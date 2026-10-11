@@ -9,6 +9,7 @@ import {
   useEngineStore,
 } from "../../../../stores/engineStore";
 import { EngineView } from "./EngineView";
+import { ENGINES_CHANGED_EVENT } from "./embedInstall";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
 
@@ -30,6 +31,10 @@ export function EnginesSection() {
   }, []);
   useEffect(() => {
     refresh();
+    // Embed model installed (from any view or Open Remote): refetch so the
+    // "model missing" state clears without reopening Settings.
+    window.addEventListener(ENGINES_CHANGED_EVENT, refresh);
+    return () => window.removeEventListener(ENGINES_CHANGED_EVENT, refresh);
   }, [refresh]);
   useEffect(() => {
     if (!detail) return;

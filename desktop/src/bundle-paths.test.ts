@@ -7,10 +7,13 @@ import { afterEach, describe, it } from "node:test";
 import {
   BUNDLED_MODEL_REL,
   LINUX_TAR_NAME,
+  devLinuxBundleTar,
+  devRepoRoot,
   hashModelDir,
   isModelDirReady,
   resolveBundledModelDir,
   resolveHfModelDir,
+  linuxBundleCandidateTars,
   resolveLinuxBundle,
 } from "./bundle-paths";
 
@@ -91,3 +94,45 @@ describe("bundle-paths", () => {
     assert.notEqual(hashModelDir(dir), a);
   });
 });
+
+describe("dev-only repo fallbacks", () => {
+  it("resolve to the checkout in dev and to nothing in a packaged app", () => {
+    const desktop = path.join(os.tmpdir(), "repo", "desktop");
+    assert.equal(devRepoRoot(false, desktop), path.join(os.tmpdir(), "repo"));
+    assert.equal(devLinuxBundleTar(false, desktop), path.join(os.tmpdir(), "repo", "dist", "linux", LINUX_TAR_NAME));
+    assert.equal(devRepoRoot(true, desktop), undefined);
+    assert.equal(devLinuxBundleTar(true, desktop), undefined);
+  });
+
+  it("a packaged app never picks a model or Linux tar out of a source tree", () => {
+    delete process.env.LITECODE_MODEL_DIR;
+    delete process.env.LITECODE_BUNDLE_ROOT;
+    delete process.env.LITECODE_LINUX_BUNDLE;
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "lc-repo-"));
+    try {
+      const desktop = path.join(repo, "desktop");
+      const model = path.join(repo, "models", ...BUNDLED_MODEL_REL.split("/"));
+      fs.mkdirSync(path.join(model, "artifacts"), { recursive: true });
+      for (const f of ["config.json", "tokenizer.json", path.join("artifacts", "ort-lin-q8-emb-q4-bs128-a1.onnx")]) {
+        fs.writeFileSync(path.join(model, f), "x");
+      }
+      const tar = path.join(repo, "dist", "linux", LINUX_TAR_NAME);
+      fs.mkdirSync(path.dirname(tar), { recursive: true });
+      fs.writeFileSync(tar, "t");
+      fs.writeFileSync(`${tar}.sha256`, "0");
+
+      // Dev: the checkout's models/ is a valid fallback; packaged: no repo root at all.
+      assert.equal(resolveHfModelDir(devRepoRoot(false, desktop)!), model);
+      assert.equal(devRepoRoot(true, desktop), undefined);
+      const packagedCandidates = linuxCandidates(true, desktop);
+      assert.ok(!packagedCandidates.some((c) => path.resolve(c).startsWith(path.resolve(repo))));
+      assert.ok(linuxCandidates(false, desktop).includes(tar));
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
+function linuxCandidates(isPackaged: boolean, desktop: string): string[] {
+  return linuxBundleCandidateTars({ developmentTar: devLinuxBundleTar(isPackaged, desktop) });
+}

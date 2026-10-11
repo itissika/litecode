@@ -57,10 +57,20 @@ import { startSidecar, stopSidecar, type SidecarHandle } from "./sidecar";
 import {
   BUNDLED_MODEL_REL,
   LINUX_TAR_NAME,
+  devLinuxBundleTar,
+  devRepoRoot as devRepoRootFor,
   resolveBundledModelDir,
   resolveLinuxBundle,
 } from "./bundle-paths";
 import { sidecarRoot } from "./paths";
+import {
+  COMPONENT_PROGRESS_CHANNEL,
+  ComponentManager,
+  isComponentId,
+  type ComponentId,
+  type ComponentProgressEvent,
+  type EnsureResult,
+} from "./components";
 import {
   materializePasswordAskPass,
   materializePrivateKeyFile,
@@ -382,12 +392,75 @@ function remoteBundleInstallDir(): string {
   return `.litecode/litecode-${productVersion()}`;
 }
 
+function devRepoRoot(): string | undefined {
+  return devRepoRootFor(app.isPackaged, app.getAppPath());
+}
+
+let componentManagerInstance: ComponentManager | null = null;
+const componentListeners = new Set<(event: ComponentProgressEvent) => void>();
+
+function broadcastComponentProgress(event: ComponentProgressEvent): void {
+  for (const listener of componentListeners) {
+    try {
+      listener(event);
+    } catch (error) {
+      console.warn("component progress listener failed", error);
+    }
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(COMPONENT_PROGRESS_CHANNEL, event);
+}
+
+/**
+ * Slim installer: embed model + Linux server tar are fetched on first use from
+ * this version's GitHub Release (or LITECODE_COMPONENTS_BASE). Lookup of an
+ * existing local copy keeps the env → bundles → sidecar → repo order.
+ */
+function componentManager(): ComponentManager {
+  if (!componentManagerInstance) {
+    componentManagerInstance = new ComponentManager({
+      appVersion: productVersion(),
+      locate: {
+        "embed-model": () =>
+          resolveBundledModelDir({ sidecarRoot: sidecarRoot(), repoRoot: devRepoRoot() }),
+        "linux-server": () => {
+          try {
+            return linuxBundlePaths().tar;
+          } catch {
+            return null;
+          }
+        },
+      },
+      emit: broadcastComponentProgress,
+    });
+  }
+  return componentManagerInstance;
+}
+
+/** `ensure` a component while mirroring its download progress into the Open Remote bar. */
+async function ensureComponentForRemote(
+  id: ComponentId,
+  range: [number, number],
+): Promise<EnsureResult> {
+  const [from, to] = range;
+  const listener = (event: ComponentProgressEvent) => {
+    if (event.id !== id || event.phase === "error") return;
+    const frac = event.total ? Math.min(1, (event.received ?? 0) / event.total) : 0;
+    emitRemoteProgress({ stage: "download", ratio: from + (to - from) * frac, message: event.message });
+  };
+  componentListeners.add(listener);
+  try {
+    return await componentManager().ensure(id);
+  } finally {
+    componentListeners.delete(listener);
+  }
+}
+
 function linuxBundlePaths(): { tar: string; checksum: string } {
   const packaged = path.join(process.resourcesPath, "linux", LINUX_TAR_NAME);
-  const development = path.resolve(app.getAppPath(), "..", "dist", "linux", LINUX_TAR_NAME);
   return resolveLinuxBundle({
     packagedTar: fs.existsSync(packaged) ? packaged : undefined,
-    developmentTar: development,
+    developmentTar: devLinuxBundleTar(app.isPackaged, app.getAppPath()),
   });
 }
 
@@ -564,11 +637,23 @@ async function stopManagedRemote(): Promise<void> {
 
 async function installLinuxBundle(session: SshSession): Promise<void> {
   const dest = remoteBundleInstallDir();
-  const repoRoot = app.isPackaged ? undefined : path.resolve(app.getAppPath(), "..");
-  const modelDir = resolveBundledModelDir({
+  let modelDir = resolveBundledModelDir({
     sidecarRoot: sidecarRoot(),
-    repoRoot,
+    repoRoot: devRepoRoot(),
   });
+  if (!modelDir) {
+    // Best effort: remote code search needs it, Open Remote itself does not.
+    try {
+      modelDir = (await ensureComponentForRemote("embed-model", [0.06, 0.12])).path;
+    } catch (error) {
+      console.warn("Embed model download failed; continuing Open Remote without it", error);
+      emitRemoteProgress({
+        stage: "download",
+        ratio: 0.12,
+        message: "Embed model unavailable — remote code search will be off. Continuing…",
+      });
+    }
+  }
   if (modelDir) {
     emitRemoteProgress({
       stage: "upload",
@@ -584,7 +669,9 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
     console.warn("Embed model not found at convention paths; remote code search will be unavailable until models are synced.");
   }
 
-  const { tar, checksum } = linuxBundlePaths();
+  const linux = await ensureComponentForRemote("linux-server", [0.14, 0.38]);
+  const tar = linux.path;
+  const checksum = `${tar}.sha256`;
   const hash = fs.readFileSync(checksum, "utf8").trim().split(/\s+/)[0];
   if (!hash) throw new Error("Linux server checksum file is invalid.");
   await session.installTar({
@@ -1195,6 +1282,22 @@ function registerIpc(): void {
 
   onTrusted("litecode:get-session-mode", "workbench", (event) => {
     event.returnValue = sessionMode;
+  });
+
+  handleTrusted("litecode:component-status", "workbench", (_e, id: unknown) => {
+    if (!isComponentId(id)) throw new Error("Unknown component");
+    return componentManager().status(id);
+  });
+
+  // The workbench may only ask for the embed model (code_search); the Linux
+  // server bundle is fetched by Open Remote in this process.
+  handleTrusted("litecode:ensure-component", "workbench", async (_e, id: unknown) => {
+    if (id !== "embed-model") throw new Error("Only embed-model can be requested here");
+    if (sessionMode === "remote") {
+      throw new Error("Remote workspaces use the embed model on the remote host.");
+    }
+    const result = await componentManager().ensure(id);
+    return { id: result.id, path: result.path, downloaded: result.downloaded };
   });
 
   onTrusted("litecode:get-ui-theme", "both", (event) => {

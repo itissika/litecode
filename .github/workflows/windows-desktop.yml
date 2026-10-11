@@ -1,6 +1,7 @@
 name: Windows desktop package
 
-# Manual-only: unsigned installers as downloadable artifacts (not published to Releases).
+# Manual-only: slim NSIS installer + embed component as downloadable artifacts
+# (not published to Releases). No Linux tar here, so only embed-model is staged.
 on:
   workflow_dispatch:
 
@@ -34,7 +35,7 @@ jobs:
           path: models/ibm-granite
           key: embed-models-${{ hashFiles('scripts/bundle_embed_model.sh') }}
 
-      - name: Package Windows (portable + NSIS)
+      - name: Package Windows (slim NSIS)
         shell: pwsh
         env:
           # Optional Authenticode (W4). When unset, unsigned artifacts are produced.
@@ -49,14 +50,20 @@ jobs:
           }
           ./scripts/package_win.ps1
 
+      - name: Stage on-demand components
+        shell: pwsh
+        run: |
+          node scripts/build_components.mjs --allow-missing --repo "${{ github.repository }}" --out dist/components
+          if ($LASTEXITCODE -ne 0) { throw "build_components.mjs failed" }
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
           name: litecode-win-x64-installers
           path: |
-            desktop/out/Litecode-Portable-*.exe
             desktop/out/Litecode-Setup-*.exe
             desktop/out/latest.yml
+            dist/components/
           if-no-files-found: error
 
       - name: Checksums

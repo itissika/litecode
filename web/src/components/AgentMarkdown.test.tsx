@@ -216,17 +216,14 @@ describe("AgentMarkdown citations", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("opens a symbol citation at the file, and at the start line when a range is written", () => {
+  it("opens a symbol citation at the file and ignores lines written on it (KR-SYM-6)", () => {
     const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
     useEditorStore.setState({ openFile, openFileAt } as never);
     const symbol = symbolMentionSource("src/a.rs", {
       symbol: "impl Store › fn save",
     });
-    const ranged = symbolMentionSource("src/a.rs", {
-      symbol: "impl Store › fn save",
-      lines: "2148-2165",
-    });
+    const ranged = '[@ file="src/a.rs" symbol="impl Store › fn save" lines="2148-2165"]';
     const { container } = render(
       <AgentMarkdown citations text={`${symbol} ${ranged}`} />,
     );
@@ -240,7 +237,8 @@ describe("AgentMarkdown citations", () => {
     fireEvent.click(symbolChips[0]!);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     fireEvent.click(symbolChips[1]!);
-    expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 2148);
+    expect(openFile).toHaveBeenCalledTimes(2);
+    expect(openFileAt).not.toHaveBeenCalled();
   });
 
   it("renders a knowledge node shortcode as a capsule beside a file citation", () => {

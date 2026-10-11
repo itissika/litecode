@@ -16,8 +16,9 @@ export function MentionChipView({
 }) {
   const id = String(node.attrs.id ?? "");
   const symbol = String(node.attrs.symbol ?? "").trim();
-  const lines = String(node.attrs.lines ?? "").trim();
-  const span = lines ? parseLineSpan(lines) : null;
+  const rawLines = node.attrs.lines == null ? null : String(node.attrs.lines);
+  // A symbol citation never carries lines; only a line range opens at a line.
+  const span = !symbol && rawLines ? parseLineSpan(rawLines.trim()) : null;
   const citation: Citation =
     mode === "node"
       ? { kind: "node", key: id }
@@ -26,6 +27,7 @@ export function MentionChipView({
           path: id,
           symbol: symbol || null,
           line: span?.start ?? null,
+          lines: symbol ? null : rawLines,
         };
 
   return (

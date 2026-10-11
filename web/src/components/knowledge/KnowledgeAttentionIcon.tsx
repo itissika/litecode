@@ -1,5 +1,6 @@
 import { WarningCircle } from "@phosphor-icons/react";
 
+import { issueText } from "../../lib/knowledge/issueText";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 
 /**
@@ -13,7 +14,7 @@ export function KnowledgeAttentionIcon({
   warnings: KnowledgeIssue[];
 }) {
   if (warnings.length === 0) return null;
-  const message = warnings.map((issue) => issue.message).join("\n");
+  const message = warnings.map(issueText).join("\n");
   return (
     <span
       className="knowledge-attention-icon"

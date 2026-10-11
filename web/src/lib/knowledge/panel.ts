@@ -1,9 +1,9 @@
 import { openPanel, revealPanel } from "../../dockview/workbench/commands";
 import { activePanelComponent, activePanelId, hasPanel } from "../../dockview/workbench/queries";
 import { isWorkspaceFileRef } from "./markers";
-import { resolveCitation, type Citation } from "./refDisplay";
+import { citationRefKey, resolveCitation, type Citation } from "./refDisplay";
 import { externalPreviewId, useEditorStore } from "../../stores/editorStore";
-import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { knowledgeRefState, useKnowledgeStore } from "../../stores/knowledgeStore";
 
 export const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
 
@@ -35,13 +35,13 @@ function citationInput(citation: Citation, sourceId?: string) {
   const source = sourceId ? (knowledge.byId.get(sourceId) ?? null) : null;
   const key = citation.kind === "node" ? citation.key.trim() : "";
   const target = key ? (knowledge.byKey.get(key) ?? null) : null;
-  const issues = sourceId ? (knowledge.issuesByNode.get(sourceId) ?? []) : [];
+  const ref = knowledgeRefState(knowledge, sourceId, citationRefKey(citation)) ?? null;
   const externalOpen =
     citation.kind === "file" &&
     useEditorStore
       .getState()
       .tabs.some((tab) => tab.external && tab.path === externalPreviewId(citation.path));
-  return { source, target, issues, externalOpen };
+  return { source, target, ref, ready: knowledge.ready, externalOpen };
 }
 
 /**

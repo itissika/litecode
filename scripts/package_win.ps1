@@ -1,15 +1,24 @@
-# Build Windows NSIS installer (and portable unless -SkipPortable).
-# Unsigned unless CSC_* env is set.
+# Build the Windows NSIS installer (the only Windows release form).
+#
+# Default = slim: the installer carries the sidecar (litecode.exe + DirectML.dll
+# + web/dist) only. The embed model and the Linux remote-server tar are NOT
+# embedded; the app downloads them on first use from this version's GitHub
+# Release (see scripts/build_components.mjs and desktop/src/components.ts).
+#
+# -Full embeds the model + Linux tar again (local offline builds only; never
+# used by release CI). Unsigned unless CSC_* env is set.
 param(
   [switch]$SkipAssemble,
   [switch]$SkipWeb,
-  [switch]$SkipModel,
-  [switch]$SkipLinuxBundle,
+  [switch]$Full,
   [switch]$LinuxBundleWarnOnly,
   [switch]$SkipLinuxFreshness,
-  [switch]$SkipPortable,
   [string]$Profile = "release",
-  [string]$ArtifactInfix = ""
+  [string]$ArtifactInfix = "",
+  # Deprecated no-ops kept so older callers keep working (slim is the default now).
+  [switch]$SkipModel,
+  [switch]$SkipLinuxBundle,
+  [switch]$SkipPortable
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,31 +53,34 @@ function Invoke-ElectronBuilder {
   }
 }
 
+if ($SkipModel -or $SkipLinuxBundle -or $SkipPortable) {
+  Write-Host "==> note: -SkipModel / -SkipLinuxBundle / -SkipPortable are no-ops (slim NSIS is the default)"
+}
+$sku = if ($Full) { "full (embeds model + Linux tar; local only)" } else { "slim (model + Linux tar download on demand)" }
+Write-Host "==> Windows NSIS, $sku, v$Version"
+
 if (-not $SkipAssemble) {
   $assembleArgs = @{ Profile = $Profile }
   if ($SkipWeb) { $assembleArgs.SkipWeb = $true }
-  if ($SkipModel) { $assembleArgs.SkipModel = $true }
+  if ($Full) { $assembleArgs.WithModel = $true }
   & (Join-Path $Root "scripts\assemble_product.ps1") @assembleArgs
 }
 
 $Product = Join-Path $Root "dist\product"
 $Exe = Join-Path $Product "litecode.exe"
 if (-not (Test-Path $Exe)) {
-  throw "sidecar missing at $Exe — assemble first"
+  throw "sidecar missing at $Exe - assemble first"
 }
 
-# GitHub checkout mtimes are "now"; the Linux artifact is older even at the same SHA.
-if ($env:GITHUB_ACTIONS) {
-  $linuxDir = Join-Path $Root "dist\linux"
-  if (Test-Path -LiteralPath $linuxDir) {
-    Get-ChildItem -LiteralPath $linuxDir -File -ErrorAction SilentlyContinue |
-      ForEach-Object { $_.LastWriteTime = Get-Date }
+if ($Full) {
+  # GitHub checkout mtimes are "now"; the Linux artifact is older even at the same SHA.
+  if ($env:GITHUB_ACTIONS) {
+    $linuxDir = Join-Path $Root "dist\linux"
+    if (Test-Path -LiteralPath $linuxDir) {
+      Get-ChildItem -LiteralPath $linuxDir -File -ErrorAction SilentlyContinue |
+        ForEach-Object { $_.LastWriteTime = Get-Date }
+    }
   }
-}
-
-if ($SkipLinuxBundle) {
-  Write-Host "==> skipping Linux bundle (slim SKU); Open Remote reads LITECODE_BUNDLE_ROOT / %LOCALAPPDATA%\litecode\bundles"
-} else {
   $ensureArgs = @{ Root = $Root }
   if ($LinuxBundleWarnOnly) { $ensureArgs.WarnOnly = $true }
   else { $ensureArgs.Require = $true }
@@ -95,24 +107,31 @@ try {
   npm run build
   Assert-LastExitCode "desktop build (tsc)"
 
-  $winArgs = if ($SkipPortable) { @("--win", "nsis", "--x64") } else { @("--win", "--x64") }
-  $needConfig = [bool]$SkipLinuxBundle -or ($infix -ne "")
-  if ($needConfig) {
+  $winArgs = @("--win", "nsis", "--x64")
+  if ($Full -or ($infix -ne "")) {
     $pkg = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
     $build = $pkg.build
-    if ($SkipLinuxBundle) {
-      $filtered = @()
+    if ($Full) {
+      $resources = @()
       foreach ($item in $build.extraResources) {
-        $from = [string]$item.from
-        if ($from -match 'dist[/\\]linux') { continue }
-        $filtered += $item
+        if ([string]$item.from -eq "../dist/product") {
+          $item.filter = @("**/*")
+        }
+        $resources += $item
       }
-      $build.extraResources = @($filtered)
+      $resources += [pscustomobject]@{
+        from = "../dist/linux/litecode-server-linux-x64.tar.gz"
+        to   = "linux/litecode-server-linux-x64.tar.gz"
+      }
+      $resources += [pscustomobject]@{
+        from = "../dist/linux/litecode-server-linux-x64.tar.gz.sha256"
+        to   = "linux/litecode-server-linux-x64.tar.gz.sha256"
+      }
+      $build.extraResources = @($resources)
     }
     if ($infix) {
       $build.win.artifactName = "Litecode-`${version}-$infix-`${os}-`${arch}.`${ext}"
       $build.nsis.artifactName = "Litecode-Setup-`${version}-$infix-`${arch}.`${ext}"
-      $build.portable.artifactName = "Litecode-Portable-`${version}-$infix-`${arch}.`${ext}"
     }
     $builderConfig = Join-Path $env:TEMP ("litecode-electron-builder-" + [guid]::NewGuid().ToString("N") + ".json")
     $json = $build | ConvertTo-Json -Depth 16
@@ -133,10 +152,13 @@ $setup = Join-Path $outDir "Litecode-Setup-$Version$infixPart-x64.exe"
 if (-not (Test-Path -LiteralPath $setup)) {
   throw "expected installer missing: $setup"
 }
-if (-not $SkipPortable) {
-  $portable = Join-Path $outDir "Litecode-Portable-$Version$infixPart-x64.exe"
-  if (-not (Test-Path -LiteralPath $portable)) {
-    throw "expected portable missing: $portable"
+
+if (-not $Full) {
+  $unpacked = Join-Path $outDir "win-unpacked\resources"
+  foreach ($leak in @("sidecar\models", "linux")) {
+    if (Test-Path -LiteralPath (Join-Path $unpacked $leak)) {
+      throw "slim installer unexpectedly contains resources\$leak"
+    }
   }
 }
 

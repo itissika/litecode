@@ -1,8 +1,9 @@
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { EnginesDetail } from "../../../../api/workspace";
 import { EnginesSection } from "./EnginesSection";
+import { ENGINES_CHANGED_EVENT } from "./embedInstall";
 
 vi.mock("../../../../api/workspace", async (importOriginal) => {
   const actual =
@@ -80,5 +81,25 @@ describe("EnginesSection", () => {
     expect(mockedDetail).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(999);
     expect(mockedDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it("refetches when an embed model install settles, even when idle (no poll)", async () => {
+    const idle = warmingDetail();
+    idle.retrieval = { ...idle.retrieval, state: "failed", usable: "unavailable" };
+    idle.retrieval.index = { ...idle.retrieval.index, status: "absent" };
+    idle.lsp = { ...idle.lsp, state: "stopped", usable: "stopped" };
+    mockedDetail.mockReset().mockResolvedValue(idle);
+    const { unmount } = render(<EnginesSection />);
+    await act(async () => undefined);
+    expect(mockedDetail).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event(ENGINES_CHANGED_EVENT));
+    });
+    expect(mockedDetail).toHaveBeenCalledTimes(2);
+
+    unmount();
+    window.dispatchEvent(new Event(ENGINES_CHANGED_EVENT));
+    expect(mockedDetail).toHaveBeenCalledTimes(2);
   });
 });

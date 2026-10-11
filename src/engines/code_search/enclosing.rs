@@ -195,7 +195,16 @@ pub fn find_scope(path: &str, content: &str, chain: &str) -> ScopeMatch {
     if chain.is_empty() {
         return ScopeMatch::Missing;
     }
-    let scopes = list_scopes(path, content);
+    match_scopes(&list_scopes(path, content), chain)
+}
+
+/// [`find_scope`] over a scope list that was already parsed, so one parse can
+/// answer many chains.
+pub fn match_scopes(scopes: &[ScopeEntry], chain: &str) -> ScopeMatch {
+    let chain = chain.trim();
+    if chain.is_empty() {
+        return ScopeMatch::Missing;
+    }
     let hits: Vec<ScopeEntry> = scopes
         .iter()
         .filter(|entry| entry.chain == chain)
@@ -208,10 +217,17 @@ pub fn find_scope(path: &str, content: &str, chain: &str) -> ScopeMatch {
         return ScopeMatch::Missing;
     };
     let hits: Vec<ScopeEntry> = scopes
-        .into_iter()
+        .iter()
         .filter(|entry| legacy_trait_impl(&entry.chain, ty, rest))
+        .cloned()
         .collect();
     scope_hits(hits)
+}
+
+/// True when the file extension has a tree-sitter grammar, i.e. symbol
+/// citations into this file can resolve at all.
+pub fn supports_scopes(path: &str) -> bool {
+    language_for_path(path).is_some()
 }
 
 fn scope_hits(hits: Vec<ScopeEntry>) -> ScopeMatch {

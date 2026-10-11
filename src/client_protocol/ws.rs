@@ -194,6 +194,54 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         }
     });
 
+    // `knowledge/changed`: the resident index published a new version.
+    {
+        let root = state.workspace.sandbox().root().to_path_buf();
+        let index = crate::knowledge::index::registered(&root)
+            .unwrap_or_else(|| crate::knowledge::index::start(&root));
+        let knowledge_tx = response_tx.clone();
+        let mut knowledge_rx = index.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match knowledge_rx.recv().await {
+                    Ok(changed) => {
+                        if knowledge_tx
+                            .send(project::notification(
+                                "knowledge/changed",
+                                serde_json::json!({
+                                    "version": changed.version,
+                                    "epoch": &*changed.epoch,
+                                    "paths": changed.paths,
+                                }),
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    // Missed versions: the latest one still tells the client to refetch.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let snapshot = index.snapshot();
+                        if knowledge_tx
+                            .send(project::notification(
+                                "knowledge/changed",
+                                serde_json::json!({
+                                    "version": snapshot.version,
+                                    "epoch": &*snapshot.epoch,
+                                    "paths": [],
+                                }),
+                            ))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     let settings_tx = response_tx.clone();
     let models_runtime = state.runtime.clone();
     tokio::spawn(async move {

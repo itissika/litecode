@@ -3,15 +3,13 @@ import { useMemo, type MouseEvent } from "react";
 
 import { followCitation } from "../lib/knowledge/panel";
 import {
+  citationRefKey,
   resolveCitation,
   type Citation,
   type CitationChipModel,
 } from "../lib/knowledge/refDisplay";
 import { externalPreviewId, useEditorStore } from "../stores/editorStore";
-import { useKnowledgeStore } from "../stores/knowledgeStore";
-import type { KnowledgeIssue } from "../lib/knowledge/types";
-
-const NO_ISSUES: readonly KnowledgeIssue[] = [];
+import { knowledgeRefState, useKnowledgeStore } from "../stores/knowledgeStore";
 
 function stopChipEvent(event: MouseEvent) {
   event.preventDefault();
@@ -55,9 +53,10 @@ export function CitationChip({
     const key = citation.key.trim();
     return key ? state.byKey.get(key) : undefined;
   });
-  const issues = useKnowledgeStore((state) =>
-    sourceId ? (state.issuesByNode.get(sourceId) ?? NO_ISSUES) : NO_ISSUES,
-  );
+  // Backend verdict for this citation, aligned by `ref_key` (KR-KEY-1).
+  const refKey = useMemo(() => citationRefKey(citation), [citation]);
+  const ref = useKnowledgeStore((state) => knowledgeRefState(state, sourceId, refKey));
+  const ready = useKnowledgeStore((state) => state.ready);
   const externalOpen = useEditorStore((state) => {
     if (citation.kind !== "file") return false;
     const id = externalPreviewId(citation.path);
@@ -68,11 +67,12 @@ export function CitationChip({
       resolveCitation(citation, {
         source: source ?? null,
         target: target ?? null,
-        issues,
+        ref: ref ?? null,
+        ready,
         externalOpen,
         label,
       }),
-    [citation, source, target, issues, externalOpen, label],
+    [citation, source, target, ref, ready, externalOpen, label],
   );
 
   return (

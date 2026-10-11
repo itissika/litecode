@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { knowledgeFixture, knowledgeFolderFixture } from "./fixture";
 import { layoutKnowledgeGraph, snapKnowledgeCoord, KNOWLEDGE_GRID } from "./layoutGraph";
 import type { KnowledgeNode } from "./types";
-import { validateKnowledge } from "./validate";
+import { knowledgeFixtureIssues as fixtureIssues } from "./fixture";
 
 function node(
   partial: Partial<KnowledgeNode> & Pick<KnowledgeNode, "id" | "key">,
@@ -25,7 +25,7 @@ function node(
 describe("layoutKnowledgeGraph", () => {
   const laid = layoutKnowledgeGraph(
     knowledgeFixture,
-    validateKnowledge(knowledgeFixture),
+    fixtureIssues,
   );
 
   it("places every node and skips self relations", () => {
@@ -53,7 +53,7 @@ describe("layoutKnowledgeGraph", () => {
   it("nests folder frames around the nodes inside them", () => {
     const laidWithFolders = layoutKnowledgeGraph(
       knowledgeFixture,
-      validateKnowledge(knowledgeFixture),
+      fixtureIssues,
       knowledgeFolderFixture,
     );
     expect(laidWithFolders.nodes).toHaveLength(knowledgeFixture.length);
@@ -128,7 +128,7 @@ describe("layoutKnowledgeGraph", () => {
       }),
       node({ id: "peer", key: "peer" }),
     ];
-    const edges = layoutKnowledgeGraph(nodes, validateKnowledge(nodes)).edges;
+    const edges = layoutKnowledgeGraph(nodes, []).edges;
     expect(edges).toHaveLength(1);
     expect(edges[0]?.variant).toBe("solid");
     expect(edges[0]?.id).toBe("host-peer");

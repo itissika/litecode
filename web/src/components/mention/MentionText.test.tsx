@@ -16,14 +16,17 @@ describe("MentionText", () => {
       byKey: new Map([["seq", { id: "seq", key: "seq", status: "active" }]]),
       byId: new Map([["seq", { id: "seq", key: "seq", status: "active" }]]),
     } as never);
+    const openFile = vi.fn(async () => {});
     const openFileAt = vi.fn(async () => {});
-    useEditorStore.setState({ openFileAt });
+    useEditorStore.setState({ openFile, openFileAt });
     const text = `see ${mentionSource("seq")} and ${fileMentionSource("src/a.rs")} then ${symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9", label: "fn save" })}`;
     render(<MentionText text={text} />);
     fireEvent.click(await screen.findByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
     fireEvent.click(screen.getByRole("button", { name: "a.rs : fn save" }));
-    expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
+    // A symbol citation opens the file; lines never ride on it (KR-SYM-6).
+    expect(openFile).toHaveBeenCalledWith("src/a.rs");
+    expect(openFileAt).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: ".../src/a.rs" }).className).toContain(
       "knowledge-token-label",
     );

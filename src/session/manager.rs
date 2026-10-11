@@ -2417,16 +2417,18 @@ impl SessionManager {
         workspace: &std::path::Path,
         user_text: &str,
     ) {
-        let Some(reminder) = crate::reminder::mentions::build(
-            workspace,
-            user_text,
-            &self.live_mention_digests(session_id),
-        ) else {
+        let mut stages = crate::telemetry::latency::Stages::new("mentions", None);
+        let digests = self.live_mention_digests(session_id);
+        stages.mark("live_mention_digests");
+        let built = crate::reminder::mentions::build(workspace, user_text, &digests);
+        stages.mark("build");
+        let Some(reminder) = built else {
             return;
         };
         if let Err(error) = self.append_reminder(session_id, &reminder) {
             tracing::warn!(%error, "mentions reminder was not saved");
         }
+        stages.mark("append");
     }
 
     /// Write `reminder/knowledge_status` after a human message.
@@ -2434,10 +2436,18 @@ impl SessionManager {
     /// An empty library writes nothing. The same class still on the live surface
     /// is left as it is. A failed write does not undo the user row.
     pub fn append_knowledge_status_for(&self, session_id: &str, workspace: &std::path::Path) {
-        let Some(reminder) = crate::reminder::knowledge_status::build(workspace) else {
+        // `build` only reads the resident knowledge snapshot; its parts
+        // (lookup / wait_fresh / snapshot_read) are on the
+        // `knowledge_status.note` line.
+        let mut stages = crate::telemetry::latency::Stages::new("knowledge_status", None);
+        let built = crate::reminder::knowledge_status::build(workspace);
+        stages.mark("build");
+        let Some(reminder) = built else {
             return;
         };
-        if let Ok(view) = self.spine_reminder_view(session_id)
+        let view = self.spine_reminder_view(session_id);
+        stages.mark("spine_view");
+        if let Ok(view) = view
             && let Some(previous) = view.latest(crate::reminder::ReminderKind::KnowledgeStatus)
             && previous.same_snapshot(&reminder)
         {
@@ -2446,6 +2456,7 @@ impl SessionManager {
         if let Err(error) = self.append_reminder(session_id, &reminder) {
             tracing::warn!(%error, "knowledge status reminder was not saved");
         }
+        stages.mark("append");
     }
 
     /// Persist the plan-execution trigger as a dedicated `plan/execute` spine Item.

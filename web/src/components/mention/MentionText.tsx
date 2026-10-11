@@ -9,13 +9,15 @@ import { CitationChip } from "../CitationChip";
 
 function citationFor(segment: Exclude<BodySegment, { type: "text" }>): Citation {
   if (segment.type === "ref") return { kind: "node", key: segment.id };
-  const lines = segment.type === "symbol" ? segment.lines : null;
+  const symbol = segment.type === "symbol" ? segment.symbol : null;
+  const lines = segment.type === "symbol" && !symbol ? segment.lines : null;
   const span = lines ? parseLineSpan(lines) : null;
   return {
     kind: "file",
     path: segment.path,
-    symbol: segment.type === "symbol" ? segment.symbol : null,
+    symbol,
     line: span?.start ?? null,
+    lines: symbol ? null : (segment.rawLines ?? null),
   };
 }
 

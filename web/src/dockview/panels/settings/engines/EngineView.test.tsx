@@ -281,3 +281,116 @@ describe("EngineView LSP persist vs stale detail", () => {
     });
   });
 });
+
+describe("EngineView embed model (slim installer)", () => {
+  const MISSING = "embed model not installed: download it in Settings → Engines";
+
+  function missingModel(): EnginesDetail {
+    const detail = detailFixture();
+    detail.retrieval = {
+      ...detail.retrieval,
+      desired: true,
+      state: "failed",
+      usable: "unavailable",
+      error: MISSING,
+      model: { model_found: false, tokenizer_found: false, ready: false },
+    };
+    return detail;
+  }
+
+  function ready(): EnginesDetail {
+    const detail = detailFixture();
+    detail.retrieval = {
+      ...detail.retrieval,
+      desired: true,
+      state: "warm",
+      usable: "ready",
+      error: null,
+      model: {
+        model_dir: "/bundles/models/ibm-granite/granite-embedding-97m-multilingual-r2",
+        model_found: true,
+        tokenizer_found: true,
+        ready: true,
+      },
+    };
+    return detail;
+  }
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      engines: { version: 1, lsp: { desired: false, servers: [] }, retrieval: { desired: true } },
+    });
+  });
+
+  afterEach(() => {
+    delete window.litecode;
+  });
+
+  function section(): HTMLElement {
+    return screen.getByText("Semantic retrieval").closest("section") as HTMLElement;
+  }
+
+  it("lets the download card own the missing-model state, then goes fully green", () => {
+    window.litecode = {
+      getSessionMode: () => "local",
+      ensureComponent: vi.fn(),
+      getComponentStatus: vi.fn(async () => ({
+        id: "embed-model",
+        installed: false,
+        path: null,
+        downloading: false,
+        error: null,
+      })),
+      onComponentProgress: () => () => undefined,
+    };
+    const { rerender } = render(<EngineView detail={missingModel()} onChanged={() => {}} />);
+    const retrieval = within(section());
+    expect(retrieval.getByRole("group", { name: "Embedding model download" })).toBeTruthy();
+    expect(retrieval.getByText("needs model")).toBeTruthy();
+    expect(retrieval.queryByText("unavailable")).toBeNull();
+    expect(retrieval.queryByText(MISSING)).toBeNull();
+    expect(retrieval.queryByText(/not found:/)).toBeNull();
+
+    rerender(<EngineView detail={ready()} onChanged={() => {}} />);
+    const after = within(section());
+    expect(after.getByText("ready")).toBeTruthy();
+    expect(after.queryByRole("group", { name: "Embedding model download" })).toBeNull();
+    expect(after.queryByText("needs model")).toBeNull();
+    expect(after.queryByText(MISSING)).toBeNull();
+    expect(after.queryByText(/not found:/)).toBeNull();
+    expect(section().querySelector(".text-\\(--_dk-red-500\\)")).toBeNull();
+  });
+
+  it("keeps the plain error + not-found line where no download is offered (browser / remote)", () => {
+    render(<EngineView detail={missingModel()} onChanged={() => {}} />);
+    const retrieval = within(section());
+    expect(retrieval.queryByRole("group", { name: "Embedding model download" })).toBeNull();
+    expect(retrieval.getByText("unavailable")).toBeTruthy();
+    expect(retrieval.getByText(MISSING)).toBeTruthy();
+    expect(retrieval.getByText(/not found:/)).toBeTruthy();
+  });
+
+  it("after a successful download restarts the failed engine and refetches detail", async () => {
+    const refresh = vi.spyOn(workspace, "refreshRetrieval").mockResolvedValue({ desired: true, mode: "full" } as never);
+    const detailSpy = vi.spyOn(workspace, "getEnginesDetail").mockResolvedValue(missingModel());
+    window.litecode = {
+      getSessionMode: () => "local",
+      ensureComponent: vi.fn(async () => ({ id: "embed-model", path: "C:/m", downloaded: true })),
+      getComponentStatus: vi.fn(async () => ({
+        id: "embed-model",
+        installed: false,
+        path: null,
+        downloading: false,
+        error: null,
+      })),
+      onComponentProgress: () => () => undefined,
+    };
+    const onChanged = vi.fn();
+    render(<EngineView detail={missingModel()} onChanged={onChanged} />);
+    fireEvent.click(within(section()).getByRole("button", { name: "Download" }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+    expect(refresh).toHaveBeenCalledTimes(1);
+    refresh.mockRestore();
+    detailSpy.mockRestore();
+  });
+});

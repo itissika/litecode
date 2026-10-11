@@ -238,6 +238,8 @@ pub fn build_global_with_custom_tool(
         args,
         timeout: 120,
         rules: Vec::new(),
+        suite: None,
+        suite_label: None,
     };
     settings.custom_tools.push(def);
     if let Some(agent) = settings.agents.get_mut("default") {

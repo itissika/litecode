@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture } from "./fixture";
-import { chipForMarker, relationStripChips, resolveCitation } from "./refDisplay";
+import { chipForMarker, citationRefKey, relationStripChips, resolveCitation } from "./refDisplay";
 import { normalizeKey } from "./markers";
-import type { KnowledgeNode } from "./types";
+import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
 function node(key: string) {
   return knowledgeFixture.find((item) => item.key === key)!;
@@ -68,7 +68,6 @@ describe("refDisplay", () => {
       {
         source,
         target: byKey.get("seq") ?? null,
-        issues: [],
         externalOpen: false,
       },
     );
@@ -77,7 +76,7 @@ describe("refDisplay", () => {
 
     const missing = resolveCitation(
       { kind: "node", key: "not-a-node" },
-      { source, target: null, issues: [], externalOpen: false },
+      { source, target: null, externalOpen: false },
     );
     expect(missing.resolvable).toBe(false);
     expect(missing.tone).toBe("error");
@@ -87,7 +86,7 @@ describe("refDisplay", () => {
     const source = node("session");
     const present = resolveCitation(
       { kind: "file", path: "src/a.rs", symbol: "fn save", line: 4 },
-      { source, target: null, issues: [], externalOpen: false },
+      { source, target: null, externalOpen: false },
     );
     expect(present.resolvable).toBe(true);
     expect(present.symbol).toBe(true);
@@ -98,15 +97,10 @@ describe("refDisplay", () => {
       {
         source,
         target: null,
-        issues: [
-          {
-            nodeId: source.id,
-            severity: "warning",
-            code: "symbol_drift",
-            message: "moved",
-            ref: "fn save",
-          },
-        ],
+        ref: refState("sym:src/a.rs\0fn save", "symbol_drift", "warning", {
+          path: "src/a.rs",
+          symbol: "fn save",
+        }),
         externalOpen: false,
       },
     );
@@ -115,14 +109,112 @@ describe("refDisplay", () => {
 
     const outside = resolveCitation(
       { kind: "file", path: "C:/outside/a.ts" },
-      { source, target: null, issues: [], externalOpen: false },
+      { source, target: null, externalOpen: false },
     );
     expect(outside.resolvable).toBe(false);
 
     const preview = resolveCitation(
       { kind: "file", path: "C:/outside/a.ts" },
-      { source, target: null, issues: [], externalOpen: true },
+      { source, target: null, externalOpen: true },
     );
     expect(preview.resolvable).toBe(true);
   });
+
+  it("aligns file and symbol verdicts by ref_key, so a same-named chain in another file stays clean", () => {
+    const source = node("session");
+    const broken = refState("sym:src/a.rs\0fn new", "ambiguous_symbol", "error", {
+      path: "src/a.rs",
+      symbol: "fn new",
+    });
+    const inA = { kind: "file" as const, path: "src/a.rs", symbol: "fn new" };
+    const inB = { kind: "file" as const, path: "src/b.rs", symbol: "fn new" };
+    expect(citationRefKey(inA)).toBe("sym:src/a.rs\0fn new");
+    expect(citationRefKey(inB)).toBe("sym:src/b.rs\0fn new");
+    const a = resolveCitation(inA, { source, target: null, ref: broken, externalOpen: false });
+    expect(a.tone).toBe("error");
+    expect(a.resolvable).toBe(false);
+    expect(a.title).toBe('Symbol "fn new" in "src/a.rs" is not unique.');
+    // b.rs has no verdict of its own yet: neutral "checking", not a's error.
+    const b = resolveCitation(inB, { source, target: null, ref: null, externalOpen: false });
+    expect(b.tone).toBe("normal");
+    expect(b.resolvable).toBe(true);
+  });
+
+  it("shows no citation error while the snapshot is not ready", () => {
+    const source = node("session");
+    const missing = refState("file:src/gone.rs", "missing_file", "error", { path: "src/gone.rs" });
+    const checking = resolveCitation(
+      { kind: "file", path: "src/gone.rs" },
+      { source, target: null, ref: missing, ready: false, externalOpen: false },
+    );
+    expect(checking.tone).toBe("normal");
+    const node404 = resolveCitation(
+      { kind: "node", key: "gone" },
+      { source, target: null, ref: null, ready: false, externalOpen: false },
+    );
+    expect(node404.tone).not.toBe("error");
+  });
+
+  it("derives a node citation locally until the backend has it, then the backend wins", () => {
+    const source = node("session");
+    const local = resolveCitation(
+      { kind: "node", key: "gone" },
+      { source, target: null, ref: null, externalOpen: false },
+    );
+    expect(local.tone).toBe("error");
+    const held = resolveCitation(
+      { kind: "node", key: "gone" },
+      {
+        source,
+        target: null,
+        ref: refState("node:gone", "ok", null, { key: "gone" }),
+        externalOpen: false,
+      },
+    );
+    expect(held.tone).toBe("normal");
+  });
+
+  it("uses the range key for a line range and ignores lines on a symbol", () => {
+    expect(citationRefKey({ kind: "file", path: "src\\a.rs", lines: "7-7" })).toBe(
+      "range:src/a.rs\x007",
+    );
+    expect(citationRefKey({ kind: "file", path: "a.rs", lines: "+3" })).toBe("range:a.rs\x00+3");
+    expect(
+      citationRefKey({ kind: "file", path: "a.rs", symbol: " fn a ", lines: "4" }),
+    ).toBe("sym:a.rs\x00fn a");
+  });
+
+  it("treats an unknown future error code as an error by severity", () => {
+    const source = node("session");
+    const future = refState("sym:a.rs\0fn a", "symbol_with_lines" as KnowledgeRefStatus, "error", {});
+    const chip = resolveCitation(
+      { kind: "file", path: "a.rs", symbol: "fn a" },
+      { source, target: null, ref: { ...future, message: "lines on a symbol" }, externalOpen: false },
+    );
+    expect(chip.tone).toBe("error");
+    expect(chip.title).toBe("lines on a symbol");
+  });
 });
+
+function refState(
+  refKey: string,
+  status: KnowledgeRefStatus,
+  severity: "error" | "warning" | null,
+  args: Record<string, unknown>,
+): KnowledgeRefState {
+  const [kind] = refKey.split(":");
+  return {
+    refKey,
+    kind: kind === "sym" ? "symbol" : (kind as KnowledgeRefState["kind"]),
+    key: null,
+    path: typeof args.path === "string" ? args.path : null,
+    symbol: typeof args.symbol === "string" ? args.symbol : null,
+    lines: null,
+    raw: "",
+    status,
+    severity,
+    targetPath: null,
+    args,
+    message: "",
+  };
+}

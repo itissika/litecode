@@ -30,6 +30,8 @@ import { useBashStore } from "./bashStore";
 import { useToastStore } from "./toastStore";
 import { useEngineStore } from "./engineStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
+import { useKnowledgeStore } from "./knowledgeStore";
+import type { KnowledgeChanged } from "../api/knowledge";
 
 interface StoreLike {
   getState: () => any;
@@ -155,6 +157,8 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           onConnectionChange: (connection) => {
             if (connection === "connected") {
               set({ state: connection });
+              // Pushes may have been missed while the socket was down (§10.2).
+              useKnowledgeStore.getState().onReconnect();
             } else {
               // Any non-connected state means the server has dropped our
               // per-socket subscriptions (a fresh socket starts empty).
@@ -423,6 +427,13 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             void tree?.handleWorkspaceChange(paths, changeKind);
             settings?.handleWorkspaceChange?.(paths, changeKind);
             git?.scheduleRefresh?.(paths);
+            return;
+          }
+
+          case "knowledge/changed": {
+            useKnowledgeStore
+              .getState()
+              .onKnowledgeChanged(params as unknown as KnowledgeChanged);
             return;
           }
 

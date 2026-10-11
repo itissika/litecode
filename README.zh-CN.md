@@ -97,13 +97,14 @@ LiteCode 的设计理念就沉淀在它自己的知识库里——`knowledge/`�
 
 > 前置要求：Rust（MSVC，edition 2024）+ Node.js 22+。
 
-本地 nightly（Windows 安装包 + 精简 Linux tar，`LITECODE_CHANNEL=nightly`）：
+本地 nightly（瘦 Windows 安装包 + 精简 Linux tar，`LITECODE_CHANNEL=nightly`）：
 
 ```powershell
 ./scripts/package_local.ps1
 ```
 
-产物：`desktop/out/` 与 `dist/linux/`。官方签名版本来自 GitHub Releases。
+产物：`desktop/out/`、`dist/linux/` 与 `dist/components/`。官方版本来自 GitHub Releases。
+Windows 安装包为瘦包：嵌入模型与 Linux 远程服务包在首次使用时从同版本 Release 按需下载（离线可设 `LITECODE_COMPONENTS_BASE=<目录>`），详见 [desktop/README.md](desktop/README.md#on-demand-components)。
 
 ## 📚 进阶
 

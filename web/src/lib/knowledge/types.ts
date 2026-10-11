@@ -45,25 +45,64 @@ export interface KnowledgeNode {
   extras?: string[];
 }
 
+/**
+ * Every problem code the backend snapshot can carry
+ * (`docs/knowledge-references.md` §6). Declaration codes have no `refKey`.
+ */
 export type KnowledgeIssueCode =
   | "duplicate_key"
   | "empty_key"
   | "filename_mismatch"
+  | "invalid_status"
   | "self_relation"
   | "dangling_relation"
   | "inactive_target"
-  | "invalid_status"
   | "missing_file"
+  | "symlink_escape"
+  | "invalid_lines"
+  | "unreadable_file"
+  | "unsupported_language"
   | "missing_symbol"
-  | "symbol_drift";
+  | "ambiguous_symbol"
+  | "symbol_drift"
+  | "line_out_of_range";
 
 export type KnowledgeIssueSeverity = "error" | "warning";
+
+/** Structured issue arguments: `key`, `path`, `symbol`, `lines`, `target_status`, `reason`, `line_count`, ... */
+export type KnowledgeIssueArgs = Readonly<Record<string, unknown>>;
 
 export interface KnowledgeIssue {
   nodeId: string;
   severity: KnowledgeIssueSeverity;
   code: KnowledgeIssueCode;
+  /** English fallback text from the backend. Display goes through `issueText`. */
   message: string;
-  /** Key the problem is about, when there is one. */
+  /** Key / path / chain the problem is about, when there is one (legacy display field). */
   ref?: string;
+  /** The citation this issue belongs to. `null` for declaration issues. */
+  refKey?: string | null;
+  args?: KnowledgeIssueArgs;
+}
+
+export type KnowledgeRefKind = "node" | "file" | "symbol" | "range";
+
+/** `ok`, `checking`, or one of the citation issue codes. */
+export type KnowledgeRefStatus = "ok" | "checking" | KnowledgeIssueCode;
+
+/** Backend verdict for one citation of one node, aligned by `refKey`. */
+export interface KnowledgeRefState {
+  refKey: string;
+  kind: KnowledgeRefKind;
+  key: string | null;
+  path: string | null;
+  symbol: string | null;
+  lines: string | null;
+  raw: string;
+  status: KnowledgeRefStatus;
+  severity: KnowledgeIssueSeverity | null;
+  /** Node refs: target node path (null when dangling). Others: the cited path. */
+  targetPath: string | null;
+  args: KnowledgeIssueArgs;
+  message: string;
 }

@@ -279,7 +279,9 @@ function sameIssueList(left: readonly KnowledgeIssue[], right: readonly Knowledg
       a.severity !== b.severity ||
       a.code !== b.code ||
       a.message !== b.message ||
-      (a.ref ?? "") !== (b.ref ?? "")
+      (a.ref ?? "") !== (b.ref ?? "") ||
+      (a.refKey ?? null) !== (b.refKey ?? null) ||
+      JSON.stringify(a.args ?? null) !== JSON.stringify(b.args ?? null)
     ) {
       return false;
     }

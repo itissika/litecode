@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { AppShellDockview } from "./dockview/AppShellDockview";
 import { ClickShield } from "./components/ClickShield";
 import { ToastHost } from "./components/ToastHost";
+import { installEmbedInstallWatcher } from "./dockview/panels/settings/engines/embedInstall";
 import { installDebugConsole } from "./lib/debugTrace";
 import { useConnectionStore } from "./stores/connectionStore";
 
@@ -13,7 +14,11 @@ export default function App() {
   useEffect(() => {
     installDebugConsole();
     init();
-    return () => destroy();
+    const stopEmbedWatcher = installEmbedInstallWatcher();
+    return () => {
+      stopEmbedWatcher();
+      destroy();
+    };
   }, [init, destroy]);
 
   return (

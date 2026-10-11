@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useMemo, type ReactNode } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
   type Components,
@@ -46,15 +46,21 @@ function FileRefChip({
   path,
   symbol,
   line,
+  lines,
 }: {
   path: string;
   symbol: string | null;
   line: number | null;
+  lines: string | null;
 }) {
   const sourceId = useContext(KnowledgeSourceContext) ?? undefined;
+  const citation = useMemo(
+    () => ({ kind: "file" as const, path, symbol, line, lines }),
+    [path, symbol, line, lines],
+  );
   return (
     <CitationChip
-      citation={{ kind: "file", path, symbol, line }}
+      citation={citation}
       sourceId={sourceId}
     />
   );
@@ -77,6 +83,7 @@ const components: Components = {
           path={located.path}
           symbol={located.symbol}
           line={located.line}
+          lines={located.lines ?? null}
         />
       );
     }

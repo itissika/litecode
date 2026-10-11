@@ -1,7 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 
-import { resolveBundledModelDir } from "./bundle-paths";
+import { app } from "electron";
+
+import { devRepoRoot, resolveBundledModelDir } from "./bundle-paths";
 import { normalizeWorkspace } from "./lap-path";
 import { litecodeBinary, sidecarRoot } from "./paths";
 
@@ -72,7 +74,8 @@ export async function startSidecar(opts: {
     String(opts.parentPid),
   ];
 
-  const repoRoot = path.resolve(__dirname, "..", "..");
+  // dist/ -> desktop/ -> repo; a packaged app must never fall back into a source tree.
+  const repoRoot = devRepoRoot(app.isPackaged, path.resolve(__dirname, ".."));
   const modelDir = resolveBundledModelDir({ sidecarRoot: productRoot, repoRoot });
   const env: NodeJS.ProcessEnv = {
     ...process.env,

@@ -14,7 +14,7 @@ use crate::knowledge::corpus::Corpus;
 use crate::knowledge::document::{self, Status};
 use crate::knowledge::mentions::{self, is_knowledge_key, normalize_key};
 use crate::knowledge::root::{self, KnowledgeRoot};
-use crate::knowledge::validate::{self, Issue};
+use crate::knowledge::validate::Issue;
 use crate::knowledge::{reminder, view};
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::ResourceKey;
@@ -590,25 +590,10 @@ fn is_write(input: &Value) -> bool {
     )
 }
 
-fn issues_of(workspace: &Path, corpus: &Corpus) -> Vec<Issue> {
-    let checks: Vec<validate::CheckNode<'_>> = corpus
-        .nodes
-        .iter()
-        .map(|node| validate::CheckNode {
-            id: &node.id,
-            key: &node.key,
-            value: &node.value,
-            status: node.status,
-            invalid_status: node.invalid_status.as_deref(),
-            path: &node.path,
-        })
-        .collect();
-    let mut symbols = crate::knowledge::symbol_check::SymbolCache::new();
-    validate::validate(
-        &checks,
-        &|path| crate::knowledge::mentions::workspace_file_exists(workspace, path),
-        &mut |file, chain, _node_path| symbols.check(workspace, file, chain),
-    )
+/// Issues from the knowledge index (same rules and caches as the turn note
+/// and the knowledge API), refreshed now so the tool sees its own writes.
+fn issues_of(workspace: &Path, _corpus: &Corpus) -> Vec<Issue> {
+    crate::knowledge::index::fresh_content(workspace).issues.clone()
 }
 
 fn read_node_file(workspace: &Path, root: &str, node: &crate::knowledge::Node) -> String {

@@ -2,6 +2,26 @@
 
 import type { BrowserBounds, BrowserPanelState } from "../lib/browserPanel";
 
+/** Slim installer: on-demand runtime components fetched by the Electron host. */
+export type DesktopComponentId = "embed-model";
+
+export interface DesktopComponentProgress {
+  id: string;
+  phase: "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
+  received?: number;
+  total?: number;
+  message: string;
+  error?: string;
+}
+
+export interface DesktopComponentStatus {
+  id: string;
+  installed: boolean;
+  path: string | null;
+  downloading: boolean;
+  error: string | null;
+}
+
 export interface LitecodeDesktopBridge {
   getAuthToken?: () => string | undefined;
   /** Real filesystem path for a file dropped onto the desktop window. */
@@ -154,6 +174,15 @@ export interface LitecodeDesktopBridge {
   /** Synchronous so a menu can hide guest pages before the next paint. */
   browserSetObscured?: (obscured: boolean) => void;
   onBrowserState?: (handler: (state: BrowserPanelState) => void) => () => void;
+  /** On-demand components (embed model). Present only in the Electron host. */
+  getComponentStatus?: (id: DesktopComponentId) => Promise<DesktopComponentStatus>;
+  /** Download + verify + install if missing; resolves with the local path. */
+  ensureComponent?: (
+    id: DesktopComponentId,
+  ) => Promise<{ id: string; path: string; downloaded: boolean }>;
+  onComponentProgress?: (
+    handler: (event: DesktopComponentProgress) => void,
+  ) => () => void;
 }
 
 declare global {

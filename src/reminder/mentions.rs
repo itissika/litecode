@@ -66,6 +66,7 @@ pub fn build(
                 path,
                 symbol,
                 lines,
+                bad_lines,
                 label: _,
             } => {
                 let identity = match symbol
@@ -78,15 +79,20 @@ pub fn build(
                         "range:{path}:{}",
                         lines
                             .map(crate::knowledge::mentions::format_line_span)
+                            .or_else(|| bad_lines.clone())
                             .unwrap_or_default()
                     ),
                 };
                 if !seen.insert(identity.clone()) {
                     continue;
                 }
-                if let Some((section, digest)) =
-                    symbol_section(workspace, &path, symbol.as_deref(), lines)
-                {
+                if let Some((section, digest)) = symbol_section(
+                    workspace,
+                    &path,
+                    symbol.as_deref(),
+                    lines,
+                    bad_lines.as_deref(),
+                ) {
                     if delivered.get(&identity) == Some(&digest) {
                         continue;
                     }
@@ -160,28 +166,54 @@ fn read_node_body(workspace: &Path, root: &str, path: &str) -> Option<String> {
     fs::read_to_string(workspace.join(root).join(path)).ok()
 }
 
+/// Snapshot text for a symbol or range citation. Uses the knowledge read
+/// policy (`knowledge::fsref`), and every non-snapshot text names the same
+/// condition the knowledge status code reports (B5).
 fn symbol_section(
     workspace: &Path,
     path: &str,
     symbol: Option<&str>,
     lines: Option<crate::knowledge::mentions::LineSpan>,
+    bad_lines: Option<&str>,
 ) -> Option<(String, String)> {
+    use crate::knowledge::fsref::{self, TextRead};
     let chain = symbol.map(str::trim).filter(|text| !text.is_empty());
-    if !crate::knowledge::mentions::is_workspace_file_ref(path) || !workspace.join(path).is_file() {
-        return Some(pack(match chain {
-            Some(chain) => format!("Symbol \"{chain}\" was not found in \"{path}\"."),
-            None => format!("File \"{path}\" was not found."),
-        }));
-    }
-    let content = fs::read_to_string(workspace.join(path)).unwrap_or_default();
-    if content.is_empty() && chain.is_some() {
-        let chain = chain.unwrap_or("");
+    let content = match fsref::read_text_once(workspace, path) {
+        // missing_file
+        TextRead::Missing => return Some(pack(format!("File \"{path}\" does not exist."))),
+        // symlink_escape
+        TextRead::Escape => {
+            return Some(pack(format!(
+                "\"{path}\" is a link that resolves outside the workspace."
+            )));
+        }
+        // unreadable_file (a directory exists; it is just not text)
+        TextRead::Unreadable(why) => {
+            return Some(pack(format!(
+                "\"{path}\" is not a readable text file ({}).",
+                why.reason()
+            )));
+        }
+        TextRead::Text(content) => content,
+    };
+    if let (Some(raw), Some(_)) = (bad_lines, chain) {
+        // invalid_lines (KR-SYM-6): symbol citations never take lines.
         return Some(pack(format!(
-            "Symbol \"{chain}\" was not found in \"{path}\"."
+            "Symbol citations do not take lines (lines=\"{raw}\" on \"{path}\"). Remove lines, or cite a line range as [@ file=\"{path}\" lines=\"A-B\"]."
+        )));
+    }
+    if let Some(raw) = bad_lines {
+        // invalid_lines
+        return Some(pack(format!(
+            "Lines \"{raw}\" in \"{path}\" are not valid. Write lines=\"A\" or lines=\"A-B\"."
         )));
     }
     let file_lines: Vec<&str> = content.lines().collect();
     if let Some(chain) = chain {
+        if !crate::engines::code_search::enclosing::supports_scopes(path) {
+            // unsupported_language
+            return Some(pack(format!("该语言不支持符号解析 (\"{path}\").")));
+        }
         return Some(pack(match find_scope(path, &content, chain) {
             ScopeMatch::Unique(scope) => code_section(
                 path,
@@ -197,6 +229,14 @@ fn symbol_section(
         }));
     }
     let span = lines?;
+    let total = fsref::line_count(&content);
+    if span.end > total {
+        // line_out_of_range
+        return Some(pack(format!(
+            "Lines {} are outside \"{path}\", which has {total} lines.",
+            crate::knowledge::mentions::format_line_span(span)
+        )));
+    }
     Some(pack(code_section(
         path,
         None,
@@ -331,6 +371,20 @@ mod tests {
             .text()
             .to_string();
         assert!(note.contains("not unique"));
+    }
+
+    #[test]
+    fn lines_on_a_symbol_citation_are_reported_not_used() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "fn save() {\n    let n = 1;\n}\n").unwrap();
+        let text = r#"[@ file="src/a.rs" symbol="fn save" lines="1-3"]"#;
+        let note = build(dir.path(), text, &HashMap::new())
+            .unwrap()
+            .text()
+            .to_string();
+        assert!(note.contains("Symbol citations do not take lines"));
+        assert!(!note.contains("let n = 1"));
     }
 
     #[test]

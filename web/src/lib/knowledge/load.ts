@@ -1,26 +1,18 @@
+/**
+ * Explicit writes to the knowledge directory. Reading the corpus, existence,
+ * and every verdict come from the backend snapshot (`snapshot.ts`); nothing
+ * here reads the tree, and nothing rewrites a file as a side effect of reading.
+ */
 import {
   createFile,
   deletePath,
-  fetchTree,
   mkdir,
-  readFile,
   renamePath,
   writeFile,
-  type TreeEntry,
 } from "../../api/workspace";
 import { isKnowledgeKey, normalizeKey } from "./markers";
-import {
-  KNOWLEDGE_ROOT,
-  knowledgeFromFiles,
-  renderKnowledgeMarkdown,
-  upgradeKnowledgeMarkdown,
-  type KnowledgeSourceFile,
-} from "./document";
-import type {
-  KnowledgeFolder,
-  KnowledgeNode,
-  KnowledgeUnknownFile,
-} from "./types";
+import { KNOWLEDGE_ROOT, renderKnowledgeMarkdown } from "./document";
+import type { KnowledgeNode } from "./types";
 
 /** Gitignored copy under `.litecode/knowledge`. */
 export const KNOWLEDGE_PRIVATE_ROOT = KNOWLEDGE_ROOT;
@@ -28,7 +20,7 @@ export const KNOWLEDGE_PRIVATE_ROOT = KNOWLEDGE_ROOT;
 /** Workspace-root copy. Git can track it. */
 export const KNOWLEDGE_PUBLIC_ROOT = "knowledge";
 
-export type KnowledgeVisibility = "private" | "public";
+export type { KnowledgeVisibility } from "./snapshot";
 
 export async function writeKnowledgeNode(
   node: KnowledgeNode,
@@ -49,119 +41,6 @@ export async function writeKnowledgeNode(
       extras: node.extras,
     }),
   );
-}
-
-function normalizePath(path: string): string {
-  return path.replaceAll("\\", "/");
-}
-
-function relativeToRoot(path: string, root: string): string | null {
-  const norm = normalizePath(path);
-  const prefix = `${root}/`;
-  if (norm === root) return "";
-  if (!norm.startsWith(prefix)) return null;
-  return norm.slice(prefix.length);
-}
-
-async function listChildren(dir: string): Promise<TreeEntry[]> {
-  const entries = await fetchTree(dir, 1);
-  return entries.map((entry) => ({
-    ...entry,
-    path: normalizePath(entry.path),
-  }));
-}
-
-/** Walk one knowledge directory. A missing root throws. */
-export async function readKnowledgeTree(root: string): Promise<{
-  files: KnowledgeSourceFile[];
-  directories: string[];
-}> {
-  const files: KnowledgeSourceFile[] = [];
-  const directories: string[] = [];
-
-  async function walk(dir: string): Promise<void> {
-    const entries = await listChildren(dir);
-    for (const entry of entries) {
-      const rel = relativeToRoot(entry.path, root);
-      if (rel == null || rel.length === 0) continue;
-      if (entry.kind === "dir") {
-        directories.push(rel);
-        await walk(entry.path);
-        continue;
-      }
-      if (!entry.name.toLowerCase().endsWith(".md")) continue;
-      let markdown = await readFile(entry.path);
-      const upgraded = upgradeKnowledgeMarkdown(markdown);
-      if (upgraded && upgraded !== markdown) {
-        markdown = upgraded;
-        await writeFile(entry.path, upgraded);
-      }
-      files.push({ path: rel, markdown });
-    }
-  }
-
-  await walk(root);
-  return { files, directories };
-}
-
-export async function knowledgeRootExists(root: string): Promise<boolean> {
-  try {
-    const entries = await fetchTree(root, 1);
-    return entries.every((entry) => entry.path !== root || entry.kind === "dir");
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Public `knowledge/` wins when it exists. Otherwise use `.litecode/knowledge`.
- * When neither exists, the caller keeps an empty private corpus and writes nothing.
- */
-export async function locateKnowledgeRoot(): Promise<{
-  root: string;
-  visibility: KnowledgeVisibility;
-} | null> {
-  if (await knowledgeRootExists(KNOWLEDGE_PUBLIC_ROOT)) {
-    return { root: KNOWLEDGE_PUBLIC_ROOT, visibility: "public" };
-  }
-  if (await knowledgeRootExists(KNOWLEDGE_PRIVATE_ROOT)) {
-    return { root: KNOWLEDGE_PRIVATE_ROOT, visibility: "private" };
-  }
-  return null;
-}
-
-/** Read the on-disk corpus. A workspace with no knowledge directory stays empty. */
-export async function loadKnowledgeFromWorkspace(): Promise<{
-  nodes: KnowledgeNode[];
-  folders: KnowledgeFolder[];
-  unknown: KnowledgeUnknownFile[];
-  root: string;
-  visibility: KnowledgeVisibility;
-}> {
-  const located = await locateKnowledgeRoot();
-  if (!located) {
-    return {
-      nodes: [],
-      folders: [],
-      unknown: [],
-      root: KNOWLEDGE_PRIVATE_ROOT,
-      visibility: "private",
-    };
-  }
-  const loaded = await readKnowledgeSnapshot(located.root);
-  return { ...loaded, root: located.root, visibility: located.visibility };
-}
-
-/** Re-read an existing corpus. Does not create a directory. */
-export async function readKnowledgeSnapshot(
-  root: string,
-): Promise<{
-  nodes: KnowledgeNode[];
-  folders: KnowledgeFolder[];
-  unknown: KnowledgeUnknownFile[];
-}> {
-  const tree = await readKnowledgeTree(root);
-  return knowledgeFromFiles(tree.files, tree.directories);
 }
 
 function joinRel(parentId: string | null, name: string): string {

@@ -1,5 +1,6 @@
 //! Process stats and live tracing broadcast for Web status bar.
 
+pub mod latency;
 mod log_broadcast;
 
 use std::sync::OnceLock;

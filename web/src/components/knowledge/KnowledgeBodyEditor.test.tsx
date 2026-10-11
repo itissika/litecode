@@ -80,19 +80,31 @@ describe("KnowledgeBodyEditor mention chip", () => {
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     unmount();
 
+    // The red state is the backend's verdict for this ref_key.
     useKnowledgeStore.setState({
-      issuesByNode: new Map([
+      ready: true,
+      refsByNode: new Map([
         [
           "session",
-          [
-            {
-              nodeId: "session",
-              severity: "error",
-              code: "missing_file",
-              message: 'File "src/a.rs" does not exist.',
-              ref: "src/a.rs",
-            },
-          ],
+          new Map([
+            [
+              "file:src/a.rs",
+              {
+                refKey: "file:src/a.rs",
+                kind: "file" as const,
+                key: null,
+                path: "src/a.rs",
+                symbol: null,
+                lines: null,
+                raw: '[@ file="src/a.rs"]',
+                status: "missing_file" as const,
+                severity: "error" as const,
+                targetPath: "src/a.rs",
+                args: { path: "src/a.rs" },
+                message: 'File "src/a.rs" does not exist.',
+              },
+            ],
+          ]),
         ],
       ]),
     });

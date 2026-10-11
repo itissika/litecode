@@ -432,3 +432,28 @@
   0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
+
+/* On-demand embed model download (slim installer). Same frosted glass as the
+   agent cards (glassFill in composerCard.ts); a short rise-in, no looping motion
+   besides the shared index pulse while the size is unknown. */
+.embed-download-card {
+  animation: embed-download-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: border-color 160ms ease;
+}
+
+.embed-download-card[data-phase="error"] {
+  border-color: color-mix(in srgb, var(--_dk-red-500) 45%, var(--_dk-line));
+}
+
+.embed-download-card[data-phase="done"] {
+  border-color: color-mix(in srgb, var(--_dk-emerald-500) 45%, var(--_dk-line));
+}
+
+@keyframes embed-download-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .embed-download-card { animation: none; }
+}

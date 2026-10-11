@@ -149,7 +149,7 @@ describe("remarkKnowledgeRef", () => {
       { type: "text", value: " " },
       {
         type: "link",
-        url: "loc:src%2Fa.rs#L4",
+        url: "loc:src%2Fa.rs?lines=4-9#L4",
         children: [{ type: "text", value: ".../src/a.rs" }],
       },
     ]);
@@ -197,9 +197,8 @@ describe("file citations", () => {
         type: "symbol",
         path: "src/session/manager.rs",
         symbol: "impl SessionManager › fn append_reminder",
-        lines: "2148-2165",
-        label:
-          "src/session/manager.rs : impl SessionManager › fn append_reminder : 2148-2165",
+        lines: null,
+        label: "src/session/manager.rs : impl SessionManager › fn append_reminder",
       },
       { type: "text", value: " then " },
       {
@@ -207,11 +206,12 @@ describe("file citations", () => {
         path: "src/a.rs",
         symbol: null,
         lines: "4-9",
+        rawLines: "4-9",
         label: "src/a.rs : 4-9",
       },
     ]);
     expect(knowledgePreview(symbol, 1)).toBe(
-      "src/session/manager.rs : impl SessionManager › fn append_reminder : 2148-2165",
+      "src/session/manager.rs : impl SessionManager › fn append_reminder",
     );
   });
 
@@ -224,6 +224,27 @@ describe("file citations", () => {
     expect(isWorkspaceFileRef("src/../a.rs")).toBe(false);
     expect(isWorkspaceFileRef("文".repeat(512))).toBe(true);
     expect(isWorkspaceFileRef("文".repeat(513))).toBe(false);
+  });
+
+  it("never shows or follows lines on a symbol citation (KR-SYM-6)", () => {
+    expect(
+      symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9" }),
+    ).toBe('[@ file="src/a.rs" symbol="fn save"]');
+    const written = '[@ file="src/a.rs" symbol="fn save" lines="4-9"]';
+    expect(splitBodyRefs(written)).toEqual([
+      {
+        type: "symbol",
+        path: "src/a.rs",
+        symbol: "fn save",
+        lines: null,
+        rawLines: "4-9",
+        label: "src/a.rs : fn save",
+      },
+    ]);
+    // An editor round-trip keeps what the body says; the backend reports it.
+    expect(
+      symbolMentionSource("src/a.rs", { symbol: "fn save", lines: "4-9", asWritten: true }),
+    ).toBe(written);
   });
 
   it("shows the path and the full chain, and ignores a stored label", () => {

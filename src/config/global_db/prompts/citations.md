@@ -4,7 +4,8 @@ In text the user can read, cite a knowledge node, a workspace file, a symbol, or
 - Node: `[@ key="seq"]`. The user sees `seq`. How a node file is written is in `knowledge guide`.
 - File: `[@ file="src/a.rs"]`. It names a workspace path, not a node. A file and a directory both count. The user sees `src/a.rs`.
 - Symbol: `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. The user sees `src/a.rs : impl Store › fn save`.
-- Line range: `[@ file="src/a.rs" lines="4-9"]`. With a symbol: `[@ file="src/a.rs" symbol="impl Store › fn save" lines="2148-2165"]`. The user sees `src/a.rs : 4-9`, or `src/a.rs : impl Store › fn save : 2148-2165`. `lines` is optional and is not checked.
+- Line range: `[@ file="src/a.rs" lines="4-9"]` or `[@ file="src/a.rs" lines="12"]`. The user sees `src/a.rs : 4-9`. Write `lines="A"` or `lines="A-B"` with 1 <= A <= B.
+- A symbol and a line range never mix: a symbol citation takes no `lines`, and `[@ file="src/a.rs" symbol="fn save" lines="4-9"]` is an error. To point at specific lines inside a symbol, cite the symbol and the range separately.
 
 Web links stay ordinary markdown: `[docs](https://example.com)`. A workspace file is not a markdown link: `[validate.ts](src/auth/validate.ts)` is not a citation and cannot be opened. Only the bracket form is clickable, as in: The guard at [@ file="src/auth/validate.ts" lines="42-45"] returns 401 when the token is missing.
 

@@ -267,7 +267,8 @@ describe("MentionEditor drops", () => {
     await waitFor(() => {
       const written = onChange.mock.calls.map((call) => String(call[0])).join("\n");
       expect(written).toContain('symbol="fn save"');
-      expect(written).toContain('lines="4-9"');
+      // KR-SYM-6: a symbol citation is written without lines.
+      expect(written).not.toContain("lines=");
     });
   });
 });

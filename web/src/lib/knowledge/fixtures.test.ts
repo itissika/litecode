@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFromFiles, renderKnowledgeMarkdown } from "./document";
-import { validateKnowledge } from "./validate";
 
 const fixtureRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -21,10 +20,6 @@ interface ExpectedFile {
   extras: string[];
 }
 
-interface ExpectedIssue {
-  node: string;
-  code: string;
-}
 
 function readTree(dir: string, prefix = ""): { path: string; markdown: string }[] {
   const out: { path: string; markdown: string }[] = [];
@@ -44,10 +39,11 @@ function readTree(dir: string, prefix = ""): { path: string; markdown: string }[
 }
 
 describe("shared knowledge fixtures", () => {
-  it("parses the same keys, refs, extras, and issue codes", () => {
+  // Issue codes are the backend's verdict now (`src/knowledge/spec_tests.rs`).
+  it("parses the same keys, refs, and extras", () => {
     const expected = JSON.parse(
       fs.readFileSync(path.join(fixtureRoot, "expected.json"), "utf8"),
-    ) as { files: ExpectedFile[]; issues: ExpectedIssue[] };
+    ) as { files: ExpectedFile[] };
     const files = readTree(fixtureRoot);
     const { nodes } = knowledgeFromFiles(files);
     const actual = nodes
@@ -64,13 +60,6 @@ describe("shared knowledge fixtures", () => {
     const wanted = [...expected.files].sort((a, b) => a.path.localeCompare(b.path));
     expect(actual).toEqual(wanted);
 
-    const issues = validateKnowledge(nodes)
-      .map((issue) => ({ node: issue.nodeId, code: issue.code }))
-      .sort((a, b) => `${a.node}:${a.code}`.localeCompare(`${b.node}:${b.code}`));
-    const wantedIssues = [...expected.issues].sort((a, b) =>
-      `${a.node}:${a.code}`.localeCompare(`${b.node}:${b.code}`),
-    );
-    expect(issues).toEqual(wantedIssues);
   });
 
   it("keeps an unknown declaration line across a save", () => {

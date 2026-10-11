@@ -50,9 +50,9 @@ The only citation that names a node is `[@ key="seq"]`. Lookup uses the key.
 
 A file citation is `[@ file="src/a.rs"]`. It names a workspace path, not a node. A file and a directory both count. `..` and an absolute path are not a path.
 
-A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. `lines` is optional and is not checked. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
+A symbol citation is `[@ file="src/a.rs" symbol="impl Store › fn save"]`. `symbol` is the ancestor chain and is the identity. A symbol citation takes no `lines`; `lines` on it is an error. A chain that is missing or not unique is an error. When git can answer, a chain whose body on disk differs from that file at HEAD is a warning. Commit that file and the warning goes away. Without git, only existence is checked.
 
-A line range with no symbol is `[@ file="src/a.rs" lines="4-9"]`.
+A line range is `[@ file="src/a.rs" lines="4-9"]` (or `lines="4"`) and has no symbol. A malformed range, or one past the end of the file, is an error.
 
 A citation inside a fence (` ``` ` or `~~~`), inside inline code, or written as `@seq` or `/src/a.rs` is ordinary text.
 
@@ -675,6 +675,9 @@ mod tests {
             code: "dangling_relation".into(),
             message: "Citation \"missing\" does not exist.".into(),
             reference: Some("missing".into()),
+            node_path: String::new(),
+            ref_key: None,
+            args: Default::default(),
         }];
         let card = node_row(&node, &issues, 2, now, "");
         assert!(card.contains("error: Citation \"missing\" does not exist."));
@@ -705,6 +708,9 @@ mod tests {
             code: "filename_mismatch".into(),
             message: "Filename \"warn\" does not match declaration \"warn\".".into(),
             reference: Some("warn".into()),
+            node_path: String::new(),
+            ref_key: None,
+            args: Default::default(),
         }];
         let incoming = |_: &str| 1;
         let board = dashboard(&nodes, &issues, incoming, None, now, Some("knowledge"), &[]);
@@ -736,6 +742,9 @@ mod tests {
             code: "filename_mismatch".into(),
             message: "Filename \"n0\" does not match declaration \"n0\".".into(),
             reference: Some("n0".into()),
+            node_path: String::new(),
+            ref_key: None,
+            args: Default::default(),
         };
         let with_warning = dashboard(&nodes, &[warned], |_| 1, None, now, None, &[]);
         assert!(with_warning.contains(

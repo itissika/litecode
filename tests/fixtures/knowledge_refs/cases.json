@@ -1,0 +1,1623 @@
+{
+  "version": 2,
+  "spec": "docs/knowledge-references.md",
+  "about": "Contract table for knowledge references. Rust runs it in src/knowledge/spec_tests.rs; the frontend can run the same table. extract: refs in document order, each with kind, its fields and ref_key (docs §1.1). resolve: expect lists every issue as {node: node path relative to the knowledge root, status, ref_key} for citation issues or {node, status, ref} for declaration issues. layout: folder tree and unknown files. `divergence` marks a case the backend does not follow yet (none today). `frontend` names a frontend divergence F1-F7 (documentation only).",
+  "extract": [
+    {
+      "id": "node.basic",
+      "rule": "KR-SYN-1",
+      "text": "see [@ key=\"seq\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "seq",
+          "ref_key": "node:seq"
+        }
+      ]
+    },
+    {
+      "id": "node.key_trimmed",
+      "rule": "KR-SYN-1",
+      "text": "[@ key=\" seq \"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "seq",
+          "ref_key": "node:seq"
+        }
+      ]
+    },
+    {
+      "id": "node.key_spaced_cjk",
+      "rule": "KR-SYN-1",
+      "text": "[@ key=\"knowledge 概念\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "knowledge 概念",
+          "ref_key": "node:knowledge 概念"
+        }
+      ]
+    },
+    {
+      "id": "node.key_double_space_is_text",
+      "rule": "KR-SYN-1",
+      "text": "[@ key=\"a  b\"]",
+      "refs": []
+    },
+    {
+      "id": "node.key_bracket_is_text",
+      "rule": "KR-SYN-1",
+      "text": "[@ key=\"a]b\"]",
+      "refs": []
+    },
+    {
+      "id": "node.no_space_is_text",
+      "rule": "KR-SYN-2",
+      "text": "[@key=\"seq\"]",
+      "refs": []
+    },
+    {
+      "id": "unknown_attribute_is_text",
+      "rule": "KR-SYN-2",
+      "text": "[@ key=\"seq\" label=\"x\"] [@ file=\"src/a.rs\" label=\"a\"] [@ id=\"seq\"]",
+      "refs": []
+    },
+    {
+      "id": "attribute_order_is_fixed",
+      "rule": "KR-SYN-2",
+      "text": "[@ lines=\"1\" file=\"src/a.rs\"] [@ file=\"src/a.rs\" lines=\"1\" symbol=\"fn a\"]",
+      "refs": []
+    },
+    {
+      "id": "legacy_marker_is_text",
+      "rule": "KR-SYN-7",
+      "text": "[[node : seq]]",
+      "refs": []
+    },
+    {
+      "id": "file.basic",
+      "rule": "KR-SYN-3",
+      "text": "[@ file=\"src/a.rs\"]",
+      "refs": [
+        {
+          "kind": "file",
+          "path": "src/a.rs",
+          "ref_key": "file:src/a.rs"
+        }
+      ]
+    },
+    {
+      "id": "file.trimmed",
+      "rule": "KR-SYN-3",
+      "text": "[@ file=\" src/a.rs \"]",
+      "refs": [
+        {
+          "kind": "file",
+          "path": "src/a.rs",
+          "ref_key": "file:src/a.rs"
+        }
+      ]
+    },
+    {
+      "id": "file.empty_is_text",
+      "rule": "KR-SYN-3",
+      "text": "[@ file=\"\"] [@ file=\"   \"]",
+      "refs": []
+    },
+    {
+      "id": "file.empty_symbol_is_file",
+      "rule": "KR-SYN-4",
+      "text": "[@ file=\"src/a.rs\" symbol=\"\"]",
+      "refs": [
+        {
+          "kind": "file",
+          "path": "src/a.rs",
+          "ref_key": "file:src/a.rs"
+        }
+      ]
+    },
+    {
+      "id": "symbol.chain",
+      "rule": "KR-SYN-4",
+      "text": "[@ file=\"src/a.rs\" symbol=\"impl Store › fn save\"]",
+      "refs": [
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "impl Store › fn save",
+          "lines": null,
+          "ref_key": "sym:src/a.rs\u0000impl Store › fn save"
+        }
+      ]
+    },
+    {
+      "id": "symbol.chain_trimmed",
+      "rule": "KR-SYN-4",
+      "text": "[@ file=\"src/a.rs\" symbol=\"  fn alpha \"]",
+      "refs": [
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "fn alpha",
+          "lines": null,
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.lines_are_not_a_span",
+      "rule": "KR-SYM-6",
+      "text": "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"2148-2165\"] [@ file=\"src/a.rs\" symbol=\"fn alpha\"]",
+      "refs": [
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "fn alpha",
+          "lines": null,
+          "bad_lines": "2148-2165",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        },
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "fn alpha",
+          "lines": null,
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.bad_lines_kept",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"9-4\"]",
+      "refs": [
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "fn alpha",
+          "lines": null,
+          "bad_lines": "9-4",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "range.single",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"src/a.rs\" lines=\"4\"] [@ file=\"src/a.rs\" lines=\"4-4\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "src/a.rs",
+          "lines": "4",
+          "ref_key": "range:src/a.rs\u00004"
+        },
+        {
+          "kind": "range",
+          "path": "src/a.rs",
+          "lines": "4",
+          "ref_key": "range:src/a.rs\u00004"
+        }
+      ]
+    },
+    {
+      "id": "range.invalid_lines_kept",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"a.rs\" lines=\"0-1\"] [@ file=\"b.rs\" lines=\"9-4\"] [@ file=\"c.rs\" lines=\"abc\"] [@ file=\"d.rs\" lines=\"3 - 5\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "0-1",
+          "ref_key": "range:a.rs\u00000-1"
+        },
+        {
+          "kind": "range",
+          "path": "b.rs",
+          "lines": null,
+          "bad_lines": "9-4",
+          "ref_key": "range:b.rs\u00009-4"
+        },
+        {
+          "kind": "range",
+          "path": "c.rs",
+          "lines": null,
+          "bad_lines": "abc",
+          "ref_key": "range:c.rs\u0000abc"
+        },
+        {
+          "kind": "range",
+          "path": "d.rs",
+          "lines": null,
+          "bad_lines": "3 - 5",
+          "ref_key": "range:d.rs\u00003 - 5"
+        }
+      ]
+    },
+    {
+      "id": "range.plus_sign_is_invalid",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"a.rs\" lines=\"+3\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "+3",
+          "ref_key": "range:a.rs\u0000+3"
+        }
+      ]
+    },
+    {
+      "id": "range.overflow_is_invalid",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"a.rs\" lines=\"4294967296\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "4294967296",
+          "ref_key": "range:a.rs\u00004294967296"
+        }
+      ],
+      "frontend": "F6: TS Number() accepts values above u32::MAX."
+    },
+    {
+      "id": "code.fences_hidden",
+      "rule": "KR-SYN-6",
+      "text": "```\n[@ key=\"a\"]\n```\n~~~\n[@ key=\"b\"]\n~~~\n````\n```\n[@ key=\"c\"]\n````\n[@ key=\"d\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "d",
+          "ref_key": "node:d"
+        }
+      ]
+    },
+    {
+      "id": "code.indented_four_is_not_a_fence",
+      "rule": "KR-SYN-6",
+      "text": "    ```\n[@ key=\"a\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "a",
+          "ref_key": "node:a"
+        }
+      ]
+    },
+    {
+      "id": "code.unclosed_fence_hides_rest",
+      "rule": "KR-SYN-6",
+      "text": "[@ key=\"a\"]\n```\n[@ key=\"b\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "a",
+          "ref_key": "node:a"
+        }
+      ]
+    },
+    {
+      "id": "code.inline_hidden",
+      "rule": "KR-SYN-6",
+      "text": "`[@ key=\"a\"]` ``x [@ key=\"b\"] y`` [@ key=\"c\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "c",
+          "ref_key": "node:c"
+        }
+      ]
+    },
+    {
+      "id": "code.unclosed_backtick_is_prose",
+      "rule": "KR-SYN-6",
+      "text": "` [@ key=\"a\"]",
+      "refs": [
+        {
+          "kind": "node",
+          "key": "a",
+          "ref_key": "node:a"
+        }
+      ]
+    },
+    {
+      "id": "order.mixed_and_repeats",
+      "rule": "KR-SYN-8",
+      "text": "[@ file=\"b.rs\"] then [@ key=\"x\"] and [@ file=\"a.rs\" symbol=\"fn a\"]\n[@ key=\"x\"]",
+      "refs": [
+        {
+          "kind": "file",
+          "path": "b.rs",
+          "ref_key": "file:b.rs"
+        },
+        {
+          "kind": "node",
+          "key": "x",
+          "ref_key": "node:x"
+        },
+        {
+          "kind": "symbol",
+          "path": "a.rs",
+          "symbol": "fn a",
+          "lines": null,
+          "ref_key": "sym:a.rs\u0000fn a"
+        },
+        {
+          "kind": "node",
+          "key": "x",
+          "ref_key": "node:x"
+        }
+      ]
+    },
+    {
+      "id": "range.other_invalid_forms",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"a.rs\" lines=\"04\"] [@ file=\"a.rs\" lines=\"1-\"] [@ file=\"a.rs\" lines=\"-3\"] [@ file=\"a.rs\" lines=\"0\"] [@ file=\"a.rs\" lines=\" 3\"] [@ file=\"a.rs\" lines=\"1-2-3\"] [@ file=\"a.rs\" lines=\"３\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "04",
+          "ref_key": "range:a.rs\u000004"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "1-",
+          "ref_key": "range:a.rs\u00001-"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "-3",
+          "ref_key": "range:a.rs\u0000-3"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "0",
+          "ref_key": "range:a.rs\u00000"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": " 3",
+          "ref_key": "range:a.rs\u0000 3"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "1-2-3",
+          "ref_key": "range:a.rs\u00001-2-3"
+        },
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": null,
+          "bad_lines": "３",
+          "ref_key": "range:a.rs\u0000３"
+        }
+      ]
+    },
+    {
+      "id": "range.u32_max_is_valid",
+      "rule": "KR-SYN-5",
+      "text": "[@ file=\"a.rs\" lines=\"4294967295\"]",
+      "refs": [
+        {
+          "kind": "range",
+          "path": "a.rs",
+          "lines": "4294967295",
+          "ref_key": "range:a.rs\u00004294967295"
+        }
+      ]
+    },
+    {
+      "id": "ref_key.path_normalized",
+      "rule": "KR-KEY-1",
+      "text": "[@ file=\" src\\a.rs \"] [@ file=\"src\\a.rs\" symbol=\" impl S › fn x \"] [@ file=\"src\\a.rs\" lines=\"7-7\"]",
+      "refs": [
+        {
+          "kind": "file",
+          "path": "src/a.rs",
+          "ref_key": "file:src/a.rs"
+        },
+        {
+          "kind": "symbol",
+          "path": "src/a.rs",
+          "symbol": "impl S › fn x",
+          "lines": null,
+          "ref_key": "sym:src/a.rs\u0000impl S › fn x"
+        },
+        {
+          "kind": "range",
+          "path": "src/a.rs",
+          "lines": "7",
+          "ref_key": "range:src/a.rs\u00007"
+        }
+      ]
+    }
+  ],
+  "resolve": [
+    {
+      "id": "node.ok",
+      "rule": "KR-NODE-1",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ key=\"b\"]"
+        },
+        {
+          "key": "b",
+          "body": ""
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "node.dangling",
+      "rule": "KR-NODE-1",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ key=\"gone\"] [@ key=\"gone\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "dangling_relation",
+          "ref_key": "node:gone"
+        }
+      ]
+    },
+    {
+      "id": "node.case_sensitive",
+      "rule": "KR-NODE-1",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ key=\"Seq\"]"
+        },
+        {
+          "key": "seq",
+          "body": ""
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "dangling_relation",
+          "ref_key": "node:Seq"
+        }
+      ]
+    },
+    {
+      "id": "node.self",
+      "rule": "KR-NODE-2",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ key=\"a\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "self_relation",
+          "ref_key": "node:a"
+        }
+      ]
+    },
+    {
+      "id": "node.inactive_target",
+      "rule": "KR-NODE-3",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ key=\"off\"] [@ key=\"draft\"]"
+        },
+        {
+          "key": "off",
+          "status": "disabled",
+          "body": ""
+        },
+        {
+          "key": "draft",
+          "status": "pending",
+          "body": ""
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "inactive_target",
+          "ref_key": "node:off"
+        },
+        {
+          "node": "a.md",
+          "status": "inactive_target",
+          "ref_key": "node:draft"
+        }
+      ]
+    },
+    {
+      "id": "node.inactive_citer_is_quiet",
+      "rule": "KR-NODE-3",
+      "nodes": [
+        {
+          "key": "a",
+          "status": "disabled",
+          "body": "[@ key=\"off\"]"
+        },
+        {
+          "key": "p",
+          "status": "pending",
+          "body": "[@ key=\"off\"]"
+        },
+        {
+          "key": "off",
+          "status": "disabled",
+          "body": ""
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "node.code_is_not_a_citation",
+      "rule": "KR-SYN-6",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "```\n[@ key=\"gone\"]\n```\n`[@ file=\"nope.rs\"]`"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "node.duplicate_target_resolves_first",
+      "rule": "KR-NODE-4",
+      "nodes": [
+        {
+          "key": "dup",
+          "path": "x/dup.md",
+          "body": ""
+        },
+        {
+          "key": "dup",
+          "path": "y/dup.md",
+          "body": ""
+        },
+        {
+          "key": "c",
+          "body": "[@ key=\"dup\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "x/dup.md",
+          "status": "duplicate_key",
+          "ref": "dup"
+        },
+        {
+          "node": "y/dup.md",
+          "status": "duplicate_key",
+          "ref": "dup"
+        }
+      ]
+    },
+    {
+      "id": "file.ok",
+      "rule": "KR-PATH-3",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\"] [@ file=\"src/a.rs\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "file.directory_ok",
+      "rule": "KR-PATH-3",
+      "files": {
+        "src/a.rs": ""
+      },
+      "dirs": [
+        "empty"
+      ],
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src\"] [@ file=\"empty\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "file.missing",
+      "rule": "KR-PATH-3",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/gone.rs\"] [@ file=\"src/gone.rs\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/gone.rs"
+        }
+      ]
+    },
+    {
+      "id": "file.moved_is_missing",
+      "rule": "KR-PATH-5",
+      "files": {
+        "src/new.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/old.rs\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/old.rs"
+        }
+      ]
+    },
+    {
+      "id": "file.illegal_paths",
+      "rule": "KR-PATH-1",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"../x\"] [@ file=\"/etc/passwd\"] [@ file=\"C:/x\"] [@ file=\"src/../src/a.rs\"] [@ file=\"./src/a.rs\"] [@ file=\"src//a.rs\"] [@ file=\"src/\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:../x"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:/etc/passwd"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:C:/x"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/../src/a.rs"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:./src/a.rs"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src//a.rs"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/"
+        }
+      ]
+    },
+    {
+      "id": "file.backslash_normalized",
+      "rule": "KR-PATH-2",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src\\a.rs\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "file.gitignored_exists",
+      "rule": "KR-PATH-3",
+      "files": {
+        ".gitignore": "ignored/\n",
+        "ignored/x.txt": "x"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"ignored/x.txt\"]"
+        }
+      ],
+      "expect": [],
+      "frontend": "F1: existence via the Explorer listing hides gitignored / files.exclude entries."
+    },
+    {
+      "id": "file.dotfiles_exist",
+      "rule": "KR-PATH-3",
+      "files": {
+        ".env": "A=1",
+        ".config/x.toml": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\".env\"] [@ file=\".config/x.toml\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "file.unicode_and_spaces",
+      "rule": "KR-PATH-3",
+      "files": {
+        "文档/设计 说明.md": "x"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"文档/设计 说明.md\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "file.case_mismatch_dir",
+      "rule": "KR-PATH-4",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"SRC/a.rs\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:SRC/a.rs"
+        }
+      ],
+      "frontend": "F2: name compare is case-insensitive on every platform."
+    },
+    {
+      "id": "file.case_mismatch_name",
+      "rule": "KR-PATH-4",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/A.rs\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/A.rs"
+        }
+      ],
+      "frontend": "F2"
+    },
+    {
+      "id": "file.trailing_dot",
+      "rule": "KR-PATH-4",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs.\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/a.rs."
+        }
+      ]
+    },
+    {
+      "id": "symbol.ok",
+      "rule": "KR-SYM-2",
+      "files": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" symbol=\" fn alpha \"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.missing",
+      "rule": "KR-SYM-2",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn beta\"] [@ file=\"src/a.rs\" symbol=\"fn Alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_symbol",
+          "ref_key": "sym:src/a.rs\u0000fn beta"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_symbol",
+          "ref_key": "sym:src/a.rs\u0000fn Alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.ambiguous",
+      "rule": "KR-SYM-3",
+      "files": {
+        "src/a.rs": "fn new() {}\nmod x {}\nfn new() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn new\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "ambiguous_symbol",
+          "ref_key": "sym:src/a.rs\u0000fn new"
+        }
+      ]
+    },
+    {
+      "id": "symbol.nested_chain",
+      "rule": "KR-SYM-1",
+      "files": {
+        "src/a.rs": "struct Store;\nimpl Store {\n    pub fn save(&self) {}\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"impl Store › fn save\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.legacy_impl_alias",
+      "rule": "KR-SYM-4",
+      "files": {
+        "src/a.rs": "struct Store;\ntrait Greet { fn hi(&self); }\nimpl Greet for Store {\n    fn hi(&self) {}\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"impl Store › fn hi\"] [@ file=\"src/a.rs\" symbol=\"impl Greet for Store › fn hi\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.legacy_impl_alias_ambiguous",
+      "rule": "KR-SYM-4",
+      "files": {
+        "src/a.rs": "struct Store;\ntrait A { fn hi(&self); }\ntrait B { fn hi(&self); }\nimpl A for Store {\n    fn hi(&self) {}\n}\nimpl B for Store {\n    fn hi(&self) {}\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"impl Store › fn hi\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "ambiguous_symbol",
+          "ref_key": "sym:src/a.rs\u0000impl Store › fn hi"
+        }
+      ]
+    },
+    {
+      "id": "symbol.file_missing_reports_file_only",
+      "rule": "KR-SYM-1",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/gone.rs\" symbol=\"fn alpha\"] [@ file=\"../x.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "sym:src/gone.rs\u0000fn alpha"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "sym:../x.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.on_directory",
+      "rule": "KR-READ-1",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "unreadable_file",
+          "ref_key": "sym:src\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.unsupported_language",
+      "rule": "KR-SYM-5",
+      "files": {
+        "notes.txt": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"notes.txt\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "unsupported_language",
+          "ref_key": "sym:notes.txt\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "symbol.typescript",
+      "rule": "KR-SYM-1",
+      "files": {
+        "web/a.ts": "export function hello() {\n  return 1;\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"web/a.ts\" symbol=\"fn hello\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.python",
+      "rule": "KR-SYM-1",
+      "files": {
+        "a.py": "class Greeter:\n    def hi(self):\n        return 1\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"a.py\" symbol=\"class Greeter › fn hi\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.bom",
+      "rule": "KR-SYM-1",
+      "files": {
+        "src/a.rs": "﻿fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.lines_are_a_format_error",
+      "rule": "KR-SYM-6",
+      "files": {
+        "src/a.rs": "fn alpha() {}\nfn beta() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"1\"] [@ file=\"src/a.rs\" symbol=\"fn beta\" lines=\"900-950\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:src/a.rs\u0000fn beta"
+        }
+      ]
+    },
+    {
+      "id": "symbol.without_lines_is_ok",
+      "rule": "KR-SYM-6",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" lines=\"1\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "symbol.lines_error_precedence",
+      "rule": "KR-SYM-6",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n",
+        "notes.txt": "x\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/gone.rs\" symbol=\"fn alpha\" lines=\"1\"] [@ file=\"src/a.rs\" symbol=\"fn missing\" lines=\"1\"] [@ file=\"notes.txt\" symbol=\"fn x\" lines=\"1\"] [@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"1\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "sym:src/gone.rs\u0000fn alpha"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:src/a.rs\u0000fn missing"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:notes.txt\u0000fn x"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "range.past_eof_is_error",
+      "rule": "KR-RANGE-2",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" lines=\"1\"] [@ file=\"src/a.rs\" lines=\"900-901\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "line_out_of_range",
+          "ref_key": "range:src/a.rs\u0000900-901"
+        }
+      ]
+    },
+    {
+      "id": "range.missing_file",
+      "rule": "KR-RANGE-1",
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/gone.rs\" lines=\"1-2\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "range:src/gone.rs\u00001-2"
+        }
+      ]
+    },
+    {
+      "id": "drift.unchanged",
+      "rule": "KR-DRIFT-1",
+      "head": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "drift.body_changed",
+      "rule": "KR-DRIFT-1",
+      "head": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "files": {
+        "src/a.rs": "fn alpha() {\n    let x = 2;\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "symbol_drift",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "drift.outside_body_ignored",
+      "rule": "KR-DRIFT-2",
+      "head": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "files": {
+        "src/a.rs": "// header\nuse std::fmt;\n\nfn alpha() {\n    let x = 1;\n}\n\nfn beta() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "drift.trailing_whitespace_ignored",
+      "rule": "KR-DRIFT-2",
+      "head": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "files": {
+        "src/a.rs": "fn alpha() {   \n    let x = 1;\t\n}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "drift.crlf_ignored",
+      "rule": "KR-DRIFT-2",
+      "head": {
+        "src/a.rs": "fn alpha() {\n    let x = 1;\n}\n"
+      },
+      "files": {
+        "src/a.rs": "fn alpha() {\r\n    let x = 1;\r\n}\r\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "drift.untracked_file",
+      "rule": "KR-DRIFT-3",
+      "head": {
+        "README.md": "x"
+      },
+      "files": {
+        "src/b.rs": "fn beta() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/b.rs\" symbol=\"fn beta\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "symbol_drift",
+          "ref_key": "sym:src/b.rs\u0000fn beta"
+        }
+      ]
+    },
+    {
+      "id": "drift.symbol_new_since_head",
+      "rule": "KR-DRIFT-3",
+      "head": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "files": {
+        "src/a.rs": "fn alpha() {}\nfn beta() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn beta\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "symbol_drift",
+          "ref_key": "sym:src/a.rs\u0000fn beta"
+        }
+      ]
+    },
+    {
+      "id": "drift.deleted_file_is_missing",
+      "rule": "KR-DRIFT-4",
+      "head": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "delete": [
+        "src/a.rs"
+      ],
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        }
+      ]
+    },
+    {
+      "id": "drift.no_repository_is_quiet",
+      "rule": "KR-DRIFT-5",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" symbol=\"fn alpha\"]"
+        }
+      ],
+      "expect": []
+    },
+    {
+      "id": "range.in_bounds",
+      "rule": "KR-RANGE-2",
+      "files": {
+        "src/a.rs": "a\nb\nc"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" lines=\"3\"] [@ file=\"src/a.rs\" lines=\"1-3\"] [@ file=\"src/a.rs\" lines=\"3-4\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "line_out_of_range",
+          "ref_key": "range:src/a.rs\u00003-4"
+        }
+      ]
+    },
+    {
+      "id": "range.empty_file",
+      "rule": "KR-RANGE-2",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" lines=\"1\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "line_out_of_range",
+          "ref_key": "range:src/a.rs\u00001"
+        }
+      ]
+    },
+    {
+      "id": "range.on_directory",
+      "rule": "KR-READ-1",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src\" lines=\"1\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "unreadable_file",
+          "ref_key": "range:src\u00001"
+        }
+      ]
+    },
+    {
+      "id": "range.invalid_lines",
+      "rule": "KR-SYN-5",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" lines=\"9-4\"] [@ file=\"src/a.rs\" lines=\"+3\"] [@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"0\"] [@ file=\"src/gone.rs\" lines=\"x\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "range:src/a.rs\u00009-4"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "range:src/a.rs\u0000+3"
+        },
+        {
+          "node": "a.md",
+          "status": "invalid_lines",
+          "ref_key": "sym:src/a.rs\u0000fn alpha"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "range:src/gone.rs\u0000x"
+        }
+      ]
+    },
+    {
+      "id": "range.duplicate_spans_dedupe",
+      "rule": "KR-KEY-1",
+      "files": {
+        "src/a.rs": "x\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/a.rs\" lines=\"5\"] [@ file=\"src\\a.rs\" lines=\"5-5\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "line_out_of_range",
+          "ref_key": "range:src/a.rs\u00005"
+        }
+      ]
+    },
+    {
+      "id": "symbol.case_mismatch_file",
+      "rule": "KR-PATH-4",
+      "files": {
+        "src/a.rs": "fn alpha() {}\n"
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src/A.rs\" symbol=\"fn alpha\"] [@ file=\"Src/a.rs\" lines=\"1\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "sym:src/A.rs\u0000fn alpha"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "range:Src/a.rs\u00001"
+        }
+      ]
+    },
+    {
+      "id": "file.trailing_space_dir",
+      "rule": "KR-PATH-4",
+      "files": {
+        "src/a.rs": ""
+      },
+      "nodes": [
+        {
+          "key": "a",
+          "body": "[@ file=\"src./a.rs\"] [@ file=\"src/a.rs::$DATA\"]"
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src./a.rs"
+        },
+        {
+          "node": "a.md",
+          "status": "missing_file",
+          "ref_key": "file:src/a.rs::$DATA"
+        }
+      ]
+    },
+    {
+      "id": "decl.invalid_status",
+      "rule": "KR-DECL-1",
+      "nodes": [
+        {
+          "key": "a",
+          "status": "bogus",
+          "body": ""
+        }
+      ],
+      "expect": [
+        {
+          "node": "a.md",
+          "status": "invalid_status",
+          "ref": "bogus"
+        }
+      ]
+    },
+    {
+      "id": "decl.invalid_key",
+      "rule": "KR-DECL-1",
+      "nodes": [
+        {
+          "key": "a]b",
+          "path": "bad.md",
+          "body": ""
+        }
+      ],
+      "expect": [
+        {
+          "node": "bad.md",
+          "status": "empty_key",
+          "ref": "a]b"
+        }
+      ]
+    },
+    {
+      "id": "decl.filename_mismatch",
+      "rule": "KR-DECL-1",
+      "nodes": [
+        {
+          "key": "a",
+          "path": "b.md",
+          "body": ""
+        }
+      ],
+      "expect": [
+        {
+          "node": "b.md",
+          "status": "filename_mismatch",
+          "ref": "a"
+        }
+      ]
+    }
+  ],
+  "layout": [
+    {
+      "id": "layout.folders_and_unknown",
+      "rule": "KR-LAYOUT-1",
+      "knowledge": {
+        "内核/seq.md": "```node\nnode : seq\nstatus : enabled\nsummary : s\n```\n",
+        "内核/子/readme.md": "plain notes\n",
+        "notes.txt": "x",
+        "top.md": "no block\n",
+        "blank.md": "```node\nnode : \nstatus : enabled\n```\nno key\n"
+      },
+      "dirs": [
+        "空"
+      ],
+      "folders": [
+        {
+          "id": "内核",
+          "name": "内核",
+          "parent_id": null
+        },
+        {
+          "id": "内核/子",
+          "name": "子",
+          "parent_id": "内核"
+        },
+        {
+          "id": "空",
+          "name": "空",
+          "parent_id": null
+        }
+      ],
+      "unknown": [
+        {
+          "path": "top.md",
+          "folder_id": null
+        },
+        {
+          "path": "内核/子/readme.md",
+          "folder_id": "内核/子"
+        },
+        {
+          "path": "blank.md",
+          "folder_id": null
+        }
+      ],
+      "nodes": [
+        "内核/seq.md"
+      ]
+    }
+  ]
+}

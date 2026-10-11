@@ -227,6 +227,7 @@ pub fn router() -> Router<ServeState> {
         .route("/symbols", get(get_symbols))
         .route("/symbols/at", get(get_symbol_at))
         .route("/symbol-refs", post(post_symbol_refs))
+        .route("/knowledge", get(get_knowledge))
         .route("/git/status", get(get_git_status))
         .route("/git/log", get(get_git_log))
         .route("/git/stage", post(post_git_stage))
@@ -729,6 +730,23 @@ async fn get_symbol_at(
             format!("symbol-at task join: {e}"),
         ),
     }
+}
+
+/// `GET /api/workspace/knowledge`: the resident knowledge snapshot.
+///
+/// Never computes: it returns the last published snapshot (`ready: false`
+/// while the first build is still running). Contract in
+/// `docs/knowledge-references.md` §10.
+async fn get_knowledge(State(state): State<ServeState>) -> Response {
+    let _lap = crate::telemetry::latency::lap("knowledge_api.get");
+    let root = state.workspace.sandbox().root().to_path_buf();
+    let index = crate::knowledge::index::registered(&root)
+        .unwrap_or_else(|| crate::knowledge::index::start(&root));
+    Json(ApiOk {
+        ok: true,
+        data: index.snapshot().to_json(),
+    })
+    .into_response()
 }
 
 async fn post_symbol_refs(

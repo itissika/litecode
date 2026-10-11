@@ -30,6 +30,8 @@ import {
 } from "../../../../api/workspace";
 import type { WorkspaceEnginesDoc } from "../../../../api/settings";
 import { useSettingsStore } from "../../../../stores/settingsStore";
+import { EmbedModelDownloadCard, useEmbedModelDownload } from "./EmbedModelDownload";
+import { restartRetrievalAfterEmbedInstall } from "./embedInstall";
 import { useToastStore } from "../../../../stores/toastStore";
 import {
   SETTINGS_PERSIST_ERROR_CHANNEL,
@@ -203,8 +205,24 @@ function RetrievalSection({
     }
   };
 
-  const tag = engineTag(detail.usable);
+  // Slim installer: fetch the embed model on demand, then (re)start retrieval.
+  // request_refresh reconciles a Failed engine, so it picks the model up.
+  const embed = useEmbedModelDownload(async () => {
+    await restartRetrievalAfterEmbedInstall();
+    onChanged();
+  });
+  const offerEmbedDownload = embed.available && !detail.model.ready;
+
   const desired = engines.retrieval.desired;
+  // While the card owns the "model missing" story, don't stack a red tag, red
+  // error line and red "not found" row on top of it.
+  const tag = offerEmbedDownload && desired && detail.usable === "unavailable"
+    ? {
+        label: embed.state.phase === "running" ? "downloading" : "needs model",
+        tone: "warn" as const,
+      }
+    : engineTag(detail.usable);
+  const shownError = offerEmbedDownload ? null : detail.error;
   const control = intentControl(desired);
   const index = detail.index;
   const status = resolveIndexStatus(index);
@@ -247,6 +265,10 @@ function RetrievalSection({
 
   const onEngineClick = () => {
     const nextDesired = control.action === "start";
+    // First start on a slim install: the model is the first thing it needs.
+    if (nextDesired && offerEmbedDownload && embed.state.phase !== "running") {
+      void embed.start();
+    }
     void run(() =>
       saveEngines({
         ...snapshotEngines(),
@@ -279,37 +301,43 @@ function RetrievalSection({
       </div>
 
       <div className="space-y-3 pl-4">
-        {detail.error && (
+        {shownError && (
           <p
             className="truncate text-dk-xs text-(--_dk-red-500)"
-            title={detail.error}
+            title={shownError}
           >
-            {detail.error}
+            {shownError}
           </p>
         )}
 
-        <div className="flex min-w-0 items-center gap-2 text-xs text-(--_dk-text-secondary)">
-          {detail.model.ready ? (
-            <CheckCircle
-              size={14}
-              weight="fill"
-              className="shrink-0 text-(--_dk-emerald-500)"
-              aria-hidden
-            />
-          ) : (
-            <XCircle
-              size={14}
-              weight="fill"
-              className="shrink-0 text-(--_dk-red-500)"
-              aria-hidden
-            />
-          )}
-          <span className="min-w-0 break-all font-mono text-dk-xs">
-            {detail.model.ready
-              ? model.name
-              : `not found: ${model.name} under ${model.path}`}
-          </span>
-        </div>
+        {offerEmbedDownload ? (
+          <EmbedModelDownloadCard state={embed.state} onStart={() => void embed.start()} />
+        ) : null}
+
+        {offerEmbedDownload ? null : (
+          <div className="flex min-w-0 items-center gap-2 text-xs text-(--_dk-text-secondary)">
+            {detail.model.ready ? (
+              <CheckCircle
+                size={14}
+                weight="fill"
+                className="shrink-0 text-(--_dk-emerald-500)"
+                aria-hidden
+              />
+            ) : (
+              <XCircle
+                size={14}
+                weight="fill"
+                className="shrink-0 text-(--_dk-red-500)"
+                aria-hidden
+              />
+            )}
+            <span className="min-w-0 break-all font-mono text-dk-xs">
+              {detail.model.ready
+                ? model.name
+                : `not found: ${model.name} under ${model.path}`}
+            </span>
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">

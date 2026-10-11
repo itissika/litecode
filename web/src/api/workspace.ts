@@ -476,39 +476,6 @@ export async function fetchSymbolAt(
   return parseJson<SymbolAtHit>(res);
 }
 
-export interface SymbolRefQuery {
-  file: string;
-  symbol?: string;
-}
-
-export interface SymbolDrift {
-  drifted: boolean;
-}
-
-export interface SymbolRefHit {
-  file: string;
-  symbol?: string | null;
-  file_exists: boolean;
-  symbol_exists: boolean;
-  ambiguous: boolean;
-  start_line?: number | null;
-  end_line?: number | null;
-  drift?: SymbolDrift | null;
-}
-
-export async function resolveSymbolRefs(
-  refs: SymbolRefQuery[],
-): Promise<SymbolRefHit[]> {
-  const res = await apiFetch("/api/workspace/symbol-refs", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ refs }),
-  });
-  if (!res.ok) throw await errorFromResponse(res);
-  const data = await parseJson<{ refs: SymbolRefHit[] }>(res);
-  return data.refs;
-}
-
 export interface CitationRefRequest {
   path: string;
   line?: number;

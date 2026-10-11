@@ -158,7 +158,7 @@ if (-not $SkipAssemble) {
   $needWeb = $RebuildWeb -or -not (Test-Path $WebIndex)
   $assembleArgs = @{
     Profile = $Profile
-    SkipModel = (-not $BundleModel)
+    WithModel = [bool]$BundleModel
   }
   if ($Cuda) {
     if (-not $env:ORT_CUDA_VERSION) { $env:ORT_CUDA_VERSION = "12" }

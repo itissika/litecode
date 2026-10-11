@@ -23,22 +23,31 @@ export function parseKnowledgeRef(href: string | undefined): string | null {
   }
 }
 
-/** A file citation the reply can open. `line` is the start of `lines`, when present. */
+/**
+ * A file citation the reply can open. `line` is the start of a line range, when
+ * present. `lines` is the raw range attribute, carried only so the chip can find
+ * its `ref_key`; a symbol citation carries neither.
+ */
 export function locationHref(
   path: string,
   line?: number | null,
   symbol?: string | null,
+  lines?: string | null,
 ): string {
   const base = `${LOC_SCHEME}${encodeURIComponent(path)}`;
   const chain = symbol?.trim() ?? "";
-  const query = chain ? `?symbol=${encodeURIComponent(chain)}` : "";
-  const hash = line != null && line >= 1 ? `#L${line}` : "";
+  const query = chain
+    ? `?symbol=${encodeURIComponent(chain)}`
+    : lines
+      ? `?lines=${encodeURIComponent(lines)}`
+      : "";
+  const hash = !chain && line != null && line >= 1 ? `#L${line}` : "";
   return `${base}${query}${hash}`;
 }
 
 export function parseLocationRef(
   href: string | undefined,
-): { path: string; line: number | null; symbol: string | null } | null {
+): { path: string; line: number | null; symbol: string | null; lines?: string | null } | null {
   if (!href?.startsWith(LOC_SCHEME)) return null;
   const raw = href.slice(LOC_SCHEME.length);
   const hashAt = raw.indexOf("#");
@@ -53,16 +62,20 @@ export function parseLocationRef(
   }
   if (!isWorkspaceFileRef(path)) return null;
   let symbol: string | null = null;
+  let lines: string | null = null;
   if (queryAt >= 0) {
-    const chain = new URLSearchParams(beforeHash.slice(queryAt + 1)).get("symbol")?.trim() ?? "";
+    const params = new URLSearchParams(beforeHash.slice(queryAt + 1));
+    const chain = params.get("symbol")?.trim() ?? "";
     symbol = chain || null;
+    lines = symbol ? null : (params.get("lines") ?? null);
   }
+  const extra = lines != null ? { lines } : {};
   const fragment = hashAt >= 0 ? raw.slice(hashAt + 1) : "";
   const lineMatch = /^L(\d+)$/.exec(fragment);
-  if (!lineMatch) return { path, line: null, symbol };
+  if (symbol || !lineMatch) return { path, line: null, symbol, ...extra };
   const line = Number(lineMatch[1]);
-  if (!Number.isInteger(line) || line < 1) return { path, line: null, symbol };
-  return { path, line, symbol };
+  if (!Number.isInteger(line) || line < 1) return { path, line: null, symbol, ...extra };
+  return { path, line, symbol, ...extra };
 }
 
 interface MdastNode {
@@ -92,14 +105,15 @@ function nodesFromText(value: string): MdastNode[] {
       continue;
     }
     const symbol = segment.type === "symbol" ? segment.symbol?.trim() ?? "" : "";
+    // Only a line range opens at a line; a symbol citation never uses lines.
     const line =
-      segment.type === "symbol" && segment.lines
+      segment.type === "symbol" && !symbol && segment.lines
         ? (parseLineSpan(segment.lines)?.start ?? null)
         : null;
     if (segment.label && isWorkspaceFileRef(segment.path)) {
       nodes.push({
         type: "link",
-        url: locationHref(segment.path, line, symbol),
+        url: locationHref(segment.path, line, symbol, symbol ? null : segment.rawLines),
         children: [
           {
             type: "text",

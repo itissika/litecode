@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use litecode::permission::{AskOutcome, PermissionSink, RecordingPermissionSink};
+use litecode::permission::{AskOutcome, AskPrompt, AskReply, PermissionSink, RecordingPermissionSink};
 use tokio_util::sync::CancellationToken;
 
 /// Integration-test sink: auto-approves permission prompts (not used in production).
@@ -8,14 +8,8 @@ use tokio_util::sync::CancellationToken;
 struct TestAutoApproveSink;
 
 impl PermissionSink for TestAutoApproveSink {
-    fn ask_permission(
-        &self,
-        _tool_name: &str,
-        _rule_id: &str,
-        _summary: &str,
-        _cancel: &CancellationToken,
-    ) -> AskOutcome {
-        AskOutcome::Allow { always: false }
+    fn ask(&self, _prompt: &AskPrompt<'_>, _cancel: &CancellationToken) -> AskReply {
+        AskReply::from_outcome(AskOutcome::Allow { always: false })
     }
 }
 

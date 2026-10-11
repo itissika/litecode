@@ -1,5 +1,10 @@
-# One-click local nightly desktop SKU: Windows NSIS + WSL slim Linux tar
-# (kernel + web, no models). Does not publish a GitHub Release.
+# One-click local nightly: slim Windows NSIS + WSL slim Linux tar (kernel + web,
+# no models) + dist/components (on-demand component assets + manifest).
+# Does not publish a GitHub Release.
+#
+# The slim installer downloads the embed model / Linux tar on first use. To test
+# that flow offline against this build, launch Litecode with
+#   $env:LITECODE_COMPONENTS_BASE = "<repo>\dist\components"
 #
 # Usage (repo root, PowerShell):
 #   ./scripts/package_local.ps1
@@ -91,7 +96,7 @@ if ($env:LITECODE_CHANNEL -ne "official") {
   $env:LITECODE_CHANNEL = "nightly"
 }
 
-Write-Host "==> Windows assemble + installers (embed + slim linux tar, v$Version)"
+Write-Host "==> Windows assemble + slim installer (v$Version)"
 $assembleArgs = @{
   Profile = $Profile
 }
@@ -101,7 +106,11 @@ $ModelDir = Join-Path $Root "models\ibm-granite\granite-embedding-97m-multilingu
 if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.onnx"))) {
   throw "embed weights missing at $ModelDir — cannot build the product SKU"
 }
-& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile -SkipPortable -SkipLinuxFreshness
+& (Join-Path $Root "scripts\package_win.ps1") -SkipAssemble -Profile $Profile
+
+Write-Host "==> staging on-demand components (dist\components)"
+& node (Join-Path $Root "scripts\build_components.mjs") --tag "v$Version" --out (Join-Path $winDist "components")
+if ($LASTEXITCODE -ne 0) { throw "build_components.mjs failed with exit code $LASTEXITCODE" }
 
 $outDir = Join-Path $Root "desktop\out"
 $setup = Join-Path $outDir "Litecode-Setup-$Version-x64.exe"
@@ -114,8 +123,11 @@ Write-Host @"
 ==> nightly artifacts (v$Version, LITECODE_CHANNEL=nightly)
   Linux tar (no embed):  $(Join-Path $winDist "litecode-server-$Version-linux-x64.tar.gz")
   Linux staged: $(Join-Path $winDist "linux\litecode-server-linux-x64.tar.gz")
-  Windows NSIS (embed + tar): $setup
+  Windows NSIS (slim):   $setup
+  Components (offline): $(Join-Path $winDist "components")
 
-Open Remote uploads embed from sidecar/models, then the slim linux tar.
+The slim installer fetches the embed model / Linux tar on first use from the
+v$Version GitHub Release. Offline test: set LITECODE_COMPONENTS_BASE to the
+components folder above before launching Litecode.
 
 "@

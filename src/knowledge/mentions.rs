@@ -14,7 +14,10 @@ static SHORTCODE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"\[@ key="([^"]*)"\]"#).expect("node citation"));
 
 /// File citation. `symbol` and `lines` are optional, in that order.
-/// A match with neither symbol nor lines is a file. A match with either is a symbol or a line range.
+/// A match with neither symbol nor lines is a file. A match with `symbol` is a
+/// symbol citation; one with only `lines` is a line range. A symbol citation
+/// never takes `lines` (KR-SYM-6): the attribute is still matched so the
+/// citation is reported as `invalid_lines` instead of turning into plain text.
 static FILE_ATTR: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\[@ file="([^"]*)"(?: symbol="([^"]*)")?(?: lines="([^"]*)")?\]"#)
         .expect("file citation")
@@ -46,7 +49,7 @@ pub fn citation_fact(path: &str, symbol: Option<&str>, lines: Option<LineSpan>) 
     out
 }
 
-/// Inclusive 1-based line span stored on a symbol citation.
+/// Inclusive 1-based line span of a range citation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineSpan {
     pub start: u32,
@@ -61,28 +64,37 @@ pub fn format_line_span(span: LineSpan) -> String {
     }
 }
 
-/// `12` or `2148-2165`. Zero and an inverted range are not spans.
+/// `12` or `2148-2165` (KR-SYN-5). The only valid forms are `A` and `A-B`:
+/// ASCII decimal digits, no sign, no spaces, no leading zero, `1 <= A <= B`,
+/// each fitting `u32`. Anything else is not a span (`invalid_lines`).
 pub fn parse_line_span(raw: &str) -> Option<LineSpan> {
-    let raw = raw.trim();
-    let (start, end) = if let Some((start, end)) = raw.split_once('-') {
-        (start.parse::<u32>().ok()?, end.parse::<u32>().ok()?)
-    } else {
-        let line = raw.parse::<u32>().ok()?;
-        (line, line)
+    let (start, end) = match raw.split_once('-') {
+        Some((start, end)) => (parse_line_number(start)?, parse_line_number(end)?),
+        None => {
+            let line = parse_line_number(raw)?;
+            (line, line)
+        }
     };
-    if start == 0 || end == 0 || end < start {
+    if end < start {
         return None;
     }
     Some(LineSpan { start, end })
 }
 
-/// One symbol or range citation. Absent `symbol` is a line range. Absent `lines` names the symbol only.
+fn parse_line_number(text: &str) -> Option<u32> {
+    if text.is_empty() || text.starts_with('0') || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse::<u32>().ok()
+}
+
+/// One symbol or range citation. With a `symbol` it is a symbol citation and
+/// `lines` is never written (KR-SYM-6). Without one, `lines` makes a line range.
 pub fn symbol_mention_source(file: &str, symbol: Option<&str>, lines: Option<LineSpan>) -> String {
     let mut out = format!(r#"[@ file="{file}""#);
     if let Some(symbol) = symbol.map(str::trim).filter(|text| !text.is_empty()) {
         out.push_str(&format!(r#" symbol="{symbol}""#));
-    }
-    if let Some(span) = lines {
+    } else if let Some(span) = lines {
         out.push_str(&format!(r#" lines="{}""#, format_line_span(span)));
     }
     out.push(']');
@@ -103,9 +115,84 @@ pub enum OrderedRef {
     Symbol {
         path: String,
         symbol: Option<String>,
+        /// Span of a range citation. Always `None` with a `symbol` (KR-SYM-6).
         lines: Option<LineSpan>,
+        /// Raw `lines` text when the attribute was written but is not allowed:
+        /// not a valid span on a range (KR-SYN-5), or any `lines` at all on a
+        /// symbol citation (KR-SYM-6). The citation stays a citation and
+        /// reports `invalid_lines`.
+        bad_lines: Option<String>,
         label: String,
     },
+}
+
+/// Kind of a citation as the knowledge API names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CiteKind {
+    Node,
+    File,
+    Symbol,
+    Range,
+}
+
+impl CiteKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::File => "file",
+            Self::Symbol => "symbol",
+            Self::Range => "range",
+        }
+    }
+}
+
+/// One citation with its source text, in appearance order (KR-SYN-8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cite {
+    pub kind: CiteKind,
+    /// Node citation key, trimmed.
+    pub key: Option<String>,
+    /// File path as written, trimmed (backslashes kept; see [`Cite::norm_path`]).
+    pub path: Option<String>,
+    pub symbol: Option<String>,
+    /// Valid span of a range citation. Always `None` on a symbol citation.
+    pub lines: Option<LineSpan>,
+    /// Raw `lines` text that is not allowed: an invalid span on a range
+    /// (KR-SYN-5) or any `lines` on a symbol citation (KR-SYM-6).
+    pub bad_lines: Option<String>,
+    /// The citation text exactly as it appears in the markdown.
+    pub raw: String,
+}
+
+impl Cite {
+    /// KR-PATH-2: `\` is `/`.
+    pub fn norm_path(&self) -> Option<String> {
+        self.path.as_deref().map(normalize_ref_path)
+    }
+
+    /// Shared identity of a citation inside one node (KR-KEY-1):
+    /// `node:<key>`, `file:<path>`, `sym:<path>\0<chain>`, `range:<path>\0<lines>`.
+    pub fn ref_key(&self) -> String {
+        let path = self.norm_path().unwrap_or_default();
+        match self.kind {
+            CiteKind::Node => format!("node:{}", self.key.as_deref().unwrap_or("")),
+            CiteKind::File => format!("file:{path}"),
+            CiteKind::Symbol => format!("sym:{path}\0{}", self.symbol.as_deref().unwrap_or("")),
+            CiteKind::Range => {
+                let lines = match (self.lines, self.bad_lines.as_deref()) {
+                    (Some(span), _) => format_line_span(span),
+                    (None, Some(raw)) => raw.to_string(),
+                    (None, None) => String::new(),
+                };
+                format!("range:{path}\0{lines}")
+            }
+        }
+    }
+}
+
+/// KR-PATH-2 path form used for identity and lookups.
+pub fn normalize_ref_path(path: &str) -> String {
+    path.trim().replace('\\', "/")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,12 +216,14 @@ pub fn is_workspace_file_ref(path: &str) -> bool {
         .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
-/// True when `rel` is a file or directory inside `workspace`.
+/// True when `rel` names a file or directory inside `workspace` exactly as it
+/// is on disk (KR-PATH-3/4, KR-LINK-1). Same predicate as the index.
 pub fn workspace_file_exists(workspace: &std::path::Path, rel: &str) -> bool {
-    if !is_workspace_file_ref(rel) {
-        return false;
-    }
-    workspace.join(rel.replace('\\', "/")).exists()
+    let mut listings = super::fsref::Listings::default();
+    matches!(
+        super::fsref::lookup(workspace, rel, &mut listings).kind,
+        super::fsref::Kind::File | super::fsref::Kind::Dir
+    )
 }
 
 /// File paths cited in prose, including the file of a symbol citation.
@@ -157,63 +246,111 @@ pub fn extract_file_refs(markdown: &str) -> Vec<String> {
 /// Citations in prose, in appearance order. Repeats are kept.
 /// Fenced blocks and inline code are not citations.
 pub fn extract_refs_in_order(markdown: &str) -> Vec<OrderedRef> {
+    extract_cites(markdown)
+        .into_iter()
+        .map(|cite| match cite.kind {
+            CiteKind::Node => {
+                let id = cite.key.unwrap_or_default();
+                OrderedRef::Node {
+                    label: id.clone(),
+                    id,
+                }
+            }
+            CiteKind::File => {
+                let path = cite.path.unwrap_or_default();
+                OrderedRef::File {
+                    label: path.clone(),
+                    path,
+                }
+            }
+            CiteKind::Symbol | CiteKind::Range => {
+                let path = cite.path.unwrap_or_default();
+                let label = citation_fact(&path, cite.symbol.as_deref(), cite.lines);
+                OrderedRef::Symbol {
+                    path,
+                    symbol: cite.symbol,
+                    lines: cite.lines,
+                    bad_lines: cite.bad_lines,
+                    label,
+                }
+            }
+        })
+        .collect()
+}
+
+/// Citations with their source text, in appearance order. Repeats are kept.
+pub fn extract_cites(markdown: &str) -> Vec<Cite> {
     let mut refs = Vec::new();
-    for line in scan_prose(markdown) {
-        let mut hits: Vec<(usize, OrderedRef)> = Vec::new();
-        for caps in SHORTCODE.captures_iter(&line) {
+    for (line, prose) in scan_prose_with_source(markdown) {
+        let mut hits: Vec<(usize, Cite)> = Vec::new();
+        for caps in SHORTCODE.captures_iter(&prose) {
             let Some(id) = node_caps(&caps) else {
                 continue;
             };
-            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+            let whole = caps.get(0).expect("full match");
             hits.push((
-                start,
-                OrderedRef::Node {
-                    id: id.clone(),
-                    label: id,
+                whole.start(),
+                Cite {
+                    kind: CiteKind::Node,
+                    key: Some(id),
+                    path: None,
+                    symbol: None,
+                    lines: None,
+                    bad_lines: None,
+                    raw: line[whole.range()].to_string(),
                 },
             ));
         }
-        for caps in FILE_ATTR.captures_iter(&line) {
-            let Some(cite) = file_attr_ref(&caps) else {
+        for caps in FILE_ATTR.captures_iter(&prose) {
+            let whole = caps.get(0).expect("full match");
+            let Some(cite) = file_attr_cite(&caps, &line[whole.range()]) else {
                 continue;
             };
-            let start = caps.get(0).map(|m| m.start()).unwrap_or(0);
-            hits.push((start, cite));
+            hits.push((whole.start(), cite));
         }
         hits.sort_by_key(|(start, _)| *start);
-        for (_, cite) in hits {
-            refs.push(cite);
-        }
+        refs.extend(hits.into_iter().map(|(_, cite)| cite));
     }
     refs
 }
 
-fn file_attr_ref(caps: &regex::Captures<'_>) -> Option<OrderedRef> {
+fn file_attr_cite(caps: &regex::Captures<'_>, raw: &str) -> Option<Cite> {
     let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
     if path.is_empty() {
         return None;
     }
-    let path = path.to_string();
     let symbol = caps
         .get(2)
         .map(|m| m.as_str().trim().to_string())
         .filter(|text| !text.is_empty());
-    let lines = caps.get(3).and_then(|m| parse_line_span(m.as_str()));
-    let label = citation_fact(&path, symbol.as_deref(), lines);
-    if symbol.is_none() && lines.is_none() && caps.get(3).is_some() {
-        // `lines` was written but does not parse. Keep the file so the path
-        // is still a citation, and drop the broken range.
-        return Some(OrderedRef::File { path, label });
-    }
-    if symbol.is_some() || lines.is_some() {
-        return Some(OrderedRef::Symbol {
-            path,
-            symbol,
-            lines,
-            label,
-        });
-    }
-    Some(OrderedRef::File { path, label })
+    let lines_raw = caps.get(3).map(|m| m.as_str());
+    // KR-SYM-6: a symbol citation locates by chain only; any `lines` on it is
+    // a format error, never a span.
+    let lines = if symbol.is_some() {
+        None
+    } else {
+        lines_raw.and_then(parse_line_span)
+    };
+    let bad_lines = match (lines_raw, lines) {
+        (Some(raw), None) => Some(raw.to_string()),
+        _ => None,
+    };
+    let kind = if symbol.is_some() {
+        CiteKind::Symbol
+    } else if lines_raw.is_some() {
+        CiteKind::Range
+    } else {
+        CiteKind::File
+    };
+    Some(Cite {
+        kind,
+        key: None,
+        path: Some(path.to_string()),
+        symbol,
+        lines,
+        bad_lines,
+        raw: raw.to_string(),
+    })
 }
 
 pub fn extract_markers(markdown: &str) -> Vec<String> {
@@ -407,7 +544,12 @@ fn replace_shortcodes_with_labels(text: &str) -> String {
                 .get(2)
                 .map(|m| m.as_str().trim().to_string())
                 .filter(|text| !text.is_empty());
-            let lines = caps.get(3).and_then(|m| parse_line_span(m.as_str()));
+            // KR-SYM-6: a symbol citation shows no line span.
+            let lines = if symbol.is_some() {
+                None
+            } else {
+                caps.get(3).and_then(|m| parse_line_span(m.as_str()))
+            };
             citation_fact(path, symbol.as_deref(), lines)
         })
         .into_owned()
@@ -444,6 +586,36 @@ fn mask_inline_code(line: &str) -> String {
     out
 }
 
+/// [`mask_inline_code`] that keeps every byte offset: a masked character
+/// becomes as many spaces as it has UTF-8 bytes.
+fn mask_inline_code_same_bytes(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '`' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut ticks = 0;
+        while i + ticks < chars.len() && chars[i + ticks] == '`' {
+            ticks += 1;
+        }
+        let Some(close_at) = find_closer(&chars, i + ticks, ticks) else {
+            out.extend(chars[i..].iter());
+            break;
+        };
+        for ch in &chars[i..close_at + ticks] {
+            for _ in 0..ch.len_utf8() {
+                out.push(' ');
+            }
+        }
+        i = close_at + ticks;
+    }
+    out
+}
+
 fn find_closer(chars: &[char], from: usize, ticks: usize) -> Option<usize> {
     let mut i = from;
     while i + ticks <= chars.len() {
@@ -453,6 +625,30 @@ fn find_closer(chars: &[char], from: usize, ticks: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Prose lines paired with their source text. Masking keeps byte offsets,
+/// so a match range in the masked line slices the source line.
+fn scan_prose_with_source(markdown: &str) -> Vec<(String, String)> {
+    let mut prose = Vec::new();
+    let mut fence_char = '\0';
+    let mut fence_len = 0usize;
+    for raw in markdown.split('\n') {
+        let line = raw.trim_end_matches('\r');
+        if fence_len > 0 {
+            if fence_closed(line, fence_char, fence_len) {
+                fence_len = 0;
+            }
+            continue;
+        }
+        if let Some((ch, len)) = fence_open(line) {
+            fence_char = ch;
+            fence_len = len;
+            continue;
+        }
+        prose.push((line.to_string(), mask_inline_code_same_bytes(line)));
+    }
+    prose
 }
 
 fn scan_prose(markdown: &str) -> Vec<String> {
@@ -576,6 +772,7 @@ see [@ file=\"src/a.rs\"]
                 path: "src/a.rs".into(),
                 symbol: Some("impl Store › fn save".into()),
                 lines: None,
+                bad_lines: None,
                 label: "src/a.rs : impl Store › fn save".into(),
             }]
         );
@@ -609,11 +806,9 @@ see [@ file=\"src/a.rs\"]
                 OrderedRef::Symbol {
                     path: "src/session/manager.rs".into(),
                     symbol: Some("impl SessionManager › fn append_reminder".into()),
-                    lines: Some(LineSpan {
-                        start: 2148,
-                        end: 2165,
-                    }),
-                    label: "src/session/manager.rs : impl SessionManager › fn append_reminder : 2148-2165".into(),
+                    lines: None,
+                    bad_lines: None,
+                    label: "src/session/manager.rs : impl SessionManager › fn append_reminder".into(),
                 },
                 OrderedRef::Node {
                     id: "seq".into(),
@@ -623,6 +818,7 @@ see [@ file=\"src/a.rs\"]
                     path: "src/a.rs".into(),
                     symbol: Some("fn alpha".into()),
                     lines: None,
+                    bad_lines: None,
                     label: "src/a.rs : fn alpha".into(),
                 },
             ]
@@ -632,8 +828,13 @@ see [@ file=\"src/a.rs\"]
             vec!["src/session/manager.rs".to_string(), "src/a.rs".to_string(),]
         );
         assert_eq!(
+            symbol,
+            r#"[@ file="src/session/manager.rs" symbol="impl SessionManager › fn append_reminder"]"#,
+            "a symbol citation is never written with lines (KR-SYM-6)"
+        );
+        assert_eq!(
             knowledge_preview(&symbol, 1),
-            "src/session/manager.rs : impl SessionManager › fn append_reminder : 2148-2165"
+            "src/session/manager.rs : impl SessionManager › fn append_reminder"
         );
         assert_eq!(
             symbol_mention_source("src/a.rs", None, Some(LineSpan { start: 4, end: 9 })),
@@ -642,6 +843,23 @@ see [@ file=\"src/a.rs\"]
         assert!(parse_line_span("0-1").is_none());
         assert!(parse_line_span("9-4").is_none());
         assert_eq!(parse_line_span("12"), Some(LineSpan { start: 12, end: 12 }));
+    }
+
+    #[test]
+    fn lines_on_a_symbol_citation_are_never_a_span() {
+        let source = r#"[@ file="src/a.rs" symbol="fn save" lines="4-9"]"#;
+        let cites = extract_cites(source);
+        assert_eq!(cites.len(), 1);
+        let cite = &cites[0];
+        assert_eq!(cite.kind, CiteKind::Symbol);
+        assert_eq!(cite.lines, None);
+        assert_eq!(cite.bad_lines.as_deref(), Some("4-9"));
+        assert_eq!(cite.ref_key(), "sym:src/a.rs\0fn save");
+        assert_eq!(knowledge_preview(source, 1), "src/a.rs : fn save");
+        let range = extract_cites(r#"[@ file="src/a.rs" lines="4-9"]"#);
+        assert_eq!(range[0].kind, CiteKind::Range);
+        assert_eq!(range[0].lines, Some(LineSpan { start: 4, end: 9 }));
+        assert_eq!(range[0].bad_lines, None);
     }
 
     #[test]

@@ -243,6 +243,7 @@ impl RuntimeHandle {
     /// Updates in-process definitions only. Running MCP child processes are
     /// left alone; the human restarts them from Settings if the command changed.
     pub fn sync_workspace_tool_readiness(&mut self) {
+        let _lap = crate::telemetry::latency::lap("sync_workspace_tool_readiness");
         let workspace = crate::config::workspace::workspace_with_disk_readiness(&self.workspace);
         self.workspace = workspace.clone();
         *self.resolved.workspace_mut() = workspace;
@@ -433,6 +434,7 @@ pub fn spawn_turn(
     turn_id: String,
     opts: TurnOptions,
 ) -> anyhow::Result<TurnHandle> {
+    let mut stages = crate::telemetry::latency::Stages::new("spawn_turn", None);
     // Agent identity is the only per-caller choice: main-session turns resolve
     // the session's sticky agent (Primary-role checked), child turns run the
     // named profile directly — including Subagent-role profiles that
@@ -455,6 +457,7 @@ pub fn spawn_turn(
         .meta_blocking(&session_id)
         .map(|meta| meta.subagent_depth)
         .unwrap_or(0);
+    stages.mark("resolve_agent_and_depth");
     let (tx, rx) = mpsc::unbounded_channel::<InternalEnvelope>();
     let observer = ChannelObserver::new(tx);
     let mut agent_loop = runtime.build_runtime(
@@ -465,6 +468,7 @@ pub fn spawn_turn(
         permission_sink,
         observer,
     )?;
+    stages.mark("build_runtime");
 
     let cancel = agent_loop.cancel_token();
     let step_max = agent_loop.agent_config.max_steps;
@@ -479,6 +483,8 @@ pub fn spawn_turn(
             .build()?;
         rt.block_on(agent_loop.run_with_turn(turn_input, &turn_id_for_thread, step_max))
     });
+    stages.mark("thread_spawn");
+    drop(stages);
 
     Ok(TurnHandle {
         handle: Some(handle),
@@ -516,6 +522,9 @@ pub struct AgentRuntime {
     /// In-flight turn-start snapshot_track (parallel with first LLM). Joined
     /// before any tool execution and again before snapshot_record_patch.
     pending_snapshot_track: Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
+    /// `run_with_turn` entry, only while `litecode::latency` is enabled; the
+    /// first `call_model` of the turn reports `turn_to_first_request` from it.
+    pub(crate) latency_turn_start: Option<std::time::Instant>,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -619,6 +628,7 @@ impl AgentRuntime {
             turn_usage_totals: TurnTokenStats::default(),
             build_tool_params: Some(build_tool_params),
             pending_snapshot_track: Mutex::new(None),
+            latency_turn_start: None,
         };
         Ok(runtime)
     }
@@ -700,7 +710,11 @@ impl AgentRuntime {
             return;
         };
         let anchor_seq = self.rctx().turn_anchor_seq().unwrap_or(-1);
-        match handle.await {
+        // Time the join blocked us; the track's own runtime is `snapshot_track`.
+        let wait = crate::telemetry::latency::lap("snapshot_track.join_wait");
+        let joined = handle.await;
+        wait.done();
+        match joined {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 tracing::warn!(%e, anchor_seq, "snapshot_track failed, revert may be incomplete");
@@ -902,9 +916,11 @@ impl AgentRuntime {
             TurnInput::Wake { anchor_user_seq } => (UserInput::text(""), true, anchor_user_seq),
             TurnInput::User(input) => (input, false, None),
         };
+        self.latency_turn_start = crate::telemetry::latency::now();
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
+            let tools_lap = crate::telemetry::latency::lap("build_tool_list");
             let tools = build_tool_list(
                 &params.runtime,
                 &params.agent_name,
@@ -914,6 +930,7 @@ impl AgentRuntime {
                 Arc::clone(&params.sessions),
             )
             .await;
+            tools_lap.done();
 
             let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
             tracing::debug!(
@@ -988,6 +1005,7 @@ impl AgentRuntime {
         let sid = self.session_id.clone();
         // Propagate begin_turn errors explicitly — a failed load must not start
         // the turn with an empty (silently truncated) transcript.
+        let begin_lap = crate::telemetry::latency::lap("begin_turn");
         let mut working = {
             self.sessions.apply(
                 &sid,
@@ -1007,6 +1025,7 @@ impl AgentRuntime {
                 Some(turn_id.to_string()),
             )?
         };
+        begin_lap.done();
         if !wake {
             let item = user_message(&user_input.text, &user_input.images);
             working.push(WorkingRow::pending(item));
@@ -1016,11 +1035,13 @@ impl AgentRuntime {
         // so the working set and disk agree before InFlight begins.
         let fresh_user_seq;
         {
+            let commit_lap = crate::telemetry::latency::lap("commit_step.user");
             let commit_outcome = self.context_pipeline.commit_step(
                 &self.sessions,
                 &self.session_id,
                 &mut working,
             )?;
+            commit_lap.done();
             if commit_outcome.discarded {
                 return self.finalize_agent_outcome(
                     turn_id,
@@ -1084,6 +1105,9 @@ impl AgentRuntime {
         let track_snaps = snaps.clone();
         let track_sid = self.session_id.clone();
         let track_handle = tokio::task::spawn_blocking(move || {
+            // Background: overlaps the first LLM call; see `join_wait` for the
+            // part that actually blocks the turn.
+            let _lap = crate::telemetry::latency::lap("snapshot_track");
             snapshot::snapshot_track(&track_ws, &track_snaps, &track_sid, anchor_seq)
         });
         {

@@ -1,5 +1,6 @@
 export type RemoteProgressStage =
   | "authenticating"
+  | "download"
   | "upload"
   | "verify"
   | "extract"

@@ -1,8 +1,6 @@
 import {
   extractMarkers,
   isKnowledgeKey,
-  knowledgePreview,
-  mentionSource,
   normalizeKey,
   replaceMentionKey,
 } from "./markers";
@@ -38,10 +36,6 @@ export interface ParsedKnowledgeFile {
   y: number | null;
   w: number | null;
   h: number | null;
-  /** True when the fence contains a `summary` line. */
-  hasSummary: boolean;
-  /** True when the fence still has a legacy `ref :` line. */
-  hadRefLine: boolean;
   /** Field lines this parser does not own, in source order. */
   extras: string[];
 }
@@ -77,17 +71,6 @@ function citedIds(body: string): string[] {
   return extractMarkers(body);
 }
 
-/** `[[node : key]]` from files written before Mention shortcodes. */
-const LEGACY_MARKER = /\[\[\s*node\s*:\s*([^\]\r\n]+?)\s*\]\]/g;
-
-function rewriteLegacyMentions(body: string): string {
-  return body.replace(LEGACY_MARKER, (full, raw: string) => {
-    const key = normalizeKey(raw);
-    if (!isKnowledgeKey(key)) return full;
-    return mentionSource(key);
-  });
-}
-
 /**
  * Read a node file. The declaration is a `node` fence at the start of the file.
  * Anything before that fence means the file has no declaration.
@@ -104,8 +87,6 @@ export function parseKnowledgeMarkdown(
   let invalidStatus: string | null = null;
   let summary = "";
   let body = source;
-  let hasSummary = false;
-  let hadRefLine = false;
   let x: number | null = null;
   let y: number | null = null;
   let w: number | null = null;
@@ -140,10 +121,7 @@ export function parseKnowledgeMarkdown(
             invalidStatus = value;
           }
         } else if (name === "summary") {
-          hasSummary = true;
           summary = value;
-        } else if (name === "ref") {
-          hadRefLine = true;
         } else if (name === "x") x = parseCoord(value);
         else if (name === "y") y = parseCoord(value);
         else if (name === "w") w = parseCoord(value);
@@ -165,8 +143,6 @@ export function parseKnowledgeMarkdown(
     y,
     w,
     h,
-    hasSummary,
-    hadRefLine,
     extras,
   };
 }
@@ -210,30 +186,6 @@ export function renderKnowledgeMarkdown(doc: {
   }
   lines.push("```", "", body, "");
   return lines.join("\n");
-}
-
-/**
- * Rewrite a legacy file once. `[[node : key]]` becomes a Mention shortcode,
- * `ref :` lines are dropped, and a missing summary is filled from the body.
- * A file that already uses shortcodes and has a summary is left unchanged.
- */
-export function upgradeKnowledgeMarkdown(markdown: string): string | null {
-  const parsed = parseKnowledgeMarkdown("node.md", markdown);
-  if (!parsed.key) return null;
-  const body = rewriteLegacyMentions(parsed.body);
-  if (body === parsed.body && !parsed.hadRefLine && parsed.hasSummary) return null;
-  return renderKnowledgeMarkdown({
-    key: normalizeKey(parsed.key),
-    status: parsed.status,
-    invalidStatus: parsed.invalidStatus,
-    summary: parsed.summary || knowledgePreview(body, 1),
-    body,
-    x: parsed.x,
-    y: parsed.y,
-    w: parsed.w,
-    h: parsed.h,
-    extras: parsed.extras,
-  });
 }
 
 /** Rewrite mention ids. Declaration lines are left alone. */

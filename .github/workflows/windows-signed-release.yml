@@ -1,6 +1,9 @@
 name: Windows release
 
-# Publishes Windows installers to a GitHub Release.
+# Publishes the slim Windows NSIS installer to a GitHub Release, plus the
+# on-demand runtime components (embed model, Linux remote-server tar) and
+# litecode-components.json. The installed app downloads those components from
+# releases/download/v<version>/ on first use, so the tag MUST be v<version>.
 # Signs with Authenticode when WIN_CSC_LINK / WIN_CSC_KEY_PASSWORD exist;
 # otherwise publishes unsigned artifacts (with a clear notice).
 on:
@@ -17,8 +20,8 @@ on:
 
 jobs:
   linux-bundle:
-    # Builds the slim Linux remote-server tarball (kernel + web, no embed)
-    # that the Windows installer embeds under extraResources (Open Remote).
+    # Builds the slim Linux remote-server tarball (kernel + web, no embed).
+    # Published as a Release asset; Open Remote downloads it on demand.
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -72,11 +75,20 @@ jobs:
           name: linux-server-bundle
           path: dist/linux/
 
-      # checkout mtimes are "now"; artifact mtimes are older and would trip
-      # ensure_linux_bundle.ps1 -Require stale check.
-      - name: Refresh Linux bundle timestamps
+      - name: Check tag matches product version
         shell: pwsh
-        run: Get-ChildItem -LiteralPath dist/linux -File | ForEach-Object { $_.LastWriteTime = Get-Date }
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+        run: |
+          . ./scripts/product_version.ps1
+          $version = Get-LitecodeProductVersion -Root (Get-Location).Path
+          $desktop = (Get-Content desktop/package.json -Raw | ConvertFrom-Json).version
+          if ($desktop -ne $version) {
+            throw "desktop/package.json version $desktop != Cargo.toml $version (client fetches components for its own version)"
+          }
+          if ($env:TAG -ne "v$version") {
+            throw "Release tag '$($env:TAG)' must be 'v$version': installed apps fetch components from releases/download/v$version/"
+          }
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -118,11 +130,20 @@ jobs:
           }
           ./scripts/package_win.ps1
 
+      - name: Stage on-demand components + manifest
+        shell: pwsh
+        env:
+          TAG: ${{ github.event.release.tag_name || inputs.tag || github.ref_name }}
+        run: |
+          node scripts/build_components.mjs --tag $env:TAG --repo "${{ github.repository }}" --out dist/components
+          if ($LASTEXITCODE -ne 0) { throw "build_components.mjs failed" }
+
       - name: SHA256SUMS
         shell: pwsh
         run: |
-          Get-FileHash desktop/out/Litecode-*.exe -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash)  $(Split-Path $_.Path -Leaf)" } |
+          $files = @(Get-ChildItem desktop/out/Litecode-Setup-*.exe) + @(Get-ChildItem dist/components -File)
+          $files | Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLowerInvariant())  $(Split-Path $_.Path -Leaf)" } |
             Set-Content -Encoding ascii desktop/out/SHA256SUMS.txt
 
       - name: Upload to GitHub Release
@@ -133,15 +154,18 @@ jobs:
           body: |
             ## 安装包
 
-            - `Litecode-Setup-x64.exe` — 安装版
-            - `Litecode-Portable-x64.exe` — 便携版
+            - `Litecode-Setup-*-x64.exe` — 安装版（瘦包；嵌入模型与 Linux 远程包首次使用时自动下载）
+            - `litecode-components.json` — 按需组件清单（客户端读取，勿删）
+            - `litecode-embed-*.tar.gz` / `litecode-server-linux-x64.tar.gz` — 按需组件
             - `SHA256SUMS.txt` — 校验和
 
             > 未配置 `WIN_CSC_*` 时为未签名构建；SmartScreen 可能在首次运行时提示。
           files: |
-            desktop/out/Litecode-Portable-*.exe
             desktop/out/Litecode-Setup-*.exe
             desktop/out/SHA256SUMS.txt
+            dist/components/litecode-components.json
+            dist/components/litecode-embed-*.tar.gz
+            dist/components/litecode-server-linux-x64.tar.gz
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

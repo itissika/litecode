@@ -72,6 +72,6 @@
 
 **怎么生效。** 无进行中的 turn 时工作区文件会重载。有 `rules` 时 Agents 可切 ALL/SAFE；改规则后下次调用按新规则。工作区同名条目整份覆盖全局；工作区这份没有规则时，不能切换 ALL/SAFE。子 agent 里 Ask 视为拒绝。
 
-**怎么验证文件。** `litecode_workspace refresh custom_tools` 校验 JSON、名字、撞名、`command`；标出未生效差异。`validate_custom` 不写盘、不绑定、不跑 rules，只剥掉 `run_in_background` 后跑一遍进程（与生产 stdin 一致）。
+**怎么验证。** `litecode_workspace refresh custom_tools` 校验 JSON、名字、撞名、`command`；标出未生效差异。`validate_custom` 不写盘、不绑定、不跑 rules，只剥掉 `run_in_background` 后跑一遍进程（与生产 stdin 一致）。
 
 **下一步。** 未打开时 status 会列成 off for you：只有这次真的需要才请人打开；否则不要提。

@@ -97,13 +97,16 @@ The design rationale lives in the repo's own knowledge base — `knowledge/`, th
 
 > Prerequisites: Rust (MSVC, edition 2024) + Node.js 22+.
 
-Local nightly (Windows installers + slim Linux tar, `LITECODE_CHANNEL=nightly`):
+Local nightly (slim Windows installer + slim Linux tar, `LITECODE_CHANNEL=nightly`):
 
 ```powershell
 ./scripts/package_local.ps1
 ```
 
-Artifacts: `desktop/out/` and `dist/linux/`. Official signed builds come from GitHub Releases.
+Artifacts: `desktop/out/`, `dist/linux/` and `dist/components/`. Official builds come from GitHub Releases.
+The Windows installer is slim: the embed model and the Linux remote-server bundle download on
+first use from the release of the same version (offline: `LITECODE_COMPONENTS_BASE=<folder>`).
+See [desktop/README.md](desktop/README.md#on-demand-components).
 
 ## 📚 Advanced
 

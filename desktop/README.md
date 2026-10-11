@@ -33,7 +33,7 @@ LITECODE_PROFILE=debug LITECODE_BUILD_WEB=0 LITECODE_BUNDLE_MODEL=0 ./scripts/as
 
 ```powershell
 # Windows (manual steps; prefer scripts/dev_win.ps1)
-./scripts/assemble_product.ps1 -Profile debug -SkipWeb -SkipModel
+./scripts/assemble_product.ps1 -Profile debug -SkipWeb   # slim by default; -WithModel embeds models/
 ```
 
 2. Install and run the shell:
@@ -91,7 +91,9 @@ machine.
 Open remote is SSH orchestration owned by `DesktopHost`:
 
 1. Authenticate to the host (password primary; key/agent optional).
-2. Upload/verify the embed weights (skip if the remote stamp matches), then the slim Linux server tar (kernel + web, no models).
+2. Make sure the embed weights and the slim Linux server tar exist locally (downloading
+   them on first use, see *On-demand components*), upload/verify the embed weights (skip if
+   the remote stamp matches), then the Linux server tar (kernel + web, no models).
 3. Start a loopback-only serve for the chosen workspace and forward a local port.
 4. Persist host credentials in Electron `safeStorage` and the workspace path in remote history
    only after a successful attach.
@@ -100,12 +102,10 @@ Closing the client stops that temporary remote serve and tunnel. A separate
 “deployed URL + hand-typed token” product path is not shown in Home; use
 `LITECODE_REMOTE_URL` + `LITECODE_TOKEN` for automation.
 
-Windows packaging requires `dist/linux/litecode-server-linux-x64.tar.gz` and its
-`.sha256` (built on Linux via `scripts/package_linux.sh`, embed weights omitted);
-these are embedded in the Windows app for managed SSH upload. Embed weights live
-once under the Windows sidecar (`sidecar/models/`).
+The Linux server tar (`scripts/package_linux.sh`, embed weights omitted) is no
+longer embedded in the Windows installer; it is a Release asset fetched on demand.
 
-Local nightly (embed in the installer, slim Linux tar, `LITECODE_CHANNEL=nightly`):
+Local nightly (slim installer + Linux tar + `dist/components`, `LITECODE_CHANNEL=nightly`):
 
 ```powershell
 ./scripts/package_local.ps1
@@ -121,8 +121,49 @@ Local nightly (embed in the installer, slim Linux tar, `LITECODE_CHANNEL=nightly
 
 Outputs under `desktop/out/`:
 
-- `Litecode-Portable-*-x64.exe` (unsigned portable)
-- `Litecode-Setup-*-x64.exe` (unsigned NSIS)
+- `Litecode-Setup-*-x64.exe` (NSIS; the only Windows release form, no portable build)
+
+The installer is **slim**: `resources/sidecar` holds `litecode.exe`, `DirectML.dll`
+(a load-time import of the sidecar, so it must stay) and `web/dist`. The embed
+model and the Linux remote-server tar are not embedded. `-Full` embeds both again
+for local offline builds only.
+
+### On-demand components
+
+`scripts/build_components.mjs` stages the components plus a small manifest
+(`dist/components/`), and release CI uploads them to the GitHub Release
+`v<version>`:
+
+| Asset | Component id | Needed by |
+|-------|--------------|-----------|
+| `litecode-embed-granite-97m-multilingual-r2.tar.gz` | `embed-model` | code_search / session search (local) and Open Remote (uploaded to the host) |
+| `litecode-server-linux-x64.tar.gz` | `linux-server` | Open Remote |
+| `litecode-components.json` | manifest | client |
+
+Manifest entries: `id`, `version`, `platform`, `file`, `url` (GitHub Releases
+only), `size`, `sha256`, `format` (`file` / `tar.gz`), `app_version_range`
+(`{min, max?}`, inclusive; the Linux server is pinned to the exact app version).
+
+Client flow (Electron main, `desktop/src/components.ts`): the existing lookup runs
+first (`LITECODE_MODEL_DIR` / `LITECODE_LINUX_BUNDLE` → `LITECODE_BUNDLE_ROOT` →
+`%LOCALAPPDATA%\litecode\bundles` → packaged sidecar → repo). Only when nothing is
+found does it fetch
+`https://github.com/itissika/litecode/releases/download/v<version>/litecode-components.json`,
+pick the entry compatible with the running version, stream the asset with
+progress, verify size + sha256, and install into
+`%LOCALAPPDATA%\litecode\bundles\models\…` or `…\bundles\linux\` (install record:
+`bundles\components.json`). The sidecar searches the bundles dir itself, so the
+model is used on the next engine start without restarting the app. Settings →
+Engines shows the download card (progress, retry); Open Remote shows it in the
+deploy progress bar. A failed download leaves everything else working.
+
+Overrides:
+
+| Variable | Effect |
+|----------|--------|
+| `LITECODE_COMPONENTS_BASE=<folder>` | read `litecode-components.json` + assets from a local folder (offline / dev, e.g. `dist\components`) |
+| `LITECODE_COMPONENTS_BASE=<https url>` | same layout served from that base URL (mirror / test server) |
+| `LITECODE_MODEL_DIR`, `LITECODE_LINUX_BUNDLE`, `LITECODE_BUNDLE_ROOT` | unchanged: point at existing local copies, no download |
 
 ### Code signing (W4)
 
@@ -134,7 +175,11 @@ Set secrets / env before `electron-builder`:
 | `CSC_KEY_PASSWORD` | PFX password |
 | `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` | Windows-specific aliases |
 
-When these are unset, builds stay unsigned (`signExecutable: false`) but still embed the app icon into the `.exe`. The release workflow only attaches installers to a GitHub Release when signing env is present.
+When these are unset, builds stay unsigned (`signExecutable: false`) but still embed the app icon into the `.exe`.
+
+Release tags must be `v<version>` (same as `Cargo.toml` and `desktop/package.json`):
+installed apps fetch components from `releases/download/v<version>/`, and the
+release workflow refuses mismatched tags.
 
 ## Contracts
 

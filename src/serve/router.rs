@@ -107,6 +107,9 @@ pub async fn listen(
     let mcp_pool = state.runtime.read().expect("runtime lock").mcp_pool.clone();
     let session_gc = sessions.clone();
     restart_watcher(&state.watcher, state.workspace.clone()).await?;
+    // Resident knowledge index: builds in the background (never blocks the
+    // first turn) and follows the same change bus as the engines below.
+    let knowledge = crate::knowledge::index::start(state.workspace.sandbox().root());
     // Sole OS watcher → code_search worker Index dirty queue (DESIGN §2.9).
     {
         let workspace = state.workspace.clone();
@@ -118,6 +121,7 @@ pub async fn listen(
             loop {
                 match rx.recv().await {
                     Ok(change) => {
+                        knowledge.notify_paths(&change.paths);
                         // Sole ServeState reload of mcp.json / custom_tools.json.
                         // Skip during a turn (same as Settings 409); start_turn reads disk.
                         if !turn_guard.is_turn_in_progress()
@@ -155,6 +159,7 @@ pub async fn listen(
                         );
                         engines.code_search().request_reconcile();
                         engines.path_index().request_rescan();
+                        knowledge.notify_lagged();
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

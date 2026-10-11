@@ -23,7 +23,8 @@ pub use filter::{
     walk_builder,
 };
 pub use git::{
-    GitError, PathCommit, WorktreeDrift, drift_since, last_commit_touching, log_between, show_at,
+    GitError, PathCommit, WorktreeDrift, drift_since, git_dir_is_snapshot, last_commit_touching,
+    log_between, show_at,
 };
 pub use path_sort::{glob_hit_key, sort_glob_hits};
 pub use routes::{WorkspaceState, router as workspace_router};

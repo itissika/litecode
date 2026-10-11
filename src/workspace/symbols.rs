@@ -6,10 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::service::{WorkspaceError, WorkspaceService};
-use crate::engines::code_search::{
-    ScopeEntry, ScopeMatch, find_scope, lines_slice, list_scopes, scope_at,
-};
+use super::service::WorkspaceService;
+use crate::engines::code_search::{ScopeEntry, lines_slice, list_scopes, scope_at};
 
 pub const MAX_SYMBOL_BATCH: usize = 64;
 
@@ -83,6 +81,8 @@ pub struct SymbolRefHit {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol: Option<String>,
+    /// Same status code the knowledge snapshot uses for this citation.
+    pub status: &'static str,
     pub file_exists: bool,
     pub symbol_exists: bool,
     pub ambiguous: bool,
@@ -117,93 +117,38 @@ pub fn locate_symbol(path: &str, content: &str, start: u32, end: u32) -> SymbolA
         .unwrap_or_else(SymbolAtHit::none)
 }
 
+/// Resolve `/symbol-refs` queries through the knowledge index engine, so the
+/// editor sees exactly what the knowledge snapshot says (one read policy,
+/// exact names, cached parses, git2 HEAD; `docs/knowledge-references.md`).
 pub fn resolve_symbol_refs(
     workspace: &WorkspaceService,
     refs: &[SymbolRefQuery],
 ) -> Vec<SymbolRefHit> {
-    let mut cache: std::collections::HashMap<String, FileText> = std::collections::HashMap::new();
-    let mut drift = crate::knowledge::symbol_check::SymbolCache::new();
+    let root = workspace.sandbox().root().to_path_buf();
+    let queries: Vec<(String, Option<String>)> = refs
+        .iter()
+        .map(|query| (query.file.trim().to_string(), query.symbol.clone()))
+        .collect();
+    let results = crate::knowledge::index::query_symbols(&root, &queries);
     refs.iter()
-        .map(|query| resolve_one(workspace, query, &mut cache, &mut drift))
+        .zip(results)
+        .map(|(query, result)| SymbolRefHit {
+            file: query.file.trim().to_string(),
+            symbol: query
+                .symbol
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string),
+            status: result.status,
+            file_exists: result.file_exists,
+            symbol_exists: result.symbol_exists,
+            ambiguous: result.ambiguous,
+            start_line: result.start_line,
+            end_line: result.end_line,
+            drift: result.drifted.map(|drifted| SymbolDrift { drifted }),
+        })
         .collect()
-}
-
-enum FileText {
-    Missing,
-    Unreadable,
-    Ready(String),
-}
-
-fn resolve_one(
-    workspace: &WorkspaceService,
-    query: &SymbolRefQuery,
-    cache: &mut std::collections::HashMap<String, FileText>,
-    drift: &mut crate::knowledge::symbol_check::SymbolCache,
-) -> SymbolRefHit {
-    let file = query.file.trim().to_string();
-    let symbol = query
-        .symbol
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string);
-    let mut hit = SymbolRefHit {
-        file: file.clone(),
-        symbol: symbol.clone(),
-        file_exists: false,
-        symbol_exists: false,
-        ambiguous: false,
-        start_line: None,
-        end_line: None,
-        drift: None,
-    };
-    if file.is_empty() {
-        return hit;
-    }
-    let text = cache
-        .entry(file.clone())
-        .or_insert_with(|| load_text(workspace, &file));
-    let FileText::Ready(content) = text else {
-        hit.file_exists = matches!(text, FileText::Unreadable);
-        return hit;
-    };
-    hit.file_exists = true;
-    let Some(chain) = symbol else {
-        return hit;
-    };
-    match find_scope(&file, content, &chain) {
-        ScopeMatch::Unique(entry) => {
-            hit.symbol_exists = true;
-            hit.start_line = Some(entry.start_line);
-            hit.end_line = Some(entry.end_line);
-        }
-        ScopeMatch::Ambiguous(_) => {
-            hit.ambiguous = true;
-        }
-        ScopeMatch::Missing => {}
-    }
-    if hit.symbol_exists {
-        let root = workspace.sandbox().root().to_path_buf();
-        hit.drift = match drift.drift(&root, &file, &chain) {
-            crate::knowledge::symbol_check::Drift::Unknown => None,
-            crate::knowledge::symbol_check::Drift::Unchanged => {
-                Some(SymbolDrift { drifted: false })
-            }
-            crate::knowledge::symbol_check::Drift::Changed => Some(SymbolDrift { drifted: true }),
-        };
-    }
-    hit
-}
-
-fn load_text(workspace: &WorkspaceService, path: &str) -> FileText {
-    match workspace.read_file(path) {
-        Ok((_, content)) => FileText::Ready(content),
-        Err(
-            WorkspaceError::NotFound(_) | WorkspaceError::NotFile(_) | WorkspaceError::IsDir(_),
-        ) => FileText::Missing,
-        Err(WorkspaceError::Sandbox(_)) => FileText::Missing,
-        Err(_) => FileText::Unreadable,
-    }
 }
 
 /// Signature line plus the next non-empty line.

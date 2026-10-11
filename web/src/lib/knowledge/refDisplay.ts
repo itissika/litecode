@@ -1,11 +1,13 @@
+import { refStateText } from "./issueText";
 import {
   extractMentions,
   humanFileLabel,
   humanSymbolLabel,
   isWorkspaceFileRef,
+  knowledgeRefKey,
   normalizeKey,
 } from "./markers";
-import type { KnowledgeIssue, KnowledgeNode } from "./types";
+import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
 export type RefChipTone = "normal" | "disabled" | "warning" | "error";
 
@@ -56,12 +58,70 @@ export function relationStripChips(
   );
 }
 
-/** A citation the chip can render. `line` is the start line, when the reference has one. */
+/**
+ * A citation the chip can render. `line` is the start line of a line range, used
+ * only to open the file. `lines` is the raw `lines` attribute, used only for the
+ * reference identity (`ref_key`). A symbol citation carries neither.
+ */
 export type Citation =
   | { kind: "node"; key: string }
-  | { kind: "file"; path: string; symbol?: string | null; line?: number | null };
+  | {
+      kind: "file";
+      path: string;
+      symbol?: string | null;
+      line?: number | null;
+      lines?: string | null;
+    };
+
+/** `ref_key` of one citation, the same formula the backend uses (KR-KEY-1). */
+export function citationRefKey(citation: Citation): string {
+  if (citation.kind === "node") return knowledgeRefKey({ kind: "node", key: citation.key });
+  return knowledgeRefKey({
+    kind: "file",
+    path: citation.path,
+    symbol: citation.symbol,
+    lines: citation.symbol?.trim() ? null : citation.lines,
+  });
+}
 
 export type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
+
+/**
+ * How a backend status draws on a chip. A status missing here (a code added
+ * after this build) falls back to its severity, so a new error code is still red.
+ */
+const STATUS_TONE: Record<KnowledgeRefStatus, "ok" | "checking" | "error" | "drift"> = {
+  ok: "ok",
+  checking: "checking",
+  inactive_target: "ok",
+  symbol_drift: "drift",
+  dangling_relation: "error",
+  self_relation: "error",
+  missing_file: "error",
+  symlink_escape: "error",
+  invalid_lines: "error",
+  unreadable_file: "error",
+  unsupported_language: "error",
+  missing_symbol: "error",
+  ambiguous_symbol: "error",
+  line_out_of_range: "error",
+  duplicate_key: "error",
+  empty_key: "error",
+  invalid_status: "error",
+  filename_mismatch: "drift",
+};
+
+export function refStatusTone(
+  ref: Pick<KnowledgeRefState, "status" | "severity">,
+): "ok" | "checking" | "error" | "drift" {
+  const known = (STATUS_TONE as Record<string, "ok" | "checking" | "error" | "drift">)[
+    ref.status
+  ];
+  if (known) return known;
+  if (ref.severity === "error") return "error";
+  if (ref.severity === "warning") return "drift";
+  return "ok";
+}
 
 export interface CitationChipModel {
   label: string;
@@ -77,7 +137,14 @@ export interface CitationResolveInput {
   source: KnowledgeNode | null;
   /** Node looked up by key. Null when the key is not in the corpus. */
   target: KnowledgeNode | null;
-  issues: readonly KnowledgeIssue[];
+  /**
+   * Backend verdict for this citation inside `source`, found by `ref_key`.
+   * Null when the snapshot does not have it yet: the chip stays neutral
+   * ("checking"), except node citations, which derive from the corpus at once.
+   */
+  ref?: KnowledgeRefState | null;
+  /** Snapshot `ready`. False: no citation shows an error yet. Default true. */
+  ready?: boolean;
   /**
    * The editor already has a preview tab for this external path.
    * A path outside the workspace is resolvable only when this is true.
@@ -102,17 +169,30 @@ export function resolveCitation(
 function resolveNode(marker: string, input: CitationResolveInput): CitationChipModel {
   const label = input.label?.trim() || normalizeKey(marker) || marker;
   const key = normalizeKey(marker);
+  const ready = input.ready ?? true;
   if (input.source) {
     const byKey = new Map<string, KnowledgeNode>();
     if (key && input.target) byKey.set(key, input.target);
     const chip = chipForMarker(input.source, marker, byKey, label);
+    const base = { label: chip.label, targetId: chip.targetId, file: false, symbol: false };
+    const ref = ready ? (input.ref ?? null) : null;
+    if (ref && refStatusTone(ref) === "error") {
+      return {
+        ...base,
+        resolvable: false,
+        tone: "error",
+        title: refStateText(ref) || undefined,
+      };
+    }
+    if (chip.tone === "error" && (ref || !ready)) {
+      // The backend says the citation holds (or has not judged it yet):
+      // never show a local error the final verdict does not have.
+      return { ...base, resolvable: chip.targetId != null, tone: "normal" };
+    }
     return {
-      label: chip.label,
+      ...base,
       resolvable: chip.jumpable && chip.targetId != null,
       tone: chip.tone === "error" ? "error" : chip.tone,
-      targetId: chip.targetId,
-      file: false,
-      symbol: false,
     };
   }
   if (!input.target) {
@@ -156,28 +236,22 @@ function resolveFile(
     file: true,
     symbol: symbol.length > 0,
   };
-  const missingFile = input.issues.some(
-    (issue) => issue.code === "missing_file" && issue.ref === path,
-  );
-  const missingSymbol =
-    symbol.length > 0 &&
-    input.issues.some((issue) => issue.code === "missing_symbol" && issue.ref === symbol);
-  if (missingFile || missingSymbol) {
-    return { ...base, resolvable: false, tone: "error" };
+  const ready = input.ready ?? true;
+  const ref = ready ? (input.ref ?? null) : null;
+  const tone = ref ? refStatusTone(ref) : "checking";
+  if (ref && tone === "error") {
+    return { ...base, resolvable: false, tone: "error", title: refStateText(ref) || undefined };
   }
-  const drift = input.issues.find(
-    (issue) => issue.code === "symbol_drift" && issue.ref === symbol,
-  );
   // The editor can read a workspace path. An outside path is openable only
   // when a preview tab already holds the bytes.
   const resolvable = isWorkspaceFileRef(path) || input.externalOpen;
   if (!resolvable) return { ...base, resolvable: false, tone: "error" };
-  if (drift) {
+  if (ref && tone === "drift") {
     return {
       ...base,
       resolvable: true,
       tone: "drift",
-      title: drift.message || undefined,
+      title: refStateText(ref) || undefined,
     };
   }
   return { ...base, resolvable: true, tone: "normal" };

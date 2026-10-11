@@ -4,6 +4,10 @@ param(
   [string]$OutDir = "",
   [string]$Profile = "release",
   [switch]$SkipWeb,
+  # Default is slim: no embed model in the product tree (downloaded at runtime).
+  # -WithModel copies models/ in (local offline builds, package_win.ps1 -Full).
+  [switch]$WithModel,
+  # Deprecated: slim is the default; kept so older callers keep working.
   [switch]$SkipModel,
   [string]$TargetTriple = "",
   [string]$Features = "",
@@ -40,8 +44,9 @@ if (-not (Test-Path $WebDist)) {
   throw "web/dist missing; run npm run build in web/ or omit -SkipWeb"
 }
 
+$IncludeModel = [bool]$WithModel -and -not $SkipModel
 $ModelDir = Join-Path $Root "models\ibm-granite\granite-embedding-97m-multilingual-r2"
-if (-not $SkipModel) {
+if ($IncludeModel) {
   $Bundle = Join-Path $Root "scripts\bundle_embed_model.sh"
   if (Test-Path $Bundle) {
     Write-Host "==> bundling embed model (bash)"
@@ -51,7 +56,7 @@ if (-not $SkipModel) {
     Write-Warning "models/ bundle missing at $ModelDir — packaging may be incomplete"
   }
 } else {
-  Write-Host "==> skipping embed model (-SkipModel, slim SKU)"
+  Write-Host "==> slim product: embed model not bundled (downloaded on demand; pass -WithModel to embed)"
 }
 
 if ($env:LITECODE_CHANNEL -ne "official") {
@@ -100,7 +105,7 @@ if ($KeepCudaDylibs) {
 New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "web") | Out-Null
 Copy-Item -Recurse -Force $WebDist (Join-Path $OutDir "web\dist")
 
-if (-not $SkipModel -and (Test-Path (Join-Path $Root "models"))) {
+if ($IncludeModel -and (Test-Path (Join-Path $Root "models"))) {
   New-Item -ItemType Directory -Force -Path (Join-Path $OutDir "models") | Out-Null
   Copy-Item -Recurse -Force (Join-Path $Root "models\*") (Join-Path $OutDir "models\")
 }
@@ -115,7 +120,8 @@ Litecode product layout (sidecar-ready)
 Layout:
   $BinName      kernel binary
   web\dist\     UI (served by litecode)
-  models\       embedding weights when bundled (full SKU)
+  models\       embedding weights only with -WithModel (slim default downloads
+                them to %LOCALAPPDATA%\litecode\bundles\models on first use)
   *.dll         native runtime deps when present
 
 Global settings DB: %LOCALAPPDATA%\litecode\

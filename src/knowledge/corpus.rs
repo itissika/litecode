@@ -36,6 +36,29 @@ pub struct Corpus {
 }
 
 impl Corpus {
+    pub fn empty() -> Self {
+        Self {
+            root: None,
+            nodes: Vec::new(),
+            unknown: Vec::new(),
+        }
+    }
+
+    /// Build from already-parsed files (the index reuses cached parses).
+    /// `files` must be sorted by path.
+    pub fn assemble(root: Option<String>, files: Vec<(ParsedFile, Option<SystemTime>)>) -> Self {
+        let files = files
+            .into_iter()
+            .map(|(parsed, modified)| LoadedFile { parsed, modified })
+            .collect();
+        let (nodes, unknown) = nodes_from_parsed(files);
+        Self {
+            root,
+            nodes,
+            unknown,
+        }
+    }
+
     pub fn load(workspace: &Path) -> Self {
         let KnowledgeRoot::Present(root) = root::locate(workspace) else {
             return Self {
@@ -201,7 +224,6 @@ mod fixture_tests {
     use std::path::PathBuf;
 
     use crate::knowledge::document::{self, RenderDoc};
-    use crate::knowledge::validate::{self, CheckNode};
 
     #[test]
     fn shared_fixtures_match_expected_json() {
@@ -233,24 +255,9 @@ mod fixture_tests {
             serde_json::Value::Array(wanted)
         );
 
-        let checks: Vec<CheckNode<'_>> = corpus
-            .nodes
-            .iter()
-            .map(|node| CheckNode {
-                id: &node.id,
-                key: &node.key,
-                value: &node.value,
-                status: node.status,
-                invalid_status: node.invalid_status.as_deref(),
-                path: &node.path,
-            })
-            .collect();
-        let mut issues: Vec<_> = validate::validate(
-            &checks,
-            &|path| crate::knowledge::mentions::workspace_file_exists(&workspace, path),
-            &mut |_, _, _| crate::knowledge::symbol_check::SymbolCheck::Present,
-        )
-        .into_iter()
+        let mut issues: Vec<_> = crate::knowledge::index::compute_once(&workspace)
+            .issues
+            .into_iter()
         .map(|issue| format!("{}:{}", issue.node_id, issue.code))
         .collect();
         issues.sort();

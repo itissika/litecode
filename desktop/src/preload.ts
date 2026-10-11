@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
  * Keep this string identical to `REMOTE_PROGRESS_CHANNEL` in `./remote-progress`.
  */
 const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
+/** Keep identical to `COMPONENT_PROGRESS_CHANNEL` in `./components`. */
+const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 /** Keep identical to `BROWSER_STATE_CHANNEL` in `./browser-host`. */
 const BROWSER_STATE_CHANNEL = "litecode:browser-state";
 
@@ -12,6 +14,23 @@ type RemoteProgressEvent = {
   stage: string;
   ratio: number;
   message: string;
+};
+
+type ComponentProgressEvent = {
+  id: string;
+  phase: "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
+  received?: number;
+  total?: number;
+  message: string;
+  error?: string;
+};
+
+type ComponentStatus = {
+  id: string;
+  installed: boolean;
+  path: string | null;
+  downloading: boolean;
+  error: string | null;
 };
 
 type RecentWorkspace = {
@@ -149,6 +168,25 @@ contextBridge.exposeInMainWorld("litecode", {
     };
     ipcRenderer.on(REMOTE_PROGRESS_CHANNEL, listener);
     return () => ipcRenderer.removeListener(REMOTE_PROGRESS_CHANNEL, listener);
+  },
+  getComponentStatus: async (id: string): Promise<ComponentStatus> => {
+    return (await ipcRenderer.invoke("litecode:component-status", id)) as ComponentStatus;
+  },
+  ensureComponent: async (
+    id: string,
+  ): Promise<{ id: string; path: string; downloaded: boolean }> => {
+    return (await ipcRenderer.invoke("litecode:ensure-component", id)) as {
+      id: string;
+      path: string;
+      downloaded: boolean;
+    };
+  },
+  onComponentProgress: (handler: (event: ComponentProgressEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: ComponentProgressEvent) => {
+      handler(payload);
+    };
+    ipcRenderer.on(COMPONENT_PROGRESS_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(COMPONENT_PROGRESS_CHANNEL, listener);
   },
   focusWorkspace: async (workspacePath: string): Promise<boolean> => {
     return (await ipcRenderer.invoke("litecode:focus-workspace", workspacePath)) as boolean;

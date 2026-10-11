@@ -8,6 +8,7 @@ use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_
 use crate::types::{FunctionToolCall, Item, Result, Transcript};
 
 use crate::agent::AgentDeps;
+use crate::telemetry::latency;
 
 use super::AgentRuntime;
 
@@ -24,6 +25,7 @@ impl AgentDeps for AgentRuntime {
 
         let step = self.current_step_value();
         self.emit_phase(TurnPhase::CallingLlm, step);
+        let build_lap = latency::lap_step("call_model.build", step);
 
         // `compact_if_needed` already ran `prepare_step` and stored the ephemeral PreparedView.
         let view = self.context_pipeline.take_prepared_view().ok_or_else(|| {
@@ -40,6 +42,11 @@ impl AgentDeps for AgentRuntime {
         let token_count = view.token_count;
         let request =
             self.build_model_request(&instructions, view.items, view.item_seqs, token_count)?;
+        build_lap.done();
+        // Turn entry -> first request leaves this process (once per turn).
+        latency::report_since("turn_to_first_request", self.latency_turn_start.take(), None);
+        // Whole provider round trip incl. streaming; not part of our overhead.
+        let _llm_lap = latency::lap_step("call_model.llm", step);
 
         // Default path: Responses SSE via complete_with_stream_events → authority
         // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
@@ -58,6 +65,7 @@ impl AgentDeps for AgentRuntime {
 
         // Any tool may write disk (including custom); join pre-tool snapshot first.
         self.await_pending_snapshot_track().await;
+        let _tools_lap = latency::lap_step("execute_tools", step);
 
         let cancel = self.cancel.clone();
         let result = self
@@ -91,6 +99,7 @@ impl AgentDeps for AgentRuntime {
             );
         }
 
+        let _lap = latency::lap_step("compact_step", step);
         self.context_pipeline
             .compact_step(
                 &self.sessions,
@@ -105,7 +114,8 @@ impl AgentDeps for AgentRuntime {
             .await
     }
 
-    fn prepare_view(&mut self, _step: u64) -> Result<()> {
+    fn prepare_view(&mut self, step: u64) -> Result<()> {
+        let _lap = latency::lap_step("build_view", step);
         self.context_pipeline.build_view(
             &self.sessions,
             &self.session_id,
@@ -115,6 +125,7 @@ impl AgentDeps for AgentRuntime {
     }
 
     fn sync_request_seam(&mut self, step: u64) -> Result<()> {
+        let _lap = latency::lap_step("seam", step);
         let mut appended = self.append_seam_reminders(step)?;
 
         // Queued user messages are drained last: they are the freshest input
@@ -159,6 +170,7 @@ impl AgentDeps for AgentRuntime {
     }
 
     fn persist_new(&self, items: &[Item]) -> Result<bool> {
+        let _lap = latency::lap_step("commit_step.persist_new", self.current_step_value());
         let outcome = self
             .context_pipeline
             .persist_new(&self.sessions, &self.session_id, items)?;
@@ -241,6 +253,7 @@ impl AgentRuntime {
         use crate::reminder::{Facts, ReminderKind, SeamCtx, TaskFacts, sync};
         use crate::tools::bash_status::display_output_path;
 
+        let mut stages = latency::Stages::new("seam.sources", Some(step));
         let cwd = self.base_ctx.cwd.clone();
         let turn_id = self.context_pipeline.current_turn_id().unwrap_or_default();
         let ctx = SeamCtx {
@@ -263,6 +276,7 @@ impl AgentRuntime {
             .and_then(|runtime| runtime.tools.iter().find_map(|tool| tool.agent_terminal()))
             .map(|hub| hub.jobs.running(&self.session_id))
             .unwrap_or_default();
+        stages.mark("bash");
         let completions = self
             .runtime_handle
             .subagent_hub
@@ -271,12 +285,14 @@ impl AgentRuntime {
             .runtime_handle
             .custom_tool_hub
             .take_mailbox(&self.session_id);
+        stages.mark("subagent_and_custom_mailbox");
 
         let changed = self.sessions.take_changed_files(&self.session_id);
         let changed_paths = changed
             .iter()
             .map(|path| display_output_path(path, &cwd))
             .collect::<Vec<_>>();
+        stages.mark("changed_files");
 
         let task_state = self
             .sessions
@@ -289,7 +305,9 @@ impl AgentRuntime {
                 .join(format!("{}.md", plan.slug));
             crate::session::task_state::plan_file_revision(&path)
         });
+        stages.mark("task_state_and_plan");
         let counts = self.sessions.child_counts(&self.session_id);
+        stages.mark("child_counts");
         let running_bash = bash_running
             .iter()
             .map(|job| RunningBash {
@@ -357,6 +375,7 @@ impl AgentRuntime {
                 }
             })
             .collect::<Vec<_>>();
+        stages.mark("settled_and_custom_format");
 
         let view = match self.sessions.spine_reminder_view(&self.session_id) {
             Ok(view) => view,
@@ -404,7 +423,10 @@ impl AgentRuntime {
             custom_tool_settled,
             changed_paths,
         };
+        stages.mark("spine_reminder_view");
         let reminders = sync(&ctx, &view, &facts);
+        stages.mark("sync");
+        stages.note("reminders", reminders.len());
         let mut bash_written = false;
         let mut subagent_written = false;
         let mut custom_written = false;
@@ -453,6 +475,7 @@ impl AgentRuntime {
         if !custom_written {
             self.restore_custom_mailbox(&custom_notices);
         }
+        stages.mark("append_reminders");
         Ok(appended)
     }
 

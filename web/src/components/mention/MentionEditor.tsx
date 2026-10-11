@@ -213,8 +213,9 @@ function MentionList({
       command({ id: item.path, label: item.path });
       return;
     }
+    // A symbol citation never carries lines (KR-SYM-6); only a range does.
     const lines =
-      includeLinesRef?.current && item.start > 0
+      includeLinesRef?.current && !item.chain && item.start > 0
         ? formatLineSpan(item.start, item.end)
         : null;
     command({

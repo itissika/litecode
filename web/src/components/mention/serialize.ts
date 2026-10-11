@@ -28,12 +28,14 @@ export function fileMentionOptions(
       const path = String(node.attrs.id ?? "");
       const label = String(node.attrs.label ?? path);
       const symbol = String(node.attrs.symbol ?? "").trim();
-      const lines = String(node.attrs.lines ?? "").trim();
+      const lines = String(node.attrs.lines ?? "");
       if (symbol || lines) {
+        // Round-trip: re-emit lines exactly as the body had them.
         return symbolMentionSource(path, {
           symbol: symbol || undefined,
           lines: lines || undefined,
           label,
+          asWritten: true,
         });
       }
       return fileMentionSource(path, label);
@@ -68,7 +70,9 @@ function inlineContent(line: string): JSONContent[] {
           id: segment.path,
           label: segment.label,
           symbol: segment.type === "symbol" ? segment.symbol : null,
-          lines: segment.type === "symbol" ? segment.lines : null,
+          // The attribute as written, so a malformed span (or lines on a symbol,
+          // which the backend reports) round-trips instead of vanishing on save.
+          lines: segment.rawLines ?? null,
           mentionSuggestionChar: "/",
         },
       });

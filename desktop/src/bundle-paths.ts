@@ -61,6 +61,21 @@ export function resolveHfModelDir(root: string): string | null {
   return null;
 }
 
+/**
+ * Repo checkout root for dev-only fallbacks (`<repo>/models`, `<repo>/dist/linux`).
+ * A packaged app never resolves into a source tree: `undefined` when packaged.
+ * `desktopDir` is the desktop package dir (`app.getAppPath()` in dev).
+ */
+export function devRepoRoot(isPackaged: boolean, desktopDir: string): string | undefined {
+  return isPackaged ? undefined : path.resolve(desktopDir, "..");
+}
+
+/** Dev-only `<repo>/dist/linux/<tar>`; `undefined` in a packaged app. */
+export function devLinuxBundleTar(isPackaged: boolean, desktopDir: string): string | undefined {
+  const repo = devRepoRoot(isPackaged, desktopDir);
+  return repo ? path.join(repo, "dist", "linux", LINUX_TAR_NAME) : undefined;
+}
+
 export function resolveBundledModelDir(opts: {
   sidecarRoot?: string;
   repoRoot?: string;

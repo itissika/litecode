@@ -220,24 +220,43 @@ describe("corpus scope", () => {
       relations: ["missing"],
     });
     const other = node("b", { summary: "kept" });
+    const issues: KnowledgeIssue[] = [
+      {
+        nodeId: "a",
+        severity: "error",
+        code: "dangling_relation",
+        message: 'Citation "missing" does not exist.',
+        ref: "missing",
+        refKey: "node:missing",
+        args: { key: "missing" },
+      },
+    ];
     const first = projectListedNodes(
-      { nodes: [], issuesByNode: new Map(), filePresence: {}, folders: [] },
+      { nodes: [], issues, issuesByNode: new Map(), folders: [] },
       [broken, other],
     );
     const edited = { ...broken, summary: "edited" };
     const second = projectListedNodes(
       {
         nodes: first.nodes,
+        issues: first.issues,
         issuesByNode: first.issuesByNode,
-        filePresence: {},
         folders: [],
       },
       [edited, other],
+      [{ node: edited, statusPatched: false }],
     );
     expect(second.byId.get("b")).toBe(other);
     expect(second.nodes[1]).toBe(other);
     expect(second.issuesByNode.get("a")).toBe(first.issuesByNode.get("a"));
     expect(second.issuesByNode.get("b")).toBeUndefined();
+
+    // Deleting the citation drops its issue at once; the backend confirms later.
+    const fixed = { ...edited, value: "no citation", relations: [] };
+    const third = projectListedNodes({ ...second, folders: [] }, [fixed, other], [
+      { node: fixed, statusPatched: false },
+    ]);
+    expect(third.issuesByNode.get("a")).toBeUndefined();
   });
 
   it("reuses an issue list with the same contents", () => {

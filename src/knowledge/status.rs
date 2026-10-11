@@ -1,14 +1,15 @@
-//! One class for the knowledge base, computed when a person sends a message.
+//! One class for the knowledge base, attached when a person sends a message.
 //!
 //! An empty knowledge base is not a class. The caller writes nothing.
+//! The class is computed by the resident index when it publishes a snapshot;
+//! a turn only reads it (see [`super::index::turn_note`]).
 
 use std::collections::HashSet;
 use std::path::Path;
 
 use super::corpus::Corpus;
 use super::document::Status;
-use super::symbol_check::SymbolCache;
-use super::validate::{self, Issue, Severity};
+use super::validate::{Issue, Severity};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -35,21 +36,25 @@ pub struct Note {
     pub text: String,
 }
 
-/// `None` when there is no knowledge base, or it has no nodes.
+/// `None` when there is no knowledge base, it has no nodes, or the resident
+/// index is not ready yet.
 pub fn note(workspace: &Path) -> Option<Note> {
-    let corpus = Corpus::load(workspace);
+    super::index::turn_note(workspace)
+}
+
+/// KR-VAL-1 class of a resolved corpus.
+pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
     if corpus.root.is_none() || corpus.nodes.is_empty() {
         return None;
     }
-    let issues = collect_issues(workspace, &corpus);
-    let errors = nodes_with(&issues, Severity::Error, |_| true);
+    let errors = nodes_with(issues, Severity::Error, |_| true);
     if !errors.is_empty() {
         return Some(Note {
             class: Class::Error,
             text: error_text(errors.len()),
         });
     }
-    let warnings = nodes_with(&issues, Severity::Warning, |issue| {
+    let warnings = nodes_with(issues, Severity::Warning, |issue| {
         issue.code != "inactive_target"
     });
     if !warnings.is_empty() {
@@ -88,29 +93,8 @@ fn nodes_with(
     issues
         .iter()
         .filter(|issue| issue.severity == severity && keep(issue))
-        .map(|issue| issue.node_id.clone())
+        .map(|issue| issue.node_path.clone())
         .collect()
-}
-
-fn collect_issues(workspace: &Path, corpus: &Corpus) -> Vec<Issue> {
-    let checks: Vec<validate::CheckNode<'_>> = corpus
-        .nodes
-        .iter()
-        .map(|node| validate::CheckNode {
-            id: &node.id,
-            key: &node.key,
-            value: &node.value,
-            status: node.status,
-            invalid_status: node.invalid_status.as_deref(),
-            path: &node.path,
-        })
-        .collect();
-    let mut symbols = SymbolCache::new();
-    validate::validate(
-        &checks,
-        &|path| super::mentions::workspace_file_exists(workspace, path),
-        &mut |file, chain, _node_path| symbols.check(workspace, file, chain),
-    )
 }
 
 fn error_text(count: usize) -> String {
