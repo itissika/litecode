@@ -339,7 +339,7 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,

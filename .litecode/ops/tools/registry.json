@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "tools_version": 5,
-  "updated_at": "2026-10-11T14:17:05.967Z",
+  "tools_version": 6,
+  "updated_at": "2026-10-11T14:18:10.015Z",
   "hot_reload": true,
   "tools": [
     {
@@ -27,9 +27,9 @@
     },
     {
       "id": "ops.wp_gate",
-      "version": 4,
-      "purpose": "检查工作包是否可推进：依赖、产物、工具调用痕迹、阻断规则",
-      "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status>",
+      "version": 5,
+      "purpose": "检查工作包是否可推进（依赖、产物、工具痕迹、阻断规则）；通过后写回 board.json 状态、append 状态变更 log 并重跑 validate，失败则回滚；--dry-run 只检查不写",
+      "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>]",
       "required_for": [
         "WP status 变更"
       ],

@@ -5,7 +5,7 @@
 
 ## 当前版本
 
-- `tools_version`: **5**
+- `tools_version`: **6**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
@@ -13,6 +13,7 @@
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-11 | v6：wp_gate 通过后写回 board.json 状态 + 自动 append status_change log + 重跑 validate（失败回滚）；--dry-run 保留只检查（工具集管家）|
 | 2026-10-11 | v5：工具一览补 emit/ack；ops.board 版本对齐；emit/ack 补 stdout_header（工具集管家）|
 | 2026-10-11 | v4：事件总线 emit/ack；工具维护权移交工具集管家；GM 仅 tick 兜底
 | 2026-10-11 | v3：stdout 首行版本头；本 board；team-ops bot 已建且未发首条 |
@@ -22,7 +23,7 @@
 ## 使用教程（强制）
 
 1. 调用前感知版本：读输出首行或跑 `tools_version.mjs`
-2. 推进 WP：`wp_gate.mjs --id WP-xxx --to <status>`；done 需产物 + tool_traces
+2. 推进 WP：`wp_gate.mjs --id WP-xxx --to <status>`（通过即写回 board.json 并记 log；只检查加 `--dry-run`）；done 需产物 + tool_traces
 3. 审计：`append_log.mjs --kind --source --summary [--wp]`
 4. 每轮：`tick.mjs`
 5. 热更：改完 `tools_version++`，并在本表追加一行；破坏性变更用新 tool id
@@ -34,7 +35,7 @@
 | ops.tools_version | `node .litecode/ops/tools/tools_version.mjs` |
 | ops.validate_board | `node .litecode/ops/tools/validate_all.mjs [--wp WP-xxx]` |
 | ops.append_log | `node .litecode/ops/tools/append_log.mjs --kind --source --summary [--evidence] [--wp]` |
-| ops.wp_gate | `node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status>` |
+| ops.wp_gate | `node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>]` |
 | ops.tick | `node .litecode/ops/tools/tick.mjs [--wp WP-xxx]` |
 | ops.board | Read `.litecode/ops/tools/board.md` |
 | ops.emit_event | `node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]` |
