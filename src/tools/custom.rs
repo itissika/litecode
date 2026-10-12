@@ -320,6 +320,9 @@ fn run_sync_with_lifecycle(
             ));
         }
     };
+    // Windows Job Object (no-op on Unix): host crash must not leave the tool running.
+    // Must run before the pid can be reused. See ISSUE-040.
+    crate::proc_lifetime::bind_child_to_parent(child.id());
 
     // Feed stdin on its own thread so a child that writes a lot of output
     // before reading its input cannot deadlock against us (and so the
@@ -332,15 +335,11 @@ fn run_sync_with_lifecycle(
     let timeout = Duration::from_secs(config.timeout.max(1));
     match wait_child_cancellable(&mut child, &execution.cancel, timeout) {
         WaitEnd::Finished(output) => {
-            // Child exited, so its stdin read end is closed (unless a
-            // grandchild inherited it) and the writer has finished or hit EPIPE.
-            // On Cancelled/TimedOut the writer is left detached: it unblocks
-            // with EPIPE once the kill below closes the pipe.
+            // wait_child_cancellable already group-killed leftovers so pipes
+            // close (ISSUE-039 X1/X2). Join the writer with a bound: after the
+            // kill, inherited stdin ends yield EPIPE (X3); never hang here.
             let stdin_result = stdin_writer
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer panicked")))
-                })
+                .map(|h| join_writer_bounded(h, Duration::from_secs(2)))
                 .unwrap_or(Ok(()));
             if let Err(e) = stdin_result {
                 return ToolCallResult::error(format!("stdin write failed: {e}"));
@@ -413,6 +412,81 @@ enum WaitEnd {
     TimedOut,
 }
 
+/// Join the stdin writer without hanging if a grandchild still held stdin
+/// open past the child's exit (ISSUE-039 X3). After group-kill, EPIPE should
+/// unblock it quickly; if not, abandon the join so the tool can return.
+fn join_writer_bounded(
+    handle: std::thread::JoinHandle<std::io::Result<()>>,
+    limit: Duration,
+) -> std::io::Result<()> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer panicked")));
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(limit) {
+        Ok(result) => result,
+        // Writer still blocked: group kill already happened; do not fail the tool.
+        Err(_) => Ok(()),
+    }
+}
+
+/// After the direct child exits, kill leftovers in the process group so any
+/// grandchild holding stdout/stderr/stdin cannot stall the drain (X1/X2), then
+/// wait for the reader with a deadline (never unbounded `recv`).
+fn finish_after_child_exit(
+    child: &mut Child,
+    rx: &mpsc::Receiver<(Vec<u8>, Vec<u8>)>,
+    status: std::process::ExitStatus,
+    cancel: &CancellationToken,
+    deadline: Instant,
+    stderr_prefix: Option<String>,
+) -> WaitEnd {
+    let _ = kill_child_tree(child);
+    let (out, err, terminal) = drain_output_bounded(rx, cancel, deadline);
+    if let Some(end) = terminal {
+        return end;
+    }
+    let stderr = match stderr_prefix {
+        Some(prefix) if err.is_empty() => prefix.into_bytes(),
+        _ => err,
+    };
+    WaitEnd::Finished(std::process::Output {
+        status,
+        stdout: out,
+        stderr,
+    })
+}
+
+fn drain_output_bounded(
+    rx: &mpsc::Receiver<(Vec<u8>, Vec<u8>)>,
+    cancel: &CancellationToken,
+    deadline: Instant,
+) -> (Vec<u8>, Vec<u8>, Option<WaitEnd>) {
+    // After group-kill, pipes should EOF promptly. Keep a small grace past the
+    // deadline so a just-killed grandchild can close fds before we give up.
+    let grace_deadline = deadline + Duration::from_millis(500);
+    loop {
+        if cancel.is_cancelled() {
+            return (Vec::new(), Vec::new(), Some(WaitEnd::Cancelled));
+        }
+        let now = Instant::now();
+        if now >= grace_deadline {
+            return (Vec::new(), Vec::new(), Some(WaitEnd::TimedOut));
+        }
+        let slice = (grace_deadline - now).min(Duration::from_millis(50));
+        match rx.recv_timeout(slice) {
+            Ok((out, err)) => return (out, err, None),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return (Vec::new(), Vec::new(), None);
+            }
+        }
+    }
+}
+
 fn wait_child_cancellable(
     child: &mut Child,
     cancel: &CancellationToken,
@@ -449,12 +523,8 @@ fn wait_child_cancellable(
         }
         match child.try_wait() {
             Ok(Some(status)) => {
-                let (out, err) = rx.recv().unwrap_or_default();
-                return WaitEnd::Finished(std::process::Output {
-                    status,
-                    stdout: out,
-                    stderr: err,
-                });
+                // ISSUE-039: never unbounded recv; group-kill then bounded drain.
+                return finish_after_child_exit(child, &rx, status, cancel, deadline, None);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => {
@@ -467,16 +537,14 @@ fn wait_child_cancellable(
                         return WaitEnd::WaitFailed(e.to_string());
                     }
                 };
-                let (out, err) = rx.recv().unwrap_or_default();
-                return WaitEnd::Finished(std::process::Output {
+                return finish_after_child_exit(
+                    child,
+                    &rx,
                     status,
-                    stdout: out,
-                    stderr: if err.is_empty() {
-                        format!("wait error: {e}").into_bytes()
-                    } else {
-                        err
-                    },
-                });
+                    cancel,
+                    deadline,
+                    Some(format!("wait error: {e}")),
+                );
             }
         }
     }
@@ -865,6 +933,63 @@ mod tests {
         assert!(result.content.contains("timed out"), "{}", result.content);
         std::thread::sleep(Duration::from_secs(4));
         assert!(!marker.exists(), "grandchild survived the kill");
+    }
+
+    /// ISSUE-039 / X1: grandchild holds stdout after the shell exits — must not
+    /// hang past the deadline, and the leftover sleep must be reaped (X2).
+    #[cfg(unix)]
+    #[test]
+    fn finished_reaps_grandchild_holding_stdout() {
+        let started = Instant::now();
+        let def = sh_def("orphan-out", "sleep 30 & echo orphan-out-marker", 2);
+        let result = run_sync_with_lifecycle(
+            &def,
+            &serde_json::json!({}),
+            &test_exec(CancellationToken::new()),
+            None,
+        );
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "hung waiting on grandchild pipe: {elapsed:?}"
+        );
+        assert!(
+            result.content.contains("orphan-out-marker"),
+            "expected tool stdout, got: {}",
+            result.content
+        );
+        assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    }
+
+    /// ISSUE-039 / X2 companion: grandchild scheduled to touch a file after we
+    /// return must not get to run — group kill on Finished.
+    #[cfg(unix)]
+    #[test]
+    fn finished_kills_orphaned_grandchild_before_side_effect() {
+        let marker = std::env::temp_dir().join(format!("lc-fin-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 2; touch {}) & echo fin-marker", marker.display());
+        let def = sh_def("fin-gc", &script, 10);
+        let started = Instant::now();
+        let result = run_sync_with_lifecycle(
+            &def,
+            &serde_json::json!({}),
+            &test_exec(CancellationToken::new()),
+            None,
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "should return as soon as the shell exits, not wait for sleep"
+        );
+        assert!(
+            result.content.contains("fin-marker"),
+            "{}",
+            result.content
+        );
+        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            !marker.exists(),
+            "grandchild survived Finished path (ISSUE-039 X2)"
+        );
     }
 
     /// B5: a failing wait (child reaped elsewhere → ECHILD) returns an error, no panic.

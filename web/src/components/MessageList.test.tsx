@@ -79,7 +79,7 @@ const turnState = {
   byId: new Map<
     string,
     {
-      pendingPermission: unknown;
+      permissionQueue: unknown[];
       compacting: boolean;
       turnPhase: string | null;
       pendingMessages: { id: string; text: string }[];
@@ -88,7 +88,7 @@ const turnState = {
     [
       "session-1",
       {
-        pendingPermission: null,
+        permissionQueue: [],
         compacting: false,
         turnPhase: null,
         pendingMessages: [],
@@ -105,7 +105,7 @@ vi.mock("../stores/turnStore", () => ({
     runState: "idle",
     currentTurnId: null,
     pendingCancel: false,
-    pendingPermission: null,
+    permissionQueue: [],
     turnPhase: null,
     turnStep: null,
     turnStepMax: null,

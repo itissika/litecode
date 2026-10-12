@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T11:13:56.017Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T12:02:38.559Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -36,7 +36,7 @@
 | WP-018 | 找不稳实现 + 裁冗余测试（前后端中层，只列不删待 GM 审） | cancelled | backend_mid | gm |
 | WP-019 | 嵌套 WP 工具（顶层，Andy 批） | done | gm | gm |
 | WP-020 | └ [WP-019 子包] 嵌套 WP 配套工具：管家先填方案交 GM 审 | done | tools_steward | gm |
-| WP-021 | 用新流程重做：找不稳实现 + 裁冗余测试 | review | gm | andy |
+| WP-021 | 用新流程重做：找不稳实现 + 裁冗余测试 | done | gm | andy |
 | WP-022 | └ 后端：找不稳实现 + 列测试裁剪清单 | done | backend_mid | gm |
 | WP-024 | 　└ WP-022/Session：不稳实现+测试裁剪 | done | session | backend_mid |
 | WP-025 | 　└ WP-022/Runtime：不稳实现+测试裁剪 | done | runtime | backend_mid |
@@ -48,6 +48,15 @@
 | WP-030 | 　└ WP-023 desktop：找不稳实现+测试裁剪清单 | done | frontend_desktop | frontend_mid |
 | WP-031 | ops 工具加固：超时去重 + 事件持久化 + issue 编号加锁 + rustup 默认 | done | gm | andy |
 | WP-032 | └ ops 工具加固（管家） | done | tools_steward | gm |
+| WP-033 | 按序修稳已定问题（权限卡/断线/进程生命周期/下载/压缩真相/workspace） | done | gm | andy |
+| WP-034 | └ web：权限卡队列+单卡UI + 断线立刻失败在途请求 | done | frontend_mid | gm |
+| WP-037 | 　└ WP-034 web：权限队列+单卡 + 断线 reject pendingRpc | done | frontend | frontend_mid |
+| WP-035 | └ desktop：自动重连/重启 + 进程单飞 + 下载体验 | done | frontend_mid | gm |
+| WP-041 | 　└ WP-035 desktop：隧道/sidecar 自动恢复+单飞 → 下载体验 | done | frontend_desktop | frontend_mid |
+| WP-036 | └ 后端：进程生命周期统一 + 压缩DB真相 + workspace 覆盖 | done | backend_mid | gm |
+| WP-038 | 　└ WP-036/Tools：统一 custom+MCP 进程生命周期 | done | tools | backend_mid |
+| WP-039 | 　└ WP-036/上下文：压缩以 Session DB 为唯一真相 | done | context | backend_mid |
+| WP-040 | 　└ WP-036/IDE：workspace 并发覆盖 + 跨盘移动 | done | ide | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

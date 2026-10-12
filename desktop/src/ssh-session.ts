@@ -86,6 +86,57 @@ export interface SshTunnelHandle {
   readonly localPort: number;
   readonly remotePort: number;
   readonly process: ChildProcess;
+  /** True after stopTunnel / markIntentionalStop — exit must not auto-reconnect. */
+  intentionalStop: boolean;
+  markIntentionalStop(): void;
+}
+
+/** OpenSSH keepalive / fail-fast options for local port forwards (D1). */
+export const TUNNEL_FORWARD_OPTS: readonly string[] = [
+  "-o",
+  "ServerAliveInterval=15",
+  "-o",
+  "ServerAliveCountMax=3",
+  "-o",
+  "ExitOnForwardFailure=yes",
+];
+
+export type TunnelExitInfo = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  intentional: boolean;
+};
+
+export type StartTunnelOptions = {
+  onExit?: (info: TunnelExitInfo) => void;
+  onError?: (error: Error) => void;
+};
+
+/** Build argv for `ssh -N -L …` including ServerAlive / ExitOnForwardFailure. */
+export function buildTunnelArgs(
+  config: SshSessionConfig,
+  localPort: number,
+  remotePort: number,
+): string[] {
+  for (const [label, port] of [
+    ["local", localPort],
+    ["remote", remotePort],
+  ] as const) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(`${label} tunnel port must be an integer between 1 and 65535.`);
+    }
+  }
+  const args = buildSshArgs(config);
+  const host = args.pop();
+  if (!host) throw new Error("SSH target is unavailable.");
+  return [
+    ...args,
+    ...TUNNEL_FORWARD_OPTS,
+    "-N",
+    "-L",
+    `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`,
+    host,
+  ];
 }
 
 export class SshCommandError extends Error {
@@ -635,32 +686,51 @@ export class SshSession {
    * Keep the control plane private: the remote serve remains on loopback and
    * Electron reaches it through a local loopback SSH forward.
    */
-  startTunnel(localPort: number, remotePort: number): SshTunnelHandle {
-    for (const [label, port] of [["local", localPort], ["remote", remotePort]] as const) {
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        throw new Error(`${label} tunnel port must be an integer between 1 and 65535.`);
-      }
-    }
-    const args = buildSshArgs(this.config);
-    const host = args.pop();
-    if (!host) throw new Error("SSH target is unavailable.");
-    const child = spawn(
-      this.config.sshCommand,
-      [...args, "-N", "-L", `127.0.0.1:${localPort}:127.0.0.1:${remotePort}`, host],
-      {
-        stdio: ["ignore", "ignore", "pipe"],
-        windowsHide: true,
-        env: this.config.askPassCommand
-          ? { ...process.env, SSH_ASKPASS: this.config.askPassCommand, SSH_ASKPASS_REQUIRE: "force", DISPLAY: "litecode" }
-          : process.env,
+  startTunnel(
+    localPort: number,
+    remotePort: number,
+    options: StartTunnelOptions = {},
+  ): SshTunnelHandle {
+    const argv = buildTunnelArgs(this.config, localPort, remotePort);
+    const child = spawn(this.config.sshCommand ?? "ssh", argv, {
+      stdio: ["ignore", "ignore", "pipe"],
+      windowsHide: true,
+      env: this.config.askPassCommand
+        ? {
+            ...process.env,
+            SSH_ASKPASS: this.config.askPassCommand,
+            SSH_ASKPASS_REQUIRE: "force",
+            DISPLAY: "litecode",
+          }
+        : process.env,
+    });
+    const handle: SshTunnelHandle = {
+      localPort,
+      remotePort,
+      process: child,
+      intentionalStop: false,
+      markIntentionalStop() {
+        handle.intentionalStop = true;
       },
-    );
-    return { localPort, remotePort, process: child };
+    };
+    child.once("exit", (code, signal) => {
+      options.onExit?.({ code, signal, intentional: handle.intentionalStop });
+    });
+    child.once("error", (error) => {
+      options.onError?.(error instanceof Error ? error : new Error(String(error)));
+    });
+    return handle;
   }
 
   stopTunnel(handle: SshTunnelHandle | null): void {
-    if (!handle || handle.process.killed) return;
-    handle.process.kill();
+    if (!handle) return;
+    handle.markIntentionalStop();
+    if (handle.process.killed || handle.process.exitCode !== null) return;
+    try {
+      handle.process.kill();
+    } catch {
+      /* ignore */
+    }
   }
 
   private async requireHome(): Promise<string> {

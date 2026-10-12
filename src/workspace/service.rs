@@ -273,15 +273,20 @@ impl WorkspaceService {
         }
         let sandbox = self.sandbox();
         let abs = sandbox.resolve(path)?;
-        if abs.exists() {
-            return Err(WorkspaceError::AlreadyExists(
-                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
-            ));
-        }
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        super::file_ops::atomic_write(&abs, content)?;
+        // Exclusive create (no exists()-then-write TOCTOU). Concurrent creators:
+        // at most one Ok; losers get AlreadyExists without clobbering.
+        match super::file_ops::atomic_create(&abs, content) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(WorkspaceError::AlreadyExists(
+                    sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+                ));
+            }
+            Err(error) => return Err(error.into()),
+        }
         let rel = sandbox.rel_path(&abs)?;
         self.emit_changed(vec![rel.clone()], "created");
         Ok(rel)
@@ -350,7 +355,14 @@ impl WorkspaceService {
         match std::fs::rename(&from_abs, &to_abs) {
             Ok(()) => {}
             Err(_) if dest_existed && overwrite && is_file_replace(&from_abs, &to_abs) => {
-                super::file_ops::replace_file(&from_abs, &to_abs)?;
+                // Same-device replace; on EXDEV fall through to copy+replace.
+                match super::file_ops::replace_file(&from_abs, &to_abs) {
+                    Ok(()) => {}
+                    Err(error) if is_cross_device(&error) => {
+                        move_via_copy(&from_abs, &to_abs)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
             }
             Err(error) if is_cross_device(&error) => {
                 move_via_copy(&from_abs, &to_abs)?;
@@ -417,18 +429,27 @@ impl WorkspaceService {
                 sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
             ));
         }
-        let existed = abs.exists();
-        if existed && !overwrite {
-            return Err(WorkspaceError::AlreadyExists(
-                sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
-            ));
-        }
         if let Some(parent) = abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        super::file_ops::atomic_write_bytes(&abs, bytes)?;
         let rel = sandbox.rel_path(&abs)?;
-        let kind = if existed { "modified" } else { "created" };
+        let kind = if overwrite {
+            let existed = abs.exists();
+            super::file_ops::atomic_write_bytes(&abs, bytes)?;
+            if existed { "modified" } else { "created" }
+        } else {
+            // Exclusive create — same TOCTOU fix as create_file (ISSUE-037).
+            match super::file_ops::atomic_create_bytes(&abs, bytes) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    return Err(WorkspaceError::AlreadyExists(
+                        sandbox.rel_path(&abs).unwrap_or_else(|_| path.into()),
+                    ));
+                }
+                Err(error) => return Err(error.into()),
+            }
+            "created"
+        };
         self.emit_changed(vec![rel.clone()], kind);
         Ok(rel)
     }
@@ -488,14 +509,18 @@ fn map_copy_error(error: std::io::Error) -> WorkspaceError {
     }
 }
 
-/// Copy then delete source. On copy failure, remove the incomplete destination
-/// and leave the source untouched.
+/// Copy then delete source. On copy failure, remove an incomplete destination
+/// only when it did not already exist — never delete a pre-existing target
+/// (ISSUE-038 / WP-040).
 fn move_via_copy(
     from_abs: &std::path::Path,
     to_abs: &std::path::Path,
 ) -> Result<(), WorkspaceError> {
+    let dest_existed = to_abs.exists();
     if let Err(error) = copy_recursive(from_abs, to_abs) {
-        cleanup_incomplete_dest(to_abs);
+        if !dest_existed {
+            cleanup_incomplete_dest(to_abs);
+        }
         return Err(map_copy_error(error));
     }
     if from_abs.is_dir() {

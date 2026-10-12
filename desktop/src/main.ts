@@ -54,7 +54,15 @@ import {
   ensureComponentForRemote as ensureComponentForRemoteCore,
   type RemoteProgressEvent,
 } from "./remote-progress";
-import { startSidecar, stopSidecar, type SidecarHandle } from "./sidecar";
+import { LifecycleMutex, SingleFlight } from "./lifecycle-mutex";
+import { clearManagedRemoteIfSession } from "./remote-state";
+import {
+  DEFAULT_SIDECAR_RECOVERY,
+  DEFAULT_TUNNEL_RECOVERY,
+  RecoveryCounter,
+  recoveryDelayMs,
+} from "./process-recovery";
+import { startSidecar, stopSidecar, watchSidecarExit, type SidecarHandle } from "./sidecar";
 import {
   BUNDLED_MODEL_REL,
   LINUX_TAR_NAME,
@@ -79,7 +87,13 @@ import {
   removeMaterializedKey,
   withMaterializedKeyDirectory,
 } from "./ssh-credential-material";
-import { scanSshHostKey, SshSession, type RemoteServeHandle, type SshTunnelHandle } from "./ssh-session";
+import {
+  scanSshHostKey,
+  SshSession,
+  type RemoteServeHandle,
+  type SshTunnelHandle,
+  type TunnelExitInfo,
+} from "./ssh-session";
 import { SshTargets, type SavedSshTarget } from "./ssh-targets";
 import { readUiTheme, writeUiTheme, type UiThemeName } from "./ui-theme";
 import { isAllowedLoadUrl } from "./url-policy";
@@ -107,16 +121,40 @@ let registry: InstanceRegistry | null = null;
 let recents: RecentWorkspaces | null = null;
 let remoteTargets: RemoteTargets | null = null;
 let sshTargets: SshTargets | null = null;
-let managedRemote: {
+/** Desktop-only: tunnel died unexpectedly (must match preload literal). */
+const REMOTE_DISCONNECTED_CHANNEL = "litecode:remote-disconnected";
+
+type ManagedRemote = {
   session: SshSession;
   serve: RemoteServeHandle;
   tunnel: SshTunnelHandle;
   keyFile?: string;
   keyDirectory?: string;
-} | null = null;
+  /** SSH target id for limited auto-reconnect (D1). */
+  targetId?: string;
+  workspace?: string;
+};
+
+let managedRemote: ManagedRemote | null = null;
 let quitting = false;
 let currentWorkspace: string | null = null;
 let trustContext: IpcTrustContext | null = null;
+
+/** Serialise sidecar stop/start so concurrent relaunch cannot orphan (D5). */
+const sidecarLifecycle = new LifecycleMutex();
+/** Single-flight Open Remote start (D4). */
+const openRemoteStartFlight = new SingleFlight<{ sessionId: string; home: string; label: string }>();
+/** Single-flight Open Remote complete (D4). */
+const openRemoteCompleteFlight = new SingleFlight<{
+  token: string;
+  baseUrl: string;
+  workspace: string;
+  label: string;
+}>();
+const tunnelRecovery = new RecoveryCounter();
+const sidecarRecovery = new RecoveryCounter();
+let tunnelReconnectTimer: NodeJS.Timeout | null = null;
+let sidecarRestartTimer: NodeJS.Timeout | null = null;
 
 function createToken(): string {
   return crypto.randomBytes(32).toString("base64url");
@@ -625,15 +663,150 @@ async function verifySidecarAttached(handle: SidecarHandle): Promise<HealthPaylo
   return waitForRemoteHealth(Number(port), handle.workspace);
 }
 
+function cancelTunnelReconnect(): void {
+  if (tunnelReconnectTimer) {
+    clearTimeout(tunnelReconnectTimer);
+    tunnelReconnectTimer = null;
+  }
+}
+
+function cancelSidecarRestart(): void {
+  if (sidecarRestartTimer) {
+    clearTimeout(sidecarRestartTimer);
+    sidecarRestartTimer = null;
+  }
+}
+
+function emitRemoteDisconnected(reason: string): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  try {
+    mainWindow.webContents.send(REMOTE_DISCONNECTED_CHANNEL, { reason });
+  } catch (error) {
+    console.warn("Failed to emit remote-disconnected", error);
+  }
+}
+
 async function stopManagedRemote(): Promise<void> {
+  cancelTunnelReconnect();
+  tunnelRecovery.reset();
   const active = managedRemote;
   managedRemote = null;
   if (!active) return;
+  active.tunnel.markIntentionalStop();
   active.session.stopTunnel(active.tunnel);
   await active.session.stopServe(active.serve).catch((error) => {
     console.warn("Failed to stop managed remote workspace", error);
   });
   removeMaterializedKey(active.keyDirectory);
+}
+
+function scheduleTunnelReconnect(targetId: string, workspace: string, attempt: number): void {
+  cancelTunnelReconnect();
+  const delay = recoveryDelayMs(attempt, DEFAULT_TUNNEL_RECOVERY);
+  tunnelReconnectTimer = setTimeout(() => {
+    tunnelReconnectTimer = null;
+    void (async () => {
+      try {
+        console.warn(`[litecode] auto-reconnecting remote tunnel (attempt ${attempt})…`);
+        await reconnectRemote(targetId);
+        tunnelRecovery.reset();
+      } catch (error) {
+        console.warn("[litecode] tunnel auto-reconnect failed", error);
+        emitRemoteDisconnected(
+          error instanceof Error ? error.message : "Tunnel reconnect failed.",
+        );
+      }
+    })();
+  }, delay);
+}
+
+function onTunnelUnexpectedExit(info: TunnelExitInfo, binding: ManagedRemote): void {
+  if (info.intentional || quitting) return;
+  // Only act if this tunnel is still the active managed remote.
+  if (managedRemote?.tunnel !== binding.tunnel) return;
+  console.warn(
+    `[litecode] SSH tunnel exited unexpectedly (code=${info.code} signal=${info.signal})`,
+  );
+  const targetId = binding.targetId;
+  const workspace = binding.workspace;
+  managedRemote = null;
+  void binding.session.stopServe(binding.serve).catch(() => undefined);
+  removeMaterializedKey(binding.keyDirectory);
+  emitRemoteDisconnected("SSH tunnel disconnected.");
+  if (!targetId || !workspace) return;
+  if (!tunnelRecovery.recordUnexpected(DEFAULT_TUNNEL_RECOVERY)) {
+    console.warn("[litecode] tunnel auto-reconnect exhausted");
+    return;
+  }
+  scheduleTunnelReconnect(targetId, workspace, tunnelRecovery.count);
+}
+
+function attachTunnelWatch(binding: ManagedRemote): void {
+  const child = binding.tunnel.process;
+  // startTunnel already attached onExit once; also listen here in case options
+  // were omitted (tests / older callers). Use a dedicated once per binding.
+  const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+    onTunnelUnexpectedExit(
+      { code, signal, intentional: binding.tunnel.intentionalStop },
+      binding,
+    );
+  };
+  child.prependOnceListener("exit", onExit);
+}
+
+function attachSidecarWatch(handle: SidecarHandle): void {
+  watchSidecarExit(handle, (info) => {
+    if (info.intentional || quitting) return;
+    if (sidecar !== handle) return;
+    console.warn(
+      `[litecode] sidecar exited after READY (code=${info.code} signal=${info.signal})`,
+    );
+    sidecar = null;
+    syncDevUpstream(null);
+    if (sessionMode !== "local" || !currentWorkspace) {
+      emitRemoteDisconnected("Local sidecar crashed.");
+      return;
+    }
+    if (!sidecarRecovery.recordUnexpected(DEFAULT_SIDECAR_RECOVERY)) {
+      console.warn("[litecode] sidecar auto-restart exhausted");
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        void dialog.showMessageBox(mainWindow, {
+          type: "error",
+          title: "Litecode sidecar crashed",
+          message: "The local server exited unexpectedly and could not be restarted.",
+          detail: `code=${info.code ?? "null"} signal=${info.signal ?? "null"}`,
+        });
+      }
+      return;
+    }
+    const workspace = currentWorkspace;
+    const attempt = sidecarRecovery.count;
+    const delay = recoveryDelayMs(attempt, DEFAULT_SIDECAR_RECOVERY);
+    cancelSidecarRestart();
+    sidecarRestartTimer = setTimeout(() => {
+      sidecarRestartTimer = null;
+      void sidecarLifecycle
+        .run(async () => {
+          console.warn(`[litecode] auto-restarting sidecar (attempt ${attempt})…`);
+          authToken = authToken || createToken();
+          const next = await startSidecar({
+            token: authToken,
+            parentPid: process.pid,
+            workspace,
+          });
+          await verifySidecarAttached(next);
+          sidecar = next;
+          attachSidecarWatch(next);
+          sidecarRecovery.reset();
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            await loadLocalWorkbench(mainWindow, next.readyUrl);
+          }
+        })
+        .catch((error) => {
+          console.warn("[litecode] sidecar auto-restart failed", error);
+        });
+    }, delay);
+  });
 }
 
 async function installLinuxBundle(session: SshSession): Promise<void> {
@@ -704,6 +877,7 @@ async function startRemoteServeAndTunnel(
     workspace,
     executable: `${home}/${remoteBundleInstallDir()}/litecode`,
   });
+  // Exit listener is attached after managedRemote is bound (see bindManagedRemote).
   const tunnel = session.startTunnel(localPort, remotePort);
   const expectedRoot = `${home.replace(/\/$/, "")}/${workspace.replace(/^\//, "")}`;
   try {
@@ -716,6 +890,16 @@ async function startRemoteServeAndTunnel(
     throw new Error(log ? `${base}\n\nRemote serve log (tail):\n${log}` : base);
   }
   return { serve, tunnel, token, localPort };
+}
+
+function bindManagedRemote(
+  partial: Omit<ManagedRemote, "tunnel"> & { tunnel: SshTunnelHandle },
+): ManagedRemote {
+  const binding: ManagedRemote = { ...partial };
+  managedRemote = binding;
+  attachTunnelWatch(binding);
+  tunnelRecovery.reset();
+  return binding;
 }
 
 async function connectManagedSsh(targetId: string, workspace: string): Promise<{ ok: true; mode: "remote" }> {
@@ -738,20 +922,26 @@ async function connectManagedSsh(targetId: string, workspace: string): Promise<{
     serve = started.serve;
     tunnel = started.tunnel;
     await stopManagedRemote();
-    managedRemote = {
+    // D8: bind only after connectRemote succeeds so a failed attach cannot
+    // leave managedRemote pointing at a stopped tunnel/serve.
+    sshTargets?.updateConnection(target.id, workspace);
+    emitRemoteProgress({ stage: "attaching", ratio: 1, message: "Opening workspace…" });
+    const result = await connectRemote(`http://127.0.0.1:${started.localPort}`, started.token);
+    bindManagedRemote({
       session,
       serve,
       tunnel,
       keyFile: materialized.keyFile,
       keyDirectory: materialized.keyDirectory,
-    };
-    sshTargets?.updateConnection(target.id, workspace);
-    emitRemoteProgress({ stage: "attaching", ratio: 1, message: "Opening workspace…" });
-    return connectRemote(`http://127.0.0.1:${started.localPort}`, started.token);
+      targetId: target.id,
+      workspace,
+    });
+    return result;
   } catch (error) {
     session.stopTunnel(tunnel);
     await session.stopServe(serve).catch(() => undefined);
     removeMaterializedKey(materialized.keyDirectory);
+    managedRemote = clearManagedRemoteIfSession(managedRemote, session);
     throw error;
   }
 }
@@ -765,6 +955,14 @@ type StartRemoteInput = {
 };
 
 async function startRemoteSession(input: StartRemoteInput): Promise<{
+  sessionId: string;
+  home: string;
+  label: string;
+}> {
+  return openRemoteStartFlight.run(() => startRemoteSessionBody(input));
+}
+
+async function startRemoteSessionBody(input: StartRemoteInput): Promise<{
   sessionId: string;
   home: string;
   label: string;
@@ -863,20 +1061,39 @@ async function completeRemoteSession(
   sessionId: string,
   workspace: string,
 ): Promise<{ token: string; baseUrl: string; workspace: string; label: string }> {
+  return openRemoteCompleteFlight.run(() => completeRemoteSessionBody(sessionId, workspace));
+}
+
+async function completeRemoteSessionBody(
+  sessionId: string,
+  workspace: string,
+): Promise<{ token: string; baseUrl: string; workspace: string; label: string }> {
   const pending = getPendingRemote(sessionId);
   const relative = String(workspace ?? "").trim() || ".";
   if (relative === ".") {
     throw new Error("Choose a workspace folder below the remote home (not home itself).");
   }
 
+  // Idempotent: a double-complete reuses the already-started serve (D4).
+  if (pending.ready) {
+    return {
+      token: pending.ready.token,
+      baseUrl: pending.ready.baseUrl,
+      workspace: pending.ready.workspace,
+      label: pending.label,
+    };
+  }
+
   const started = await startRemoteServeAndTunnel(pending.session, pending.home, relative);
   await stopManagedRemote();
-  managedRemote = {
+  bindManagedRemote({
     session: pending.session,
     serve: started.serve,
     tunnel: started.tunnel,
     keyDirectory: pending.keyDirectory,
-  };
+    targetId: pending.id,
+    workspace: relative,
+  });
 
   const baseUrl = `http://127.0.0.1:${started.localPort}`;
   pending.ready = { token: started.token, baseUrl, workspace: relative };
@@ -902,7 +1119,13 @@ async function enterRemoteWorkbench(sessionId: string): Promise<{ ok: true; mode
     throw new Error("Remote session is not ready. Choose a workspace first.");
   }
   emitRemoteProgress({ stage: "attaching", ratio: 1, message: "Opening workspace…" });
-  const result = await connectRemote(pending.ready.baseUrl, pending.ready.token);
+  let result: { ok: true; mode: "remote" };
+  try {
+    result = await connectRemote(pending.ready.baseUrl, pending.ready.token);
+  } catch (error) {
+    managedRemote = clearManagedRemoteIfSession(managedRemote, pending.session);
+    throw error;
+  }
   takePendingRemote(sessionId);
 
   const store = sshTargets;
@@ -1050,42 +1273,52 @@ function reloadWorkbench(win: BrowserWindow): Promise<void> {
  */
 async function relaunchSidecar(workspacePath: string): Promise<{ ok: true; project: string }> {
   const workspace = requireWorkspaceDirectory(workspacePath);
-  await stopSidecar(sidecar);
-  sidecar = null;
-  syncDevUpstream(null);
+  return sidecarLifecycle.run(async () => {
+    cancelSidecarRestart();
+    sidecarRecovery.reset();
+    await stopSidecar(sidecar);
+    sidecar = null;
+    syncDevUpstream(null);
 
-  sessionMode = "local";
-  sidecar = await startSidecar({
-    token: authToken,
-    parentPid: process.pid,
-    workspace,
+    sessionMode = "local";
+    const next = await startSidecar({
+      token: authToken,
+      parentPid: process.pid,
+      workspace,
+    });
+    await verifySidecarAttached(next);
+    sidecar = next;
+    attachSidecarWatch(next);
+    currentWorkspace = workspace;
+    registry?.setWorkspace(workspace);
+    recordRecent(workspace);
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await loadLocalWorkbench(mainWindow, sidecar.readyUrl);
+    }
+    return { ok: true, project: workspace };
   });
-  await verifySidecarAttached(sidecar);
-  currentWorkspace = workspace;
-  registry?.setWorkspace(workspace);
-  recordRecent(workspace);
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    await loadLocalWorkbench(mainWindow, sidecar.readyUrl);
-  }
-  return { ok: true, project: workspace };
 }
 
 async function connectRemote(baseUrl: string, token: string): Promise<{ ok: true; mode: "remote" }> {
   const url = handshakeUrl(baseUrl, token);
   await waitForWorkspaceHealth(healthUrlFromBase(baseUrl));
-  await stopSidecar(sidecar);
-  sidecar = null;
-  syncDevUpstream(null);
-  sessionMode = "remote";
-  authToken = token;
-  currentWorkspace = null;
-  registry?.setWorkspace(null);
+  return sidecarLifecycle.run(async () => {
+    cancelSidecarRestart();
+    sidecarRecovery.reset();
+    await stopSidecar(sidecar);
+    sidecar = null;
+    syncDevUpstream(null);
+    sessionMode = "remote";
+    authToken = token;
+    currentWorkspace = null;
+    registry?.setWorkspace(null);
 
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    await safeLoadURL(mainWindow, url);
-  }
-  return { ok: true, mode: "remote" };
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      await safeLoadURL(mainWindow, url);
+    }
+    return { ok: true, mode: "remote" } as const;
+  });
 }
 
 async function connectSavedRemote(targetId: string): Promise<{ ok: true; mode: "remote" }> {
@@ -1139,6 +1372,7 @@ async function boot(): Promise<void> {
         workspace,
       });
       await verifySidecarAttached(sidecar);
+      attachSidecarWatch(sidecar);
       currentWorkspace = workspace;
       recordRecent(workspace);
       content = { kind: "url", url: await localWorkbenchUrl(sidecar.readyUrl) };
@@ -1298,6 +1532,22 @@ function registerIpc(): void {
       throw new Error("Remote workspaces use the embed model on the remote host.");
     }
     const result = await componentManager().ensure(id);
+    return { id: result.id, path: result.path, downloaded: result.downloaded };
+  });
+
+  handleTrusted("litecode:component-pause", "both", (_e, id: unknown) => {
+    if (!isComponentId(id)) throw new Error("Unknown component");
+    return { ok: componentManager().pause(id) };
+  });
+
+  handleTrusted("litecode:component-stop", "both", (_e, id: unknown) => {
+    if (!isComponentId(id)) throw new Error("Unknown component");
+    return { ok: componentManager().stop(id) };
+  });
+
+  handleTrusted("litecode:component-retry", "both", async (_e, id: unknown) => {
+    if (!isComponentId(id)) throw new Error("Unknown component");
+    const result = await componentManager().retry(id);
     return { id: result.id, path: result.path, downloaded: result.downloaded };
   });
 
@@ -1519,14 +1769,18 @@ function registerIpc(): void {
     for (const stale of clearAllPendingRemotes()) {
       removeMaterializedKey(stale.keyDirectory);
     }
-    await stopSidecar(sidecar);
-    await stopManagedRemote();
-    sidecar = null;
-    syncDevUpstream(null);
-    sessionMode = "local";
-    authToken = createToken();
-    currentWorkspace = null;
-    registry?.setWorkspace(null);
+    await sidecarLifecycle.run(async () => {
+      cancelSidecarRestart();
+      sidecarRecovery.reset();
+      await stopSidecar(sidecar);
+      await stopManagedRemote();
+      sidecar = null;
+      syncDevUpstream(null);
+      sessionMode = "local";
+      authToken = createToken();
+      currentWorkspace = null;
+      registry?.setWorkspace(null);
+    });
     if (mainWindow && mainWindow.isDestroyed() === false) {
       await loadHub(mainWindow);
     }
@@ -1598,11 +1852,20 @@ app.on("before-quit", (e) => {
   quitting = true;
   e.preventDefault();
   void (async () => {
+    cancelTunnelReconnect();
+    cancelSidecarRestart();
+    try {
+      componentManagerInstance?.abortAll();
+    } catch {
+      /* ignore */
+    }
     registry?.stop();
-    await stopSidecar(sidecar);
-    await stopManagedRemote();
-    sidecar = null;
-    syncDevUpstream(null);
+    await sidecarLifecycle.run(async () => {
+      await stopSidecar(sidecar);
+      await stopManagedRemote();
+      sidecar = null;
+      syncDevUpstream(null);
+    });
     app.exit(0);
   })();
 });

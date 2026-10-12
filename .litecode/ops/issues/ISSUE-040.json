@@ -5,15 +5,34 @@
   "domain": "tools-permission",
   "core": false,
   "core_nodes": [],
-  "basis": ["WP-027"],
+  "basis": [
+    "WP-027"
+  ],
   "title": "custom tool 子进程未接入 proc_lifetime::bind_child_to_parent（Windows 宿主崩溃不级联）",
   "promise": "与 LSP/code_search worker 一致：宿主退出时子进程随之退出。",
   "actual": "custom.rs spawn 后未调用 bind_child_to_parent；Windows 不在 Job 内，litecode 崩溃后后台 job 无人超时。Unix 上该函数为 no-op，靠 stdin EOF（仅对读 stdin 的工具有效）。",
-  "evidence": [{"path": "src/tools/custom.rs", "note": ":306-314 spawn 处无 bind_child_to_parent", "commit": ""}],
+  "evidence": [
+    {
+      "path": "src/tools/custom.rs",
+      "note": ":306-314 spawn 处无 bind_child_to_parent",
+      "commit": ""
+    }
+  ],
   "repro": "Windows：后台运行长时 custom tool，强杀 litecode，子进程仍在。",
   "reporter": "ide",
   "owner": "tools",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
-  "history": [{"ts": "2026-10-12T16:15:00+08:00", "by": "tools", "change": "WP-027 交叉审 IDE X4 接受并登记"}]
+  "history": [
+    {
+      "ts": "2026-10-12T16:15:00+08:00",
+      "by": "tools",
+      "change": "WP-027 交叉审 IDE X4 接受并登记"
+    },
+    {
+      "ts": "2026-10-12T19:55:54+08:00",
+      "by": "gm",
+      "change": "WP-036/038 验收通过：spawn 后 bind_child_to_parent；mcp client 同契约。GM 关。"
+    }
+  ]
 }

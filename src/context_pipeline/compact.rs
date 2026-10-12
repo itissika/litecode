@@ -2,6 +2,9 @@ use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use std::cell::Cell;
+
 use crate::authority::responses::MessageItem;
 use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
 use crate::context_pipeline::media_budget::drop_stale_media;
@@ -183,6 +186,9 @@ impl CompactPolicy {
         }
 
         let snapshot = rows.clone();
+        // Capture revision with the snapshot so the optimistic lock covers
+        // snapshot→persist (ISSUE-035). Fail closed — never unwrap_or(0).
+        let expected_revision = sessions.data().revision_blocking(session_id)?;
         let prefix_len = persisted_prefix_len(rows);
         let tail = rows.split_off(prefix_len);
         let mut transcript = project_items(rows);
@@ -283,7 +289,7 @@ impl CompactPolicy {
         if let Err(e) =
             sessions.mutate_blocking(crate::session::data::command::SessionMutation::Compact {
                 session_id: session_id.to_string(),
-                expected_revision: sessions.data().revision_blocking(session_id).unwrap_or(0),
+                expected_revision,
                 operation_id: crate::session::data::command::MutationId::new(),
                 summary: summary_item,
                 token_estimate: final_count as i64,
@@ -305,20 +311,49 @@ impl CompactPolicy {
         }
 
         // One reload. The pending tail was split off before the summary call.
-        let mut model = match sessions.data().working_set_blocking(session_id) {
+        // ISSUE-035 / WP-039: after Compact has committed, DB is sole truth.
+        // Reload failure must not roll memory back to the pre-compact snapshot
+        // or emit Failed (that would pretend compaction never happened).
+        // Keep `working_set_blocking` in this fn body (death_list g2 item-level gate).
+        let reload_result = {
+            #[cfg(test)]
+            {
+                if INJECT_RELOAD_ERR_AFTER_COMPACT.with(|flag| flag.replace(false)) {
+                    Err(LitecodeError::ToolExecution(
+                        "injected working_set reload failure after Compact persist".into(),
+                    ))
+                } else {
+                    sessions.data().working_set_blocking(session_id)
+                }
+            }
+            #[cfg(not(test))]
+            {
+                sessions.data().working_set_blocking(session_id)
+            }
+        };
+        let mut model = match reload_result {
             Ok(loaded) => loaded,
             Err(e) => {
-                *rows = snapshot;
+                tracing::warn!(
+                    session_id,
+                    error = %e,
+                    "compact persisted but working_set reload failed; installing emergency cache"
+                );
+                let mut emergency: Vec<WorkingRow> =
+                    transcript.into_iter().map(WorkingRow::pending).collect();
+                emergency.extend(tail);
+                *rows = emergency;
+                prompt_baseline.clear();
                 emit_compact_lifecycle(
                     sessions,
                     session_id,
                     trigger,
-                    CompactionStage::Failed,
+                    CompactionStage::Succeeded,
                     operation_id,
-                    Some(CompactionFailKind::Failed),
-                    Some(e.to_string()),
+                    None,
+                    None,
                 );
-                return Err(e.into());
+                return Ok(true);
             }
         };
         model.extend(tail);
@@ -472,6 +507,19 @@ fn summary_text_from_compact_output(items: &[Item]) -> String {
         .join("")
 }
 
+
+/// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+#[cfg(test)]
+thread_local! {
+    static INJECT_RELOAD_ERR_AFTER_COMPACT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Arm a one-shot reload failure after a successful Compact persist (WP-039 / ISSUE-035).
+#[cfg(test)]
+pub fn inject_reload_err_after_compact_once() {
+    INJECT_RELOAD_ERR_AFTER_COMPACT.with(|flag| flag.set(true));
+}
+
 fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
     match err {
         LitecodeError::NothingToCompact => CompactionFailKind::NothingToCompact,
@@ -549,10 +597,12 @@ mod tests {
     use crate::authority::responses::{
         OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
     };
+    use crate::config::TurnGuard;
     use crate::llm::LlmProvider;
-    use crate::types::{StreamEvents, assistant_text};
+    use crate::types::{StreamEvents, assistant_text, user_text};
     use std::future::Future;
     use std::pin::Pin;
+    use std::sync::Arc;
 
     /// Silent provider whose stream call never resolves — the failure mode that
     /// used to pend the turn forever.
@@ -748,5 +798,116 @@ mod tests {
     fn compact_summary_empty_when_only_reasoning() {
         let items = vec![reasoning("only thinking")];
         assert!(summary_text_from_compact_output(&items).is_empty());
+    }
+
+    /// WP-039 / ISSUE-035: Compact persist succeeds, reload fails → Ok(true),
+    /// Succeeded (not Failed), DB has summary, memory ≠ pre-compact snapshot.
+    #[tokio::test]
+    async fn compact_persist_ok_reload_err_keeps_db_truth() {
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ));
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .expect("open session");
+        let seed: Vec<Item> = (0..12)
+            .map(|i| user_text(format!("reload-err-seed-{i}")))
+            .collect();
+        sessions.insert_detail_rows(&sid, &seed).expect("seed");
+
+        let mut rx = sessions.subscribe(&sid).expect("subscribe lifecycle");
+
+        let mut rows = sessions
+            .data()
+            .working_set_blocking(&sid)
+            .expect("pre-compact working set");
+        let before_previews: Vec<String> = rows
+            .iter()
+            .map(|row| item_text_preview(&row.item))
+            .collect();
+        rows.push(WorkingRow::pending(user_text("pending-tail-after-prefix")));
+
+        inject_reload_err_after_compact_once();
+
+        let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+        let baseline = ProviderPromptBaseline::default();
+        let compacted = CompactPolicy::compact_transcript(
+            &budget,
+            &sessions,
+            &sid,
+            compact_llm(&TextProvider),
+            "system",
+            1024,
+            &baseline,
+            &mut rows,
+            &CancellationToken::new(),
+            CompactionTrigger::Manual,
+            Some("wp039-reload-err"),
+        )
+        .await
+        .expect("persist ok + reload err must return Ok");
+        assert!(compacted, "compaction committed");
+
+        let mem_previews: Vec<String> = rows
+            .iter()
+            .map(|row| item_text_preview(&row.item))
+            .collect();
+        assert!(
+            mem_previews.first().is_some_and(|t| {
+                t.starts_with("[Conversation summary]") && t.contains("## summary")
+            }),
+            "emergency cache must lead with summary, got {mem_previews:?}"
+        );
+        assert!(
+            mem_previews
+                .iter()
+                .any(|t| t.contains("pending-tail-after-prefix")),
+            "emergency cache must keep pending tail, got {mem_previews:?}"
+        );
+        assert_ne!(
+            &mem_previews[..before_previews.len().min(mem_previews.len())],
+            before_previews.as_slice(),
+            "memory must not equal pre-compact snapshot content"
+        );
+        assert!(
+            rows.iter().all(|row| row.log_seq.is_none()),
+            "emergency cache rows are pending"
+        );
+
+        let db_rows = sessions
+            .data()
+            .working_set_blocking(&sid)
+            .expect("DB working set");
+        let db0 = item_text_preview(&db_rows[0].item);
+        assert!(
+            db0.starts_with("[Conversation summary]") && db0.contains("## summary"),
+            "DB must show compacted summary, got {db0}"
+        );
+        assert!(
+            db_rows.iter().all(|row| row.log_seq.is_some()),
+            "DB fold rows must be persisted"
+        );
+
+        let mut saw_succeeded = false;
+        let mut saw_failed = false;
+        while let Ok(env) = rx.try_recv() {
+            if let InternalEvent::CompactionLifecycle {
+                trigger: CompactionTrigger::Manual,
+                stage,
+                operation_id,
+                ..
+            } = env.event
+            {
+                assert_eq!(operation_id.as_deref(), Some("wp039-reload-err"));
+                match stage {
+                    CompactionStage::Succeeded => saw_succeeded = true,
+                    CompactionStage::Failed => saw_failed = true,
+                    _ => {}
+                }
+            }
+        }
+        assert!(saw_succeeded, "must emit Succeeded after Compact persist");
+        assert!(!saw_failed, "must not emit Failed after Compact persist");
     }
 }

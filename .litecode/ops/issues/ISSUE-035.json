@@ -6,7 +6,9 @@
   "core": true,
   "core_nodes": [],
   "basis": [
-    "WP-026"
+    "WP-026",
+    "WP-036",
+    "WP-039"
   ],
   "title": "compact：Compact 已落库后 reload 失败，仍回滚内存并发 Failed 事件",
   "promise": "compact 失败时内存与库一致，生命周期事件如实反映结果。",
@@ -26,7 +28,7 @@
   "repro": "注入 working_set_blocking 在 Compact 后报错；观察 CompactionStage::Failed 与库中 summary 行并存。",
   "reporter": "context",
   "owner": "context",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -38,6 +40,16 @@
       "ts": "2026-10-12T15:50:00+08:00",
       "by": "runtime",
       "change": "WP-026 交叉审（Runtime）：确认 reload 失败回滚与事件不一致成立；补充 Compact mutation 带 expected_prefix（compact.rs:291），revision 现取（286）的竞态危害有限，建议维持 bug 但非阻断。"
+    },
+    {
+      "ts": "2026-10-12T19:50:00+08:00",
+      "by": "context",
+      "change": "WP-039 已改 compact.rs：persist 成功后 reload 失败不再回滚 snapshot / 不再 Failed，改为 Succeeded + emergency pending cache + Ok(true)；expected_revision 在 snapshot 时捕获且 fail-closed。回归：compact::tests::compact_persist_ok_reload_err_keeps_db_truth。未 commit；待 Session 交叉审与中层 close 后再关 issue。"
+    },
+    {
+      "ts": "2026-10-12T19:55:54+08:00",
+      "by": "gm",
+      "change": "WP-036/039 验收通过：persist 成功后 reload 失败不再回滚；compact_persist_ok_reload_err_keeps_db_truth 绿；Session 有条件接受（同回合可能重复 pending，非阻断）。GM 关。"
     }
   ]
 }

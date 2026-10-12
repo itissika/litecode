@@ -5,6 +5,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
  * Keep this string identical to `REMOTE_PROGRESS_CHANNEL` in `./remote-progress`.
  */
 const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
+/** Keep identical to REMOTE_DISCONNECTED_CHANNEL in main.ts (D1). */
+const REMOTE_DISCONNECTED_CHANNEL = "litecode:remote-disconnected";
 /** Keep identical to `COMPONENT_PROGRESS_CHANNEL` in `./components`. */
 const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 /** Keep identical to `BROWSER_STATE_CHANNEL` in `./browser-host`. */
@@ -19,8 +21,11 @@ type RemoteProgressEvent = {
 type ComponentProgressEvent = {
   id: string;
   phase: "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
+  status?: "idle" | "downloading" | "paused" | "stopped" | "error" | "done";
   received?: number;
   total?: number;
+  percent?: number;
+  bytesPerSecond?: number;
   message: string;
   error?: string;
 };
@@ -30,6 +35,7 @@ type ComponentStatus = {
   installed: boolean;
   path: string | null;
   downloading: boolean;
+  status?: "idle" | "downloading" | "paused" | "stopped" | "error" | "done";
   error: string | null;
 };
 
@@ -169,6 +175,13 @@ contextBridge.exposeInMainWorld("litecode", {
     ipcRenderer.on(REMOTE_PROGRESS_CHANNEL, listener);
     return () => ipcRenderer.removeListener(REMOTE_PROGRESS_CHANNEL, listener);
   },
+  onRemoteDisconnected: (handler: (event: { reason: string }) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: { reason: string }) => {
+      handler(payload);
+    };
+    ipcRenderer.on(REMOTE_DISCONNECTED_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(REMOTE_DISCONNECTED_CHANNEL, listener);
+  },
   getComponentStatus: async (id: string): Promise<ComponentStatus> => {
     return (await ipcRenderer.invoke("litecode:component-status", id)) as ComponentStatus;
   },
@@ -176,6 +189,21 @@ contextBridge.exposeInMainWorld("litecode", {
     id: string,
   ): Promise<{ id: string; path: string; downloaded: boolean }> => {
     return (await ipcRenderer.invoke("litecode:ensure-component", id)) as {
+      id: string;
+      path: string;
+      downloaded: boolean;
+    };
+  },
+  pauseComponent: async (id: string): Promise<{ ok: boolean }> => {
+    return (await ipcRenderer.invoke("litecode:component-pause", id)) as { ok: boolean };
+  },
+  stopComponent: async (id: string): Promise<{ ok: boolean }> => {
+    return (await ipcRenderer.invoke("litecode:component-stop", id)) as { ok: boolean };
+  },
+  retryComponent: async (
+    id: string,
+  ): Promise<{ id: string; path: string; downloaded: boolean }> => {
+    return (await ipcRenderer.invoke("litecode:component-retry", id)) as {
       id: string;
       path: string;
       downloaded: boolean;

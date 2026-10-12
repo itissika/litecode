@@ -56,7 +56,8 @@ export interface TurnSlice {
   replaying: boolean;
   currentTurnId: string | null;
   pendingCancel: boolean;
-  pendingPermission: PendingPermission | null;
+  /** FIFO of outstanding asks for this session; UI shows queue[0] only. */
+  permissionQueue: PendingPermission[];
   turnPhase: TurnPhase | null;
   turnStep: number | null;
   turnStepMax: number | null;
@@ -100,12 +101,21 @@ export function emptySlice(): TurnSlice {
   return { ...EMPTY_SLICE };
 }
 
+/** UI / callers: current ask is the FIFO head, or null when the queue is empty. */
+export function headPermission(
+  slice: TurnSlice | undefined | null,
+): PendingPermission | null {
+  const q = slice?.permissionQueue;
+  return q && q.length > 0 ? q[0]! : null;
+}
+
+
 export const EMPTY_SLICE: TurnSlice = {
   runState: "idle",
   replaying: false,
   currentTurnId: null,
   pendingCancel: false,
-  pendingPermission: null,
+  permissionQueue: [],
   turnPhase: null,
   turnStep: null,
   turnStepMax: null,
@@ -621,7 +631,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       patch(sessionId, {
         runState: "cancelling",
         pendingCancel: true,
-        pendingPermission: null,
+        permissionQueue: [],
       });
       useConnectionStore
         .getState()
@@ -637,18 +647,18 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       patch(sessionId, {
         runState: "cancelling",
         pendingCancel: true,
-        pendingPermission: null,
+        permissionQueue: [],
       });
     },
 
     grantPermission: (sessionId, approved, always, opts) => {
       const current = getSlice(get().byId, sessionId);
-      if (!current.pendingPermission) return;
-      const pending = current.pendingPermission;
+      const pending = current.permissionQueue[0];
+      if (!pending) return;
 
       // Keep the card open until the server's `agent/permission` receipt
-      // arrives; only then close it. On failure, restore the card and surface
-      // the error explicitly instead of a silent empty catch (FE-04).
+      // arrives; only then dequeue. On failure, never re-insert a card that
+      // cancel/revert already cleared (W6 — no `|| !latest` restore).
       const trimmed = opts?.freeText?.trim();
       const selected = opts?.selected;
       const answers = opts?.answers;
@@ -665,17 +675,23 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           ...(answers && Object.keys(answers).length > 0 ? { answers } : {}),
         })
         .then(() => {
-          // Close only the card we granted; a newer request may have replaced it.
-          const latest = getSlice(get().byId, sessionId).pendingPermission;
-          if (latest?.request_id === pending.request_id) {
-            patch(sessionId, { pendingPermission: null });
+          const queue = getSlice(get().byId, sessionId).permissionQueue;
+          if (queue[0]?.request_id === pending.request_id) {
+            patch(sessionId, { permissionQueue: queue.slice(1) });
+          } else {
+            patch(sessionId, {
+              permissionQueue: queue.filter(
+                (p) => p.request_id !== pending.request_id,
+              ),
+            });
           }
         })
         .catch((error: unknown) => {
-          // Rollback: keep/restore this card (unless a newer request is showing).
-          const latest = getSlice(get().byId, sessionId).pendingPermission;
-          if (latest?.request_id === pending.request_id || !latest) {
-            patch(sessionId, { pendingPermission: pending });
+          // W6: only leave as-is when this ask is still the head. Do not
+          // re-insert after cancel/revert emptied the queue.
+          const latest = getSlice(get().byId, sessionId).permissionQueue[0];
+          if (latest?.request_id === pending.request_id) {
+            // still showing — no patch needed (we never optimistic-dequeued)
           }
           const message =
             error instanceof Error ? error.message : "Permission grant failed";
@@ -695,20 +711,26 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pr.multi_select,
         pr.free_text,
       );
-      patch(sessionId, {
-        pendingPermission: {
-          turn_id: pr.turn_id,
-          request_id: pr.request_id,
-          tool: pr.tool,
-          rule_id: pr.rule_id,
-          summary: pr.summary,
-          kind,
-          free_text: pr.free_text ?? false,
-          options: pr.options ?? [],
-          multi_select: pr.multi_select ?? false,
-          questions,
-        },
-      });
+      const item: PendingPermission = {
+        turn_id: pr.turn_id,
+        request_id: pr.request_id,
+        tool: pr.tool,
+        rule_id: pr.rule_id,
+        summary: pr.summary,
+        kind,
+        free_text: pr.free_text ?? false,
+        options: pr.options ?? [],
+        multi_select: pr.multi_select ?? false,
+        questions,
+      };
+      const queue = [...getSlice(get().byId, sessionId).permissionQueue];
+      const idx = queue.findIndex((p) => p.request_id === item.request_id);
+      if (idx >= 0) {
+        queue[idx] = item;
+      } else {
+        queue.push(item);
+      }
+      patch(sessionId, { permissionQueue: queue });
     },
 
     onTurnStarted: (ts) => {
@@ -726,7 +748,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         turnPhase: "starting",
         turnStep: null,
         turnStepMax: ts.step_max,
-        pendingPermission: null,
+        permissionQueue: [],
         pendingCancel: false,
         llmReconnect: null,
       });
@@ -954,7 +976,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         turnStepMax: null,
         pendingCancel: false,
         runState: "idle",
-        pendingPermission: null,
+        permissionQueue: [],
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
         contextTokenBreakdown:

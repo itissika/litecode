@@ -11,12 +11,17 @@ function longRunningChild(): SidecarHandle {
     ["-e", "setInterval(() => {}, 1000)"],
     { stdio: ["ignore", "ignore", "ignore"], windowsHide: true },
   );
-  return {
+  const handle: SidecarHandle = {
     process: child,
     readyUrl: "http://127.0.0.1:0/",
     token: "",
     workspace: "",
+    intentionalStop: false,
+    markIntentionalStop() {
+      handle.intentionalStop = true;
+    },
   };
+  return handle;
 }
 
 describe("formatSidecarBootFailure", () => {
@@ -55,5 +60,14 @@ describe("stopSidecar (DESK-04 sidecar cleanup)", () => {
 
   it("is a no-op for a null handle", async () => {
     await assert.doesNotReject(stopSidecar(null));
+  });
+});
+
+describe("stopSidecar intentional stop (D2)", () => {
+  it("marks intentionalStop before killing", async () => {
+    const handle = longRunningChild();
+    assert.equal(handle.intentionalStop, false);
+    await stopSidecar(handle);
+    assert.equal(handle.intentionalStop, true);
   });
 });

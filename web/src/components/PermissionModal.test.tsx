@@ -508,3 +508,38 @@ describe("PermissionCard — ask_user", () => {
     });
   });
 });
+
+describe("PermissionCard — key remount (W5)", () => {
+  it("key remount clears prior ask picks", async () => {
+    const user = userEvent.setup();
+    const onGrant = vi.fn();
+    const ask = {
+      tool: "ask_user",
+      ruleId: "ask",
+      summary: "Pick",
+      kind: "ask_user" as const,
+      freeText: false,
+      options: [
+        { id: "a", label: "Option A" },
+        { id: "b", label: "Option B" },
+      ],
+      multiSelect: false,
+    };
+    const { rerender } = render(
+      <PermissionCard key="req-1" {...ask} onGrant={onGrant} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Option A" }));
+    expect(
+      (screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+
+    // New request_id key remounts the card — prior pick must not carry over.
+    rerender(<PermissionCard key="req-2" {...ask} onGrant={onGrant} />);
+    expect(
+      (screen.getByRole("button", { name: "Submit" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(onGrant).not.toHaveBeenCalled();
+  });
+});

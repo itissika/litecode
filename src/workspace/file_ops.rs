@@ -22,6 +22,87 @@ pub fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     atomic_write_follow(path, bytes, 0)
 }
 
+/// Create a new file exclusively (fails if `path` already exists).
+///
+/// Content is written to a sibling temp file, then published with `hard_link`
+/// so an existing destination yields [`std::io::ErrorKind::AlreadyExists`]
+/// without overwriting. If hard links are unsupported, falls back to
+/// `OpenOptions::create_new` plus a copy from the temp file.
+pub fn atomic_create(path: &Path, content: &str) -> std::io::Result<()> {
+    atomic_create_bytes(path, content.as_bytes())
+}
+
+/// Same as [`atomic_create`] for raw bytes.
+pub fn atomic_create_bytes(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = unique_tmp_path(path);
+    {
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o644);
+        let mut file = opts.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+
+    let persist = match std::fs::hard_link(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => Err(link_err),
+        Err(link_err) => {
+            // Hard links unavailable (some FS) or other error: try O_EXCL create.
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            opts.mode(0o644);
+            match opts.open(path) {
+                Ok(mut dest) => {
+                    let write_ok = (|| -> std::io::Result<()> {
+                        let mut src = std::fs::File::open(&tmp)?;
+                        let mut buf = Vec::new();
+                        src.read_to_end(&mut buf)?;
+                        dest.write_all(&buf)?;
+                        dest.sync_all()?;
+                        Ok(())
+                    })();
+                    if let Err(write_err) = write_ok {
+                        let _ = std::fs::remove_file(path);
+                        Err(write_err)
+                    } else {
+                        Ok(())
+                    }
+                }
+                Err(open_err) if open_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                    Err(open_err)
+                }
+                Err(open_err) => {
+                    // Prefer the original link error when create_new is unsupported
+                    // for the same reason hard_link failed (not AlreadyExists).
+                    if open_err.kind() == std::io::ErrorKind::Unsupported {
+                        Err(link_err)
+                    } else {
+                        Err(open_err)
+                    }
+                }
+            }
+        }
+    };
+
+    let _ = std::fs::remove_file(&tmp);
+    persist?;
+
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = std::fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 fn atomic_write_follow(path: &Path, content: &[u8], depth: u32) -> std::io::Result<()> {
     if depth > SYMLINK_FOLLOW_LIMIT {
         return Err(std::io::Error::new(
@@ -243,6 +324,24 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "new");
+    }
+
+    #[test]
+    fn atomic_create_fails_if_exists_without_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("note.txt");
+        atomic_create(&target, "first").unwrap();
+        let err = atomic_create(&target, "second").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
+    }
+
+    #[test]
+    fn atomic_create_bytes_creates_new_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("bin.dat");
+        atomic_create_bytes(&target, &[1, 2, 3]).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), vec![1, 2, 3]);
     }
 
     #[cfg(unix)]

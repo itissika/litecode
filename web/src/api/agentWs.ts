@@ -102,6 +102,8 @@ export class AgentWsClient {
     this.ws = null;
     this.generation += 1;
     const generation = this.generation;
+    // Drop in-flight RPCs from the previous generation immediately (W1).
+    this.rejectAllPendingRpc("WebSocket closed");
     previous?.close();
 
     this.connectStartedAt = Date.now();
@@ -164,6 +166,7 @@ export class AgentWsClient {
 
     ws.onclose = () => {
       if (!current()) return;
+      this.rejectAllPendingRpc("WebSocket closed");
       this.ws = null;
       this.lineBuffer = "";
       if (this.stopped || this.intentionalClose) return;
@@ -241,6 +244,7 @@ export class AgentWsClient {
     const ws = this.ws;
     this.ws = null;
     this.generation += 1;
+    this.rejectAllPendingRpc("WebSocket closed");
     ws?.close();
     this.setConnectionState("disconnected");
   }
@@ -265,6 +269,17 @@ export class AgentWsClient {
       this.options.onError?.(
         `WebSocket send failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+    }
+  }
+
+  /** Reject every in-flight JSON-RPC and clear its 30s timer. No auto-replay. */
+  private rejectAllPendingRpc(reason: string): void {
+    if (this.pendingRpc.size === 0) return;
+    const pending = Array.from(this.pendingRpc.values());
+    this.pendingRpc.clear();
+    const err = new Error(reason);
+    for (const entry of pending) {
+      entry.reject(err);
     }
   }
 

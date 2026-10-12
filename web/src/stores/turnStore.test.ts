@@ -792,18 +792,20 @@ describe("grantPermission receipt (FE-04)", () => {
           sessionId,
           {
             ...EMPTY_SLICE,
-            pendingPermission: {
-              turn_id: "t1",
-              request_id: "req-1",
-              tool: "bash",
-              rule_id: "default",
-              summary: "Run bash",
-              kind: "permission",
-              free_text: false,
-              options: [],
-              multi_select: false,
-              questions: [],
-            },
+            permissionQueue: [
+              {
+                turn_id: "t1",
+                request_id: "req-1",
+                tool: "bash",
+                rule_id: "default",
+                summary: "Run bash",
+                kind: "permission",
+                free_text: false,
+                options: [],
+                multi_select: false,
+                questions: [],
+              },
+            ],
           },
         ],
       ]),
@@ -831,14 +833,14 @@ describe("grantPermission receipt (FE-04)", () => {
     useTurnStore.getState().grantPermission(sessionId, true, false);
     // Card is still open while awaiting the receipt.
     expect(
-      useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
-    ).not.toBeNull();
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(1);
 
     resolve({ ok: true });
     await vi.waitFor(() => {
       expect(
-        useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
-      ).toBeNull();
+        useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+      ).toHaveLength(0);
     });
   });
 
@@ -852,14 +854,14 @@ describe("grantPermission receipt (FE-04)", () => {
 
     useTurnStore.getState().grantPermission(sessionId, true, false);
     expect(
-      useTurnStore.getState().byId.get(sessionId)!.pendingPermission,
-    ).not.toBeNull();
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(1);
 
     reject(new Error("permission rejected"));
     await vi.waitFor(() => {
-      // Card is restored (rollback) and the error is not silently swallowed.
+      // Card stays at head (no optimistic dequeue); error is toasted.
       expect(
-        useTurnStore.getState().byId.get(sessionId)!.pendingPermission
+        useTurnStore.getState().byId.get(sessionId)!.permissionQueue[0]
           ?.request_id,
       ).toBe("req-1");
     });
@@ -875,7 +877,8 @@ describe("grantPermission receipt (FE-04)", () => {
           sessionId,
           {
             ...EMPTY_SLICE,
-            pendingPermission: {
+            permissionQueue: [
+              {
               turn_id: "t1",
               request_id: "req-ask",
               tool: "ask_user",
@@ -900,6 +903,7 @@ describe("grantPermission receipt (FE-04)", () => {
                 },
               ],
             },
+            ],
           },
         ],
       ]),
@@ -940,7 +944,8 @@ describe("grantPermission receipt (FE-04)", () => {
           sessionId,
           {
             ...EMPTY_SLICE,
-            pendingPermission: {
+            permissionQueue: [
+              {
               turn_id: "t1",
               request_id: "req-multi",
               tool: "ask_user",
@@ -970,6 +975,7 @@ describe("grantPermission receipt (FE-04)", () => {
                 },
               ],
             },
+            ],
           },
         ],
       ]),
@@ -1012,7 +1018,7 @@ describe("grantPermission receipt (FE-04)", () => {
       options: [{ id: "x", label: "X" }],
       free_text: true,
     });
-    const pending = useTurnStore.getState().byId.get(sessionId)!.pendingPermission!;
+    const pending = useTurnStore.getState().byId.get(sessionId)!.permissionQueue[0]!;
     expect(pending.questions).toEqual([
       {
         id: "q0",
@@ -1023,6 +1029,158 @@ describe("grantPermission receipt (FE-04)", () => {
       },
     ]);
   });
+
+  it("FIFO: parallel asks enqueue; grant dequeues head only", async () => {
+    const sessionId = "s-fifo";
+    const { promise, resolve } = deferred<{ ok: boolean }>();
+    useConnectionStore.setState({ sendRpc: vi.fn(() => promise) } as never);
+
+    useTurnStore.getState().onPermissionRequest(sessionId, {
+      turn_id: "t1",
+      request_id: "req-a",
+      tool: "bash",
+      rule_id: "default",
+      summary: "first",
+      session_id: sessionId,
+    });
+    useTurnStore.getState().onPermissionRequest(sessionId, {
+      turn_id: "t1",
+      request_id: "req-b",
+      tool: "edit",
+      rule_id: "default",
+      summary: "second",
+      session_id: sessionId,
+    });
+    const q = useTurnStore.getState().byId.get(sessionId)!.permissionQueue;
+    expect(q.map((p) => p.request_id)).toEqual(["req-a", "req-b"]);
+
+    useTurnStore.getState().grantPermission(sessionId, true, false);
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue.map(
+        (p) => p.request_id,
+      ),
+    ).toEqual(["req-a", "req-b"]);
+
+    resolve({ ok: true });
+    await vi.waitFor(() => {
+      expect(
+        useTurnStore.getState().byId.get(sessionId)!.permissionQueue.map(
+          (p) => p.request_id,
+        ),
+      ).toEqual(["req-b"]);
+    });
+  });
+
+  it("W6: cancel mid-grant does not resurrect the dismissed card on RPC failure", async () => {
+    const sessionId = "s-w6";
+    const { promise, reject } = deferred<{ ok: boolean }>();
+    useConnectionStore.setState({ sendRpc: vi.fn(() => promise) } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            runState: "running",
+            permissionQueue: [
+              {
+                turn_id: "t1",
+                request_id: "req-1",
+                tool: "bash",
+                rule_id: "default",
+                summary: "Run bash",
+                kind: "permission",
+                free_text: false,
+                options: [],
+                multi_select: false,
+                questions: [],
+              },
+            ],
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore.getState().grantPermission(sessionId, true, false);
+    useTurnStore.getState().cancel(sessionId);
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(0);
+
+    reject(new Error("WebSocket closed"));
+    await vi.waitFor(() => {
+      expect(useToastStore.getState().toasts.length).toBeGreaterThan(0);
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(0);
+  });
+
+  it("W6: transcript revert mid-grant does not resurrect the card on RPC failure", async () => {
+    const sessionId = "s-w6-revert";
+    const { promise, reject } = deferred<{ ok: boolean }>();
+    useConnectionStore.setState({ sendRpc: vi.fn(() => promise) } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            runState: "running",
+            permissionQueue: [
+              {
+                turn_id: "t1",
+                request_id: "req-1",
+                tool: "bash",
+                rule_id: "default",
+                summary: "Run bash",
+                kind: "permission",
+                free_text: false,
+                options: [],
+                multi_select: false,
+                questions: [],
+              },
+            ],
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore.getState().grantPermission(sessionId, true, false);
+    useTurnStore.getState().onTranscriptReverted(sessionId);
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(0);
+
+    reject(new Error("permission rejected"));
+    await vi.waitFor(() => {
+      expect(useToastStore.getState().toasts.length).toBeGreaterThan(0);
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)!.permissionQueue,
+    ).toHaveLength(0);
+  });
+
+  it("duplicate request_id updates in place instead of double-enqueue", () => {
+    const sessionId = "s-dup";
+    const pr = {
+      turn_id: "t1",
+      request_id: "req-same",
+      tool: "bash",
+      rule_id: "default",
+      summary: "v1",
+      session_id: sessionId,
+    };
+    useTurnStore.getState().onPermissionRequest(sessionId, pr);
+    useTurnStore.getState().onPermissionRequest(sessionId, {
+      ...pr,
+      summary: "v2",
+    });
+    const q = useTurnStore.getState().byId.get(sessionId)!.permissionQueue;
+    expect(q).toHaveLength(1);
+    expect(q[0]!.summary).toBe("v2");
+  });
+
 
   it("routes turn error and snapshot warning to toast, not the bell", () => {
     const sessionId = "s-toast-fail";

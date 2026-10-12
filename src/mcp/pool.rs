@@ -294,6 +294,8 @@ impl McpConnectionPool {
         stop_inner(&self.inner, id).await;
     }
 
+    /// Force-kill one server's process tree (group kill on Unix / taskkill /T
+    /// on Windows via `McpStdioClient::kill`). Used when a call times out.
     pub async fn kill_child(&self, id: &str) {
         let inner = Arc::clone(&self.inner);
         let id = id.to_string();

@@ -19,18 +19,20 @@ vi.mock("../../stores/turnStore", () => ({
         [
           "session-1",
           {
-            pendingPermission: {
-              turn_id: "turn-1",
-              request_id: "req-abcdef12",
-              tool: "bash",
-              rule_id: "default",
-              summary: "Run bash command",
-              kind: "permission",
-              free_text: false,
-              options: [],
-              multi_select: false,
-              questions: [],
-            },
+            permissionQueue: [
+              {
+                turn_id: "turn-1",
+                request_id: "req-abcdef12",
+                tool: "bash",
+                rule_id: "default",
+                summary: "Run bash command",
+                kind: "permission",
+                free_text: false,
+                options: [],
+                multi_select: false,
+                questions: [],
+              },
+            ],
           },
         ],
       ]),

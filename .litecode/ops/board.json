@@ -832,13 +832,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-021.md",
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-12T08:51:07.026Z",
+      "progress": "closed done by andy: 挖潜结论已被采纳进修稳顺序；未修项转入新修稳顶层包",
+      "status_entered_at": null,
       "parent": null,
       "goal": "主动找出后端和前端可能不稳的实现并给出证据；列出可删、可放宽或重复的测试清单，经审后再处理；引擎产品和 symlink 复制不碰",
       "approver": "andy",
@@ -882,6 +882,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": null
+        },
+        {
+          "ts": "2026-10-12T11:31:12.896Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "挖潜结论已被采纳进修稳顺序；未修项转入新修稳顶层包",
+          "to": "done"
         }
       ]
     },
@@ -1674,6 +1681,672 @@
           "actor": "gm",
           "action": "close",
           "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-033",
+      "domain": "team-ops",
+      "title": "按序修稳已定问题（权限卡/断线/进程生命周期/下载/压缩真相/workspace）",
+      "result": "已定问题按波次修稳并附测试证据；无跨包文件竞态",
+      "done_when": [
+        "各波次子包 done 或 blocked 经 Andy 点头；GM 汇总四件套交验收"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-033.md",
+      "progress": "closed done by andy: Andy 验收通过；随后提交推送",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按上序把已定问题修稳，注意 wp 包的时序问题，防止竞态冲突",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-033 按序修稳已定问题\n\n## Goal（Andy）\n按上序把已定问题修稳，注意 wp 包的时序问题，防止竞态冲突。\n\n## 已定口径（讨论收敛）\n| # | 项 | 口径 |\n|---|---|---|\n| 1 | 并行权限询问 | UI 单卡；底层按真实待批列表排队挨个批复 |\n| 2 | 短线重连恢复 ask | 不恢复；孤儿 ask 系统封口，失败可接受 |\n| 3 | 压缩库/内存不一致 | **Session DB 为唯一真相**；内存是缓存；reload 失败不得回滚到压缩前内存快照 |\n| 4+缺陷 | 隧道/sidecar 崩 | 自动重连/重启 |\n| 6 | 网页断线在途 RPC | 断线/换代立刻 reject pending，不干等 30s，不自动重放 |\n| 7 | 组件下载 | 状态+百分比+网速；暂停/停止/重试；断点续传 |\n| 8 | 桌面 CI | 本包不做，另议成本收益 |\n| 9 | MCP vs custom | 先统一进程生命周期；调用面不合 |\n| 10 | 文件追踪 take_changes | 保持现状不修 |\n| 11 | 进程泄露 | 必须解（后端+桌面生命周期） |\n\n## 子包拆分与时序（防竞态）\n\n```\n波次1 ── WP-034 frontend_mid（独占 web）\n         权限队列+单卡 → 同包内断线 reject pendingRpc\n              │\n              │ done 后\n              ▼\n波次2 ── WP-035 frontend_mid（独占 desktop）     ║ 并行 ║  WP-036 backend_mid\n         自动重连/单飞 → 下载体验                 ║      ║  (1)进程生命周期\n                                                  ║      ║  (2)压缩 DB 真相\n                                                  ║      ║  (3)workspace 覆盖\n```\n\n**硬门禁**\n- WP-035 的 `start` 必须在 WP-034 `done` 之后（同中层、避免并行调度抢人；代码面本不交，但执行带宽要串）。\n- WP-036 可与 WP-035 并行（代码面：desktop vs src/{tools,mcp,context,workspace} 不交）。\n- WP-036 域内三步串行或严格分文件：先 `custom.rs`/`mcp/*`，再 `compact.rs`，再 `workspace/service.rs`。\n- 禁止两端同时改同一文件。冻结线仍有效：引擎产品、symlink copy 行为不改（service.rs 仅允许修 ISSUE-037/038 相关，不碰 symlink 产品行为）。\n\n## 中层职责（写入各子包 goal 已重申）\n只拆给域 bot、交叉审、汇总；不亲手改代码/测试。\n\n## 不做\n桌面 CI；文件追踪；ask 重连恢复；MCP/custom 调用面合并；引擎产品；symlink 产品行为。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:31:13.148Z",
+          "actor": "andy",
+          "action": "create",
+          "note": "goal: 按上序把已定问题修稳，注意 wp 包的时序问题，防止竞态冲突"
+        },
+        {
+          "ts": "2026-10-12T11:31:30.948Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-033 按序修稳已定问题\n\n## Goal（Andy）\n按上序把已定问题修稳，注意 wp 包的时序问题，防止竞态冲突。\n\n## 已定口径（讨论收敛）\n"
+        },
+        {
+          "ts": "2026-10-12T11:31:31.237Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-033.md\""
+        },
+        {
+          "ts": "2026-10-12T11:31:31.461Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "方案：三子包+波次门禁防竞态；请 Andy 批 plan"
+        },
+        {
+          "ts": "2026-10-12T11:40:48.029Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 批 plan，开干"
+        },
+        {
+          "ts": "2026-10-12T11:40:48.286Z",
+          "actor": "gm",
+          "action": "start",
+          "note": "启动修稳；先 WP-034，WP-035 等 034 done，WP-036 可并行"
+        },
+        {
+          "ts": "2026-10-12T12:00:06.904Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "三子包均 done；整包交 Andy 验收"
+        },
+        {
+          "ts": "2026-10-12T12:02:38.414Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 验收通过；随后提交推送",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-034",
+      "domain": "client-ux",
+      "title": "web：权限卡队列+单卡UI + 断线立刻失败在途请求",
+      "result": "web 权限队列+单卡与断线在途失败均有测试绿",
+      "done_when": [
+        "中层交叉审通过；GM 抽测通过；deliver"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by gm: 验收通过：代码抽查+Node22 vitest 126/126",
+      "status_entered_at": null,
+      "parent": "WP-033",
+      "goal": "波次1（独占 web）：(1) 同一会话并行权限询问改为底层排队、界面只显示一张卡，按真实待批列表挨个批复；顺带修答案串号（PermissionCard 缺 key）与取消/回退后旧卡复活。(2) 同包内紧接着：WebSocket 断线/换代时立刻 reject 全部 pendingRpc 并清定时器，不再干等 30s；不断线卡到恢复、不自动重放旧请求。不碰 desktop。孤儿 ask 不恢复（封口失败可接受）。附回归测试。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "波次1 独占 web，不碰 desktop。参考 WP-021-frontend.md（W1/W4/W5/W6）与 WP-033 已定口径。\n\n子包：WP-037（owner=frontend，审批=前端中层）→ 产物 WP-034-web.md。\n\n子包目标（两步同包、同 bot、串行）：\n1) 并行权限询问：底层按真实待批列表 FIFO 排队；UI 只显示一张 PermissionCard，key=request_id；挨个批复后出队。顺带修答案串号与取消/回退后旧卡复活（去掉回滚里的 `|| !latest`，或加 dismissedRequestIds）。孤儿 ask 不恢复（封口失败可接受）。\n2) 紧接着：agentWs 在 onclose / connect 换代 / disconnect 时立刻 reject 全部 pendingRpc 并清定时器；不干等 30s；不自动重放旧请求。\n\n回归测试覆盖：队列 FIFO、单卡+key、旧卡不复活、断线/换代 reject。不 commit。禁区：引擎 UI、symlink 复制、desktop/。\n\n流程：GM 批 WP-034 → 我 start → 前端-web fill WP-037 方案报我审 → 我批后它 start 开工 → 完成后我交叉审/抽样核对 → 汇总到 WP-034.md → deliver 给 GM。\n工具需求：前端-web 报我，我认可后转工具集管家。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:31:21.718Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 波次1（独占 web）：(1) 同一会话并行权限询问改为底层排队、界面只显示一张卡，按真实待批列表挨个批复；顺带修答案串号（PermissionCard 缺 key）与取消/回退后旧卡复活。(2) 同包内紧接着：WebSocket 断线/换代时立刻 reject 全部 pendingRpc 并清定时器，不再干等 30s；不断线卡到恢复、不自动重放旧请求。不碰 desktop。孤儿 ask 不恢复（封口失败可接受）。附回归测试。"
+        },
+        {
+          "ts": "2026-10-12T11:41:12.691Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 波次1 独占 web，不碰 desktop。参考 WP-021-frontend.md（W1/W4/W5/W6）与 WP-033 已定口径。\n\n子包：WP-03"
+        },
+        {
+          "ts": "2026-10-12T11:41:12.912Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子包 WP-037 已建，请审 WP-034 方案"
+        },
+        {
+          "ts": "2026-10-12T11:41:41.740Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案对齐已定口径；批；先 start WP-034，再审 WP-037"
+        },
+        {
+          "ts": "2026-10-12T11:41:47.472Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批，下发 WP-037"
+        },
+        {
+          "ts": "2026-10-12T11:49:05.293Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总见 WP-034.md；明细 WP-034-web.md"
+        },
+        {
+          "ts": "2026-10-12T11:50:07.043Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：代码抽查+Node22 vitest 126/126",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-035",
+      "domain": "release-desktop",
+      "title": "desktop：自动重连/重启 + 进程单飞 + 下载体验",
+      "result": "desktop 自动恢复与下载体验达标并有测试/手测证据",
+      "done_when": [
+        "中层交叉审通过；GM 抽测通过；deliver"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by gm: 验收通过：代码抽查+desktop npm test 127/127",
+      "status_entered_at": null,
+      "parent": "WP-033",
+      "goal": "波次2起（独占 desktop，须等波次1 web 子包 done 后再 start，避免中层并行调度抢人）：(1) SSH 隧道与 sidecar 崩溃/退出后自动重连或重启，不丢给用户手动；生命周期单飞，防并发起远程/切工作区留下孤儿进程占锁。(2) 随后同域做组件下载：状态+百分比+网速可见，可暂停/停止/重试，断点续传。不碰 web。桌面 CI 本包不做。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "波次2 独占 desktop，不碰 web。桌面 CI 不做。参考 WP-021-frontend.md D1/D2/D4/D5/D6/D7 与 WP-033 口径 #4+#7。前置：WP-034 已 done。\n\n子包：WP-041（owner=frontend_desktop，审批=前端中层）→ 产物 .litecode/ops/artifacts/WP-035-desktop.md。\n\n子包目标（两步同 bot 串行）：\n1) 自动恢复 + 单飞（先做）\n- D1：ssh 隧道 exit/error 监听 + ServerAliveInterval/CountMax/ExitOnForwardFailure；断线后置 managedRemote 失效并通知；退避自动重连（可复用 reconnectRemote）。\n- D2：sidecar READY 后挂 exit 监听；非主动停止则提示/受限自动重启；stopSidecar 打主动停止标记防误报。\n- D4/D5：startRemoteSession / relaunchSidecar / connectRemote 生命周期单飞（mutex 或 promise 链），防双击 Connect、切工作区孤儿进程占锁。\n- 顺手：D8 managedRemote 赋值时机/catch 置 null（与恢复路径相关）。\n\n2) 下载体验（Step1 相关测绿后再做）\n- 状态+百分比+网速可见；暂停/停止/重试；断点续传（Range + .part + sha 复核）。\n- D7 cancel API + before-quit abort；D6 启动清扫过期 .tmp/.part。\n\n禁区：web/、引擎 UI、symlink 复制、桌面 CI。不 commit。\n\n流程：GM 批 WP-035 → 我 start → desktop fill WP-041 方案报我审 → 我批后它 start → 完后我交叉审抽样 → 汇总 WP-035.md → deliver 给 GM。\n工具需求：desktop 报我，我认可后转工具集管家。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:31:21.964Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 波次2起（独占 desktop，须等波次1 web 子包 done 后再 start，避免中层并行调度抢人）：(1) SSH 隧道与 sidecar 崩溃/退出后自动重连或重启，不丢给用户手动；生命周期单飞，防并发起远程/切工作区留下孤儿进程占锁。(2) 随后同域做组件下载：状态+百分比+网速可见，可暂停/停止/重试，断点续传。不碰 web。桌面 CI 本包不做。"
+        },
+        {
+          "ts": "2026-10-12T11:50:21.930Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 波次2 独占 desktop，不碰 web。桌面 CI 不做。参考 WP-021-frontend.md D1/D2/D4/D5/D6/D7 与 WP-033 "
+        },
+        {
+          "ts": "2026-10-12T11:50:27.142Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 波次2 独占 desktop，不碰 web。桌面 CI 不做。参考 WP-021-frontend.md D1/D2/D4/D5/D6/D7 与 WP-033 "
+        },
+        {
+          "ts": "2026-10-12T11:50:27.367Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子包 WP-041 已建，请审 WP-035 方案；未 start"
+        },
+        {
+          "ts": "2026-10-12T11:50:42.016Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "WP-034 已 done；方案对齐；两步串行正确；批"
+        },
+        {
+          "ts": "2026-10-12T11:50:48.195Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批，下发 WP-041"
+        },
+        {
+          "ts": "2026-10-12T11:59:14.970Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总见 WP-035.md；明细 WP-035-desktop.md；npm test 127/127"
+        },
+        {
+          "ts": "2026-10-12T12:00:06.669Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：代码抽查+desktop npm test 127/127",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-036",
+      "domain": "harness-core",
+      "title": "后端：进程生命周期统一 + 压缩DB真相 + workspace 覆盖",
+      "result": "三步均有测试绿；无进程泄露复现；compact/workspace 行为符合口径",
+      "done_when": [
+        "中层交叉审通过；GM 抽测通过；deliver"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-036-backend.md",
+      "progress": "closed done by gm: 验收通过：代码抽查+cargo 抽样全绿；035/039/040 issue 另关",
+      "status_entered_at": null,
+      "parent": "WP-033",
+      "goal": "后端波次（与 desktop 波次2代码面不交，可并行 start；域内必须串行分文件）：(1) 统一 custom tool 与 MCP 的进程生命周期（超时/取消杀组杀干净、Windows 宿主崩溃级联绑定）；调用面不合、协议层仍分开——对 custom 是增强。(2) 压缩以 Session DB 为唯一真相：落库成功后 reload 失败不得把内存退回压缩前快照（ISSUE-035）。(3) 再修 workspace 并发 create/write 静默覆盖（ISSUE-037）及跨盘移动（ISSUE-038）。文件追踪 take_changes 保持现状不修。不碰前端。中层只组织域 bot，不亲手改代码。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "与 desktop 波次2（WP-035）代码面不交，可并行 start。中层只组织/交叉审/汇总，不改 src/、tests/。参考 WP-033.md、WP-021-backend.md（ISSUE-035/037/038/039/040）。\n\n## 子包（均 drafting，等 GM 批 WP-036 后再令各域 fill）\n\n| 子包 | owner | 产物 | 主修 |\n|---|---|---|---|\n| WP-038 | tools | WP-036-tools.md | 统一 custom+MCP 进程生命周期（ISSUE-039/040） |\n| WP-039 | context | WP-036-context.md | 压缩以 Session DB 为唯一真相（ISSUE-035） |\n| WP-040 | ide | WP-036-ide.md | workspace 并发覆盖 + 跨盘移动（ISSUE-037/038） |\n\n未建 Session/Runtime 子包：ISSUE-035 修复面在 compact.rs；Session Compact 落库已正确；Runtime turn seam 本包不改。Session 以交叉审身份审 WP-039（不占子包）。\n\n## 文件归属（严格分文件；禁止跨域同改）\n\n**WP-038 Tools（域内串行：先 custom，再 mcp）**\n- src/tools/custom.rs — ISSUE-039（timeout/cancel/Finished 杀组 + recv/join 受 deadline）；ISSUE-040（spawn 后 bind_child_to_parent）\n- src/mcp/client.rs、src/mcp/pool.rs（必要时 src/mcp/mod.rs）— MCP spawn/kill/超时取消与 custom 生命周期口径对齐（杀干净、Windows Job 绑定）；协议层/请求匹配（ISSUE-034）不修\n- 本域测试（custom/mcp 生命周期回归）；不改 src/proc_lifetime.rs 实现（只调用现有 API）\n\n**WP-039 上下文**\n- src/context_pipeline/compact.rs — 落库成功后 reload 失败不得回滚压缩前内存；事件与库一致；审视 expected_revision 现取（不扩 Session schema）\n- 本域测试（可注入 reload 失败）；不改 session/、runtime/、reminder/file_tracker\n\n**WP-040 IDE 基座**\n- src/workspace/service.rs — 仅 ISSUE-037/038 相关（create_file / write_file_bytes(overwrite=false) 竞态；rename_path overwrite 跨盘走 move_via_copy）\n- 必要时本域 file_ops；探针 tests/wp028_probe_s2_create_race.rs、tests/wp028_probe_s1_xdev_move.rs 升级/保留为回归\n- 硬门禁：symlink 产品行为（refuse_top_level_symlink_copy 等）与引擎产品冻结；service.rs 禁止无关改动\n\n## 域内串行 / 跨域并行\n\n- 跨域：三子包文件不交，可并行 start（满足 WP-033「严格分文件」）。\n- 域内：Tools 必须先 custom.rs 再 mcp/*；Context/IDE 单文件主路径，改动串行提交到本域产物。\n- 共享 target：各域 cargo test 排队，不并行占锁。\n\n## 交叉审\n\n- Tools ↔ IDE：生命周期（custom/MCP kill 树、bind、与 IDE 既有 X1–X4/proc 口径）；双方在对方产物末附「交叉审」段。\n- Context ↔ Session：compact DB 真相（落库成功后内存/事件不得假装未压缩）；Session 读 WP-039 产物并签字，无需 Session 改码。\n- IDE 自审 037/038 + 确认 symlink/引擎未碰。\n\n## 不做 / 禁区\n\n- take_changes / file_tracker / ISSUE-032\n- 前端 web/desktop；MCP/custom 调用面合并；ISSUE-034 协议层\n- 引擎产品；symlink 产品行为（037/038 以外）\n- 中层不亲手改代码/测试；不 commit/push\n\n## 流程\n\n1. GM 批 WP-036 → 我 start\n2. 三域 fill 子包方案 → submit 给我（backend_mid）\n3. 我 approve → 各域 start 开工（可并行；Tools 域内串文件）\n4. 域 deliver → 我验收 close；组织交叉审；抽查证据\n5. 汇总 `.litecode/ops/artifacts/WP-036-backend.md` → deliver WP-036 给 GM\n工具需求：域报我 → 我认可后转工具集管家。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:31:22.195Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 后端波次（与 desktop 波次2代码面不交，可并行 start；域内必须串行分文件）：(1) 统一 custom tool 与 MCP 的进程生命周期（超时/取消杀组杀干净、Windows 宿主崩溃级联绑定）；调用面不合、协议层仍分开——对 custom 是增强。(2) 压缩以 Session DB 为唯一真相：落库成功后 reload 失败不得把内存退回压缩前快照（ISSUE-035）。(3) 再修 workspace 并发 create/write 静默覆盖（ISSUE-037）及跨盘移动（ISSUE-038）。文件追踪 take_changes 保持现状不修。不碰前端。中层只组织域 bot，不亲手改代码。"
+        },
+        {
+          "ts": "2026-10-12T11:42:32.599Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: 与 desktop 波次2（WP-035）代码面不交，可并行 start。中层只组织/交叉审/汇总，不改 src/、tests/。参考 WP-033.md、WP"
+        },
+        {
+          "ts": "2026-10-12T11:42:32.805Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-036-backend.md\""
+        },
+        {
+          "ts": "2026-10-12T11:42:33.007Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "子包 WP-038(Tools)/WP-039(上下文)/WP-040(IDE) 已建（drafting）；未建 Session/Runtime（ISSUE-035 仅 compact.rs）。请审 WP-036 方案。"
+        },
+        {
+          "ts": "2026-10-12T11:43:00.671Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "分文件并行可；子包须你批 plan 后才 start；ISSUE-034/032 排除正确"
+        },
+        {
+          "ts": "2026-10-12T11:43:07.972Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T11:54:17.364Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "三子包 done；汇总 WP-036-backend.md"
+        },
+        {
+          "ts": "2026-10-12T11:55:48.477Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：代码抽查+cargo 抽样全绿；035/039/040 issue 另关",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-037",
+      "domain": "client-ux",
+      "title": "WP-034 web：权限队列+单卡 + 断线 reject pendingRpc",
+      "result": "只改 web/。(1) 同一会话并行权限询问：底层按真实待批列表 FIFO 排队、UI 只显示一张 PermissionCard 并设 key=request_id，挨个批复；修取消/回退后旧卡复活（去掉 || !latest 或加 dismissedRequestIds）。(2) 紧接着：agentWs 断线/换代立刻 reject 全部 pendingRpc 并清定时器，不干等 30s、不自动重放。孤儿 ask 不恢复。附回归测试。不碰 desktop。不 commit。",
+      "done_when": [
+        "权限队列+单卡有测试绿",
+        "串号与旧卡复活已修并有测试",
+        "断线/换代立刻 reject pendingRpc 有测试",
+        "中层交叉审通过"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-034-web.md",
+      "progress": "closed done by frontend_mid: 抽样核对：permissionQueue+key+rejectAllPendingRpc 均到位；W6 已去 || !latest；箱内 Node20 无法复跑 vitest，采信产物 126 passed",
+      "status_entered_at": null,
+      "parent": "WP-034",
+      "goal": "只改 web/。(1) 同一会话并行权限询问：底层按真实待批列表 FIFO 排队、UI 只显示一张 PermissionCard 并设 key=request_id，挨个批复；修取消/回退后旧卡复活（去掉 || !latest 或加 dismissedRequestIds）。(2) 紧接着：agentWs 断线/换代立刻 reject 全部 pendingRpc 并清定时器，不干等 30s、不自动重放。孤儿 ask 不恢复。附回归测试。不碰 desktop。不 commit。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "WP-037 方案（web，两步串行）。对齐 WP-033 已定口径 #1（UI 单卡 + 底层 FIFO 排队挨个批复）、#2（短线重连不恢复孤儿 ask）、#6（断线/换代立刻 reject pendingRpc，不干等 30s、不自动重放）。修 WP-021 的 W4/W5/W6，再修 W1。产物事后写 .litecode/ops/artifacts/WP-034-web.md。禁区：desktop、引擎 UI、symlink 复制。不 commit，等明示。\n\n## 现状锚点（只读确认）\n- W4：turnStore.ts:59 单槽 pendingPermission；:686-711 onPermissionRequest 直接覆盖 → 同 session 后到 ask 吞掉前一个。\n- W5：AgentPanel.tsx:613-625 PermissionCard 无 key → 覆盖时本地勾选/文本串号。\n- W6：turnStore.ts:677 grant 失败回滚 `latest?.request_id === pending.request_id || !latest` → cancel(:624)/revert(:640) 清空后旧卡复活。\n- W1：agentWs.ts pendingRpc(:77) 仅超时(:282-285)与响应(:393-395)清理；onclose(:165-189)/connect 换代(:103)/disconnect(:243) 不 reject → 在途挂 30s。\n\n## Step 1 — 多 Ask FIFO + UI 单卡 + 禁复活（先做）\n目标：同会话并行 permission_request 不丢；UI 永远只渲一张卡；cancel/revert/grant 失败不把已dismiss 的卡复活。\n\n数据模型（turnStore.ts）\n- 将 TurnSlice.pendingPermission: PendingPermission | null 改为 permissionQueue: PendingPermission[]（FIFO）。\n- 派生头：UI/对外仍可读「当前卡」= queue[0] ?? null（选择器或薄 getter，避免 AgentPanel 大改）。\n- onPermissionRequest：按 request_id 入队（已存在则忽略或更新同 id，防重复通知）；不覆盖。\n- grantPermission：只对队头操作；RPC 成功后按 request_id 出队（若队头已变则只删匹配 id）；失败回滚见下。\n- cancel / onTranscriptReverted / onTurnStarted / 服务端清槽路径：整队清空（或至少清空当前 turn 相关项），与现网「回合结束无卡」一致。\n- W6 修法（选简单可测的）：去掉 catch 里 `|| !latest`；仅当 `latest?.request_id === pending.request_id`（即该卡仍是队头）才恢复。可选加固：维护 dismissedRequestIds:Set，cancel/revert/主动关卡写入，grant 失败若 id 在集合内永不回插；集合在 turn 结束时清空。二选一落地，优先「去 || !latest + 出队语义」；若单测暴露竞态再加 Set。\n\nUI（AgentPanel.tsx / PermissionCard）\n- PermissionCard 加 key={pendingPermission.request_id}（W5）。\n- 绑定 queue 头字段；批复回调仍走 grantPermission(sessionId, …)。\n- PermissionModal/AskUserCard 本地 state 随 key 重挂，无需改内部（除非后续发现异会话串号，本包不做）。\n\n回归测试（先写/补，不删旧测）\n- web/src/stores/turnStore.test.ts：① 连续两次 onPermissionRequest → queue 长度 2、头为先到；② grant 成功出队，头变为第二个；③ cancel/revert 后 queue 空，随后 grant 失败不得回插；④ 去掉 || !latest 行为单测。\n- web/src/dockview/panels/AgentPanel.test.tsx 或 PermissionModal.test.tsx：换 request_id 时组件重挂（key），旧勾选不带到新卡（可测 remount / 无残留 data-testid）。\n\n触达文件\n- 改：web/src/stores/turnStore.ts、web/src/dockview/panels/AgentPanel.tsx\n- 测：web/src/stores/turnStore.test.ts、必要时 AgentPanel.test.tsx / PermissionModal.test.tsx\n- 只读扫：所有读 pendingPermission 的引用改为队头选择器（rg 后逐个改，避免漏）。\n\n## Step 2 — 断线/换代立刻 reject pendingRpc（Step 1 合并测绿后再做）\n目标：W1；对齐口径 #6/#2。不恢复孤儿 ask（本包不写 snapshot 回灌；W10 不做）。\n\nagentWs.ts\n- 抽 rejectAllPendingRpc(reason)：遍历 pendingRpc，调用各 reject（其闭包已 clearTimeout），再 clear Map。\n- 调用点：① ws.onclose（current generation）；② connect() 在 generation+=1 / previous?.close() 时（旧代在途一并刷掉）；③ disconnect() 换代后。\n- 错误文案统一如 \"WebSocket closed\"（或区分 intentional），保证上层 grantPermission.catch 走失败 toast，且 Step1 的「仅队头可恢复」+ 断线后若 cancel 已清队则不复活。\n- 不自动重放任何 RPC；重连只建新连接，pending 不迁移。\n\nconnectionStore\n- 若仅透传 sendRpc→agentWs.sendJsonRpc，预计无逻辑改；确认断线后 in-flight permission/cancel/revert Promise 立刻 reject，无额外重试队列即可。不改重连策略本身。\n\n孤儿 ask\n- 按口径 #2：断线后 queue 内未批复项不在重连/snapshot 恢复；可选在 onclose 联动 turnStore 清 permissionQueue（若 connection 层能拿到 session 列表则清；否则依赖「RPC 失败 + 不回插」与服务端封口）。方案默认：agentWs 只 reject RPC；turnStore 侧不因重连自动回灌（现 sessionStore snapshot 本无 pending_permission，保持）。若需在断线时主动清卡，于 connectionStore 断线回调里对可见 session 调 clearPermissionQueue——实现时二选一写进产物，优先「不回灌 + reject」最小改动。\n\n回归测试\n- web/src/api/agentWs.test.ts：① 发 sendJsonRpc 后 mock close → Promise 立刻 reject，不等 30s；② connect 换代 / disconnect 同样 reject；③ 定时器被清（可用 fake timers 断言无 timeout 再 reject）。\n- web/src/stores/turnStore.test.ts（联或单）：permission RPC 在途时模拟 WS closed → catch 触发且队头策略不错误复活已 cancel 卡。\n\n触达文件\n- 改：web/src/api/agentWs.ts（必要时 connectionStore.ts 仅断线清卡钩子）\n- 测：web/src/api/agentWs.test.ts；必要时 connectionStore.test.ts / turnStore.test.ts\n\n## 产物与门禁\n- 实施记录事后写入 .litecode/ops/artifacts/WP-034-web.md（改动点、测例、与口径对照）。\n- 顺序硬门：Step1 相关测绿 → 再 Step2 → 全量相关 vitest 绿 → 私信前端中层 → 再 deliver。\n- 不做：desktop、引擎 UI、symlink、commit、ask 重连恢复（W10）、改协议/snapshot 字段。\n- 要新工具/越权先报前端中层。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:41:07.014Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只改 web/。(1) 同一会话并行权限询问：底层按真实待批列表 FIFO 排队、UI 只显示一张 PermissionCard 并设 key=request_id，挨个批复；修取消/回退后旧卡复活（去掉 || !latest 或加 dismissedRequestIds）。(2) 紧接着：agentWs 断线/换代立刻 reject 全部 pendingRpc 并清定时器，不干等 30s、不自动重放。孤儿 ask 不恢复。附回归测试。不碰 desktop。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T11:42:49.403Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: WP-037 方案（web，两步串行）。对齐 WP-033 已定口径 #1（UI 单卡 + 底层 FIFO 排队挨个批复）、#2（短线重连不恢复孤儿 ask）、"
+        },
+        {
+          "ts": "2026-10-12T11:42:52.599Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": "方案待审：两步串行 Step1 FIFO+单卡+禁复活 → Step2 断线 reject pendingRpc；对齐 WP-033 #1/#2/#6；产物 WP-034-web.md"
+        },
+        {
+          "ts": "2026-10-12T11:43:22.060Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐口径 #1/#2/#6；两步串行可开工。注意：断线清卡优先最小改动（不回灌+reject），若加 clearPermissionQueue 写进产物说明。"
+        },
+        {
+          "ts": "2026-10-12T11:43:50.550Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": "前端中层已批，开工"
+        },
+        {
+          "ts": "2026-10-12T11:48:24.150Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "WP-034-web.md：Step1 FIFO+单卡+W6、Step2 rejectAllPendingRpc；126/126 绿；无 clearPermissionQueue；未 commit"
+        },
+        {
+          "ts": "2026-10-12T11:49:05.064Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "抽样核对：permissionQueue+key+rejectAllPendingRpc 均到位；W6 已去 || !latest；箱内 Node20 无法复跑 vitest，采信产物 126 passed",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-038",
+      "domain": "tools-permission",
+      "title": "WP-036/Tools：统一 custom+MCP 进程生命周期",
+      "result": "custom/MCP 超时取消杀干净、Windows 级联绑定；无调用面合并；测试绿；产物 WP-036-tools.md",
+      "done_when": [
+        "ISSUE-039 修完有测；ISSUE-040 bind 接入有测；MCP spawn/kill 与 custom 生命周期口径一致有测；IDE 交叉审通过；中层验收 close"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-036-tools.md",
+      "progress": "closed done by backend_mid: 验收通过：039/040 已落（有界 drain、Finished 组杀、bind）；custom 23/23 mcp 6/6；proc_lifetime 未改；与 IDE 交叉审闭合",
+      "status_entered_at": null,
+      "parent": "WP-036",
+      "goal": "只改 tools/mcp 进程生命周期，不合并调用面、不碰协议层（ISSUE-034 不修）。(1) ISSUE-039：custom.rs 孙进程持管道时 timeout/cancel 必须在期限内返回并 kill 进程组；Finished 路径 kill 组；recv/join 受 deadline 约束。(2) ISSUE-040：custom spawn 后调用 proc_lifetime::bind_child_to_parent。(3) MCP（client.rs/pool.rs 等）：spawn/kill/超时取消与 custom 对齐——杀干净、可绑 Windows Job；协议/请求匹配仍分开。文件串行：先 custom.rs，再 mcp/*。不改 proc_lifetime.rs 实现（只调用）。IDE 交叉审生命周期。附回归测试。不 commit。不碰前端/workspace/compact。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-038 Tools 方案（tools，direct）— 统一 custom+MCP 进程生命周期\n父包 WP-036；产物本文件。状态：方案填写，**未 start、未改代码**。ISSUE-034 明确不在本包。\n\n### 0 目标与范围\n- **目标**：统一 custom 与 MCP stdio 子进程生命周期——超时/取消在期限内返回并杀干净进程组；Windows 父子绑定；覆盖 ISSUE-039 / ISSUE-040。\n- **文件串行（硬门禁）**：①先 `src/tools/custom.rs`；②再 `src/mcp/{client,pool}.rs`（必要时 `mod.rs` 仅转发，不扩面）。\n- **只调用、不改** `src/proc_lifetime.rs`（IDE 拥有）。`bind_child_to_parent` 按 LSP/code_search 既有用法调用。\n- **不碰**：协议层/请求匹配（ISSUE-034）、前端、引擎产品、symlink 产品行为、`take_changes`、不 commit/push。\n- **不合并调用面**：custom 与 MCP 各自保留现有 API；对齐的是 spawn/kill/超时取消语义，不是抽公共 wrapper 强行合并。\n\n### 1 ISSUE-039（custom：X1+X2+X3 / B7）修复方向\n证据（WP-027 交叉审接受）：\n- `wait_child_cancellable`：`Ok(Some(status))` 后 `rx.recv()` 无界（~:449-457）——孙进程持 stdout 时超时/取消失效。\n- `run_sync_with_lifecycle`：`WaitEnd::Finished` 不 `kill_child_tree`（~:334-366）；stdin writer `join()` 无界（~:339-346）。\n\n复现（登记）：`sh -c 'sleep 30 & echo done'`，timeout=2 → 约 30s 才返回；结束后 sleep 仍在。\n\n**修法（本包实施，批后再动）**：\n1. **有界 drain**：`Ok(Some)` / wait 兜底拿到 status 后，用剩余 deadline（及 cancel）做 `recv_timeout`；超时或取消 → 走「杀组 + 短等 drain」再返回 TimedOut/Cancelled（不再无界 hang）。\n2. **Finished 后组杀**：直接子进程已退出后对组 `kill_child_tree`（组号仍被存活孙进程占用，不会复用；与 WP-027 Tools 回应一致）。杀后再有界 join stdin writer（杀组关闭继承的 stdin → EPIPE，避免 X3）。\n3. **Cancelled/TimedOut**：保持现有「先组杀再 `child.wait()`」；读线程/writer 仍 detach，依赖组杀后 EOF/EPIPE；若仍超时则记录但不阻塞返回。\n4. **不改** `kill_child_tree` 的 unix `kill(-pid)` / Windows `taskkill /T /F` 语义（WP-027 已对齐 pty）；本包只补调用点与有界等待。\n5. X5（WaitFailed 后 killpg 理论误杀）低优先级：本包顺手在 WaitFailed 路径确认 pid 仍为本 child 的 id 再杀；不扩大范围。\n\n### 2 ISSUE-040（custom：bind_child_to_parent）\n- spawn 成功后立即 `crate::proc_lifetime::bind_child_to_parent(child.id())`（对照 `lsp/server.rs:168`、`engines/code_search_ipc/client.rs:51`）。\n- Unix 为 no-op（文档已说明）；主要收益在 Windows Job Object。不改 `proc_lifetime` 实现。\n- 与 `process_group(0)` 并存：组杀负责 timeout/cancel 清理；Job 负责宿主崩溃级联。\n\n### 3 MCP 对齐（client.rs → pool.rs，第二步）\n现状缺口：\n- `McpStdioClient::new`：spawn 后无 `process_group`、无 `bind_child_to_parent`。\n- `kill` / `start_kill` / `Drop`：仅 `child.kill()` / `start_kill()`，Unix 不杀孙进程；Windows tokio kill 也不保证 /T 树杀。\n- pool：`stop_inner` / `kill_child` / Drop 均委托上述 kill；timeout 路径（`mcp_tool` / pool 握手 timeout）依赖 `stop_on_hub` → 同一缺口。\n\n**对齐方案（不碰协议读写）**：\n1. **spawn（client.rs）**：unix `process_group(0)`（tokio Command 的 unix extension）；spawn 后 `bind_child_to_parent(child.id().unwrap_or(0))`。\n2. **杀干净**：抽出与 custom 同语义的组杀（client 内私有 helper，或复用同模式代码；**不**改 `proc_lifetime`、**不**抽跨 crate 大重构）：\n   - Unix：`kill(-pid, SIGKILL)` + `child.start_kill()`/`wait` 回收；\n   - Windows：`taskkill /PID /T /F`（与 custom/pty 一致）再 `start_kill`/`kill` 兜底。\n   - `kill()`、`start_kill()`、`Drop` 均走该路径。\n3. **pool.rs**：不改调度/锁模型；确认 `stop_inner` / `kill_child` / Drop / 超时后 `stop_on_hub` 落到新 kill。必要时仅加注释或极小转发，不改协议。\n4. **mod.rs**：若需对外签名不变则不动；仅当枚举转发必须时改一行。\n5. **明确不做**：`send_request` 无超时/错号（ISSUE-034）——只在产物注明「生命周期与协议分离」。\n\n### 4 与现有 helper 的关系\n| Helper | 归属 | 本包用法 |\n|---|---|---|\n| `proc_lifetime::bind_child_to_parent` | IDE | custom + MCP spawn 后调用；不改实现 |\n| `kill_child_tree`（custom 私有） | Tools | 保留；Finished/超时/取消/WaitFailed 调用；MCP 侧平行实现同语义（tokio Child vs std Child，不硬共用） |\n| `wait_child_cancellable` + deadline | Tools | 补 recv_timeout / Finished 组杀 |\n| terminal/pty 组杀 | IDE | 语义对照，不改 pty |\n\n### 5 测试（批后写；先 custom 测绿再动 MCP）\n**custom.rs（ISSUE-039/040）**：\n1. `timeout_returns_while_grandchild_holds_stdout`：`sh -c 'sleep 30 & echo done'`，timeout=2 → 在约 deadline+裕量内返回 TimedOut/或 Finished（echo 先出则 Finished+组杀），且 `pgrep`/临时 marker 证明 sleep 被杀（扩展现有 `timeout_kills_grandchild_process`）。\n2. `finished_kills_orphaned_grandchild`：子进程先退出、孙进程仍跑 → 调用返回后孙进程不在。\n3. `finished_stdin_writer_join_bounded`（可选，unix）：大 stdin + 孙进程继承不读 → 不 hang（依赖组杀 EPIPE）。\n4. bind：编译期保证调用点存在；Windows 行为依赖 Job，本 box（Linux）以调用点+注释为准，不伪测 no-op。\n\n**mcp（client / 必要时 pool）**：\n5. spawn 后进程在组内：timeout/kill 后无残留孙进程（stdio 假 server：`sh -c 'sleep 30 & …'` 或最小可执行）。\n6. `kill()` / Drop 杀树：子+孙均退出。\n7. 既有 mcp/pool 测回归全过；不改协议测断言。\n\n实跑：`cargo test`（box rustc 1.99.0，**勿**再前缀 `PATH=/home/box/.cargo/bin`）；共享 target 排队；尽量只跑本域 `tools::custom` / `mcp::`。\n\n### 6 交叉审（与 IDE 基座，模式同 WP-027）\n- **交 IDE 审**：custom 有界 recv + Finished 组杀 + `bind_child_to_parent`；MCP spawn 组+Job + 组杀 kill/Drop；是否与 pty/LSP 生命周期口径一致。\n- **审 IDE**：对照 `WP-022-ide.md` / pty / `proc_lifetime` 文档；确认我们只调用不改 `proc_lifetime`；若 IDE 在 WP-040 改 workspace，不审其 037/038 文件竞态（非本包）。\n- 双方在对方产物末尾附「交叉审」段；IDE 未回则 deliver 前标「待补」。\n\n### 7 工具需求\n- **无额外工具**。rustc 1.99.0 已就绪；`cargo test` / `rustc -V` 直接用。\n- 若共享 target 锁长时间占满，排队等待，不改并行策略。\n\n### 8 禁区与验收\n- 禁：前端、引擎产品、symlink 产品行为、`take_changes`、改 `proc_lifetime.rs`、修 ISSUE-034、commit/push。\n- done-when 预期：ISSUE-039/040 关闭或证据闭合；custom→mcp 串行改完；上述回归测绿；交叉审段落写入本产物；不 commit。\n\n### 9 执行顺序（仅批示 start 后）\n1. custom.rs：有界 drain + Finished 组杀 + bind → 单测绿。\n2. mcp/client.rs：spawn 组+bind + 组杀 kill/Drop → 单测绿。\n3. mcp/pool.rs（±mod.rs）：确认委托路径，必要时最小改动。\n4. 本域回归 + 写交叉审 + 私信中层 → deliver WP-038。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:42:13.591Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只改 tools/mcp 进程生命周期，不合并调用面、不碰协议层（ISSUE-034 不修）。(1) ISSUE-039：custom.rs 孙进程持管道时 timeout/cancel 必须在期限内返回并 kill 进程组；Finished 路径 kill 组；recv/join 受 deadline 约束。(2) ISSUE-040：custom spawn 后调用 proc_lifetime::bind_child_to_parent。(3) MCP（client.rs/pool.rs 等）：spawn/kill/超时取消与 custom 对齐——杀干净、可绑 Windows Job；协议/请求匹配仍分开。文件串行：先 custom.rs，再 mcp/*。不改 proc_lifetime.rs 实现（只调用）。IDE 交叉审生命周期。附回归测试。不 commit。不碰前端/workspace/compact。"
+        },
+        {
+          "ts": "2026-10-12T11:44:15.653Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: ## WP-038 Tools 方案（tools，direct）— 统一 custom+MCP 进程生命周期\n父包 WP-036；产物本文件。状态：方案填写，*"
+        },
+        {
+          "ts": "2026-10-12T11:44:15.875Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "方案已填：ISSUE-039/040；串行 custom→mcp；只调 proc_lifetime；产物 WP-036-tools.md；无额外工具；未 start"
+        },
+        {
+          "ts": "2026-10-12T11:44:28.999Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准：串行 custom→mcp，039/040 在包内，034 排除，不改 proc_lifetime"
+        },
+        {
+          "ts": "2026-10-12T11:44:51.182Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "方案已批，开工：先 custom ISSUE-039/040"
+        },
+        {
+          "ts": "2026-10-12T11:50:24.586Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "WP-036-tools.md：ISSUE-039/040+MCP生命周期已修测绿；交叉审 IDE WP-040 已写（接受I1-I6，回应X1/X2/X4已闭合）；未 commit"
+        },
+        {
+          "ts": "2026-10-12T11:50:38.582Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：039/040 已落（有界 drain、Finished 组杀、bind）；custom 23/23 mcp 6/6；proc_lifetime 未改；与 IDE 交叉审闭合",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-039",
+      "domain": "harness-core",
+      "title": "WP-036/上下文：压缩以 Session DB 为唯一真相",
+      "result": "compact 落库成功后 reload 失败不再回滚内存；DB 为唯一真相；测试绿；产物 WP-036-context.md",
+      "done_when": [
+        "ISSUE-035 修完：落库成功后 reload 失败不回滚压缩前内存；事件与库一致；有回归测试；Session 交叉审通过；中层验收 close"
+      ],
+      "owner": "context",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-036-context.md",
+      "progress": "closed done by backend_mid: 验收通过：Session 交叉审有条件接受（pending-cache 同回合可能重复，非阻断）；落库成功后 reload 失败不回滚；测试绿",
+      "status_entered_at": null,
+      "parent": "WP-036",
+      "goal": "只改 src/context_pipeline/compact.rs（及相关本域测试）。ISSUE-035：mutate_blocking(Compact) 落库成功后，若 working_set_blocking/reload 失败，不得把内存 rows 回滚到压缩前 snapshot，也不得把生命周期事件标成与库矛盾的 Failed（内存是缓存，Session DB 为唯一真相；失败应表现为缓存未刷新/可自愈，而不是假装压缩没发生）。顺带审视 expected_revision 现取+unwrap_or(0) 是否需在本包收紧（不扩大到 Session schema）。不改 Session/Runtime 源码；不修 take_changes/file_tracker（ISSUE-032 禁区）。Session 交叉审 compact DB 真相口径。附回归测试（可注入 reload 失败）。不 commit。不碰前端/tools/workspace。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-039 方案（context）— ISSUE-035：压缩以 Session DB 为唯一真相\n\nowner: context　approver: backend_mid　parent: WP-036　artifact: `.litecode/ops/artifacts/WP-036-context.md`\n状态：仅方案，未改产品代码，不 commit。禁区：前端 / 引擎产品 / symlink / take_changes·file_tracker；不改 session/runtime 源码。\n\n## 1. 目标与口径\n\n- **Session DB 为唯一真相**；内存 working set 是缓存。\n- `mutate_blocking(SessionMutation::Compact)` **已成功** 之后，若 `working_set_blocking`（reload）失败：\n  - **不得** `*rows = snapshot`（不得把内存退回压缩前）；\n  - **不得** 发与库矛盾的 `CompactionStage::Failed`（不得假装压缩没发生）；\n  - 失败应表现为 **缓存未刷新 / 可自愈**，压缩本身视为已成功。\n- 顺带收紧本文件内 `expected_revision` 现取 + `unwrap_or(0)`（不扩大到 Session schema）。\n- 范围：**只改** `src/context_pipeline/compact.rs` + 本域测试；产物 `WP-036-context.md`；Session 交叉审本产物。\n\n## 2. 现状证据（file:line）\n\n| 点 | 位置 | 行为 |\n|---|---|---|\n| 快照 | `compact.rs:185` | `let snapshot = rows.clone()`（split_off 前） |\n| persist | `:283-305` | `mutate_blocking(Compact)`；失败时 `*rows=snapshot` + Failed — **正确保留**（库未改） |\n| **bug** | `:308-322` | persist **成功** 后 reload Err → `*rows=snapshot` + Failed + `return Err` — **与库矛盾** |\n| revision | `:286` | `revision_blocking(session_id).unwrap_or(0)` 在提交时现取；读失败变 0，乐观锁形同虚设 |\n| 安全网 | `:291` | `expected_prefix: Some(prefix_len)`（Runtime WP-026 交叉审：sibling safety net，revision 竞态危害有限） |\n| 自愈旁路 | `context_pipeline/mod.rs:211-230` | `sync_turn_working` 在 cursor 变化时重载；但 `compact_step` 成功路径会把 `log_max_seq` 对齐当前 cursor（`:294-300`），若内存仍是压缩前内容会短窗口内假装未压缩 |\n\nRuntime history on ISSUE-035：确认 reload 回滚+事件不一致成立；`expected_prefix` 兜底使 revision 现取非阻断级 — 本包仍按 goal 修主路径并收紧 revision。\n\n## 3. 具体改法（仅 compact.rs）\n\n### 3.1 `expected_revision`（ISSUE-035 第二节，本包收紧）\n\n- 在取 snapshot 时（约 `:185`）**一次**读取：\n  - `let expected_revision = sessions.data().revision_blocking(session_id)?;`\n  - **fail-closed**：读失败直接 `Err`，**删除** `unwrap_or(0)`。\n- Compact mutation 使用该捕获值，不再在 `:286` 现取。\n- 效果：snapshot→persist 之间的并发写入可被 revision 挡住（配合既有 `expected_prefix`）；不改 Session schema / `SessionManager::expected_revision`。\n- persist **失败**分支（`:293-304`）逻辑不变：回滚 snapshot + Failed。\n\n### 3.2 reload 失败分支（主修，`:308-322`）\n\npersist 已成功后：\n\n1. **禁止** `*rows = snapshot`。\n2. **禁止** `CompactionStage::Failed`。\n3. 发 `CompactionStage::Succeeded`（库已压缩 = 真相）。\n4. 内存作**应急缓存**（非 fold 权威，仅避免继续端上压缩前内容；g2 死亡清单仍约束成功热路径必须 `working_set_blocking` reload，本分支是 reload 已失败的降级）：\n   - 用当前 `transcript`（first_pass 后已是 summary+kept 的 `Item` 列表）映射为 `WorkingRow::pending(item)`，再 `extend(tail)`；\n   - `*rows =` 该应急缓存；\n   - `tracing::warn` 记录 reload 错误（缓存非 fold、待后续 sync/begin_turn 自愈）。\n5. `prompt_baseline.clear()` 与成功路径一致（库已压缩，基线应丢弃）。\n6. **`return Ok(true)`**（压缩已发生；调用方 `compact_step` / 口径「auto compact Err→停回合」不把「缓存 reload 失败」当成压缩失败）。\n\n**明确不改的分支**（仍回滚 snapshot + Failed/Canceled）：\n\n- keep-recent skip（`:196`）、cut 无 seq（`:203`）、LLM Err（`:246`）、cancel 于 persist 前（`:253`）、token budget 仍超（`:266`）、**persist Err（`:294`）**。\n\n### 3.3 测试注入（不改 Session）\n\n- 在 `compact.rs` 内加 `#[cfg(test)]` 钩子（`thread_local!` 或等价），仅劫持 **persist 成功之后** 的那一次 `working_set_blocking`，注入 `Err`；生产路径零开销。\n- **不**改 `src/session/**`，不新增 Session 测试 seam。\n\n## 4. 测试计划\n\n| 测试 | 动作 | 断言 |\n|---|---|---|\n| **新** `compact.rs` 单测（或 `tests/stage_a_ctx_consistency.rs` 本域用例）`compact_persist_ok_reload_err_keeps_db_truth` | 真实 Session + ScriptedProvider；打开 inject → `compact_now` / `compact_transcript` | 返回 `Ok(true)`；事件生命周期为 Started→**Succeeded**（无 Failed）；清 inject 后 `working_set_blocking` 含 summary（DB 已压缩）；内存 rows **不是**压缩前 snapshot（首条为 summary / 或 pending summary+kept，且含 tail 语义）；`compact_failure_calibers` 的「失败回滚 snapshot」口径仍只覆盖 **persist 前/ persist Err** |\n| 既有 `pipeline_compact_reloads_working_set_from_fold` | 不改意图 | 成功热路径仍 reload fold，与 g2 一致 |\n| 既有 CountingProvider / LLM 单测 | 不动 | 仍证明统一 stream 入口 |\n| `compact_failure_calibers` / manual e2e | 回归，不改口径 | empty-summary 等 **未落库** 失败仍回滚；本修不放宽死亡清单 |\n\n证据命令（在 `/workspace/litecode`，**不加 PATH 前缀**；等共享 target 锁）：\n\n```text\ncargo test --lib context_pipeline::compact\ncargo test --lib context_pipeline\ncargo test --test stage_a_ctx_consistency pipeline_compact_reloads_working_set_from_fold\ncargo test --test stage_a_ctx_consistency compact_persist_ok_reload_err_keeps_db_truth\ncargo test --test compact_failure_calibers\ncargo test --lib death_list\n```\n\n（若新测挂在 lib 则改对应 filter；产物写明 rustc/`rustc -V` 与源码状态。）\n\n## 5. 产物与交叉审\n\n- 产物路径：`.litecode/ops/artifacts/WP-036-context.md`（实施记录 + 测试证据 + Session 交叉审段）。\n- **Session 交叉审请核对**：\n  1. Compact mutation 成功后，DB fold/working_set 是否仍是唯一权威；\n  2. reload 失败是否仍发 Succeeded、是否不再 Failed；\n  3. 应急 `WorkingRow::pending` 缓存是否可接受（seq 空、待 sync 自愈），会否误导 Session 读模型；\n  4. `expected_revision` 改为 snapshot 时捕获 + fail-closed 是否与 Session 乐观锁语义一致；`expected_prefix` 是否仍在；\n  5. 本 diff **零** session/runtime/file_tracker 改动。\n\n## 6. 工具需求\n\n- **无**。rustc 1.99 已可用；注入在 compact.rs `cfg(test)` 内完成；不申请 Session seam / 新工具。\n\n## 7. 执行顺序（获批 start 后）\n\n1. `wp.mjs start --id WP-039 --as context`\n2. 改 `compact.rs`（revision 捕获 + reload 分支 + test hook）\n3. 补回归测试并跑上表命令\n4. 写 `WP-036-context.md`，请 Session 填交叉审\n5. `deliver`；中层验收 close\n6. **不 commit**（等 GM 批提交）\n\n## 8. 风险与非目标\n\n- 应急缓存在成功后短暂窗口内 `log_seq` 可能为空，依赖后续 `begin_turn` / cursor 变化自愈；Session 审是否接受。\n- 不修 ISSUE-032（take_changes）、ISSUE-033（cancel→Error）。\n- 不放宽/删除 death_list；g2 成功路径断言保留。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:42:21.044Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只改 src/context_pipeline/compact.rs（及相关本域测试）。ISSUE-035：mutate_blocking(Compact) 落库成功后，若 working_set_blocking/reload 失败，不得把内存 rows 回滚到压缩前 snapshot，也不得把生命周期事件标成与库矛盾的 Failed（内存是缓存，Session DB 为唯一真相；失败应表现为缓存未刷新/可自愈，而不是假装压缩没发生）。顺带审视 expected_revision 现取+unwrap_or(0) 是否需在本包收紧（不扩大到 Session schema）。不改 Session/Runtime 源码；不修 take_changes/file_tracker（ISSUE-032 禁区）。Session 交叉审 compact DB 真相口径。附回归测试（可注入 reload 失败）。不 commit。不碰前端/tools/workspace。"
+        },
+        {
+          "ts": "2026-10-12T11:44:47.225Z",
+          "actor": "context",
+          "action": "fill",
+          "note": "direct: # WP-039 方案（context）— ISSUE-035：压缩以 Session DB 为唯一真相\n\nowner: context　approver: b"
+        },
+        {
+          "ts": "2026-10-12T11:44:49.970Z",
+          "actor": "context",
+          "action": "submit",
+          "note": "ISSUE-035 plan only: DB sole truth after Compact persist; no product code changed"
+        },
+        {
+          "ts": "2026-10-12T11:45:14.994Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准：落库成功后 reload 失败不回滚、发 Succeeded；expected_revision fail-closed；只动 compact.rs"
+        },
+        {
+          "ts": "2026-10-12T11:45:29.784Z",
+          "actor": "context",
+          "action": "start",
+          "note": "ISSUE-035 implement: DB sole truth after Compact persist"
+        },
+        {
+          "ts": "2026-10-12T11:50:56.180Z",
+          "actor": "context",
+          "action": "deliver",
+          "note": "ISSUE-035 fixed in compact.rs; artifact WP-036-context.md; Session cross-review pending"
+        },
+        {
+          "ts": "2026-10-12T11:53:08.929Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：Session 交叉审有条件接受（pending-cache 同回合可能重复，非阻断）；落库成功后 reload 失败不回滚；测试绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-040",
+      "domain": "ide-substrate",
+      "title": "WP-036/IDE：workspace 并发覆盖 + 跨盘移动",
+      "result": "037/038 修完有测；service.rs 仅 037/038 相关改动；产物 WP-036-ide.md",
+      "done_when": [
+        "ISSUE-037 并发 create/write 不再静默覆盖有测；ISSUE-038 跨盘 overwrite rename 走 move_via_copy 有测；symlink/引擎产品行为未改；中层验收 close"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-036-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：037 atomic_create 排他、038 EXDEV→move_via_copy 且不误删；探针去 ignore 默认绿；禁区未碰",
+      "status_entered_at": null,
+      "parent": "WP-036",
+      "goal": "只改 workspace 的 ISSUE-037/038，文件以 src/workspace/service.rs 为主（必要时本域 file_ops/测试）；探针 tests/wp028_probe_s2_create_race.rs、tests/wp028_probe_s1_xdev_move.rs 可升级为正式回归。(1) ISSUE-037：create_file / write_file_bytes(overwrite=false) 消除先查后写竞态，并发不得静默覆盖，已存在必须 AlreadyExists。(2) ISSUE-038：rename_path(overwrite=true) 跨盘时走 move_via_copy，不得在 replace_file 的 EXDEV 处直接失败。硬门禁：不改 symlink 产品行为（refuse_top_level_symlink_copy 等）、不碰引擎产品、不修 take_changes/file_tracker。本域内自审 037/038；不 commit。不碰前端/tools/mcp/compact。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-040 方案（ide）——只填方案，不开工\n\n基线：HEAD `104fd43`，分支 `ops/team-framework`，2026-10-12 HKT。\n父包：WP-036（in_progress）。产物：`.litecode/ops/artifacts/WP-036-ide.md`（批准开工后再写）。\n本步：只 fill/submit；不改产品代码、不改测试、不 commit。\n\n严重度归类（Andy 谱系）：ISSUE-037 ≈ 产品缺陷 / 常触发普通 bug（并发 create 必现）；ISSUE-038 ≈ 罕见边角（跨盘 + overwrite）。\n\n## 目标对齐（board goal）\n只修 workspace ISSUE-037/038：以 `src/workspace/service.rs` 为主（必要时本域 `file_ops` + 探针升级）。\n硬门禁：不改 symlink 产品行为（`refuse_top_level_symlink_copy` 等）、不碰引擎产品、不修 take_changes/file_tracker、不碰前端/tools/mcp/compact、不 commit。\n\n## 1. ISSUE-037 — 并发 create / write(overwrite=false) 静默覆盖\n\n**现状（WP-028 已实测）**：`create_file`（约 270–287）与 `write_file_bytes(overwrite=false)`（约 404–433）先 `exists()` 再 `atomic_write`/`atomic_write_bytes`；后者最终 `rename` 可覆盖。探针 `tests/wp028_probe_s2_create_race.rs`：8 线程 × 300 轮，两 API 均 300/300 多成功。\n\n**修复思路**：去掉「先查后写」的 TOCTOU，改为**排他创建**。\n- 在 `src/workspace/file_ops.rs` 新增 `atomic_create` / `atomic_create_bytes`（名称可微调）：写 sibling tmp → 以**目标不存在才成功**的方式落盘。优先序：\n  1. Unix：`hard_link(tmp, path)`（目标已存在则 EEXIST）+ 删 tmp；或等价 `open(O_CREAT|O_EXCL)` 声明所有权后再写入（若选此路径须保证失败不留半文件或可接受空文件+文档说明）。\n  2. 跨平台兜底：`OpenOptions::create_new(true)` 打开目标并写入；`ErrorKind::AlreadyExists` 映射为契约错误。\n- `create_file`：改走排他创建；去掉或降级为仅优化的 `exists()` 预检（预检失败仍以排他结果为准）。\n- `write_file_bytes`：`overwrite=false` 走排他创建；`overwrite=true` **仍用**现有 `atomic_write_bytes`（允许覆盖）。\n- 错误对齐：`AlreadyExists` → `WorkspaceError::AlreadyExists(rel)`（HTTP CONFLICT），**不要**落成裸 `WorkspaceError::Io(AlreadyExists)`。`IsDir` / `TooLarge` / sandbox 错误保持现状。\n- 不动：`mkdir` 的 exists 竞态（非本 issue）；symlink 跟随语义仅随现有 `atomic_write_follow` 惯例，不为 037 扩 symlink 行为。\n\n**探针**：去掉 `#[ignore]`（或改 ignore 文案为回归说明后默认跑）；断言保持「多成功轮次 == 0」。修复后默认 `cargo test --test wp028_probe_s2_create_race` 必须绿。\n\n**关闭条件**：探针默认绿；单线程「已存在 → AlreadyExists」旧测仍绿；无静默覆盖。\n\n## 2. ISSUE-038 — 跨盘 overwrite rename → CrossesDevices\n\n**现状（WP-028 已实测）**：`rename_path`（约 349–358）在 `dest_existed && overwrite && is_file_replace` 时先 `replace_file`（仍是 `rename`）；EXDEV 直接 `?` 返回，其后的 `is_cross_device → move_via_copy` 分支不可达。源与原目标均完好，但操作不可用。原「失败删原目标」假设已推翻。探针：`tests/wp028_probe_s1_xdev_move.rs`。\n\n**修复思路**（只动 rename 失败处理 + 必要的 move_via_copy 安全加固）：\n1. `replace_file` 失败且 `is_cross_device` → 改调 `move_via_copy`，不得把 EXDEV 直接抛给调用方。同盘 `replace_file` 成功路径不变。\n2. **失败不丢原目标**：今日 `move_via_copy` 在 `copy_recursive` 失败时无条件 `cleanup_incomplete_dest(to_abs)`；若目标**事先已存在**，这会误删原文件。本包必须收紧：仅当本次调用**新创建了**目标（或仅清理 sibling tmp）时才清理；目标预先存在时，依赖 `copy_recursive` 已有的 tmp+`replace_file` 路径（tmp 与 dst 同盘，replace 不 EXDEV），失败只丢 tmp、原 dst 完好。\n3. 成功语义与探针一致：dst 内容为源内容，源删除。\n\n**硬门禁**：不改 `refuse_top_level_symlink_copy` / `copy_recursive` 拒 symlink 行为；不碰 `copy_path` 产品语义（除非 move_via_copy 清理逻辑的最小共享修复严格必要且测覆盖）。\n\n**探针**：去掉 `#[ignore]`；环境无双文件系统时允许 skip（打印原因），有 `/dev/shm`+仓库 ext4 时必须断言 Ok + 内容/源删除。默认跑应绿（或显式 skip，不得红）。\n\n**关闭条件**：跨盘 overwrite 成功走复制回退；失败时原目标字节不变；同盘 overwrite / 跨盘非覆盖旧路径回归绿。\n\n## 3. service.rs 未提交改动\n当前 `git status`：`src/workspace/service.rs` **工作树干净**，无未提交纯 fmt。本包不附带 fmt-only 提交；只提交（由上层批次决定何时 commit）037/038 必要 diff。本步仍不改文件、不 commit。\n\n## 4. 测试计划\n- 环境：在 `/workspace/litecode` 直接 `rustc`/`cargo`（勿再加 `PATH=/home/box/.cargo/bin` 前缀）；确认 `rustc -V` → 1.99.0。\n- 共享 target：与其他域串行；遇锁排队。\n- 命令形态：`HOME=/workspace/litecode/.tmp/home timeout 600 cargo test --test <name> </dev/null`（必要时 timeout 120 单测）。\n- 必跑：`wp028_probe_s2_create_race`、`wp028_probe_s1_xdev_move`（默认无 ignore，应绿）；`workspace` 相关 lib 测 / 既有 create-rename 测；触及 `file_ops` 则跑其单元测。\n- 不跑：引擎产品、symlink 复制死亡清单扩面（仅确认未改相关断言所依赖的行为）。\n\n## 5. 产物 WP-036-ide.md（开工后写）\n含：改动文件列表（service.rs / ±file_ops.rs / 两探针）；037/038 修复前后对照与复现命令；issue 关闭证据；自审「未碰 symlink/引擎/take_changes」；交叉审段。\n\n## 6. 交叉审（Tools ↔ IDE 进程生命周期）\n本包主战场是 workspace 文件 API，**无新增子进程**。线索交 Tools：此前 WP-028 对 `custom.rs` 的 X1/X2/X4（Finished 后后台仍占 stdout 导致 recv 卡死；timeout/cancel 杀组；Windows Job 绑定）仍有效，本包不重复审。若开工读码发现 move/create 路径意外拉起进程再补一句；否则产物交叉审段写「本包无进程生命周期增量；认同 WP-038 对 X1–X4 的修复口径」。\n\n## 7. 明确不碰\n前端；engines 产品；take_changes / file_tracker；symlink 产品行为；MCP/custom/compact；不 commit / 不 push。需要新工具：无（现有 rustc 1.99 + timeout 足够）。若跨盘探针环境缺双 FS，报后端中层，不申请新工具。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:42:21.287Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只改 workspace 的 ISSUE-037/038，文件以 src/workspace/service.rs 为主（必要时本域 file_ops/测试）；探针 tests/wp028_probe_s2_create_race.rs、tests/wp028_probe_s1_xdev_move.rs 可升级为正式回归。(1) ISSUE-037：create_file / write_file_bytes(overwrite=false) 消除先查后写竞态，并发不得静默覆盖，已存在必须 AlreadyExists。(2) ISSUE-038：rename_path(overwrite=true) 跨盘时走 move_via_copy，不得在 replace_file 的 EXDEV 处直接失败。硬门禁：不改 symlink 产品行为（refuse_top_level_symlink_copy 等）、不碰引擎产品、不修 take_changes/file_tracker。本域内自审 037/038；不 commit。不碰前端/tools/mcp/compact。"
+        },
+        {
+          "ts": "2026-10-12T11:44:43.870Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-040 方案（ide）——只填方案，不开工\n\n基线：HEAD `104fd43`，分支 `ops/team-framework`，2026-10-12"
+        },
+        {
+          "ts": "2026-10-12T11:44:44.107Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "ide 方案已填：037 排他创建；038 replace EXDEV→move_via_copy 且失败保原目标；产物 WP-036-ide.md；无新工具；不开工不 commit"
+        },
+        {
+          "ts": "2026-10-12T11:45:05.323Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准：037 排他创建、038 EXDEV 走 move_via_copy 且不误删原文件；探针去 ignore；不碰 symlink 产品行为"
+        },
+        {
+          "ts": "2026-10-12T11:45:24.272Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开工：修 ISSUE-037/038，不 commit"
+        },
+        {
+          "ts": "2026-10-12T11:49:22.530Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-036-ide.md\" -> \".litecode/ops/artifacts/WP-036-ide.md\""
+        },
+        {
+          "ts": "2026-10-12T11:49:22.745Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"037/038 fixed; probes green; artifact written; awaiting del"
+        },
+        {
+          "ts": "2026-10-12T11:49:29.757Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "WP-036-ide.md：037/038 已修，探针与 workspace_api 绿；issue closed；不 commit；请验收"
+        },
+        {
+          "ts": "2026-10-12T11:49:57.962Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：037 atomic_create 排他、038 EXDEV→move_via_copy 且不误删；探针去 ignore 默认绿；禁区未碰",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-041",
+      "domain": "release-desktop",
+      "title": "WP-035 desktop：隧道/sidecar 自动恢复+单飞 → 下载体验",
+      "result": "只改 desktop/scripts（及相关 Windows workflows 仅当必要）。两步串行：(1) SSH 隧道与 sidecar 崩溃/退出后自动重连或重启；生命周期单飞防并发起远程/切工作区留孤儿；(2) 组件下载：状态+百分比+网速，可暂停/停止/重试，断点续传。不碰 web。桌面 CI 不做。不 commit。附回归测/手测证据。",
+      "done_when": [
+        "隧道/sidecar 自动恢复有证据",
+        "生命周期单飞有证据",
+        "下载体验达标有证据",
+        "中层交叉审通过"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-035-desktop.md",
+      "progress": "closed done by frontend_mid: 抽样核对 D1/D2/D4/D5/D8/D6/D7 落点；npm test 127/127 复跑通过；已知缺口已记",
+      "status_entered_at": null,
+      "parent": "WP-035",
+      "goal": "只改 desktop/scripts（及相关 Windows workflows 仅当必要）。两步串行：(1) SSH 隧道与 sidecar 崩溃/退出后自动重连或重启；生命周期单飞防并发起远程/切工作区留孤儿；(2) 组件下载：状态+百分比+网速，可暂停/停止/重试，断点续传。不碰 web。桌面 CI 不做。不 commit。附回归测/手测证据。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-041 方案（串行两步：恢复+单飞 → 下载体验）\n\n范围：只改 `desktop/`、`scripts/`；workflows 仅当真有必要。不碰 web、不做桌面 CI、不 commit、不碰引擎 UI / symlink。产物：`.litecode/ops/artifacts/WP-035-desktop.md`。口径：WP-033 #4+#7；对症 WP-021 D1/D2/D4/D5/D6/D7，顺手 D8。\n\n## 步序（硬串行）\n先合步 (1) 并让相关单测绿，再开步 (2)。两步不要并行改同一文件（重点 `main.ts` / `components.ts`）。\n\n---\n\n## 步 (1) 隧道/sidecar 自动恢复 + 生命周期单飞（D1/D2/D4/D5，顺手 D8）\n\n### 1.1 SSH 隧道（D1）\n- `ssh-session.ts` `startTunnel`：加 `-o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes`；挂 `exit`/`error`。\n- 隧道非主动退出 → 通知 main：清/标 `managedRemote` 失效，向主窗发断开事件；退避自动重连（复用既有 `reconnectRemote` 路径，限次）。\n- 主动 `stopManagedRemote` 先打「主动停」标记，避免误重连。\n\n### 1.2 sidecar 崩溃重启（D2）\n- `startSidecar` 返回后在 main 挂 post-ready `exit`：非主动停 → 提示 + 受限次数自动重启（清旧句柄再 start）。\n- `stopSidecar` 先标主动停。\n\n### 1.3 生命周期单飞（D4/D5）\n- Open Remote：`startRemoteSession` / `completeRemoteSession` 单飞（进行中拒绝或复用同一 promise）；hub 侧在 promise 结束前禁用 Connect（若只能动 desktop：main 硬拒即可）。\n- sidecar 生命周期（relaunch / connectRemote / stop）：promise 链或 mutex 串行化，避免双 stop 同句柄后双 start 留孤儿。\n\n### 1.4 顺手 D8\n- `connectRemote` 失败 catch：`if (managedRemote?.session === session) managedRemote = null`（或成功后再赋值）。\n\n### 步(1) 证据\n- 单测：隧道 exit 回调触发断开标记；主动停不重连；sidecar post-ready exit → 重启计数；单飞重入拒绝/复用；D8 失败后句柄为 null。\n- 手测清单（写入产物）：杀隧道进程 / 杀 sidecar / 双击 Connect / 切工作区中途再连。\n- 回归：`cd desktop && npm test` 全绿。\n\n---\n\n## 步 (2) 组件下载体验（D7 + D6 清扫；口径 #7）\n\n在步(1)稳定后改 `components.ts` + 必要 IPC/preload 暴露（仍不碰 web UI 工程；若壳侧需事件通道，只加 desktop 侧可测 API，进度展示沿用既有 remote-progress / hub 通道或等价桌面侧事件，不改 `web/`）。\n\n### 2.1 可观察状态\n- 进度事件扩展：状态（idle/downloading/paused/stopped/error/done）+ 百分比 + 瞬时网速（bytes/s，滑动窗口）。\n\n### 2.2 控制面\n- Manager 持有 `AbortController`：`pause`（abort 并保留 `.part`）、`stop`（abort + 删 `.part`/staging）、`retry`（从当前策略续或重来）。\n- `before-quit` abort 在途下载。\n\n### 2.3 断点续传\n- 写 `.part`；重试/续传发 `Range`（若服务器不支持 206 → 回退整文件重下并记日志）。\n- 完成后整文件 sha256 复核；失败不落盘为「已安装」。\n\n### 2.4 半成品清扫（D6）\n- 构造或首次 download 时清扫 `bundles/.tmp` 过期/无主 `.part` 与 staging（避免误删其它实例：nonce 命名或年龄阈值）。\n\n### 步(2) 证据\n- 单测：进度含 speed；pause/stop/retry；Range 续传（mock fetch）；abort 后清理策略；启动清扫 `.tmp`；quit 路径 abort。\n- 手测：弱网大文件暂停再续、停止、失败重试、下载中关窗。\n- 回归：`cd desktop && npm test` 全绿。\n\n---\n\n## 不做\nweb；桌面 CI（D3）；electron-updater；引擎 UI；symlink 复制；workflows 除非步(1)(2)实现被迫改（默认不动）。\n\n## 风险与依赖\n- 自动重连需防抖/限次，避免与用户主动 Disconnect 打架（主动停标记）。\n- Range 依赖 GitHub Releases；不支持时优雅降级。\n- 与后端 WP-036 并行但文件面不交；本包不改 `src/`。\n\n## 工具\n现有 `node:test` + 既有 mock fetch 即可；若需新工具先报前端中层。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T11:50:21.687Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只改 desktop/scripts（及相关 Windows workflows 仅当必要）。两步串行：(1) SSH 隧道与 sidecar 崩溃/退出后自动重连或重启；生命周期单飞防并发起远程/切工作区留孤儿；(2) 组件下载：状态+百分比+网速，可暂停/停止/重试，断点续传。不碰 web。桌面 CI 不做。不 commit。附回归测/手测证据。"
+        },
+        {
+          "ts": "2026-10-12T11:51:22.964Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-041 方案（串行两步：恢复+单飞 → 下载体验）\n\n范围：只改 `desktop/`、`scripts/`；workflows 仅当真有必要。不碰 "
+        },
+        {
+          "ts": "2026-10-12T11:51:23.185Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "方案待审：两步串行"
+        },
+        {
+          "ts": "2026-10-12T11:51:36.081Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐 #4+#7 与 D1/D2/D4/D5/D6/D7/D8；两步硬串行可开工。进度通道只加 desktop 侧，不碰 web。"
+        },
+        {
+          "ts": "2026-10-12T11:51:46.686Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "开工：步1恢复+单飞"
+        },
+        {
+          "ts": "2026-10-12T11:58:41.474Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "两步串行落地；127 pass；产物 WP-035-desktop.md"
+        },
+        {
+          "ts": "2026-10-12T11:59:14.741Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "抽样核对 D1/D2/D4/D5/D8/D6/D7 落点；npm test 127/127 复跑通过；已知缺口已记",
           "to": "done"
         }
       ]

@@ -12,7 +12,26 @@ export type SidecarHandle = {
   readyUrl: string;
   token: string;
   workspace: string;
+  /** True after stopSidecar — post-ready exit must not auto-restart. */
+  intentionalStop: boolean;
+  markIntentionalStop(): void;
 };
+
+export type SidecarExitInfo = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  intentional: boolean;
+};
+
+/** Attach a post-READY exit listener. Safe to call once per handle. */
+export function watchSidecarExit(
+  handle: SidecarHandle,
+  onExit: (info: SidecarExitInfo) => void,
+): void {
+  handle.process.once("exit", (code, signal) => {
+    onExit({ code, signal, intentional: handle.intentionalStop });
+  });
+}
 
 const READY_RE = /^LITECODE_READY (http:\/\/127\.0\.0\.1:\d+\/?)\s*$/;
 const MAX_CAPTURED_CHARS = 8_000;
@@ -95,7 +114,17 @@ export async function startSidecar(opts: {
 
   const timeoutMs = opts.timeoutMs ?? 90_000;
   const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace });
-  return { process: child, readyUrl, token: opts.token, workspace };
+  const handle: SidecarHandle = {
+    process: child,
+    readyUrl,
+    token: opts.token,
+    workspace,
+    intentionalStop: false,
+    markIntentionalStop() {
+      handle.intentionalStop = true;
+    },
+  };
+  return handle;
 }
 
 function waitForReady(
@@ -184,6 +213,7 @@ function waitForReady(
 
 export async function stopSidecar(handle: SidecarHandle | null): Promise<void> {
   if (!handle) return;
+  handle.markIntentionalStop();
   const child = handle.process;
   if (child.killed || child.exitCode !== null) return;
 

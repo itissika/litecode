@@ -1,5 +1,5 @@
-//! WP-028 probe S2: create_file / write_file_bytes(overwrite=false) check-then-write race.
-//! Expectation per contract: at most one concurrent create of the same path succeeds.
+//! WP-040 regression (ISSUE-037): create_file / write_file_bytes(overwrite=false)
+//! must not let concurrent creators both succeed (no silent clobber).
 use litecode::workspace::WorkspaceService;
 use std::sync::{Arc, Barrier};
 
@@ -31,19 +31,21 @@ where
         }
     }
     println!("{label}: rounds={rounds} threads={threads} rounds_with_multiple_successes={double}");
-    assert_eq!(double, 0, "{label}: concurrent creates both reported success (later write clobbers earlier)");
+    assert_eq!(
+        double, 0,
+        "{label}: concurrent creates both reported success (later write clobbers earlier)"
+    );
 }
 
 #[test]
-#[ignore = "WP-028 probe: ISSUE-037"]
 fn probe_s2_create_file_race() {
     race("create_file", |s, p, t| s.create_file(p, &format!("writer {t}")).is_ok());
 }
 
 #[test]
-#[ignore = "WP-028 probe: ISSUE-037"]
 fn probe_s2_write_file_bytes_no_overwrite_race() {
     race("write_file_bytes(overwrite=false)", |s, p, t| {
-        s.write_file_bytes(p, format!("writer {t}").as_bytes(), false).is_ok()
+        s.write_file_bytes(p, format!("writer {t}").as_bytes(), false)
+            .is_ok()
     });
 }

@@ -11,15 +11,21 @@ import { BUNDLED_MODEL_REL, LINUX_TAR_NAME, isModelDirReady } from "./bundle-pat
 import {
   COMPONENTS_MANIFEST_NAME,
   ComponentManager,
+  cleanupComponentTmp,
   compareVersions,
+  componentPartPath,
   componentPayloadLocation,
+  DownloadControlError,
   extractTarGz,
   installedLinuxTar,
   installedModelDir,
+  isDownloadControlError,
   parseManifest,
+  progressPercent,
   readInstallRecord,
   resolveComponentSource,
   selectComponent,
+  SpeedTracker,
   versionInRange,
   type ComponentProgressEvent,
   type ComponentsManifest,
@@ -334,5 +340,238 @@ describe("ComponentManager", () => {
     assert.equal(offline.status("embed-model").error, null);
     assert.equal(offline.status("embed-model").installed, true);
     assert.equal((await offline.ensure("embed-model")).downloaded, false);
+  });
+});
+
+describe("download UX helpers (D6/D7)", () => {
+  it("tracks sliding-window speed and percent", () => {
+    const speed = new SpeedTracker();
+    speed.push(0, 1_000);
+    speed.push(1_000_000, 2_000);
+    assert.equal(speed.bytesPerSecond(), 1_000_000);
+    assert.equal(progressPercent(50, 200), 25);
+    assert.equal(progressPercent(undefined, 0), 0);
+  });
+
+  it("cleans stale .part and staging under bundles/.tmp", () => {
+    const bundles = tmp("lc-tmp-clean-");
+    const tmpDir = path.join(bundles, ".tmp");
+    fs.mkdirSync(tmpDir, { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "linux-server-abcdef.part"), "x");
+    fs.mkdirSync(path.join(tmpDir, "embed-model-deadbeef"));
+    fs.writeFileSync(path.join(tmpDir, "keep-me.txt"), "y");
+    assert.equal(cleanupComponentTmp(tmpDir), 2);
+    assert.deepEqual(fs.readdirSync(tmpDir).sort(), ["keep-me.txt"]);
+  });
+});
+
+describe("ComponentManager pause/stop/retry + Range (D7)", () => {
+  it("emits status, percent, and bytesPerSecond while downloading", async () => {
+    const { out, manifest } = buildComponents();
+    const linux = manifest.components.find((c) => c.id === "linux-server")!;
+    const payload = fs.readFileSync(path.join(out, linux.file));
+
+    let pullCount = 0;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(COMPONENTS_MANIFEST_NAME)) {
+        return new Response(fs.readFileSync(path.join(out, COMPONENTS_MANIFEST_NAME)), { status: 200 });
+      }
+      // Stream in small chunks so progress fires with speed.
+      pullCount += 1;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const chunk = 4;
+          let off = 0;
+          const push = () => {
+            if (off >= payload.length) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(payload.subarray(off, off + chunk));
+            off += chunk;
+            setTimeout(push, 1);
+          };
+          push();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof fetch;
+
+    const bundles = tmp("lc-dl-speed-");
+    const events: ComponentProgressEvent[] = [];
+    const mgr = manager({ bundles, env: {}, fetchImpl, events });
+    await mgr.ensure("linux-server");
+    const downloading = events.filter((e) => e.phase === "downloading" && e.received && e.received > 0);
+    assert.ok(downloading.length >= 1, "expected progress events");
+    assert.ok(downloading.some((e) => typeof e.percent === "number"));
+    assert.ok(downloading.some((e) => e.status === "downloading"));
+    assert.ok(downloading.some((e) => typeof e.bytesPerSecond === "number"));
+    assert.equal(pullCount >= 1, true);
+  });
+
+  it("pauses (keeps .part), stops (deletes .part), and retries with Range resume", async () => {
+    const { out, manifest } = buildComponents();
+    const linux = manifest.components.find((c) => c.id === "linux-server")!;
+    const full = fs.readFileSync(path.join(out, linux.file));
+    const mid = Math.floor(full.length / 2);
+
+    let rangeSeen = false;
+    let fullFetches = 0;
+    let gate!: () => void;
+    let blocked = new Promise<void>((r) => {
+      gate = r;
+    });
+    let blockOnce = true;
+
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(COMPONENTS_MANIFEST_NAME)) {
+        return new Response(fs.readFileSync(path.join(out, COMPONENTS_MANIFEST_NAME)), { status: 200 });
+      }
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      const range = headers.Range || headers.range;
+      if (range) {
+        rangeSeen = true;
+        assert.equal(range, `bytes=${mid}-`);
+        return new Response(full.subarray(mid), {
+          status: 206,
+          headers: { "Content-Range": `bytes ${mid}-${full.length - 1}/${full.length}` },
+        });
+      }
+      fullFetches += 1;
+      if (blockOnce) {
+        blockOnce = false;
+        const stream = new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(full.subarray(0, mid));
+            await blocked;
+            // After pause the reader is cancelled; ignore further pushes.
+            try {
+              controller.close();
+            } catch {
+              /* ignore */
+            }
+          },
+        });
+        return new Response(stream, { status: 200 });
+      }
+      return new Response(full, { status: 200 });
+    }) as typeof fetch;
+
+    const bundles = tmp("lc-dl-pause-");
+    const events: ComponentProgressEvent[] = [];
+    const mgr = manager({ bundles, env: {}, fetchImpl, events });
+
+    const first = mgr.ensure("linux-server");
+    // Wait until half is on disk.
+    const part = componentPartPath(path.join(bundles, ".tmp"), "linux-server", linux.sha256);
+    for (let i = 0; i < 200; i++) {
+      if (fs.existsSync(part) && fs.statSync(part).size >= mid) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.ok(fs.existsSync(part), "partial .part should exist before pause");
+    assert.equal(mgr.pause("linux-server"), true);
+    gate();
+    await assert.rejects(first, (err: unknown) => isDownloadControlError(err) && err.kind === "pause");
+    assert.ok(fs.existsSync(part), "pause must keep .part");
+    assert.equal(mgr.status("linux-server").status, "paused");
+
+    // Retry should Range-resume from mid.
+    const result = await mgr.retry("linux-server");
+    assert.equal(result.downloaded, true);
+    assert.ok(rangeSeen, "expected Range resume request");
+    assert.equal(fs.readFileSync(result.path).equals(full), true);
+    assert.ok(!fs.existsSync(part), "part removed after success");
+
+    // Stop deletes an in-progress part.
+    blockOnce = true;
+    blocked = new Promise<void>((r) => {
+      gate = r;
+    });
+    // Remove installed so ensure downloads again.
+    fs.rmSync(result.path, { force: true });
+    fs.rmSync(`${result.path}.sha256`, { force: true });
+    fs.rmSync(path.join(bundles, "components.json"), { force: true });
+    const mgr2 = manager({ bundles, env: {}, fetchImpl });
+    const second = mgr2.ensure("linux-server");
+    for (let i = 0; i < 200; i++) {
+      if (fs.existsSync(part) && fs.statSync(part).size >= mid) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(mgr2.stop("linux-server"), true);
+    gate();
+    await assert.rejects(second, (err: unknown) => isDownloadControlError(err) && err.kind === "stop");
+    assert.ok(!fs.existsSync(part), "stop must delete .part");
+    void fullFetches;
+  });
+
+  it("falls back to full re-download when server ignores Range", async () => {
+    const { out, manifest } = buildComponents();
+    const linux = manifest.components.find((c) => c.id === "linux-server")!;
+    const full = fs.readFileSync(path.join(out, linux.file));
+    const bundles = tmp("lc-dl-norange-");
+
+    let sawRange = false;
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith(COMPONENTS_MANIFEST_NAME)) {
+        return new Response(fs.readFileSync(path.join(out, COMPONENTS_MANIFEST_NAME)), { status: 200 });
+      }
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      if (headers.Range || headers.range) sawRange = true;
+      // Pretend we do not support Range — always 200 with full body.
+      return new Response(full, { status: 200 });
+    }) as typeof fetch;
+
+    // Construct first so startup tmp cleanup runs, then seed a partial .part.
+    const mgr = manager({ bundles, env: {}, fetchImpl });
+    const part = componentPartPath(path.join(bundles, ".tmp"), "linux-server", linux.sha256);
+    fs.mkdirSync(path.dirname(part), { recursive: true });
+    fs.writeFileSync(part, full.subarray(0, 4));
+    const res = await mgr.ensure("linux-server");
+    assert.equal(res.downloaded, true);
+    assert.ok(sawRange, "client should attempt Range when .part exists");
+    assert.equal(fs.readFileSync(res.path).equals(full), true);
+  });
+
+  it("abortAll pauses in-flight downloads (before-quit path)", async () => {
+    const { out, manifest } = buildComponents();
+    const linux = manifest.components.find((c) => c.id === "linux-server")!;
+    const full = fs.readFileSync(path.join(out, linux.file));
+    let release!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const fetchImpl = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(COMPONENTS_MANIFEST_NAME)) {
+        return new Response(fs.readFileSync(path.join(out, COMPONENTS_MANIFEST_NAME)), { status: 200 });
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          controller.enqueue(full.subarray(0, 2));
+          await hold;
+          try {
+            controller.close();
+          } catch {
+            /* ignore */
+          }
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }) as typeof fetch;
+    const bundles = tmp("lc-dl-abortall-");
+    const mgr = manager({ bundles, env: {}, fetchImpl });
+    const job = mgr.ensure("linux-server");
+    const part = componentPartPath(path.join(bundles, ".tmp"), "linux-server", linux.sha256);
+    for (let i = 0; i < 200; i++) {
+      if (fs.existsSync(part)) break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    mgr.abortAll();
+    release();
+    await assert.rejects(job, DownloadControlError);
+    assert.ok(fs.existsSync(part), "abortAll behaves like pause (keeps .part)");
   });
 });

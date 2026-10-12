@@ -10,7 +10,7 @@
   ],
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "basis": [
     "A5"
@@ -38,6 +38,11 @@
       "ts": "2026-10-12T16:05:00+08:00",
       "by": "ide",
       "change": "WP-028 探针复现，开单；修复另开包"
+    },
+    {
+      "ts": "2026-10-12T19:50:00+08:00",
+      "by": "ide",
+      "change": "WP-040: replace_file EXDEV→move_via_copy，失败不误删原目标；探针 wp028_probe_s1 默认绿；closed"
     }
   ]
 }

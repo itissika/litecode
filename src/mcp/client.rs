@@ -32,10 +32,20 @@ impl McpStdioClient {
         if let Some(cwd) = cwd {
             cmd.current_dir(cwd);
         }
+        // Own process group so kill_process_tree can reach grandchildren
+        // (servers that wrap `sh -c` / node spawn), matching custom tools.
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             LitecodeError::ToolExecution(format!("failed to spawn MCP server '{}': {}", command, e))
         })?;
+        // Windows Job Object (no-op on Unix): host crash must not leave the
+        // server running. Call before the pid can be reused. Aligns with
+        // ISSUE-040 / LSP / custom tools. Does not touch proc_lifetime.rs.
+        crate::proc_lifetime::bind_child_to_parent(child.id().unwrap_or(0));
 
         let stdin = child.stdin.take().expect("stdin piped but missing");
         let stdout = child.stdout.take().expect("stdout piped but missing");
@@ -168,18 +178,105 @@ impl McpStdioClient {
         }
     }
 
-    /// Kill the child process (used to tear down a stuck/timed-out server).
+    /// Kill the child process tree (used to tear down a stuck/timed-out server).
+    ///
+    /// Matches custom-tool `kill_child_tree`: Unix process-group SIGKILL,
+    /// Windows `taskkill /T /F`. Protocol/request matching (ISSUE-034) is
+    /// intentionally untouched.
     pub async fn kill(&mut self) {
+        kill_process_tree(&mut self.child);
         let _ = self.child.kill().await;
     }
 
     pub fn start_kill(&mut self) {
+        kill_process_tree(&mut self.child);
         let _ = self.child.start_kill();
+    }
+}
+
+/// Best-effort group/tree kill for an MCP stdio server. Safe to call after the
+/// direct child has already exited (Unix pgid still held by grandchildren).
+fn kill_process_tree(child: &mut Child) {
+    let Some(pid) = child.id() else {
+        return;
+    };
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(unix)]
+    {
+        let _ = child;
+        // Negative pid = whole group created via process_group(0).
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = child.start_kill();
     }
 }
 
 impl Drop for McpStdioClient {
     fn drop(&mut self) {
+        kill_process_tree(&mut self.child);
         let _ = self.child.start_kill();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_reaps_grandchild_process() {
+        let marker = std::env::temp_dir().join(format!("lc-mcp-gc-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 3; touch {}) & wait", marker.display());
+        let mut client = McpStdioClient::new(
+            "sh",
+            &[String::from("-c"), script],
+            &HashMap::new(),
+            None,
+        )
+        .expect("spawn");
+        // Let the grandchild start before we kill the tree.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        client.kill().await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !marker.exists(),
+            "MCP kill must reach grandchildren (process group / tree kill)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_reaps_grandchild_process() {
+        let marker = std::env::temp_dir().join(format!("lc-mcp-drop-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 3; touch {}) & wait", marker.display());
+        {
+            let _client = McpStdioClient::new(
+                "sh",
+                &[String::from("-c"), script],
+                &HashMap::new(),
+                None,
+            )
+            .expect("spawn");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Drop triggers start_kill + group kill.
+        }
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !marker.exists(),
+            "MCP Drop must reach grandchildren"
+        );
     }
 }

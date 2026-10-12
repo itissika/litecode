@@ -261,3 +261,66 @@ describe("AgentWsClient liveness", () => {
     expect(socketsCreated).toBe(1);
   });
 });
+
+describe("AgentWsClient pendingRpc reject on close/generation (W1)", () => {
+  function startInFlight(client: AgentWsClient): Promise<unknown> {
+    openAndHello(client);
+    const pending = client.sendJsonRpc("agent/permission", {
+      request_id: "req-1",
+      session_id: "s1",
+    });
+    // Prevent unhandled rejection if close rejects before the test awaits.
+    void pending.catch(() => {});
+    return pending;
+  }
+
+  it("rejects in-flight RPC immediately on socket close (no 30s wait)", async () => {
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope: () => {},
+      reconnect: false,
+    });
+    const pending = startInFlight(client);
+    const ws = (client as unknown as { ws: MockWebSocket }).ws;
+    ws.close();
+    await expect(pending).rejects.toThrow(/WebSocket closed/);
+  });
+
+  it("rejects in-flight RPC on disconnect", async () => {
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope: () => {},
+    });
+    const pending = startInFlight(client);
+    client.disconnect();
+    await expect(pending).rejects.toThrow(/WebSocket closed/);
+  });
+
+  it("rejects in-flight RPC when connect() bumps generation", async () => {
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope: () => {},
+      reconnect: false,
+    });
+    const pending = startInFlight(client);
+    client.connect();
+    await expect(pending).rejects.toThrow(/WebSocket closed/);
+  });
+
+  it("does not fire the 30s timeout after close already rejected", async () => {
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      onEnvelope: () => {},
+      reconnect: false,
+    });
+    openAndHello(client);
+    const pending = client.sendJsonRpc("session/compact", { session_id: "s1" });
+    void pending.catch(() => {});
+    const ws = (client as unknown as { ws: MockWebSocket }).ws;
+    ws.close();
+    await expect(pending).rejects.toThrow(/WebSocket closed/);
+    // Advancing past 30s must not produce a second rejection / unhandled error.
+    await vi.advanceTimersByTimeAsync(31_000);
+    await expect(pending).rejects.toThrow(/WebSocket closed/);
+  });
+});

@@ -67,13 +67,28 @@ export type ComponentsManifest = {
 
 export type ComponentPhase = "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
 
+/** Rich download lifecycle for pause/stop/retry UI (口径 #7). */
+export type ComponentDownloadStatus =
+  | "idle"
+  | "downloading"
+  | "paused"
+  | "stopped"
+  | "error"
+  | "done";
+
 export type ComponentProgressEvent = {
   id: ComponentId;
   phase: ComponentPhase;
+  /** Richer status mirror (defaults derived from phase when omitted by older callers). */
+  status?: ComponentDownloadStatus;
   /** Bytes received (downloading/verifying). */
   received?: number;
   /** Expected bytes. */
   total?: number;
+  /** 0..100 */
+  percent?: number;
+  /** Sliding-window throughput while downloading. */
+  bytesPerSecond?: number;
   message: string;
   error?: string;
 };
@@ -307,9 +322,92 @@ export function installedLinuxTar(bundlesDir: string): string {
 
 type FetchLike = typeof fetch;
 
-type TransferProgress = (received: number, total: number) => void;
+type TransferProgress = (received: number, total: number, bytesPerSecond: number) => void;
 
 class VerificationError extends Error {}
+
+/** User/control aborts — pause keeps `.part`, stop deletes it. */
+export class DownloadControlError extends Error {
+  constructor(readonly kind: "pause" | "stop") {
+    super(kind === "pause" ? "Download paused" : "Download stopped");
+    this.name = "DownloadControlError";
+  }
+}
+
+export function isDownloadControlError(error: unknown): error is DownloadControlError {
+  return error instanceof DownloadControlError;
+}
+
+function controlKindFromAbort(signal: AbortSignal): "pause" | "stop" | null {
+  const reason = (signal as AbortSignal & { reason?: unknown }).reason;
+  if (reason instanceof DownloadControlError) return reason.kind;
+  if (reason && typeof reason === "object" && "kind" in reason) {
+    const kind = (reason as { kind?: unknown }).kind;
+    if (kind === "pause" || kind === "stop") return kind;
+  }
+  return null;
+}
+
+/** Sliding window throughput over the last ~2s of progress samples. */
+export class SpeedTracker {
+  private samples: Array<{ t: number; bytes: number }> = [];
+
+  push(received: number, now = Date.now()): void {
+    this.samples.push({ t: now, bytes: received });
+    while (this.samples.length > 1 && now - this.samples[0]!.t > 2_000) {
+      this.samples.shift();
+    }
+  }
+
+  bytesPerSecond(): number {
+    if (this.samples.length < 2) return 0;
+    const first = this.samples[0]!;
+    const last = this.samples[this.samples.length - 1]!;
+    const dt = (last.t - first.t) / 1000;
+    if (dt <= 0) return 0;
+    return Math.max(0, (last.bytes - first.bytes) / dt);
+  }
+}
+
+export function progressPercent(received: number | undefined, total: number | undefined): number {
+  if (!total || total <= 0) return 0;
+  return Math.min(100, Math.max(0, Math.round(((received ?? 0) / total) * 100)));
+}
+
+/** Stable `.part` path so pause/retry can resume the same blob. */
+export function componentPartPath(tmpDir: string, id: ComponentId, sha256: string): string {
+  return path.join(tmpDir, `${id}-${sha256.slice(0, 16)}.part`);
+}
+
+/**
+ * Remove leftover `.part` / staging dirs under `bundles/.tmp`.
+ * When `maxAgeMs` is 0 (default), clears everything that looks like our temp
+ * artefacts — safe at process start when no other download holds them.
+ */
+export function cleanupComponentTmp(tmpDir: string, maxAgeMs = 0, now = Date.now()): number {
+  if (!fs.existsSync(tmpDir)) return 0;
+  let removed = 0;
+  for (const name of fs.readdirSync(tmpDir)) {
+    const full = path.join(tmpDir, name);
+    let st: fs.Stats;
+    try {
+      st = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (maxAgeMs > 0 && now - st.mtimeMs < maxAgeMs) continue;
+    const looksLikePart = name.endsWith(".part");
+    const looksLikeStaging = name.startsWith("embed-model-") && st.isDirectory();
+    if (!looksLikePart && !looksLikeStaging) continue;
+    try {
+      fs.rmSync(full, { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      /* ignore busy files */
+    }
+  }
+  return removed;
+}
 
 async function fetchManifest(
   source: ComponentSource,
@@ -346,11 +444,15 @@ async function streamToFile(
   dest: string,
   expected: { size: number; sha256: string },
   onProgress: TransferProgress,
+  opts: { append?: boolean; startReceived?: number; startHash?: ReturnType<typeof createHash> } = {},
 ): Promise<void> {
-  const hash = createHash("sha256");
-  const handle = await fs.promises.open(dest, "w");
-  let received = 0;
+  const hash = opts.startHash ?? createHash("sha256");
+  const startReceived = opts.startReceived ?? 0;
+  const handle = await fs.promises.open(dest, opts.append ? "a" : "w");
+  let received = startReceived;
   let lastEmit = 0;
+  const speed = new SpeedTracker();
+  speed.push(received);
   try {
     for await (const chunk of chunks) {
       received += chunk.byteLength;
@@ -362,13 +464,15 @@ async function streamToFile(
       const now = Date.now();
       if (now - lastEmit > 120) {
         lastEmit = now;
-        onProgress(received, expected.size);
+        speed.push(received, now);
+        onProgress(received, expected.size, speed.bytesPerSecond());
       }
     }
   } finally {
     await handle.close();
   }
-  onProgress(received, expected.size);
+  speed.push(received);
+  onProgress(received, expected.size, speed.bytesPerSecond());
   if (received !== expected.size) {
     throw new VerificationError(`Size mismatch: expected ${expected.size} bytes, got ${received}.`);
   }
@@ -388,18 +492,43 @@ async function* readWithIdleTimeout(
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => ctrl.abort(new Error("Download stalled (no data received).")), IDLE_TIMEOUT_MS);
   };
+  const onAbort = () => {
+    void reader.cancel().catch(() => undefined);
+  };
+  ctrl.signal.addEventListener("abort", onAbort);
+  if (ctrl.signal.aborted) onAbort();
   try {
     arm();
     for (;;) {
+      if (ctrl.signal.aborted) {
+        const kind = controlKindFromAbort(ctrl.signal);
+        throw kind ? new DownloadControlError(kind) : new Error("Download aborted");
+      }
       const { done, value } = await reader.read();
       if (done) return;
       arm();
       if (value) yield value;
     }
   } finally {
+    ctrl.signal.removeEventListener("abort", onAbort);
     if (timer) clearTimeout(timer);
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      /* already cancelled */
+    }
   }
+}
+
+async function hashFilePrefix(file: string): Promise<{ size: number; hash: ReturnType<typeof createHash> }> {
+  const hash = createHash("sha256");
+  let size = 0;
+  const stream = fs.createReadStream(file, { highWaterMark: 1 << 20 });
+  for await (const chunk of stream as AsyncIterable<Buffer>) {
+    size += chunk.byteLength;
+    hash.update(chunk);
+  }
+  return { size, hash };
 }
 
 async function downloadOnce(
@@ -408,12 +537,70 @@ async function downloadOnce(
   expected: { size: number; sha256: string },
   fetchImpl: FetchLike,
   onProgress: TransferProgress,
+  ctrl: AbortController,
 ): Promise<void> {
-  const ctrl = new AbortController();
-  const res = await fetchImpl(url, { signal: ctrl.signal, redirect: "follow" });
+  let existing = 0;
+  let startHash: ReturnType<typeof createHash> | undefined;
+  if (fs.existsSync(dest)) {
+    const st = fs.statSync(dest);
+    if (st.size > 0 && st.size < expected.size) {
+      const prefix = await hashFilePrefix(dest);
+      existing = prefix.size;
+      startHash = prefix.hash;
+    } else if (st.size === expected.size) {
+      // Complete leftover — verify sha256 then treat as done.
+      const prefix = await hashFilePrefix(dest);
+      const digest = prefix.hash.digest("hex");
+      if (digest !== expected.sha256) {
+        fs.rmSync(dest, { force: true });
+      } else {
+        onProgress(expected.size, expected.size, 0);
+        return;
+      }
+    } else {
+      fs.rmSync(dest, { force: true });
+    }
+  }
+
+  const headers: Record<string, string> = {};
+  if (existing > 0) headers.Range = `bytes=${existing}-`;
+
+  let res: Response;
+  try {
+    res = await fetchImpl(url, { signal: ctrl.signal, redirect: "follow", headers });
+  } catch (error) {
+    const kind = controlKindFromAbort(ctrl.signal);
+    if (kind) throw new DownloadControlError(kind);
+    throw error;
+  }
+
+  if (existing > 0 && res.status === 206 && res.body) {
+    await streamToFile(readWithIdleTimeout(res.body, ctrl), dest, expected, onProgress, {
+      append: true,
+      startReceived: existing,
+      startHash,
+    });
+    return;
+  }
+
+  if (existing > 0 && res.status === 200) {
+    console.warn(
+      `[litecode] Range resume unsupported for ${url} (HTTP ${res.status}); re-downloading from scratch`,
+    );
+    fs.rmSync(dest, { force: true });
+    existing = 0;
+    startHash = undefined;
+  }
+
   if (!res.ok || !res.body) {
     throw new Error(`HTTP ${res.status} for ${url}`);
   }
+
+  if (existing > 0 && res.status !== 206) {
+    // Unexpected status with partial file — restart clean.
+    fs.rmSync(dest, { force: true });
+  }
+
   await streamToFile(readWithIdleTimeout(res.body, ctrl), dest, expected, onProgress);
 }
 
@@ -423,22 +610,37 @@ async function transferPayload(
   expected: { size: number; sha256: string },
   fetchImpl: FetchLike,
   onProgress: TransferProgress,
+  ctrl: AbortController,
 ): Promise<void> {
   if (location.kind === "file") {
     if (!fs.existsSync(location.file)) throw new Error(`Component file missing: ${location.file}`);
-    await streamToFile(fs.createReadStream(location.file, { highWaterMark: 1 << 20 }), dest, expected, onProgress);
+    await streamToFile(
+      fs.createReadStream(location.file, { highWaterMark: 1 << 20 }),
+      dest,
+      expected,
+      onProgress,
+    );
     return;
   }
   let lastError: unknown;
   for (let attempt = 1; attempt <= NETWORK_ATTEMPTS; attempt++) {
     try {
-      await downloadOnce(location.url, dest, expected, fetchImpl, onProgress);
+      await downloadOnce(location.url, dest, expected, fetchImpl, onProgress, ctrl);
       return;
     } catch (error) {
       lastError = error;
-      fs.rmSync(dest, { force: true });
-      // A wrong hash/size will not fix itself on retry.
-      if (error instanceof VerificationError || attempt === NETWORK_ATTEMPTS) break;
+      const kind = isDownloadControlError(error)
+        ? error.kind
+        : controlKindFromAbort(ctrl.signal);
+      if (kind) {
+        if (kind === "stop") fs.rmSync(dest, { force: true });
+        throw new DownloadControlError(kind);
+      }
+      if (error instanceof VerificationError || attempt === NETWORK_ATTEMPTS) {
+        fs.rmSync(dest, { force: true });
+        break;
+      }
+      // Keep `.part` so the next attempt can Range-resume.
       await new Promise((r) => setTimeout(r, 800 * attempt));
     }
   }
@@ -607,11 +809,57 @@ export type EnsureResult = { id: ComponentId; path: string; downloaded: boolean 
 export class ComponentManager {
   private readonly inflight = new Map<ComponentId, Promise<EnsureResult>>();
   private readonly lastError = new Map<ComponentId, string>();
+  private readonly controllers = new Map<ComponentId, AbortController>();
+  private readonly statuses = new Map<ComponentId, ComponentDownloadStatus>();
+  private readonly activeParts = new Map<ComponentId, string>();
+  private tmpCleaned = false;
 
-  constructor(private readonly opts: ComponentManagerOptions) {}
+  constructor(private readonly opts: ComponentManagerOptions) {
+    this.ensureTmpClean();
+  }
 
   private bundlesDir(): string {
     return this.opts.bundlesDir ?? litecodeBundlesDir();
+  }
+
+  private tmpDir(): string {
+    return path.join(this.bundlesDir(), ".tmp");
+  }
+
+  private ensureTmpClean(): void {
+    if (this.tmpCleaned) return;
+    this.tmpCleaned = true;
+    try {
+      cleanupComponentTmp(this.tmpDir());
+    } catch (error) {
+      console.warn("[litecode] component tmp cleanup failed", error);
+    }
+  }
+
+  private setStatus(id: ComponentId, status: ComponentDownloadStatus): void {
+    this.statuses.set(id, status);
+  }
+
+  private emitProgress(
+    id: ComponentId,
+    phase: ComponentPhase,
+    status: ComponentDownloadStatus,
+    fields: Partial<ComponentProgressEvent> & { message: string },
+  ): void {
+    this.setStatus(id, status);
+    const received = fields.received;
+    const total = fields.total;
+    this.opts.emit({
+      id,
+      phase,
+      status,
+      received,
+      total,
+      percent: fields.percent ?? progressPercent(received, total),
+      bytesPerSecond: fields.bytesPerSecond,
+      message: fields.message,
+      ...(fields.error ? { error: fields.error } : {}),
+    });
   }
 
   /**
@@ -632,25 +880,88 @@ export class ComponentManager {
     return found;
   }
 
-  status(id: ComponentId): { id: ComponentId; installed: boolean; path: string | null; downloading: boolean; error: string | null } {
+  status(id: ComponentId): {
+    id: ComponentId;
+    installed: boolean;
+    path: string | null;
+    downloading: boolean;
+    status: ComponentDownloadStatus;
+    error: string | null;
+  } {
     const found = this.locate(id);
-    // Installed wins: a failure from an earlier attempt (or another instance
-    // that since finished the job) must not keep the UI red.
     if (found) this.lastError.delete(id);
+    const downloadStatus: ComponentDownloadStatus = found
+      ? "done"
+      : this.statuses.get(id) ?? (this.inflight.has(id) ? "downloading" : this.lastError.has(id) ? "error" : "idle");
     return {
       id,
       installed: Boolean(found),
       path: found,
       downloading: this.inflight.has(id),
+      status: downloadStatus,
       error: found ? null : this.lastError.get(id) ?? null,
     };
   }
 
+  /** Pause in-flight download; keeps `.part` for Range resume. */
+  pause(id: ComponentId): boolean {
+    const ctrl = this.controllers.get(id);
+    if (!ctrl) return false;
+    ctrl.abort(new DownloadControlError("pause"));
+    return true;
+  }
+
+  /** Stop in-flight download and delete `.part` / staging. */
+  stop(id: ComponentId): boolean {
+    const ctrl = this.controllers.get(id);
+    const part = this.activeParts.get(id);
+    if (ctrl) ctrl.abort(new DownloadControlError("stop"));
+    if (part) {
+      fs.rmSync(part, { force: true });
+      const staging = part.replace(/\.part$/, "");
+      // staging dirs use embed-model-<nonce> naming; best-effort wipe siblings for this id.
+      try {
+        const dir = path.dirname(part);
+        for (const name of fs.readdirSync(dir)) {
+          if (name.startsWith(`${id}-`) && !name.endsWith(".part")) {
+            fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      void staging;
+    }
+    this.setStatus(id, "stopped");
+    return Boolean(ctrl || part);
+  }
+
+  /** Re-run ensure (resumes from `.part` when present). */
+  retry(id: ComponentId): Promise<EnsureResult> {
+    this.lastError.delete(id);
+    this.setStatus(id, "idle");
+    return this.ensure(id);
+  }
+
+  /** Abort every in-flight download (before-quit). Keeps `.part` like pause. */
+  abortAll(): void {
+    for (const [id, ctrl] of this.controllers) {
+      try {
+        ctrl.abort(new DownloadControlError("pause"));
+      } catch {
+        /* ignore */
+      }
+      this.setStatus(id, "paused");
+    }
+  }
+
   /** Return the local path, downloading + installing it first if needed. Concurrent calls share one download. */
   ensure(id: ComponentId): Promise<EnsureResult> {
+    this.ensureTmpClean();
     const existing = this.locate(id);
     if (existing) {
       this.lastError.delete(id);
+      this.setStatus(id, "done");
       return Promise.resolve({ id, path: existing, downloaded: false });
     }
     const running = this.inflight.get(id);
@@ -658,26 +969,48 @@ export class ComponentManager {
     const job = this.download(id)
       .then((result) => {
         this.lastError.delete(id);
+        this.setStatus(id, "done");
         return result;
       })
       .catch((error: unknown) => {
+        if (isDownloadControlError(error)) {
+          this.setStatus(id, error.kind === "pause" ? "paused" : "stopped");
+          this.opts.emit({
+            id,
+            phase: "error",
+            status: error.kind === "pause" ? "paused" : "stopped",
+            message: error.message,
+            error: error.message,
+          });
+          throw error;
+        }
         const message = error instanceof Error ? error.message : String(error);
         this.lastError.set(id, message);
-        this.opts.emit({ id, phase: "error", message: `${COMPONENT_LABEL[id]} download failed`, error: message });
+        this.setStatus(id, "error");
+        this.opts.emit({
+          id,
+          phase: "error",
+          status: "error",
+          message: `${COMPONENT_LABEL[id]} download failed`,
+          error: message,
+        });
         throw new Error(`${COMPONENT_LABEL[id]} download failed: ${message}`);
       })
-      .finally(() => this.inflight.delete(id));
+      .finally(() => {
+        this.inflight.delete(id);
+        this.controllers.delete(id);
+      });
     this.inflight.set(id, job);
     return job;
   }
 
   private async download(id: ComponentId): Promise<EnsureResult> {
-    const { appVersion, emit } = this.opts;
+    const { appVersion } = this.opts;
     const label = COMPONENT_LABEL[id];
     const env = this.opts.env ?? process.env;
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     const source = resolveComponentSource(appVersion, env);
-    emit({ id, phase: "resolving", message: `Looking up ${label}…` });
+    this.emitProgress(id, "resolving", "downloading", { message: `Looking up ${label}…` });
     const manifest = await fetchManifest(source, fetchImpl).catch((error: unknown) => {
       const why = error instanceof Error ? error.message : String(error);
       throw new Error(`${why}\nSource: ${describeSource(source)}\nOffline? Set ${COMPONENTS_BASE_ENV} to a folder containing ${COMPONENTS_MANIFEST_NAME}.`);
@@ -686,23 +1019,42 @@ export class ComponentManager {
     const location = componentPayloadLocation(source, component);
 
     const bundles = this.bundlesDir();
-    const tmpDir = path.join(bundles, ".tmp");
+    const tmpDir = this.tmpDir();
     fs.mkdirSync(tmpDir, { recursive: true });
-    const nonce = randomBytes(6).toString("hex");
-    const payload = path.join(tmpDir, `${id}-${nonce}.part`);
+    const payload = componentPartPath(tmpDir, id, component.sha256);
+    this.activeParts.set(id, payload);
+    const ctrl = new AbortController();
+    this.controllers.set(id, ctrl);
     const totalMb = (component.size / 1024 / 1024).toFixed(1);
     try {
-      emit({ id, phase: "downloading", received: 0, total: component.size, message: `Downloading ${label} (${totalMb} MB)…` });
-      await transferPayload(location, payload, component, fetchImpl, (received, total) => {
-        emit({
-          id,
-          phase: "downloading",
-          received,
-          total,
-          message: `Downloading ${label} — ${(received / 1024 / 1024).toFixed(1)} / ${totalMb} MB`,
-        });
+      this.emitProgress(id, "downloading", "downloading", {
+        received: fs.existsSync(payload) ? fs.statSync(payload).size : 0,
+        total: component.size,
+        bytesPerSecond: 0,
+        message: `Downloading ${label} (${totalMb} MB)…`,
       });
-      emit({ id, phase: "installing", received: component.size, total: component.size, message: `Installing ${label}…` });
+      await transferPayload(
+        location,
+        payload,
+        component,
+        fetchImpl,
+        (received, total, bytesPerSecond) => {
+          this.emitProgress(id, "downloading", "downloading", {
+            received,
+            total,
+            bytesPerSecond,
+            message: `Downloading ${label} — ${(received / 1024 / 1024).toFixed(1)} / ${totalMb} MB`,
+          });
+        },
+        ctrl,
+      );
+      this.emitProgress(id, "installing", "downloading", {
+        received: component.size,
+        total: component.size,
+        bytesPerSecond: 0,
+        message: `Installing ${label}…`,
+      });
+      const nonce = randomBytes(6).toString("hex");
       const installed = id === "embed-model"
         ? await this.installModel(payload, component, tmpDir, nonce)
         : this.installLinuxTar(payload, component);
@@ -712,10 +1064,25 @@ export class ComponentManager {
         app_version: appVersion,
         installed_at: new Date().toISOString(),
       });
-      emit({ id, phase: "done", received: component.size, total: component.size, message: `${label} ready` });
+      this.emitProgress(id, "done", "done", {
+        received: component.size,
+        total: component.size,
+        bytesPerSecond: 0,
+        message: `${label} ready`,
+      });
       return { id, path: installed, downloaded: true };
     } finally {
-      fs.rmSync(payload, { force: true });
+      this.activeParts.delete(id);
+      // Pause keeps `.part` for Range resume; everything else removes leftovers.
+      // (linux install renames the part away on success — rm is then a no-op.)
+      const kind = controlKindFromAbort(ctrl.signal);
+      if (kind !== "pause") {
+        try {
+          if (fs.existsSync(payload)) fs.rmSync(payload, { force: true });
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -760,3 +1127,4 @@ export class ComponentManager {
     return tar;
   }
 }
+

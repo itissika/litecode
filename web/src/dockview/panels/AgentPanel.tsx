@@ -549,7 +549,7 @@ export function ComposerDock({
   onCollapsedChange?: (collapsed: boolean) => void;
 }) {
   const pendingPermission = useTurnStore(
-    (s) => s.byId.get(sessionId)?.pendingPermission ?? null,
+    (s) => s.byId.get(sessionId)?.permissionQueue[0] ?? null,
   );
   const grantPermission = useTurnStore((s) => s.grantPermission);
   const [collapsed, setCollapsed] = useState(false);
@@ -612,6 +612,7 @@ export function ComposerDock({
             )}
             {pendingPermission && (
               <PermissionCard
+                key={pendingPermission.request_id}
                 tool={pendingPermission.tool}
                 ruleId={pendingPermission.rule_id}
                 summary={pendingPermission.summary}

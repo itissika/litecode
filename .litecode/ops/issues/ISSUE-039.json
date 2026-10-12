@@ -5,18 +5,39 @@
   "domain": "tools-permission",
   "core": true,
   "core_nodes": [],
-  "basis": ["WP-027"],
+  "basis": [
+    "WP-027"
+  ],
   "title": "custom tool：孙进程持有 stdout/stdin 时超时/取消失效且不清理（X1+X2+X3，含 B7）",
   "promise": "custom tool 在 timeout/cancel 内返回，结束后不遗留同组进程。",
   "actual": "wait_child_cancellable 在直接子进程退出后 rx.recv() 无界等待管道 EOF，不受 deadline/cancel 约束；Finished 路径不 kill 进程组，孙进程成孤儿；Finished 中 stdin writer join 无界（大输入+孙进程继承 stdin 不读时挂住）。",
   "evidence": [
-    {"path": "src/tools/custom.rs", "note": ":449-457 Ok(Some) 分支 rx.recv() 无界（X1/B7）", "commit": ""},
-    {"path": "src/tools/custom.rs", "note": ":334-366 Finished 不 kill_child_tree（X2）；:339-346 writer join 无界（X3）", "commit": ""}
+    {
+      "path": "src/tools/custom.rs",
+      "note": ":449-457 Ok(Some) 分支 rx.recv() 无界（X1/B7）",
+      "commit": ""
+    },
+    {
+      "path": "src/tools/custom.rs",
+      "note": ":334-366 Finished 不 kill_child_tree（X2）；:339-346 writer join 无界（X3）",
+      "commit": ""
+    }
   ],
   "repro": "自定义工具 sh -c 'sleep 30 & echo done'，timeout=2：调用约 30s 才返回（应 ~0s）；结束后 sleep 仍在（X2）。",
   "reporter": "ide",
   "owner": "tools",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
-  "history": [{"ts": "2026-10-12T16:15:00+08:00", "by": "tools", "change": "WP-027 交叉审 IDE X1/X2/X3 接受并登记；修复方向：Finished 后对组 kill + recv/join 用 recv_timeout 受 deadline 约束"}]
+  "history": [
+    {
+      "ts": "2026-10-12T16:15:00+08:00",
+      "by": "tools",
+      "change": "WP-027 交叉审 IDE X1/X2/X3 接受并登记；修复方向：Finished 后对组 kill + recv/join 用 recv_timeout 受 deadline 约束"
+    },
+    {
+      "ts": "2026-10-12T19:55:54+08:00",
+      "by": "gm",
+      "change": "WP-036/038 验收通过：进程组杀/超时有界 drain；custom 23/23。GM 关。"
+    }
+  ]
 }
