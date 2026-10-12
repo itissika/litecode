@@ -26,6 +26,37 @@ if ($TargetTriple) { $CargoArgs += @("--target", $TargetTriple) }
 if ($Features) { $CargoArgs += @("--features", $Features) }
 if ($TargetDir) { $CargoArgs += @("--target-dir", $TargetDir) }
 
+# ISSUE-015: remap cargo registry/git paths in release panic/debuginfo only.
+function Append-RustflagRemap {
+  param([Parameter(Mandatory = $true)][string]$Flag)
+  $cur = if ($null -ne $env:RUSTFLAGS) { $env:RUSTFLAGS } else { "" }
+  $tokens = @()
+  if ($cur.Trim().Length -gt 0) {
+    $tokens = $cur -split '\s+' | Where-Object { $_ -ne "" }
+  }
+  if ($tokens -contains $Flag) { return }
+  if ($cur.Trim().Length -gt 0) {
+    $env:RUSTFLAGS = "$($cur.Trim()) $Flag"
+  } else {
+    $env:RUSTFLAGS = $Flag
+  }
+}
+
+function Ensure-ReleaseRustflagsRemaps {
+  if ($Profile -eq "debug") { return }
+  $cargoHome = if ($env:CARGO_HOME -and $env:CARGO_HOME.Trim().Length -gt 0) {
+    $env:CARGO_HOME
+  } else {
+    Join-Path $env:USERPROFILE ".cargo"
+  }
+  if (Test-Path -LiteralPath $cargoHome) {
+    $cargoHome = (Resolve-Path -LiteralPath $cargoHome).Path
+  }
+  # Use the resolved Windows path form cargo/rustc typically emit (backslash).
+  Append-RustflagRemap "--remap-path-prefix=$cargoHome\registry=/rustc/registry"
+  Append-RustflagRemap "--remap-path-prefix=$cargoHome\git=/rustc/git"
+}
+
 Write-Host "==> product root: $OutDir (profile=$Profile)"
 if (Test-Path $OutDir) { Remove-Item -Recurse -Force $OutDir }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -63,6 +94,10 @@ if ($env:LITECODE_CHANNEL -ne "official") {
   $env:LITECODE_CHANNEL = "nightly"
 }
 
+Ensure-ReleaseRustflagsRemaps
+if ($Profile -ne "debug") {
+  Write-Host "==> RUSTFLAGS (release remap): $($env:RUSTFLAGS)"
+}
 Write-Host "==> cargo $($CargoArgs -join ' ') (LITECODE_CHANNEL=$($env:LITECODE_CHANNEL))"
 Push-Location $Root
 $prevEa = $ErrorActionPreference

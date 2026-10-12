@@ -2,7 +2,7 @@ use crate::config::resolved::ResolvedConfig;
 use crate::platform_knobs::{ContextMode, effective_context_window};
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, FailReason, InternalEvent,
-    TurnEndReason, TurnPhase,
+    TurnEndReason, TurnErrorKind, TurnPhase,
 };
 use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::manager::SessionManager;
@@ -485,9 +485,10 @@ fn project_with(
             reason,
             turn_token_stats,
             committed_next_seq: _,
+            error_kind,
         } => {
             let snapshot = snapshot?;
-            let error = turn_error(reason, final_text, snapshot.llm_reconnect);
+            let error = turn_error(reason, final_text, *error_kind, snapshot.llm_reconnect);
             let mut params = serde_json::json!({
                 "session_id": snapshot.session_id,
                 "turn_id": turn_id,
@@ -537,19 +538,20 @@ fn project_with(
 fn turn_error(
     reason: &TurnEndReason,
     final_text: &Option<String>,
+    error_kind: Option<TurnErrorKind>,
     reconnect: Option<crate::llm::reconnect::LlmReconnect>,
 ) -> Option<StructuredError> {
     match reason {
         TurnEndReason::Error => {
-            // WP-025: auto compact failure ends the turn with
-            // `TurnOutcome::Error(CompactionFailed)`; runtime/mod.rs passes
-            // `err.to_string()` as final_text. Surface it as a dedicated,
-            // non-retryable code instead of `internal`.
-            let compaction_msg = crate::types::LitecodeError::CompactionFailed.to_string();
-            if final_text.as_deref() == Some(compaction_msg.as_str()) {
+            // WP-069 / ISSUE-036: typed category from Runtime TurnCompleted.error_kind
+            // (not final_text string equality). CompactionFailed → dedicated,
+            // non-retryable code; message still from final_text.
+            if error_kind == Some(TurnErrorKind::CompactionFailed) {
                 return Some(StructuredError {
                     code: ErrorCode::CompactionFailed,
-                    message: compaction_msg,
+                    message: final_text
+                        .clone()
+                        .unwrap_or_else(|| "compaction failed".into()),
                     retryable: false,
                 });
             }
@@ -1209,9 +1211,14 @@ mod wp025_turn_error_tests {
 
     #[test]
     fn auto_compact_failure_maps_to_compaction_failed_not_retryable() {
-        let msg = crate::types::LitecodeError::CompactionFailed.to_string();
-        let err = turn_error(&TurnEndReason::Error, &Some(msg.clone()), None)
-            .expect("error turn must carry a StructuredError");
+        let msg = "compaction blew up".to_string();
+        let err = turn_error(
+            &TurnEndReason::Error,
+            &Some(msg.clone()),
+            Some(TurnErrorKind::CompactionFailed),
+            None,
+        )
+        .expect("error turn must carry a StructuredError");
         assert!(
             matches!(err.code, ErrorCode::CompactionFailed),
             "got {:?}",
@@ -1220,9 +1227,26 @@ mod wp025_turn_error_tests {
         assert!(!err.retryable);
         assert_eq!(err.message, msg);
 
-        // Other errors keep the previous mapping.
-        let other = turn_error(&TurnEndReason::Error, &Some("boom".into()), None).unwrap();
+        // Other errors keep the previous mapping (no error_kind).
+        let other = turn_error(&TurnEndReason::Error, &Some("boom".into()), None, None).unwrap();
         assert!(matches!(other.code, ErrorCode::Internal));
         assert!(!other.retryable);
+
+        // Text that happens to match CompactionFailed Display must NOT map
+        // when error_kind is absent (ISSUE-036: no string equality).
+        let coincidental = crate::types::LitecodeError::CompactionFailed.to_string();
+        let not_compaction = turn_error(
+            &TurnEndReason::Error,
+            &Some(coincidental),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            matches!(not_compaction.code, ErrorCode::Internal),
+            "string-only match must not yield CompactionFailed, got {:?}",
+            not_compaction.code
+        );
+        assert!(!not_compaction.retryable);
     }
 }

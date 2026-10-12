@@ -25,4 +25,4 @@ h : 408
 **核实结论：一致，无漂移。**（基线 075308b）
 - 唯一安全门与唯一 watcher —— [@ file="src/workspace/sandbox.rs" symbol="impl Sandbox › fn resolve"]、[@ file="src/workspace/watcher.rs" symbol="impl WorkspaceWatcher › fn start"]；跨进程独占锁 [@ file="src/session/workspace_lock.rs" symbol="impl WorkspaceLock › fn acquire"]。
 - PTY / 引擎基座清单与子节点一致；终端死亡清单通过（`terminal_bypass_death_list`）。
-- 产品 bug（不否定唯一门主张）—— 顶层 symlink 经 resolve 跟随后被 copy，见 ISSUE-010（不越界，非 B3）。热切换死亡清单误报见 ISSUE-007。
+- ISSUE-010（WP-067 已关，不否定唯一门主张）—— `copy_path` 现保链接（顶层+嵌套），链出仍 Escape；非 B3。热切换死亡清单误报见 ISSUE-007（已关）。

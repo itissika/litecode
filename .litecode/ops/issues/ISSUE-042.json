@@ -1,0 +1,43 @@
+{
+  "id": "ISSUE-042",
+  "grade": "drift",
+  "layer": "product",
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "tools",
+  "status": "open",
+  "blocks": false,
+  "title": "tools/litecode_workspace 生产路径自行 SessionDataReader::open(sessions.db)",
+  "basis": [
+    "A4"
+  ],
+  "promise": "sessions.db 的 SessionDataReader::open 只许出现在 SessionData 注入路径（或测试）；Tools 不得在 call_inner 自行 open sessions.db。",
+  "actual": "src/tools/litecode_workspace.rs:821 Tool::call_inner 生产路径 SessionDataReader::open(&runtime.workspace.paths.sessions_db)。WP-069/ISSUE-041 收紧 death_list 后假红清零，复跑余此 1 条真实命中。属 Tools 域架构越界，非 041 假红；本波 WP-064 不修不白名单。",
+  "evidence": [
+    {
+      "path": "src/tools/litecode_workspace.rs",
+      "lines": "821-823",
+      "note": "call_inner 自行 open sessions.db"
+    },
+    {
+      "path": "tests/session_data_sql_death_list.rs",
+      "test": "fn sessions_db_sql_and_rusqlite_stay_in_sqlite_module",
+      "note": "041 收紧后唯一剩余真实命中"
+    }
+  ],
+  "repro": "PATH=/home/box/.cargo/bin:$PATH cargo test --test session_data_sql_death_list sessions_db_sql_and_rusqlite_stay_in_sqlite_module",
+  "history": [
+    {
+      "ts": "2026-10-12T13:56:11.550Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-069）"
+    },
+    {
+      "ts": "2026-10-12T21:56:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-069/041 复跑发现真违规；挂 ISSUE；owner=tools；本波不修"
+    }
+  ]
+}

@@ -12,7 +12,7 @@
     "A6"
   ],
   "title": "copy_path 经 sandbox.resolve 跟随符号链接后复制了目标（顶层 symlink）",
-  "promise": "workspace copy 拒绝符号链接（refuses_to_copy_symlinks）；sandbox 仍是唯一路径门，目标须在工作区内",
+  "promise": "workspace copy 保链接（preserves_symlink 顶层+嵌套）；sandbox 仍是唯一路径门；链出工作区拒绝（Escape）；不解引用抄内容",
   "actual": "copy_path 先 sandbox.resolve→canon_abs 跟随顶层 symlink 得到目标路径，再 copy_recursive 用 symlink_metadata 检查时已是普通文件，于是复制目标内容。子目录内链接仍拒。目标仍在工作区内，未 Escape——不触发 B3。",
   "evidence": [
     {
@@ -40,15 +40,15 @@
     },
     {
       "path": "src/workspace/service.rs",
-      "test": "fn refuses_to_copy_symlinks",
+      "test": "fn preserves_symlink_top_level",
       "commit": "075308b",
-      "note": "FAILED at 075308b: expected InvalidMove, got Ok"
+      "note": "WP-067: preserve symlink (Andy 锁定); 旧 refuses_* 已废"
     }
   ],
-  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib workspace::service::tests::refuses_to_copy_symlinks",
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib workspace::service::tests::preserves_symlink_top_level workspace::service::tests::preserves_symlink_nested workspace::service::tests::refuses_symlink_copy_escaping_workspace",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -60,6 +60,11 @@
       "ts": "2026-10-12T00:40:00+08:00",
       "by": "ide",
       "change": "Batch3: reproduced fail; evidence chain confirmed; no product fix this round (not tiny gate); not B3"
+    },
+    {
+      "ts": "2026-10-12T21:56:00+08:00",
+      "by": "ide",
+      "change": "WP-067: copy_path 保链接落地；废 refuse_top_level_symlink_copy / refuses_to_copy_symlinks；新 preserves_symlink_* + 出界 Escape；promise 改 preserve；closed"
     }
   ]
 }

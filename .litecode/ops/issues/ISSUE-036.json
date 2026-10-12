@@ -27,13 +27,23 @@
   "repro": "代码可判定；用户可见的 final_text 只要恰好等于该文案就会被误判（概率低）。",
   "reporter": "runtime",
   "owner": "runtime",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T15:50:00+08:00",
       "by": "runtime",
       "change": "WP-025 交叉审（Session）建议立项：在 InternalEvent::TurnCompleted 上带内存错误类别（不落盘），替换文本匹配"
+    },
+    {
+      "ts": "2026-10-12T22:01:06+08:00",
+      "by": "runtime",
+      "change": "WP-068 emit 已落地：InternalEvent::TurnCompleted.error_kind:Option<TurnErrorKind> （CompactionFailed）；finalize_agent_outcome 按 LitecodeError 映射；不改 TurnEndReason/落盘/wire。consume（删 project.rs 文案全等）仍归 WP-069——issue 保持 open。"
+    },
+    {
+      "ts": "2026-10-12T22:05:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-069 验收：Runtime emit(WP-068)+Session turn_error 类型化消费落地；废 final_text 文案匹配。status→closed。"
     }
   ]
 }

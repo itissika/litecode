@@ -16,4 +16,4 @@ domain : ide-substrate
 **核实结论：一致，无漂移。**（基线 075308b）
 - `Sandbox::resolve` 经 `resolve_human_relative`，越界为 Escape —— 守护 [@ file="src/workspace/sandbox.rs" symbol="mod tests › fn rejects_parent_dir_escape"]（通过）。
 - 人类 / Agent SAFE / LSP 共用同一解析入口 —— [@ file="src/workspace/tool_path.rs" symbol="fn resolve_human_relative"]。
-- ISSUE-010：`copy_path` 在 resolve **之后**丢了「源是 symlink」信息；边界本身未放宽、未第二实现。修复应在 service 层先 `symlink_metadata`，或提供不跟随的 resolve 变体后再拒链。
+- ISSUE-010（WP-067 已关）：`copy_path` 对 symlink **保链接**（lexical readlink + sandbox 门后在 dest 重建；不解引用抄内容；嵌套同口径；链出工作区 Escape）。边界仍唯一，未第二实现。

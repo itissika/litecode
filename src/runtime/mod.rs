@@ -38,8 +38,8 @@ use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::permission::{CancellingPermissionSink, PermissionEngine, PermissionSink};
 use crate::runtime::observer::{
-    ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason, TurnPhase,
-    TurnTokenStats,
+    ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason, TurnErrorKind,
+    TurnPhase, TurnTokenStats,
 };
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
@@ -749,7 +749,7 @@ impl AgentRuntime {
         final_text: Option<String>,
     ) -> Result<String> {
         self.context_pipeline.end_turn();
-        self.emit_turn_completed(turn_id, reason, final_text)
+        self.emit_turn_completed(turn_id, reason, final_text, None)
     }
 
     fn emit_turn_completed(
@@ -757,6 +757,7 @@ impl AgentRuntime {
         turn_id: &str,
         reason: TurnEndReason,
         final_text: Option<String>,
+        error_kind: Option<TurnErrorKind>,
     ) -> Result<String> {
         let step = self.current_step_value();
         if step > 0 {
@@ -836,6 +837,7 @@ impl AgentRuntime {
             reason,
             turn_token_stats: stats,
             committed_next_seq: 0,
+            error_kind,
         });
         match reason {
             TurnEndReason::Error => Err(LitecodeError::Llm(if text.is_empty() {
@@ -874,24 +876,27 @@ impl AgentRuntime {
         self.seal_rows_still_in_flight();
         match outcome {
             TurnOutcome::Completed { final_text } => {
-                self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text))
+                self.emit_turn_completed(turn_id, TurnEndReason::Completed, Some(final_text), None)
             }
             TurnOutcome::Cancelled { final_text } => self.emit_turn_completed(
                 turn_id,
                 TurnEndReason::Cancelled,
                 (!final_text.is_empty()).then_some(final_text),
+                None,
             ),
             TurnOutcome::MaxSteps { final_text } => {
                 self.emit_turn_completed(
                     turn_id,
                     TurnEndReason::MaxSteps,
                     (!final_text.is_empty()).then_some(final_text),
+                    None,
                 )?;
                 Err(LitecodeError::MaxStepsReached)
             }
             TurnOutcome::Error(err) => {
+                let error_kind = turn_error_kind(&err);
                 let msg = err.to_string();
-                self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg))
+                self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg), error_kind)
             }
         }
     }
@@ -1246,6 +1251,17 @@ impl AgentRuntime {
     }
 }
 
+/// Map a turn-ending `LitecodeError` to the in-memory `TurnErrorKind` carried on
+/// `InternalEvent::TurnCompleted` (ISSUE-036 emit). Not persisted; Session WP-069
+/// consumes this instead of matching `final_text`.
+fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
+    match err {
+        LitecodeError::CompactionFailed => Some(TurnErrorKind::CompactionFailed),
+        _ => None,
+    }
+}
+
+
 #[cfg(test)]
 mod pending_snapshot_tests {
     use std::sync::Arc;
@@ -1310,5 +1326,30 @@ mod pending_snapshot_tests {
         // Before any tool: must join.
         assert!(take_and_await(&slot).await);
         assert!(snap_done.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod turn_error_kind_tests {
+    use super::turn_error_kind;
+    use crate::runtime::observer::TurnErrorKind;
+    use crate::types::LitecodeError;
+
+    /// T1 (mapping): CompactionFailed → Some(CompactionFailed).
+    #[test]
+    fn turn_error_kind_maps_compaction_failed() {
+        assert_eq!(
+            turn_error_kind(&LitecodeError::CompactionFailed),
+            Some(TurnErrorKind::CompactionFailed)
+        );
+    }
+
+    /// T2 (mapping): other LitecodeError → None (final_text still carries display).
+    #[test]
+    fn turn_error_kind_none_for_other_errors() {
+        assert_eq!(turn_error_kind(&LitecodeError::Llm("boom".into())), None);
+        assert_eq!(turn_error_kind(&LitecodeError::Canceled), None);
+        assert_eq!(turn_error_kind(&LitecodeError::MaxStepsReached), None);
+        assert_eq!(turn_error_kind(&LitecodeError::NothingToCompact), None);
     }
 }

@@ -34,7 +34,7 @@
   "repro": "缺：在签名 release 产物上触发第三方 panic 并检查栈是否含 .cargo/registry；Andy口径不升产品形态",
   "reporter": "前端",
   "owner": "前端",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -46,6 +46,11 @@
       "ts": "2026-10-12T00:30:00Z",
       "by": "前端",
       "change": "Batch3: formalize as gate/build-hygiene per Andy; not product; do not elevate"
+    },
+    {
+      "ts": "2026-10-12T13:54:38Z",
+      "by": "gm",
+      "change": "WP-065/066: assemble_product sh+ps1 release-only remap-path-prefix (registry/git→/rustc/…); evidence A green; strings B deferred to CI. closed."
     }
   ]
 }

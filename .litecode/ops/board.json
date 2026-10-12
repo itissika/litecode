@@ -431,7 +431,7 @@
       ],
       "owner": "ide",
       "reviewer": "gm",
-      "status": "blocked",
+      "status": "cancelled",
       "depends_on": [
         "WP-011"
       ],
@@ -441,8 +441,17 @@
       },
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-004.md",
-      "progress": "停等提交批次（blocker=product，满足 validate）",
-      "status_entered_at": null
+      "progress": "closed cancelled by gm: 产品口径已锁保链接；旧「拒绝复制」目标作废，并入新顶包",
+      "status_entered_at": null,
+      "history": [
+        {
+          "ts": "2026-10-12T13:48:00.834Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "产品口径已锁保链接；旧「拒绝复制」目标作废，并入新顶包",
+          "to": "cancelled"
+        }
+      ]
     },
     {
       "id": "WP-005",
@@ -3982,6 +3991,544 @@
           "actor": "frontend_mid",
           "action": "close",
           "note": "交叉审通过：抽查 Sync头/CodeSearch/SessionSearch strip；中层复跑 vitest 4/29 绿；脚手架跟契约；未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-063",
+      "domain": "team-ops",
+      "title": "合包：保链接复制 + 类型化压缩失败 + 已定小缺陷",
+      "result": "010/036/041/015 closed或明确blocked；中层汇总；未commit；004仍open",
+      "done_when": [
+        "子包done/blocked/cancelled；issues关闭或明确blocked；中层汇总可验收；未擅自commit"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063.md",
+      "progress": "closed done by andy: Andy 批：封包后统一 commit+push",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "一波落掉 ISSUE-010保链接、ISSUE-036类型化压缩失败、ISSUE-041 death list误报、ISSUE-015 remap-path-prefix；排除 ISSUE-004",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-063 合包：保链接复制 + 类型化压缩失败 + 已定小缺陷\n\n## Goal（Andy 2026-10-12）\n合包一波落掉：保链接复制（ISSUE-010）+ 类型化压缩失败（ISSUE-036）+ 已定小缺陷（ISSUE-041 / ISSUE-015）。产品侧无更大未决；实现与优先级由中层/域包消化。\n\n## 范围（本包）\n\n| Issue | 一句话 | 域 | 期望 |\n|---|---|---|---|\n| ISSUE-010 | `copy_path` 顶层 symlink 经 resolve 后跟源复制了目标内容 | IDE（workspace） | **保链接**：产物仍是 symlink，不解引用抄内容；sandbox 仍门；测/promise 跟新口径 |\n| ISSUE-036 | `turn_error` 靠 `final_text` 字符串匹配识别 auto compact 失败 | Runtime | 类型化错误类别贯通（内存侧），调用方对上号；有回归测 |\n| ISSUE-041 | `session_data_sql_death_list` 对 `session_search` 稀疏索引/cfg(test) 误报 | Session / 门禁 | 假红消除（白名单或收窄检测）；不改引擎产品行为 |\n| ISSUE-015 | 第三方 panic 路径可能仍带构建机 `.cargo/registry` 前缀 | Desktop / 构建卫生 | release 路径 remap / 构建卫生落地；有可核证据 |\n\n## 非范围（禁区 / 另包）\n- **ISSUE-004**（suspect，无 LS 复现）— 本波不碰，保持 open\n- 检索引擎产品口径（WP-057 已 done）\n- 不擅自 commit / push（统一由 GM 收口）\n\n## 产品锁定 · ISSUE-010（Andy 2026-10-12）\n- **保链接**（preserve symlink）：`copy_path` 对顶层 symlink **保留为 symlink**，不 follow/dereference 去抄目标内容。\n- 废止旧口径「拒绝复制 symlink」（原 WP-004 / `refuses_to_copy_symlinks` 目标）。WP-004 已 cancelled。\n- sandbox 仍是唯一路径门；目标须在工作区内。\n- 测试名/promise 由中层/IDE 域决定：可改为 `preserves_symlink` 或等价；issue promise 与绿测对齐新口径。\n\n## 子包与时序\n\n```\nWP-063 (gm)\n  ├── WP-064 backend_mid：组织 IDE(010保链接) + Runtime(036类型化压缩失败) + 门禁/相关域(041 death list 误报)\n  └── WP-065 frontend_mid：组织 desktop(015 remap-path-prefix / 构建路径卫生)\n```\n\n- **064 与 065 可并行**（预期无共享文件）。\n- 064 内由 backend_mid 再拆域包（IDE / Runtime / Session 等）；域间若撞共享文件，等前一波改完再动。\n- 中层只拆活 / 交叉审 / 汇总；**不写 `src/`**（前后端中层同）。\n- 子包：中层先 fill+submit → GM 批 plan → 再 start；域包同理由中层批 plan。\n\n## 验收\n- ISSUE-010 / 036 / 041 / 015 closed，或有明确 blocked（仅 product/arch）说明\n- ISSUE-004 仍 open（本包未动）\n- 中层汇总 md + 分域证据\n- 禁区未碰；本包不擅自 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:48:13.548Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 一波落掉 ISSUE-010保链接、ISSUE-036类型化压缩失败、ISSUE-041 death list误报、ISSUE-015 remap-path-prefix；排除 ISSUE-004"
+        },
+        {
+          "ts": "2026-10-12T13:48:24.755Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-063 合包：保链接复制 + 类型化压缩失败 + 已定小缺陷\n\n## Goal（Andy 2026-10-12）\n合包一波落掉：保链接复制（ISSUE"
+        },
+        {
+          "ts": "2026-10-12T13:48:25.597Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "Andy 点头「好可以开」；保链接已锁；合包开顶"
+        },
+        {
+          "ts": "2026-10-12T13:48:25.877Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 认可保链接；点头开合包"
+        },
+        {
+          "ts": "2026-10-12T13:48:26.182Z",
+          "actor": "gm",
+          "action": "start",
+          "note": "顶包开工；子包等中层 fill+submit 后再批"
+        },
+        {
+          "ts": "2026-10-12T14:05:26.517Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "前后端子包均 done；请 Andy 验收后统一 commit+push（排除无 workflow scope 的 yml）。"
+        },
+        {
+          "ts": "2026-10-12T16:23:11.535Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 批：封包后统一 commit+push",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-064",
+      "domain": "team-ops",
+      "title": "后端：组织 IDE(010保链接) + Runtime(036) + 门禁(041)",
+      "result": "010/036/041 closed或明确blocked；WP-067 IDE保链接 + WP-068 Runtime类型化emit + WP-069 Session消费/death_list；分域证据+中层汇总；未commit",
+      "done_when": [
+        "WP-067/068/069 done或明确blocked；ISSUE-010/036/041 closed或明确blocked；中层汇总交GM；未写src/、未commit；ISSUE-004仍open"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-backend.md",
+      "progress": "closed done by gm: 验收通过：010保链接测绿；036 error_kind emit+consume；041 death_list 假红清；042另挂；004未碰。",
+      "status_entered_at": null,
+      "parent": "WP-063",
+      "goal": "组织域包落地 ISSUE-010保链接复制、ISSUE-036类型化压缩失败、ISSUE-041 session_data_sql_death_list误报；中层只协调/交叉审/汇总，不写src/",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-063-backend · 后端中层方案（WP-064）\n\n- 角色：backend_mid；父 WP-063（合包，Andy 批，in_progress）；本包 WP-064（split）。\n- 基线：分支 `ops/team-framework`；中层只拆活 / 交叉审 / 汇总；**不写 `src/`**；**不 commit**。\n- 时间：2026-10-12（HKT）。\n- 产物路径：`.litecode/ops/artifacts/WP-063-backend.md`（本文件；deliver 时覆写为汇总）。\n\n## 1. Goal\n\n组织三域子包落地：\n1. **ISSUE-010** — `copy_path` **保链接**（Andy 2026-10-12 锁定）\n2. **ISSUE-036** — `turn_error` 用**类型化**压缩失败类别，废 `final_text` 字符串匹配\n3. **ISSUE-041** — `session_data_sql_death_list` 假红收紧（不改引擎产品）\n\n前端 ISSUE-015 归 WP-065；**ISSUE-004 保持 open**。\n\n## 2. Issue 表\n\n| Issue | 域 / 主责 | 一句话 | 期望 |\n|---|---|---|---|\n| ISSUE-010 | ide-substrate / IDE（WP-067） | 旧「拒绝复制 symlink」作废；改为 preserve | 绿测 `preserves_symlink`；sandbox 仍门；promise 对齐 |\n| ISSUE-036 | harness-core / Runtime emit（WP-068）+ Session consume（WP-069） | TurnCompleted 只传 `err.to_string()`，projector 靠文案认 CompactionFailed | 内存 InternalEvent 携带类型化类别；`turn_error` 无 string equality |\n| ISSUE-041 | harness-core / Session（WP-069） | death_list 误杀 `engines/session_search/sparse` 与文件级 `#[cfg(test)]` | 白名单 / 跳过文件级 cfg(test)；引擎行为不动 |\n\n## 3. 子包树\n\n```\nWP-063 (gm, in_progress)\n  └── WP-064 (backend_mid, approver=gm)  ← 本包\n        ├── WP-067 owner=ide      domain=ide-substrate   ISSUE-010\n        ├── WP-068 owner=runtime  domain=harness-core    ISSUE-036 emit\n        └── WP-069 owner=session  domain=harness-core    ISSUE-036 consume + ISSUE-041\n```\n\n| 子包 | 标题 | artifact |\n|---|---|---|\n| WP-067 | WP-064/IDE：copy_path 保链接（ISSUE-010） | `.litecode/ops/artifacts/WP-063-ide.md` |\n| WP-068 | WP-064/Runtime：类型化压缩失败到 TurnCompleted（ISSUE-036 emit） | `.litecode/ops/artifacts/WP-063-runtime.md` |\n| WP-069 | WP-064/Session：turn_error 类型化消费 + death_list 假红（ISSUE-036/041） | `.litecode/ops/artifacts/WP-063-session.md` |\n\n## 4. 串并行与文件竞态\n\n| 包 | 主文件 | 与谁并行 | 依赖 |\n|---|---|---|---|\n| WP-067 IDE | `src/workspace/service.rs`（+ 内测） | **与 068/069 全并行** | 无 |\n| WP-068 Runtime | `src/runtime/observer.rs`、`src/runtime/mod.rs`；必要时 `src/types/error.rs` | 与 IDE、与 Session-041 **并行** | 无；**须先于** Session-036 consume |\n| WP-069 Session | `tests/session_data_sql_death_list.rs`（041）+ `src/client_protocol/project.rs`（036 consume） | 041 可与 IDE/Runtime **并行** | **036 consume 等 WP-068 deliver**（类型化字段落地后） |\n\n时序建议（GM 批 plan 并 mid start 后）：\n1. 三域同时 fill+submit → mid approve → start。\n2. IDE 独立干完 010。\n3. Runtime 干完 036 emit 并 deliver。\n4. Session：041 可先合；036 consume **在 Runtime deliver 后**再改 `project.rs`，再一并 deliver。\n5. Mid 交叉审 → 关 issue → 汇总本 md → deliver WP-064。\n\n## 5. 域约束 / 实现口径（给子包）\n\n### WP-067 · ISSUE-010 保链接\n- Andy 锁：**复制时保留 symlink，不解引用抄内容**；sandbox 仍是唯一路径门；目标须在工作区内。\n- 废止：`refuse_top_level_symlink_copy` + 测 `refuses_to_copy_symlinks`（旧 WP-004 口径已 cancelled）。\n- Mid 偏好（域可微调但须写进产物）：\n  - **顶层**：lexical `symlink_metadata` / `readlink` → sandbox 校验链接目标仍在工作区 → 在 dest **重建 symlink**（不 follow）。\n  - **目录内嵌套**：`copy_recursive` 对 symlink 节点同样 preserve（一致口径），仍 sandbox 门。\n- 测名/promise → `preserves_symlink`（或等价）；覆盖顶层 + 嵌套。\n- **不 Escape**；不碰引擎 / Runtime / Session。\n\n### WP-068 · ISSUE-036 emit\n- 现状：`finalize_agent_outcome` 对 `TurnOutcome::Error(err)` 只 `err.to_string()` → `emit_turn_completed` → `InternalEvent::TurnCompleted { final_text, reason: Error, ... }`；`turn_error` 用 `final_text == LitecodeError::CompactionFailed.to_string()`。\n- 改法（内存侧，不扩 wire）：\n  - 在 `InternalEvent::TurnCompleted` 增加可选类型化错误类别字段，**或** 丰富 `TurnEndReason::Error` 携带类别；\n  - 复用已有 `CompactionFailKind` / `LitecodeError::CompactionFailed` 模式；\n  - emit 路径在 Error 分支保留类别，不只字符串。\n- **不改** `src/client_protocol/project.rs`（归 WP-069）。\n- 回归测：emit 后类别可断言为 CompactionFailed（不依赖文案）。\n\n### WP-069 · ISSUE-041 + ISSUE-036 consume\n- **041**：白名单 `src/engines/session_search/**`（sparse 自有 FTS/rusqlite ≠ sessions.db）；跳过**文件级** `#[cfg(test)]` 模块（`golden.rs` / `parity.rs` / `dense_parity.rs` 经 mod.rs `#[cfg(test)] mod X;` 挂载但仍被 walk 当生产扫）。**不改引擎产品代码/行为**。\n- **036 consume**：`turn_error` 读 Runtime 新字段判定 `ErrorCode::CompactionFailed`；删除（或降为兜底并测证明不再依赖）`final_text` 字符串相等。须 **WP-068 deliver 后**再动 `project.rs`。\n- 回归：death_list 绿无假红；`wp025_turn_error_tests` / 新测证明类型化路径。\n\n## 6. 禁区\n\n- 不写中层 `src/`；域包不得越域改无关文件。\n- **ISSUE-004** 不碰（保持 open）。\n- 引擎产品口径（WP-057 已落地）不回潮。\n- 不擅自 **commit / push**（GM 收口）。\n- 不发明超出内存 InternalEvent 的 wire 协议变更（036）。\n- 064 与 065 并行、无共享文件预期。\n\n## 7. 验收清单（WP-064 deliver 前）\n\n- [ ] WP-067 / 068 / 069 均为 done（或明确 blocked 且仅 product/arch）\n- [ ] ISSUE-010 / 036 / 041 closed（或明确 blocked 说明）\n- [ ] ISSUE-004 仍 open\n- [ ] 分域产物：`WP-063-{ide,runtime,session}.md` + 本汇总更新\n- [ ] 交叉审：Runtime 字段 ↔ Session `turn_error` 对齐；IDE 测名/promise 对齐 Andy 保链接\n- [ ] 禁区未碰；未 commit\n\n## 8. 请 GM\n\n本方案已填实并创建 WP-067/068/069（均 drafting）。请 `approve --id WP-064`；中层再 start，并批域包 plan 后开工。统一 commit 仍由 GM 收口。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:48:18.786Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织域包落地 ISSUE-010保链接复制、ISSUE-036类型化压缩失败、ISSUE-041 session_data_sql_death_list误报；中层只协调/交叉审/汇总，不写src/"
+        },
+        {
+          "ts": "2026-10-12T13:48:25.047Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: 拆 IDE(ISSUE-010 保链接) + Runtime(ISSUE-036 类型化压缩失败) + Session/门禁(ISSUE-041 death l"
+        },
+        {
+          "ts": "2026-10-12T13:51:23.402Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-063-backend · 后端中层方案（WP-064）\n\n- 角色：backend_mid；父 WP-063（合包，Andy 批，in_progre"
+        },
+        {
+          "ts": "2026-10-12T13:51:23.691Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"域包done/blocked/cancelled；issues关闭或明确blocked；中层汇总交GM；未写src/ -> [\"WP-067/068/069 done或明确blocked；ISSUE-010/036/041 closed或明确b"
+        },
+        {
+          "ts": "2026-10-12T13:51:23.968Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "result: \"010/036/041 closed或明确blocked；分域证据+中层汇总；未commit\" -> \"010/036/041 closed或明确blocked；WP-067 IDE保链接 + WP-068 Runtime"
+        },
+        {
+          "ts": "2026-10-12T13:51:24.246Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "方案已填实：子包 WP-067(IDE/010保链接) WP-068(Runtime/036 emit) WP-069(Session/036 consume+041)；串并行与文件竞态已写清。请 GM approve 后再 start；域包仍 drafting 待 mid 批。"
+        },
+        {
+          "ts": "2026-10-12T13:51:52.873Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案可：保链接口径、036 Runtime→Session 串行、041 并行、004 禁区。批后请 start 并批域包 plan。"
+        },
+        {
+          "ts": "2026-10-12T13:52:06.874Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM approved; start; awaiting WP-067/068/069 domain plan submit"
+        },
+        {
+          "ts": "2026-10-12T14:04:57.100Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-063-backend.md\" -> \".litecode/ops/artifacts/WP-063-backend.md\""
+        },
+        {
+          "ts": "2026-10-12T14:04:57.372Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-067/068/069 done；010/036/041 closed；042另挂；汇总 WP-063-backend.md；未 commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T14:05:26.246Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：010保链接测绿；036 error_kind emit+consume；041 death_list 假红清；042另挂；004未碰。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-065",
+      "domain": "team-ops",
+      "title": "前端：组织 desktop(015 remap-path-prefix / 构建路径卫生)",
+      "result": "015 closed或明确blocked；分域证据+中层汇总；未commit",
+      "done_when": [
+        "域包done/blocked/cancelled；ISSUE-015关闭或明确blocked；中层汇总交GM；未写src/、未commit"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-frontend.md",
+      "progress": "closed done by gm: 验收通过：assemble release 幂等 remap；证据 A 齐；B 留 CI strings 抽测不挡关。ISSUE-015 同步 closed。",
+      "status_entered_at": null,
+      "parent": "WP-063",
+      "goal": "组织 desktop 域落地 ISSUE-015 remap-path-prefix / release 构建路径卫生；中层只协调/交叉审/汇总，不写src/",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-065 方案（frontend_mid）\n\n父包：WP-063 · Issue：**ISSUE-015**（构建卫生，非产品形态）  \n并行：WP-064（后端；代码面不交）  \n产物本文件 + 子包明细 `WP-063-desktop.md`  \n中层只拆活 / 交叉审 / 汇总；**不写 `src/` / scripts 落地由域 bot**。\n\n## Goal\nrelease 构建的第三方 panic / 调试路径**尽量不带构建机** `.cargo/registry`（及等价 git checkout）前缀：落地 `--remap-path-prefix`（或等价），并留下可核证据。\n\n## 范围\n| 做 | 不做 |\n|----|------|\n| Desktop/release 构建链：`scripts/assemble_product.{sh,ps1}`（及经其调用的 `package_linux` / `package_win` / signed-release）在 **release profile** 注入 remap | ISSUE-004；后端 010/036/041 |\n| remap：`$CARGO_HOME/registry` → 稳定假路径（如 `/rustc/registry`）；`$CARGO_HOME/git` → `/rustc/git`；Windows 用对应路径 | 不擅自 commit |\n| 可核证据：脚本/CI 可见 RUSTFLAGS；或 release 二进制 `strings`/`rg` 抽查无本机 registry 绝对路径（箱内能做则做；签名产物真机 panic 复现可记为后续/手测） | 不升产品 UI；不改 embed debug 回退口径 |\n| 可选：workspace/`$ROOT` remap（若证据仍泄露本机 checkout）— 仅当 registry remap 不够且代价可接受 | 不为 debug/dev `serve` 强加 remap（避免拖慢本地诊断） |\n\n## 现状锚点（只读）\n- ISSUE-015：workflows/scripts **未见** `--remap-path-prefix`；本域已限 `CARGO_MANIFEST_DIR` 模型回退为 `debug_assertions`；`devRepoRoot` 在 `isPackaged` 为空。\n- Release 入口：`assemble_product.sh` / `.ps1` → `package_linux.sh` / `package_win.ps1` → `.github/workflows/windows-signed-release.yml`（`LITECODE_CHANNEL=official`）。\n- `serve.sh` / `serve_win.ps1` 为开发路径，本包默认不改。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-066** | `frontend_desktop` | release-desktop | `WP-063-desktop.md` |\n\n## desktop 落点（域 bot 实施）\n1. **注入点**：在 `assemble_product.sh` / `assemble_product.ps1`，当 `PROFILE=release`（或等价 `--release`）时，向 `RUSTFLAGS` **追加**（保留调用方已有 flags）：\n   - `--remap-path-prefix=<cargo_home>/registry=/rustc/registry`\n   - `--remap-path-prefix=<cargo_home>/git=/rustc/git`\n   - `cargo_home` = `$CARGO_HOME` 或默认 `~/.cargo` / `%USERPROFILE%\\.cargo`（注意 Windows 路径分隔与引号）。\n2. **幂等**：已含相同 remap 前缀则不重复追加。\n3. **证据（写入 WP-063-desktop.md）** 至少一项：\n   - A. 脚本单测 / 干跑打印：release 路径下 `RUSTFLAGS` 含 remap；debug 路径不含（或明确说明）。\n   - B. 本地 `cargo build --release`（带注入）后对二进制 `strings`/`rg` 抽查：无 `$HOME/.cargo/registry` 或 CI runner 典型绝对前缀（若箱内 Rust 可用）；不可用则记环境限制 + 以 A 为准，并建议 GM/CI 抽测。\n4. **workflow**：一般**不必**在 yml 再写一遍（走 assemble）；若发现旁路 `cargo build --release` 未走 assemble，补同一注入或改走 assemble，并记产物。\n5. **回归**：既有 desktop `npm test` 若受影响需仍绿；本包不扩产品测，以构建卫生证据为主。\n6. **ISSUE-015**：证据齐后建议 closed（中层汇总时写明）；promise 对齐「release 用户可见路径不泄露构建机 registry 树」。\n\n## 时序\n```\nfill/submit WP-065 → GM 批 → start\n  → desktop 子包 fill/submit → 中层批 → start → 落地+证据\n  → 中层交叉审 → close 子包 → 本文件验收节 → deliver WP-065\n```\n\n## done-when\n1. release assemble 路径具备 remap（sh+ps1）；有可核证据写入 `WP-063-desktop.md`。\n2. ISSUE-015 可 closed 或明确 blocked（仅环境无法核二进制时说明）。\n3. 禁区未碰；未 commit。\n\n## 非目标\n- 不保证所有第三方/宏路径 100% 无本机痕迹（「尽量」）；不以 panic 真机签名包为硬门，除非 GM 另加。\n- 不改 ISSUE-004 / 后端 issues。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:48:19.102Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 desktop 域落地 ISSUE-015 remap-path-prefix / release 构建路径卫生；中层只协调/交叉审/汇总，不写src/"
+        },
+        {
+          "ts": "2026-10-12T13:48:25.324Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 拆 desktop(ISSUE-015 remap-path-prefix / release 构建路径卫生)。与 WP-064 并行。中层只协调/交叉审/汇总"
+        },
+        {
+          "ts": "2026-10-12T13:50:25.700Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-065 方案（frontend_mid）\n\n父包：WP-063 · Issue：**ISSUE-015**（构建卫生，非产品形态）  \n并行：WP-0"
+        },
+        {
+          "ts": "2026-10-12T13:50:25.986Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子包 WP-066（desktop）已建；ISSUE-015 remap 落 assemble sh/ps1。请审；未 start。"
+        },
+        {
+          "ts": "2026-10-12T13:50:39.123Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案可：release assemble 注入 remap、幂等、debug 不动、证据 A/B。批后请 start，并批 desktop 子包 plan 后开工。"
+        },
+        {
+          "ts": "2026-10-12T13:50:50.425Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批；下发 WP-066；ISSUE-015 remap+证据"
+        },
+        {
+          "ts": "2026-10-12T13:54:15.612Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总 WP-063-frontend.md；子包 WP-066 done；中层复跑证据 A 绿；未 commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T13:54:37.882Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：assemble release 幂等 remap；证据 A 齐；B 留 CI strings 抽测不挡关。ISSUE-015 同步 closed。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-066",
+      "domain": "release-desktop",
+      "title": "WP-065 desktop：release remap-path-prefix / 构建路径卫生",
+      "result": "release assemble 有 remap；证据写入 WP-063-desktop.md；ISSUE-015 可关或说明",
+      "done_when": [
+        "sh+ps1 release 注入 remap 且幂等；证据齐；禁区未碰；未 commit"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-desktop.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：sh/ps1 release 幂等 remap；中层复跑证据 A 绿；B 环境限制可接受；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-065",
+      "goal": "只动 release 构建卫生（ISSUE-015）。在 scripts/assemble_product.sh 与 assemble_product.ps1 的 release profile 注入 --remap-path-prefix（CARGO_HOME registry→/rustc/registry、git→/rustc/git，幂等追加）；确保 package_linux/package_win/signed-release 经此路径生效。产出可核证据（RUSTFLAGS 干跑/单测，箱内能则 strings 抽查无 .cargo/registry）。不改 debug/dev serve；不碰 ISSUE-004/后端；不 commit。产物 .litecode/ops/artifacts/WP-063-desktop.md。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-066 方案（frontend_desktop · direct）\n\n父包：WP-065 · 祖先 WP-063 · Issue：**ISSUE-015**（release 构建卫生）  \n审批：frontend_mid · `--as frontend_desktop` · 产物：`.litecode/ops/artifacts/WP-063-desktop.md`  \n**未经中层批 plan 禁止 start；不 commit。**\n\n## Goal\n仅在 **release** assemble 路径，向 `RUSTFLAGS` **幂等追加** `--remap-path-prefix`，使第三方 panic/调试路径尽量不带构建机 `.cargo/registry`（及 git checkout）绝对前缀；留下可核证据。\n\n## 做 / 不做\n\n| 做 | 不做 |\n|----|------|\n| `scripts/assemble_product.sh` + `assemble_product.ps1`：`PROFILE=release`（或非 debug）时注入 remap | debug / `serve.sh` / `serve_win.ps1` |\n| 确保 `package_linux` / `package_win` / signed-release 经 assemble 生效；旁路裸 `cargo build --release` 对齐或改走 assemble（除明确禁区的 serve） | ISSUE-004；后端；产品 UI；web |\n| 证据写入 `WP-063-desktop.md` | 不 commit；不擅自改桌面 CI 产品测门禁 |\n\n## 落点（实施步骤）\n\n### 1. 注入（核心）\n在 `assemble_product.sh` / `assemble_product.ps1`，当 profile 为 **release** 时：\n\n- `cargo_home` = `$CARGO_HOME` / `$env:CARGO_HOME`，否则默认 `~/.cargo` / `%USERPROFILE%\\.cargo`\n- 向现有 `RUSTFLAGS` **追加**（保留调用方已有 flags）：\n  - `--remap-path-prefix=<cargo_home>/registry=/rustc/registry`\n  - `--remap-path-prefix=<cargo_home>/git=/rustc/git`\n- **幂等**：若 `RUSTFLAGS` 已含相同 remap 前缀则不重复追加\n- Windows：注意路径分隔与引号，避免把空格路径拆坏\n- debug profile：**不**注入\n\n### 2. 链路核对\n只读确认并记入产物：\n\n- `package_linux.sh` → `assemble_product.sh`\n- `package_win.ps1` / `package_local*.ps1` / sidecar workflow → `assemble_product.ps1`\n- `windows-signed-release.yml` 经 package/assemble（一般 **不必** 在 yml 再写一遍 RUSTFLAGS）\n- 若发现 release 旁路裸 `cargo build --release` **且**属于本域发布链：补同一注入或改走 assemble；`serve*` 旁路明确不做\n\n### 3. 证据（写入 `WP-063-desktop.md`）\n至少：\n\n- **A（必做）**：脚本干跑 / 单测：release 路径下导出的 `RUSTFLAGS` 含两条 remap；debug 路径不含（或明确说明未注入）\n- **B（箱内能则做）**：带注入的 `cargo build --release` 后对二进制 `strings`/`rg` 抽查无 `$HOME/.cargo/registry` 等本机绝对前缀；不可用则记环境限制，以 A 为准并建议 CI/GM 抽测\n\n可选：若 A+B 后仍明显泄露 workspace 绝对路径，评估是否追加 `$ROOT` remap——**仅当**代价可接受且父方案允许；默认本包不主动加，除非证据强制。\n\n### 4. 回归\n- 既有 `cd desktop && npm test` 若受影响需仍绿；本包不以扩产品测为主，以构建卫生证据为主\n\n## done-when\n1. release assemble（sh+ps1）具备幂等 remap；debug 无。\n2. 发布链经 assemble 生效（旁路已对齐或已记除外）。\n3. `WP-063-desktop.md` 含 A（及能做的 B）。\n4. 禁区未碰；未 commit。\n5. 绿/证据齐 → **私信前端中层交叉审** → 再 `deliver`。\n\n## 风险 / 备注\n- remap 不保证 100% 无本机痕迹（宏/proc-macro 等「尽量」口径）。\n- 不以签名包真机 panic 为硬门（父方案非目标）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:50:19.937Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只动 release 构建卫生（ISSUE-015）。在 scripts/assemble_product.sh 与 assemble_product.ps1 的 release profile 注入 --remap-path-prefix（CARGO_HOME registry→/rustc/registry、git→/rustc/git，幂等追加）；确保 package_linux/package_win/signed-release 经此路径生效。产出可核证据（RUSTFLAGS 干跑/单测，箱内能则 strings 抽查无 .cargo/registry）。不改 debug/dev serve；不碰 ISSUE-004/后端；不 commit。产物 .litecode/ops/artifacts/WP-063-desktop.md。"
+        },
+        {
+          "ts": "2026-10-12T13:51:54.088Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-066 方案（frontend_desktop · direct）\n\n父包：WP-065 · 祖先 WP-063 · Issue：**ISSUE-01"
+        },
+        {
+          "ts": "2026-10-12T13:51:54.382Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "plan filled: release-only idempotent RUSTFLAGS remap in assemble sh+ps1; evidence WP-063-desktop.md; await mid approve before start"
+        },
+        {
+          "ts": "2026-10-12T13:52:06.930Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐 WP-065/ISSUE-015：release 幂等 remap；证据 A 必做 B 能则做；serve/debug 不动。可 start。"
+        },
+        {
+          "ts": "2026-10-12T13:52:12.919Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "mid approved; starting release remap landing"
+        },
+        {
+          "ts": "2026-10-12T13:54:04.200Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "cross-review passed; evidence A green; B env-limited OK; remap landed in assemble sh+ps1; no commit"
+        },
+        {
+          "ts": "2026-10-12T13:54:14.741Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：sh/ps1 release 幂等 remap；中层复跑证据 A 绿；B 环境限制可接受；未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-067",
+      "domain": "ide-substrate",
+      "title": "WP-064/IDE：copy_path 保链接（ISSUE-010）",
+      "result": "绿测 preserves_symlink（顶层+嵌套）；ISSUE-010 closed 或交中层关；产物 md；禁区未碰；未 commit",
+      "done_when": [
+        "preserves_symlink 相关测绿；旧 refuse 口径废止；sandbox 仍门；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：中层复跑 preserves_symlink_top_level/nested + refuses_symlink_copy_escaping_workspace 绿；refuse_* 已废；ISSUE-010 closed+promise 保链接；ISSUE-004/引擎未碰；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-064",
+      "goal": "按 Andy 锁定口径落地 workspace copy_path 保链接：顶层 symlink 经 lexical readlink + sandbox 门后在目标重建 symlink（不解引用抄内容）；目录复制内嵌套 symlink 节点同样 preserve（一致口径），仍 sandbox 门。废止 refuse_top_level_symlink_copy / refuses_to_copy_symlinks；测名/promise 改为 preserves_symlink 或等价。主改 src/workspace/service.rs（含测）。不 Escape；不 commit。产物 .litecode/ops/artifacts/WP-063-ide.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-067 方案（ide）——只填方案，不开工\n\n基线：HEAD `a72ad6a`，分支 `ops/team-framework`，2026-10-12（HKT）\n父包：WP-064（in_progress，backend_mid）；合包 WP-063；审批：backend_mid\n产物（开工后写）：`.litecode/ops/artifacts/WP-063-ide.md`\n本步：fill → submit；**批前不 start、不改代码/测试、不 commit**。\n\n## 0. Goal / 锁定口径对齐\n\n按 Andy 2026-10-12 锁定 + WP-063 / WP-063-backend §5：\n\n- **保链接**：`copy_path` 对**顶层** symlink 经 lexical `readlink` + sandbox 门后，在 dest **重建 symlink**，**不解引用抄内容**。\n- **嵌套一致**：目录复制时，内嵌 symlink 节点同样 preserve + sandbox 门。\n- **废止**：`refuse_top_level_symlink_copy` + 测 `refuses_to_copy_symlinks`（旧 WP-004 拒拷口径已 cancelled）。\n- **测名/promise**：改为 `preserves_symlink`（或等价，覆盖顶层+嵌套）；关 ISSUE-010 时同步改 promise。\n- **不 Escape**：sandbox 仍是唯一路径门；链出工作区必须失败。\n- 主改 `src/workspace/service.rs`（含内测）；不 commit。\n\n## 1. 迁移背景（WP-004 → 本包）\n\n| 阶段 | 口径 | 代码现状 |\n|---|---|---|\n| ISSUE-010 发现 | 顶层 symlink 经 `sandbox.resolve`→canonicalize **跟随**后 `copy_recursive` 只见普通文件，于是**抄了目标内容**；嵌套仍拒 | 根因仍在：resolve 跟随 |\n| WP-004（已 cancelled） | 试图固化「拒绝复制 symlink」；加 `refuse_top_level_symlink_copy` + 测 `refuses_to_copy_symlinks` | 今日代码：**拒拷**（顶层函数 + `copy_recursive` 两处 InvalidInput） |\n| **本包 WP-067** | Andy **产品口径翻转**：拒拷作废 → **preserve** | 删除拒拷路径；改成 readlink→门→重建 |\n\n本包是**有意的行为变更**，不是小修：旧绿测「期望 InvalidMove」将作废并替换。产物须写清「旧 promise / 新 promise」。\n\n## 2. 现状读码（证据）\n\n- `copy_path`（~376–413）：先 `refuse_top_level_symlink_copy`，再 `sandbox.resolve(from)`（跟随），再 `copy_recursive`。\n- `refuse_top_level_symlink_copy`（~460–476）：lexical `root.join(rel)` + `symlink_metadata` → `InvalidMove(\"refusing to copy symbolic links\")`。\n- `copy_recursive`（~554–594）：对 src 与每个 child 若 `is_symlink` → `InvalidInput`「refusing…」（嵌套拒）。\n- 测 `refuses_to_copy_symlinks`（unix，~755–766）：期望顶层 copy → `InvalidMove` 且 dest 不存在。\n- `move_via_copy` 共用 `copy_recursive`：本包改 preserve 后，跨盘 move 对 symlink 节点会**一并** inherit（同口径副作用；测若触及则一并绿）。\n- 不改：`Sandbox::resolve` 本身（其他 API 仍可跟随）；`file_ops::atomic_write_follow`（写穿链接，非 copy）。\n\n## 3. copy_path / copy_recursive 算法（拟实现）\n\n### 3.1 共享助手（建议名，可微调）\n\n`preserve_symlink_at(sandbox_root, link_abs_lexical, dest_abs) -> Result<(), WorkspaceError>`：\n\n1. `symlink_metadata(link_abs)` 确认仍是 symlink（否则调用方不应进此路径）。\n2. `target_text = read_link(link_abs)`（**保留原文**，相对/绝对不改写）。\n3. **Sandbox 门（不 follow 抄内容）**：\n   - 解析「链接所指」：`target_text` 若绝对则用之，否则 `link_abs.parent().join(target_text)`（同 `file_ops::resolve_link_target`）。\n   - 判定是否在工作区内：对已存在路径用 `canon_abs` + `starts_with(root)`；对断链用「经 root 规范化的 lexical 祖先 / `canon_join_nonexistent` 同类」检查，**不得**因断链而误放行出界绝对路径。\n   - 出界 → 映射为 `WorkspaceError`（优先对齐既有 Escape/`InvalidMove` 入口，与 `SandboxError::Escape` 一致；文案可含 symbolic link escapes workspace）。**禁止**在 dest 留下半成品链接。\n4. 在 `dest_abs` **重建** symlink：`symlink(target_text, dest_abs)`（unix）；Windows 按目标是文件/目录选 `symlink_file` / `symlink_dir`（读不到类型时：优先按 link 元数据/target 试探，失败则 Io；测以 unix 为主，Windows 无权限创建时 skip 并打印原因——对齐 `tool_path` 测惯例）。\n5. **不** `fs::copy` 目标内容；**不**对 link 本身调用会 canonicalize 跟随的 `Sandbox::resolve` 作为「源内容路径」。\n\n### 3.2 `copy_path` 顶层\n\n1. 用与今日 refuse 相同的 **lexical** 定位：`classify_agent_path(from)` → `root.join(rel)`；非法绝对/traversal 仍交给后续 `resolve` 报错。\n2. 若 lexical 节点是 symlink → 走 §3.1；`to` 仍 `sandbox.resolve(to)`；`refuse_directory_overwrite` / 自拷检查：用**链接节点**的 rel（非 follow 后的目标 rel）参与 `from_rel`/`is_same_or_descendant`；成功后 `emit_changed` 报 dest rel。\n3. 若非 symlink → 保持现有 `resolve` + `copy_recursive` 路径（普通文件/目录）。\n4. **删除** `refuse_top_level_symlink_copy` 函数及其唯一调用点。\n\n### 3.3 `copy_recursive` 嵌套\n\n- 替换两处「is_symlink → Err refusing」：对 symlink 节点调用同一 `preserve_symlink_at`（root 从外层传入或经 `Sandbox` 可见路径；若助手只收 `Path`，由 `copy_path` 注入 `sandbox.root()`）。\n- 目录项：`read_dir` + 对每个 child `symlink_metadata` 分支 → preserve 或递归；普通文件仍 `fs::copy` / tmp+replace。\n- 错误：preserve 的 Escape/InvalidMove 经 `map_copy_error` 或显式映射冒泡（避免只剩裸 Io）。\n\n### 3.4 错误与边界\n\n| 情形 | 行为 |\n|---|---|\n| 链目标在工作区内（含断链但 lexical 仍落在 root 下） | **preserve**（dest 为同文 symlink；断链允许） |\n| 链目标出界（绝对出界 / 相对解析后出界） | **失败**，不创建 dest 链接；不 Escape |\n| 源非 symlink | 旧行为（抄内容） |\n| overwrite / 目录互覆盖 | 仍走现有 `refuse_directory_overwrite`；文件 overwrite 时 dest 若已是 symlink，替换策略与现文件 replace 一致（先清/replace 再写入链接或内容——开工实现时写清并测） |\n| Windows 无创建权限 | Io 或测 skip；不放宽 sandbox |\n| `move_via_copy` | 自动 inherit preserve；不单开产品承诺，回归顺带覆盖即可 |\n\n## 4. 测试计划\n\n废止并替换（unix `#[cfg(unix)]`）：\n\n| 旧 | 新 |\n|---|---|\n| `refuses_to_copy_symlinks` | `preserves_symlink_top_level`（或单测 `preserves_symlink` 内分节） |\n| （无嵌套 preserve） | `preserves_symlink_nested`（目录内 child link） |\n\n断言要点：\n\n1. **顶层**：`copy_path(\"link.txt\",\"out.txt\")` → Ok；`out` 的 `symlink_metadata().is_symlink()`；`read_link(out)==read_link(link)`；`out` **不是**普通文件抄内容（可对比 inode/文件类型）；源 link 仍在。\n2. **嵌套**：目录含 symlink child → copy 后对应 child 仍为 symlink 且 link text 一致；sibling 普通文件内容仍复制。\n3. **出界**：workspace 内 link → `/tmp/...` 或 workspace 外 dir → `copy_path` Err（Escape/InvalidMove）；dest 不存在。\n4. **回归**：`mkdir_rename_copy_and_reject_self_copy`、`refuses_directory_overwrite_*`、037/038 探针、普通 copy；`workspace::service::` lib 全绿。\n5. 命令形态：`HOME=/workspace/litecode/.tmp/home timeout 600 cargo test --lib workspace::service:: -- --nocapture </dev/null`（共享 target 排队）。\n\n关 ISSUE-010：status→closed；**promise 改为**「workspace copy 保链接（preserves_symlink）；sandbox 仍门；目标须在工作区内」；repro 指向新测名。\n\n## 5. 与 ISSUE-004 边界（为何不碰）\n\n- ISSUE-004：`optional_lsp` findReferences **缺上下文块**，域虽同属 ide-substrate，但是 **LSP 工具输出**，与 `copy_path`/sandbox 文件语义无关；grade=suspect，合包 WP-063 明文「保持 open」。\n- 本包文件面仅 `service.rs`（±本域测）；不改 `src/lsp/**`、不改 `tests/optional_lsp.rs`。\n- 验收自检：ISSUE-004 仍 open。\n\n## 6. 产物提纲（WP-063-ide.md，开工后写）\n\n```\n# WP-063 / WP-067 — IDE：copy_path 保链接（ISSUE-010）\n- 元信息：HEAD、日期、审批、禁区、不 commit\n## 1. 口径迁移（拒拷 → preserve）与 ISSUE-010 promise 新旧对照\n## 2. 改动文件 / 算法摘要（顶层+嵌套；删除 refuse_*）\n## 3. 测试：旧测废止、新 preserves_*、出界、回归；命令与结果\n## 4. ISSUE-010 关闭证据；ISSUE-004 未碰声明\n## 5. move_via_copy 副作用说明（若有）\n## 6. 门禁自检：引擎产品未动；未 commit；无 Escape\n```\n\n## 7. 硬门禁\n\n- **引擎产品**（WP-057 已落地）不回潮、不改 `src/engines/**`。\n- **ISSUE-004** 不碰。\n- **不 Escape**；不擅自 commit / push。\n- 不改 Runtime/Session/Tools；与 WP-068/069 **文件不交，可并行**。\n- 批前：**不 start、不改代码**。\n\n## 8. 工具需求\n\n**无。** 现有 rustc 1.99 + 系统 `timeout` + 共用 target 排队足够。若 Windows symlink 测环境缺权限，仅 skip 记录，不申请新工具。\n\n## 9. 本步确认\n\n- 仅 fill 本方案并 submit 给 backend_mid。\n- **未**改 `src/` / `tests/` / issue / 产物文件；**未 commit**；**未 start**。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:50:54.350Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 Andy 锁定口径落地 workspace copy_path 保链接：顶层 symlink 经 lexical readlink + sandbox 门后在目标重建 symlink（不解引用抄内容）；目录复制内嵌套 symlink 节点同样 preserve（一致口径），仍 sandbox 门。废止 refuse_top_level_symlink_copy / refuses_to_copy_symlinks；测名/promise 改为 preserves_symlink 或等价。主改 src/workspace/service.rs（含测）。不 Escape；不 commit。产物 .litecode/ops/artifacts/WP-063-ide.md。"
+        },
+        {
+          "ts": "2026-10-12T13:54:32.144Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-067 方案（ide）——只填方案，不开工\n\n基线：HEAD `a72ad6a`，分支 `ops/team-framework`，2026-10-12"
+        },
+        {
+          "ts": "2026-10-12T13:54:32.443Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "WP-067 域方案已填：copy_path 保链接（lexical readlink+sandbox门+dest重建）；废 refuse_*；测 preserves_symlink 顶层+嵌套；ISSUE-004/引擎不碰；不 commit。请批 plan 后再准 start。"
+        },
+        {
+          "ts": "2026-10-12T13:55:02.475Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "plan OK：拒拷→preserve；lexical readlink+sandbox门+dest重建；嵌套同口径；出界失败；测 preserves_*；ISSUE-004/引擎不碰。准 start 并行落地。"
+        },
+        {
+          "ts": "2026-10-12T13:55:16.308Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "方案已批，开工落地 copy_path 保链接"
+        },
+        {
+          "ts": "2026-10-12T13:58:06.422Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-063-ide.md\" -> \".litecode/ops/artifacts/WP-063-ide.md\""
+        },
+        {
+          "ts": "2026-10-12T13:58:06.707Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "WP-067 落地完成：copy_path 保链接；废 refuse_*；preserves_symlink_*+出界 Escape 绿；ISSUE-010 closed+promise 改 preserve；ISSUE-004/引擎未碰；未 commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T14:00:53.202Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：中层复跑 preserves_symlink_top_level/nested + refuses_symlink_copy_escaping_workspace 绿；refuse_* 已废；ISSUE-010 closed+promise 保链接；ISSUE-004/引擎未碰；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-068",
+      "domain": "harness-core",
+      "title": "WP-064/Runtime：类型化压缩失败到 TurnCompleted（ISSUE-036 emit）",
+      "result": "TurnCompleted 发出类型化压缩失败类别；回归绿；产物 md；未改 client_protocol；未 commit",
+      "done_when": [
+        "类型化类别已 emit；字符串匹配不再是唯一依据（对 Runtime 侧）；测绿；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-runtime.md",
+      "progress": "closed done by backend_mid: 验收通过：中层复跑 T1–T4 相关测绿；error_kind 挂 TurnCompleted；turn_error 零改；ISSUE-036 仍 open 等 WP-069；未 commit。放行 Session 036 consume。",
+      "status_entered_at": null,
+      "parent": "WP-064",
+      "goal": "为 ISSUE-036 在内存 InternalEvent 侧落地类型化错误类别：在 InternalEvent::TurnCompleted（或丰富 TurnEndReason::Error）携带可判定的 CompactionFailed 类别（复用 CompactionFailKind / LitecodeError 模式），使 finalize_agent_outcome / emit_turn_completed 不再只传 err.to_string()。主改 src/runtime/{observer,mod}.rs，必要时 src/types/error.rs。不改 client_protocol（Session 子包消费）；不发明 wire 协议变更；有回归测。不 commit。产物 .litecode/ops/artifacts/WP-063-runtime.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-068 / WP-063-runtime（Runtime：ISSUE-036 emit · 类型化压缩失败到 TurnCompleted）\n\n- 父包：WP-063 → WP-064；本包：**WP-068**；owner：runtime；approver：backend_mid\n- 状态：**方案 fill → submit（awaiting_approval）**；**批前不 start、不改代码/测试、不 commit**\n- 分支：`ops/team-framework`；基线 HEAD `a72ad6a`\n- 产物路径：`.litecode/ops/artifacts/WP-063-runtime.md`（本文件）\n- 关联：ISSUE-036（open，owner=runtime）；消费端 Session **WP-069**（硬串行：本包 deliver 后才能改 `project.rs`）\n- 禁区：**ISSUE-004**、引擎产品、**不改** `src/client_protocol/**` 的消费逻辑（见 §3.4 编译兼容例外请示）、不发明 wire 协议字段、**不 commit**\n\n---\n\n## 1. Goal / Promise\n\n修 **ISSUE-036 emit**：auto compact 失败结束回合时，`InternalEvent::TurnCompleted` 携带**类型化内存错误类别**，使 Session `turn_error` 可判定 `ErrorCode::CompactionFailed`，**不再**依赖 `final_text == LitecodeError::CompactionFailed.to_string()`。\n\n- promise（ISSUE）：回合错误码从类型化错误推导；不依赖展示文案。\n- actual：`finalize_agent_outcome` 对 `TurnOutcome::Error(err)` 只 `err.to_string()` → `emit_turn_completed`；类型在 TurnCompleted 前丢失（`runtime/mod.rs:892-895`）。\n\n本包只做 **emit**；**consume**（删字符串相等、改 `wp025_turn_error_tests`）归 WP-069。\n\n---\n\n## 2. 现状读码（证据）\n\n| 位置 | 行为 | 问题 / 要点 |\n|---|---|---|\n| `src/runtime/observer.rs:129-135` | `TurnCompleted { turn_id, final_text, reason, turn_token_stats, committed_next_seq }` | **无**错误类别字段 |\n| `src/runtime/observer.rs:78-83` | `TurnEndReason::{Completed,Cancelled,MaxSteps,Error}` 无载荷 | `as_log_reason` → 落盘 `turn/end.reason` 字符串；`project.rs` 把 `reason` 原样塞进 `agent/turn_finished` |\n| `src/runtime/observer.rs:50-54` | `CompactionFailKind::{NothingToCompact,Failed,Canceled}` | 已用于 `CompactionLifecycle.fail_kind`（manual/auto 生命周期），**非** TurnCompleted |\n| `src/runtime/observer.rs:11-22` | `FailReason` + `TurnError` → `InternalEvent::Error` / `TurnPhase::Failed` | 现有 LlmHttp/LlmParse/Internal；**无** CompactionFailed；与 TurnCompleted 路径分离 |\n| `src/runtime/mod.rs:892-895` | `TurnOutcome::Error(err) => emit(..., Error, Some(err.to_string()))` | **类型丢掉**的唯一主路径 |\n| `src/runtime/mod.rs:755-848` | `emit_turn_completed` 构造 TurnCompleted；落盘只写 `reason`/`final_text` | 内存类别**不应**写入 SessionEvent（ISSUE：内存侧、不落盘） |\n| `src/client_protocol/project.rs:537-565` | `turn_error`：文案全等 → `CompactionFailed`/`retryable:false` | **WP-069 消费**；本包不改此逻辑 |\n| `src/client_protocol/project.rs:482-504` | 投影 TurnCompleted → `agent/turn_finished`；`error` 来自 `turn_error(reason, final_text, …)` | 消费改字段后由 Session 接 |\n| `src/context_pipeline/compact.rs:523-528` | `compact_fail_kind(&LitecodeError)` → CompactionFailKind | 生命周期映射范例；Turn 结束用 `LitecodeError::CompactionFailed` 变体本身即可 |\n\n显式构造 / 解构 `TurnCompleted` 字段的编译触点（加字段后须补全）：\n\n- Runtime emit：`mod.rs:833`\n- client_protocol：`project.rs:482`、`controller/mod.rs:348/354`、`:871`、`:1802`（测）\n- tests：`tests/client_protocol_project.rs`、`tests/wire_seq_identity.rs` 等\n- `session/manager.rs` 已用 `TurnCompleted { reason, .. }` / `{ .. }` → **通常免改**\n\n---\n\n## 3. 方案（emit 设计）\n\n### 3.1 选定形态：**TurnCompleted 可选字段**（对齐 CompactionLifecycle 思路）\n\n在 `src/runtime/observer.rs` 新增（命名锁定，供 WP-069 对齐）：\n\n```rust\n/// In-memory turn-end error category (not persisted on turn/end).\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]\n#[serde(rename_all = \"snake_case\")]\npub enum TurnErrorKind {\n    CompactionFailed,\n}\n\n// InternalEvent::TurnCompleted { ... existing ...,\n//   #[serde(default)]\n//   error_kind: Option<TurnErrorKind>,\n// }\n```\n\n| 决策 | 选择 | 理由 |\n|---|---|---|\n| 载体 | **`TurnCompleted.error_kind`** | 与 `CompactionLifecycle.fail_kind` 同模式；Session 投影已解构该事件 |\n| 不 enrich `TurnEndReason::Error` | **否** | `reason` 已进 wire（`agent/turn_finished.reason`）与落盘 `turn/end`；struct 变体会把 `\"error\"` 改成对象，触犯「不发明 wire」 |\n| 不直接复用 `CompactionFailKind` | **类型新、思路复用** | `NothingToCompact`/`Canceled` 是生命周期轴；回合 Error 结束对应的是 `LitecodeError::CompactionFailed`（Canceled 已走 `TurnEndReason::Cancelled`，ISSUE-033）。混用易误判 |\n| 不扩展 `FailReason` / 挂 `TurnError` 到 TurnCompleted | **本包不做** | `FailReason` 服务 Phase/Error 事件；扩面会扯 phase 投影。最小闭环只需一变体 |\n| 落盘 | **不写** `error_kind` 进 `SessionApply::Append(TurnEnd)` | ISSUE「内存侧」；`final_text`/`reason` 保持现状 |\n| wire | **本包不**把 `error_kind` 塞进 JSON-RPC params | Session 继续用 `StructuredError.code`；WP-069 只改判定来源 |\n\n### 3.2 Emit 路径（获批后改）\n\n主改文件：`src/runtime/observer.rs`、`src/runtime/mod.rs`。`src/types/error.rs` **不必改**（已有 `LitecodeError::CompactionFailed`）。\n\n1. `emit_turn_completed` / `finalize_turn` 增加参数 `error_kind: Option<TurnErrorKind>`（或仅 Error 路径传入；非 Error 恒 `None`）。\n2. `finalize_agent_outcome` Error 分支：\n\n```text\nTurnOutcome::Error(err) => {\n    let error_kind = match &err {\n        LitecodeError::CompactionFailed => Some(TurnErrorKind::CompactionFailed),\n        _ => None,\n    };\n    let msg = err.to_string();\n    self.emit_turn_completed(turn_id, TurnEndReason::Error, Some(msg), error_kind)\n}\n```\n\n3. 其它 outcome（Completed / Cancelled / MaxSteps）传 `None`。\n4. 构造 `InternalEvent::TurnCompleted { ..., error_kind }`。\n5. **私有** helper 可放 `runtime/mod.rs`（如 `fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind>`）；不强制改 `types/error.rs`。\n\n### 3.3 回归测（本包；批后写）\n\n| # | 测 | 断言 |\n|---|---|---|\n| T1 | emit/finalize：`TurnOutcome::Error(CompactionFailed)` | 捕获的 `TurnCompleted.error_kind == Some(CompactionFailed)`；`reason == Error`；`final_text` 仍为 display 文案（兼容展示） |\n| T2 | emit：其它 `LitecodeError`（如 `Llm(\"boom\")`） | `error_kind == None`；`final_text` 仍有 |\n| T3 | serde：缺省字段 | 无 `error_kind` 的旧 JSON → `None`（`#[serde(default)]`） |\n| T4 |（可选）observer 单测 | `TurnErrorKind` snake_case 序列化为 `\"compaction_failed\"` |\n\n跑法：定点 `cargo test`（本域 / lib 相关模块）；避开 Tools 等未完成编译挡路时用 `--lib` 过滤或单测名。**不**改 `project.rs` 的 `wp025_turn_error_tests`（WP-069）。\n\n### 3.4 编译兼容 vs「不改 client_protocol」（请中层裁）\n\n加字段后，**显式列字段**的 match/构造会编不过。提案二选一（默认 **A**）：\n\n| 方案 | 内容 | 利弊 |\n|---|---|---|\n| **A（推荐）** | 本包允许对 `client_protocol` / 相关 tests 做**纯机械**补全：`error_kind: _` 或构造处 `error_kind: None`；**禁止**改 `turn_error` 逻辑与文案匹配测 | deliver 后树可编；消费仍等 WP-069；符合「先 emit 后 consume」串行 |\n| B | 本包零碰 client_protocol；deliver 后短暂红，WP-069 同日接字段+consume | 字面遵守「不改 client_protocol」；CI/他人并行易踩红 |\n\n**本方案默认按 A 执行**（若你批 plan 时否决 A，改 B 并在产物注明）。A **不等于** ISSUE-036 consume。\n\n### 3.5 明确不做\n\n- 不改 `turn_error` / 不删字符串相等（WP-069）。\n- 不改 `TurnEndReason` 变体形状；不改落盘 `turn/end` schema。\n- 不改 JSON-RPC / `client_protocol/protocol.rs` ErrorCode 契约（已有 `CompactionFailed`）。\n- 不碰 ISSUE-004、引擎产品、symlink、前端。\n- 不 commit / push。\n\n---\n\n## 4. 风险\n\n| 风险 | 缓解 |\n|---|---|\n| enrich `TurnEndReason` 误伤 wire | 已否决；只用 TurnCompleted 可选字段 |\n| 机械补全被误当成 consume | §3.4 写清；diff 审：`turn_error` 函数体本包零改 |\n| Session 未接前行为仍靠文案 | 可接受；串行设计如此；deliver 后立刻催 WP-069 |\n| 其它 `LitecodeError` 将来也要类型化 | `TurnErrorKind` 可加变体；本包只加 `CompactionFailed` |\n| 与 `CompactionLifecycle.fail_kind` 双通道混淆 | 文档区分：lifecycle = compact 操作结果；`error_kind` = 回合以 Error 结束的类别 |\n\n---\n\n## 5. 交接 Session WP-069\n\n锁定契约（deliver 后以本产物 + diff 为准）：\n\n1. 读 `InternalEvent::TurnCompleted.error_kind`。\n2. `turn_error`：`reason == Error && error_kind == Some(CompactionFailed)` → `ErrorCode::CompactionFailed` / `retryable: false` / message 可用 `final_text` 或既有文案。\n3. 删除（或降级为测覆盖证明不可达的兜底）`final_text == LitecodeError::CompactionFailed.to_string()`。\n4. 更新 `wp025_turn_error_tests`：用 `error_kind` 构造，不再只靠文案。\n5. **硬门闩**：本包未 deliver 前禁止改 `project.rs` 消费逻辑（与 WP-063-backend / WP-063-session 一致）。\n\n交叉审点（mid）：Runtime 字段名/枚举 ↔ Session `turn_error` 分支一一对应；wire 仍只暴露 `StructuredError.code`。\n\n---\n\n## 6. done_when\n\n- [ ] `TurnErrorKind::CompactionFailed` + `TurnCompleted.error_kind: Option<…>`（`serde(default)`）已落地\n- [ ] `finalize_agent_outcome` Error 路径按 `LitecodeError` 映射类别，不再只传字符串\n- [ ] T1–T3（及可选 T4）绿；定点命令写入 deliver 产物\n- [ ] 落盘 `turn/end` **无** `error_kind`；`TurnEndReason` 形状未改\n- [ ] `turn_error` 函数体本包未改（consume 归 WP-069）；若走 §3.4-A，仅机械字段补全\n- [ ] ISSUE-004 / 引擎未碰；**未 commit**\n- [ ] 本 md 更新为落地证据 + 给 WP-069 的 API 摘要；`deliver --id WP-068`\n\n---\n\n## 7. 请 backend_mid\n\n1. **approve WP-068**（本方案）；批后再 `start`。\n2. 确认 §3.4 **A（机械编译兼容）** 或改 **B**。\n3. 确认字段/枚举命名 `TurnErrorKind` / `error_kind`（若要改名，批 plan 时一句话即可，Session 跟）。\n4. 本包 deliver 后放行 WP-069 的 036 consume。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:51:00.801Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 为 ISSUE-036 在内存 InternalEvent 侧落地类型化错误类别：在 InternalEvent::TurnCompleted（或丰富 TurnEndReason::Error）携带可判定的 CompactionFailed 类别（复用 CompactionFailKind / LitecodeError 模式），使 finalize_agent_outcome / emit_turn_completed 不再只传 err.to_string()。主改 src/runtime/{observer,mod}.rs，必要时 src/types/error.rs。不改 client_protocol（Session 子包消费）；不发明 wire 协议变更；有回归测。不 commit。产物 .litecode/ops/artifacts/WP-063-runtime.md。"
+        },
+        {
+          "ts": "2026-10-12T13:56:03.348Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-068 / WP-063-runtime（Runtime：ISSUE-036 emit · 类型化压缩失败到 TurnCompleted）\n\n- 父包"
+        },
+        {
+          "ts": "2026-10-12T13:56:03.614Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "ISSUE-036 emit 方案：TurnCompleted.error_kind=Option<TurnErrorKind>；不 enrich TurnEndReason（避 wire）；批前不 start。请裁 §3.4 A/B 与命名。"
+        },
+        {
+          "ts": "2026-10-12T13:56:06.638Z",
+          "actor": "runtime",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-063-runtime.md\" -> \".litecode/ops/artifacts/WP-063-runtime.md\""
+        },
+        {
+          "ts": "2026-10-12T13:56:40.522Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "plan OK：TurnCompleted.error_kind=Option<TurnErrorKind::CompactionFailed>；不 enrich TurnEndReason；不落盘/不塞 wire。§3.4 裁 A（机械补字段，turn_error 零改）。命名认可 TurnErrorKind/error_kind。准 start。"
+        },
+        {
+          "ts": "2026-10-12T13:56:59.047Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T14:01:09.236Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "ISSUE-036 emit: TurnCompleted.error_kind=Option<TurnErrorKind>; mapping in finalize_agent_outcome; T1-T4 green; turn_error untouched (WP-069); ISSUE-036 left open for consume; no commit"
+        },
+        {
+          "ts": "2026-10-12T14:01:55.217Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：中层复跑 T1–T4 相关测绿；error_kind 挂 TurnCompleted；turn_error 零改；ISSUE-036 仍 open 等 WP-069；未 commit。放行 Session 036 consume。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-069",
+      "domain": "harness-core",
+      "title": "WP-064/Session：turn_error 类型化消费 + death_list 假红（ISSUE-036/041）",
+      "result": "death_list 无假红绿；turn_error 无 final_text CompactionFailed 匹配；ISSUE-036/041 可关；产物 md；未 commit",
+      "done_when": [
+        "death_list 绿无假红；turn_error 类型化消费；036/041 closable；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-063-session.md",
+      "progress": "closed done by backend_mid: 验收通过：036 turn_error 类型化绿（wp025+turn_finished）；041 假红清；ISSUE-036/041 closed；ISSUE-042 真违规另挂；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-064",
+      "goal": "(a) ISSUE-041：收紧 tests/session_data_sql_death_list.rs——白名单 engines/session_search（sparse 自有索引非 sessions.db）并跳过文件级 #[cfg(test)] 模块（golden/parity/dense_parity）；不改引擎产品行为。(b) ISSUE-036 消费：在 src/client_protocol/project.rs 的 turn_error 改用 Runtime 落地的类型化类别判定 CompactionFailed，废止 final_text 与 LitecodeError::CompactionFailed.to_string() 相等匹配；须等 Runtime 子包交付类型化字段后再改 project.rs（041 可先落地）。不 commit。产物 .litecode/ops/artifacts/WP-063-session.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-069 方案（Session：ISSUE-041 death_list 假红 + ISSUE-036 turn_error 类型化消费）\n\n- owner: session　approver: backend_mid　parent: WP-064　本包: WP-069\n- 产物：`.litecode/ops/artifacts/WP-063-session.md`（本文件）\n- 状态：方案起草 → fill+submit；**批前不改代码/测试、不 start**\n- 禁区：ISSUE-004、引擎产品行为、symlink 复制；**不 commit / 不 push**\n- 工具需求：**无**（wp.mjs / cargo / rg 足够；无额外工具）\n\n## 0. Goal（对齐父包 WP-064 / WP-063-backend §5）\n\n两腿：\n\n1. **ISSUE-041**：收紧 `tests/session_data_sql_death_list.rs`，消除对 `engines/session_search` 自有 SQLite / 文件级 `#[cfg(test)]` 的假红；**不改引擎产品代码与行为**。批后可立即落地，不依赖 Runtime。\n2. **ISSUE-036 consume**：`src/client_protocol/project.rs` 的 `turn_error` 改用 Runtime 类型化错误类别判定 `ErrorCode::CompactionFailed`，废止 `final_text == LitecodeError::CompactionFailed.to_string()`。**硬依赖：等 WP-068 Runtime deliver 后再改 `project.rs`**。\n\n## 1. 现状证据（只读核实）\n\n### 1.1 ISSUE-041 · death_list 假红\n\n| 点 | 位置 | 说明 |\n|---|---|---|\n| 门禁测 | `tests/session_data_sql_death_list.rs:87-148` | `sessions_db_sql_and_rusqlite_stay_in_sqlite_module`：walk `src/**/*.rs`，对「生产行」扫 `rusqlite` / `CREATE TABLE … transcript_items` / leftover 符号 / `sessions.db` join 等 |\n| 白名单过窄 | `:27-30` `is_sqlite_ok` | 仅放行 `/src/session/data/sqlite/`（另有 global_db / error.rs / workspace preview） |\n| 内联 cfg(test) | `:54-84` `production_lines` | 只跳过**同文件内** `#[cfg(test)] mod { … }`；**不跳过**经父 mod `#[cfg(test)] mod X;` 挂进来的**整文件** |\n| 生产自有索引 | `src/engines/session_search/sparse.rs:98` 等 | 生产 `use rusqlite` 打开 **sparse 自有索引**（`sparse_index_path`），≠ SessionData `sessions.db` 写路径；被误杀 |\n| 文件级测试模块 | `session_search/mod.rs:8-20` | `#[cfg(test)] mod dense_parity/golden/parity/relevance`；`golden.rs`/`parity.rs` 等整文件 `use rusqlite`，walk 仍当生产扫 |\n| 同模式扩大面 | `src/session/data/mod.rs:5-6` + `final_immutability_tests.rs:18` | 文件级 `#[cfg(test)] mod final_immutability_tests`；亦 `use rusqlite`，WP-047 已登记为假红扩大面（非产品回归） |\n\n门禁意图不变：**sessions.db 的 SQL/rusqlite 只许在 SessionData sqlite（+ 既有白名单）**。假红来自「任意 rusqlite 子串」扫到引擎自有索引与文件级测试模块。\n\n### 1.2 ISSUE-036 · turn_error 文本匹配\n\n| 点 | 位置 | 说明 |\n|---|---|---|\n| 消费端 | `project.rs:537-565` `turn_error` | `TurnEndReason::Error` 时用 `final_text == LitecodeError::CompactionFailed.to_string()` → `ErrorCode::CompactionFailed` / `retryable:false`；否则按 reconnect 映 `llm_http`/`internal` |\n| 发射端现状 | `InternalEvent::TurnCompleted`（`observer.rs:129-135`） | 仅有 `final_text` / `reason` / token stats / seq；**无类型化错误类别**；Runtime 只把 `err.to_string()` 塞进 `final_text`（ISSUE-036 actual） |\n| 既有测 | `project.rs` `wp025_turn_error_tests`（~1207+） | 用文案构造 `final_text` 断言 `CompactionFailed`；消费改类型化后须改测 |\n| 发射责任 | **WP-068 Runtime** | 在内存 `TurnCompleted`（或等价）落地类型化类别；**不改** `project.rs`（归本包） |\n\n字段名 / 枚举形态 **TBD**：以 WP-068 deliver 产物与 diff 为准；本方案只约定消费契约与改法，不预发明 wire。\n\n---\n\n## 2. 腿 A · ISSUE-041（可与 WP-068 并行；批后即可改测试）\n\n### 2.1 改法（仅 `tests/session_data_sql_death_list.rs`；零引擎 src 改动）\n\n1. **路径白名单（引擎自有 SQLite）**  \n   - 新增 `is_session_search_engine_ok(path)`：`norm(path).contains(\"/src/engines/session_search/\")`  \n   - 在 hit 扫描循环开头与现有 `is_sqlite_ok` 等并列 `continue`  \n   - 理由：sparse/lexical/trimmer 等生产 rusqlite 服务的是引擎自有 FTS/稀疏索引，不是 SessionData `sessions.db` 架构越界；门禁目标是 sessions.db 方言集中，不是禁止引擎任何 SQLite。\n\n2. **跳过文件级 `#[cfg(test)]` 模块**（收窄检测，非整目录 ignore）  \n   - 预扫：walk 时解析各 `mod.rs`（及含 `mod name;` 的父文件）中形如  \n     `#[cfg(test)]` 下一行（或紧邻）`mod <name>;`  \n     收集「仅测试挂载」的 sibling 文件路径（如 `…/golden.rs`、`…/parity.rs`、`…/dense_parity.rs`、`…/relevance.rs`、`…/final_immutability_tests.rs`）。  \n   - 对这些路径整文件跳过（与内联 `production_lines` 语义对齐：测试代码不参与生产方言门禁）。  \n   - **不**因目录名含 test 而盲跳；**不**跳过生产 `sparse.rs` 以外且已由 (1) 白名单覆盖的引擎路径以外的真实生产违规。\n\n3. **保持**  \n   - `leftover_symbols_absent_from_repo`（`:151-188`）逻辑不动（除非复跑证明新假红；本方案不预期改）。  \n   - 既有白名单：`session/data/sqlite`、`config/global_db`、`types/error.rs`、`workspace/sqlite_preview.rs`、path-construct 例外。  \n   - 对**真正**在非 sqlite 模块写 `sessions.db` / leftover Session CRUD 的命中仍 fail。\n\n### 2.2 验收（041）\n\n- `PATH=/home/box/.cargo/bin:$PATH cargo test --test session_data_sql_death_list`：**全绿、0 假红**。  \n- 抽查：故意在非白名单生产文件插入 `use rusqlite::` 仍应失败（门禁未废）。  \n- `rg` / diff：**无** `src/engines/**` 产品行为改动；仅测试文件。  \n- 产物补「041 落地证据」：命令、pass 数、白名单/跳过路径列表。\n\n### 2.3 不做\n\n- 不改 `src/engines/session_search/**` 产品代码。  \n- 不 `#[ignore]` 整测、不删 death_list。  \n- 不扩大白名单到无关 crate 路径（若复跑另发现假红，写入产物报 backend_mid，不擅扩）。\n\n---\n\n## 3. 腿 B · ISSUE-036 consume（**硬串行：等 WP-068 deliver**）\n\n### 3.1 依赖门闩\n\n| 条件 | 动作 |\n|---|---|\n| WP-068 **未** deliver | **禁止**改 `project.rs` / 相关测；041 可先行 |\n| WP-068 已 deliver | 读 `.litecode/ops/artifacts/WP-063-runtime.md` + Runtime diff，锁定类型化字段 API 后再改消费端 |\n\n假定接口（**待 Runtime 落地后以实际为准，本方案不锁死命名**）：\n\n- 内存事件 `InternalEvent::TurnCompleted`（或 Runtime 文档指明的等价载体）新增可选类别，例如 `error_kind` / `fail_kind` / `turn_error_category`，可区分 **CompactionFailed**（及必要时与 `CompactionFailKind` 对齐）。  \n- **不扩 JSON-RPC wire schema**（父包禁区）；`message` 仍可用 `final_text` / `error.to_string()`。  \n- 数字 JSON-RPC code 行为与现网一致；客户端继续读 `StructuredError.code`（`compaction_failed`）+ `retryable:false`。\n\n### 3.2 消费改法（WP-068 后）\n\n文件：`src/client_protocol/project.rs`（主）；必要时同文件内测 / `tests/client_protocol_*` 跟随。\n\n1. 投影 `TurnCompleted` 时把 Runtime 新字段传入 `turn_error`（签名增参或从 event 解构）。  \n2. `TurnEndReason::Error` 分支：  \n   - **若**类别 == CompactionFailed（精确匹配 Runtime 枚举/常量）→ `ErrorCode::CompactionFailed`，`retryable: false`，`message` 仍取 `final_text`（或 Display），**不再**与 `LitecodeError::CompactionFailed.to_string()` 做字符串相等。  \n   - **否则**保持现逻辑：`retryable = reconnect.is_failed()` → `llm_http` / `internal`。  \n3. **删除**（首选）或降级为「仅 debug_assert / 测中证明不可达」的文案匹配分支；产物写明选用哪种及理由。  \n4. 更新 `wp025_turn_error_tests`：用类型化类别构造事件/参数，断言 `CompactionFailed`；另加「文案碰巧相同但类别非 compaction → 不得误判为 compaction_failed」对照（若 API 允许）。  \n5. 与 manual compact 路径已有的 `compact_fail_code(CompactionFailKind)`（`project.rs:146-150`）口径对齐：auto 失败与 manual Failed 均映 `compaction_failed` / non-retryable。\n\n### 3.3 验收（036）\n\n- 类型化路径单测绿；文案匹配代码路径移除或有测证明不再依赖。  \n- 相关：`cargo test -p … client_protocol::project::wp025_turn_error_tests`（及本域 compact/turn 投影相关测）绿。  \n- 交叉审：与 WP-068 产物字段表一致（名、Option、serde、是否落盘=否）。  \n- 若 WP-068 接口与假定严重偏离：停手写清差异，报 backend_mid，**不臆造第二套类别**。\n\n### 3.4 不做\n\n- 不改 Runtime emit、不改 `TurnEndReason` 持久化 schema（除非 WP-068 已改且要求跟随——以 Runtime 交付说明为准，默认不扩盘）。  \n- 不改前端；若 `data.code` 语义不变则无需前端中层动作（有变则写入产物请 mid 转发）。\n\n---\n\n## 4. 时序与交付\n\n```\napprove WP-069\n  ├─ 立即：腿 A ISSUE-041（改 tests/session_data_sql_death_list.rs → 复跑绿 → 写证据）\n  └─ 等待：WP-068 deliver\n        └─ 腿 B ISSUE-036（改 project.rs + 测 → 复跑绿 → 写字段对齐表）\n一并 deliver WP-069 → backend_mid 验收\n```\n\n- 若 068 长期未交付：041 可先在产物标明「036 未开工原因=依赖 WP-068」；是否部分 deliver 听 mid（默认两腿齐再 deliver）。  \n- 交叉审：本包 deliver 前在 `WP-063-runtime.md` / 本 md 互留「交叉审」节（字段 ↔ `turn_error`）。\n\n## 5. 禁区与工具\n\n- **ISSUE-004** 不碰；引擎产品 / symlink 不碰；不 commit/push。  \n- 共享 `target/` 遇锁排队；只跑本域相关测。  \n- 工具需求：无。\n\n## 6. 请 backend_mid\n\n请 `approve --id WP-069`。批后 Session start：先落地 041；036 待 WP-068 deliver 后再改 `project.rs`。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:51:01.086Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: (a) ISSUE-041：收紧 tests/session_data_sql_death_list.rs——白名单 engines/session_search（sparse 自有索引非 sessions.db）并跳过文件级 #[cfg(test)] 模块（golden/parity/dense_parity）；不改引擎产品行为。(b) ISSUE-036 消费：在 src/client_protocol/project.rs 的 turn_error 改用 Runtime 落地的类型化类别判定 CompactionFailed，废止 final_text 与 LitecodeError::CompactionFailed.to_string() 相等匹配；须等 Runtime 子包交付类型化字段后再改 project.rs（041 可先落地）。不 commit。产物 .litecode/ops/artifacts/WP-063-session.md。"
+        },
+        {
+          "ts": "2026-10-12T13:53:15.048Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-069 方案（Session：ISSUE-041 death_list 假红 + ISSUE-036 turn_error 类型化消费）\n\n- own"
+        },
+        {
+          "ts": "2026-10-12T13:53:15.333Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案两腿：041 death_list 白名单+跳过文件级 cfg(test)；036 consume 硬等 WP-068 deliver。产物 WP-063-session.md。工具无。"
+        },
+        {
+          "ts": "2026-10-12T13:53:32.763Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "plan OK：041 白名单+文件级 cfg(test) 跳过、不改引擎；036 硬等 WP-068 再改 turn_error。准 start：先 041，036 等 Runtime deliver。"
+        },
+        {
+          "ts": "2026-10-12T13:53:47.468Z",
+          "actor": "session",
+          "action": "start",
+          "note": "批后开工：先 ISSUE-041；036 等 WP-068"
+        },
+        {
+          "ts": "2026-10-12T13:55:16.278Z",
+          "actor": "session",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"腿A ISSUE-041 已落地（death_list 假红清；剩 1 真实命中 litecode_workspace"
+        },
+        {
+          "ts": "2026-10-12T14:03:46.816Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T14:04:24.719Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：036 turn_error 类型化绿（wp025+turn_finished）；041 假红清；ISSUE-036/041 closed；ISSUE-042 真违规另挂；未 commit。",
           "to": "done"
         }
       ]

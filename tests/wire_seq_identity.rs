@@ -443,6 +443,7 @@ fn turn_finished_snapshot_next_seq_matches_db_max_plus_one() {
             reason: TurnEndReason::Completed,
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 99,
+        error_kind: None,
         },
         "/p",
         &binding(),

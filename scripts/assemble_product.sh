@@ -16,6 +16,31 @@ if [[ "$PROFILE" == "debug" ]]; then
   PROFILE_DIR="debug"
 fi
 
+# ISSUE-015: remap cargo registry/git paths in release panic/debuginfo only.
+append_rustflag_remap() {
+  local flag="$1"
+  case " ${RUSTFLAGS:-} " in
+    *" ${flag} "*) ;;
+    *) RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }${flag}" ;;
+  esac
+}
+
+ensure_release_rustflags_remaps() {
+  # Debug/dev builds keep real paths for local diagnostics.
+  if [[ "$PROFILE" == "debug" ]]; then
+    return 0
+  fi
+  local cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+  if command -v realpath >/dev/null 2>&1; then
+    cargo_home="$(realpath -m "$cargo_home")"
+  elif [[ -d "$cargo_home" ]]; then
+    cargo_home="$(cd "$cargo_home" && pwd -P)"
+  fi
+  append_rustflag_remap "--remap-path-prefix=${cargo_home}/registry=/rustc/registry"
+  append_rustflag_remap "--remap-path-prefix=${cargo_home}/git=/rustc/git"
+  export RUSTFLAGS
+}
+
 echo "==> product root: $OUT (profile=$PROFILE)"
 rm -rf "$OUT"
 mkdir -p "$OUT"
@@ -42,6 +67,10 @@ else
 fi
 
 echo "==> cargo build ${CARGO_PROFILE_FLAG}${TARGET_TRIPLE:+ --target $TARGET_TRIPLE}"
+ensure_release_rustflags_remaps
+if [[ "$PROFILE" != "debug" ]]; then
+  echo "==> RUSTFLAGS (release remap): ${RUSTFLAGS:-}"
+fi
 # Release CI sets official; local product assembly is always nightly otherwise.
 if [[ "${LITECODE_CHANNEL:-}" != "official" ]]; then
   export LITECODE_CHANNEL=nightly

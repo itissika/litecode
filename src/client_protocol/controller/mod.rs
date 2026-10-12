@@ -351,12 +351,14 @@ impl Projection {
                 reason,
                 turn_token_stats,
                 committed_next_seq: _,
+                error_kind,
             } => InternalEvent::TurnCompleted {
                 turn_id,
                 final_text,
                 reason,
                 turn_token_stats,
                 committed_next_seq: self.turn_committed_next_seq,
+                error_kind,
             },
             other => other,
         };
@@ -874,6 +876,7 @@ impl Projection {
                 reason: _,
                 turn_token_stats,
                 committed_next_seq: _,
+                error_kind: _,
             } => {
                 if self.turn_completed_emitted {
                     return;
@@ -1805,6 +1808,7 @@ mod compact_item_wire_tests {
                 reason: crate::runtime::observer::TurnEndReason::Cancelled,
                 turn_token_stats: crate::runtime::observer::TurnTokenStats::default(),
                 committed_next_seq: 0,
+                error_kind: None,
             },
             "/p",
             &binding(),

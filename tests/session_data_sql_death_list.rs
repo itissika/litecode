@@ -51,6 +51,64 @@ fn is_path_construct_ok(path: &Path) -> bool {
         || s.ends_with("/src/serve/state.rs")
 }
 
+/// Engine-owned sparse/FTS SQLite under session_search — not SessionData sessions.db.
+fn is_session_search_engine_ok(path: &Path) -> bool {
+    norm(path).contains("/src/engines/session_search/")
+}
+
+/// Collect sibling `.rs` paths mounted only via `#[cfg(test)] mod name;` (file-level).
+/// Inline `#[cfg(test)] mod { … }` bodies stay handled by `production_lines`.
+fn file_level_cfg_test_modules(files: &[PathBuf]) -> std::collections::HashSet<PathBuf> {
+    use std::collections::HashSet;
+    let mut out = HashSet::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let parent = match path.parent() {
+            Some(p) => p,
+            None => continue,
+        };
+        let mut pending = false;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#[cfg(test)]") {
+                pending = true;
+                continue;
+            }
+            if !pending {
+                continue;
+            }
+            // Blank / doc / other attrs between #[cfg(test)] and mod — still pending.
+            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            if trimmed.starts_with("mod ") && trimmed.ends_with(';') {
+                // `mod name;` → sibling name.rs (or name/mod.rs).
+                let name = trimmed
+                    .trim_start_matches("mod ")
+                    .trim_end_matches(';')
+                    .trim();
+                if !name.is_empty() && !name.contains('{') {
+                    let sibling = parent.join(format!("{name}.rs"));
+                    if sibling.is_file() {
+                        out.insert(sibling);
+                    }
+                    let nested = parent.join(name).join("mod.rs");
+                    if nested.is_file() {
+                        out.insert(nested);
+                    }
+                }
+                pending = false;
+                continue;
+            }
+            // Next non-attr line is not a file-level `mod name;` — clear.
+            pending = false;
+        }
+    }
+    out
+}
+
 /// Skip `#[cfg(test)]` modules when scanning production dialect.
 fn production_lines(text: &str) -> Vec<(usize, String)> {
     let mut out = Vec::new();
@@ -89,12 +147,16 @@ fn sessions_db_sql_and_rusqlite_stay_in_sqlite_module() {
     let mut files = Vec::new();
     walk(&root.join("src"), &mut files);
 
+    let cfg_test_files = file_level_cfg_test_modules(&files);
+
     let mut hits = Vec::new();
     for path in &files {
         if is_sqlite_ok(path)
             || is_global_db_ok(path)
             || is_shared_error_type(path)
             || is_workspace_sqlite_preview(path)
+            || is_session_search_engine_ok(path)
+            || cfg_test_files.contains(path)
         {
             continue;
         }

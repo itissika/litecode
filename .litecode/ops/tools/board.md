@@ -12,14 +12,14 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T13:24:32.874Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T16:23:12.111Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
 | WP-001 | 冻结团队框架 v0：域+面板+工具门禁+冷启动稿 | done | gm | andy |
 | WP-002 | （断点后）装填 Runtime/上下文/IDE/需求官/工具集管家 | done | gm | andy |
 | WP-003 | 管理团队冷启动对齐（事件+tick+职责移交） | done | gm | andy |
-| WP-004 | 修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标 | blocked | ide | gm |
+| WP-004 | 修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标 | cancelled | ide | gm |
 | WP-005 | 修 ISSUE-008：PermissionModal 过期 justify-start 断言 | done | frontend | gm |
 | WP-006 | 修 ISSUE-005：repair_agent_models_on_boot 越界 rusqlite | done | runtime | gm |
 | WP-007 | 修 ISSUE-018：CompactionFailed 文案与实现一致 | done | runtime | gm |
@@ -78,6 +78,13 @@
 | WP-061 | 　└ WP-058/Tools：工具可见性 + 废暖机长等 + 结果头 sync% + session 降级表面 | done | tools | backend_mid |
 | WP-059 | └ 前端：工具结果视图同步百分比 | done | frontend_mid | gm |
 | WP-062 | 　└ WP-059 web：工具结果视图开头同步百分比 | done | frontend | frontend_mid |
+| WP-063 | 合包：保链接复制 + 类型化压缩失败 + 已定小缺陷 | done | gm | andy |
+| WP-064 | └ 后端：组织 IDE(010保链接) + Runtime(036) + 门禁(041) | done | backend_mid | gm |
+| WP-067 | 　└ WP-064/IDE：copy_path 保链接（ISSUE-010） | done | ide | backend_mid |
+| WP-068 | 　└ WP-064/Runtime：类型化压缩失败到 TurnCompleted（ISSUE-036 emit） | done | runtime | backend_mid |
+| WP-069 | 　└ WP-064/Session：turn_error 类型化消费 + death_list 假红（ISSUE-036/041） | done | session | backend_mid |
+| WP-065 | └ 前端：组织 desktop(015 remap-path-prefix / 构建路径卫生) | done | frontend_mid | gm |
+| WP-066 | 　└ WP-065 desktop：release remap-path-prefix / 构建路径卫生 | done | frontend_desktop | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

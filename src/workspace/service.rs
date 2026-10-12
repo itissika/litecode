@@ -359,13 +359,13 @@ impl WorkspaceService {
                 match super::file_ops::replace_file(&from_abs, &to_abs) {
                     Ok(()) => {}
                     Err(error) if is_cross_device(&error) => {
-                        move_via_copy(&from_abs, &to_abs)?;
+                        move_via_copy(sandbox.root(), &from_abs, &to_abs)?;
                     }
                     Err(error) => return Err(error.into()),
                 }
             }
             Err(error) if is_cross_device(&error) => {
-                move_via_copy(&from_abs, &to_abs)?;
+                move_via_copy(sandbox.root(), &from_abs, &to_abs)?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -380,10 +380,33 @@ impl WorkspaceService {
         overwrite: bool,
     ) -> Result<String, WorkspaceError> {
         let sandbox = self.sandbox();
-        // Refuse top-level symlinks before resolve: Sandbox::resolve follows via
-        // canonicalize, so copy_recursive would only see the target file/dir.
-        // Nested symlinks inside a directory copy remain refused in copy_recursive.
-        refuse_top_level_symlink_copy(sandbox.root(), from)?;
+        let root = sandbox.root();
+
+        // Top-level symlink: lexical path (do not Sandbox::resolve — it follows).
+        if let Some((from_abs, from_rel)) = lexical_relative_path(root, from)? {
+            if path_is_symlink(&from_abs) {
+                if from_rel.is_empty() {
+                    return Err(WorkspaceError::InvalidMove(
+                        "cannot copy the workspace root".into(),
+                    ));
+                }
+                let to_abs = sandbox.resolve(to)?;
+                let to_rel = sandbox.rel_path(&to_abs)?;
+                if is_same_or_descendant(&from_rel, &to_rel) {
+                    return Err(WorkspaceError::InvalidMove(
+                        "cannot copy a path into itself".into(),
+                    ));
+                }
+                refuse_symlink_node_overwrite(&to_abs, overwrite, &to_rel)?;
+                if let Some(parent) = to_abs.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                preserve_symlink_at(root, &from_abs, &to_abs)?;
+                self.emit_changed(vec![to_rel.clone()], "created");
+                return Ok(to_rel);
+            }
+        }
+
         let from_abs = sandbox.resolve(from)?;
         if !from_abs.exists() {
             return Err(WorkspaceError::NotFound(
@@ -407,7 +430,7 @@ impl WorkspaceService {
         if let Some(parent) = to_abs.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        copy_recursive(&from_abs, &to_abs).map_err(map_copy_error)?;
+        copy_recursive(root, &from_abs, &to_abs)?;
         self.emit_changed(vec![to_rel.clone()], "created");
         Ok(to_rel)
     }
@@ -455,24 +478,138 @@ impl WorkspaceService {
     }
 }
 
-/// Lexical (non-following) check: if `from` names a symlink under the workspace
-/// root, refuse before [`Sandbox::resolve`] canonicalizes through it.
-fn refuse_top_level_symlink_copy(
+/// Lexical workspace-relative path without following symlinks.
+/// Returns `None` for absolute / unclassifiable inputs so callers can fall
+/// through to [`Sandbox::resolve`].
+fn lexical_relative_path(
     root: &std::path::Path,
     from: &str,
-) -> Result<(), WorkspaceError> {
+) -> Result<Option<(std::path::PathBuf, String)>, WorkspaceError> {
     use super::agent_path::{PathCandidate, classify_agent_path};
-    let Ok(PathCandidate::Relative(rel)) = classify_agent_path(from) else {
-        // Absolute / traversal / empty: let resolve report the real error.
-        return Ok(());
-    };
-    let lexical = root.join(rel);
-    match std::fs::symlink_metadata(&lexical) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(WorkspaceError::InvalidMove(
-            "refusing to copy symbolic links".into(),
+    match classify_agent_path(from) {
+        Ok(PathCandidate::Relative(rel)) => {
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            Ok(Some((root.join(rel), rel_str)))
+        }
+        Ok(PathCandidate::Absolute(_)) => Ok(None),
+        Err(super::agent_path::ClassifyError::Empty) => Err(WorkspaceError::Sandbox(
+            SandboxError::Invalid("path must be non-empty".into()),
         )),
-        _ => Ok(()),
+        Err(super::agent_path::ClassifyError::RelativeTraversal)
+        | Err(super::agent_path::ClassifyError::UnixStyleOnWindows { .. }) => {
+            Err(WorkspaceError::Sandbox(SandboxError::Escape))
+        }
     }
+}
+
+fn path_is_symlink(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+fn resolve_link_target_path(link: &std::path::Path, target: &std::path::Path) -> std::path::PathBuf {
+    if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        match link.parent() {
+            Some(parent) => parent.join(target),
+            None => target.to_path_buf(),
+        }
+    }
+}
+
+/// Sandbox gate for a symlink's referent (does not copy content).
+fn ensure_link_target_in_workspace(
+    root: &std::path::Path,
+    link_abs: &std::path::Path,
+    target_text: &std::path::Path,
+) -> Result<(), WorkspaceError> {
+    use crate::config::path::{canon_abs, canon_abs_lossy, canon_join_nonexistent, is_under};
+    let root = canon_abs_lossy(root);
+    let resolved = resolve_link_target_path(link_abs, target_text);
+    if resolved.exists() {
+        let canon = canon_abs(&resolved)?;
+        if !is_under(&canon, &root) {
+            return Err(WorkspaceError::Sandbox(SandboxError::Escape));
+        }
+        return Ok(());
+    }
+    match canon_join_nonexistent(&root, &resolved) {
+        Ok(joined) if is_under(&joined, &root) => Ok(()),
+        Ok(_) => Err(WorkspaceError::Sandbox(SandboxError::Escape)),
+        Err(_) => {
+            let lossy = canon_abs_lossy(&resolved);
+            if is_under(&lossy, &root) {
+                Ok(())
+            } else {
+                Err(WorkspaceError::Sandbox(SandboxError::Escape))
+            }
+        }
+    }
+}
+
+fn create_symlink(target_text: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target_text, dest)
+    }
+    #[cfg(windows)]
+    {
+        let looks_dir = resolve_link_target_path(dest, target_text).is_dir();
+        if looks_dir {
+            std::os::windows::fs::symlink_dir(target_text, dest)
+        } else {
+            std::os::windows::fs::symlink_file(target_text, dest)
+        }
+    }
+}
+
+/// Preserve a symlink node at `dest_abs` (readlink → sandbox gate → recreate).
+fn preserve_symlink_at(
+    root: &std::path::Path,
+    link_abs: &std::path::Path,
+    dest_abs: &std::path::Path,
+) -> Result<(), WorkspaceError> {
+    let target_text = std::fs::read_link(link_abs)?;
+    ensure_link_target_in_workspace(root, link_abs, &target_text)?;
+    // Overwrite path: replace file/symlink nodes; never clobber a real directory.
+    if let Ok(meta) = std::fs::symlink_metadata(dest_abs) {
+        if meta.file_type().is_symlink() || meta.is_file() {
+            std::fs::remove_file(dest_abs)?;
+        } else if meta.is_dir() {
+            return Err(WorkspaceError::InvalidMove(
+                "refusing to overwrite a directory".into(),
+            ));
+        }
+    }
+    if let Some(parent) = dest_abs.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    create_symlink(&target_text, dest_abs)?;
+    Ok(())
+}
+
+/// Symlink (and plain-file) overwrite gate for top-level preserve copies.
+fn refuse_symlink_node_overwrite(
+    to_abs: &std::path::Path,
+    overwrite: bool,
+    to_rel: &str,
+) -> Result<(), WorkspaceError> {
+    let meta = match std::fs::symlink_metadata(to_abs) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        return Err(WorkspaceError::InvalidMove(
+            "refusing to overwrite a directory".into(),
+        ));
+    }
+    if !overwrite {
+        return Err(WorkspaceError::AlreadyExists(to_rel.into()));
+    }
+    Ok(())
 }
 
 fn refuse_directory_overwrite(
@@ -501,32 +638,32 @@ fn is_file_replace(from_abs: &std::path::Path, to_abs: &std::path::Path) -> bool
     from_abs.is_file() && to_abs.is_file()
 }
 
-fn map_copy_error(error: std::io::Error) -> WorkspaceError {
-    if error.kind() == std::io::ErrorKind::InvalidInput {
-        WorkspaceError::InvalidMove(error.to_string())
-    } else {
-        WorkspaceError::Io(error)
-    }
-}
-
 /// Copy then delete source. On copy failure, remove an incomplete destination
 /// only when it did not already exist — never delete a pre-existing target
 /// (ISSUE-038 / WP-040).
 fn move_via_copy(
+    root: &std::path::Path,
     from_abs: &std::path::Path,
     to_abs: &std::path::Path,
 ) -> Result<(), WorkspaceError> {
-    let dest_existed = to_abs.exists();
-    if let Err(error) = copy_recursive(from_abs, to_abs) {
+    let dest_existed = to_abs.exists() || path_is_symlink(to_abs);
+    if let Err(error) = copy_recursive(root, from_abs, to_abs) {
         if !dest_existed {
             cleanup_incomplete_dest(to_abs);
         }
-        return Err(map_copy_error(error));
+        return Err(error);
     }
-    if from_abs.is_dir() {
-        std::fs::remove_dir_all(from_abs)?;
-    } else if from_abs.exists() {
-        std::fs::remove_file(from_abs)?;
+    // Remove source node without following symlinks.
+    match std::fs::symlink_metadata(from_abs) {
+        Ok(meta) if meta.file_type().is_symlink() || meta.is_file() => {
+            std::fs::remove_file(from_abs)?;
+        }
+        Ok(meta) if meta.is_dir() => {
+            std::fs::remove_dir_all(from_abs)?;
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
     }
     Ok(())
 }
@@ -551,48 +688,40 @@ fn is_cross_device(error: &std::io::Error) -> bool {
         || error.kind() == std::io::ErrorKind::CrossesDevices
 }
 
-fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+fn copy_recursive(
+    root: &std::path::Path,
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), WorkspaceError> {
     let meta = std::fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "refusing to copy symbolic links",
-        ));
+        return preserve_symlink_at(root, src, dst);
     }
     if meta.is_dir() {
         std::fs::create_dir_all(dst)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
-            let child_meta = std::fs::symlink_metadata(entry.path())?;
-            if child_meta.file_type().is_symlink() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "refusing to copy symbolic links",
-                ));
-            }
-            copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+            copy_recursive(root, &entry.path(), &dst.join(entry.file_name()))?;
         }
         Ok(())
-    } else {
-        if dst.exists() {
-            let tmp = dst.with_file_name(format!(
-                ".{}.litecode-copy-{}",
-                dst.file_name().unwrap_or_default().to_string_lossy(),
-                std::process::id()
-            ));
-            std::fs::copy(src, &tmp)?;
-            let persist = super::file_ops::replace_file(&tmp, dst);
-            if persist.is_err() || tmp.exists() {
-                let _ = std::fs::remove_file(&tmp);
-            }
-            persist
-        } else {
-            if let Some(parent) = dst.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::copy(src, dst)?;
-            Ok(())
+    } else if dst.exists() {
+        let tmp = dst.with_file_name(format!(
+            ".{}.litecode-copy-{}",
+            dst.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id()
+        ));
+        std::fs::copy(src, &tmp)?;
+        let persist = super::file_ops::replace_file(&tmp, dst);
+        if persist.is_err() || tmp.exists() {
+            let _ = std::fs::remove_file(&tmp);
         }
+        persist.map_err(WorkspaceError::from)
+    } else {
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dst)?;
+        Ok(())
     }
 }
 
@@ -752,16 +881,82 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn refuses_to_copy_symlinks() {
+    fn preserves_symlink_top_level() {
         let dir = tempfile::tempdir().unwrap();
         let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
-        std::fs::write(dir.path().join("real.txt"), "x").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("real.txt"), dir.path().join("link.txt"))
-            .unwrap();
+        std::fs::write(dir.path().join("real.txt"), "payload").unwrap();
+        // Relative link text — must be preserved verbatim, not dereferenced.
+        std::os::unix::fs::symlink("real.txt", dir.path().join("link.txt")).unwrap();
+        let out = service.copy_path("link.txt", "out.txt", false).unwrap();
+        assert_eq!(out, "out.txt");
+        let out_meta = std::fs::symlink_metadata(dir.path().join("out.txt")).unwrap();
+        assert!(
+            out_meta.file_type().is_symlink(),
+            "dest must remain a symlink, not a copied file"
+        );
+        assert_eq!(
+            std::fs::read_link(dir.path().join("out.txt")).unwrap(),
+            std::fs::read_link(dir.path().join("link.txt")).unwrap()
+        );
+        // Following the new link still reaches the original payload.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+            "payload"
+        );
+        // Source link node unchanged.
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("link.txt"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_symlink_nested() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/real.txt"), "inner").unwrap();
+        std::os::unix::fs::symlink("real.txt", dir.path().join("sub/link.txt")).unwrap();
+        service.copy_path("sub", "sub2", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sub2/real.txt")).unwrap(),
+            "inner"
+        );
+        let nested = std::fs::symlink_metadata(dir.path().join("sub2/link.txt")).unwrap();
+        assert!(nested.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(dir.path().join("sub2/link.txt")).unwrap(),
+            std::fs::read_link(dir.path().join("sub/link.txt")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sub2/link.txt")).unwrap(),
+            "inner"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_copy_escaping_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "nope").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("evil.txt"),
+        )
+        .unwrap();
         assert!(matches!(
-            service.copy_path("link.txt", "out.txt", false),
-            Err(WorkspaceError::InvalidMove(_))
+            service.copy_path("evil.txt", "out.txt", false),
+            Err(WorkspaceError::Sandbox(SandboxError::Escape))
         ));
         assert!(!dir.path().join("out.txt").exists());
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("out.txt")).is_err(),
+            "must not leave a half-written escape link"
+        );
     }
 }
