@@ -42,3 +42,14 @@
 {"event_id":"E-1791807882091-8690-WP051-acceptance_requested","ts":"2026-10-12T12:24:42.091Z","type":"team_ops.acceptance_requested","wp":"WP-051","target":"backend_mid"}
 {"event_id":"E-1791807938634-22110-WP043-acceptance_requested","ts":"2026-10-12T12:25:38.634Z","type":"team_ops.acceptance_requested","wp":"WP-043","target":"gm"}
 {"event_id":"E-1791808016559-43890-WP042-acceptance_requested","ts":"2026-10-12T12:26:56.559Z","type":"team_ops.acceptance_requested","wp":"WP-042","target":"gm"}
+{"event_id":"E-1791808504945-11370-WP052-approval_requested","ts":"2026-10-12T12:35:04.945Z","type":"team_ops.approval_requested","wp":"WP-052","target":"gm"}
+{"event_id":"E-1791808554531-25940-WP053-approval_requested","ts":"2026-10-12T12:35:54.531Z","type":"team_ops.approval_requested","wp":"WP-053","target":"gm"}
+{"event_id":"E-1791808757070-70480-WP055-approval_requested","ts":"2026-10-12T12:39:17.070Z","type":"team_ops.approval_requested","wp":"WP-055","target":"backend_mid"}
+{"event_id":"E-1791808761010-72930-WP054-approval_requested","ts":"2026-10-12T12:39:21.010Z","type":"team_ops.approval_requested","wp":"WP-054","target":"backend_mid"}
+{"event_id":"E-1791808828444-6620-WP056-approval_requested","ts":"2026-10-12T12:40:28.444Z","type":"team_ops.approval_requested","wp":"WP-056","target":"backend_mid"}
+{"event_id":"E-1791808879195-29860-WP054-acceptance_requested","ts":"2026-10-12T12:41:19.195Z","type":"team_ops.acceptance_requested","wp":"WP-054","target":"backend_mid"}
+{"event_id":"E-1791809020690-3490-WP056-acceptance_requested","ts":"2026-10-12T12:43:40.690Z","type":"team_ops.acceptance_requested","wp":"WP-056","target":"backend_mid"}
+{"event_id":"E-1791809085332-37290-WP054-acceptance_requested","ts":"2026-10-12T12:44:45.332Z","type":"team_ops.acceptance_requested","wp":"WP-054","target":"backend_mid"}
+{"event_id":"E-1791809387926-84730-WP055-acceptance_requested","ts":"2026-10-12T12:49:47.926Z","type":"team_ops.acceptance_requested","wp":"WP-055","target":"backend_mid"}
+{"event_id":"E-1791809431640-95610-WP053-acceptance_requested","ts":"2026-10-12T12:50:31.640Z","type":"team_ops.acceptance_requested","wp":"WP-053","target":"gm"}
+{"event_id":"E-1791809444802-250-WP052-acceptance_requested","ts":"2026-10-12T12:50:44.802Z","type":"team_ops.acceptance_requested","wp":"WP-052","target":"gm"}

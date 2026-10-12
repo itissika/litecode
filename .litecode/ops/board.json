@@ -3152,6 +3152,374 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-052",
+      "domain": "team-ops",
+      "title": "产品缺陷级钉稳（文件变更不丢 + MCP 超时/按 id 匹配）",
+      "result": "032/034 closed 或有可复现绿证据；产物含分域结论",
+      "done_when": [
+        "两缺陷均有落地证据且中层汇总验收；禁区未碰"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-052.md",
+      "progress": "closed done by andy: Andy 验收通过：032/034 缺陷批完成；统一 commit+push。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "整批修产品缺陷级：ISSUE-032（外部改文件被 take_changes 消费后写入失败永久丢失）与 ISSUE-034（MCP stdio 无超时 + 响应不按 id 匹配致错号/挂死）。禁区：引擎产品、symlink 产品行为。中层只协调拆包交叉审汇总，不亲写代码。未统一 commit 前不 push。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-052 产品缺陷级钉稳\n\n## Goal（Andy）\n缺陷级别整批作为顶级包给 GM 向下安排：修 ISSUE-032 与 ISSUE-034。\n\n## 范围（本包）\n\n| Issue | 一句话 | 域 | 期望 |\n|---|---|---|---|\n| ISSUE-032 | 外部改文件被 `take_changes` 消费后，写入失败即永久丢失 | Runtime（file tracker / seam） | 失败时改动通知不丢（与 bash/subagent/custom 一样可回灌）；有回归测 |\n| ISSUE-034 | MCP stdio `send_request` 无超时 + 不按 id 匹配响应 | Tools（mcp） | 请求有界返回；按 JSON-RPC id 匹配；取消/乱序/notification 不致错号或永久占锁；有回归测 |\n\n## 非范围（禁区 / 另包）\n- 引擎产品行为（WP-016 / ISSUE-023–026）\n- 顶层 symlink 复制产品口径（WP-004 / ISSUE-010）\n- 架构债 ISSUE-036（压缩失败类型化）——非本缺陷批\n- 前端 / 桌面 CI / Hub pause\n- 统一 commit/push 仍由 GM 收口\n\n## 子包与时序\n\n```\nWP-052 (gm)\n  └── WP-053 backend_mid：组织 Runtime(032) + Tools(034)\n        ├── （中层自建）Runtime 域包 · ISSUE-032\n        └── （中层自建）Tools 域包 · ISSUE-034\n```\n\n- 032 与 034 代码面不交，**可并行**。\n- 中层先填方案 → GM 批 plan → 再 start；域包同样：中层批 plan 后才执行。\n- 中层只拆活、交叉审、汇总；不写 `src/`。\n\n## 验收\n- 032/034 关闭或有明确 blocked（仅 product/arch）说明\n- 中层汇总 md + 分域证据\n- 禁区未碰；本包不擅自 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:34:46.114Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 整批修产品缺陷级：ISSUE-032（外部改文件被 take_changes 消费后写入失败永久丢失）与 ISSUE-034（MCP stdio 无超时 + 响应不按 id 匹配致错号/挂死）。禁区：引擎产品、symlink 产品行为。中层只协调拆包交叉审汇总，不亲写代码。未统一 commit 前不 push。"
+        },
+        {
+          "ts": "2026-10-12T12:34:59.818Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-052 产品缺陷级钉稳\n\n## Goal（Andy）\n缺陷级别整批作为顶级包给 GM 向下安排：修 ISSUE-032 与 ISSUE-034。\n\n#"
+        },
+        {
+          "ts": "2026-10-12T12:35:04.944Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "缺陷级整批：032+034；子包 WP-053 后端中层"
+        },
+        {
+          "ts": "2026-10-12T12:35:05.224Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：缺陷级别整批作顶级包给 GM 向下安排"
+        },
+        {
+          "ts": "2026-10-12T12:35:05.531Z",
+          "actor": "gm",
+          "action": "start",
+          "note": "开干；交后端中层填 WP-053 并自建域子包"
+        },
+        {
+          "ts": "2026-10-12T12:50:44.801Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "子包 WP-053 done；032/034 closed；汇总交 Andy 验收后统一 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:52:52.829Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 验收通过：032/034 缺陷批完成；统一 commit+push。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-053",
+      "domain": "team-ops",
+      "title": "后端：组织修 ISSUE-032 文件变更丢失 + ISSUE-034 MCP 超时/id 匹配",
+      "result": "分域产物 + 中层汇总 md；032/034 状态更新",
+      "done_when": [
+        "两子域 done 或 blocked（仅 product/arch）；汇总可验收"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-052-backend.md",
+      "progress": "closed done by gm: 验收通过：054/055/056 done；ISSUE-032/034 closed；中层复跑绿；禁区未碰；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-052",
+      "goal": "组织 Runtime / Tools 域 bot 落地产品缺陷：032 外部改文件 take_changes 消费后写失败不丢通知；034 MCP stdio 请求有界超时且按 JSON-RPC id 匹配响应（含取消后读缓冲错号）。交叉审后汇总交 GM。中层不写 src/。禁区：引擎产品、symlink、前端。文件面：032≈runtime/file-tracker/seam；034≈tools/mcp；可并行，禁止抢同一文件。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-053 后端中层 · ISSUE-032 + ISSUE-034\n\n父：WP-052（产品缺陷级钉稳）。中层只拆活 / 批域 plan / 交叉审 / 汇总；**不写 `src/`**。不 commit。\n\n## 1. 目标\n\n| Issue | 域子包 | 一句话验收 |\n|---|---|---|\n| ISSUE-032 | **WP-054** Runtime | `take_changes` 消费后写入/spine 失败 → 改动通知可回灌，不永久丢失；有回归测 |\n| ISSUE-034 | **WP-055** Tools | MCP stdio 请求有界超时；按 JSON-RPC id 匹配；取消/notification/乱序不错号；有回归测 |\n\n两 issue **代码面不交，可并行**（032≈`runtime`/`file_tracker` seam；034≈`mcp/client`+`pool`）。\n\n## 2. 子包\n\n```\nWP-053 backend_mid\n  ├── WP-054 Runtime · ISSUE-032 → .litecode/ops/artifacts/WP-052-runtime.md\n  └── WP-055 Tools   · ISSUE-034 → .litecode/ops/artifacts/WP-052-tools.md\n```\n\n- 域 bot fill 方案 → **中层批 plan** → 域 start → 落地 → deliver → 中层验收 close。\n- 父包须 GM 批本方案后才 start（防竞态）。\n\n## 3. 域约束摘要\n\n### WP-054 / ISSUE-032（Runtime）\n- 主战场：`src/runtime/exec.rs`（`take_changed_files` 先消费；`restore_seam_sources` 不含 changed files；FilesChanged append 失败仅 warn）。\n- 期望：失败路径回灌，行为对齐 bash/subagent/custom mailbox 回灌。\n- `reminder/file_tracker.rs` 属 Context 路径：若需 `forget`/`mark_dirty` 等 API，**Runtime 只读提案 → 中层转 Context 窄协助**；本包不擅自扩写 reminder。\n- Session 若需 `restore_changed_files` 暴露：经中层协调，不改前端。\n\n### WP-055 / ISSUE-034（Tools）\n- 主战场：`src/mcp/client.rs` `send_request`；`src/mcp/pool.rs` 持锁贯穿调用。\n- 期望：(1) 每请求 timeout；(2) 循环读至 id 匹配，跳过 notification；(3) 取消/超时 → 连接脏重建或排空，防错号。\n- 回归：假 MCP server 覆盖 notification 先行 / 不回复 / 取消后下一请求。\n\n## 4. 禁区\n- 引擎产品行为；symlink 产品口径；前端 / 桌面 CI\n- ISSUE-036（压缩失败类型化）不进本包\n- 不擅自 commit/push（GM 收口）\n\n## 5. 交叉审\n- Runtime ↔ Context（仅当 032 触及 tracker API / FilesChanged 契约）\n- Tools ↔ IDE（仅当 MCP 子进程生命周期与 WP-038 假设冲突时只读对照；本包以协议层为主）\n- 中层抽样 file:line + 关键回归测；汇总 `.litecode/ops/artifacts/WP-052-backend.md` → deliver GM\n\n## 6. done-when\n- WP-054 / WP-055 均为 done，或 blocked 且仅 product/arch 说明\n- ISSUE-032 / 034 closed 或板记明确 blocked\n- 汇总 md 可验收；禁区未碰；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:34:49.291Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 Runtime / Tools 域 bot 落地产品缺陷：032 外部改文件 take_changes 消费后写失败不丢通知；034 MCP stdio 请求有界超时且按 JSON-RPC id 匹配响应（含取消后读缓冲错号）。交叉审后汇总交 GM。中层不写 src/。禁区：引擎产品、symlink、前端。文件面：032≈runtime/file-tracker/seam；034≈tools/mcp；可并行，禁止抢同一文件。"
+        },
+        {
+          "ts": "2026-10-12T12:35:00.095Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-053 后端中层 · 缺陷 032+034\n\n父：WP-052。目标见父包。\n\n## 中层待填\n1. 拆 Runtime（ISSUE-032）与 To"
+        },
+        {
+          "ts": "2026-10-12T12:35:54.217Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-053 后端中层 · ISSUE-032 + ISSUE-034\n\n父：WP-052（产品缺陷级钉稳）。中层只拆活 / 批域 plan / 交叉审 /"
+        },
+        {
+          "ts": "2026-10-12T12:35:54.531Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "已建 WP-054 Runtime(032)、WP-055 Tools(034)；方案已填。请批 plan；未 start。"
+        },
+        {
+          "ts": "2026-10-12T12:37:06.998Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案通过：054 Runtime/032 与 055 Tools/034 可并行；file_tracker API 经中层转 Context；禁区清楚。"
+        },
+        {
+          "ts": "2026-10-12T12:37:12.859Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM 已批；令 Runtime/Tools fill 域 plan，中层批后再 start；032/034 并行。"
+        },
+        {
+          "ts": "2026-10-12T12:50:31.639Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-054/055/056 均 done；ISSUE-032/034 closed。汇总 .litecode/ops/artifacts/WP-052-backend.md。中层复跑：issue_032 6/6、mcp:: 9/9、mcp_integration 10/10、file_tracker 5/5。未 commit。请 GM 验收。"
+        },
+        {
+          "ts": "2026-10-12T12:50:44.421Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：054/055/056 done；ISSUE-032/034 closed；中层复跑绿；禁区未碰；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-054",
+      "domain": "harness-core",
+      "title": "WP-053/Runtime：ISSUE-032 take_changes 失败不丢通知",
+      "result": "代码+回归测绿；ISSUE-032 closed 或 blocked 说明；产物 md",
+      "done_when": [
+        "失败路径回灌成立；回归测绿；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-052-runtime.md",
+      "progress": "closed done by backend_mid: 验收通过：restore_changed_files→mark_dirty；exec spine Err + FilesChanged 软回灌；中层复跑 issue_032_changed_files_restore 6 passed。ISSUE-032 closed。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-053",
+      "goal": "修 ISSUE-032：seam 在 take_changed_files 消费后，FilesChanged append/spine 失败时须回灌改动通知（与 bash/subagent/custom 同类），不得永久丢失；补回归测。主改 src/runtime（exec seam）；若需 file_tracker 回滚/forget API，只读提案接口经中层转 Context，本包不擅自扩域写 reminder。禁区：引擎产品、symlink、前端、ISSUE-034。不 commit。产物 .litecode/ops/artifacts/WP-052-runtime.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-054 / WP-052-runtime（Runtime：ISSUE-032 take_changes 失败回灌）\n\n- 父包：WP-052 → WP-053；本包：WP-054；owner：runtime；approver：backend_mid\n- 状态：方案 drafting → 待 submit/approve；**批前不 start、不改测试/代码、不 commit**\n- 分支：`ops/team-framework`；基线 HEAD `5421369`\n- 产物路径：`.litecode/ops/artifacts/WP-052-runtime.md`\n- 禁区：引擎产品、symlink、前端、ISSUE-034；**不扩写** `src/reminder/**`（含 `file_tracker.rs`）；不 commit\n\n---\n\n## 1. Goal / Promise\n\n修 **ISSUE-032**：seam 在 `take_changed_files` 消费外部改动后，若后续 `spine_reminder_view` 失败或 `FilesChanged` append 失败，改动通知须**回灌**，下一 seam 仍可上报——与 bash / subagent / custom 的 mailbox 回灌同类。\n\n- promise（ISSUE）：`files_changed` 提醒失败时与 bash/subagent/custom 一样回灌，不丢通知。\n- actual：`take_changed_files` 在 seam 开头推进 FileTracker 快照；`restore_seam_sources` 不含 changed files；非 subagent 的 append 失败仅 warn。\n\n---\n\n## 2. 现状读码（证据）\n\n| 位置 | 行为 | 问题 |\n|---|---|---|\n| `src/runtime/exec.rs:294` | `sessions.take_changed_files` → 底层 `FileTracker::take_changes` | **先消费**：快照就地更新为「已见」 |\n| `src/reminder/file_tracker.rs:66-81` | `take_changes` 对每个 path `insert` 新 snap；**无回滚/mark_dirty** | 消费不可逆 |\n| `src/runtime/exec.rs:386-388` | `spine_reminder_view` Err → `restore_seam_sources` 后 return | 只回灌 bash / subagent / custom，**不含** changed |\n| `src/runtime/exec.rs:486-499` | `restore_seam_sources` | 三路 mailbox only |\n| `src/runtime/exec.rs:438-481` | append 循环：`SubagentSettled` 失败 → 回灌+`Err`；其余 kind 失败 → **warn**；循环后若 bash/custom/subagent 未写入则回灌 | `FilesChanged` **无** `*_written` 标志、**无**失败回灌 |\n| `src/session/manager.rs:1419-1427` | `take_changed_files` 转调 tracker | 无对称 `restore_changed_files` |\n\n对照（应对齐的回灌模式）：\n\n- bash：`restore_mailbox`（`exec.rs:471-472` / `510-520`）\n- custom：`restore_mailbox`（`479-480` / `501-507`）\n- subagent：`restore_completions`（失败硬 `Err` 或未写入时回灌）\n\n`FilesChanged` 更接近 **bash/custom**（append 失败 warn + 回灌，不因单条 FilesChanged 使整个 seam 变硬错误），而非 subagent 的硬 `Err`。\n\nWP-025 产物（`WP-022-runtime.md` §ISSUE-032）已确认成立并留下跨域草案；本包落地该草案的 **Runtime 侧**，Context API 仅提案。\n\n---\n\n## 3. 方案（主改 Runtime seam）\n\n### 3.1 Runtime（本包执行，获批后）\n\n1. **spine 失败路径**（`exec.rs:386-388`）：在 `restore_seam_sources(...)` 同时回灌本次已 `take` 的 `changed` paths（调用 Session 薄封装，见 §3.3）。\n2. **append 路径对齐 bash/custom**：\n   - 增加 `files_changed_written: bool`（或等价：仅当本轮 reminders 含 `FilesChanged` 且成功写入时置 true）。\n   - `ReminderKind::FilesChanged` append `Err`：保持现有 `tracing::warn`（与 bash/custom 一致，**不**升格为 seam `Err`）。\n   - 循环结束后：若本轮本应上报的 changed 非空且 **未**成功写入 `FilesChanged`，则 `restore_changed_files(session_id, &changed)`。\n3. **成功路径不变**：`FilesChanged` 已写入 → 不回灌；下一 seam `take_changes` 对已吸收路径为空（现有语义）。\n4. **不改**引擎 / symlink / 前端 / ISSUE-034；**不直接改** `src/reminder/file_tracker.rs`。\n\n伪代码（意图，非落地）：\n\n```text\nchanged = sessions.take_changed_files(sid)\n...\nview = spine_reminder_view(sid)\n  Err(e) => {\n    restore_seam_sources(bash, completions, custom)\n    sessions.restore_changed_files(sid, &changed)  // NEW\n    return Err(e)\n  }\n...\nfiles_changed_written = false\nfor reminder in reminders {\n  match append {\n    Ok if FilesChanged => files_changed_written = true\n    Err if SubagentSettled => /* 现有硬回滚+Err */\n    Err => warn  // FilesChanged 走此支\n  }\n}\nif !bash_written { restore_bash... }\nif !subagent_written { restore_completions... }\nif !custom_written { restore_custom... }\nif !changed.is_empty() && !files_changed_written {\n  sessions.restore_changed_files(sid, &changed)  // NEW\n}\n```\n\n### 3.2 Context / file_tracker（**只读提案**，经中层转 Context；本包不写）\n\n`FileTracker` 现无回滚口。为让 Session/Runtime 能「撤销本次 take 的消费」，请 Context 增加其一（推荐 A）：\n\n| 方案 | 签名（草案） | 语义 | 取舍 |\n|---|---|---|---|\n| **A（推荐）** | `mark_dirty(&mut self, paths: &[PathBuf])` | 对给定 path：**删除** `snaps` 条目，**保留** `order` | 下次 `take_changes`：`get` 为 None → `differs=true` → 再次上报并写入新 snap。不改变 MAX_TRACKED / absorb 语义 |\n| B | `forget(&mut self, paths: &[PathBuf])` | 从 `order`+`snaps` 双删 | **不可取作回灌**：下次不再追踪该 path，外部再改也不会报 |\n| C | 保存旧 snap 并 `restore_snaps` | 精确回滚到 take 前 | 正确但 API/内存更重；本缺陷不需要 |\n\n**不建议** Runtime 绕过 tracker、自建「侧路 mailbox」：会与 `absorb` / 重启清空 / 多 seam 语义分叉，且与 bash 回灌「归还真相源」不一致。\n\nContext 侧建议自带单测：`mark_dirty` 后再次 `take_changes` 仍报出同一 path；`absorb` 不受影响。\n\n> 本包 **零行** 改动 `src/reminder/**`。接口以中层转发、Context 落地为准；若 Context 命名/语义有调整，Runtime 只跟 Session 封装。\n\n### 3.3 Session 薄封装（依赖协调）\n\n`SessionManager` 已有 `take_changed_files` / `absorb_touched_files` / `note_touched_files`（`manager.rs:1399-1427`）。对称增加：\n\n```text\npub fn restore_changed_files(&self, session_id: &str, paths: &[PathBuf])\n// → record.file_tracker.mark_dirty(paths)\n```\n\n- **归属**：Session 面；本包 **默认不擅自改** `src/session/**`。\n- **请中层裁决**其一：\n  1. 另开/并行 Session 微任务只加此封装 + 单测；或\n  2. 批准本包在 Context `mark_dirty` 就绪后，**仅**加这一薄转调（仍不碰 reminder 实现）。\n- Runtime 只通过 `sessions.restore_changed_files` 调用，不直持 `FileTracker`。\n\n### 3.4 依赖与串行\n\n```text\nContext: FileTracker::mark_dirty          （中层转；本包只提案）\n    ↓\nSession: restore_changed_files 薄封装     （中层裁：并行包 or 授权本包一行）\n    ↓\nRuntime: exec.rs 两处回灌 + 回归测         （本包主改；API 未就绪则 blocked 写明）\n```\n\n032 ∥ 034（Tools WP-055）代码面不交，可并行。\n\n---\n\n## 4. 测试计划（获批 start 后；批前不写测）\n\n| # | 用例 | 断言 | 建议落点 |\n|---|---|---|---|\n| T1 | seam：`take` 后 `spine_reminder_view` 注入失败 | 调用 restore；**下一** seam / 再次 take 仍含同一 paths；bash/custom/subagent 回灌回归不破 | `tests/` 或 `src/runtime` 集成；失败注入点复用/扩展现有 session/spine mock |\n| T2 | seam：`FilesChanged` append 注入失败 | warn 路径；`files_changed_written=false` → restore；下一 seam 仍上报；seam 本身不因 FilesChanged 变硬 `Err`（对齐 bash/custom） | 同上 |\n| T3 | 幸福路径：FilesChanged 写入成功 | 不 restore；随后 take 对那些 path 为空 | 防回灌过猛 |\n| T4 | 空 changed | 不调用 restore（或 no-op）；无行为变化 | 烟测 |\n\n- 命令（预定）：`cargo test` 定点本域相关集成/lib（具体二进制名 start 后按夹具落点写进产物）；直接 `cargo`，无 PATH 前缀。\n- **不**在本包装 ISSUE-034 / 引擎 / symlink 测。\n\n若失败注入夹具不足：先在产物记缺口，**报中层**再加 tests/common seam（不擅自扩产品 seam）。\n\n---\n\n## 5. 风险\n\n| 风险 | 缓解 |\n|---|---|\n| Context `mark_dirty` 未就绪 → Runtime 无法闭环 | 状态 `blocked`（product/arch 依赖）写进产物；不 hack 侧路 mailbox |\n| `mark_dirty` 误做成 `forget`（移出 order） | 提案表写明；交叉审 Context 实现 |\n| 回灌过猛（成功写入仍 restore） | T3；以 `files_changed_written` 为准 |\n| 与 subagent 硬 `Err` 口径混淆 | 明确 FilesChanged=bash/custom 软回灌 |\n| Session 封装归属争执 | §3.3 交中层裁，不阻塞提案提交 |\n| 多 path 部分写入（未来若拆多条 FilesChanged） | 现状 sources 通常一条；若一条失败则整批 restore `changed` |\n\n---\n\n## 6. done_when\n\n1. ISSUE-032：失败路径回灌成立（T1/T2 绿）；幸福路径不回灌（T3 绿）。\n2. Runtime 改动限于 `src/runtime` seam（+ 若中层授权的 Session 一行转调）；**未**改 `src/reminder/**`、引擎、symlink、前端、ISSUE-034 面。\n3. Context API 提案已写入本产物 §3.2，供中层转发；Context/Session 落地证据或 blocked 原因记入产物。\n4. ISSUE-032 history 追加修复/证据；status 在验收后由流程关闭（本包不擅自改流程外字段以外的越权操作）。\n5. 本包 **不 commit**；交中层 `deliver` → 验收。\n\n---\n\n## 7. 执行步骤（approve → start 后）\n\n1. 等中层批 plan；确认 Context `mark_dirty` 与 Session 封装路径（§3.3 裁夺）。\n2. Context/Session API 就绪（或本包获授权加 Session 转调）后，改 `exec.rs` 两处回灌。\n3. 落 T1–T4；定点 `cargo test` 绿。\n4. 更新本产物实跑表 + ISSUE-032 history；`deliver`。\n\n---\n\n## 8. 交叉审 / 协作\n\n- **→ Context**：请审 §3.2 `mark_dirty` 语义（保留 order、只剔 snap）；实现归属 reminder。\n- **→ Session**：请审 §3.3 `restore_changed_files` 与现有 `take_changed_files` 对称性。\n- **→ Tools**：无交面（034 并行）。\n- 中层：汇总 032+034；转发 Context 提案；裁 Session 封装归属。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:35:41.212Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 修 ISSUE-032：seam 在 take_changed_files 消费后，FilesChanged append/spine 失败时须回灌改动通知（与 bash/subagent/custom 同类），不得永久丢失；补回归测。主改 src/runtime（exec seam）；若需 file_tracker 回滚/forget API，只读提案接口经中层转 Context，本包不擅自扩域写 reminder。禁区：引擎产品、symlink、前端、ISSUE-034。不 commit。产物 .litecode/ops/artifacts/WP-052-runtime.md。"
+        },
+        {
+          "ts": "2026-10-12T12:39:18.156Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-054 / WP-052-runtime（Runtime：ISSUE-032 take_changes 失败回灌）\n\n- 父包：WP-052 → WP"
+        },
+        {
+          "ts": "2026-10-12T12:39:21.010Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "方案已填：ISSUE-032 Runtime seam 回灌（对齐 bash/custom）；file_tracker mark_dirty 只读提案请转 Context；Session restore_changed_files 薄封装请裁归属。批前不 start/不改码。产物 WP-052-runtime.md"
+        },
+        {
+          "ts": "2026-10-12T12:39:47.175Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：spine/append 两处回灌对齐 bash/custom。§3.3 裁：授权 Runtime 在 Context mark_dirty 就绪后仅加 Session restore_changed_files 薄转调（不扩写 reminder）。§3.2 中层转 Context 窄包。可 start（API 未就绪则 blocked 写明，不 hack 侧路）。"
+        },
+        {
+          "ts": "2026-10-12T12:40:06.592Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T12:41:19.194Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "partial: T1-T4 ignore skeletons + seam map; BLOCKED on WP-056 FileTracker::mark_dirty (still drafting). No exec/session/reminder product change. No commit. See WP-052-runtime.md §9."
+        },
+        {
+          "ts": "2026-10-12T12:42:34.179Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "验收：partial/blocked 说明成立（mark_dirty 当时未齐，未 hack 侧路，正确）。现 WP-056 已 in_progress。reject→in_progress：等 Context deliver mark_dirty 后立即落地 Session 薄转调 + exec 回灌 + 去掉 ignore 测；再 deliver。勿 close blocked 以免多一次 reopen。"
+        },
+        {
+          "ts": "2026-10-12T12:44:45.331Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "ISSUE-032 fixed: Session restore_changed_files + exec spine/append soft restore; T1-T4 green (cargo test --test issue_032_changed_files_restore). mark_dirty call-only. No commit."
+        },
+        {
+          "ts": "2026-10-12T12:46:01.760Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：restore_changed_files→mark_dirty；exec spine Err + FilesChanged 软回灌；中层复跑 issue_032_changed_files_restore 6 passed。ISSUE-032 closed。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-055",
+      "domain": "tools-permission",
+      "title": "WP-053/Tools：ISSUE-034 MCP stdio 超时 + id 匹配",
+      "result": "代码+回归测绿；ISSUE-034 closed 或 blocked 说明；产物 md",
+      "done_when": [
+        "超时+id匹配+取消不错号成立；回归测绿；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-052-tools.md",
+      "progress": "closed done by backend_mid: 验收通过：id 匹配+有界超时+dirty 重建；中层复跑 mcp:: 9/9、mcp_integration 10/10。ISSUE-034 closed。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-053",
+      "goal": "修 ISSUE-034：MCP stdio send_request (1) 每请求有界超时；(2) 按 JSON-RPC id 匹配响应，丢弃/跳过 notification 与乱序行；(3) 取消或超时后不得让残留响应错号给下一次请求（连接标脏重建或排空缓冲）。覆盖 pool 持锁贯穿调用的阻塞面。补回归测（假 server：notification 先行、不回复、取消后下一请求）。主改 src/mcp/{client,pool}.rs。禁区：引擎产品、symlink、前端、ISSUE-032。不 commit。产物 .litecode/ops/artifacts/WP-052-tools.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-055 Tools 方案（tools，direct）— ISSUE-034 MCP stdio 超时 + id 匹配\n父包 WP-053（in_progress）← WP-052；产物本文件 `.litecode/ops/artifacts/WP-052-tools.md`。\n状态：**方案填写，未 start、未改代码、不 commit**。等 backend_mid 批 plan 后再 start。\n\n### 0 目标与范围\n- **目标**：修 ISSUE-034——MCP stdio `send_request`：(1) 每请求有界超时；(2) 按 JSON-RPC `id` 匹配响应，跳过 notification / 无 id 行；(3) 取消或超时后不得让残留响应错号给下一次请求（连接标脏重建，优先于盲排空）。\n- **主改**：`src/mcp/client.rs`（协议读写核心）、`src/mcp/pool.rs`（持锁贯穿调用、超时/脏连接重建）。必要时 `src/mcp/mod.rs` 仅转发签名，不扩面。\n- **可复用**：WP-038 已落地的组杀 / `kill_child` / `stop_on_hub` / `bind_child_to_parent`（生命周期层）；本包只补**协议层**，不重做杀树。\n- **禁区**：引擎产品、symlink 产品行为、前端/桌面、ISSUE-032（`take_changes`）、不改 `proc_lifetime.rs`、不 commit/push。\n\n### 1 现状证据（只读核对，与 ISSUE-034 一致）\n| 点 | 位置 | 问题 |\n|---|---|---|\n| 无超时读 | `client.rs` `send_request` ~:81-85：`write+flush` 后无界 `read_line` | 服务器不回 → 永久挂起 |\n| 不按 id | 同函数 ~:92-103：解析下一行即当响应，无 `response.id == request_id` | notification / 日志行 → Null/错结果；真响应残留 → 错号 |\n| 锁贯穿 | `pool.rs` ~:285-289：`client.lock().await` 后 `initialize`/`call_tool` 无额外 timeout | 一次挂死 → 同 server 后续调用全堵在 Mutex |\n| 外层超时不全 | `mcp_tool.rs` 已有 `tokio::time::timeout` + 超时 `stop_on_hub` | 仅覆盖工具调用路径；`send_request` 自身仍无界；**turn cancel** 若只 drop future、未标脏/重建，BufReader 残留仍致错号 |\n| 握手有界 | `pool.rs` ~:404 `START_TIMEOUT` 仅握手 | 与每次 `tools/call` 无关 |\n\n复现口径（批后用假 server 固化为测）：\n1. tools/call 先发 `notifications/message` 再发真响应 → 现实现当 Null/错；真响应留给下一请求。\n2. tools/call 不回复 → 挂死 + pool 锁堵死同 server。\n3. tools/call 延迟回复期间取消回合 → 下一 `tools/list` 读到上一 call 的响应（错号）。\n\n### 2 修复设计（批后实施）\n\n#### 2.1 按 id 循环读（client.rs）\n改写 `send_request`：\n1. 分配 `id`，写出请求（保持现有 AtomicU64）。\n2. **循环** `read_line`：\n   - 空读（EOF）→ 明确错误（server 关闭）。\n   - JSON 解析失败 → 记日志/计次，可跳过或标脏（建议：连续非法行达阈值 → 标脏返回错误，避免死循环吞噪声）。\n   - 无 `id` 字段（JSON-RPC notification）或 `method` 存在且无匹配 result/error → **跳过**，继续读。\n   - 有 `id` 但 `id != request_id` → **跳过**（乱序/过期响应），继续读；可选 debug 计数。\n   - `id == request_id` → 按现逻辑取 `error` / `result` 返回。\n3. 不把 notification 的缺失 `result` 当成 `Null` 成功。\n\n#### 2.2 每请求有界超时（client + pool）\n- **client**：`send_request` 内对「整段读循环」包 `tokio::time::timeout(request_timeout)`（或每轮 `read_line` 用剩余 deadline）。超时 → 返回可识别错误（如 `ToolExecution(\"MCP request timed out…\")`），并 **标记连接脏**。\n- **超时值来源**（方案偏好，批时可裁）：\n  - 默认常量（如 60s）与现有 `McpServerConnection.timeout_secs` / `mcp_tool` 外层超时对齐；\n  - 优先让 `pool.call_tool` / `send_request` 接受可选 `Duration`，由 pool/mcp_tool 传入 `conn.timeout_secs`，避免「外层 60s + 内层更长」双超时打架；\n  - 若签名改动面大：client 用保守默认 + pool 在 `lock` 期间再包一层与 `timeout_secs` 一致的 timeout，超时后 `kill_child` + 移除条目（与现 `mcp_tool` 超时杀进程一致）。\n- **锁**：超时/错误路径必须释放 `Mutex`（自然 drop guard）；不得在无界 read 上持锁。\n\n#### 2.3 取消/超时后防错号（脏连接重建，优先）\n根因：请求已写出、响应未按 id 读完就被 cancel/timeout → 字节留在 `BufReader` → 下次 `read_line` 错号。\n\n**首选策略：标脏 + 重建**（比盲排空更稳）：\n1. `McpStdioClient` 增 `dirty: bool`（或 `session_epoch`）；timeout / cancel / 未匹配到 id 就返回前设脏。\n2. pool：调用前后若 `dirty` 或超时/取消错误 → `kill_child`（复用 WP-038 组杀）+ 从 map 剔除 → 下次 `get_or_create` 新进程、空缓冲。\n3. turn cancel：若调用 future 被 cancel，在 `mcp_tool` / pool 路径用 `CancellationToken` 或 `Drop` guard 确保「取消 ⇒ 标脏/停 hub」，不能只靠外层 timeout。\n4. **不优先**「排空缓冲直到空闲」作为唯一手段（notification 可能持续到来；排空无终止条件）。可作重建前的 best-effort，但不替代杀进程重建。\n\n#### 2.4 与现有 mcp_tool 外层超时的关系\n- 保留 `mcp_tool` 的 timeout + `stop_on_hub`（已测 `execute_stays_pending_while_hang_blocks_on_hub`）。\n- 本包补齐：**协议层自身有界 + id 匹配 + 脏重建**，使非 mcp_tool 入口（直接 `list_tools` / pool 内部）与 cancel 路径同样安全。\n- 文档写清：外层超时负责「用户可见 deadline + 杀进程」；内层负责「不错号、不无界占锁」。\n\n### 3 文件与串行\n| 顺序 | 文件 | 改动要点 |\n|---|---|---|\n| 1 | `src/mcp/client.rs` | id 循环读；请求 timeout；dirty 标记；单测用假 server/脚本 |\n| 2 | `src/mcp/pool.rs` | 传播 timeout；脏/超时/取消 → kill + 剔除重建；持锁时间仍跨一次 call 但 call 有界 |\n| 3 | `src/mcp/mod.rs` | 仅当枚举转发需要；默认不动 |\n| 4 | `tests/fixtures/mock_mcp_server.py` 或新 fixture | 模式：notify-first / hang / slow-then-reply（供 cancel 测） |\n| 5 | `src/mcp/client.rs` 单测 + `tests/mcp_integration.rs` | 三条回归 + 既有 echo/hang 回归 |\n\n不改：`custom.rs`、前端、runtime seam、`proc_lifetime`。\n\n### 4 回归测试（假 MCP server，必过）\n| # | 场景 | 期望 |\n|---|---|---|\n| R1 | notification 先行再真响应 | 返回真 `result`；下一请求仍正确（不错号） |\n| R2 | 不回复 / hang | 在 timeout 内返回错误；同 server 后续调用可再建连成功（锁不永久堵死） |\n| R3 | 慢响应期间取消（或模拟 timeout 后立刻下一请求） | 下一 `tools/list`/`echo` 不得收到上一 call 的响应；连接已重建或等效干净 |\n| R4 | 既有 | `mcp::` 单测 + `mcp_integration` echo/hang/catalog 全绿 |\n\n实现建议：扩展 `tests/fixtures/mock_mcp_server.py`（env 开关 `MCP_MOCK_MODE=notify_first|hang|slow`）或并列小脚本；client 单测可 `Command::new(\"python3\").arg(fixture)`。\n\n实跑（批后；共享 target 排队；直接 `cargo`，rustc 1.99.0）：\n```\ncargo test --lib mcp::\ncargo test --test mcp_integration\n```\n\n### 5 交叉审\n- **Tools ↔ IDE（只读）**：确认本包不改生命周期假设（WP-038 组杀/bind 仍成立）；协议超时触发的 `kill_child` 与 IDE `proc_lifetime` 无冲突。要点写入本产物「交叉审」节；IDE 未回标「待补」，不挡 deliver。\n- **不审** Runtime ISSUE-032 / 前端。\n\n### 6 工具需求\n- **无新增工具**。rustc 1.99.0；`cargo test` 直接用；假 server 依赖系统 `python3`（已有 mock）。\n- 共享 target 锁：排队，只跑 `mcp::` / `mcp_integration`。\n\n### 7 禁区与验收（done-when）\n- 禁：引擎产品、symlink、前端、ISSUE-032、commit/push、改 `proc_lifetime` 实现。\n- done-when：\n  1. `send_request` 有界超时 + 按 id 匹配 + 跳过 notification；\n  2. 取消/超时后无错号（脏重建证据）；\n  3. R1–R3 回归绿 + 既有 mcp 测绿；\n  4. ISSUE-034 → closed（或经中层/GM 的 blocked 说明）；\n  5. 产物本文件写全证据；交叉审节齐；不 commit。\n\n### 8 执行顺序（仅批准 start 后）\n1. `wp.mjs start --id WP-055 --as tools`\n2. client.rs：id 循环 + timeout + dirty → 单测 R1/R2\n3. pool.rs：超时/脏重建 + cancel 路径 → R3\n4. 扩展 fixture + mcp_integration 回归\n5. 写交叉审 → 更新 ISSUE-034 history → deliver WP-055 给 backend_mid\n\n### 9 ISSUE 状态备忘\n| ID | status | 本包 |\n|---|---|---|\n| ISSUE-034 | open | **本包修** |\n| ISSUE-039/040 | closed | 不重做；只复用 kill |\n| ISSUE-032 | （Runtime WP-054） | 禁区 |\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:35:44.671Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 修 ISSUE-034：MCP stdio send_request (1) 每请求有界超时；(2) 按 JSON-RPC id 匹配响应，丢弃/跳过 notification 与乱序行；(3) 取消或超时后不得让残留响应错号给下一次请求（连接标脏重建或排空缓冲）。覆盖 pool 持锁贯穿调用的阻塞面。补回归测（假 server：notification 先行、不回复、取消后下一请求）。主改 src/mcp/{client,pool}.rs。禁区：引擎产品、symlink、前端、ISSUE-032。不 commit。产物 .litecode/ops/artifacts/WP-052-tools.md。"
+        },
+        {
+          "ts": "2026-10-12T12:39:16.774Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: ## WP-055 Tools 方案（tools，direct）— ISSUE-034 MCP stdio 超时 + id 匹配\n父包 WP-053（in_pr"
+        },
+        {
+          "ts": "2026-10-12T12:39:17.069Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "WP-055 方案已填：ISSUE-034 有界超时+id匹配+脏连接重建；假server三回归；未 start、未改代码。请批。"
+        },
+        {
+          "ts": "2026-10-12T12:39:46.892Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：id 循环读+有界超时+脏重建优先；R1–R3 假 server；禁区正确。可 start。"
+        },
+        {
+          "ts": "2026-10-12T12:39:59.328Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "按批方案开工：client id匹配+超时+dirty；pool重建；R1-R3"
+        },
+        {
+          "ts": "2026-10-12T12:49:47.925Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "ISSUE-034 落地：id匹配+有界超时+dirty重建；R1/R2/R3绿；mcp::9 + mcp_integration10；lib可编；未commit"
+        },
+        {
+          "ts": "2026-10-12T12:50:21.537Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：id 匹配+有界超时+dirty 重建；中层复跑 mcp:: 9/9、mcp_integration 10/10。ISSUE-034 closed。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-056",
+      "domain": "harness-core",
+      "title": "WP-053/上下文：FileTracker::mark_dirty 供 ISSUE-032 回灌",
+      "result": "mark_dirty + 单测绿；产物 md",
+      "done_when": [
+        "mark_dirty 语义成立；单测绿；产物齐；未 commit"
+      ],
+      "owner": "context",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-052-context.md",
+      "progress": "closed done by backend_mid: 验收通过：mark_dirty 仅 snaps.remove、留 order（:91–96）；三测源码齐且语义对。cargo --lib 绿被 Tools WP-055 r3 测 E0502/E0505 挡住——非本包责任；记依赖 Tools 修编译后复跑。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-053",
+      "goal": "为 ISSUE-032 提供 FileTracker::mark_dirty(paths)：对给定 path 删除 snaps 条目、保留 order，使下次 take_changes 再上报。附单测。不改 Runtime seam / Session 薄封装（由 Runtime 经中层授权加）。禁区：引擎、symlink、前端、ISSUE-034。不 commit。产物 .litecode/ops/artifacts/WP-052-context.md。对照 WP-052-runtime.md §3.2。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-056 方案（context · ISSUE-032 FileTracker::mark_dirty）\n\n**状态**：plan only，待 backend_mid 批准后再 start。  \n**对照**：`.litecode/ops/artifacts/WP-052-runtime.md` §3.2 方案 A；ISSUE-032。  \n**产物（开工后）**：`.litecode/ops/artifacts/WP-052-context.md`  \n**禁区**：引擎产品、symlink、前端、ISSUE-034、Runtime seam、Session 薄封装。不 commit。\n\n---\n\n## 1. 目标\n\n为 ISSUE-032（`take_changes` 消费后写入失败即永久丢失）提供 **Context 侧回灌原语**：\n\n```text\nFileTracker::mark_dirty(&mut self, paths: &[PathBuf])\n```\n\n对给定 path：**删除 `snaps` 条目、保留 `order`**，使下次 `take_changes` 因 `get` 为 None 而再次上报。  \n**不得**做成 `forget`（从 `order`+`snaps` 双删——下次不再追踪）。\n\n本包 **只动** `src/reminder/file_tracker.rs`（+ 同文件单测）。不改 Runtime / Session。\n\n---\n\n## 2. 现状锚点（file:line）\n\n文件：`src/reminder/file_tracker.rs`（`mod` 于 `src/reminder/mod.rs:7`，`pub use` 于 `:17`）\n\n| 结构/方法 | 行 | 语义 |\n|---|---|---|\n| `FileTracker { order, snaps }` | 23–27 | `order: VecDeque<PathBuf>` 追踪顺序；`snaps: HashMap<PathBuf, Snap>` 上次快照 |\n| `record` | 30–44 | 入 order 尾 + 写 snap；超 `MAX_TRACKED` 时 `pop_front` 并 `snaps.remove` |\n| `absorb` | 56–62 | 对 order 内每 path **重写** snap（消化本会话自写） |\n| `take_changes` | 66–81 | 对 order 遍历：`snaps.get` 为 None **或** 与现态不等 → 入 changed；**无论是否变化都 `insert` 新 snap**（消费不可逆） |\n\n关键消费逻辑（回灌依赖此行为）：\n\n```66:81:src/reminder/file_tracker.rs\n// get().is_none_or(|previous| previous != &next) → differs\n// self.snaps.insert(path, next)  // 就地覆盖，无回滚\n```\n\n→ **删 snap、留 order** 后，下次 `take_changes` 必 `differs=true` 并重新建 snap。与 Runtime §3.2 方案 A 一致。\n\n现有单测（将保留并增补）：\n- `absorb_hides_our_write_and_take_changes_reports_external`（116–128）\n- `deletion_is_a_change`（131–139）\n\n---\n\n## 3. 实现方案（批后落地）\n\n### 3.1 API\n\n```rust\n/// Drop snapshots for `paths` but keep them in `order`, so the next\n/// `take_changes` re-reports them. Unknown / untracked paths are no-ops.\npub fn mark_dirty(&mut self, paths: &[PathBuf]) {\n    for path in paths {\n        self.snaps.remove(path);\n        // intentionally do NOT touch self.order\n    }\n}\n```\n\n- 签名对齐 Runtime §3.2：`paths: &[PathBuf]`（与 Session 拟议 `restore_changed_files` 对称）。\n- 未在 `order`/`snaps` 中的 path：静默 no-op（不 insert order，避免把未追踪 path 偷偷纳入）。\n- **禁止**同时 `order.remove`（那是 forget，Runtime 明确不可取）。\n\n### 3.2 不改动\n\n- `absorb` / `take_changes` / `record` / `MAX_TRACKED` / `HASH_LIMIT` / `snap_of` 行为不变。\n- `src/session/**`、`src/runtime/**`：本包零行（Session 封装 / Runtime seam 由 Runtime 经中层另包）。\n- 引擎产品、symlink、前端、ISSUE-034。\n\n### 3.3 单测（同文件 `#[cfg(test)]`）\n\n| 用例 | 断言 |\n|---|---|\n| `mark_dirty_then_take_changes_rereports` | record → take_changes 消化一次 → `mark_dirty(&[path])` → 再次 `take_changes` **仍报出同一 path**（即使文件内容未再变，因 snap 缺失） |\n| `mark_dirty_preserves_order_and_absorb` | mark_dirty 后 `absorb()` 仍能重写 snap；随后无外部改动时 `take_changes` 为空（absorb 语义未破） |\n| （可选加固）`mark_dirty_unknown_path_is_noop` | 未 record 的 path 调用后 order/snaps 不变 |\n\n不引入 forget 测试作为本包交付（避免误导）；产物中注明与 forget 的差异。\n\n### 3.4 产物\n\n开工后写 `.litecode/ops/artifacts/WP-052-context.md`：API 定稿、锚点、测绿证据、与 Runtime §3.2 对照、交叉审请求。\n\n---\n\n## 4. 交叉审 / 协作\n\n- **→ Runtime**：实现落地后请审「删 snap / 留 order」是否满足 seam 回灌；本包不改 `exec.rs`。\n- **→ Session**：薄封装 `restore_changed_files → mark_dirty` **不在本包**；等中层另派或授权 Runtime 包。\n- **→ backend_mid**：本方案 submit 待批；批后 start → 测绿 → deliver。\n\n---\n\n## 5. 工具需求\n\n- 本域已有 `cargo test`（rustc ≥1.88，当前 box 1.99）。**无新工具需求**。\n- 拟跑：`cargo test -p <crate> --lib reminder::file_tracker`（或等价本域过滤），证据写入产物。遇 cargo 锁排队，不 PATH 前缀。\n\n---\n\n## 6. 验收口径（done_when）\n\n1. `mark_dirty`：给定 path 仅 `snaps.remove`，`order` 不变。  \n2. 单测绿：再 take 仍报同 path；absorb 不受影响。  \n3. 产物 `WP-052-context.md` 齐。  \n4. 未改 Runtime/Session；未 commit。\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:39:47.462Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 为 ISSUE-032 提供 FileTracker::mark_dirty(paths)：对给定 path 删除 snaps 条目、保留 order，使下次 take_changes 再上报。附单测。不改 Runtime seam / Session 薄封装（由 Runtime 经中层授权加）。禁区：引擎、symlink、前端、ISSUE-034。不 commit。产物 .litecode/ops/artifacts/WP-052-context.md。对照 WP-052-runtime.md §3.2。"
+        },
+        {
+          "ts": "2026-10-12T12:40:28.159Z",
+          "actor": "context",
+          "action": "fill",
+          "note": "direct: # WP-056 方案（context · ISSUE-032 FileTracker::mark_dirty）\n\n**状态**：plan only，待 bac"
+        },
+        {
+          "ts": "2026-10-12T12:40:28.443Z",
+          "actor": "context",
+          "action": "submit",
+          "note": "plan: mark_dirty 删 snaps 留 order；仅 file_tracker+单测；对照 WP-052-runtime §3.2；待批后开工"
+        },
+        {
+          "ts": "2026-10-12T12:40:55.024Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：mark_dirty 仅 snaps.remove、留 order；未知 path no-op；单测覆盖再 take / absorb / 未知空操作。不做成 forget。可 start。"
+        },
+        {
+          "ts": "2026-10-12T12:41:08.769Z",
+          "actor": "context",
+          "action": "start",
+          "note": "start: mark_dirty + tests in file_tracker.rs only"
+        },
+        {
+          "ts": "2026-10-12T12:43:40.689Z",
+          "actor": "context",
+          "action": "deliver",
+          "note": "mark_dirty+3测已落 file_tracker.rs；产物 WP-052-context.md；cargo test --lib reminder::file_tracker 被 mcp/client.rs E0502/E0505 阻断（域外禁改），未等全绿"
+        },
+        {
+          "ts": "2026-10-12T12:44:07.822Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：mark_dirty 仅 snaps.remove、留 order（:91–96）；三测源码齐且语义对。cargo --lib 绿被 Tools WP-055 r3 测 E0502/E0505 挡住——非本包责任；记依赖 Tools 修编译后复跑。未 commit。",
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

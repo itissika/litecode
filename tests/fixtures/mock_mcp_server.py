@@ -8,6 +8,12 @@ Supported tools:
   - "echo": returns {"text": <arguments>}
   - "crash": exits the process immediately (exercises pool crash-rebuild).
   - "hang": sleeps forever (exercises the 60s timeout kill path).
+
+Env:
+  MCP_MOCK_MODE=notify_first  — before each tools/call result, emit a
+      notifications/message line (ISSUE-034 R1).
+  MCP_MOCK_MODE=slow — sleep MCP_MOCK_SLOW_SECS (default 5) before
+      tools/call result (ISSUE-034 R3 cancel-then-next).
 """
 
 import json
@@ -16,6 +22,8 @@ import sys
 import time
 
 INITIALIZED = {"initialized": False}
+MODE = os.environ.get("MCP_MOCK_MODE", "").strip()
+SLOW_SECS = float(os.environ.get("MCP_MOCK_SLOW_SECS", "5"))
 
 
 def send(obj):
@@ -58,6 +66,16 @@ def handle(method, params, req_id):
         name = params.get("name")
         arguments = params.get("arguments", {})
         if name == "echo":
+            if MODE == "notify_first":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "notifications/message",
+                        "params": {"level": "info", "data": "pre-result"},
+                    }
+                )
+            if MODE == "slow":
+                time.sleep(SLOW_SECS)
             return {
                 "content": [
                     {"type": "text", "text": json.dumps(arguments, separators=(",", ":"))}

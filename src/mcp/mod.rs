@@ -80,6 +80,32 @@ impl McpClient {
         }
     }
 
+    pub fn is_dirty(&self) -> bool {
+        match self {
+            McpClient::Stdio(c) => c.is_dirty(),
+            #[cfg(feature = "remote-mcp")]
+            McpClient::Remote(_) => false,
+        }
+    }
+
+    pub fn mark_dirty(&mut self) {
+        match self {
+            McpClient::Stdio(c) => c.mark_dirty(),
+            #[cfg(feature = "remote-mcp")]
+            McpClient::Remote(_) => {}
+        }
+    }
+
+    pub fn set_request_timeout(&mut self, timeout: std::time::Duration) {
+        match self {
+            McpClient::Stdio(c) => c.set_request_timeout(timeout),
+            #[cfg(feature = "remote-mcp")]
+            McpClient::Remote(_) => {
+                let _ = timeout;
+            }
+        }
+    }
+
     /// Kill the underlying server process (no-op for remote).
     pub async fn kill(&mut self) {
         match self {

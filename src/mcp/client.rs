@@ -1,12 +1,21 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
+use crate::config::schema::DEFAULT_MCP_TOOL_TIMEOUT_SECS;
 use crate::types::{LitecodeError, Result};
+
+/// Default per-request read timeout; aligns with [`DEFAULT_MCP_TOOL_TIMEOUT_SECS`].
+pub const DEFAULT_MCP_REQUEST_TIMEOUT: Duration =
+    Duration::from_secs(DEFAULT_MCP_TOOL_TIMEOUT_SECS);
+
+/// Max consecutive non-JSON stdout lines before declaring the connection dirty.
+const MAX_BAD_LINES: u32 = 32;
 
 pub struct McpStdioClient {
     child: Child,
@@ -14,6 +23,25 @@ pub struct McpStdioClient {
     reader: BufReader<tokio::process::ChildStdout>,
     next_id: AtomicU64,
     initialized: bool,
+    /// After a cancelled/timed-out/failed read, the BufReader may hold a stale
+    /// response. Callers must rebuild (kill + respawn) rather than reuse.
+    dirty: bool,
+    request_timeout: Duration,
+}
+
+/// Sets `*flag = true` on drop unless disarmed — covers turn-cancel dropping
+/// the read future mid-`read_line` (ISSUE-034 misnumbering).
+struct DirtyOnDrop<'a> {
+    flag: &'a mut bool,
+    armed: bool,
+}
+
+impl Drop for DirtyOnDrop<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            *self.flag = true;
+        }
+    }
 }
 
 impl McpStdioClient {
@@ -57,7 +85,31 @@ impl McpStdioClient {
             reader,
             next_id: AtomicU64::new(1),
             initialized: false,
+            dirty: false,
+            request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
         })
+    }
+
+    /// Per-request bound for the JSON-RPC read loop (ISSUE-034).
+    pub fn set_request_timeout(&mut self, timeout: Duration) {
+        self.request_timeout = if timeout.is_zero() {
+            DEFAULT_MCP_REQUEST_TIMEOUT
+        } else {
+            timeout
+        };
+    }
+
+    pub fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
+    /// True when the stdio buffer may contain a stale response; rebuild required.
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     fn next_request_id(&self) -> u64 {
@@ -65,6 +117,12 @@ impl McpStdioClient {
     }
 
     async fn send_request(&mut self, method: &str, params: Option<Value>) -> Result<Value> {
+        if self.dirty {
+            return Err(LitecodeError::ToolExecution(
+                "MCP connection is dirty; server must be rebuilt".into(),
+            ));
+        }
+
         let id = self.next_request_id();
         let mut request = serde_json::json!({
             "jsonrpc": "2.0",
@@ -78,29 +136,42 @@ impl McpStdioClient {
         let mut line = serde_json::to_string(&request)?;
         line.push('\n');
 
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        self.stdin.write_all(line.as_bytes()).await.map_err(|e| {
+            self.dirty = true;
+            LitecodeError::ToolExecution(format!("MCP stdin write failed: {e}"))
+        })?;
+        self.stdin.flush().await.map_err(|e| {
+            self.dirty = true;
+            LitecodeError::ToolExecution(format!("MCP stdin flush failed: {e}"))
+        })?;
 
-        let mut response_line = String::new();
-        let bytes_read = self.reader.read_line(&mut response_line).await?;
-        if bytes_read == 0 {
-            return Err(LitecodeError::ToolExecution(
-                "MCP server closed stdout unexpectedly".into(),
-            ));
+        // After the request is on the wire, any incomplete read leaves a
+        // response that would mis-number the next call (ISSUE-034).
+        let timeout = self.request_timeout;
+        let method_owned = method.to_string();
+        {
+            let dirty = &mut self.dirty;
+            let reader = &mut self.reader;
+            let mut guard = DirtyOnDrop {
+                flag: dirty,
+                armed: true,
+            };
+            let outcome = tokio::time::timeout(timeout, read_matching_response(reader, id)).await;
+            match outcome {
+                Ok(Ok(value)) => {
+                    guard.armed = false;
+                    Ok(value)
+                }
+                Ok(Err(e)) => {
+                    // leave armed → dirty
+                    Err(e)
+                }
+                Err(_) => Err(LitecodeError::ToolExecution(format!(
+                    "MCP request timed out after {}s ({method_owned})",
+                    timeout.as_secs()
+                ))),
+            }
         }
-
-        let response: Value = serde_json::from_str(response_line.trim())?;
-
-        if let Some(error) = response.get("error") {
-            let msg = error["message"].as_str().unwrap_or("unknown error");
-            let code = error["code"].as_i64().unwrap_or(-1);
-            return Err(LitecodeError::ToolExecution(format!(
-                "MCP error (code {}): {}",
-                code, msg
-            )));
-        }
-
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
     pub async fn initialize(&mut self) -> Result<Value> {
@@ -181,16 +252,82 @@ impl McpStdioClient {
     /// Kill the child process tree (used to tear down a stuck/timed-out server).
     ///
     /// Matches custom-tool `kill_child_tree`: Unix process-group SIGKILL,
-    /// Windows `taskkill /T /F`. Protocol/request matching (ISSUE-034) is
-    /// intentionally untouched.
+    /// Windows `taskkill /T /F`.
     pub async fn kill(&mut self) {
         kill_process_tree(&mut self.child);
         let _ = self.child.kill().await;
+        self.dirty = true;
     }
 
     pub fn start_kill(&mut self) {
         kill_process_tree(&mut self.child);
         let _ = self.child.start_kill();
+        self.dirty = true;
+    }
+}
+
+/// Read stdout lines until a JSON-RPC response with matching `id` arrives.
+/// Skips notifications (no id) and responses for other ids (ISSUE-034).
+async fn read_matching_response(
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+    want_id: u64,
+) -> Result<Value> {
+    let mut bad_lines = 0u32;
+    loop {
+        let mut response_line = String::new();
+        let bytes_read = reader.read_line(&mut response_line).await?;
+        if bytes_read == 0 {
+            return Err(LitecodeError::ToolExecution(
+                "MCP server closed stdout unexpectedly".into(),
+            ));
+        }
+
+        let response: Value = match serde_json::from_str(response_line.trim()) {
+            Ok(v) => {
+                bad_lines = 0;
+                v
+            }
+            Err(_) => {
+                bad_lines += 1;
+                if bad_lines >= MAX_BAD_LINES {
+                    return Err(LitecodeError::ToolExecution(
+                        "MCP server sent too many non-JSON lines".into(),
+                    ));
+                }
+                continue;
+            }
+        };
+
+        // Notifications have no id (or null id).
+        let Some(resp_id) = response.get("id") else {
+            continue;
+        };
+        if resp_id.is_null() {
+            continue;
+        }
+        if !json_rpc_id_matches(resp_id, want_id) {
+            // Stale / out-of-order response for another request — skip.
+            continue;
+        }
+
+        if let Some(error) = response.get("error") {
+            let msg = error["message"].as_str().unwrap_or("unknown error");
+            let code = error["code"].as_i64().unwrap_or(-1);
+            return Err(LitecodeError::ToolExecution(format!(
+                "MCP error (code {}): {}",
+                code, msg
+            )));
+        }
+
+        return Ok(response.get("result").cloned().unwrap_or(Value::Null));
+    }
+}
+
+fn json_rpc_id_matches(resp_id: &Value, want: u64) -> bool {
+    match resp_id {
+        Value::Number(n) => n.as_u64() == Some(want) || n.as_i64() == Some(want as i64),
+        Value::String(s) => s.parse::<u64>().ok() == Some(want),
+        _ => false,
     }
 }
 
@@ -235,6 +372,22 @@ mod tests {
     use std::collections::HashMap;
     use std::time::Duration;
 
+    fn mock_cmd() -> (String, Vec<String>, HashMap<String, String>) {
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mock_mcp_server.py");
+        (
+            "python3".into(),
+            vec![script.display().to_string()],
+            HashMap::new(),
+        )
+    }
+
+    fn mock_cmd_env(mode: &str) -> (String, Vec<String>, HashMap<String, String>) {
+        let (cmd, args, mut env) = mock_cmd();
+        env.insert("MCP_MOCK_MODE".into(), mode.into());
+        (cmd, args, env)
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn kill_reaps_grandchild_process() {
@@ -277,6 +430,113 @@ mod tests {
         assert!(
             !marker.exists(),
             "MCP Drop must reach grandchildren"
+        );
+    }
+
+    /// R1: notification before the real response must not be treated as the result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r1_skips_notification_before_response() {
+        let (cmd, args, env) = mock_cmd_env("notify_first");
+        let mut client = McpStdioClient::new(&cmd, &args, &env, None).expect("spawn");
+        client.initialize().await.expect("initialize");
+        let out = client
+            .call_tool("echo", serde_json::json!({"greeting": "after-notify"}))
+            .await
+            .expect("echo after notification");
+        let text = out["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("after-notify"),
+            "must match by id and skip notification, got: {text}"
+        );
+        assert!(!client.is_dirty(), "successful match must not dirty");
+        // Next call must still work (no misnumbering from leftover response).
+        let out2 = client
+            .call_tool("echo", serde_json::json!({"greeting": "second"}))
+            .await
+            .expect("second echo");
+        assert!(
+            out2["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("second"),
+            "second call must not receive a stale response"
+        );
+    }
+
+    /// R2: no reply → bounded timeout error + dirty (pool must rebuild).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r2_hang_times_out_and_marks_dirty() {
+        let (cmd, args, env) = mock_cmd();
+        let mut client = McpStdioClient::new(&cmd, &args, &env, None).expect("spawn");
+        client.set_request_timeout(Duration::from_secs(2));
+        client.initialize().await.expect("initialize");
+        let started = std::time::Instant::now();
+        let err = client
+            .call_tool("hang", serde_json::json!({}))
+            .await
+            .expect_err("hang must time out");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout must be bounded, took {elapsed:?}"
+        );
+        assert!(
+            err.to_string().contains("timed out"),
+            "error should mention timeout, got: {err}"
+        );
+        assert!(client.is_dirty(), "timeout must mark connection dirty");
+        // Reuse must fail closed until rebuild.
+        let reuse = client
+            .call_tool("echo", serde_json::json!({"greeting": "nope"}))
+            .await;
+        assert!(
+            reuse.is_err(),
+            "dirty client must refuse further requests"
+        );
+    }
+
+    /// R3: cancel mid-request → dirty; rebuilt client serves the next request correctly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r3_cancel_marks_dirty_next_client_ok() {
+        let (cmd, args, env) = mock_cmd_env("slow");
+        let mut client = McpStdioClient::new(&cmd, &args, &env, None).expect("spawn");
+        client.set_request_timeout(Duration::from_secs(30));
+        client.initialize().await.expect("initialize");
+
+        // Inner scope so the call_tool future (and its &mut client borrow) end
+        // before we assert is_dirty / drop(client) — avoids E0502/E0505.
+        {
+            let call = client.call_tool("echo", serde_json::json!({"greeting": "slow-one"}));
+            tokio::pin!(call);
+            tokio::select! {
+                res = &mut call => {
+                    panic!("slow call should have been cancelled, got {res:?}");
+                }
+                _ = tokio::time::sleep(Duration::from_millis(300)) => {
+                    // Falling through drops `call` → DirtyOnDrop marks dirty.
+                }
+            }
+        }
+        assert!(
+            client.is_dirty(),
+            "cancel during read must mark dirty to prevent misnumbering"
+        );
+
+        // Rebuild (simulates pool kill + get_or_create).
+        drop(client);
+        let (cmd, args, env) = mock_cmd();
+        let mut fresh = McpStdioClient::new(&cmd, &args, &env, None).expect("respawn");
+        fresh.initialize().await.expect("re-initialize");
+        let out = fresh
+            .call_tool("echo", serde_json::json!({"greeting": "after-cancel"}))
+            .await
+            .expect("echo on fresh client");
+        assert!(
+            out["content"][0]["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("after-cancel"),
+            "fresh client must not see the cancelled request's response"
         );
     }
 }

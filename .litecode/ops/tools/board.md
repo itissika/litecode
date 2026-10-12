@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T12:28:32.739Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T12:52:52.986Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -67,6 +67,11 @@
 | WP-044 | └ 前端测试：核心流程覆盖核对 + 裁剪裁决 | done | frontend_mid | gm |
 | WP-045 | 　└ WP-044 web：核心覆盖核对 + 测试裁剪提案 | done | frontend | frontend_mid |
 | WP-046 | 　└ WP-044 desktop：核心覆盖核对 + 测试裁剪提案 | done | frontend_desktop | frontend_mid |
+| WP-052 | 产品缺陷级钉稳（文件变更不丢 + MCP 超时/按 id 匹配） | done | gm | andy |
+| WP-053 | └ 后端：组织修 ISSUE-032 文件变更丢失 + ISSUE-034 MCP 超时/id 匹配 | done | backend_mid | gm |
+| WP-054 | 　└ WP-053/Runtime：ISSUE-032 take_changes 失败不丢通知 | done | runtime | backend_mid |
+| WP-055 | 　└ WP-053/Tools：ISSUE-034 MCP stdio 超时 + id 匹配 | done | tools | backend_mid |
+| WP-056 | 　└ WP-053/上下文：FileTracker::mark_dirty 供 ISSUE-032 回灌 | done | context | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

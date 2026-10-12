@@ -123,6 +123,7 @@ fn hub_call(
                 server_cwd,
                 &mcp_tool_name,
                 input,
+                timeout_secs,
             ),
         )
         .await

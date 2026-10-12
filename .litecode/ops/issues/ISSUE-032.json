@@ -36,7 +36,7 @@
   "repro": "让 append_reminder(FilesChanged) 失败一次；下一 seam 不再报告该文件。",
   "reporter": "context",
   "owner": "runtime",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -48,6 +48,16 @@
       "ts": "2026-10-12T15:50:00+08:00",
       "by": "runtime",
       "change": "WP-026 交叉审（Runtime）：确认成立。接口建议拆分：上下文在 file_tracker 提供 forget/mark_dirty(paths)；Session 在 SessionManager 暴露 restore_changed_files(session_id, paths)；Runtime 在 exec.rs:386 及 FilesChanged append 失败分支调用。owner 维持 runtime。"
+    },
+    {
+      "ts": "2026-10-12T20:41:19+08:00",
+      "by": "runtime",
+      "change": "WP-054 start：确认 mark_dirty 未落地（WP-056 仍 drafting）。已写 T1–T4 ignore 骨架 tests/issue_032_changed_files_restore.rs（--no-run 编译绿）；exec 回灌未改；产物标 blocked on WP-056。不 commit。"
+    },
+    {
+      "ts": "2026-10-12T20:44:45+08:00",
+      "by": "runtime",
+      "change": "WP-054 闭环：Session::restore_changed_files→mark_dirty；exec.rs spine Err + FilesChanged 未写入软回灌（+ SubagentSettled 早退对称）；tests/issue_032_changed_files_restore.rs T1–T4 全绿（6 passed）。不 commit。status→closed。"
     }
   ]
 }

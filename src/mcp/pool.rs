@@ -264,6 +264,10 @@ impl McpConnectionPool {
     }
 
     /// Must run on the MCP hub (via [`Self::block_on_hub`] / [`Self::on_hub`]).
+    ///
+    /// `timeout_secs` bounds each JSON-RPC read (ISSUE-034); on timeout/cancel
+    /// the client is marked dirty and this method kills + drops the entry so
+    /// the next call rebuilds a clean connection.
     pub(crate) async fn call_on_hub(
         &self,
         server_key: &str,
@@ -273,21 +277,40 @@ impl McpConnectionPool {
         cwd: Option<PathBuf>,
         tool_name: &str,
         input: serde_json::Value,
+        timeout_secs: u64,
     ) -> Result<String> {
+        let timeout_secs = if timeout_secs == 0 {
+            crate::config::schema::DEFAULT_MCP_TOOL_TIMEOUT_SECS
+        } else {
+            timeout_secs
+        };
         let def = McpServerDefinition {
             command: command.to_string(),
             args: args.to_vec(),
             env: env.clone(),
             transport: crate::config::schema::McpTransport::Stdio,
-            ..Default::default()
+            timeout: timeout_secs,
         };
+        // start_inner rebuilds when the cached client is dirty/dead.
         let client = get_or_create_inner(&self.inner, server_key, &def, cwd).await?;
-        let mut guard = client.lock().await;
-        if guard.needs_initialize() {
-            guard.initialize().await?;
+        let (result, dirty) = {
+            let mut guard = client.lock().await;
+            guard.set_request_timeout(Duration::from_secs(timeout_secs));
+            let result = call_initialized(&mut guard, tool_name, input).await;
+            let dirty = guard.is_dirty();
+            (result, dirty)
+        };
+        match result {
+            Ok(value) => Ok(format_mcp_result(value)),
+            Err(e) => {
+                // Timeout/cancel/protocol failure may leave a stale BufReader.
+                // Prefer kill+drop rebuild over blind drain (ISSUE-034).
+                if dirty {
+                    stop_inner(&self.inner, server_key).await;
+                }
+                Err(e)
+            }
         }
-        let result = guard.call_tool(tool_name, input).await?;
-        Ok(format_mcp_result(result))
     }
 
     pub(crate) async fn stop_on_hub(&self, id: &str) {
@@ -372,10 +395,14 @@ async fn start_inner(
                 McpRunState::Running => {
                     let same_def = entry.def.as_ref() == Some(def) && entry.cwd == cwd;
                     if same_def && let Some(client) = &entry.client {
-                        let alive = client.lock().await.is_alive().await;
-                        if alive {
+                        let mut c = client.lock().await;
+                        let alive = c.is_alive().await;
+                        let dirty = c.is_dirty();
+                        drop(c);
+                        if alive && !dirty {
                             return Ok(entry.schemas.clone());
                         }
+                        // Dead or dirty (ISSUE-034): tear down and respawn.
                     }
                     drop(map);
                     stop_inner(inner, id).await;
@@ -499,6 +526,18 @@ async fn spawn_and_list(
     let mut client = McpClient::Stdio(McpStdioClient::new(command, args, env, cwd)?);
     let schemas = client.tool_schemas().await?;
     Ok((client, schemas))
+}
+
+
+async fn call_initialized(
+    guard: &mut McpClient,
+    tool_name: &str,
+    input: serde_json::Value,
+) -> Result<serde_json::Value> {
+    if guard.needs_initialize() {
+        guard.initialize().await?;
+    }
+    guard.call_tool(tool_name, input).await
 }
 
 fn format_mcp_result(result: serde_json::Value) -> String {

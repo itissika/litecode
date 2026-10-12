@@ -1427,6 +1427,20 @@ impl SessionManager {
             .unwrap_or_default()
     }
 
+    /// Undo a prior [`take_changed_files`] consumption so the next take can
+    /// re-report `paths` (ISSUE-032). Thin wrap over `FileTracker::mark_dirty`.
+    pub fn restore_changed_files(&self, session_id: &str, paths: &[std::path::PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let Ok(mut records) = self.records.lock() else {
+            return;
+        };
+        if let Some(record) = records.get_mut(session_id) {
+            record.file_tracker.mark_dirty(paths);
+        }
+    }
+
     /// Live child-session counts for the whole subtree: total and non-idle.
     ///
     /// Cheap read used by the post-compaction reminder so a window reset does

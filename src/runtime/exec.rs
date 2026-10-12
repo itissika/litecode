@@ -385,6 +385,12 @@ impl AgentRuntime {
             Ok(view) => view,
             Err(error) => {
                 self.restore_seam_sources(&bash_notices, completions, &custom_notices);
+                // ISSUE-032: take_changed_files already advanced snaps; undo so
+                // the next seam can still report these paths.
+                if !changed.is_empty() {
+                    self.sessions
+                        .restore_changed_files(&self.session_id, &changed);
+                }
                 return Err(error);
             }
         };
@@ -434,6 +440,7 @@ impl AgentRuntime {
         let mut bash_written = false;
         let mut subagent_written = false;
         let mut custom_written = false;
+        let mut files_changed_written = false;
         let mut appended = false;
         for reminder in &reminders {
             match self.sessions.append_reminder(&self.session_id, reminder) {
@@ -443,6 +450,7 @@ impl AgentRuntime {
                         ReminderKind::BashExit => bash_written = true,
                         ReminderKind::SubagentSettled => subagent_written = true,
                         ReminderKind::CustomToolSettled => custom_written = true,
+                        ReminderKind::FilesChanged => files_changed_written = true,
                         _ => {}
                     }
                 }
@@ -453,6 +461,10 @@ impl AgentRuntime {
                         }
                         if !custom_written {
                             self.restore_custom_mailbox(&custom_notices);
+                        }
+                        if !changed.is_empty() && !files_changed_written {
+                            self.sessions
+                                .restore_changed_files(&self.session_id, &changed);
                         }
                         self.runtime_handle
                             .subagent_hub
@@ -478,6 +490,12 @@ impl AgentRuntime {
         }
         if !custom_written {
             self.restore_custom_mailbox(&custom_notices);
+        }
+        // ISSUE-032: soft restore like bash/custom when FilesChanged was not
+        // persisted (append warn path or sync omitted the kind).
+        if !changed.is_empty() && !files_changed_written {
+            self.sessions
+                .restore_changed_files(&self.session_id, &changed);
         }
         stages.mark("append_reminders");
         Ok(appended)
