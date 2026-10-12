@@ -251,13 +251,19 @@ fn ask_cli_one_question(
     } else {
         None
     };
-    Some(crate::permission::AskAnswer { selected, free_text })
+    Some(crate::permission::AskAnswer {
+        selected,
+        free_text,
+    })
 }
 
 fn ask_cli_ask_user(
     summary: &str,
     questions: &[crate::permission::AskQuestion],
-) -> (bool, std::collections::HashMap<String, crate::permission::AskAnswer>) {
+) -> (
+    bool,
+    std::collections::HashMap<String, crate::permission::AskAnswer>,
+) {
     if !summary.is_empty() {
         eprintln!("\n⚠ {summary}");
     }

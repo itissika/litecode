@@ -12,6 +12,18 @@ process.stdout.write(r.stdout||""); process.stderr.write(r.stderr||"");
 if (r.status !== 0) process.exit(r.status||1);
 const demand = JSON.parse(fs.readFileSync(path.join(ops,"demand","board.json"),"utf8"));
 if (demand.schema_version !== 1) { console.error("demand schema_version"); process.exit(1); }
+// v15: issues — file name must equal its id, ids unique, reserved ids must not exist as files
+{
+  const idir = path.join(ops, "issues"); const seen = new Map(); const errs = [];
+  let reserved = []; try { reserved = JSON.parse(fs.readFileSync(path.join(idir, ".reserved.json"), "utf8")).reserved.map((r) => r.id); } catch {}
+  for (const f of fs.readdirSync(idir).filter((x) => /^ISSUE-.*\.json$/.test(x))) {
+    let j; try { j = JSON.parse(fs.readFileSync(path.join(idir, f), "utf8")); } catch (e) { errs.push(`${f}: invalid JSON`); continue; }
+    if (j.id + ".json" !== f) errs.push(`${f}: id ${j.id} does not match file name`);
+    if (seen.has(j.id)) errs.push(`${f}: duplicate id ${j.id} (also ${seen.get(j.id)})`); else seen.set(j.id, f);
+    if (reserved.includes(j.id)) errs.push(`${f}: id ${j.id} is reserved (issues/.reserved.json)`);
+  }
+  if (errs.length) { console.error("INVALID: issues:\n  " + errs.join("\n  ")); process.exit(1); }
+}
 // v7: knowledge base must have no errors (ops.kb_check; warnings do not fail)
 const kb = kbCheck();
 const ks = summarize(kb.findings);

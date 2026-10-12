@@ -3,7 +3,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use super::kinds::{CustomToolSettledEntry, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild, TodoSnap};
+use super::kinds::{
+    CustomToolSettledEntry, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
+    TodoSnap,
+};
 use super::sources;
 
 /// Facts the seam already sensed. Sources do not reach back into the runtime.
@@ -185,7 +188,7 @@ mod tests {
     }
 
     #[test]
-        fn bash_exit_names_a_user_kill() {
+    fn bash_exit_names_a_user_kill() {
         let facts = Facts {
             bash_exits: vec![crate::reminder::BashExitEntry {
                 job_id: "bg-1".into(),

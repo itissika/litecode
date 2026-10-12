@@ -1,0 +1,63 @@
+{
+  "id": "ISSUE-033",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [],
+  "basis": [
+    "WP-026"
+  ],
+  "title": "回合：压缩期间用户取消被映射为 TurnOutcome::Error 而非 Cancelled",
+  "promise": "用户取消在任何阶段都结束为 TurnOutcome::Cancelled；compact 失败口径仅对真实失败给 Error。",
+  "actual": "compact_transcript 在取消时返回 Err(Canceled)（摘要后、LLM 等待中），core.rs:45 统一映射为 TurnOutcome::Error；call_model 路径则正确映射 Cancelled。",
+  "evidence": [
+    {
+      "path": "src/context_pipeline/compact.rs:252-256",
+      "note": "取消→Err(Canceled)+Failed 事件",
+      "commit": ""
+    },
+    {
+      "path": "src/context_pipeline/compact.rs:415-432",
+      "note": "LLM 等待中取消→Err(Canceled)",
+      "commit": ""
+    },
+    {
+      "path": "src/agent/core.rs:43-46",
+      "note": "Err(e)→TurnOutcome::Error(e)，未区分 Canceled",
+      "commit": ""
+    },
+    {
+      "path": "src/agent/core.rs:54-58",
+      "note": "对照：call_model Canceled→Cancelled",
+      "commit": ""
+    },
+    {
+      "path": "src/agent/core.rs",
+      "note": "compact_if_needed Err(Canceled) → TurnOutcome::Cancelled（对齐 call_model 分支）",
+      "commit": ""
+    },
+    {
+      "path": "tests/agent_loop.rs",
+      "test": "cancel_during_auto_compact_is_cancelled_without_model_call",
+      "commit": ""
+    }
+  ],
+  "repro": "cargo test --test agent_loop cancel_during_auto_compact_is_cancelled_without_model_call",
+  "reporter": "context",
+  "owner": "runtime",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T15:40:00+08:00",
+      "by": "context",
+      "change": "WP-026 审计新建"
+    },
+    {
+      "ts": "2026-10-12T15:50:00+08:00",
+      "by": "runtime",
+      "change": "WP-025（后端中层批准）：core.rs 加 Canceled→Cancelled 分支 + 测试；相关套件绿；closed（未 commit）"
+    }
+  ]
+}

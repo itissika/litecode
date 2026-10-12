@@ -541,6 +541,18 @@ fn turn_error(
 ) -> Option<StructuredError> {
     match reason {
         TurnEndReason::Error => {
+            // WP-025: auto compact failure ends the turn with
+            // `TurnOutcome::Error(CompactionFailed)`; runtime/mod.rs passes
+            // `err.to_string()` as final_text. Surface it as a dedicated,
+            // non-retryable code instead of `internal`.
+            let compaction_msg = crate::types::LitecodeError::CompactionFailed.to_string();
+            if final_text.as_deref() == Some(compaction_msg.as_str()) {
+                return Some(StructuredError {
+                    code: ErrorCode::CompactionFailed,
+                    message: compaction_msg,
+                    retryable: false,
+                });
+            }
             let retryable = reconnect.is_some_and(|notice| notice.is_failed());
             Some(StructuredError {
                 code: if retryable {
@@ -1188,5 +1200,29 @@ pub fn buffer_snapshot(
         pending_messages: Vec::new(),
         active_plan_path: None,
         llm_reconnect: None,
+    }
+}
+
+#[cfg(test)]
+mod wp025_turn_error_tests {
+    use super::*;
+
+    #[test]
+    fn auto_compact_failure_maps_to_compaction_failed_not_retryable() {
+        let msg = crate::types::LitecodeError::CompactionFailed.to_string();
+        let err = turn_error(&TurnEndReason::Error, &Some(msg.clone()), None)
+            .expect("error turn must carry a StructuredError");
+        assert!(
+            matches!(err.code, ErrorCode::CompactionFailed),
+            "got {:?}",
+            err.code
+        );
+        assert!(!err.retryable);
+        assert_eq!(err.message, msg);
+
+        // Other errors keep the previous mapping.
+        let other = turn_error(&TurnEndReason::Error, &Some("boom".into()), None).unwrap();
+        assert!(matches!(other.code, ErrorCode::Internal));
+        assert!(!other.retryable);
     }
 }

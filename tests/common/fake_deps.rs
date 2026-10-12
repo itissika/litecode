@@ -67,6 +67,13 @@ pub struct FakeAgentDeps {
     pub compact_calls: Cell<u64>,
     /// When true, `compact_if_needed` returns `CompactionFailed` (Andy auto-fail caliber).
     pub compact_fail: bool,
+    /// WP-025 R4: when set, `compact_if_needed` fails only from this step on
+    /// (step 1 = first loop iteration), so an earlier step can succeed first.
+    pub compact_fail_from_step: Option<u64>,
+    /// ISSUE-033: when true, `compact_if_needed` returns `Canceled` (user cancel mid-compact).
+    pub compact_cancel: bool,
+    /// WP-025 R4: `(call_model index, error)` injected instead of a response.
+    pub model_errors: RefCell<Vec<(usize, LitecodeError)>>,
     /// Ordered snapshots from `persist_new` (for timing assertions).
     pub persist_log: RefCell<Vec<PersistSnapshot>>,
     /// Items accepted by `persist_new`, in order. The loop no longer holds a
@@ -87,6 +94,9 @@ impl Default for FakeAgentDeps {
             stop_on_text: true,
             compact_calls: Cell::new(0),
             compact_fail: false,
+            compact_fail_from_step: None,
+            compact_cancel: false,
+            model_errors: RefCell::new(Vec::new()),
             persist_log: RefCell::new(Vec::new()),
             landed: RefCell::new(Vec::new()),
         }
@@ -115,6 +125,12 @@ impl AgentDeps for FakeAgentDeps {
     async fn call_model(&mut self) -> Result<Vec<Item>> {
         let idx = self.call_index.get();
         self.call_index.set(idx + 1);
+        {
+            let mut errs = self.model_errors.borrow_mut();
+            if let Some(pos) = errs.iter().position(|(i, _)| *i == idx) {
+                return Err(errs.remove(pos).1);
+            }
+        }
         let items = self
             .responses
             .get(idx)
@@ -160,10 +176,13 @@ impl AgentDeps for FakeAgentDeps {
         Ok(false)
     }
 
-    async fn compact_if_needed(&self, _step: u64) -> Result<bool> {
+    async fn compact_if_needed(&self, step: u64) -> Result<bool> {
         self.compact_calls
             .set(self.compact_calls.get().saturating_add(1));
-        if self.compact_fail {
+        if self.compact_cancel {
+            return Err(LitecodeError::Canceled);
+        }
+        if self.compact_fail || self.compact_fail_from_step.is_some_and(|from| step >= from) {
             return Err(LitecodeError::CompactionFailed);
         }
         Ok(false)

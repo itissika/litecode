@@ -1171,7 +1171,6 @@ pub(crate) fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -
     Ok(())
 }
 
-
 /// Capture current bytes of a workspace settings file (or `None` if missing).
 fn snapshot_workspace_file(path: &Path) -> Result<Option<Vec<u8>>> {
     match std::fs::read(path) {
@@ -1774,11 +1773,7 @@ max_output = 1024
                     let root = root.clone();
                     move || workspace::delete_workspace_custom_tool(&root, "demo").map(|_| ())
                 },
-                |_settings| {
-                    Err(LitecodeError::Config(
-                        "injected replace_all failure".into(),
-                    ))
-                },
+                |_settings| Err(LitecodeError::Config("injected replace_all failure".into())),
             )
             .expect_err("DB-side failure must surface");
         assert!(
@@ -1828,10 +1823,7 @@ max_output = 1024
                 },
             )
             .expect_err("validate failure must surface");
-        assert!(
-            err.to_string().contains("empty tool binding"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("empty tool binding"), "got: {err}");
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(
             workspace::read_workspace_mcp(&root)

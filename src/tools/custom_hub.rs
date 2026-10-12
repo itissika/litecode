@@ -90,6 +90,12 @@ impl CustomToolHub {
         cancel
     }
 
+    /// Drop an in-flight job that never got a worker (spawn failure). No notice.
+    pub fn abandon_job(&self, job_id: &str) -> bool {
+        let mut g = self.inner.lock().expect("custom mailbox lock");
+        g.jobs.remove(job_id).is_some()
+    }
+
     /// Cancel a running job by id (no-op if already finished).
     pub fn cancel_job(&self, job_id: &str) -> bool {
         let g = self.inner.lock().expect("custom mailbox lock");
@@ -118,12 +124,20 @@ impl CustomToolHub {
             let mut g = self.inner.lock().expect("custom mailbox lock");
             g.jobs.remove(&notice.job_id);
             let queue = g.mailbox.entry(session_id.clone()).or_default();
-            if queue.iter().any(|existing| existing.job_id == notice.job_id) {
+            if queue
+                .iter()
+                .any(|existing| existing.job_id == notice.job_id)
+            {
                 return;
             }
             queue.push_back(notice.clone());
         }
-        if let Some(handler) = self.exit_handler.lock().expect("custom exit handler lock").clone() {
+        if let Some(handler) = self
+            .exit_handler
+            .lock()
+            .expect("custom exit handler lock")
+            .clone()
+        {
             handler(notice);
         }
     }

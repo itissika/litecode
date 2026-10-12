@@ -726,8 +726,7 @@ mod tests {
 
     fn done_event(id: &str, output_index: u32) -> ResponseStreamEvent {
         use crate::authority::responses::{
-            AssistantRole, OutputItem, OutputMessage, OutputStatus,
-            ResponseOutputItemDoneEvent,
+            AssistantRole, OutputItem, OutputMessage, OutputStatus, ResponseOutputItemDoneEvent,
         };
         ResponseStreamEvent::ResponseOutputItemDone(ResponseOutputItemDoneEvent {
             sequence_number: output_index as u64 + 100,
@@ -1173,10 +1172,7 @@ mod tests {
         assert_eq!(f.rows().len(), 1);
         assert_eq!(f.rows()[0].state, "in_progress");
 
-        f.sessions
-            .data()
-            .hooks()
-            .inject(FaultKind::BeforeCommit);
+        f.sessions.data().hooks().inject(FaultKind::BeforeCommit);
         // Checkpoint flushes an UpdateStreamItem while the fault is armed.
         projection.observe(&done_event("msg_upd", 0));
 

@@ -590,6 +590,32 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
     assert_eq!(plain["params"]["error"]["retryable"], false);
 }
 
+/// WP-024 G3 (protocol half) / WP-025: auto compact failure ends the turn
+/// with CompactionFailed; the client sees compaction_failed, not retryable.
+#[test]
+fn turn_finished_auto_compact_failure_is_compaction_failed() {
+    let snap = sample_snapshot();
+    let msg = project::project(
+        &InternalEvent::TurnCompleted {
+            turn_id: "t1".into(),
+            final_text: Some(litecode::types::LitecodeError::CompactionFailed.to_string()),
+            reason: TurnEndReason::Error,
+            turn_token_stats: TurnTokenStats::default(),
+            committed_next_seq: 0,
+        },
+        &snap,
+    )
+    .unwrap();
+    assert_eq!(msg["params"]["error"]["code"], "compaction_failed");
+    assert_eq!(msg["params"]["error"]["retryable"], false);
+    assert!(
+        !msg["params"]["error"]["message"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+}
+
 #[test]
 fn structured_error_omitted_retryable_is_false() {
     let error: litecode::client_protocol::protocol::StructuredError =

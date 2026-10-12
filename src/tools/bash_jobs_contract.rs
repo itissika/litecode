@@ -505,6 +505,9 @@ fn wait_validate_copy_matches_schema_helpers() {
             .unwrap_err(),
         crate::tool::expected_type("sec", "integer", &serde_json::json!(1.5))
     );
-    assert!(tool.validate_input(&serde_json::json!({"bash_id": ""})).is_err());
+    assert!(
+        tool.validate_input(&serde_json::json!({"bash_id": ""}))
+            .is_err()
+    );
     assert!(tool.validate_input(&serde_json::json!({"id": ""})).is_err());
 }

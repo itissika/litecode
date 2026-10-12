@@ -42,6 +42,10 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
 
         let compacted = match deps.compact_if_needed(step).await {
             Ok(compacted) => compacted,
+            // ISSUE-033: a user cancel during auto compact is a cancel, not an error.
+            Err(LitecodeError::Canceled) => {
+                return TurnOutcome::Cancelled { final_text };
+            }
             Err(e) => return TurnOutcome::Error(e),
         };
         if compacted && let Err(error) = deps.sync_request_seam(step) {

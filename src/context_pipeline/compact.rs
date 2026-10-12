@@ -632,8 +632,7 @@ mod tests {
             _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
             _cancel: &'a CancellationToken,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Box::pin(
                 async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) },
             )

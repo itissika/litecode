@@ -593,7 +593,9 @@ fn is_write(input: &Value) -> bool {
 /// Issues from the knowledge index (same rules and caches as the turn note
 /// and the knowledge API), refreshed now so the tool sees its own writes.
 fn issues_of(workspace: &Path, _corpus: &Corpus) -> Vec<Issue> {
-    crate::knowledge::index::fresh_content(workspace).issues.clone()
+    crate::knowledge::index::fresh_content(workspace)
+        .issues
+        .clone()
 }
 
 fn read_node_file(workspace: &Path, root: &str, node: &crate::knowledge::Node) -> String {

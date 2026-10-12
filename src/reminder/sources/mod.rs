@@ -17,3 +17,6 @@ pub(crate) use plan::plan_changed;
 pub(crate) use step_budget::step_budget;
 pub(crate) use subagent::subagent_settled;
 pub(crate) use tasks::tasks;
+
+#[cfg(test)]
+mod tests;

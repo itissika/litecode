@@ -13,7 +13,7 @@
   ],
   "title": "热切换死亡清单子串误伤排除重载 / open_with_default_app",
   "promise": "tests/workspace_hotswitch_death_list.rs 禁止工作区根热切换符号重现；不得误杀合法 API",
-  "actual": "FORBIDDEN 含 reload_workspace / post_open / api/workspace/open。命中的是 reload_workspace_excludes_from_disk、plan.reload_workspace 字段、以及 open_with_default_app（post_open /api/workspace/open），均非根热切换。测试失败。",
+  "actual": "FORBIDDEN 子串匹配在 c6b24df 命中 8 个文件：reload_workspace×6（config/gate、code_search_ipc/server、runtime、workspace/filter/mod、workspace_excludes、watcher）、post_open×1（workspace/routes.rs）、api/workspace/open×1（web/src/api/workspace.ts），均非工作区根热切换。测试失败。",
   "evidence": [
     {
       "path": "tests/workspace_hotswitch_death_list.rs",
@@ -42,9 +42,57 @@
       "lines": "150-158",
       "commit": "075308b",
       "note": "openWithDefaultApp → /api/workspace/open"
+    },
+    {
+      "path": "src/config/gate/mod.rs",
+      "lines": "87",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: ApplyPlan.reload_workspace 字段（配置重载计划），非根热切换 — 新增（行 87、97、130）"
+    },
+    {
+      "path": "src/engines/code_search_ipc/server.rs",
+      "lines": "26",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: 调用 reload_workspace_excludes_from_disk — 新增"
+    },
+    {
+      "path": "src/runtime/mod.rs",
+      "lines": "163",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: plan.reload_workspace 配置应用（行 163、171）"
+    },
+    {
+      "path": "src/workspace/filter/mod.rs",
+      "lines": "138",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: reload_workspace_excludes_from_disk 再导出"
+    },
+    {
+      "path": "src/workspace/filter/workspace_excludes.rs",
+      "lines": "181",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: fn reload_workspace_excludes_from_disk 定义与测试（行 181、358、388）"
+    },
+    {
+      "path": "src/workspace/watcher.rs",
+      "lines": "11",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: watcher 调用 reload_workspace_excludes_from_disk（行 11、82）"
+    },
+    {
+      "path": "src/workspace/routes.rs",
+      "lines": "225",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: fn post_open = open_with_default_app，非根切换（行 225、804）"
+    },
+    {
+      "path": "web/src/api/workspace.ts",
+      "lines": "152",
+      "commit": "c6b24df",
+      "note": "WP-028 实测命中: openWithDefaultApp → /api/workspace/open"
     }
   ],
-  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --test workspace_hotswitch_death_list",
+  "repro": "CARGO_MANIFEST_DIR=$PWD HOME=/workspace/litecode/.tmp/home timeout 120 target/debug/deps/workspace_hotswitch_death_list-<hash> </dev/null  （或 PATH=/home/box/.cargo/bin:$PATH HOME=… timeout 600 cargo test --test workspace_hotswitch_death_list </dev/null）",
   "reporter": "ide",
   "owner": "ide",
   "status": "open",
@@ -59,6 +107,16 @@
       "ts": "2026-10-12T00:40:00+08:00",
       "by": "ide",
       "change": "Batch3: reproduced fail; expanded evidence to post_open/api/workspace/open false positives; recommend narrow FORBIDDEN (do not silent-green)"
+    },
+    {
+      "ts": "2026-10-12T15:50:00+08:00",
+      "by": "ide",
+      "change": "WP-028: 在 c6b24df 实测 8 处误报，新增 config/gate 与 code_search_ipc/server 证据；建议精确匹配，不删"
+    },
+    {
+      "ts": "2026-10-12T16:10:00+08:00",
+      "by": "ide",
+      "change": "建议（后端中层裁定）：按已删除的符号来禁，不删清单。FORBIDDEN 里的 reload_workspace / post_open / api/workspace/open 是泛化子串，应换成当初热切换移除时删掉的具体符号全名（handler 名、路由常量、协议帧名），其余条目（commit_workspace_lock、WorkspaceOpenEvent、workspace_root_changed 等）本已是删除符号，保留。HEAD c6b24df 上 git log -S 未找到名为 fn reload_workspace 的已删定义，具体符号名由修复包从热切换移除提交中确认；/api/workspace/open 已有行为测试 workspace_open_http_endpoint_is_gone 兜底。"
     }
   ]
 }

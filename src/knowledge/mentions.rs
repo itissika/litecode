@@ -808,7 +808,8 @@ see [@ file=\"src/a.rs\"]
                     symbol: Some("impl SessionManager › fn append_reminder".into()),
                     lines: None,
                     bad_lines: None,
-                    label: "src/session/manager.rs : impl SessionManager › fn append_reminder".into(),
+                    label: "src/session/manager.rs : impl SessionManager › fn append_reminder"
+                        .into(),
                 },
                 OrderedRef::Node {
                     id: "seq".into(),

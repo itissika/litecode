@@ -29,6 +29,7 @@ fn err_response(id: serde_json::Value, code: i64, message: impl Into<String>) ->
         error: Some(JsonRpcErrorBody {
             code,
             message: message.into(),
+            data: None,
         }),
     }
 }

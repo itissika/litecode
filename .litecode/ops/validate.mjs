@@ -69,6 +69,38 @@ for (const w of board.work_packages) {
     fail("WP " + w.id + ": other blockers must not block pipeline status=blocked");
   }
 }
+// v13: nested WP model checks (WP-020)
+const byId = new Map(board.work_packages.map((w) => [w.id, w]));
+const CLOSED = new Set(["done", "cancelled", "blocked"]);
+for (const w of board.work_packages) {
+  if (w.parent !== undefined && w.parent !== null) {
+    if (w.parent === w.id) fail("WP " + w.id + ": parent points to itself");
+    if (!byId.has(w.parent)) fail("WP " + w.id + ": parent missing " + w.parent);
+    const seen = new Set([w.id]);
+    let cur = byId.get(w.parent);
+    while (cur) {
+      if (seen.has(cur.id)) fail("WP " + w.id + ": parent cycle via " + cur.id);
+      seen.add(cur.id);
+      cur = cur.parent ? byId.get(cur.parent) : null;
+    }
+  }
+  if (w.approver !== undefined && w.approver !== null && !agentIds.has(w.approver) && !humanIds.has(w.approver)) {
+    fail("WP " + w.id + " approver unknown");
+  }
+  if (w.status === "done") {
+    const kids = board.work_packages.filter((c) => c.parent === w.id);
+    const open = kids.filter((c) => c.status !== "done" && c.status !== "cancelled" && c.status !== "blocked");
+    if (open.length) fail("WP " + w.id + ": done but children not closed: " + open.map((c) => c.id).join(","));
+    const bad = kids.filter((c) => c.status === "blocked");
+    if (bad.length) {
+      const appr = w.approver ?? w.reviewer;
+      const h = Array.isArray(w.history) ? w.history : [];
+      if (!h.some((e) => e.action === "close" && e.actor === appr && e.note)) {
+        fail("WP " + w.id + ": done with blocked children requires a close by approver with note");
+      }
+    }
+  }
+}
 for (const p of board.pipelines) {
   if (!agentIds.has(p.owner)) fail("pipeline " + p.id + " owner");
   if (!agentIds.has(p.reviewer) && !humanIds.has(p.reviewer)) fail("pipeline " + p.id + " reviewer");

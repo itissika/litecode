@@ -284,7 +284,11 @@ fn run_layout(case: &Value) -> Result<(), String> {
             .collect(),
     ));
     let nodes = sorted(json!(
-        content.nodes.iter().map(|n| n.path.clone()).collect::<Vec<_>>()
+        content
+            .nodes
+            .iter()
+            .map(|n| n.path.clone())
+            .collect::<Vec<_>>()
     ));
     let wanted = (
         sorted(case["folders"].clone()),
@@ -469,16 +473,29 @@ fn oversized_and_binary_files_are_unreadable_everywhere() {
     let (status, args) = ref_status(&content, "sym:src/big.rs\0fn alpha");
     assert_eq!(status, "unreadable_file");
     assert_eq!(args["reason"], "larger than 10 MiB");
-    assert_eq!(ref_status(&content, "range:src/big.rs\x001").0, "unreadable_file");
+    assert_eq!(
+        ref_status(&content, "range:src/big.rs\x001").0,
+        "unreadable_file"
+    );
     let (status, args) = ref_status(&content, "range:src/bin.rs\x001");
     assert_eq!(status, "unreadable_file");
     assert_eq!(args["reason"], "not UTF-8 text");
-    assert_eq!(ref_status(&content, "range:src/cap.txt\x005").0, "ok", "exactly 10 MiB is readable");
+    assert_eq!(
+        ref_status(&content, "range:src/cap.txt\x005").0,
+        "ok",
+        "exactly 10 MiB is readable"
+    );
 
     let text = mention_text(ws, "[@ file=\"src/big.rs\" symbol=\"fn alpha\"]");
-    assert!(text.contains("is not a readable text file (larger than 10 MiB)"), "{text}");
+    assert!(
+        text.contains("is not a readable text file (larger than 10 MiB)"),
+        "{text}"
+    );
     let text = mention_text(ws, "[@ file=\"src/bin.rs\" lines=\"1\"]");
-    assert!(text.contains("is not a readable text file (not UTF-8 text)"), "{text}");
+    assert!(
+        text.contains("is not a readable text file (not UTF-8 text)"),
+        "{text}"
+    );
 }
 
 /// B5: a directory exists for file refs, and symbol/range refs on it are
@@ -489,13 +506,22 @@ fn directory_texts_match_the_status() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
     fs::create_dir_all(ws.join("src/inner")).unwrap();
-    node_file(ws, "[@ file=\"src\"] [@ file=\"src\" lines=\"1\"] [@ file=\"src\" symbol=\"fn a\"]");
+    node_file(
+        ws,
+        "[@ file=\"src\"] [@ file=\"src\" lines=\"1\"] [@ file=\"src\" symbol=\"fn a\"]",
+    );
     let content = index::compute_once(ws);
     assert_eq!(ref_status(&content, "file:src").0, "ok");
-    assert_eq!(ref_status(&content, "range:src\x001").1["reason"], "directory");
+    assert_eq!(
+        ref_status(&content, "range:src\x001").1["reason"],
+        "directory"
+    );
     assert_eq!(ref_status(&content, "sym:src\0fn a").0, "unreadable_file");
     let text = mention_text(ws, "[@ file=\"src\" lines=\"1\"]");
-    assert!(text.contains("\"src\" is not a readable text file (directory)."), "{text}");
+    assert!(
+        text.contains("\"src\" is not a readable text file (directory)."),
+        "{text}"
+    );
     let hits = index::query_symbols(ws, &[("src".into(), Some("fn a".into()))]);
     assert_eq!(hits[0].status, "unreadable_file");
     assert!(hits[0].file_exists);
@@ -510,7 +536,10 @@ fn mention_texts_follow_the_statuses() {
     fs::write(ws.join("src/a.rs"), "fn alpha() {}\n").unwrap();
     fs::write(ws.join("notes.txt"), "x\n").unwrap();
     let text = mention_text(ws, "[@ file=\"src/a.rs\" lines=\"2-3\"]");
-    assert!(text.contains("Lines 2-3 are outside \"src/a.rs\", which has 1 lines."), "{text}");
+    assert!(
+        text.contains("Lines 2-3 are outside \"src/a.rs\", which has 1 lines."),
+        "{text}"
+    );
     let text = mention_text(ws, "[@ file=\"notes.txt\" symbol=\"fn x\"]");
     assert!(text.contains("该语言不支持符号解析"), "{text}");
     let text = mention_text(ws, "[@ file=\"src/A.rs\" lines=\"1\"]");
@@ -541,18 +570,34 @@ fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
         .expect("symbol key has no lines");
     assert_eq!(alpha.status, "invalid_lines");
     assert_eq!(alpha.lines, None);
-    assert_eq!(alpha.args["reason"], super::validate::INVALID_LINES_ON_SYMBOL);
+    assert_eq!(
+        alpha.args["reason"],
+        super::validate::INVALID_LINES_ON_SYMBOL
+    );
     assert_eq!(alpha.args["lines"], "1");
-    assert!(alpha.message.contains("do not take lines"), "{}", alpha.message);
-    let beta = refs.iter().find(|r| r.ref_key == "sym:src/a.rs\0fn beta").unwrap();
+    assert!(
+        alpha.message.contains("do not take lines"),
+        "{}",
+        alpha.message
+    );
+    let beta = refs
+        .iter()
+        .find(|r| r.ref_key == "sym:src/a.rs\0fn beta")
+        .unwrap();
     assert_eq!((beta.status, beta.lines.clone()), ("ok", None));
-    let range = refs.iter().find(|r| r.ref_key == "range:src/a.rs\x002").unwrap();
+    let range = refs
+        .iter()
+        .find(|r| r.ref_key == "range:src/a.rs\x002")
+        .unwrap();
     assert_eq!((range.status, range.lines.as_deref()), ("ok", Some("2")));
     let (status, args) = ref_status(&content, "range:src/a.rs\0x");
     assert_eq!(status, "invalid_lines");
     assert_eq!(args["reason"], super::validate::INVALID_LINES_FORMAT);
     let text = mention_text(ws, "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"1\"]");
-    assert!(text.contains("Symbol citations do not take lines"), "{text}");
+    assert!(
+        text.contains("Symbol citations do not take lines"),
+        "{text}"
+    );
 }
 
 /// KR-LINK-1: links are followed inside the workspace and are an error when
@@ -570,11 +615,11 @@ fn links_resolve_inside_the_workspace_only() {
     let made = std::os::unix::fs::symlink(outside.path().join("secret.rs"), ws.join("src/out.rs"))
         .and_then(|_| std::os::unix::fs::symlink(ws.join("src/real.rs"), ws.join("src/in.rs")));
     #[cfg(windows)]
-    let made = std::os::windows::fs::symlink_file(
-        outside.path().join("secret.rs"),
-        ws.join("src/out.rs"),
-    )
-    .and_then(|_| std::os::windows::fs::symlink_file(ws.join("src/real.rs"), ws.join("src/in.rs")));
+    let made =
+        std::os::windows::fs::symlink_file(outside.path().join("secret.rs"), ws.join("src/out.rs"))
+            .and_then(|_| {
+                std::os::windows::fs::symlink_file(ws.join("src/real.rs"), ws.join("src/in.rs"))
+            });
     if made.is_err() {
         // Windows without Developer Mode: a directory junction needs no
         // privilege and must follow the same rule.
@@ -587,7 +632,10 @@ fn links_resolve_inside_the_workspace_only() {
                 .output()
                 .is_ok_and(|out| out.status.success());
             if made {
-                node_file(ws, "[@ file=\"src/outdir/secret.rs\" lines=\"1\"] [@ file=\"src/outdir\"]");
+                node_file(
+                    ws,
+                    "[@ file=\"src/outdir/secret.rs\" lines=\"1\"] [@ file=\"src/outdir\"]",
+                );
                 let content = index::compute_once(ws);
                 assert_eq!(
                     ref_status(&content, "range:src/outdir/secret.rs\x001").0,
@@ -606,7 +654,10 @@ fn links_resolve_inside_the_workspace_only() {
     );
     let content = index::compute_once(ws);
     assert_eq!(ref_status(&content, "file:src/out.rs").0, "symlink_escape");
-    assert_eq!(ref_status(&content, "sym:src/out.rs\0fn alpha").0, "symlink_escape");
+    assert_eq!(
+        ref_status(&content, "sym:src/out.rs\0fn alpha").0,
+        "symlink_escape"
+    );
     assert_eq!(ref_status(&content, "sym:src/in.rs\0fn alpha").0, "ok");
     let text = mention_text(ws, "[@ file=\"src/out.rs\" lines=\"1\"]");
     assert!(text.contains("resolves outside the workspace"), "{text}");

@@ -258,8 +258,8 @@ mod fixture_tests {
         let mut issues: Vec<_> = crate::knowledge::index::compute_once(&workspace)
             .issues
             .into_iter()
-        .map(|issue| format!("{}:{}", issue.node_id, issue.code))
-        .collect();
+            .map(|issue| format!("{}:{}", issue.node_id, issue.code))
+            .collect();
         issues.sort();
         let mut wanted_issues: Vec<String> = expected["issues"]
             .as_array()

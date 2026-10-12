@@ -278,7 +278,10 @@ impl Engine {
             stages.note("stats", c.stats - before.stats);
             stages.note("file_reads", c.file_reads - before.file_reads);
             stages.note("ts_parses", c.ts_parses - before.ts_parses);
-            stages.note("head_blob_reads", c.head_blob_reads - before.head_blob_reads);
+            stages.note(
+                "head_blob_reads",
+                c.head_blob_reads - before.head_blob_reads,
+            );
         }
         content
     }
@@ -450,7 +453,10 @@ impl Engine {
 
     fn loaded(&mut self, path: &str) -> Option<&Loaded> {
         let stamp = self.ensure_stat(path);
-        let need = self.files.get(path).is_some_and(|entry| entry.loaded.is_none());
+        let need = self
+            .files
+            .get(path)
+            .is_some_and(|entry| entry.loaded.is_none());
         if need {
             let loaded = match stamp.kind {
                 Kind::Missing | Kind::Escape => None,
@@ -1086,7 +1092,10 @@ impl KnowledgeIndex {
 
     /// Latest published snapshot. Never blocks on a recompute.
     pub fn snapshot(&self) -> Arc<Snapshot> {
-        self.current.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Changed> {
@@ -1108,7 +1117,9 @@ impl KnowledgeIndex {
             let lower = path.to_lowercase();
             if touches_knowledge_root(&path)
                 || cited.contains(&lower)
-                || cited.iter().any(|c| hinted(std::slice::from_ref(&lower), c))
+                || cited
+                    .iter()
+                    .any(|c| hinted(std::slice::from_ref(&lower), c))
             {
                 hint.paths.insert(path);
             }
@@ -1152,7 +1163,11 @@ impl KnowledgeIndex {
 
     /// Synchronous full refresh (tool path): fresh after the caller's writes.
     pub fn refresh_now(&self) -> Arc<Snapshot> {
-        let content = self.engine.lock().expect("knowledge engine").refresh(&Hint::full());
+        let content = self
+            .engine
+            .lock()
+            .expect("knowledge engine")
+            .refresh(&Hint::full());
         self.publish(content)
     }
 
@@ -1247,8 +1262,7 @@ fn moves_head(path: &str) -> bool {
 }
 
 fn changed_node_paths(old: &Content, new: &Content) -> Vec<String> {
-    let before: HashMap<&str, &NodeView> =
-        old.nodes.iter().map(|n| (n.path.as_str(), n)).collect();
+    let before: HashMap<&str, &NodeView> = old.nodes.iter().map(|n| (n.path.as_str(), n)).collect();
     let after: HashMap<&str, &NodeView> = new.nodes.iter().map(|n| (n.path.as_str(), n)).collect();
     let mut paths: Vec<String> = after
         .iter()

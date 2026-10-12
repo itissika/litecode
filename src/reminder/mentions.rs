@@ -377,7 +377,11 @@ mod tests {
     fn lines_on_a_symbol_citation_are_reported_not_used() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
-        fs::write(dir.path().join("src/a.rs"), "fn save() {\n    let n = 1;\n}\n").unwrap();
+        fs::write(
+            dir.path().join("src/a.rs"),
+            "fn save() {\n    let n = 1;\n}\n",
+        )
+        .unwrap();
         let text = r#"[@ file="src/a.rs" symbol="fn save" lines="1-3"]"#;
         let note = build(dir.path(), text, &HashMap::new())
             .unwrap()

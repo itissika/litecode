@@ -1,6 +1,6 @@
 pub mod bash_auto_turn;
-pub mod custom_auto_turn;
 pub mod context;
+pub mod custom_auto_turn;
 pub mod exec;
 pub mod llm_resolve;
 pub mod observer;
@@ -1246,7 +1246,6 @@ impl AgentRuntime {
     }
 }
 
-
 #[cfg(test)]
 mod pending_snapshot_tests {
     use std::sync::Arc;
@@ -1257,9 +1256,7 @@ mod pending_snapshot_tests {
     use crate::types::Result;
 
     /// Mirrors `await_pending_snapshot_track`: take the join handle once, await it.
-    async fn take_and_await(
-        slot: &Mutex<Option<tokio::task::JoinHandle<Result<()>>>>,
-    ) -> bool {
+    async fn take_and_await(slot: &Mutex<Option<tokio::task::JoinHandle<Result<()>>>>) -> bool {
         let handle = slot.lock().expect("lock").take();
         let Some(handle) = handle else {
             return false;

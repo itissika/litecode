@@ -16,7 +16,6 @@ use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::guides::{self, GuideTopic};
 use crate::config::schema::{CustomToolDefinition, McpServerDefinition, ToolOrigin};
 use crate::config::settings_writer::{validate_custom_definition, validate_mcp_definition};
-use crate::tools::custom::validate_custom_tool_run;
 use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
 use crate::engines::session_search::short_session_ref;
@@ -27,6 +26,7 @@ use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus}
 use crate::tool::Tool;
 use crate::tool::availability::agent_tool_enabled;
 use crate::tool::trait_::ToolExecutionContext;
+use crate::tools::custom::validate_custom_tool_run;
 use crate::types::ToolCallResult;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, active_workspace_excludes, read_workspace_excludes,
@@ -134,7 +134,6 @@ topics:\n\
 - `excludes`\n\
 - `mcp`\n\
 - `custom_tools`";
-
 
 fn parse_validate_custom(input: &Value) -> Result<(CustomToolDefinition, Value), String> {
     let def_val = input.get("definition").ok_or_else(|| {

@@ -137,7 +137,11 @@ fn drift_compares_head_with_the_worktree_through_git2() {
 fn every_file_is_parsed_once_per_stamp() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path();
-    write(ws, "src/a.rs", "fn alpha() {}\nfn beta() {}\nmod m { fn gamma() {} }\n");
+    write(
+        ws,
+        "src/a.rs",
+        "fn alpha() {}\nfn beta() {}\nmod m { fn gamma() {} }\n",
+    );
     commit_all(ws);
     let body = "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ file=\"src/a.rs\" symbol=\"fn beta\"] \
                 [@ file=\"src/a.rs\" symbol=\"mod m › fn gamma\"] [@ file=\"src/a.rs\" lines=\"1-2\"]";
@@ -150,8 +154,14 @@ fn every_file_is_parsed_once_per_stamp() {
     assert_eq!(engine.counters.head_blob_reads, 1);
     let before = engine.counters;
     engine.refresh(&Hint::full());
-    assert_eq!(engine.counters.ts_parses, before.ts_parses, "unchanged: no parse");
-    assert_eq!(engine.counters.file_reads, before.file_reads, "unchanged: no read");
+    assert_eq!(
+        engine.counters.ts_parses, before.ts_parses,
+        "unchanged: no parse"
+    );
+    assert_eq!(
+        engine.counters.file_reads, before.file_reads,
+        "unchanged: no read"
+    );
     assert_eq!(engine.counters.head_blob_reads, before.head_blob_reads);
 }
 
@@ -197,9 +207,17 @@ fn node_body(rng: &mut Rng) -> String {
                 "[@ file=\"{file}\" symbol=\"{}\"]",
                 CHAINS[rng.pick(CHAINS.len())]
             ),
-            3 => format!("[@ file=\"{file}\" lines=\"{}-{}\"]", 1 + rng.pick(3), 3 + rng.pick(6)),
+            3 => format!(
+                "[@ file=\"{file}\" lines=\"{}-{}\"]",
+                1 + rng.pick(3),
+                3 + rng.pick(6)
+            ),
             4 => format!("[@ key=\"{}\"]", ["a", "b", "c", "gone"][rng.pick(4)]),
-            _ => format!("[@ file=\"{}\" lines=\"+{}\"]", file.to_uppercase(), rng.pick(9)),
+            _ => format!(
+                "[@ file=\"{}\" lines=\"+{}\"]",
+                file.to_uppercase(),
+                rng.pick(9)
+            ),
         };
         parts.push(part);
     }
@@ -217,11 +235,19 @@ fn incremental_equals_from_scratch_over_random_edits() {
         }
         commit_all(ws);
         for key in ["a", "b", "c"] {
-            write(ws, &format!("knowledge/{key}.md"), &node(key, &node_body(&mut rng)));
+            write(
+                ws,
+                &format!("knowledge/{key}.md"),
+                &node(key, &node_body(&mut rng)),
+            );
         }
         let mut engine = Engine::new(ws);
         let mut tick = 0;
-        assert_eq!(engine.refresh(&Hint::full()), compute_once(ws), "seed {seed} start");
+        assert_eq!(
+            engine.refresh(&Hint::full()),
+            compute_once(ws),
+            "seed {seed} start"
+        );
         for step in 0..40 {
             tick += 1;
             let mut hint = Hint::default();
@@ -286,7 +312,10 @@ fn the_turn_reads_the_snapshot_only() {
     write(
         ws,
         "knowledge/n.md",
-        &node("n", "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ key=\"gone\"]"),
+        &node(
+            "n",
+            "[@ file=\"src/a.rs\" symbol=\"fn alpha\"] [@ key=\"gone\"]",
+        ),
     );
     let index = start(ws);
     let deadline = std::time::Instant::now() + Duration::from_secs(20);

@@ -1,0 +1,43 @@
+{
+  "id": "ISSUE-035",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [],
+  "basis": [
+    "WP-026"
+  ],
+  "title": "compact：Compact 已落库后 reload 失败，仍回滚内存并发 Failed 事件",
+  "promise": "compact 失败时内存与库一致，生命周期事件如实反映结果。",
+  "actual": "mutate_blocking(Compact) 成功后若 working_set_blocking 失败，rows 回滚到压缩前 snapshot 并 emit Failed；库已是压缩后状态，事件与内存都与库不一致（下一次 sync_turn_working 才靠 cursor 变动重载自愈）。另：expected_revision 在提交时现取且 unwrap_or(0)，乐观锁形同虚设。",
+  "evidence": [
+    {
+      "path": "src/context_pipeline/compact.rs:283-323",
+      "note": "persist 成功→reload Err→*rows=snapshot + Failed",
+      "commit": ""
+    },
+    {
+      "path": "src/context_pipeline/compact.rs:286",
+      "note": "expected_revision 现取 + unwrap_or(0)",
+      "commit": ""
+    }
+  ],
+  "repro": "注入 working_set_blocking 在 Compact 后报错；观察 CompactionStage::Failed 与库中 summary 行并存。",
+  "reporter": "context",
+  "owner": "context",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T15:45:00+08:00",
+      "by": "context",
+      "change": "WP-026 审计新建（原拟 ISSUE-031 文件丢失，改号）"
+    },
+    {
+      "ts": "2026-10-12T15:50:00+08:00",
+      "by": "runtime",
+      "change": "WP-026 交叉审（Runtime）：确认 reload 失败回滚与事件不一致成立；补充 Compact mutation 带 expected_prefix（compact.rs:291），revision 现取（286）的竞态危害有限，建议维持 bug 但非阻断。"
+    }
+  ]
+}

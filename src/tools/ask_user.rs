@@ -332,7 +332,11 @@ fn format_answers(questions: &[AskQuestion], answers: &HashMap<String, AskAnswer
                 })
                 .collect();
             lines.push(format!("[{}] selected: {}", q.id, labels.join(", ")));
-            lines.push(format!("[{}] selected_ids: {}", q.id, ans.selected.join(",")));
+            lines.push(format!(
+                "[{}] selected_ids: {}",
+                q.id,
+                ans.selected.join(",")
+            ));
         }
         if let Some(text) = ans.free_text.as_deref() {
             lines.push(format!("[{}] free_text: {text}", q.id));
@@ -389,8 +393,16 @@ mod tests {
             ]
         }));
         assert_eq!(result.level, ToolSignalLevel::Ok);
-        assert!(result.content.contains("[q0] selected_ids: ship"), "{}", result.content);
-        assert!(result.content.contains("[q0] free_text: lgtm"), "{}", result.content);
+        assert!(
+            result.content.contains("[q0] selected_ids: ship"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("[q0] free_text: lgtm"),
+            "{}",
+            result.content
+        );
     }
 
     #[test]
@@ -437,9 +449,21 @@ mod tests {
             ]
         }));
         assert_eq!(result.level, ToolSignalLevel::Ok);
-        assert!(result.content.contains("[color] selected_ids: blue"), "{}", result.content);
-        assert!(result.content.contains("[size] selected_ids: m,l"), "{}", result.content);
-        assert!(result.content.contains("[size] free_text: prefer M"), "{}", result.content);
+        assert!(
+            result.content.contains("[color] selected_ids: blue"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("[size] selected_ids: m,l"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("[size] free_text: prefer M"),
+            "{}",
+            result.content
+        );
     }
 
     #[test]

@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "tools_version": 12,
-  "updated_at": "2026-10-12T03:30:32.869Z",
+  "tools_version": 15,
+  "updated_at": "2026-10-12T10:49:25.000Z",
   "hot_reload": true,
   "tools": [
     {
       "id": "ops.validate_board",
-      "version": 5,
-      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败",
+      "version": 8,
+      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现",
       "invoke": "node .litecode/ops/tools/validate_all.mjs",
       "required_for": [
         "WP done",
@@ -27,8 +27,8 @@
     },
     {
       "id": "ops.wp_gate",
-      "version": 8,
-      "purpose": "检查工作包是否可推进；通过后写回 board.json、记 status_entered_at（进 in_progress/review 起算）、append status_change log、刷新 board.md「WP 状态」、失败回滚；--dry-run 只检查",
+      "version": 10,
+      "purpose": "检查工作包是否可推进；通过后写回 board.json、记 status_entered_at（进 in_progress/review 起算）、append status_change log、刷新 board.md「WP 状态」、失败回滚；--dry-run 只检查；v13 新模型包（有 parent/goal/history）进 in_progress 须有本轮 approve，推 review/done 须子包全封，done 只能 approver（--source）推；老 WP 行为不变；v14 新模型子包进 in_progress 还要求父包方案已批",
       "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>] [--kb-nodes k1,k2]",
       "required_for": [
         "WP status 变更"
@@ -37,8 +37,8 @@
     },
     {
       "id": "ops.tick",
-      "version": 7,
-      "purpose": "事件/tick：扫描需求板与 WP；刷新 board.md「WP 状态」；工作时段内对 in_progress/review 超 1h 的 WP emit team_ops.wp_timeout（无未封超时则安静）；v11 起每轮检查 wp_watch 心跳，缺失或超 15 分钟 emit 一条 team_ops.watcher_down（未 ack 期间不重发）",
+      "version": 10,
+      "purpose": "事件/tick：扫描需求板与 WP；刷新 board.md「WP 状态」；工作时段内对 in_progress/review 超 1h 的 WP emit team_ops.wp_timeout（无未封超时则安静）；v11 起每轮检查 wp_watch 心跳，缺失或超 15 分钟 emit 一条 team_ops.watcher_down（未 ack 期间不重发）；v13 awaiting_approval 也计时，输出 awaiting_approval_wp；新模型包超时先发 approver，5 分钟未 ack 升级到父包 approver，顶层只到 gm（不含 andy 级）；v14 两种等待（awaiting_approval 方案待批、review 待验收）都计时并按层级升级，顶层止于 gm；v15 每条父子链只发一条超时（叫离卡点最近、真正要动手的人；有未封子包的 in_progress 父包不算卡点）；matter 去重，已 ack 的 60 分钟内不重发（老 WP 同样）；watcher 健康时只报告不 emit；watcher 挂了自动 start 并记 team_ops.watcher_restarted（--no-autostart 关闭）",
       "invoke": "node .litecode/ops/tools/tick.mjs [--wp WP-xxx] [--force-timeout-scan] [--watcher-stale-min N] [--no-watcher-check]",
       "required_for": [
         "总经理/team-ops 每轮开工前"
@@ -57,7 +57,7 @@
     },
     {
       "id": "ops.board",
-      "version": 11,
+      "version": 14,
       "purpose": "打开工具聚合面板（最近更新/教程/版本）",
       "invoke": "type .litecode/ops/tools/board.md  # or Read",
       "required_for": [
@@ -68,8 +68,8 @@
     },
     {
       "id": "ops.emit_event",
-      "version": 2,
-      "purpose": "写入事件总线 inbox",
+      "version": 3,
+      "purpose": "写入事件总线 inbox；v15 加锁+fsync 原子写，可选 --target；可投递类型写 outbox",
       "invoke": "node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]",
       "required_for": [
         "跨角色通知"
@@ -78,8 +78,8 @@
     },
     {
       "id": "ops.ack_event",
-      "version": 2,
-      "purpose": "确认已消费事件",
+      "version": 3,
+      "purpose": "确认已消费事件；v15 加锁+fsync 原子写；未知 id 明确报错",
       "invoke": "node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id>",
       "required_for": [
         "事件闭环"
@@ -100,8 +100,8 @@
     },
     {
       "id": "ops.wp_watch",
-      "version": 1,
-      "purpose": "常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起",
+      "version": 3,
+      "purpose": "常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起；v13 回调体增加 level/parent/path/target/escalated（旧字段不变）；v15 事件先 fsync 落盘（inbox+events/outbox.jsonl）再发，启动/每轮排空 outbox，重启不丢；所有告警类型（超时、方案待批、待验收、watcher_down/restarted）都走 webhook，payload 带 target/type/actor/merged/matter_key；state/心跳/日志 fsync",
       "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
       "required_for": [
         "WP 超时回调触发",
@@ -129,6 +129,58 @@
       "required_for": [
         "新节点起草",
         "WP-013"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.wp",
+      "version": 3,
+      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘",
+      "invoke": "node .litecode/ops/tools/wp.mjs <new|fill|submit|approve|start|deliver|reject|close|set|tree|summary|history> --as <agent_id|andy> [...]",
+      "required_for": [
+        "新模型 WP 填写→请审→批准→执行→封包",
+        "WP-019/WP-020"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.wp.test",
+      "version": 2,
+      "purpose": "ops.wp 测试：临时副本里跑（跑完清理），剥离 webhook env；覆盖 schema、权限、方案审批、父包门禁、完工验收、超时升级、老 WP 兼容、回滚、三层流程 Andy→GM→中层→域",
+      "invoke": "node .litecode/ops/tools/wp.test.mjs [--json] [--keep]",
+      "required_for": [
+        "ops.wp 改动后回归"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.issue_new",
+      "version": 1,
+      "purpose": "加锁分配 issue 编号：max(现有文件, git HEAD, issues/.reserved.json)+1，独占创建（wx，绝不覆盖），写首条 history",
+      "invoke": "node .litecode/ops/tools/issue_new.mjs --as <agent_id> --title T --domain D [--grade G] [--layer L] [--owner O] [--wp WP-x] [--json-file F] [--dry-run]",
+      "required_for": [
+        "新建 issue（禁止手写编号）"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.toolchain_check",
+      "version": 1,
+      "purpose": "rust 工具链体检：继承 env / bash -c / bash -lc / env -i 四种 shell 下 cargo -V + rustup active-toolchain，任一失败 exit 1",
+      "invoke": "node .litecode/ops/tools/toolchain_check.mjs [--json] [--wp WP-x]",
+      "required_for": [
+        "cargo 报 no default toolchain 时自查",
+        "系统依赖变更前后"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.ops_harden.test",
+      "version": 1,
+      "purpose": "WP-032 测试：链合并、60 分钟重提醒、单一发事件方、升级、并发写、重启不丢（本地假 webhook）、issue 分配、toolchain_check、老 WP 兼容 + 今日场景回放",
+      "invoke": "node .litecode/ops/tools/ops_harden.test.mjs [--json] [--keep]",
+      "required_for": [
+        "ops 加固回归"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
     }

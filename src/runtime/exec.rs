@@ -44,7 +44,11 @@ impl AgentDeps for AgentRuntime {
             self.build_model_request(&instructions, view.items, view.item_seqs, token_count)?;
         build_lap.done();
         // Turn entry -> first request leaves this process (once per turn).
-        latency::report_since("turn_to_first_request", self.latency_turn_start.take(), None);
+        latency::report_since(
+            "turn_to_first_request",
+            self.latency_turn_start.take(),
+            None,
+        );
         // Whole provider round trip incl. streaming; not part of our overhead.
         let _llm_lap = latency::lap_step("call_model.llm", step);
 
@@ -494,10 +498,7 @@ impl AgentRuntime {
         self.restore_custom_mailbox(custom_notices);
     }
 
-    fn restore_custom_mailbox(
-        &self,
-        notices: &[crate::tools::custom_hub::CustomToolExitNotice],
-    ) {
+    fn restore_custom_mailbox(&self, notices: &[crate::tools::custom_hub::CustomToolExitNotice]) {
         if notices.is_empty() {
             return;
         }

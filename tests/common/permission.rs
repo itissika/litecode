@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use litecode::permission::{AskOutcome, AskPrompt, AskReply, PermissionSink, RecordingPermissionSink};
+use litecode::permission::{
+    AskOutcome, AskPrompt, AskReply, PermissionSink, RecordingPermissionSink,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Integration-test sink: auto-approves permission prompts (not used in production).

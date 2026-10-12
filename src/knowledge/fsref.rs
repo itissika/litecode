@@ -194,7 +194,14 @@ mod tests {
         let mut l = Listings::default();
         assert_eq!(lookup(dir.path(), "src/a.rs", &mut l).kind, Kind::File);
         assert_eq!(lookup(dir.path(), "src", &mut l).kind, Kind::Dir);
-        for bad in ["SRC/a.rs", "src/A.rs", "src/a.rs.", "src/a.rs ", "../a.rs", "src/"] {
+        for bad in [
+            "SRC/a.rs",
+            "src/A.rs",
+            "src/a.rs.",
+            "src/a.rs ",
+            "../a.rs",
+            "src/",
+        ] {
             assert_eq!(lookup(dir.path(), bad, &mut l).kind, Kind::Missing, "{bad}");
         }
         assert_eq!(lookup(dir.path(), "src\\a.rs", &mut l).kind, Kind::File);
@@ -206,7 +213,10 @@ mod tests {
         fs::write(dir.path().join("t.rs"), "a\nb\n").unwrap();
         fs::write(dir.path().join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
         fs::create_dir_all(dir.path().join("d")).unwrap();
-        assert_eq!(read_text_once(dir.path(), "t.rs"), TextRead::Text("a\nb\n".into()));
+        assert_eq!(
+            read_text_once(dir.path(), "t.rs"),
+            TextRead::Text("a\nb\n".into())
+        );
         assert_eq!(
             read_text_once(dir.path(), "bin.dat"),
             TextRead::Unreadable(Unreadable::NotText)

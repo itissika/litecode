@@ -1,0 +1,43 @@
+{
+  "id": "ISSUE-038",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "workspace-shared-substrate",
+    "workspace-sandbox"
+  ],
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "basis": [
+    "A5"
+  ],
+  "title": "[严重度:低] rename_path 跨盘覆盖已有文件直接报 CrossesDevices 失败（修复另开包）",
+  "promise": "rename_path(overwrite=true) 跨设备时应回退为复制+删除（move_via_copy），与目标不存在时的跨盘移动行为一致。",
+  "actual": "目标为已有文件时先走 is_file_replace → replace_file（仍是 rename），EXDEV 直接以 Io(CrossesDevices) 返回，排在其后的 is_cross_device 回退分支永不可达；源与原目标均完好，不丢数据但操作不可用。修复另开包（WP-028 只审不修）。",
+  "evidence": [
+    {
+      "path": "src/workspace/service.rs",
+      "symbol": "WorkspaceService::rename_path",
+      "lines": "347-357",
+      "commit": "c6b24df"
+    },
+    {
+      "path": "tests/wp028_probe_s1_xdev_move.rs",
+      "test": "probe_s1_cross_device_overwrite_succeeds",
+      "commit": "c6b24df",
+      "note": "未提交探针，#[ignore]；workspace 根 /，源 /dev/shm(tmpfs)，目标仓库 .tmp(ext4)"
+    }
+  ],
+  "repro": "PATH=/home/box/.cargo/bin:$PATH HOME=/workspace/litecode/.tmp/home timeout 600 cargo test --test wp028_probe_s1_xdev_move -- --ignored </dev/null（需要 /dev/shm 与仓库不同文件系统）",
+  "history": [
+    {
+      "ts": "2026-10-12T16:05:00+08:00",
+      "by": "ide",
+      "change": "WP-028 探针复现，开单；修复另开包"
+    }
+  ]
+}

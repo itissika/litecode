@@ -435,10 +435,9 @@ mod tests {
 
     #[test]
     fn resolve_returns_literal_public_ips() {
-        let ips = resolve_and_validate_public_http_url(
-            &url::Url::parse("http://8.8.8.8/").unwrap(),
-        )
-        .unwrap();
+        let ips =
+            resolve_and_validate_public_http_url(&url::Url::parse("http://8.8.8.8/").unwrap())
+                .unwrap();
         assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
     }
 

@@ -169,6 +169,8 @@
           },
           "status": {
             "enum": [
+              "drafting",
+              "awaiting_approval",
               "backlog",
               "ready",
               "in_progress",
@@ -227,7 +229,95 @@
               "string",
               "null"
             ],
-            "description": "ISO8601 when WP last entered in_progress or review; null when not in those statuses"
+            "description": "ISO8601 when WP last entered in_progress, review or awaiting_approval (v13); null otherwise"
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "v13: parent WP id; null/absent = top-level"
+          },
+          "goal": {
+            "type": "string",
+            "description": "v13: goal given by the parent level"
+          },
+          "approver": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "v13: upper-level approver (agent id or andy); falls back to reviewer"
+          },
+          "content": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "text"
+            ],
+            "properties": {
+              "kind": {
+                "enum": [
+                  "direct",
+                  "split"
+                ]
+              },
+              "text": {
+                "type": "string"
+              }
+            }
+          },
+          "history": {
+            "type": "array",
+            "description": "v13: append-only approval history",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ts",
+                "actor",
+                "action"
+              ],
+              "properties": {
+                "ts": {
+                  "type": "string"
+                },
+                "actor": {
+                  "type": "string"
+                },
+                "action": {
+                  "enum": [
+                    "create",
+                    "fill",
+                    "submit",
+                    "approve",
+                    "start",
+                    "deliver",
+                    "reject",
+                    "return",
+                    "reopen",
+                    "close",
+                    "set"
+                  ]
+                },
+                "note": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "to": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
           }
         }
       }

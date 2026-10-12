@@ -605,6 +605,10 @@ pub struct JsonRpcResponse {
 pub struct JsonRpcErrorBody {
     pub code: i64,
     pub message: String,
+    /// Optional structured detail (`StructuredError`) for clients that need
+    /// a machine-readable code; the numeric `code` stays transport-level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// Transport-level operations that are not JSON-RPC methods.

@@ -108,10 +108,7 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
             PermissionSurface::Preset
         };
         let series_id = tool.suite.clone();
-        let series_label = tool
-            .suite_label
-            .clone()
-            .or_else(|| tool.suite.clone());
+        let series_label = tool.suite_label.clone().or_else(|| tool.suite.clone());
         out.push(tool_card(
             tool.name,
             AvailableKind::Custom,

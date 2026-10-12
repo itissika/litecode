@@ -268,18 +268,19 @@ fn declaration_issues(
     key_counts: &HashMap<String, usize>,
 ) -> Vec<Issue> {
     let mut issues = Vec::new();
-    let mut push = |severity, code: &str, message: String, reference: Option<String>, args: Args| {
-        issues.push(Issue {
-            node_id: node.id.to_string(),
-            node_path: node.path.to_string(),
-            severity,
-            code: code.into(),
-            message,
-            reference,
-            ref_key: None,
-            args,
-        })
-    };
+    let mut push =
+        |severity, code: &str, message: String, reference: Option<String>, args: Args| {
+            issues.push(Issue {
+                node_id: node.id.to_string(),
+                node_path: node.path.to_string(),
+                severity,
+                code: code.into(),
+                message,
+                reference,
+                ref_key: None,
+                args,
+            })
+        };
     if let Some(raw) = node.invalid_status {
         push(
             Severity::Error,

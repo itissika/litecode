@@ -189,11 +189,27 @@ pub fn validate_custom_tool_run(
     }
 }
 
+type WorkerSpawner = fn(String, Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()>;
+
+fn spawn_os_thread(name: String, f: Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()> {
+    std::thread::Builder::new().name(name).spawn(f).map(|_| ())
+}
+
 fn start_background(
     config: CustomToolDefinition,
     hub: Arc<CustomToolHub>,
     input: Value,
     execution: ToolExecutionContext,
+) -> ToolCallResult {
+    start_background_with(config, hub, input, execution, spawn_os_thread)
+}
+
+fn start_background_with(
+    config: CustomToolDefinition,
+    hub: Arc<CustomToolHub>,
+    input: Value,
+    execution: ToolExecutionContext,
+    spawner: WorkerSpawner,
 ) -> ToolCallResult {
     let job_id = ulid::Ulid::new().to_string();
     let session_id = execution.session_id.clone();
@@ -208,9 +224,9 @@ fn start_background(
     let tool_name2 = tool_name.clone();
     let job_id2 = job_id.clone();
 
-    let _ = std::thread::Builder::new()
-        .name(format!("custom-tool-{job_id}"))
-        .spawn(move || {
+    let spawned = spawner(
+        format!("custom-tool-{job_id}"),
+        Box::new(move || {
             let result = run_sync_with_lifecycle(
                 &config,
                 &input,
@@ -220,11 +236,9 @@ fn start_background(
                 },
                 Some(job_id2.as_str()),
             );
-            let outcome = if result.content.contains("timed out") {
-                CustomToolOutcome::Error {
-                    message: result.content,
-                }
-            } else if result.content.contains("cancelled") || job_cancel.is_cancelled() {
+            // Classify on our own lifecycle signals only: the child's stdout may
+            // legitimately contain words like "cancelled" / "timed out".
+            let outcome = if job_cancel.is_cancelled() {
                 CustomToolOutcome::Cancelled
             } else if result.level == ToolSignalLevel::Error {
                 CustomToolOutcome::Error {
@@ -243,7 +257,15 @@ fn start_background(
                 outcome,
                 revision_hint: None,
             });
-        });
+        }),
+    );
+    if let Err(e) = spawned {
+        // No worker → no notice would ever arrive; release the job and fail now.
+        hub.abandon_job(&job_id);
+        return ToolCallResult::error(format!(
+            "failed to start background worker for custom tool '{tool_name}': {e}"
+        ));
+    }
 
     ToolCallResult::ok(format!(
         "started custom tool '{tool_name}' as background job `{job_id}` (call_id `{call_id}`).\nResult arrives later as reminder/custom_tool_settled (CustomToolSettled); do not invent a FunctionCallOutput."
@@ -281,6 +303,13 @@ fn run_sync_with_lifecycle(
     if let Some(job_id) = job_id {
         cmd.env(ENV_JOB_ID, job_id);
     }
+    // Own process group so kill_child_tree can reach grandchildren
+    // (e.g. `sh -c "a | b"`), matching terminal/pty.rs group kill.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -292,17 +321,30 @@ fn run_sync_with_lifecycle(
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(e) = stdin.write_all(input_json.as_bytes()) {
-            let _ = kill_child_tree(&mut child);
-            return ToolCallResult::error(format!("stdin write failed: {e}"));
-        }
-        drop(stdin);
-    }
+    // Feed stdin on its own thread so a child that writes a lot of output
+    // before reading its input cannot deadlock against us (and so the
+    // timeout/cancel loop below always runs). EPIPE is tolerated inside.
+    let stdin_writer = child
+        .stdin
+        .take()
+        .map(|stdin| spawn_stdin_writer(stdin, input_json.into_bytes()));
 
     let timeout = Duration::from_secs(config.timeout.max(1));
     match wait_child_cancellable(&mut child, &execution.cancel, timeout) {
         WaitEnd::Finished(output) => {
+            // Child exited, so its stdin read end is closed (unless a
+            // grandchild inherited it) and the writer has finished or hit EPIPE.
+            // On Cancelled/TimedOut the writer is left detached: it unblocks
+            // with EPIPE once the kill below closes the pipe.
+            let stdin_result = stdin_writer
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err(std::io::Error::other("stdin writer panicked")))
+                })
+                .unwrap_or(Ok(()));
+            if let Err(e) = stdin_result {
+                return ToolCallResult::error(format!("stdin write failed: {e}"));
+            }
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             match output.status.code() {
@@ -325,6 +367,9 @@ fn run_sync_with_lifecycle(
                 )),
             }
         }
+        WaitEnd::WaitFailed(e) => {
+            ToolCallResult::error(format!("custom tool '{}' wait failed: {e}", config.name))
+        }
         WaitEnd::Cancelled => {
             let _ = kill_child_tree(&mut child);
             let _ = child.wait();
@@ -341,8 +386,29 @@ fn run_sync_with_lifecycle(
     }
 }
 
+/// Write the whole input to the child's stdin, then close it.
+///
+/// `BrokenPipe` means the child exited or closed stdin without reading all of
+/// it; that is not a tool failure (exit status decides). Windows reports
+/// ERROR_BROKEN_PIPE / ERROR_NO_DATA, which std maps to the same
+/// `ErrorKind::BrokenPipe`. Any other error is returned.
+fn spawn_stdin_writer(
+    mut stdin: std::process::ChildStdin,
+    input: Vec<u8>,
+) -> std::thread::JoinHandle<std::io::Result<()>> {
+    std::thread::spawn(move || {
+        let r = stdin.write_all(&input);
+        drop(stdin);
+        match r {
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            other => other,
+        }
+    })
+}
+
 enum WaitEnd {
     Finished(std::process::Output),
+    WaitFailed(String),
     Cancelled,
     TimedOut,
 }
@@ -356,14 +422,20 @@ fn wait_child_cancellable(
     let stderr = child.stderr.take();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
+        // Drain stderr concurrently: reading the two pipes one after another
+        // stalls a child that fills the stderr pipe before closing stdout.
+        let err_reader = std::thread::spawn(move || {
+            let mut err = Vec::new();
+            if let Some(mut s) = stderr {
+                let _ = s.read_to_end(&mut err);
+            }
+            err
+        });
         let mut out = Vec::new();
-        let mut err = Vec::new();
         if let Some(mut s) = stdout {
             let _ = s.read_to_end(&mut out);
         }
-        if let Some(mut s) = stderr {
-            let _ = s.read_to_end(&mut err);
-        }
+        let err = err_reader.join().unwrap_or_default();
         let _ = tx.send((out, err));
     });
 
@@ -386,12 +458,15 @@ fn wait_child_cancellable(
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
             Err(e) => {
-                let status = child.wait().unwrap_or_else(|_| {
-                    // Last resort: synthesize a failed wait by re-checking.
-                    child.try_wait().ok().flatten().unwrap_or_else(|| {
-                        panic!("custom tool wait failed: {e}")
-                    })
-                });
+                let status = match child.wait() {
+                    Ok(status) => status,
+                    // Never panic here: in a background worker that would lose
+                    // the exit notice forever. Report the failure instead.
+                    Err(_) => {
+                        let _ = kill_child_tree(child);
+                        return WaitEnd::WaitFailed(e.to_string());
+                    }
+                };
                 let (out, err) = rx.recv().unwrap_or_default();
                 return WaitEnd::Finished(std::process::Output {
                     status,
@@ -421,8 +496,9 @@ fn kill_child_tree(child: &mut Child) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         let _ = child;
+        // Negative pid = the whole group created via process_group(0).
         unsafe {
-            libc::kill(pid as i32, libc::SIGKILL);
+            libc::kill(-(pid as i32), libc::SIGKILL);
         }
         Ok(())
     }
@@ -579,8 +655,7 @@ mod tests {
 
     #[test]
     fn level_warning_envelope_sets_warning_signal() {
-        let result =
-            result_from_stdout(r#"{"content":"wrote 3 of 10","level":"warning"}"#.into());
+        let result = result_from_stdout(r#"{"content":"wrote 3 of 10","level":"warning"}"#.into());
         let wire = result.finalize_signals();
         assert_eq!(wire.content, "Warning: wrote 3 of 10");
     }
@@ -605,8 +680,7 @@ mod tests {
 
     #[test]
     fn envelope_hint_key_is_ignored() {
-        let result =
-            result_from_stdout(r#"{"content":"ok","level":"ok","hint":"nope"}"#.into());
+        let result = result_from_stdout(r#"{"content":"ok","level":"ok","hint":"nope"}"#.into());
         assert_eq!(result.level, ToolSignalLevel::Ok);
         assert!(result.hint.is_none());
     }
@@ -635,6 +709,209 @@ mod tests {
     fn malformed_envelope_hard_fails() {
         let result = result_from_stdout(r#"{"level":123}"#.into());
         assert_eq!(result.level, ToolSignalLevel::Error);
+    }
+
+    /// WP-018: child that never reads stdin must not fail with Broken pipe.
+    /// 1 MiB input exceeds the pipe buffer, so the write deterministically
+    /// hits EPIPE once the child exits.
+    #[cfg(unix)]
+    #[test]
+    fn child_ignoring_stdin_is_not_a_broken_pipe_failure() {
+        use crate::tool::trait_::ToolExecutionContext;
+        let def = CustomToolDefinition {
+            name: "no_stdin".into(),
+            description: "ignores stdin".into(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+            command: "sh".into(),
+            args: vec!["-c".into(), "exec 0<&-; echo no-stdin-marker".into()],
+            timeout: 15,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        };
+        let big = "x".repeat(1 << 20);
+        let exec = ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: std::env::temp_dir(),
+            call_id: "call-np".into(),
+            cancel: CancellationToken::new(),
+            output_limit: 8_000,
+            session_id: "sess-np".into(),
+            session: None,
+        };
+        let result = run_sync_with_lifecycle(&def, &serde_json::json!({ "pad": big }), &exec, None);
+        assert!(
+            !result.content.contains("Broken pipe"),
+            "EPIPE must not surface: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("no-stdin-marker"),
+            "{}",
+            result.content
+        );
+    }
+
+    fn sh_def(name: &str, script: &str, timeout: u64) -> CustomToolDefinition {
+        CustomToolDefinition {
+            name: name.into(),
+            description: name.into(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+            command: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            timeout,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        }
+    }
+
+    fn test_exec(cancel: CancellationToken) -> crate::tool::trait_::ToolExecutionContext {
+        crate::tool::trait_::ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: std::env::temp_dir(),
+            call_id: "call-t".into(),
+            cancel,
+            output_limit: 8_000,
+            session_id: "sess-t".into(),
+            session: None,
+        }
+    }
+
+    /// Child writes 1 MiB to stdout AND 1 MiB to stderr before reading its
+    /// 1 MiB stdin. Old code deadlocked (sync stdin write / sequential reads)
+    /// until timeout.
+    #[cfg(unix)]
+    #[test]
+    fn large_output_before_reading_stdin_does_not_deadlock() {
+        let def = sh_def(
+            "big_io",
+            "head -c 1048576 /dev/zero | tr '\\0' a; head -c 1048576 /dev/zero >&2; cat >/dev/null; echo",
+            20,
+        );
+        let big = "x".repeat(1 << 20);
+        let start = Instant::now();
+        let result = run_sync_with_lifecycle(
+            &def,
+            &serde_json::json!({ "pad": big }),
+            &test_exec(CancellationToken::new()),
+            None,
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "took {:?}",
+            start.elapsed()
+        );
+        assert_ne!(
+            result.level,
+            ToolSignalLevel::Error,
+            "{}",
+            &result.content[..200.min(result.content.len())]
+        );
+    }
+
+    /// Background outcome must not be classified by words in the child's output.
+    #[tokio::test]
+    async fn background_output_mentioning_cancelled_is_ok() {
+        let hub = Arc::new(CustomToolHub::new());
+        let tool = CustomTool::new(
+            sh_def(
+                "talky",
+                "echo 'request cancelled; upload timed out (retrying)'",
+                15,
+            ),
+            Arc::clone(&hub),
+        );
+        let mut exec = test_exec(CancellationToken::new());
+        exec.session_id = "sess-talky".into();
+        tool.execute(serde_json::json!({ "run_in_background": true }), exec)
+            .await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let notices = loop {
+            let n = hub.take_mailbox("sess-talky");
+            if !n.is_empty() {
+                break n;
+            }
+            assert!(Instant::now() < deadline, "no notice");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        match &notices[0].outcome {
+            CustomToolOutcome::Ok { output } => assert!(output.contains("cancelled")),
+            other => panic!("misclassified: {other:?}"),
+        }
+    }
+
+    /// Timeout kill must reach grandchildren (process group kill).
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_grandchild_process() {
+        let marker = std::env::temp_dir().join(format!("lc-gc-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 3; touch {}) & wait", marker.display());
+        let def = sh_def("gc", &script, 1);
+        let result = run_sync_with_lifecycle(
+            &def,
+            &serde_json::json!({}),
+            &test_exec(CancellationToken::new()),
+            None,
+        );
+        assert!(result.content.contains("timed out"), "{}", result.content);
+        std::thread::sleep(Duration::from_secs(4));
+        assert!(!marker.exists(), "grandchild survived the kill");
+    }
+
+    /// B5: a failing wait (child reaped elsewhere → ECHILD) returns an error, no panic.
+    #[cfg(unix)]
+    #[test]
+    fn wait_failure_returns_error_instead_of_panicking() {
+        let mut child = StdCommand::new("sh")
+            .args(["-c", "exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut st = 0;
+        unsafe {
+            libc::waitpid(child.id() as i32, &mut st, 0);
+        }
+        let end = wait_child_cancellable(
+            &mut child,
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+        );
+        assert!(matches!(end, WaitEnd::WaitFailed(_)));
+    }
+
+    /// B6: worker spawn failure releases the job and reports an error.
+    #[test]
+    fn background_spawn_failure_is_reported_and_job_released() {
+        fn failing(_: String, _: Box<dyn FnOnce() + Send + 'static>) -> std::io::Result<()> {
+            Err(std::io::Error::other("no threads"))
+        }
+        let hub = Arc::new(CustomToolHub::new());
+        let mut exec = test_exec(CancellationToken::new());
+        exec.session_id = "sess-sf".into();
+        let result = start_background_with(
+            sh_def("sf", "true", 5),
+            Arc::clone(&hub),
+            serde_json::json!({}),
+            exec,
+            failing,
+        );
+        assert_eq!(result.level, ToolSignalLevel::Error, "{}", result.content);
+        assert!(result.content.contains("failed to start background worker"));
+        let job_id = result.content.split('`').nth(1);
+        assert!(job_id.is_none(), "must not announce a job id");
+        // Nothing left in flight for this session.
+        hub.cancel_session("sess-sf");
+        assert!(hub.take_mailbox("sess-sf").is_empty());
     }
 
     #[tokio::test]

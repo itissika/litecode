@@ -199,7 +199,6 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     );
 }
 
-
 /// ISSUE-013 / g2 behavior: CompactPolicy::compact_now (pipeline path) must leave
 /// the reader working set identical to the fold projection — reload from fold
 /// after SessionMutation::Compact, not an in-memory summary+kept rebuild.

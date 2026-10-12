@@ -1,4 +1,4 @@
-// ops.wp_watch (v11) — resident WP-timeout watcher with callback delivery.
+// ops.wp_watch (v11; v13 payload adds hierarchy/escalation fields; v15 durable outbox delivery, all alert types, payload type/target/actor/merged/matter_key) — resident WP-timeout watcher with callback delivery.
 //   start | stop | status | supervise | run | once     (see tools/board.md「ops.wp_watch 用法」)
 // Env (never written to repo / git config):
 //   LITECODE_WP_WEBHOOK_URL  callback URL (POST JSON)
@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   loadRegistry, printVersionHeader, opsRoot, recordTrace, scanAndEmitWpTimeouts,
-  watchPaths, ensureTmpDir, writeJsonAtomic, readJsonOr, isWatchPidAlive,
+  watchPaths, ensureTmpDir, writeJsonAtomic, readJsonOr, isWatchPidAlive, webhookPayloadOf, readOutbox, appendLineDurable,
 } from "./_lib.mjs";
 
 const TOOL = "ops.wp_watch";
@@ -37,7 +37,7 @@ function log(level, msg) {
   const line = `${new Date().toISOString()} [${ROLE} ${process.pid}] ${level} ${msg}\n`;
   try {
     try { if (fs.statSync(P.log).size > LOG_MAX) fs.renameSync(P.log, P.log + ".1"); } catch {}
-    fs.appendFileSync(P.log, line);
+    appendLineDurable(P.log, line);
   } catch {}
   if (ROLE === "ctl" || cmd === "once") process.stderr.write(line);
 }
@@ -66,14 +66,7 @@ function loadState() {
   return { delivered: s.delivered || {}, retry: s.retry || {}, updated_at: s.updated_at || null };
 }
 function saveState(s) { s.updated_at = new Date().toISOString(); writeJsonAtomic(P.state, s); }
-function payloadOf(ev) {
-  const m = ev.meta || {};
-  return {
-    event_id: ev.id, wp_id: ev.wp, status: m.status ?? null, age_minutes: m.age_minutes ?? null,
-    owner: m.owner ?? null, reviewer: m.reviewer ?? null, status_entered_at: m.status_entered_at ?? null,
-    summary: ev.summary, ts: ev.ts,
-  };
-}
+function payloadOf(ev) { return webhookPayloadOf(ev); } // v13: shared, adds level/parent/path/target/escalated
 async function post(url, key, payload) {
   const body = JSON.stringify(payload);
   const t = String(Math.floor(Date.now() / 1000));
@@ -94,41 +87,46 @@ async function post(url, key, payload) {
   try { await r.arrayBuffer(); } catch {}
   return r.status;
 }
+// v15 (WP-032): delivery source is events/outbox.jsonl — every deliverable event is fsynced to inbox + outbox
+// BEFORE it can be POSTed, so a send can never exist without a durable record (cf. E-1791792744885-WP022).
+// On start and every cycle, all outbox entries not yet delivered and not acked are drained (restart-safe).
 async function cycle() {
   cycleNo++;
   const now = new Date();
   const scan = scanAndEmitWpTimeouts(ops, { force: FORCE, now, source: "ops.wp_watch" });
   const box = JSON.parse(fs.readFileSync(path.join(ops, "events", "inbox.json"), "utf8"));
+  const byId = new Map(box.inbox.map((e) => [e.id, e]));
   const state = loadState();
-  const pending = box.inbox.filter((e) => e.type === "team_ops.wp_timeout" && (!e.acked || e.acked.length === 0) && !state.delivered[e.id]);
+  const pending = readOutbox(ops).map((o) => byId.get(o.event_id)).filter((e) => e && (!e.acked || e.acked.length === 0) && !state.delivered[e.id]);
   const url = process.env.LITECODE_WP_WEBHOOK_URL, key = process.env.LITECODE_WP_WEBHOOK_KEY;
   let sent = 0, failed = 0, deferred = 0;
   if (pending.length && (!url || !key)) {
-    log("WARN", `delivery skipped: ${!url ? "LITECODE_WP_WEBHOOK_URL" : ""}${!url && !key ? "+" : ""}${!key ? "LITECODE_WP_WEBHOOK_KEY" : ""} unset; ${pending.length} undelivered wp_timeout event(s): ${pending.map((e) => e.id).join(",")}`);
+    log("WARN", `delivery skipped: ${!url ? "LITECODE_WP_WEBHOOK_URL" : ""}${!url && !key ? "+" : ""}${!key ? "LITECODE_WP_WEBHOOK_KEY" : ""} unset; ${pending.length} undelivered event(s): ${pending.map((e) => e.id).join(",")}`);
   } else if (pending.length) {
     for (const ev of pending) {
       const r = state.retry[ev.id];
       if (r && Date.parse(r.next_at) > Date.now()) { deferred++; continue; }
       let code = null, err = null;
-      try { code = await post(url, key, payloadOf(ev)); } catch (e) { err = e.name === "TimeoutError" ? "timeout" : (e.cause?.code || e.message); }
+      const payload = payloadOf(ev);
+      try { code = await post(url, key, payload); } catch (e) { err = e.name === "TimeoutError" ? "timeout" : (e.cause?.code || e.message); }
       if (code !== null && code >= 200 && code < 300) {
-        state.delivered[ev.id] = { at: new Date().toISOString(), http_status: code, wp: ev.wp, attempts: (r?.attempts || 0) + 1 };
+        state.delivered[ev.id] = { at: new Date().toISOString(), http_status: code, wp: ev.wp, type: ev.type, target: payload.target, attempts: (r?.attempts || 0) + 1 };
         delete state.retry[ev.id];
+        saveState(state); // durable per event
         sent++;
-        log("INFO", `delivered ${ev.id} (${ev.wp}) http=${code}`);
+        log("INFO", `delivered ${ev.id} (${ev.wp ?? "-"} ${ev.type} target=${payload.target}) http=${code}`);
       } else {
         const attempts = (r?.attempts || 0) + 1;
         const backoffMs = Math.min(INTERVAL_MS * 2 ** (attempts - 1), 60 * 60 * 1000);
         state.retry[ev.id] = { attempts, last_error: err ?? `http ${code}`, last_try_at: new Date().toISOString(), next_at: new Date(Date.now() + backoffMs).toISOString() };
+        saveState(state);
         failed++;
-        log("WARN", `delivery failed ${ev.id} (${ev.wp}) ${err ?? "http " + code}; attempt ${attempts}, retry after ${Math.round(backoffMs / 1000)}s`);
+        log("WARN", `delivery failed ${ev.id} (${ev.wp ?? "-"}) ${err ?? "http " + code}; attempt ${attempts}, retry after ${Math.round(backoffMs / 1000)}s`);
       }
     }
-    saveState(state);
   }
-  // drop retry entries for events that got acked meanwhile
   for (const id of Object.keys(state.retry)) {
-    const e = box.inbox.find((x) => x.id === id);
+    const e = byId.get(id);
     if (!e || (e.acked && e.acked.length)) { delete state.retry[id]; saveState(state); }
   }
   lastCycleAt = new Date().toISOString();

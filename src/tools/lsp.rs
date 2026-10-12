@@ -1082,6 +1082,8 @@ mod tests {
         );
     }
 
+    // Windows path semantics only: on unix `\\?\E:\...` is one opaque component.
+    #[cfg(windows)]
     #[test]
     fn resolve_strips_windows_verbatim_after_canonicalize_shape() {
         // Simulate the Windows canonicalize form without requiring a real \\?\ filesystem.

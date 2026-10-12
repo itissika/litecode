@@ -209,7 +209,8 @@ impl PlanTool {
                 ));
             }
             AskOutcome::Deny => {
-                let mut msg = "Plan create rejected by the user. No plan file was created.".to_string();
+                let mut msg =
+                    "Plan create rejected by the user. No plan file was created.".to_string();
                 if let Some(opinion) = reply.free_text.as_deref() {
                     msg.push_str("\nUser opinion: ");
                     msg.push_str(opinion);
@@ -338,9 +339,8 @@ mod tests {
     fn test_create_plan_asks_and_writes_stub() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (manager, sid) = setup(dir.path());
-        let sink = Arc::new(
-            RecordingPermissionSink::from_reply(true, false).with_free_text("looks good"),
-        );
+        let sink =
+            Arc::new(RecordingPermissionSink::from_reply(true, false).with_free_text("looks good"));
         let tool = make_tool_with_sink(Arc::clone(&manager), &sid, sink.clone());
 
         let result = tool.call(serde_json::json!({
@@ -408,9 +408,8 @@ mod tests {
     fn test_create_rejected_does_not_create_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (manager, sid) = setup(dir.path());
-        let sink = Arc::new(
-            RecordingPermissionSink::new(AskOutcome::Deny).with_free_text("too vague"),
-        );
+        let sink =
+            Arc::new(RecordingPermissionSink::new(AskOutcome::Deny).with_free_text("too vague"));
         let tool = make_tool_with_sink(Arc::clone(&manager), &sid, sink);
 
         let result = tool.call(serde_json::json!({

@@ -213,7 +213,6 @@ pub struct CustomToolSettledBody {
     pub text: String,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StepBudgetBody {
     pub step: u64,

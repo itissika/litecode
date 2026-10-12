@@ -1059,9 +1059,15 @@ fn agent_lsp_tool_line_text_scenarios() {
         "refs should list locations: {}",
         refs.content
     );
+    // Context uses the shared numbered-line format (tool::format_file_line,
+    // `{n:6}: text`) since b4f04e7; the old ``` / `|` gutter is gone.
     assert!(
-        refs.content.contains("```") || refs.content.contains("|"),
-        "refs should attach context under locations: {}",
+        refs.content.lines().any(|l| {
+            let t = l.trim_start();
+            t.split_once(": ")
+                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        }),
+        "refs should attach numbered context lines under locations: {}",
         refs.content
     );
 

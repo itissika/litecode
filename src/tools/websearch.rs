@@ -98,10 +98,7 @@ mod tests {
     use crate::types::ToolSignalLevel;
 
     fn cold_tool() -> WebSearchTool {
-        WebSearchTool::new(
-            Arc::new(RwLock::new(None)),
-            Arc::new(RwLock::new(None)),
-        )
+        WebSearchTool::new(Arc::new(RwLock::new(None)), Arc::new(RwLock::new(None)))
     }
 
     #[test]
@@ -159,4 +156,3 @@ mod tests {
         );
     }
 }
-

@@ -564,11 +564,7 @@ fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
             }
             for (needle, why) in forbidden {
                 if line.contains(needle) {
-                    hits.push(format!(
-                        "{}:{}: `{needle}` ({why})",
-                        path.display(),
-                        i + 1
-                    ));
+                    hits.push(format!("{}:{}: `{needle}` ({why})", path.display(), i + 1));
                 }
             }
         }
@@ -681,7 +677,6 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
         "reasoning_effort belongs to the chat codec"
     );
 }
-
 
 /// Ticket 05: search/revert must not use SQL window pointers as authority.
 #[test]

@@ -1,0 +1,49 @@
+{
+  "id": "ISSUE-037",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "workspace-shared-substrate",
+    "workspace-sandbox"
+  ],
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "basis": [
+    "A5"
+  ],
+  "title": "[严重度:中] create_file / write_file_bytes(overwrite=false) 先查后写，并发时静默覆盖（修复另开包）",
+  "promise": "WorkspaceService::create_file 与 write_file_bytes(overwrite=false)：目标已存在必须返回 WorkspaceError::AlreadyExists，不得覆盖。",
+  "actual": "exists() 检查与 atomic_write（rename 覆盖）之间无原子性；同一路径并发 create 时多个调用同时返回 Ok，后写者静默覆盖先写者。探针 8 线程×300 轮：两个 API 均 300/300 轮出现多成功。修复另开包（WP-028 只审不修）。",
+  "evidence": [
+    {
+      "path": "src/workspace/service.rs",
+      "symbol": "WorkspaceService::create_file",
+      "lines": "270-287",
+      "commit": "c6b24df"
+    },
+    {
+      "path": "src/workspace/service.rs",
+      "symbol": "WorkspaceService::write_file_bytes",
+      "lines": "404-433",
+      "commit": "c6b24df"
+    },
+    {
+      "path": "tests/wp028_probe_s2_create_race.rs",
+      "test": "probe_s2_create_file_race / probe_s2_write_file_bytes_no_overwrite_race",
+      "commit": "c6b24df",
+      "note": "未提交探针，#[ignore]，基于 HEAD c6b24df 工作区"
+    }
+  ],
+  "repro": "PATH=/home/box/.cargo/bin:$PATH HOME=/workspace/litecode/.tmp/home timeout 600 cargo test --test wp028_probe_s2_create_race -- --ignored </dev/null",
+  "history": [
+    {
+      "ts": "2026-10-12T16:05:00+08:00",
+      "by": "ide",
+      "change": "WP-028 探针复现，开单；修复另开包"
+    }
+  ]
+}

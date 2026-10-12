@@ -1,0 +1,53 @@
+{
+  "id": "ISSUE-032",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [],
+  "basis": [
+    "WP-026"
+  ],
+  "title": "seam：外部改动文件被 take_changes 消费后，写入失败即永久丢失",
+  "promise": "files_changed 提醒失败时与 bash/subagent/custom 一样回灌，不丢通知。",
+  "actual": "take_changed_files 在 seam 开头即更新 FileTracker 快照；spine_reminder_view 失败分支只回灌 mailbox，FilesChanged append 失败仅 warn，改动不再上报。",
+  "evidence": [
+    {
+      "path": "src/runtime/exec.rs:294",
+      "note": "take_changed_files 先消费",
+      "commit": ""
+    },
+    {
+      "path": "src/runtime/exec.rs:386-388",
+      "note": "restore_seam_sources 不含 changed files",
+      "commit": ""
+    },
+    {
+      "path": "src/runtime/exec.rs:462-467",
+      "note": "非 subagent 失败只 warn",
+      "commit": ""
+    },
+    {
+      "path": "src/reminder/file_tracker.rs:66-81",
+      "note": "take_changes 就地覆盖快照、无回滚接口",
+      "commit": ""
+    }
+  ],
+  "repro": "让 append_reminder(FilesChanged) 失败一次；下一 seam 不再报告该文件。",
+  "reporter": "context",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T15:40:00+08:00",
+      "by": "context",
+      "change": "WP-026 审计新建"
+    },
+    {
+      "ts": "2026-10-12T15:50:00+08:00",
+      "by": "runtime",
+      "change": "WP-026 交叉审（Runtime）：确认成立。接口建议拆分：上下文在 file_tracker 提供 forget/mark_dirty(paths)；Session 在 SessionManager 暴露 restore_changed_files(session_id, paths)；Runtime 在 exec.rs:386 及 FilesChanged append 失败分支调用。owner 维持 runtime。"
+    }
+  ]
+}

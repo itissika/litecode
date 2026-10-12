@@ -43,8 +43,40 @@ pub fn err_response(id: serde_json::Value, code: i64, message: String) -> JsonRp
         jsonrpc: "2.0".into(),
         id,
         result: None,
-        error: Some(JsonRpcErrorBody { code, message }),
+        error: Some(JsonRpcErrorBody {
+            code,
+            message,
+            data: None,
+        }),
     }
+}
+
+/// `session/compact` sync failure (S2/WP-024). Numeric code stays -32000;
+/// `error.data` carries a `StructuredError` so clients branch on
+/// `code`/`retryable`: turn running → `agent_already_running` (retryable),
+/// real failure → `compaction_failed` (not retryable). `nothing_to_compact`
+/// and `cancelled` keep the plain -32000 body (no data), unchanged.
+pub(crate) fn compact_error_response(
+    id: serde_json::Value,
+    error: &crate::types::LitecodeError,
+) -> JsonRpcResponse {
+    use crate::types::LitecodeError as E;
+    let structured = match error {
+        E::AgentAlreadyRunning => Some((ErrorCode::AgentAlreadyRunning, true)),
+        E::NothingToCompact | E::Canceled => None,
+        _ => Some((ErrorCode::CompactionFailed, false)),
+    };
+    let message = error.to_string();
+    let mut resp = err_response(id, -32000, message.clone());
+    if let (Some((code, retryable)), Some(body)) = (structured, resp.error.as_mut()) {
+        body.data = serde_json::to_value(crate::client_protocol::protocol::StructuredError {
+            code,
+            message,
+            retryable,
+        })
+        .ok();
+    }
+    resp
 }
 
 fn operation_error(
@@ -867,10 +899,9 @@ pub async fn handle_jsonrpc(
                     );
                 }
                 Err(error) => {
-                    let message = error.to_string();
                     emit(
                         sink,
-                        serde_json::to_value(err_response(id, -32000, message)).unwrap(),
+                        serde_json::to_value(compact_error_response(id, &error)).unwrap(),
                     );
                 }
             }
@@ -1399,9 +1430,9 @@ fn apply_permission_grant(
             PermissionAction::Allow,
         );
     }
-    let _ = pending
-        .reply_tx
-        .send(AskReply::from_grant(approved, always, free_text, selected, answers));
+    let _ = pending.reply_tx.send(AskReply::from_grant(
+        approved, always, free_text, selected, answers,
+    ));
     GrantApply::Resolved {
         session_id: pending.session_id,
         tool,
@@ -1748,7 +1779,12 @@ pub async fn run_session_loop(
                     SessionRequest::Quit => {
                         for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
                             emit_permission_resolved(
-                                session, &response_tx, &rej_sid, &tool, false, false,
+                                session,
+                                &response_tx,
+                                &rej_sid,
+                                &tool,
+                                false,
+                                false,
                             );
                         }
                         session.sessions.cancel_turn(&sid).await;
@@ -1757,7 +1793,12 @@ pub async fn run_session_loop(
                     SessionRequest::Cancel => {
                         for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
                             emit_permission_resolved(
-                                session, &response_tx, &rej_sid, &tool, false, false,
+                                session,
+                                &response_tx,
+                                &rej_sid,
+                                &tool,
+                                false,
+                                false,
                             );
                         }
                         session.sessions.cancel_turn(&sid).await;
@@ -1773,7 +1814,12 @@ pub async fn run_session_loop(
                         {
                             for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
                                 emit_permission_resolved(
-                                    session, &response_tx, &rej_sid, &tool, false, false,
+                                    session,
+                                    &response_tx,
+                                    &rej_sid,
+                                    &tool,
+                                    false,
+                                    false,
                                 );
                             }
                             return;
@@ -1803,24 +1849,25 @@ pub async fn run_session_loop(
             match req {
                 SessionRequest::Quit => {
                     for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                        emit_permission_resolved(
-                            session, &response_tx, &sid, &tool, false, false,
-                        );
+                        emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
                     }
                     break;
                 }
                 SessionRequest::Cancel => {
                     for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                        emit_permission_resolved(
-                            session, &response_tx, &sid, &tool, false, false,
-                        );
+                        emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
                     }
                 }
                 SessionRequest::JsonRpc(rpc) => {
                     if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
                         for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
                             emit_permission_resolved(
-                                session, &response_tx, &sid, &tool, false, false,
+                                session,
+                                &response_tx,
+                                &sid,
+                                &tool,
+                                false,
+                                false,
                             );
                         }
                         return;
@@ -1885,6 +1932,44 @@ impl ConnectionHandle {
     }
 }
 
+#[cfg(test)]
+mod compact_error_tests {
+    use super::compact_error_response;
+    use crate::types::LitecodeError;
+
+    fn wire(e: LitecodeError) -> serde_json::Value {
+        serde_json::to_value(compact_error_response(serde_json::json!(7), &e)).unwrap()
+    }
+
+    /// WP-024 G4 (wire half): session/compact while a turn runs.
+    #[test]
+    fn g4_compact_while_running_is_agent_already_running_retryable() {
+        let v = wire(LitecodeError::AgentAlreadyRunning);
+        assert_eq!(v["error"]["code"], -32000);
+        assert_eq!(v["error"]["data"]["code"], "agent_already_running");
+        assert_eq!(v["error"]["data"]["retryable"], true);
+        assert_eq!(v["error"]["data"]["message"], v["error"]["message"]);
+    }
+
+    #[test]
+    fn compact_real_failure_is_compaction_failed_not_retryable() {
+        let v = wire(LitecodeError::CompactionFailed);
+        assert_eq!(v["error"]["code"], -32000);
+        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
+        assert_eq!(v["error"]["data"]["retryable"], false);
+        let v = wire(LitecodeError::Config("no context window".into()));
+        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
+    }
+
+    #[test]
+    fn compact_nothing_and_cancelled_unchanged() {
+        for e in [LitecodeError::NothingToCompact, LitecodeError::Canceled] {
+            let v = wire(e);
+            assert_eq!(v["error"]["code"], -32000);
+            assert!(v["error"].get("data").is_none());
+        }
+    }
+}
 
 #[cfg(test)]
 mod pending_ask_tests {
@@ -2002,7 +2087,16 @@ mod pending_ask_tests {
         let mut pending = HashMap::new();
         let mut rx_a = insert_ask(&mut pending, "a", "sess-a");
         let rx_b = insert_ask(&mut pending, "b", "sess-b");
-        apply_permission_grant(&mut pending, "b".into(), "bash".into(), true, false, None, Vec::new(), HashMap::new());
+        apply_permission_grant(
+            &mut pending,
+            "b".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        );
         assert_eq!(pending.len(), 1);
         assert!(pending.contains_key("a"));
         assert_eq!(
@@ -2010,7 +2104,16 @@ mod pending_ask_tests {
             AskOutcome::Allow { always: false }
         );
         assert!(rx_a.try_recv().is_err());
-        apply_permission_grant(&mut pending, "a".into(), "bash".into(), false, false, None, Vec::new(), HashMap::new());
+        apply_permission_grant(
+            &mut pending,
+            "a".into(),
+            "bash".into(),
+            false,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        );
         assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Deny);
         assert!(pending.is_empty());
     }
@@ -2019,7 +2122,6 @@ mod pending_ask_tests {
 #[cfg(test)]
 mod ask_loop_tests {
     use super::{SessionRequest, run_session_loop};
-    use std::collections::HashMap;
     use crate::client_protocol::controller::SessionController;
     use crate::client_protocol::permission_bridge::PendingPermission;
     use crate::client_protocol::protocol::JsonRpcRequestEnvelope;
@@ -2033,6 +2135,7 @@ mod ask_loop_tests {
     use crate::runtime::RuntimeHandle;
     use crate::session::SessionManager;
     use crate::workspace::WorkspaceService;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::AtomicU64;
     use std::time::Duration;

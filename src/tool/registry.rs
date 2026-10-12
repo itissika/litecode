@@ -12,6 +12,7 @@ use crate::session::manager::SessionManager;
 use crate::tool::availability::{available_tools, should_include_in_llm_list};
 use crate::tool::trait_::Tool;
 use crate::tools::{
+    ask_user::AskUserTool,
     bash::BashTool,
     code_search::CodeSearchTool,
     custom::CustomTool,
@@ -23,7 +24,6 @@ use crate::tools::{
     litecode_workspace::LitecodeWorkspaceTool,
     lsp::LspTool,
     mcp_tool::McpTool,
-    ask_user::AskUserTool,
     plan::PlanTool,
     read::ReadTool,
     session_search::SessionSearchTool,

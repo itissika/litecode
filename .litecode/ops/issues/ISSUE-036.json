@@ -1,0 +1,39 @@
+{
+  "id": "ISSUE-036",
+  "grade": "drift",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "basis": [
+    "A4"
+  ],
+  "title": "turn_error 靠 final_text 文本匹配识别 auto compact 失败，应改为类型化的内存错误类别",
+  "promise": "回合错误码应从类型化错误推导（ErrorCode/StructuredError 契约，protocol.rs:58-86），不依赖展示文案。",
+  "actual": "project.rs turn_error 拿 final_text 与 LitecodeError::CompactionFailed.to_string() 比较来决定 compaction_failed；runtime/mod.rs:893 只传 err.to_string()，类型信息在 TurnCompleted 之前就丢了。",
+  "evidence": [
+    {
+      "path": "src/client_protocol/project.rs",
+      "symbol": "turn_error",
+      "lines": "537-563",
+      "commit": "c6b24df+wt"
+    },
+    {
+      "path": "src/runtime/mod.rs",
+      "lines": "892-895",
+      "commit": "c6b24df"
+    }
+  ],
+  "repro": "代码可判定；用户可见的 final_text 只要恰好等于该文案就会被误判（概率低）。",
+  "reporter": "runtime",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T15:50:00+08:00",
+      "by": "runtime",
+      "change": "WP-025 交叉审（Session）建议立项：在 InternalEvent::TurnCompleted 上带内存错误类别（不落盘），替换文本匹配"
+    }
+  ]
+}

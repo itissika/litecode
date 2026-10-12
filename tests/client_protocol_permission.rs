@@ -78,7 +78,9 @@ async fn permission_channel_round_trip() {
     let perm = perm_rx.recv().await.expect("recv");
     assert_eq!(perm.tool, "bash");
     perm.reply_tx
-        .send(AskReply::from_outcome(permission::AskOutcome::Allow { always: false }))
+        .send(AskReply::from_outcome(permission::AskOutcome::Allow {
+            always: false,
+        }))
         .ok();
 
     let reply = permission::blocking_wait_oneshot(reply_rx);
@@ -138,7 +140,9 @@ async fn ws_permission_bridge_assigns_uuid_request_id() {
         perm.request_id
     );
     perm.reply_tx
-        .send(AskReply::from_outcome(permission::AskOutcome::Allow { always: false }))
+        .send(AskReply::from_outcome(permission::AskOutcome::Allow {
+            always: false,
+        }))
         .ok();
     let reply = ask.await.expect("join");
     assert_eq!(reply, permission::AskOutcome::Allow { always: false });
@@ -175,8 +179,9 @@ async fn ws_bridge_ask_user_questions_round_trip_with_answers_map() {
     use std::collections::HashMap;
 
     let (perm_tx, mut perm_rx) = mpsc::unbounded_channel::<PendingPermission>();
-    let sink: Arc<dyn PermissionSink> =
-        Arc::new(WsPermissionBridge::new("s-ask", "t-ask", "default", perm_tx));
+    let sink: Arc<dyn PermissionSink> = Arc::new(WsPermissionBridge::new(
+        "s-ask", "t-ask", "default", perm_tx,
+    ));
 
     let questions = vec![
         AskQuestion {
@@ -297,11 +302,11 @@ async fn ws_bridge_ask_user_questions_round_trip_with_answers_map() {
         .ok();
 
     let reply = ask.await.expect("join");
-    assert_eq!(reply.outcome, permission::AskOutcome::Allow { always: false });
     assert_eq!(
-        reply.answers["q_lang"].selected,
-        vec!["zh".to_string()]
+        reply.outcome,
+        permission::AskOutcome::Allow { always: false }
     );
+    assert_eq!(reply.answers["q_lang"].selected, vec!["zh".to_string()]);
     assert_eq!(
         reply.answers["q_lang"].free_text.as_deref(),
         Some("prefer zh"),
@@ -318,8 +323,9 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
     use litecode::permission::AskPrompt;
 
     let (perm_tx, mut perm_rx) = mpsc::unbounded_channel::<PendingPermission>();
-    let sink: Arc<dyn PermissionSink> =
-        Arc::new(WsPermissionBridge::new("s-appr", "t-appr", "default", perm_tx));
+    let sink: Arc<dyn PermissionSink> = Arc::new(WsPermissionBridge::new(
+        "s-appr", "t-appr", "default", perm_tx,
+    ));
 
     let sink2 = sink.clone();
     let ask = tokio::task::spawn_blocking(move || {
@@ -354,7 +360,10 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
     assert_eq!(req_json["kind"], "approval");
     assert_eq!(req_json["free_text"], true);
     assert!(
-        req_json.get("questions").is_none() || req_json["questions"].as_array().is_none_or(|a| a.is_empty()),
+        req_json.get("questions").is_none()
+            || req_json["questions"]
+                .as_array()
+                .is_none_or(|a| a.is_empty()),
         "approval omits empty questions on wire when skip_serializing_if"
     );
 

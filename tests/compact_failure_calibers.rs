@@ -10,8 +10,12 @@ use std::sync::Arc;
 
 use litecode::config::workspace::set_runtime_paths;
 use litecode::config::{TurnGuard, WorkspaceState};
-use litecode::context_pipeline::{BudgetPolicy, CompactPolicy, ContextPipeline, ProviderPromptBaseline};
-use litecode::runtime::observer::{CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent};
+use litecode::context_pipeline::{
+    BudgetPolicy, CompactPolicy, ContextPipeline, ProviderPromptBaseline,
+};
+use litecode::runtime::observer::{
+    CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
+};
 use litecode::session::manager::{SessionManager, SessionOperationKind};
 use litecode::session::{WorkingRow, project_items};
 use litecode::types::{LitecodeError, item_text_preview, user_text};
@@ -67,7 +71,9 @@ async fn compact_failure_restores_transcript_snapshot() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
 
-    let seed: Vec<_> = (0..12).map(|i| user_text(format!("restore-seed-{i}"))).collect();
+    let seed: Vec<_> = (0..12)
+        .map(|i| user_text(format!("restore-seed-{i}")))
+        .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
     let before = sessions.data().working_set_blocking(&sid).unwrap();
@@ -127,11 +133,13 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
 
-    let seed: Vec<_> = (0..30).map(|i| user_text(format!("auto-restore-{i}"))).collect();
+    let seed: Vec<_> = (0..30)
+        .map(|i| user_text(format!("auto-restore-{i}")))
+        .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let workspace_id =
-        litecode::config::peek_workspace_id(dir.path()).unwrap_or_else(|| "test-workspace-id".into());
+    let workspace_id = litecode::config::peek_workspace_id(dir.path())
+        .unwrap_or_else(|| "test-workspace-id".into());
     let paths = litecode::config::WorkspacePaths::for_workspace(dir.path(), &workspace_id);
     let ctx = litecode::context_pipeline::Context {
         cwd: dir.path().to_path_buf(),
@@ -196,10 +204,14 @@ async fn manual_compact_failure_releases_lease_for_retry() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (sid, sessions) = setup_workspace_and_session(dir.path(), "default");
 
-    let seed: Vec<_> = (0..12).map(|i| user_text(format!("manual-retry-{i}"))).collect();
+    let seed: Vec<_> = (0..12)
+        .map(|i| user_text(format!("manual-retry-{i}")))
+        .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let mut rx = sessions.subscribe(&sid).expect("subscribe for Failed lifecycle");
+    let mut rx = sessions
+        .subscribe(&sid)
+        .expect("subscribe for Failed lifecycle");
 
     let lease = sessions
         .try_begin_operation(&sid, SessionOperationKind::Compact)
@@ -253,7 +265,10 @@ async fn manual_compact_failure_releases_lease_for_retry() {
             saw_failed = true;
         }
     }
-    assert!(saw_failed, "manual compact failure must emit CompactionStage::Failed");
+    assert!(
+        saw_failed,
+        "manual compact failure must emit CompactionStage::Failed"
+    );
 
     // session_lifecycle::start_manual_compact drops the lease after compact_now returns.
     drop(lease);
@@ -265,4 +280,102 @@ async fn manual_compact_failure_releases_lease_for_retry() {
         .expect("after Failed + lease drop, user must be able to start_manual_compact again");
     assert!(sessions.is_compacting_blocking(&sid));
     drop(retry);
+}
+
+// ---- WP-025 R4 (Runtime turn-stop side) ----
+//
+// Reconnect is absorbed inside `call_model` (provider stream retry). At the
+// agent-loop seam the observable post-reconnect state is: step 1's
+// `call_model` returned items (a tool call) after the reconnect. These tests
+// pin what happens to the *next* step.
+
+use common::fake_deps::{FakeAgentDeps, function_call_item};
+
+/// After a reconnected step 1 (tool call executed), step 2's auto compact
+/// fails → TurnOutcome::Error(CompactionFailed) and no further `call_model`.
+#[tokio::test(flavor = "current_thread")]
+async fn reconnect_then_auto_compact_failure_stops_turn() {
+    let mut deps = FakeAgentDeps::with_responses(vec![
+        vec![function_call_item("call_r1", "read", "{}", "fc_r1")],
+        vec![common::fake_deps::assistant_text_item(
+            "must-not-run",
+            "msg_r2",
+        )],
+    ]);
+    deps.compact_fail_from_step = Some(2);
+
+    let outcome = litecode::agent::run(&mut deps).await;
+    match outcome {
+        litecode::agent::TurnOutcome::Error(err) => assert!(
+            matches!(err, LitecodeError::CompactionFailed),
+            "expected CompactionFailed, got {err:?}"
+        ),
+        other => panic!("expected Error(CompactionFailed), got {other:?}"),
+    }
+    assert_eq!(
+        deps.model_calls(),
+        1,
+        "no call_model after auto compact fails"
+    );
+    assert_eq!(
+        deps.compact_calls.get(),
+        2,
+        "compact ran at step 1 (ok) and step 2 (fail)"
+    );
+    assert_eq!(
+        deps.execute_calls.get(),
+        1,
+        "step-1 tool call executed once"
+    );
+    let landed = deps.landed.borrow();
+    assert!(
+        !landed
+            .iter()
+            .any(|i| item_text_preview(i) == "must-not-run"),
+        "step-2 model output must never land: {landed:?}"
+    );
+}
+
+/// After a reconnected step 1, step 2's `call_model` returns a terminal
+/// (non-retryable) LLM error → TurnOutcome::Error(Llm), loop stops at once.
+#[tokio::test(flavor = "current_thread")]
+async fn reconnect_then_terminal_llm_error_stops_turn() {
+    let deps_responses = vec![
+        vec![function_call_item("call_r1", "read", "{}", "fc_r1")],
+        vec![common::fake_deps::assistant_text_item(
+            "must-not-run",
+            "msg_r2",
+        )],
+    ];
+    let mut deps = FakeAgentDeps::with_responses(deps_responses);
+    deps.model_errors
+        .borrow_mut()
+        .push((1, LitecodeError::Llm("401 unauthorized (terminal)".into())));
+
+    let outcome = litecode::agent::run(&mut deps).await;
+    match outcome {
+        litecode::agent::TurnOutcome::Error(LitecodeError::Llm(msg)) => {
+            assert!(msg.contains("terminal"), "unexpected message: {msg}")
+        }
+        other => panic!("expected Error(Llm), got {other:?}"),
+    }
+    assert_eq!(
+        deps.model_calls(),
+        2,
+        "exactly one failing call_model, no retry loop"
+    );
+    assert_eq!(
+        deps.compact_calls.get(),
+        2,
+        "no compact after the terminal error"
+    );
+    assert_eq!(deps.execute_calls.get(), 1);
+    assert!(
+        !deps
+            .landed
+            .borrow()
+            .iter()
+            .any(|i| item_text_preview(i) == "must-not-run"),
+        "no output may land after the terminal error"
+    );
 }

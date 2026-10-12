@@ -165,7 +165,6 @@ impl ConfigManager {
     }
 }
 
-
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "off"];
 
 fn validate_log_level(log: &super::schema::LogSettings) -> Result<()> {

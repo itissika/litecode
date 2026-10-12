@@ -1,0 +1,24 @@
+{
+  "id": "ISSUE-034",
+  "grade": "arch",
+  "layer": "impl",
+  "domain": "tools-permission",
+  "core": true,
+  "core_nodes": [],
+  "basis": ["A2"],
+  "title": "MCP stdio send_request：无超时 + 响应不按 id 匹配（错号）",
+  "promise": "MCP 调用有界返回；每个请求拿到 id 相同的响应。",
+  "actual": "send_request 写请求后 read_line 读取下一行即当作响应：(1) 无超时，服务器不回则永久挂起，且 pool 在整个调用期间持有该 server 的 client Mutex，后续所有调用一并阻塞；(2) 不校验 response.id，服务器先发 notification/日志行即被当作响应（JSON-RPC notification 无 result→返回 Null 或解析错）；(3) 调用 future 被取消（turn cancel）时请求已写出、响应未读，留在 BufReader，下一次请求读到上一次的响应——错号。",
+  "evidence": [
+    {"path": "src/mcp/client.rs", "note": ":57-94 send_request：:72-73 write+flush，:75 read_line 无 timeout，:82 直接解析，无 id 比对", "commit": ""},
+    {"path": "src/mcp/pool.rs", "note": ":285-289 client.lock().await 后 initialize/call_tool 无 timeout，锁持有贯穿整个调用；对比 :402 仅握手有 START_TIMEOUT", "commit": ""}
+  ],
+  "repro": "1) 假 MCP server（python 脚本）：对 tools/call 先输出一行 {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}} 再输出真实响应 → 客户端返回 Null/错结果，真实响应残留，下一次调用拿到它（错号）。2) 对 tools/call 不回复 → 调用永久挂起，同一 server 后续调用全部阻塞在 pool.rs:285 的锁上。3) 对 tools/call sleep 5s 后回复，期间取消回合 → 下一次 tools/list 读到上一次 tools/call 的响应。",
+  "reporter": "tools",
+  "owner": "tools",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {"ts": "2026-10-12T15:50:00+08:00", "by": "tools", "change": "WP-027 可疑实现排查新建；按中层指示不改代码，待排期（建议：按 id 循环读至匹配并丢弃 notification；每请求 timeout；取消/超时后标记连接脏并重建）"}
+  ]
+}

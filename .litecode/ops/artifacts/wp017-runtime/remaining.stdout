@@ -1,0 +1,42 @@
+=== [2026-10-12T12:47:31+0800] lib_agent :: cargo test --lib -- pending_continue_tests::stop_check  (filter=stop_check) ===
+→ exit=0 passed=2 failed=0 ignored=0
+=== [2026-10-12T12:51:46+0800] architecture_layers :: cargo test --test architecture_layers -- runtime_and_protocol_do_not_open_child_sessions  (filter=runtime_child_sessions) ===
+→ exit=0 passed=1 failed=0 ignored=0
+=== [2026-10-12T12:55:54+0800] lib_stream :: cargo test --lib -- runtime::stream_projection::tests::  (filter=stream_projection) ===
+→ exit=0 passed=2 failed=0 ignored=0
+=== [2026-10-12T12:59:55+0800] lib_death :: cargo test --lib -- stream_projection_uses_only_the_lifecycle_writes death_list_dialect_tokens_absent_from_src death_list_provider_catalog_is_the_only_llm_source death_list_codecs_are_provider_agnostic death_list_db_runtime_store_only_uses_provider_credentials death_list_no_vendor_model_catalog_fetch compact_llm_path_does_not_bypass_unified_provider session_seq_g1_envelope_vocab_matches_mental_model session_seq_g4_wire_speaks_seq session_seq_g6_derived_paths_use_surface_not_pointers session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept  (filter=runtime_owned_gates) ===
+→ exit=0 passed=1 failed=0 ignored=0
+=== [2026-10-12T13:03:51+0800] lib_llm :: cargo test --lib -- compaction_scope_turns_a_terminal_failure_into_cleared retry_emits_waiting_then_connecting_then_cleared exhausted_budget_emits_failed_without_another_wait non_retryable_status_after_a_retry_does_not_clear send_cancellable_retries_transient_status_before_stream_starts send_cancellable_does_not_retry_explicit_client_failure first_success_emits_no_reconnect_notice  (filter=reconnect_http) ===
+→ exit=0 passed=7 failed=0 ignored=0
+=== [2026-10-12T13:07:13+0800] lib_llm_resolve :: cargo test --lib -- compaction_binding_uses_its_own_provider_and_credentials  (filter=compaction_binding) ===
+→ exit=0 passed=1 failed=0 ignored=0
+=== [2026-10-12T13:10:29+0800] lib_config :: cargo test --lib -- commit_mixed_restores_file_when_db_step_fails commit_mixed_restores_file_when_validate_fails config::settings_writer::tests::turn_blocks_write settings_writes_hand_agents_a_runnable_model provider_key_write_stores_the_credential_and_masks_it workspace_engines_commit_file_and_event_together  (filter=commit_mixed+core) ===
+→ exit=0 passed=6 failed=0 ignored=0
+=== [2026-10-12T13:10:29+0800] lib_bridge :: cargo test --lib -- active_models_require_a_credential agent_config_carries_the_model_ref global_and_workspace_partitions_are_disjoint active_models_follow_the_credential_map  (filter=repair_resolved) ===
+→ exit=0 passed=4 failed=0 ignored=0
+=== [2026-10-12T13:10:30+0800] lib_catalog :: cargo test --lib -- embedded_catalog_is_valid_and_complete references_are_provider_slash_model_and_lookup_splits_once request_url_comes_from_endpoint_type reasoning_tiers_inherit_from_provider_and_override_per_model provider_id_format_is_enforced  (filter=provider_catalog_core) ===
+→ exit=0 passed=5 failed=0 ignored=0
+=== [2026-10-12T13:10:30+0800] lib_types :: cargo test --lib -- golden_item_fixtures_deserialize compaction_failed_display_matches_empty_summary_path user_text_item_roundtrip assistant_text_item_is_output_assistant_role  (filter=fixtures_display) ===
+→ exit=0 passed=4 failed=0 ignored=0
+=== [2026-10-12T13:10:30+0800] global_db_seed :: cargo test --test global_db_seed  (filter=all) ===
+→ exit=0 passed=2 failed=0 ignored=0
+=== [2026-10-12T13:11:11+0800] settings_api :: cargo test --test settings_api -- settings_write_blocked_during_turn settings_summary_masks_api_key settings_provider_key_write_bumps_revision_and_masks_secret settings_put_orphan_model_ref_returns_400 settings_auth_endpoint_removed  (filter=main_chain) ===
+→ exit=0 passed=5 failed=0 ignored=0
+
+======== SUMMARY ========
+/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/run_remaining.sh: line 127: column: command not found
+group	filter	exit	passed	failed	ignored	log
+agent_loop	turn+compact_fail	0	6	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/agent_loop-turncompact_fail.log
+compact_failure_calibers	all	0	5	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/compact_failure_calibers-all.log
+lib_agent	stop_check	0	2	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_agent-stop_check.log
+architecture_layers	runtime_child_sessions	0	1	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/architecture_layers-runtime_child_sessions.log
+lib_stream	stream_projection	0	2	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_stream-stream_projection.log
+lib_death	runtime_owned_gates	0	1	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_death-runtime_owned_gates.log
+lib_llm	reconnect_http	0	7	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_llm-reconnect_http.log
+lib_llm_resolve	compaction_binding	0	1	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_llm_resolve-compaction_binding.log
+lib_config	commit_mixed+core	0	6	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_config-commit_mixedcore.log
+lib_bridge	repair_resolved	0	4	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_bridge-repair_resolved.log
+lib_catalog	provider_catalog_core	0	5	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_catalog-provider_catalog_core.log
+lib_types	fixtures_display	0	4	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/lib_types-fixtures_display.log
+global_db_seed	all	0	2	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/global_db_seed-all.log
+settings_api	main_chain	0	5	0	0	/workspace/litecode/.litecode/ops/artifacts/wp017-runtime/settings_api-main_chain.log

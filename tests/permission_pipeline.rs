@@ -388,7 +388,6 @@ async fn authorize_ask_aborted_is_not_deny() {
     );
 }
 
-
 #[tokio::test(flavor = "current_thread")]
 async fn authorize_invalid_json_arguments_denied() {
     let _grants = grant_lock();
@@ -469,4 +468,3 @@ async fn authorize_schema_missing_content_denied() {
         "schema failure must not reach Ask sink"
     );
 }
-

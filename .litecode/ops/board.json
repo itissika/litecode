@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-12T04:18:21.422Z",
+  "updated_at": "2026-10-12T05:17:03.842Z",
   "domains": [
     {
       "id": "team-ops",
@@ -306,6 +306,49 @@
         "改 web/src 产品 UI",
         "改 Rust 内核大块",
         "擅自改 enabled 知识节点"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "backend_mid",
+      "name": "后端中层",
+      "place": "/workspace/litecode",
+      "scope": [
+        "后端域交叉审与钉稳统筹"
+      ],
+      "tools": [
+        "读写域内",
+        "cargo/npm",
+        "不 commit 除非 GM"
+      ],
+      "accept_tests": [
+        "交叉审有记录",
+        "禁区不碰"
+      ],
+      "reject_tests": [
+        "擅自解冻引擎/symlink",
+        "直接找 Andy"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "frontend_mid",
+      "name": "前端中层",
+      "place": "/workspace/litecode/{web,desktop,scripts}",
+      "scope": [
+        "前端-web/desktop 统筹"
+      ],
+      "tools": [
+        "读写前端树",
+        "vitest/npm",
+        "不 commit 除非 GM"
+      ],
+      "accept_tests": [
+        "交叉审有记录"
+      ],
+      "reject_tests": [
+        "改 Rust 内核",
+        "直接找 Andy"
       ],
       "status": "active"
     }
@@ -654,6 +697,986 @@
       "artifact_path": ".litecode/ops/artifacts/WP-016.md",
       "progress": "冻结；核对中",
       "status_entered_at": null
+    },
+    {
+      "id": "WP-017",
+      "domain": "team-ops",
+      "title": "稳域钉稳：必过测试清单+交叉审+实跑绿表（禁碰引擎产品/symlink复制）",
+      "result": "session/runtime/context/tools/knowledge/瘦包：每域必过集、交叉复审记录、实跑绿表；不改引擎产品形状、不动 ISSUE-010 复制修复",
+      "done_when": [
+        "每域必过清单",
+        "他域交叉审至少一轮",
+        "实跑证据（允许列已知环境红）",
+        "假绿/缺口进 issue"
+      ],
+      "owner": "demand_officer",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-017.md",
+      "progress": "六域确认+交叉审完成；绿表齐 → review（2026-10-12T13:16:42+08:00）",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-018",
+      "domain": "team-ops",
+      "title": "找不稳实现 + 裁冗余测试（前后端中层，只列不删待 GM 审）",
+      "result": "session/runtime/context/tools/knowledge/瘦包：每域必过集、交叉复审记录、实跑绿表；不改引擎产品形状、不动 ISSUE-010 复制修复",
+      "done_when": [
+        "每域必过清单",
+        "他域交叉审至少一轮",
+        "实跑证据（允许列已知环境红）",
+        "假绿/缺口进 issue"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "cancelled",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-017.md",
+      "progress": "六域确认+交叉审完成；绿表齐 → review（2026-10-12T13:16:42+08:00）",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-019",
+      "domain": "team-ops",
+      "title": "嵌套 WP 工具（顶层，Andy 批）",
+      "result": "统一可嵌套 WP 模型及配套工具落地，后续包按新流程运作",
+      "done_when": [
+        "子包 WP-020 封 done（工具说明+测试+空跑记录）",
+        "GM 四段汇总报 Andy",
+        "Andy 验收"
+      ],
+      "owner": "gm",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-019.md",
+      "progress": "Andy 已批（2026-10-12T14:41+08:00）；WP-020 方案已交 GM 审，GM 已批",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-020",
+      "domain": "team-ops",
+      "title": "[WP-019 子包] 嵌套 WP 配套工具：管家先填方案交 GM 审",
+      "result": "ops 工具支持嵌套 WP：schema/validate（parent/goal/approver/content/history、drafting/awaiting_approval、parent 环检查、封包检查）、ops.wp 生命周期命令（new/fill/submit/approve/reject/close/tree/summary/history）、wp_gate 新模型门禁、超时按层级升级（顶层止于 gm）、webhook 层级字段、树形 WP 状态表；老 WP 行为不变",
+      "done_when": [
+        "wp.test.mjs 8 组测试全过",
+        "validate_all 全绿（kb 0 error）",
+        "临时副本两层空跑（含一次退回）完整记录写入 WP-020.md「空跑记录」",
+        "tools_version=13，board.md/registry 工具说明（含 --as 自律边界）",
+        "经 wp_gate 推到 review，GM 审后封 done"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-020.md",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
+      "goal": "把统一 WP 模型做进 ops 工具，让各层都能用工具走完「填写 → 请审 → 批准 → 执行 → 封包」。",
+      "parent": "WP-019",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "见 .litecode/ops/artifacts/WP-020.md（方案经 GM 批，2026-10-12）"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T06:41:47.174Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "backfill: GM 派包 WP-020（父包 WP-019）"
+        },
+        {
+          "ts": "2026-10-12T06:42:51.789Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "backfill: 方案写入 artifacts/WP-020.md"
+        },
+        {
+          "ts": "2026-10-12T06:42:51.789Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": "backfill: 私信 GM 请审"
+        },
+        {
+          "ts": "2026-10-12T06:46:39.197Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "backfill: GM 私信批方案（四点答复），可以开工"
+        },
+        {
+          "ts": "2026-10-12T06:48:31.343Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-021",
+      "domain": "team-ops",
+      "title": "用新流程重做：找不稳实现 + 裁冗余测试",
+      "result": "主动找出后端和前端可能不稳的实现并给出证据；列出可删、可放宽或重复的测试清单，经审后再处理；引擎产品和 symlink 复制不碰",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "review",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-021.md",
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-12T08:51:07.026Z",
+      "parent": null,
+      "goal": "主动找出后端和前端可能不稳的实现并给出证据；列出可删、可放宽或重复的测试清单，经审后再处理；引擎产品和 symlink 复制不碰",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-021（草案，待 Andy 审）找不稳实现 + 裁冗余测试（新流程重做 WP-018）\n\n- 层级：顶层包；负责人：Andy + 总经理；审批人：Andy\n- 状态：drafting → 交 Andy 审；审过之前不派\n- 工作区：/workspace/litecode，分支 ops/team-framework，不 commit\n- 关系：替代 WP-018（WP-018 在本包批准时封为 cancelled，理由是改用新流程）\n\n## Goal（Andy 给）\n主动找出后端和前端可能不稳的实现并给出证据；列出可删、可放宽或重复的测试清单，经审后再处理；引擎产品和 symlink 复制不碰。\n\n## 内容：拆两个子包（子包内容由中层自己填，交 GM 审）\n\n### 子包 A · 后端（负责人：后端中层；审批人：GM）\n- goal：组织 Session、Runtime、上下文、Tools、IDE 基座各域，找出本域可能不稳的实现（并发、回滚、半写入、失败路径、竞态），每条都要有证据：复现、测试或代码定位；能当场修的小问题由域内修好并补测试；每个域列出可删、可放宽或重复的测试及理由，只列不删。\n- 已知线索：Tools 自定义后台进程偶发 Broken pipe（疑似竞态）；手动压缩失败后能否重试，缺端到端测试；断线重连后「自动停回合、手动可再点」缺行为测试；reminder 来源模块没有专属测试。\n- 已知现状：`src/tools/custom.rs` 有上一轮停在半路的改动，由 Tools 决定采用、改写还是回退。\n- 中层职责：拆成各域子包交 GM 审，批后再派；跟进进度、组织跨域交叉审、抽样核对、汇总。中层不亲自改代码，也不补测试。\n- 平级：前端中层（子包 B）。\n\n### 子包 B · 前端（负责人：前端中层；审批人：GM）\n- goal：组织前端-web 和前端-desktop，找出可能不稳的实现（状态竞态、重连、下载和瘦包的失败路径、多会话 Ask），每条都要有证据；收敛 web 死亡清单里那条自己引用自己文件名的弱断言；列出可删、可放宽、重复或假绿的测试及理由，只列不删。\n- 中层职责：同子包 A。\n- 平级：后端中层（子包 A）。\n\n## 本包验收（GM → Andy）\n- 两个子包都封成 done 或 blocked。\n- GM 汇总四段报告：可疑实现清单及证据、已修的问题、测试裁剪建议。裁剪清单由 Andy 拍板后，再开新包执行删除。\n- 禁区：引擎产品（WP-016）、symlink 复制（WP-004）。\n\n## 另请 Andy 定\n- `src/` 里约 41 个未提交的改动是之前各轮留下的。提交前要不要单独过一遍？我建议另开一个小包，由 GM 直接核对，不放进本包。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T06:52:01.027Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 主动找出后端和前端可能不稳的实现并给出证据；列出可删、可放宽或重复的测试清单，经审后再处理；引擎产品和 symlink 复制不碰"
+        },
+        {
+          "ts": "2026-10-12T06:52:15.453Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-021（草案，待 Andy 审）找不稳实现 + 裁冗余测试（新流程重做 WP-018）\n\n- 层级：顶层包；负责人：Andy + 总经理；审批人：An"
+        },
+        {
+          "ts": "2026-10-12T06:58:00.000Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "backfill: 方案交 Andy 审"
+        },
+        {
+          "ts": "2026-10-12T06:58:00.000Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "backfill: plan approved by andy (2026-10-12 14:58 HKT)"
+        },
+        {
+          "ts": "2026-10-12T07:01:52.088Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:51:07.026Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-022",
+      "domain": "team-ops",
+      "title": "后端：找不稳实现 + 列测试裁剪清单",
+      "result": "组织后端各域找不稳实现并给证据，能修的小问题由域内修好并补测；各域列可删/放宽/重复测试，只列不删",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-021-backend.md",
+      "progress": "closed done by gm: 补跑 7 组全绿；已修项有测试；11 项裁定上交",
+      "status_entered_at": null,
+      "parent": "WP-021",
+      "goal": "组织后端各域找不稳实现并给证据，能修的小问题由域内修好并补测；各域列可删/放宽/重复测试，只列不删",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "## WP-022 方案（后端中层，split）\n### 拆分（各域先 fill 方案报中层审批，批后再 start；工具需求经中层转工具集管家；不 commit；禁区：引擎产品 WP-016、symlink 复制 WP-004）\n每个子包通用：审本域可疑实现（并发/竞态、回滚、半写入、失败路径），逐条 file:line 证据 + 严重度；小问题域内当场修并补测试；列可删/可放宽/重复测试及理由，只列不删；收掉本域未提交 src 改动。\n- WP-024 Session（session）→ WP-022-session.md；R1/R4 与 Runtime 联合。收：client_protocol/connection.rs, session/data/sqlite/ops.rs, session/manager.rs\n- WP-025 Runtime（runtime）→ WP-022-runtime.md；牵头 R1 手动压缩失败可重试 e2e、R4 断线重连「自动停回合/手动可再点」行为测试。收：config/{manager,schema,settings_writer}.rs, runtime/{exec,mod,stream_projection}.rs, types/death_list_gate.rs\n- WP-026 上下文（context）→ WP-022-context.md；R3 reminder sources 最小专属单测。收：context_pipeline/compact.rs, reminder/{engine,kinds,mentions,mod}.rs, reminder/sources/mod.rs, 新增 reminder/sources/tests.rs\n- WP-027 Tools（tools）→ WP-022-tools.md；Broken pipe 竞态根因修或定性，custom.rs 半成品采用/改写/回退。收：tool/{availability,registry}.rs, tools/{ask_user,bash_jobs_contract,custom,custom_hub,knowledge,litecode_workspace,mod,plan,webfetch,websearch}.rs, permission/{mod,sinks}.rs, knowledge/{corpus,fsref,index,index_tests,mentions,spec_tests,validate}.rs\n- WP-028 IDE 基座（ide）→ WP-022-ide.md；进程生命周期/终端/LSP/workspace。收：workspace/service.rs, engines/code_search/embed.rs（若属引擎产品范围则只登记不改，报中层）\n- 未映射：src/cli/cli.rs —— 中层先核 diff 归属后指派（倾向 Runtime），在 GM 批后定。\n### 交叉审\nSession↔Runtime 联审 R1/R4 及对方清单；Tools↔IDE 基座互审（进程生命周期、Broken pipe）；上下文↔Runtime（compact/reminder 与回合交界）。审者在对方产物末尾附「交叉审」段：同意/异议+证据。\n### 抽样核对（中层）\n每域抽 ≥2 条可疑项复核 file:line 与复现；每域抽 ≥2 条裁剪建议核对理由；已修项抽查补测是否覆盖；R1/R3/R4/Broken pipe 四条线索全部核对。\n### 汇总与交付\n各子包 done/blocked 后汇总到 .litecode/ops/artifacts/WP-021-backend.md：可疑实现清单+证据、已修问题、测试裁剪建议、未提交改动处置表，然后 deliver 给 GM。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T06:52:21.541Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织后端各域找不稳实现并给证据，能修的小问题由域内修好并补测；各域列可删/放宽/重复测试，只列不删"
+        },
+        {
+          "ts": "2026-10-12T07:02:57.170Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: ## WP-022 方案（后端中层，split）\n### 拆分（各域先 fill 方案报中层审批，批后再 start；工具需求经中层转工具集管家；不 commi"
+        },
+        {
+          "ts": "2026-10-12T07:02:57.247Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "5 域子包 WP-024..028 已建(drafting)，请审"
+        },
+        {
+          "ts": "2026-10-12T07:03:21.039Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案批准；embed.rs 按引擎产品冻结处理，只记录不改；cli.rs 由中层看 diff 后定归属"
+        },
+        {
+          "ts": "2026-10-12T07:03:36.371Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:17:56.814Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "五域子包全部 done；汇总见 .litecode/ops/artifacts/WP-021-backend.md"
+        },
+        {
+          "ts": "2026-10-12T08:25:57.043Z",
+          "actor": "gm",
+          "action": "return",
+          "note": "环境修好后补跑已修项测试与抽样实测，结果补进汇总再交"
+        },
+        {
+          "ts": "2026-10-12T08:50:37.516Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "补跑完成：已修项 7 组定向测试全过，结果见 WP-021-backend.md §6"
+        },
+        {
+          "ts": "2026-10-12T08:51:06.802Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "补跑 7 组全绿；已修项有测试；11 项裁定上交",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-023",
+      "domain": "team-ops",
+      "title": "前端：找不稳实现 + 列测试裁剪清单",
+      "result": "组织前端-web/desktop 找不稳实现并给证据，收敛 web 死亡清单自指弱断言；列可删/放宽/重复/假绿测试，只列不删",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-021-frontend.md",
+      "progress": "closed done by gm: GM 抽查 CI 无 desktop 测试属实；汇总可用",
+      "status_entered_at": null,
+      "parent": "WP-021",
+      "goal": "组织前端-web/desktop 找不稳实现并给证据，收敛 web 死亡清单自指弱断言；列可删/放宽/重复/假绿测试，只列不删",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "拆为两个子包，不 commit，禁区：引擎 UI(WP-016)、symlink 复制(WP-004)。\n- WP-029（前端-web，审批：前端中层）：web/ 中状态竞态、重连、多会话 Ask 的可疑实现，逐条 文件:行号 证据+风险+建议；收敛 web 死亡清单自引用文件名的弱断言(R2)；web 测试可删/可放宽/重复/假绿清单及理由，只列不删。写 WP-021-frontend.md 的「## web」节。\n- WP-030（前端-desktop，审批：前端中层）：desktop/、scripts/、相关 Windows workflows 中瘦包/组件下载失败路径（断点、校验、重试、半成品清理）、状态竞态、重连的可疑实现，同样带证据；desktop 测试裁剪清单，只列不删。写「## desktop」节。\n- 未提交改动：当前 web/、desktop/ 无未提交改动；若推进中出现，由对应子包顺手收掉。\n- 流程：GM 批后 start；两 bot 先 fill 方案报我审，批后开工；完成后 web 审 desktop 节、desktop 审 web 节，审查意见记在各自节末；我抽样核对证据（不跑全套实测），汇总成「## 汇总」节后 deliver 给 GM。\n- 工具需求：前端 bot 报我，我认可后转工具集管家。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T06:52:21.640Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织前端-web/desktop 找不稳实现并给证据，收敛 web 死亡清单自指弱断言；列可删/放宽/重复/假绿测试，只列不删"
+        },
+        {
+          "ts": "2026-10-12T07:03:12.214Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 拆为两个子包，不 commit，禁区：引擎 UI(WP-016)、symlink 复制(WP-004)。\n- WP-029（前端-web，审批：前端中层）：we"
+        },
+        {
+          "ts": "2026-10-12T07:03:12.290Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "两个子包已建，请审"
+        },
+        {
+          "ts": "2026-10-12T07:03:46.476Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案批准"
+        },
+        {
+          "ts": "2026-10-12T07:03:50.101Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批，下发子包"
+        },
+        {
+          "ts": "2026-10-12T07:09:13.077Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总见 WP-021-frontend.md 的「## 汇总」节"
+        },
+        {
+          "ts": "2026-10-12T07:09:42.225Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 抽查 CI 无 desktop 测试属实；汇总可用",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-024",
+      "domain": "harness-core",
+      "title": "WP-022/Session：不稳实现+测试裁剪",
+      "result": "Session 域审可疑实现并列测试裁剪清单；与 Runtime 联合补 R1 手动压缩失败后重试 e2e、R4 断线重连自动停回合/手动可再点行为测试",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-022-session.md",
+      "progress": "closed done by backend_mid: 验收通过：S1 已修并配复现测试，顺修 resume_session 重入死锁，S2 错误口径定为 error.data，G3-G5 已补，lib 246/0；集成测试结果待补，G5 的 e2e 并入 Runtime 后续",
+      "status_entered_at": null,
+      "parent": "WP-022",
+      "goal": "Session 域审可疑实现并列测试裁剪清单；与 Runtime 联合补 R1 手动压缩失败后重试 e2e、R4 断线重连自动停回合/手动可再点行为测试",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-024 方案（Session：不稳实现 + 测试裁剪）\n\n## (a) 可疑实现排查范围\n- 范围：src/session（manager/turn 预约/TurnGuard、data/sqlite 写路径与 receipt/revision CAS、幂等）、src/client_protocol（connection 会话循环、Ask registry、permission_bridge、controller）、src/serve（bind/auth、连接生命周期）。\n- 关注四类：并发（锁持有跨 await、单写者被绕过、Ask/RPC 互阻）、回滚（start_turn/fanout 失败后预约与 activity 是否复原）、半写入（事务外多步写、revision 与 change_log 不同步、blob 删除顺序）、失败路径（send/recv 错误被 `let _ =` 吞、断连时 pending ask 与 turn 清理、Quit/Cancel 路径一致性）。\n- 方法：读代码 + 针对性测试（必要时写临时复现测试于 .tmp，不入树）；每条给 file:line、分级（按 .litecode/ops/context/issue-grading.md：arch/drift/bug/suspect）、证据强度（复现测试 / 代码推理 / 仅疑似）。不改实现，修复另立包。\n\n## (b) 与 Runtime 协作 R1（manual-compact e2e）/ R4（reconnect：auto 停回合、manual 可再点）\n- Session 负责：回合终止的持久化与投影（终止事件落盘、SessionEvent/投影一致）、activity 回到 Idle、TurnGuard 释放（StartingTurn/RunningTurn→Idle）、协议 RPC 入口与再次进入（manual 再点不被残留预约挡住）、向客户端的错误上报（error 帧/通知字段）。\n- Runtime 负责：LLM 重连策略、compact 引擎逻辑、auto/manual 判定与重试。\n- 需对齐的接口点：Runtime 放弃重连时向 Session 交付的终止原因/错误类型；manual compact 的 RPC 方法名与参数；终止后是否允许同 session 立即 start_turn；客户端可见的错误码与文案字段。先与 Runtime 书面对齐，再各写各侧测试，e2e 由 Runtime 主跑、Session 提供协议入口断言。\n\n## (c) 本域未提交文件收口\n- 现状（git diff 已核）：三文件 diff 均为 rustfmt 格式化，无行为变化——\n  - src/client_protocol/connection.rs（+67/-?）：长参数换行、删多余空行、ask_loop_tests 内 `use std::collections::HashMap` 位置调整。\n  - src/session/data/sqlite/ops.rs（9 行）：测试中 query_row 闭包换行、删空行。\n  - src/session/manager.rs（13 行）：child_session_tests 中 start_turn/assert 合并为单行。\n- 功能修复（Ask registry 非阻塞、Deleted receipt 反查、fanout 回滚/TurnGuard）已在既有提交中（如 74f2bb1），对应测试 ask_does_not_block_other_session_rpc、ops.rs delete receipt 测试、fanout spawn failure 测试。\n- 收法：按 hunk 归类（全部为 fmt），确认 `cargo fmt --check` 与本域测试通过后，作为一个“仅格式化”补丁集交总经理审，不 commit；若总经理要求，也可 `git checkout` 还原（需批准）。\n\n## (d) 测试裁剪清单（只列不删）\n- 标准：可删（被更强测试完全覆盖/测已删除行为）、可放宽（断言过细如完整文案/时序 sleep 易抖）、重复（同一路径多处断言）；每条写测试路径::名称、理由、替代覆盖测试。\n- 已知项：sql death_list 假红（session_search 引起）归 WP-011，此处只登记不处理。\n- 输出到 .litecode/ops/artifacts/WP-022-session.md。\n\n## 工具需求\n无，现有 wp.mjs / kb_check.mjs / cargo 足够。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:02:49.556Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: Session 域审可疑实现并列测试裁剪清单；与 Runtime 联合补 R1 手动压缩失败后重试 e2e、R4 断线重连自动停回合/手动可再点行为测试"
+        },
+        {
+          "ts": "2026-10-12T07:04:30.085Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-024 方案（Session：不稳实现 + 测试裁剪）\n\n## (a) 可疑实现排查范围\n- 范围：src/session（manager/turn "
+        },
+        {
+          "ts": "2026-10-12T07:04:30.153Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案已填，待后端中层审批"
+        },
+        {
+          "ts": "2026-10-12T07:05:02.584Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准。交叉审：Session↔Runtime 互审 R1/R4 与彼此清单；仅格式化补丁集按建议处理"
+        },
+        {
+          "ts": "2026-10-12T07:05:29.817Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:08:38.107Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "S1 修复+复现测试(另修 resume_session 自死锁)；S2 data=StructuredError；G3/G4/G5 测试；lib 246/0；集成结果待出，详见 WP-022-session.md §6"
+        },
+        {
+          "ts": "2026-10-12T08:09:01.180Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：S1 已修并配复现测试，顺修 resume_session 重入死锁，S2 错误口径定为 error.data，G3-G5 已补，lib 246/0；集成测试结果待补，G5 的 e2e 并入 Runtime 后续",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-025",
+      "domain": "harness-core",
+      "title": "WP-022/Runtime：不稳实现+测试裁剪",
+      "result": "Runtime 域审可疑实现并列测试裁剪清单；牵头 R1 手动压缩失败可重试 e2e、R4 重连行为测试（与 Session 联合）",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-022-runtime.md",
+      "progress": "closed done by backend_mid: 验收通过：R1/R4 测试连续三遍全绿，compaction_failed 映射完成，ISSUE-033 已修，Session 提的阻断项已补；lib 单测在最终代码上未重跑，汇总时抽样补跑",
+      "status_entered_at": null,
+      "parent": "WP-022",
+      "goal": "Runtime 域审可疑实现并列测试裁剪清单；牵头 R1 手动压缩失败可重试 e2e、R4 重连行为测试（与 Session 联合）",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-025 / WP-022-runtime 方案（Runtime，仅方案，未开工）\n\n## 1. R1 手动压缩失败→重试 e2e（牵头）\n- 现状：`tests/manual_compact_e2e.rs::manual_compact_failure_e2e_releases_lease_and_retry_starts` 已在 HEAD(c6b24df)，走真实 `SessionController::start_manual_compact`（src/client_protocol/controller/session_lifecycle.rs:241）；`tests/compact_failure_calibers.rs::manual_compact_failure_releases_lease_for_retry` 为 runtime 层口径。\n- 计划：先评估现有 e2e 是否只断言\"重试能 start\"；补 `manual_compact_retry_after_failure_completes`（同文件）：provider 注入首次 Err、第二次 Ok → 断言第二次 compact 完成、transcript 为压缩后形态、lease 释放、无残留 Compact phase。\n- seam：沿用现有 provider 注入（tests/common），不新增产品 seam；若需\"第 N 次失败\"脚本化 provider，仅在 tests/common 加。\n- 验收：`cargo test --test manual_compact_e2e` 与 `--test compact_failure_calibers` 全绿，各跑 3 次无 flake。\n\n## 2. R4 重连后行为（牵头，与 Session 协作）\n- Runtime（回合停止侧）：`tests/compact_failure_calibers.rs` 新增 `reconnect_then_auto_compact_failure_stops_turn`：模拟断线重连（provider 首个流中断→reconnect）后 compact_if_needed→Err，断言 TurnOutcome::Error、call_model 计数不再增长、snapshot 还原；`reconnect_then_terminal_llm_error_stops_turn`：不可重试错误直接终止。\n- Session（controller/client 重试 UX 侧）：重连后 manual compact 可再点（lease/按钮状态/协议事件）。\n- 交接点：Runtime 提供\"失败后 lease 已释放 + TurnOutcome::Error\"断言 helper；Session 在 controller 层复用并断言客户端可再次发起。双方产物互附交叉审段。\n\n## 3. 可疑实现排查范围\n- 文件：src/runtime/{mod,exec,context,pending_auto_turn,*_auto_turn,stream_projection,phase,provider_registry,llm_resolve}.rs、src/agent/**、src/types/**、src/config/**（manager/settings_writer/global_db）、src/llm/**。\n- 方法：rg `lock()`/`.await` 同作用域（std Mutex 跨 await）、lease/guard 未 Drop 的早退路径（`?` 前已取 lease）、take() 后失败未归还（如 restore_custom_mailbox）、多步写入无回滚、spawn 后 JoinHandle 遗失、错误吞没（`let _ =`/`.ok()`）。\n- 输出：file:line + 现象 + 复现/证据 + 严重度（issue-grading.md）；小问题域内修+补测，大问题开 ISSUE。\n- 已关闭不重复：ISSUE-005（rusqlite 越界）、017（commit_mixed 半写入）、018（CompactionFailed 文案）、027（compact 失败三口径）。仅核回归。\n\n## 4. 本域未提交文件处置\n`git diff --stat`：7 文件 +15/−34，全部为纯 rustfmt 格式化（换行/多余空行/mod 排序），无语义变更。WP-006/007/008/014 的实质改动已在 HEAD c6b24df。\n| 文件 | 变化 | 来源 | 处置 |\n|---|---|---|---|\n| config/manager.rs | 删 1 空行 | 未知（cargo fmt），非 runtime 手写 | 保留，需 owner 确认 |\n| config/schema.rs | fn 签名换行 | 未知（fmt） | 保留，需 owner 确认 |\n| config/settings_writer.rs | 删空行 + WP-008 测试内 fmt | WP-008 文件，fmt 来源未知 | 保留 |\n| runtime/exec.rs | 2 处换行 | 未知（fmt） | 保留，需 owner 确认 |\n| runtime/mod.rs | mod 排序 + 空行 + 签名 | 未知（fmt） | 保留，需 owner 确认 |\n| runtime/stream_projection.rs | 测试内 use/链式调用折行 | 未知（fmt） | 保留，需 owner 确认 |\n| types/death_list_gate.rs | format! 折行 + 空行 | 未知（fmt） | 保留，需 owner 确认 |\n- 验证：`cargo fmt --check -- <files>`、`cargo build`、`cargo test --lib config:: runtime:: types::death_list_gate`。\n- 提交：交 GM 合批，作为单独 \"style: rustfmt\" 提交，不混入语义改动。\n\n## 5. 测试裁剪清单（只列不删）\n- src/runtime/{bash,subagent,custom}_auto_turn.rs：三份结构同构的 auto-turn 测试（排队/触发/去重），建议抽公共参数化 helper，保留各自差异断言。\n- tests/session_data_sql_death_list.rs vs src/types/death_list_gate.rs：SQL 死亡清单两处均有子串扫描，重复；且 session_search 等预存红灯（WP-012 归档）——建议单点化。\n- death_list_gate::session_seq_g2_*：子串门禁易假绿/误杀（ISSUE-013，context 所有），建议放宽为 AST/符号级或标注。\n- compact_failure_calibers::manual_compact_failure_releases_lease_for_retry 与 manual_compact_e2e 部分重叠：e2e 补全后可将前者降为单元级或合并。\n\n## 6. 交叉审\n- Session↔Runtime：互审 R1/R4 及对方清单（我审 WP-024 / WP-022-session.md）。\n- 上下文↔Runtime：互审 compact/reminder 与回合交界（我审 WP-026 / WP-022-context.md）。\n- 中层抽样核对 R1/R4。\n\n## 7. 执行步骤 / done_when / 风险\n1) 获批后 start；2) R1 补测；3) 与 Session 对齐 helper 后写 R4 runtime 侧；4) 排查出清单并修小项；5) fmt 文件验证并交 GM；6) 交叉审；7) review。\n- done_when：R1/R4 测试 3 连绿；可疑清单含 file:line+严重度；处置表落地；交叉审段齐；approver close。\n- 风险：重连模拟需 provider 流中断注入，若现有 fake 不支持需在 tests/common 加（报中层）；fmt 改动归属未知；死亡清单预存红灯干扰全量跑。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:02:49.630Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: Runtime 域审可疑实现并列测试裁剪清单；牵头 R1 手动压缩失败可重试 e2e、R4 重连行为测试（与 Session 联合）"
+        },
+        {
+          "ts": "2026-10-12T07:04:49.237Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-025 / WP-022-runtime 方案（Runtime，仅方案，未开工）\n\n## 1. R1 手动压缩失败→重试 e2e（牵头）\n- 现状：`"
+        },
+        {
+          "ts": "2026-10-12T07:04:49.304Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "WP-025 方案已填：R1/R4、排查范围、7 文件均为纯 fmt 处置表、裁剪清单；请审"
+        },
+        {
+          "ts": "2026-10-12T07:05:37.340Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准"
+        },
+        {
+          "ts": "2026-10-12T07:06:00.482Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:04:18.895Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:05:03.773Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：R1/R4 测试连续三遍全绿，compaction_failed 映射完成，ISSUE-033 已修，Session 提的阻断项已补；lib 单测在最终代码上未重跑，汇总时抽样补跑",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-026",
+      "domain": "harness-core",
+      "title": "WP-022/上下文：不稳实现+测试裁剪",
+      "result": "上下文域审可疑实现并列测试裁剪清单；R3 为 reminder sources 模块补最小专属单测",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "context",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-022-context.md",
+      "progress": "closed done by backend_mid: 验收通过：R3 九个 source 全覆盖，本域测试全绿，Runtime 交叉审已写",
+      "status_entered_at": null,
+      "parent": "WP-022",
+      "goal": "上下文域审可疑实现并列测试裁剪清单；R3 为 reminder sources 模块补最小专属单测",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-026 方案（上下文）— 产物 .litecode/ops/artifacts/WP-022-context.md；不 commit；不碰引擎产品/symlink 复制\n\n## (a) R3 reminder/sources 最小单测\n- 保留并收口 src/reminder/sources/tests.rs（已取消的 WP-018 留下的，仅测试，9 条）：tasks（只有压缩后才恢复，且只恢复一次）/background/files_changed（最多 20 条，并带 +N 计数）/bash_exit（区分 kill，列出仍在运行的）/subagent_settled/custom_tool_settled/plan_changed（与 seen 及 spine 做 diff）/step_budget（剩余 ≤3 步时警告，每回合一次）/env（快照变了才再发）。\n- 补齐缺口：逐个核对 sources/mod.rs 导出的每个 source 是否至少有 1 条正向用例和 1 条抑制用例；注释头的 WP-018 改为 WP-026；跑 rustfmt。\n- 证据命令：cargo test --lib reminder::sources:: 和 cargo test --lib reminder::（遇到 cargo 锁时，直接跑已编译的测试二进制，并在产物里写明）。\n\n## (b) 可疑实现排查范围（只读；每条给 file:line，按 arch/drift/bug/suspect × product/gate/env 定级，并对照 B1–B5 阻断阈值）\n1. compact 失败恢复：auto 失败→TurnOutcome::Error，manual 可重试；失败后 working set/fold 不能被半写入。\n2. prepared view 生命周期：准备、使用、作废的时机，以及跨 step 复用是否会拿到过期视图。\n3. seam 写入顺序：reminder 写入与 item 落盘的先后，以及崩溃或取消时是否丢失或重复。\n4. file_tracker：并发更新，mtime/hash 竞态，删除与重命名。\n5. migrate：失败路径能否回滚，有无版本漂移。\n6. mentions 去重：同文件或同符号的重复引用，以及只报 lines 不使用的口径。\n7. budget 硬上限：越限时是截断还是报错，keep-recent 与媒体计数在边界上的行为。\n- 发现只记录、开 issue，本 WP 不修产品代码。\n\n## (c) 本域未提交文件的处置（已核实来源）\n- compact.rs（-1 行合并 fetch_add）、reminder/engine.rs（use 换行、修正测试缩进）、kinds.rs（删一个空行）、mentions.rs（测试里 fs::write 换行）、mod.rs（re-export 重排）：全是 rustfmt 格式化，没有语义变化 → 保留，随 GM 批量提交。\n- reminder/sources/mod.rs：+#[cfg(test)] mod tests; → 保留（R3 依赖它）。\n- reminder/sources/tests.rs（新文件，未跟踪）：WP-018 产物 → 保留，按 (a) 调整。\n- 不 revert 任何文件。上面的 fmt 改动可能来自某次全仓 cargo fmt，请后端中层确认没有别的域要撤回。\n\n## (d) 测试裁剪清单（只列不删）\n- 扫 context_pipeline/reminder 的单测和 tests/stage_a_*、working_set_identity、turn_prefix_stability，逐条标「可删/可放宽/重复」，并写明理由与覆盖替代。\n- 死名单（death_list_gate.rs）里的条目一律不动；任何改动建议都必须先开 issue 写明理由。\n\n## (e) 与 Runtime 互审 compact/reminder ↔ 回合交界\n- 我审 Runtime：runtime/exec.rs 什么时候触发 compact，失败时 TurnOutcome 的映射，cancel 如何传播，seam facts 收集是否完整。\n- Runtime 审我：compact 返回的契约（错误类型、能否重试），reminder 注入的位置和顺序，prepared view 的失效条件。\n- 双方各在产物里写下结论和 file:line，有分歧就开 issue。\n\n## 工具需求\n- 暂无新工具需求。只请求一点：cargo 锁冲突时允许直接跑测试二进制，并以此作为证据。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:02:49.704Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 上下文域审可疑实现并列测试裁剪清单；R3 为 reminder sources 模块补最小专属单测"
+        },
+        {
+          "ts": "2026-10-12T07:04:44.566Z",
+          "actor": "context",
+          "action": "fill",
+          "note": "direct: # WP-026 方案（上下文）— 产物 .litecode/ops/artifacts/WP-022-context.md；不 commit；不碰引擎产品/s"
+        },
+        {
+          "ts": "2026-10-12T07:04:44.637Z",
+          "actor": "context",
+          "action": "submit",
+          "note": "方案已填：R3/排查/未提交文件/裁剪/互审；批后开工"
+        },
+        {
+          "ts": "2026-10-12T07:05:37.411Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准"
+        },
+        {
+          "ts": "2026-10-12T07:06:06.851Z",
+          "actor": "context",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:04:04.152Z",
+          "actor": "context",
+          "action": "deliver",
+          "note": "产物 .litecode/ops/artifacts/WP-022-context.md（含 Runtime 交叉审）；R3 9 源测试；cargo 1.99.0 全绿；ISSUE-032/033/035；不 commit"
+        },
+        {
+          "ts": "2026-10-12T08:05:03.690Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：R3 九个 source 全覆盖，本域测试全绿，Runtime 交叉审已写",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-027",
+      "domain": "tools-permission",
+      "title": "WP-022/Tools：不稳实现+测试裁剪",
+      "result": "Tools 域审可疑实现并列测试裁剪清单；查清自定义后台进程 Broken pipe 竞态根因并修或定性，决定 src/tools/custom.rs 半成品采用/改写/回退",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-022-tools.md",
+      "progress": "closed done by backend_mid: 验收通过：Broken pipe 已修，20 连跑全过；B5/B6/B12 已修并配测试；optional_lsp 过时断言已更新；IDE 交叉审已回应（ISSUE-039/040），对 IDE 的交叉审已写",
+      "status_entered_at": null,
+      "parent": "WP-022",
+      "goal": "Tools 域审可疑实现并列测试裁剪清单；查清自定义后台进程 Broken pipe 竞态根因并修或定性，决定 src/tools/custom.rs 半成品采用/改写/回退",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-027 Tools 方案（tools，direct）\n### 0 现状快照（WP-018 作废时，未回退任何东西）\n- WP-018-tools.md 不存在；WP-018 无 Tools 产物。\n- custom.rs 已有改动（含中层半成品）：run_sync_with_lifecycle stdin write_all（约 :295-305）**已真正**放过 ErrorKind::BrokenPipe，其余写错误仍 kill+error；新增测试 child_ignoring_stdin_is_not_a_broken_pipe_failure（unix，1MiB 输入+`exec 0<&-`，未跑）；其余为 rustfmt 格式化。\n- cli.rs：只有 AskAnswer / ask_cli_ask_user 返回类型的 rustfmt 换行，无语义改动。\n- 本机 box rustc 1.85.1 < 依赖要求 1.88（ort/time），cargo test 无法编译，未能实跑。\n### 1 Broken pipe 根因与修复方向\n根因（待实跑确认）：background_real_process_begin_job_then_mailbox_notice 的子进程 `sh -c \"echo custom-bg-marker\"` 不读 stdin；父进程 spawn 后再 write_all(input_json)。子进程先退出（关闭读端）→ write 得 EPIPE → 旧代码判 \"stdin write failed: Broken pipe\"。批量跑负载高时 sh 退出更早于写入，故偶发；单跑写入抢先进 pipe buffer，故 2/2 过。纯竞态，非逻辑错。\n修复方向：EPIPE 不算工具失败，以退出码/输出为准（即现半成品做法）；同时核对后台路径（custom_hub begin_job）是否复用同一写入函数，若各自写 stdin 则统一走一个 helper。用 1MiB 输入的确定性测试固化，再把原 flake 测试批量跑 ≥20 次验证。\n### 2 custom.rs 半成品：采用（小改）\n理由：EPIPE 放过逻辑正确且最小；测试设计可确定性复现。小改：补注释说明非 EPIPE 仍致命；检查 Windows 对应错误码（ERROR_NO_DATA→BrokenPipe 映射）；测试实跑通过后保留。格式化 hunk 保留。不回退。\n### 3 可疑实现排查范围\nsrc/{tool,tools,permission,mcp,hook,knowledge,optional}，四类：并发/竞态（custom_hub mailbox 与 seam、ask 串行、MCP 连接池）、回滚（权限规则写入、plan 审批失败）、半写入（knowledge index/文件写、settings 写）、失败路径（wait panic 兜底 custom.rs wait_child_cancellable 的 panic!、子进程 kill 树、webfetch DNS 失败/代理残留）。逐条 file:line + 严重度(arch/drift/bug/suspect)；小问题域内修+补测，大问题只登记报中层。\n### 4 测试裁剪清单（只列不删）\n按 可删（重复覆盖、已被集成测替代）/ 可放宽（依赖时序 sleep、断言过严字符串）/ 重复（tests/permission_pipeline 与 client_protocol_permission 重叠门禁）三类，逐条给测试名+理由+替代覆盖。\n### 5 未提交文件处置（逐文件，结论在产物表中落实）\n- tool/{availability,registry}.rs, tools/{ask_user,bash_jobs_contract,custom_hub,knowledge,litecode_workspace,mod,plan,webfetch,websearch}.rs, permission/{mod,sinks}.rs：逐个看 diff，区分 功能(ISSUE-012/021/030 等已交付) / 纯格式化 / 测试；保留并 cargo check+test 本域通过后标「待提交」。\n- tools/custom.rs：见 §2，保留。\n- knowledge/{corpus,fsref,index,index_tests,mentions,spec_tests,validate}.rs：同上逐文件核对；疑为纯格式化者标注。\n- 关联 tests/{client_protocol_permission,common/permission,permission_pipeline}.rs 属本域测试，一并收（WP-022 未列，报中层确认归属）。\n- src/cli/cli.rs：仅 AskAnswer 格式化 hunk，保留，标「纯格式化」。\n- 不 commit，由 GM 统一提交。\n### 6 与 IDE 基座互审\n交 IDE：custom.rs 进程 spawn/stdin/wait/kill_child_tree、custom_hub 后台 job 生命周期、EPIPE 修复；审 IDE 的 workspace/service.rs 及终端进程生命周期。双方在对方产物末尾附「交叉审」段。\n### 7 工具需求\n需要可编译本仓库的 rustc ≥1.88（box 当前 1.85.1，无法 cargo test）。请中层转工具集管家，或指定实跑环境。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:02:49.777Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: Tools 域审可疑实现并列测试裁剪清单；查清自定义后台进程 Broken pipe 竞态根因并修或定性，决定 src/tools/custom.rs 半成品采用/改写/回退"
+        },
+        {
+          "ts": "2026-10-12T07:04:53.501Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: ## WP-027 Tools 方案（tools，direct）\n### 0 现状快照（WP-018 作废时，未回退任何东西）\n- WP-018-tools.m"
+        },
+        {
+          "ts": "2026-10-12T07:04:53.570Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "方案已填；需 rustc>=1.88 实跑环境"
+        },
+        {
+          "ts": "2026-10-12T07:05:37.482Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准"
+        },
+        {
+          "ts": "2026-10-12T07:06:10.945Z",
+          "actor": "tools",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T08:10:44.704Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "WP-022-tools.md：BP修复+B5/B6/B12修复与测试、20x 20/20、ISSUE-034/039/040、IDE X1-7 已回应、lsp 测试修正"
+        },
+        {
+          "ts": "2026-10-12T08:16:27.538Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：Broken pipe 已修，20 连跑全过；B5/B6/B12 已修并配测试；optional_lsp 过时断言已更新；IDE 交叉审已回应（ISSUE-039/040），对 IDE 的交叉审已写",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-028",
+      "domain": "ide-substrate",
+      "title": "WP-022/IDE 基座：不稳实现+测试裁剪",
+      "result": "IDE 基座域审可疑实现（进程生命周期/终端/LSP/workspace）并列测试裁剪清单",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-022-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：探针已标 ignore 并对应 ISSUE-037/038，S1 假设已推翻，custom.rs 交叉审已写；Tools 对本包的交叉审待补，汇总时一并核",
+      "status_entered_at": null,
+      "parent": "WP-022",
+      "goal": "IDE 基座域审可疑实现（进程生命周期/终端/LSP/workspace）并列测试裁剪清单",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-028 方案（ide）——只填方案，不开工\n\n基线：HEAD c6b24df，分支 ops/team-framework，2026-10-12。产物路径：`.litecode/ops/artifacts/WP-022-ide.md`（开工后再建）。\n禁区：引擎产品形状（ISSUE-023..026 冻结；embed.rs 只记录现状）、symlink 复制（ISSUE-010 / WP-004）。不 commit、不改产品代码和测试。\n\n## 1. 可疑实现排查计划（进程生命周期 / terminal / LSP / workspace）\nWP-018-ide.md 草稿没有落盘，WP-018 只留下读码线索，下面这些都当线索，开工后逐条复核或复现：\n- LSP `src/lsp/server.rs` `LspServer::kill_child`（约 771 行）：用 `child.try_lock()`，锁被占时静默不 kill。`LspHub::drop` 在 runtime 内的路径（hub.rs 约 985 行）只调用它，而且不 wait，可能留下进程或僵尸。另外没有建进程组，rust-analyzer 的 proc-macro-srv 等孙进程只能靠 stdin EOF 退出。先定 suspect，开工后拿进程计数做复现。\n- `src/proc_lifetime.rs` `sweep_once`（Linux，约 258 行）：只认 `ppid == 1`，可注释里写了 subreaper。被重挂到 subreaper 的孤儿会漏掉。suspect，要求有 subreaper 环境。\n- `src/engines/code_search_ipc/client.rs` `Drop for CodeSearchWorkerClient`（约 226 行）：只 kill 不 wait，可能留僵尸。这一条只看子进程生命周期，不碰引擎产品形状。\n- terminal `src/terminal/pty.rs` `kill_process_group` 和 `src/terminal/mod.rs` 的 close/kill 路径（约 195、451、778 行）：kill 之后只做一次 `try_reap`。要核实 `PtySession::drop → wait_join` 是否在所有路径上都兜底回收，并对照 `exec_once_timeout_kills_process_group_without_leak`。\n- workspace `src/workspace/service.rs`：`create_file` 和 `write_file_bytes(overwrite=false)` 先查 exists、再 atomic_write，存在 TOCTOU 竞态，并发时后写者会覆盖先写者。`move_via_copy`（约 490 行）跨设备失败时，`cleanup_incomplete_dest` 可能删掉原来就在的目标文件（overwrite=true），需要复现。源文件删到一半也会留下半移动状态。\n- 每条都写 file:line + 符号、严重度、依据（读码还是实测）、分级（arch/drift/bug/suspect）。复现命令统一用 `HOME=/workspace/litecode/.tmp/home … </dev/null`。拿不到复现的一律标 suspect，不凑数。ISSUE-002/009 不重复报，ISSUE-007 可以引用。\n- 注意：WP-018 在跑三个死亡清单 cargo test 时被中断（运行约 42 分钟），开工时先单独 `cargo build --tests`，然后逐个 `--test` 跑，并设超时。\n\n## 2. 测试裁剪清单的做法（只列不删）\n- 范围：`tests/workspace_hotswitch_death_list.rs`、`terminal_bypass_death_list.rs`、`workspace_path_death_list.rs`、`tests/workspace_*.rs`、`tests/optional_lsp.rs`，以及上面源码目录里的单元测试。\n- 每条给出：测试名、文件、类别（可删/可放宽/重复）、理由、建议动作。死亡清单逐条辩证：\n  - hotswitch：FORBIDDEN 是子串匹配，误报见 ISSUE-007（`reload_workspace`、`post_open`、`api/workspace/open`）。建议改成词边界或精确符号再放宽，不建议删。\n  - path：`death_list_src_canonicalize_whitelist_is_only_path_rs` 只是自检，要看它和 `no_bare_canonicalize` 是否重复。\n  - optional_lsp 和 workspace_api：找出和单元测试重复的 CRUD/路径用例。\n- 每条都标出“过时依据”。不能为了变绿而建议删除。\n\n## 3. src/workspace/service.rs 未提交改动：建议保留（这一步不动）\n`git diff`：只是把 `refuse_top_level_symlink_copy` 的函数签名从多行并成一行，正好 100 列，也就是 rustfmt 默认 max_width 下的输出，不改语义。理由：这是纯 cargo fmt 结果。回退反而会让 `cargo fmt --check` 失败。这个函数属于 symlink 复制禁区，但改动不碰逻辑，所以保留，留到提交批次随 fmt 一起提交，并在提交说明里注明“fmt-only，不涉及 ISSUE-010”。如果总经理要求本批零触碰禁区文件，备选方案是 `git checkout -- src/workspace/service.rs`，由批次负责人执行。\n\n## 4. embed.rs 现状（冻结，只记录）\n`src/engines/code_search/embed.rs` 有未提交改动，只在测试模块约 359 行：一个 `assert!` 按 rustfmt 拆成多行，纯格式，不改产品和测试语义。只记录，不改也不回退，由冻结批次统一处理。\n\n## 5. 和 Tools 互审（进程生命周期、Broken pipe）\n- 交给 Tools 的材料：第 1 节里进程生命周期各条（LSP kill/wait、worker Drop、PTY 进程组、孤儿清扫），附 file:line 和复现命令。\n- 请 Tools 反审：子进程 stdin/stdout 管道在对端退出后写入导致 Broken pipe（EPIPE）的处理路径，包括 LSP `send_notification` 在 shutdown/exit 时、code_search worker `request`、PTY writer。确认每处是吞掉、记日志还是向上冒泡，以及是否会触发 SIGPIPE 让进程退出。\n- 形式：双方各写一节，进 WP-022-ide.md 的「互审」节，结论合并到可疑表。有分歧时标 suspect，交审批人（backend_mid）裁定。\n\n## 完成标准\nWP-022-ide.md 包括 HEAD/日期、可疑实现表、测试清单表、service.rs 和 embed.rs 的处置记录、互审节、统计和优先级。全程无 commit，不改产品代码和测试。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:02:49.855Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: IDE 基座域审可疑实现（进程生命周期/终端/LSP/workspace）并列测试裁剪清单"
+        },
+        {
+          "ts": "2026-10-12T07:05:21.077Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-028 方案（ide）——只填方案，不开工\n\n基线：HEAD c6b24df，分支 ops/team-framework，2026-10-12。产物路"
+        },
+        {
+          "ts": "2026-10-12T07:05:21.151Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "ide 方案已填，产物 .litecode/ops/artifacts/WP-022-ide.md"
+        },
+        {
+          "ts": "2026-10-12T07:06:16.868Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准"
+        },
+        {
+          "ts": "2026-10-12T07:06:55.950Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开工：只审不修"
+        },
+        {
+          "ts": "2026-10-12T08:04:58.966Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "WP-022-ide.md 完成；ISSUE-037/038 新开、ISSUE-007 补证；探针 #[ignore] 默认绿、--ignored 复现；custom.rs 交叉审已追加至 WP-022-tools.md；Tools 交叉审待补"
+        },
+        {
+          "ts": "2026-10-12T08:05:48.868Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：探针已标 ignore 并对应 ISSUE-037/038，S1 假设已推翻，custom.rs 交叉审已写；Tools 对本包的交叉审待补，汇总时一并核",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-029",
+      "domain": "client-ux",
+      "title": "WP-023 web：找不稳实现+R2+测试裁剪清单",
+      "result": "在 web/ 找出状态竞态、重连、多会话 Ask 的可疑实现并逐条给文件:行号证据；收敛 web 死亡清单里自引用文件名的弱断言(R2)；列 web 可删/可放宽/重复/假绿测试及理由，只列不删",
+      "done_when": [
+        "可疑实现清单带证据",
+        "R2 已收敛或给出方案",
+        "测试裁剪清单带理由",
+        "已交叉审 desktop 节"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-021-frontend.md",
+      "progress": "closed done by frontend_mid: web 节+交叉审 desktop 节已验收",
+      "status_entered_at": null,
+      "parent": "WP-023",
+      "goal": "在 web/ 找出状态竞态、重连、多会话 Ask 的可疑实现并逐条给文件:行号证据；收敛 web 死亡清单里自引用文件名的弱断言(R2)；列 web 可删/可放宽/重复/假绿测试及理由，只列不删",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "WP-029 方案（web，只列不改）。起点：复用已取消 WP-018-frontend.md 的 web 相关内容（11 条可疑/R2/10 条测试清单），逐条复核后迁入，原文件保留不删。\n1) 不稳实现排查：a 状态竞态——turnStore pendingPermission/grantPermission 乐观清除与失败回滚；messageStore snapshot 与 delta seq 顺序/丢弃旧 seq；knowledgeStore version/epoch 与 debounce 乱序。b 重连——connectionStore 退避、重订阅、旧 handler 残留、在途 RPC 处理。c 多会话 Ask——PermissionModal/AskUserCard/AgentPanel 的 session 绑定，两会话同时出卡。每条输出 文件:行号 证据、风险、置信度、修法建议。\n2) R2 收敛：rg 定位 web death-list 测试中 basename(__filename) 自指断言，说明为何弱（扫到自身即绿，扫描器空跑也过）；加强方案：断言扫描文件数 N>0、pattern 列表非空、植入 fixture 自测必报、校验 roots/globs 含 .tsx。本 WP 只写方案，未获批不改测试。\n3) 测试裁剪清单：rg skip/todo/expect(true)/无断言、实现细节 class 断言、重复覆盖、mock 被测单元；vitest 只读运行取基线；输出清单+理由，不删。\n4) 产物：仅写 .litecode/ops/artifacts/WP-021-frontend.md「## web」节，保留其他节；完成后交叉审「## desktop」。\n完成标准（对齐 goal）：三类问题均有文件:行号证据；R2 方案成文；清单只列不删；不 commit、不碰引擎 UI/symlink 复制。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:03:02.874Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 在 web/ 找出状态竞态、重连、多会话 Ask 的可疑实现并逐条给文件:行号证据；收敛 web 死亡清单里自引用文件名的弱断言(R2)；列 web 可删/可放宽/重复/假绿测试及理由，只列不删"
+        },
+        {
+          "ts": "2026-10-12T07:04:29.309Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: WP-029 方案（web，只列不改）。起点：复用已取消 WP-018-frontend.md 的 web 相关内容（11 条可疑/R2/10 条测试清单），逐"
+        },
+        {
+          "ts": "2026-10-12T07:04:29.381Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": "方案待审"
+        },
+        {
+          "ts": "2026-10-12T07:05:00.806Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案通过；完成标准以 4 条为准：可疑实现带证据；R2 已收敛或有方案；测试裁剪清单带理由；交叉审 desktop 节"
+        },
+        {
+          "ts": "2026-10-12T07:05:23.758Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": "开工"
+        },
+        {
+          "ts": "2026-10-12T07:08:24.283Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "WP-021-frontend.md：## web 写了 W1-W10 + 3 处核查无问题，R2 只出方案、未改测试，裁剪清单 T1-T9；## desktop 末尾追加了交叉审（web）：16 条中 13 成立 / 2 部分成立 / 1 不成立，裁剪 3 条有异议"
+        },
+        {
+          "ts": "2026-10-12T07:08:58.822Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "web 节+交叉审 desktop 节已验收",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-030",
+      "domain": "release-desktop",
+      "title": "WP-023 desktop：找不稳实现+测试裁剪清单",
+      "result": "在 desktop/、scripts/ 及相关 Windows workflows 找出瘦包/组件下载失败路径、状态竞态、重连的可疑实现并逐条给文件:行号证据；列 desktop 可删/可放宽/重复/假绿测试及理由，只列不删",
+      "done_when": [
+        "可疑实现清单带证据",
+        "测试裁剪清单带理由",
+        "已交叉审 web 节"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-021-frontend.md",
+      "progress": "closed done by frontend_mid: desktop 节+交叉审 web 节已验收",
+      "status_entered_at": null,
+      "parent": "WP-023",
+      "goal": "在 desktop/、scripts/ 及相关 Windows workflows 找出瘦包/组件下载失败路径、状态竞态、重连的可疑实现并逐条给文件:行号证据；列 desktop 可删/可放宽/重复/假绿测试及理由，只列不删",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-030 方案（desktop：找不稳实现 + 测试裁剪清单）\n\n范围：desktop/、scripts/、.github/workflows/windows-*.yml。只读审查；产物仅写 .litecode/ops/artifacts/WP-021-frontend.md 的「## desktop」节（保留其它节原样）。不 commit、不删/不改测试与产品代码、不碰引擎 UI 与 symlink 复制。\n\n## 一、排查点（逐条给 文件:行号 / 风险 / 场景 / 建议修法；未证实标「假设」）\n1. 组件下载失败路径（components.ts / build_components.mjs）\n   - 断点：中断后是否续传或干净重下；半写文件是否残留成「已安装」\n   - 校验：sha256/size 校验时机（落盘前/后）、不过时是否清理、install record 是否先写\n   - 重试：失败状态能否复位、并发 ensure 是否共享 promise、错误后再触发是否卡死\n   - 半成品清理：临时目录/解包目录在异常、取消、进程退出时是否清理；extractTarGz 中途失败\n2. 状态竞态：ComponentManager 状态机并发；Open Remote（main.ts ensureComponentForRemote、pending-remote.ts、hub.ts 进度监听卸载）重复点击/窗口关闭；sidecar 启停重叠\n3. 重连：SSH 断开后重连/重附（ssh-session.ts、main.ts remote 流程）、sidecar 崩溃重启、进度 UI 残留\n4. 打包/CI 失败路径：package_win.ps1 / assemble_product.ps1 中途失败残留；windows-signed-release.yml 组件上传缺件或版本三角不一致时是否阻断\n已缓解项（ISSUE-028 门等）简记不重复。\n\n## 二、测试裁剪清单产出方法\n逐个过 desktop/src/*.test.ts（16+2 个，基线 109 pass）：按 可删 / 可放宽 / 重复 / 假绿 四类，每条写 测试名 + 理由（与哪条重叠、断言是否恒真、是否锁实现细节/过时契约），辩证判断，只列不删；附显著缺口。先实跑 `cd desktop && npm test` 记基线。\n\n## 三、交付与后续\n写完 desktop 节 → deliver 并私信前端中层；之后交叉审「## web」节（只写审阅意见）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T07:03:02.949Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 在 desktop/、scripts/ 及相关 Windows workflows 找出瘦包/组件下载失败路径、状态竞态、重连的可疑实现并逐条给文件:行号证据；列 desktop 可删/可放宽/重复/假绿测试及理由，只列不删"
+        },
+        {
+          "ts": "2026-10-12T07:04:34.117Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-030 方案（desktop：找不稳实现 + 测试裁剪清单）\n\n范围：desktop/、scripts/、.github/workflows/wind"
+        },
+        {
+          "ts": "2026-10-12T07:04:34.185Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "方案待审"
+        },
+        {
+          "ts": "2026-10-12T07:04:45.390Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案通过；scripts/ 和 workflows 里的测试也一起过一遍"
+        },
+        {
+          "ts": "2026-10-12T07:04:57.145Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "开工"
+        },
+        {
+          "ts": "2026-10-12T07:08:02.271Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "desktop 节+交叉审 web 完成"
+        },
+        {
+          "ts": "2026-10-12T07:08:30.060Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "desktop 节+交叉审 web 节已验收",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-031",
+      "domain": "team-ops",
+      "title": "ops 工具加固：超时去重 + 事件持久化 + issue 编号加锁 + rustup 默认",
+      "result": "超时提醒按链合并，只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配、不撞号；任何 shell 下 cargo 都能直接用 1.99",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "超时提醒按链合并，只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配、不撞号；任何 shell 下 cargo 都能直接用 1.99",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "Andy 18:43 批：GM 工具需求全部合理，直接建包派下去。拆一个子包给工具集管家。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T10:43:27.323Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 超时提醒按链合并，只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配、不撞号；任何 shell 下 cargo 都能直接用 1.99"
+        },
+        {
+          "ts": "2026-10-12T10:43:34.108Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: Andy 18:43 批：GM 工具需求全部合理，直接建包派下去。拆一个子包给工具集管家。"
+        },
+        {
+          "ts": "2026-10-12T10:43:34.316Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T10:43:34.534Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 18:43 在 1:1 批准"
+        },
+        {
+          "ts": "2026-10-12T10:43:34.765Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T10:55:31.058Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T11:13:55.886Z",
+          "actor": "andy",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-032",
+      "domain": "team-ops",
+      "title": "ops 工具加固（管家）",
+      "result": "超时按链合并只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配；非登录 shell 下 cargo/rustup 默认可用；配测试，老包行为不变",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-032.md",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
+      "parent": "WP-031",
+      "goal": "超时按链合并只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配；非登录 shell 下 cargo/rustup 默认可用；配测试，老包行为不变",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-032 方案（drafting → 交 GM 审）ops 工具加固（管家）\n\n- 父包：WP-031（owner gm，approver andy，方案已由 andy 批，in_progress）\n- 负责人：tools_steward · 审批人：gm\n- 本步只出方案：没写工具代码，没改 /etc 和 ~ 下的文件，不 commit\n- 基线：tools_version=14（ops.wp v2）\n\n## 0. 根因（实地排查）\n\n### 0.1 GM 15 分钟被叫醒 7 次（events/inbox.json + .tmp/wp_watch.log）\n08:07–08:22Z（16:07–16:22 HKT）这段时间 wp_watch 投递了 7 次：08:07 四次（WP-021/022/024/027），08:14 两次（WP-021/022），08:19 一次（WP-021）。之后 WP-021 几乎每 5 分钟一次（08:24、08:39、08:44、08:49），08:50 又由 tick 重复发了一次。原因有五条：\n1. **ack 之后就会重发**：`scanAndEmitWpTimeouts` 去重时只看「本段计时内有没有**未 ack** 的事件」。GM 一 ack，下一个 5 分钟周期又发一条新的。所以同一个卡点会一直响，直到状态变化为止（WP-021 共 9 条）。\n2. **父包被子包连带**：WP-021（gm）和 WP-022（gm 当 owner）处在 in_progress，只是因为子包还在跑。父包 owner 当时没有自己要做的动作，照样被叫醒。父子链没有合并，一条链会发多条。\n3. **target 不等于真正收到的人**：WP-024/027 的 target 是 backend_mid，但 wp_watch 只有一个 webhook（GM 回调），所有 wp_timeout 都推给了 GM。inbox 里这两条也是 gm ack 的。\n4. **两个发事件的进程**：tick（08:50:29，source=ops.tick）和 wp_watch（08:49:16）各自扫描、各自 emit。前一条刚被 ack，tick 就又发了一条。\n5. 计时口径：in_progress 也算卡点（v13 起沿用）。父包在等子包时并不卡，这一条和第 2 点是一回事。\n\n### 0.2 16:11 重启丢事件（emit_event / wp.mjs emit / wp_watch）\n- wp_watch 只投递 `team_ops.wp_timeout`。`approval_requested` / `acceptance_requested` 只写进 inbox，从来不推。重启前后 08:08 WP-024 和 08:10 WP-027 的 acceptance_requested 就属于这种：没有推送，只能等 GM 自己 tick 才看得到。\n- 重启窗口：08:07:26 的 cycle 之后，下一条日志是 08:14:45（手动 `start`）。没有 supervisor 退出记录，说明是整机断电式重启。08:12 那个周期整体缺失，box 上没有 systemd/cron 能自动拉起 watcher，只能靠 tick 的 watcher_down 提醒，再由人手工 start。08:24→08:39 又缺了两个周期（疑似暂停），原因未查明。\n- 写盘不安全：emit_event、ack_event、wp.mjs 的 emit、超时扫描都是对 `events/inbox.json` 做**整文件读-改-写**，用的是普通 `writeFileSync`：\n  - 不加锁：几个 bot 并发写时，后写的会把先写的覆盖掉（丢更新）。\n  - 写入不是原子的：重启时正好在写，文件会被截断。\n- wp_watch 先 POST 再保存 delivered：如果在两步之间崩溃，会重复投递，但不会丢。\n- 现在的 inbox 里，每条 submit/deliver 日志都能找到对应事件（对过 39 条，没有重复 id）。所以「丢的那一条」更可能是**没被推送**（上面第一点）或者**重启窗口里没扫到**，而不是写盘丢失。这个判断要 GM 确认丢的是哪一条（见第 7 节问题 2）。\n\n### 0.3 ISSUE-031 被覆盖（issues/）\n- **没有任何分配工具**：tools/ 下没有 issue 相关脚本，各 bot 自己数一下最大号然后加 1，再手写 `issues/ISSUE-NNN.json`。\n- 15:40–15:50 HKT，WP-026（context）和 WP-027（tools）同时在审计，都选了 031。结果一份被覆盖。context 后来改号为 035（ISSUE-035 的 history 写着「原拟 ISSUE-031 文件丢失，改号」）。现在 031 这个号空着，006 也空着（历史遗留）。\n- 也没有校验能发现这类问题：文件名和 id 是否一致、id 是否重复，都没人查。\n\n### 0.4 后端中层跑 cargo 报「no default toolchain」\n在本 Shell 里复现了（非登录、非交互，env 是 bot harness 继承下来的）：\n- `PATH=/home/box/.cargo/bin:/usr/local/bin:...`，而且**没有** RUSTUP_HOME/CARGO_HOME。\n- `~/.cargo/bin/cargo` 是 rustup proxy（软链到 `~/.cargo/bin/rustup`，16:13 重启后重装的）。没有 RUSTUP_HOME 时它默认读 `~/.rustup`，那个目录是空的（没有 settings.toml，也没有 toolchains），于是报 `rustup could not choose a version of cargo`。\n- `/usr/local/bin/cargo`（wrapper，会设置 ops toolchain 的环境变量）本身没问题，但被前面的 `~/.cargo/bin` 挡住了。\n- `/etc/environment` 只在 PAM 登录时生效。`/etc/profile.d/litecode-rust.sh` 和 `~/.cargo/env`（已改成 source 这个 profile.d）只在登录或交互 shell 里生效。bot 的 Shell 两样都不是。\n- 对照：`env -i PATH=/usr/local/bin:... cargo -V` 正常，`bash -lc` 正常，`bash -ic` 正常，**只有直接继承来的环境出错**。\n- 推断：所有 bot 共用 box 用户、HOME=/home/box、同一套 harness PATH，所以都会遇到。我只能看到自己的 Shell 环境，其他 bot 的环境没法直接查。\n\n## 1. 实现方案\n\n### 1.1 超时按链合并（_lib.scanAndEmitWpTimeouts、tick、wp_watch）\n- **谁该动手**：awaiting_approval 和 review 由 approver 动手；in_progress 由 owner 动手，**但如果它有未封的子包，它自己不算卡点**（在等子包），这时卡点往下找。\n- **每条链只发一条**：把所有 stale 的 WP 按根节点分组，每条链只取「离卡点最近的那个需要动手的人」，也就是最深的 stale 节点对应的 actor。同一条链上其他 stale 节点记进 `meta.merged:[ids]`，不单独发。\n- **matter 去重**：matter key 定为 `wp + status + status_entered_at + actor`。\n  - 同一个 matter 已经 ack 的，在**重提醒间隔**内不再发。间隔默认 60 分钟，至少一个周期，可以用 `--realert-min` 调整（数值待 GM 定）。\n  - 没 ack 的 matter 也不重复发。\n  - 状态变了，或者 actor 变了，就是新 matter。\n  - 升级规则沿用 v13：没 ack 超过 5 分钟就上升一级，每段计时只升一次，顶层止于 gm，没有 andy 级。\n- **只有一个发事件的进程**：watcher 健康时 tick 只报告、不 emit，只有 watcher 心跳失效时 tick 才兜底 emit。两边共用 1.2 里的锁和 matter 去重，就算同时跑也不会重复。\n- **投递对象**：webhook 只推 actor 是 gm 的事件（含升级到 gm 的）。actor 是其他人的只进 inbox，由对方的 tick 消费。payload 新增 `actor`、`merged`、`matter_key`。（是否这样做见第 7 节问题 1。）\n- 老 WP（没有 parent、goal、history）：每个包仍然自成一条链。只加两点：「ack 后重提醒间隔」和「单发事件进程」，event 字段只增不改。这算行为修正，需要 GM 认可（第 7 节问题 3）。\n\n### 1.2 事件先落盘再发（_lib 新增 eventStore；emit_event / ack_event / wp.mjs / scan / wp_watch 改用它）\n- `withLock(path)`：用 `fs.openSync(lock,'wx')` 建锁文件，里面写 pid 和 ts。等锁时退避重试，最多等 5 秒。锁的 pid 已经不在、或者超过 30 秒的，算陈旧锁，可以抢。\n- `appendEvent / ackEvent`：拿锁 → 读 inbox → 修改 → 写 tmp → fsync → rename，原子替换。**先落盘，再返回或投递。**\n- outbox：`events/outbox.jsonl` 只追加，每行 `{event_id, ts, type, target}`，加锁写入并 fsync。投递状态仍然记在 `.tmp/wp_watch.state.json`，也改成原子写。\n- wp_watch 每个周期以及**启动时**都先把 outbox 里「没送达、没 ack」的条目排空。投递类型从只有 wp_timeout 扩到 approval_requested 和 acceptance_requested（只投 target 是 gm 的，和 1.1 一致）。重复投递靠 `x-litecode-event-id` 幂等，GM 端按 id 去重。\n- 重启后自动恢复：box 上没有 systemd/cron。tick 发现 watcher_down 时，可以加 `--autostart` 直接执行 `wp_watch start`，env 从调用方继承（需不需要待 GM 定）。\n\n### 1.3 Issue 编号加锁（新增 tools/issue_new.mjs = ops.issue_new；validate_all 加 issue 校验）\n- `issue_new --as <id> --title T --domain D [--severity ..] [--wp WP-x] [--body-file F]`。\n- 先锁 `issues/.lock`，然后取 max(issues/*.json, `git show HEAD:` 里已有的 issue 号, `issues/.reserved` 墓碑) + 1。用 `'wx'` 创建文件（已存在就失败，绝不覆盖），写 history 第一条，最后放锁。打印分配到的 id。\n- `issues/.reserved` 记录作废的号：031（覆盖事故）和 006。这些号不会再分配。\n- validate_all 新增检查：文件名和内部 `id` 一致、id 不重复。冲突直接报 error。\n- 已有的 issue 文件一个都不改。\n\n### 1.4 cargo/rustup 在非登录 shell 下默认可用（系统依赖，GM 批后执行；本步没动）\n- 把 `~/.cargo/bin/` 里的 rustup proxy（cargo、rustc、rustup、cargo-clippy、cargo-fmt、rustfmt、rustdoc、clippy-driver 等）换成和 `/usr/local/bin` 一样的 wrapper 脚本，内容是先设置 RUSTUP_HOME/CARGO_HOME 默认值，再 exec ops toolchain。这样不管 PATH 先后顺序如何，都会落到 ops toolchain。原文件备份到 `~/.cargo/bin.bak-<ts>`。\n- `~/.rustup`（现在是空目录）改成软链，指向 `/workspace/litecode/.litecode/ops/.toolchain/rustup`。这是兜底：任何没设 RUSTUP_HOME 的 rustup proxy 都能找到 default toolchain。\n- 新增 `tools/toolchain_check.mjs`（ops.toolchain_check）：在三种环境下各跑一次 `cargo -V` 和 `rustup show active-toolchain`，并打印 which、PATH 前几段、RUSTUP_HOME 是否设置。三种环境分别是：当前继承的 env、`env -i` 最小 env、`bash -lc`。任何一种失败就退出码 1。tick 可以顺带报告结果（不 emit）。\n- 不改 /etc/environment 和 profile.d（它们本来就对）。不碰 E 盘，不碰产品代码。\n\n## 2. 要改的工具\n| 文件 | 改动 |\n|---|---|\n| `tools/_lib.mjs` | 链合并、matter 去重、重提醒间隔；withLock、原子写、appendEvent/ackEvent、outbox |\n| `tools/tick.mjs` | watcher 健康时只报告不 emit；`--autostart`（待定）；报告 toolchain 状态 |\n| `tools/wp_watch.mjs` | 启动和每个周期排空 outbox；投递 approval/acceptance（target=gm）；state 原子写；payload 加 actor/merged/matter_key |\n| `tools/emit_event.mjs` / `ack_event.mjs` / `wp.mjs` | 改走 eventStore（加锁、原子写、落 outbox） |\n| `tools/issue_new.mjs`（新）+ `issues/.reserved`（新） | 加锁分配 issue 编号 |\n| `tools/validate_all.mjs` | issue 的 id 和文件名一致、不重复 |\n| `tools/toolchain_check.mjs`（新） | rust 工具链体检 |\n| `registry.json` / `board.md` | tools_version=15，写用法和边界 |\n| 系统（GM 批后） | `~/.cargo/bin` 换 wrapper、`~/.rustup` 改软链 |\n| `tools/ops_harden.test.mjs`（新） | 测试 |\n\n## 3. 测试计划（临时副本，跑完清理；剥掉 webhook env，用本地 http 假服务器接收投递）\n1. 链合并：三层链里子包在跑，父包和祖父包都 stale，只发一条，actor 是最深卡点。awaiting/review 的 actor 是 approver。父包没有未封子包时，才对父包 owner 发。\n2. 重提醒：ack 之后，下一个周期和重提醒间隔内都不再发，过了间隔才再发。状态变化算新 matter，立即发。\n3. 单发事件进程：watcher 健康时 tick 不 emit。tick 和 watcher 同时扫描，只有一条。\n4. 升级不变：没 ack 5 分钟升一级，顶层止于 gm，没有 andy。\n5. 并发写：20 个进程并发 emit 加 ack，inbox 一条不少，JSON 合法。kill -9 写到一半的进程，inbox 仍然完整。\n6. 重启不丢：emit 之后 webhook 不通，kill 掉 watcher，再 start，假服务器收到这条，而且只收到一次（按 event-id）。outbox 里 approval/acceptance 的投递也覆盖到。\n7. issue_new：10 个进程并发分配，号码互不相同。已存在的文件不会被覆盖。墓碑号跳过。validate 能抓到重复 id 和名实不符。\n8. toolchain_check：模拟坏 PATH（假 proxy 加空 RUSTUP_HOME）判红，wrapper 方案判绿。不真的改 ~（用临时 HOME）。\n9. 老 WP 兼容：老 19 个 WP 的 gate dry-run 结果不变，validate_all 绿。webhook 旧字段不变。wp.test.mjs 原有的 9 组全过。\n\n## 4. 空跑（临时副本）\n复刻今天的场景：WP-021（GM，in_progress）→ WP-022（后端中层）→ WP-024/027（域，in_progress 超时），用 `now` 推进 15 分钟。\n- 预期改动前 GM 被叫醒 7 次；改动后只发 2 条，都给 backend_mid（域卡点在 backend_mid 下面的域 owner 身上的话，就发给域 owner），GM 被叫醒 0 次，直到升级。\n- 再模拟一次重启丢投递的情况，记录 outbox 被排空的过程。\n- 输出（事件列表、投递日志）写进本文件的「空跑记录」一节。真实看板和真实 webhook 都不动。\n\n## 5. 老 WP 兼容\n老 WP 视为单节点链，判定逻辑不变。新增的只有「ack 后重提醒间隔」和「tick 在 watcher 健康时不 emit」。gate、validate 对老 WP 保持不变（另加 issue 校验，现在的 issue 文件都能通过，已核对 id 唯一）。event、webhook 的字段只增不改。\n\n## 6. 发布\n测试和空跑都过了之后，用 wp_watch 自己的 stop/start 重启 watcher。webhook secret 只从 env 读，不打印、不落盘。系统改动（1.4）单独执行，执行前后各跑一次 toolchain_check 留档。\n\n## 7. 待 GM 定\n1. 非 gm 的卡点只进 inbox、不推 webhook（webhook 是 GM 回调），可以吗？还是要给各中层或域单独配回调？\n2. 16:11 丢的具体是哪一条（id 或时间）？我查到的最可能原因有两个：approval/acceptance 从来不推送；重启窗口里 08:12 的周期缺失。inbox 本身没有发现写丢的记录。\n3. ack 后的重提醒间隔默认 60 分钟（要求是「一个周期内不重发」，60 分钟比 5 分钟更符合「少叫醒」）。老 WP 也用这个间隔，可以吗？\n4. tick 发现 watcher_down 时自动 `start`（`--autostart`），可以吗？\n5. 1.4 要改 ~/.cargo/bin 和 ~/.rustup（box 共享，影响所有 bot），批方案时一并批，还是另开一个系统包？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T10:43:33.875Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 超时按链合并只叫醒离卡点最近的负责人；事件先落盘再发、重启不丢；issue 编号加锁分配；非登录 shell 下 cargo/rustup 默认可用；配测试，老包行为不变"
+        },
+        {
+          "ts": "2026-10-12T10:45:43.668Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "direct: # WP-032 方案（drafting → 交 GM 审）ops 工具加固（管家）\n\n- 父包：WP-031（owner gm，approver andy，方"
+        },
+        {
+          "ts": "2026-10-12T10:45:43.939Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T10:46:53.872Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批准；5 点答复见 GM 私信"
+        },
+        {
+          "ts": "2026-10-12T10:47:25.863Z",
+          "actor": "tools_steward",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T10:53:08.739Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-032.md\""
+        },
+        {
+          "ts": "2026-10-12T10:53:29.783Z",
+          "actor": "tools_steward",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T10:55:30.656Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

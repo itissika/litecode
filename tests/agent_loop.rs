@@ -287,3 +287,23 @@ async fn auto_compact_fail_stops_turn_without_model_call() {
         "no model output may land when compact aborts the turn"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancel_during_auto_compact_is_cancelled_without_model_call() {
+    // ISSUE-033: compact_if_needed Err(Canceled) → TurnOutcome::Cancelled, not Error.
+    let mut deps = FakeAgentDeps::with_text_response("must-not-run");
+    deps.compact_cancel = true;
+
+    let outcome = agent::run(&mut deps).await;
+    assert!(
+        matches!(outcome, litecode::agent::TurnOutcome::Cancelled { .. }),
+        "expected Cancelled, got {outcome:?}"
+    );
+    assert_eq!(deps.compact_calls.get(), 1);
+    assert_eq!(
+        deps.model_calls(),
+        0,
+        "call_model must not run after cancel mid-compact"
+    );
+    assert!(deps.landed.borrow().is_empty());
+}

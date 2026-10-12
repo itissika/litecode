@@ -500,16 +500,23 @@ impl SessionManager {
                 crate::session::task_state::PlanRef::with_revision(slug, meta.plan_revision.clone())
             }),
         };
+        let mut revision = receipt.revision;
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+            match self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: sid.clone(),
-                expected_revision: receipt.revision,
+                expected_revision: revision,
                 operation_id: MutationId::new(),
                 state: task_state.clone(),
-            });
+            }) {
+                // Record is not in `records` yet, so note_receipt cannot sync it (S1).
+                Ok(saved) => revision = saved.revision,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to persist pruned active plan on open")
+                }
+            }
         }
-        let mut record = SessionRecord::from_meta(&meta, task_state, receipt.revision);
+        let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = Some(project.to_string());
         self.records.lock().unwrap().insert(sid.clone(), record);
         Ok(sid)
@@ -560,16 +567,23 @@ impl SessionManager {
         let sid = receipt.session_id.clone();
         let meta = self.data.meta_blocking(&sid)?;
         let mut task_state = TaskReminders::default();
+        let mut revision = receipt.revision;
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+            match self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: sid.clone(),
-                expected_revision: receipt.revision,
+                expected_revision: revision,
                 operation_id: MutationId::new(),
                 state: task_state.clone(),
-            });
+            }) {
+                // Record is not in `records` yet, so note_receipt cannot sync it (S1).
+                Ok(saved) => revision = saved.revision,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to persist pruned active plan on open")
+                }
+            }
         }
-        let mut record = SessionRecord::from_meta(&meta, task_state, receipt.revision);
+        let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = Some(project.to_string());
         self.records.lock().unwrap().insert(sid.clone(), record);
         self.emit_lifecycle(LifecycleEvent::SessionAdded {
@@ -590,7 +604,7 @@ impl SessionManager {
             return Ok(());
         }
         let meta = self.data.meta_blocking(session_id)?;
-        let revision = self.data.revision_blocking(session_id).unwrap_or(0);
+        let mut revision = self.data.revision_blocking(session_id).unwrap_or(0);
         let mut task_state = TaskReminders {
             todos: meta
                 .todos
@@ -603,12 +617,20 @@ impl SessionManager {
         };
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+            // `records` is locked here: call data directly (note_receipt would
+            // re-lock `records` and self-deadlock). Revision synced below (S1).
+            match self.data.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: session_id.to_string(),
                 expected_revision: revision,
                 operation_id: MutationId::new(),
                 state: task_state.clone(),
-            });
+            }) {
+                // Record is not in `records` yet, so note_receipt cannot sync it (S1).
+                Ok(saved) => revision = saved.revision,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to persist pruned active plan on open")
+                }
+            }
         }
         let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = None;
@@ -2128,15 +2150,21 @@ impl SessionManager {
 
     pub fn register_session(&self, session_id: &str, mut task_state: TaskReminders) {
         let meta = self.data.meta_blocking(session_id).ok();
-        let revision = self.data.revision_blocking(session_id).unwrap_or(0);
+        let mut revision = self.data.revision_blocking(session_id).unwrap_or(0);
         let plan_dir = self.plan_dir_path();
         if prune_stale_active_plan(&mut task_state, &plan_dir) {
-            let _ = self.mutate_blocking(SessionMutation::SaveTaskState {
+            match self.mutate_blocking(SessionMutation::SaveTaskState {
                 session_id: session_id.to_string(),
                 expected_revision: revision,
                 operation_id: MutationId::new(),
                 state: task_state.clone(),
-            });
+            }) {
+                // Record is not in `records` yet, so note_receipt cannot sync it (S1).
+                Ok(saved) => revision = saved.revision,
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to persist pruned active plan on open")
+                }
+            }
         }
         if let Some(meta) = meta {
             let mut record = SessionRecord::from_meta(&meta, task_state, revision);
@@ -3135,6 +3163,148 @@ mod child_session_tests {
         assert!(matches!(err, LitecodeError::AgentAlreadyRunning));
     }
 
+    fn append_turn_end(mgr: &SessionManager, sid: &str, turn: &str, reason: &str) {
+        mgr.apply(
+            sid,
+            crate::session::store::SessionApply::Append(crate::session::EventDraft {
+                time: 1,
+                event_type: crate::session::EventType::TurnEnd,
+                data: serde_json::json!({"turn": turn, "reason": reason, "final_text": "llm error: boom"}),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::LogState::Final,
+            }),
+        )
+        .unwrap();
+    }
+
+    /// WP-024 G3: error termination (reconnect exhausted / auto compact failed)
+    /// persists turn/end before finish_turn, so TurnFinished carries a non-empty reason.
+    #[tokio::test]
+    async fn g3_turn_finished_reason_non_empty_on_error_termination() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db").to_str().unwrap().to_string();
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            db_path,
+        ));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.begin_turn(
+            &sid,
+            "t1".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+        let mut rx = mgr.subscribe_lifecycle();
+        append_turn_end(&mgr, &sid, "t1", "error");
+        assert!(mgr.finish_turn(&sid, "t1").is_some());
+        let mut reason = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let LifecycleEvent::TurnFinished {
+                session_id,
+                reason: r,
+                ..
+            } = ev
+            {
+                if session_id == sid {
+                    reason = Some(r);
+                }
+            }
+        }
+        let reason = reason
+            .expect("TurnFinished emitted")
+            .expect("reason present");
+        assert!(!reason.is_empty());
+        assert_eq!(reason, "error");
+    }
+
+    /// WP-024 G4 (manager half): while a turn runs, a Compact operation is
+    /// rejected with AgentAlreadyRunning; the wire mapping is asserted in
+    /// client_protocol::connection::compact_error_tests.
+    /// WP-024 G5: after error termination the session is Idle and a new turn
+    /// starts (no stuck RunningTurn), and compact is admitted again.
+    #[tokio::test]
+    async fn g4_g5_compact_rejected_while_running_and_turn_restarts_after_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db").to_str().unwrap().to_string();
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(Arc::clone(&guard), db_path));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.begin_turn(
+            &sid,
+            "t1".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+        assert!(matches!(
+            mgr.try_begin_operation(&sid, SessionOperationKind::Compact),
+            Err(LitecodeError::AgentAlreadyRunning)
+        ));
+        append_turn_end(&mgr, &sid, "t1", "error");
+        mgr.finish_turn(&sid, "t1").unwrap();
+        assert!(!mgr.is_turn_running_blocking(&sid));
+        assert!(!guard.is_turn_in_progress());
+        {
+            let _lease = mgr
+                .try_begin_operation(&sid, SessionOperationKind::Compact)
+                .expect("compact admitted after error termination");
+        }
+        mgr.begin_turn(
+            &sid,
+            "t2".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .expect("new turn after error termination");
+        assert!(mgr.is_turn_running_blocking(&sid));
+    }
+
+    /// WP-024 S1 repro: reopening a session whose active plan file is gone
+    /// prunes it with SaveTaskState; in-memory revision must follow the DB,
+    /// otherwise the next CAS write conflicts.
+    #[tokio::test]
+    async fn s1_reopen_prune_keeps_revision_in_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("sessions.db").to_str().unwrap().to_string();
+        let sid = {
+            let mgr = SessionManager::new_for_test(Arc::new(TurnGuard::new()), db_path.clone());
+            let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+            mgr.records
+                .lock()
+                .unwrap()
+                .get_mut(&sid)
+                .unwrap()
+                .task_state
+                .active_plan = Some(crate::session::task_state::PlanRef::new("gone"));
+            mgr.save_task_state(&sid).unwrap();
+            sid
+        };
+        let mgr = SessionManager::new_for_test(Arc::new(TurnGuard::new()), db_path);
+        mgr.ensure_entry(&sid).await.unwrap();
+        assert!(
+            mgr.records.lock().unwrap()[&sid]
+                .task_state
+                .active_plan
+                .is_none()
+        );
+        assert_eq!(
+            mgr.expected_revision(&sid),
+            mgr.data().revision_blocking(&sid).unwrap(),
+            "in-memory revision must match DB after prune-on-open"
+        );
+        mgr.save_task_state(&sid)
+            .expect("next CAS write must not conflict");
+    }
+
     #[tokio::test]
     async fn finish_turn_clears_running_immediately_and_allows_rebegin() {
         let dir = tempfile::tempdir().unwrap();
@@ -3505,19 +3675,10 @@ mod child_session_tests {
             step_max: 5,
         };
         let err = mgr
-            .start_turn(
-                &sid,
-                handle,
-                "default",
-                "/proj",
-                Arc::clone(&mgr),
-            )
+            .start_turn(&sid, handle, "default", "/proj", Arc::clone(&mgr))
             .await
             .expect_err("injected fanout spawn failure must surface");
-        assert!(
-            err.to_string().contains("fanout spawn failed"),
-            "got {err}"
-        );
+        assert!(err.to_string().contains("fanout spawn failed"), "got {err}");
         drop(tx);
 
         assert!(

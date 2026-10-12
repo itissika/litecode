@@ -77,7 +77,10 @@ impl EngineManager {
 
     /// Demote a warmed engine to Idle (worker crash path).
     pub fn note_engine_idle(&self, tool_id: &str) {
-        let mut states = self.states.write().expect("engine states lock");
+        let mut states = self
+            .states
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if states.get(tool_id) == Some(&EngineWarmupState::Warm) {
             states.insert(tool_id.to_string(), EngineWarmupState::Idle);
         }
@@ -114,7 +117,7 @@ impl EngineManager {
         }
         self.states
             .read()
-            .expect("engine states lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(tool_id)
             .copied()
             == Some(EngineWarmupState::Warm)
@@ -123,7 +126,7 @@ impl EngineManager {
     pub fn state(&self, tool_id: &str) -> Option<EngineWarmupState> {
         self.states
             .read()
-            .expect("engine states lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(tool_id)
             .copied()
     }
@@ -131,7 +134,7 @@ impl EngineManager {
     pub fn last_error(&self, tool_id: &str) -> Option<String> {
         self.last_errors
             .read()
-            .expect("engine errors lock")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(tool_id)
             .cloned()
     }
@@ -165,7 +168,10 @@ impl EngineManager {
         }
 
         {
-            let states = self.states.read().expect("engine states lock");
+            let states = self
+                .states
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if matches!(
                 states.get(tool_id),
                 Some(EngineWarmupState::Warm | EngineWarmupState::Warming)
@@ -175,7 +181,10 @@ impl EngineManager {
         }
 
         {
-            let mut states = self.states.write().expect("engine states lock");
+            let mut states = self
+                .states
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             states.insert(tool_id.to_string(), EngineWarmupState::Warming);
         }
 
@@ -195,7 +204,9 @@ impl EngineManager {
                     Ok(Err(e)) => (false, Some(e.to_string())),
                     Err(e) => (false, Some(format!("warmup task failed: {e}"))),
                 };
-                let mut states = states.write().expect("engine states lock");
+                let mut states = states
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if states.get(&tool_id_owned) == Some(&EngineWarmupState::Warming) {
                     states.insert(
                         tool_id_owned.clone(),
@@ -206,7 +217,9 @@ impl EngineManager {
                         },
                     );
                 }
-                let mut errors = errors.write().expect("engine errors lock");
+                let mut errors = errors
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if warm {
                     errors.remove(&tool_id_owned);
                 } else if let Some(msg) = err_msg {
@@ -217,7 +230,10 @@ impl EngineManager {
         } else {
             let result = engine.warmup();
             let warm = result.is_ok();
-            let mut states = self.states.write().expect("engine states lock");
+            let mut states = self
+                .states
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if states.get(tool_id) == Some(&EngineWarmupState::Warming) {
                 states.insert(
                     tool_id_owned.clone(),
@@ -228,7 +244,10 @@ impl EngineManager {
                     },
                 );
             }
-            let mut errors = self.last_errors.write().expect("engine errors lock");
+            let mut errors = self
+                .last_errors
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if warm {
                 errors.remove(tool_id);
             } else if let Err(e) = result {
@@ -241,9 +260,15 @@ impl EngineManager {
         if let Some(engine) = self.engines.get(tool_id) {
             engine.stop();
         }
-        let mut states = self.states.write().expect("engine states lock");
+        let mut states = self
+            .states
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         states.insert(tool_id.to_string(), EngineWarmupState::Stopped);
-        let mut errors = self.last_errors.write().expect("engine errors lock");
+        let mut errors = self
+            .last_errors
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         errors.remove(tool_id);
     }
 }
@@ -288,5 +313,21 @@ mod tests {
         mgr.reconcile(&resolved);
         mgr.stop_all();
         assert!(!mgr.is_warmed("webfetch", &resolved));
+    }
+
+    /// B12: a panic while holding the states lock must not poison every later call.
+    #[test]
+    fn poisoned_state_lock_does_not_cascade_panics() {
+        let mgr = EngineManager::new();
+        let states = Arc::clone(&mgr.states);
+        let _ = std::thread::spawn(move || {
+            let _g = states.write().unwrap();
+            panic!("poison engine states");
+        })
+        .join();
+        assert!(mgr.states.is_poisoned());
+        assert_eq!(mgr.state("webfetch"), None);
+        mgr.note_engine_idle("webfetch");
+        assert!(mgr.last_error("webfetch").is_none());
     }
 }

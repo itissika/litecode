@@ -196,7 +196,6 @@ pub fn delete_blob_rows(conn: &Connection, ids: &[String]) -> Result<()> {
     Ok(())
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +234,9 @@ mod tests {
         r.outcome = CommitKind::Deleted;
         persist_receipt(&conn, &r).expect("delete receipt after row removal");
         let changes: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(changes, 1);
     }
@@ -277,7 +278,9 @@ mod tests {
             .unwrap();
         assert_eq!(revision, 2);
         let changes: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(changes, 1);
     }

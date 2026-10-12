@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadRegistry, printVersionHeader, opsRoot, recordTrace, renderWpStatusTable, applyStatusEnteredAt } from "./_lib.mjs";
+import { loadRegistry, printVersionHeader, opsRoot, recordTrace, renderWpStatusTable, applyStatusEnteredAt, WP_STATUSES, isNewModelWp, isApproved, approverOf, childrenOf, CLOSED_STATUSES } from "./_lib.mjs";
 import { kbCheck, summarize, findingsFor } from "./kb_check.mjs";
 const { reg } = loadRegistry(import.meta.url);
 printVersionHeader(reg, "ops.wp_gate");
@@ -16,7 +16,7 @@ function arg(n){const i=args.indexOf(n);return i>=0?args[i+1]:null}
 const id=arg("--id"), to=arg("--to"), source=arg("--source")||"tools_steward";
 const dryRun=args.includes("--dry-run");
 if(!id||!to){console.error("usage: --id WP-xxx --to <status> [--dry-run] [--source <agent_id>] [--kb-nodes k1,k2]");process.exit(2)}
-const STATUSES=["backlog","ready","in_progress","review","done","blocked","cancelled"];
+const STATUSES=WP_STATUSES; // v13: + drafting, awaiting_approval (prefer ops.wp for those)
 if(!STATUSES.includes(to)){console.error("invalid status",to);process.exit(2)}
 const wp=board.work_packages.find(w=>w.id===id);
 if(!wp){console.error("missing WP",id);process.exit(1)}
@@ -26,6 +26,16 @@ for(const d of wp.depends_on){
 }
 if(to==="blocked" && wp.blocker && wp.blocker.kind==="other"){
   console.error("other blocker cannot set status=blocked");process.exit(1)
+}
+// v13: nested-model WPs (parent/goal/history set). Old WPs skip this block entirely.
+if(isNewModelWp(wp)){
+  if(to==="in_progress" && !isApproved(wp)){console.error(`new-model WP ${id}: in_progress requires an approve in history (ops.wp approve by ${approverOf(wp)})`);process.exit(1)}
+  if(to==="in_progress" && wp.parent){const par=board.work_packages.find(w=>w.id===wp.parent); if(par && isNewModelWp(par) && !isApproved(par)){console.error(`new-model WP ${id}: parent ${par.id} plan not approved yet; cannot start`);process.exit(1)}}
+  if(to==="review"||to==="done"){
+    const open=childrenOf(board,id).filter(c=>!CLOSED_STATUSES.has(c.status));
+    if(open.length){console.error(`new-model WP ${id}: children not closed: ${open.map(c=>c.id+"("+c.status+")").join(", ")}`);process.exit(1)}
+  }
+  if(to==="done" && source!==approverOf(wp)){console.error(`new-model WP ${id}: only approver ${approverOf(wp)} may set done (--source ${source}); use ops.wp close`);process.exit(1)}
 }
 if(to==="done"){
   const candidates=[

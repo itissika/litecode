@@ -1,0 +1,6 @@
+{
+  "reserved": [
+    {"id": "ISSUE-006", "reason": "历史空号（来源不明），不再分配"},
+    {"id": "ISSUE-031", "reason": "2026-10-12 15:40-15:50 HKT context/tools 并发手写同号互相覆盖，事故号作废；context 改号 ISSUE-035"}
+  ]
+}

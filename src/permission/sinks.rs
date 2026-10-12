@@ -132,10 +132,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let sink = CancellingPermissionSink::new(inner, cancel.clone());
-        let reply = sink.ask(
-            &AskPrompt::permission("bash", "default", "ls"),
-            &cancel,
-        );
+        let reply = sink.ask(&AskPrompt::permission("bash", "default", "ls"), &cancel);
         assert_eq!(reply.outcome, AskOutcome::Aborted);
     }
 }

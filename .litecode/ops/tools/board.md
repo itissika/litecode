@@ -5,21 +5,21 @@
 
 ## 当前版本
 
-- `tools_version`: **11**
+- `tools_version`: **15**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T04:04:10.245Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T11:13:56.017Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
 | WP-001 | 冻结团队框架 v0：域+面板+工具门禁+冷启动稿 | done | gm | andy |
 | WP-002 | （断点后）装填 Runtime/上下文/IDE/需求官/工具集管家 | done | gm | andy |
 | WP-003 | 管理团队冷启动对齐（事件+tick+职责移交） | done | gm | andy |
-| WP-004 | 修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标 | in_progress | ide | gm |
+| WP-004 | 修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标 | blocked | ide | gm |
 | WP-005 | 修 ISSUE-008：PermissionModal 过期 justify-start 断言 | done | frontend | gm |
 | WP-006 | 修 ISSUE-005：repair_agent_models_on_boot 越界 rusqlite | done | runtime | gm |
 | WP-007 | 修 ISSUE-018：CompactionFailed 文案与实现一致 | done | runtime | gm |
@@ -32,12 +32,31 @@
 | WP-014 | 补测：compact 失败三口径（auto 停 turn / 失败还原 / manual 可重试） | done | runtime | gm |
 | WP-015 | 主链测试打稳跟进包（g2 门改写、debug-fold、瘦包门、Tools WS/websearch） | done | demand_officer | gm |
 | WP-016 | 冻结：检索引擎产品行为（起即可搜 / 刷不挡搜 / 空结果才谈库旧） | blocked | gm | andy |
+| WP-017 | 稳域钉稳：必过测试清单+交叉审+实跑绿表（禁碰引擎产品/symlink复制） | done | demand_officer | gm |
+| WP-018 | 找不稳实现 + 裁冗余测试（前后端中层，只列不删待 GM 审） | cancelled | backend_mid | gm |
+| WP-019 | 嵌套 WP 工具（顶层，Andy 批） | done | gm | gm |
+| WP-020 | └ [WP-019 子包] 嵌套 WP 配套工具：管家先填方案交 GM 审 | done | tools_steward | gm |
+| WP-021 | 用新流程重做：找不稳实现 + 裁冗余测试 | review | gm | andy |
+| WP-022 | └ 后端：找不稳实现 + 列测试裁剪清单 | done | backend_mid | gm |
+| WP-024 | 　└ WP-022/Session：不稳实现+测试裁剪 | done | session | backend_mid |
+| WP-025 | 　└ WP-022/Runtime：不稳实现+测试裁剪 | done | runtime | backend_mid |
+| WP-026 | 　└ WP-022/上下文：不稳实现+测试裁剪 | done | context | backend_mid |
+| WP-027 | 　└ WP-022/Tools：不稳实现+测试裁剪 | done | tools | backend_mid |
+| WP-028 | 　└ WP-022/IDE 基座：不稳实现+测试裁剪 | done | ide | backend_mid |
+| WP-023 | └ 前端：找不稳实现 + 列测试裁剪清单 | done | frontend_mid | gm |
+| WP-029 | 　└ WP-023 web：找不稳实现+R2+测试裁剪清单 | done | frontend | frontend_mid |
+| WP-030 | 　└ WP-023 desktop：找不稳实现+测试裁剪清单 | done | frontend_desktop | frontend_mid |
+| WP-031 | ops 工具加固：超时去重 + 事件持久化 + issue 编号加锁 + rustup 默认 | done | gm | andy |
+| WP-032 | └ ops 工具加固（管家） | done | tools_steward | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-12 | v15（WP-032）：超时按父子链合并、只叫离卡点最近真正要动手的人（有未封子包的 in_progress 父包不算卡点），matter 去重，已 ack 60 分钟内不重发（老 WP 同）；tick 在 watcher 健康时只报告、watcher 挂了自动拉起并记 team_ops.watcher_restarted；事件加锁 + fsync 原子写，先落 inbox+events/outbox.jsonl 再发，重启排空 outbox，所有告警类型都走 webhook（payload 带 target/type/actor/merged/matter_key）；新增 ops.issue_new（加锁分配 issue 号，独占创建）、issues/.reserved.json（031/006 作废）、validate_all 查 issue 名实/重复；新增 ops.toolchain_check；ops.wp v3 加 set；~/.cargo/bin 换 wrapper、~/.rustup 指向 ops toolchain（备份在 ~/.litecode-toolchain-backup-20261012-184910）（工具集管家）|
+| 2026-10-12 | v14：ops.wp v2——方案审批与完工验收分开（submit→approve / start→deliver→close，reject 分方案退回与验收退回）；split 方案只需至少 1 个子包；父包方案未批前子包不能交方案或开工；awaiting_approval 与 review 两种等待都超时升级（顶层止于 gm）；ops.wp.test 入 registry；写明工具需求指挥链（工具集管家，Andy 批）|
+| 2026-10-12 | v13：新增 ops.wp（嵌套 WP 生命周期 new/fill/submit/approve/reject/close + tree/summary/history）；schema 加 parent/goal/approver/content/history 与 drafting/awaiting_approval；validate 查 parent 环/封包；wp_gate 对新模型包加批准/子包封包/approver 推 done 门禁；超时扩到 awaiting_approval 并按层级升级（顶层只到 gm）；webhook 加 level/parent/path/target/escalated；「WP 状态」表按父包缩进；老 WP 行为不变（工具集管家，WP-020）|
 | 2026-10-12 | v12：新增 ops.kb_nav（按 key 查出边/入边、缺边/无父节点/孤儿）与 ops.kb_scaffold（新节点声明块+domain/上层|父节点/基线脚手架；--write 不覆盖）；selftest 固定夹具+live smoke（工具集管家）|
 | 2026-10-12 | v11：新增 ops.wp_watch 常驻 watcher——每 5 分钟复用 tick 超时判定，新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（Bearer + HMAC，2xx 才算送达，跨重启不重发，失败退避重试；env 未配只记日志）；supervisor 崩溃自动拉起、心跳/日志/状态落 `.litecode/ops/.tmp`（已 gitignore）；tick 每轮查心跳，超 15 分钟 emit team_ops.watcher_down（工具集管家）|
 | 2026-10-12 | v10：kb_check 不再把 Andy（itissika）提交设定的新节点 enabled 报 new_not_pending，改为 warning new_status_by_andy；未提交或非 Andy 的状态改动仍为 error（工具集管家）|
@@ -78,6 +97,11 @@
 | ops.kb_nav | `node .litecode/ops/tools/kb_nav.mjs --key <key> [--json] [--wp WP-xxx]` · `--orphans` · `--selftest` |
 | ops.kb_scaffold | `node .litecode/ops/tools/kb_scaffold.mjs --key <key> --domain <id> [--parent <key>] [--dir knowledge/...] [--write] [--json] [--wp WP-xxx]` |
 | ops.wp_watch | `node .litecode/ops/tools/wp_watch.mjs start\|stop\|status\|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]` |
+| ops.wp | `node .litecode/ops/tools/wp.mjs <new\|fill\|submit\|approve\|start\|deliver\|reject\|close\|set\|tree\|summary\|history> --as <agent_id\|andy> ...`（v14，见「ops.wp 用法」；`--as` 自报无鉴权） |
+| ops.wp.test | `node .litecode/ops/tools/wp.test.mjs [--json] [--keep]` |
+| ops.issue_new | `node .litecode/ops/tools/issue_new.mjs --as <agent_id> --title T --domain D [--grade G] [--layer L] [--owner O] [--wp WP-x] [--json-file F] [--dry-run]` |
+| ops.toolchain_check | `node .litecode/ops/tools/toolchain_check.mjs [--json] [--wp WP-x]` |
+| ops.ops_harden.test | `node .litecode/ops/tools/ops_harden.test.mjs [--json] [--keep]` |
 
 ## ops.kb_check 用法（v7）
 
@@ -205,6 +229,63 @@ node .litecode/ops/tools/kb_nav.mjs --selftest
 node .litecode/ops/tools/kb_scaffold.mjs --key my-node --domain harness-core --parent session --dir knowledge/contracts
 node .litecode/ops/tools/kb_scaffold.mjs --key my-node --domain harness-core --parent session --dir knowledge/contracts --write
 ```
+
+## ops.wp 用法（v14，ops.wp v2：方案审批 ≠ 完工验收）
+
+新模型包 = 声明了 `parent` 或 `goal`（或带 `history`）的包；老 WP（WP-001..019）不受影响。
+
+```
+drafting --submit--> awaiting_approval --approve--> ready --start--> in_progress --deliver--> review --close--> done|blocked
+                 <--reject(方案退回)--                              <--reject(验收退回，可 --reopen 子包)--
+```
+
+```
+node .litecode/ops/tools/wp.mjs new     --as gm|andy --title T --goal G --owner O --approver A                  # 顶层包
+node .litecode/ops/tools/wp.mjs new     --as <父包owner> --parent WP-x --title T --goal G --owner O [--approver A] # 子包，approver 默认父包 owner
+node .litecode/ops/tools/wp.mjs fill    --as <owner> --id WP-x --text T|--content-file F [--kind direct|split]   # 仅 drafting
+node .litecode/ops/tools/wp.mjs submit  --as <owner> --id WP-x [--note N]      # 交方案 → awaiting_approval；split 至少 1 个子包（子包可仍 drafting）；父包方案须已批
+node .litecode/ops/tools/wp.mjs approve --as <approver> --id WP-x [--note N]   # 批方案 → ready：可执行、可下派子包
+node .litecode/ops/tools/wp.mjs reject  --as <approver> --id WP-x --note N     # 方案退回 → drafting
+node .litecode/ops/tools/wp.mjs start   --as <owner> --id WP-x                 # ready → in_progress（本包及父包方案已批）
+node .litecode/ops/tools/wp.mjs deliver --as <owner> --id WP-x [--note N]      # 送验收 → review；子包须全部 done/blocked（cancelled 也算封）
+node .litecode/ops/tools/wp.mjs close   --as <approver> --id WP-x --to done|blocked [--note N]   # 验收通过封包（done 只能从 review）；有 blocked 须 note
+node .litecode/ops/tools/wp.mjs reject  --as <approver> --id WP-x --note N [--reopen WP-a,WP-b]  # 验收退回 → in_progress（方案仍有效），子包重开回 drafting
+node .litecode/ops/tools/wp.mjs close   --as <approver> --id WP-x --to cancelled [--note N]      # 任意时刻取消
+node .litecode/ops/tools/wp.mjs tree|summary|history [--id WP-x] [--json]
+node .litecode/ops/tools/wp.mjs set     --as <owner|approver> --id WP-x --field artifact_path|handoff_path|progress|result|done_when --value V   # v3；路径须为 .litecode/ops/...；done_when 用 ; 分隔；已封包不可改
+```
+
+- 父包方案未批之前：子包可以 new/fill，但不能 submit 方案，也不能 start（wp start 与 wp_gate in_progress 都拦）。
+- 每次写入：board.json → validate.mjs（失败回滚）→ history（append-only：create/fill/submit/approve/start/deliver/reject/return/reopen/close）+ log.jsonl `wp_lifecycle` → 刷新「WP 状态」树 → tool_traces。submit 发 `team_ops.approval_requested`，deliver 发 `team_ops.acceptance_requested`。
+- wp_gate 对新模型包：进 in_progress 须本包方案已批且父包方案已批；推 review/done 须子包全封；done 只能 approver（`--source`）推。
+- 超时：两种等待（awaiting_approval 方案待批、review 待验收）以及 in_progress，工作时段 >1h → `team_ops.wp_timeout` 发给 approver；未 ack 超 5 分钟再发一条 `escalated:true` 给父包 approver，**顶层只升到 gm 为止**（升级链里没有 andy 级；要不要告诉 Andy 由 GM 判断）。老 WP 不升级。webhook 字段：`level` `parent` `path` `target` `escalated`。
+- **已知边界：身份靠 `--as` 自报，不做真实鉴权，靠自律；审计看 history/log 的 actor。**
+- **工具需求指挥链**：域 bot 的工具需求报给本域中层；中层批过的直接转给工具集管家；中层自己的需求报 GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求。
+- 测试：`node .litecode/ops/tools/wp.test.mjs`（临时副本，跑完清理；`--keep` 保留）。
+
+## v15 告警 / 事件 / issue / 工具链（WP-032）
+
+**超时告警**
+- 卡点定义：awaiting_approval、review 由 approver 动手；in_progress 由 owner 动手。有未封子包的 in_progress 包**不算卡点**，它在等子包。
+- 每条父子链只发一条，发给离卡点最近、真正要动手的人（最深的 stale 节点）。被合并掉的祖先包记在 `meta.merged`。
+- matter = `wp|status|status_entered_at|target`：
+  - 未 ack 的不重发（新模型包未 ack 超过 5 分钟，会升级一次，顶层止于 gm）。
+  - 已 ack 的 **60 分钟内不重发**，老 WP 同样适用。
+  - 状态变化算新 matter。
+- **所有告警都走 webhook**（GM 例程转私信）。payload 带 `target`（谁该动手）、`type`、`actor`、`merged`、`matter_key`，v11/v13 的字段不变。target 永远不是 andy，approver=andy 时按 gm 计。
+
+**事件写入与投递**
+- 只有一个发事件的进程：wp_watch。tick 在 watcher 健康时只报告（`report_only`）。watcher 心跳失效时，tick 自动执行 `wp_watch start` 并记一条 `team_ops.watcher_restarted`（`--no-autostart` 可关闭）；起不来再兜底 emit。
+- 事件写入：`events/.inbox.lock` 加锁，写 tmp，fsync，rename，再 fsync 目录。可投递类型（超时、approval/acceptance_requested、watcher_down/restarted）同时追加到 `events/outbox.jsonl`（fsync）。**落盘之后才可能被 POST。**
+- wp_watch 启动时和每个周期都会排空 outbox 里「没送达、没 ack」的条目。delivered/retry 状态以 fsync 方式写入。按 `x-litecode-event-id` 幂等。
+
+**Issue 编号**
+- 新建 issue 一律用 `ops.issue_new`：加锁，取 max(文件, git HEAD, `issues/.reserved.json`)+1，独占创建，绝不覆盖。禁止手写编号。
+- validate_all 会查文件名和 id 是否一致、id 是否重复、是否用了保留号。
+
+**工具链**
+- `~/.cargo/bin/*` 已换成 wrapper：先设 RUSTUP_HOME/CARGO_HOME 默认值，再 exec ops toolchain。`~/.rustup` 是指向 `.litecode/ops/.toolchain/rustup` 的软链。原文件备份在 `~/.litecode-toolchain-backup-20261012-184910/`。
+- cargo 报错时先跑 `toolchain_check`。
 
 ## 待发掘
 
