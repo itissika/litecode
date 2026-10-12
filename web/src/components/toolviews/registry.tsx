@@ -6,6 +6,7 @@ import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { KillShellToolView } from "./KillShellToolView";
+import { CodeSearchToolView } from "./CodeSearchToolView";
 import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
 import { SubagentListToolView } from "./SubagentListToolView";
@@ -47,6 +48,7 @@ export const TOOL_VIEWS: Record<
   subagent_stop: SubagentStopToolView,
   subagent_send: SubagentSendToolView,
   subagent_list: SubagentListToolView,
+  code_search: CodeSearchToolView,
   session_search: SessionSearchToolView,
   litecode_workspace: WorkspaceToolView,
   knowledge: WorkspaceToolView,
@@ -75,6 +77,7 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "subagent_list",
   "edit",
   "write",
+  "code_search",
   "session_search",
   "litecode_workspace",
   "knowledge",

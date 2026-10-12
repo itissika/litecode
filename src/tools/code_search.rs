@@ -1,8 +1,6 @@
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::{Duration, Instant};
-
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, enclosing_scopes, format_breadcrumb,
@@ -21,9 +19,6 @@ const CODE_SEARCH_TOKEN_BUDGET: usize = 6_000;
 const EXPANDED_CHUNK_LINES: u32 = 12;
 /// Max lines shown from an indexed chunk in the compact view.
 const CONTEXT_CHUNK_LINES: u32 = 6;
-
-const CODE_SEARCH_WARM_WAIT: Duration = Duration::from_secs(30);
-const CODE_SEARCH_WARM_POLL: Duration = Duration::from_millis(50);
 
 pub struct CodeSearchTool {
     engines: WorkspaceEngines,
@@ -97,31 +92,7 @@ impl Tool for CodeSearchTool {
             .unwrap_or(DEFAULT_TOP_K)
             .clamp(1, MAX_TOP_K);
 
-        match self.engines.state("code_search") {
-            Some(EngineState::Failed) => {
-                let detail = self
-                    .engines
-                    .last_error("code_search")
-                    .unwrap_or_else(|| "code_search engine failed".into());
-                return ToolCallResult::error(detail);
-            }
-            _ => {}
-        }
-
-        let deadline = Instant::now() + CODE_SEARCH_WARM_WAIT;
-        let started_unwarmed = !self.engines.is_warmed("code_search");
-        if started_unwarmed {
-            while Instant::now() < deadline {
-                if self.engines.is_warmed("code_search") {
-                    break;
-                }
-                if matches!(self.engines.state("code_search"), Some(EngineState::Failed)) {
-                    break;
-                }
-                std::thread::sleep(CODE_SEARCH_WARM_POLL);
-            }
-        }
-
+        // Defensive path only: LLM table already hides Warming / desired=false (no sleep).
         match self.engines.state("code_search") {
             Some(EngineState::Failed) => {
                 let detail = self
@@ -132,20 +103,12 @@ impl Tool for CodeSearchTool {
             }
             Some(EngineState::Warm) => {}
             _ => {
-                return ToolCallResult::warning(indexing_wait_message(&self.engines));
+                return ToolCallResult::warning(defensive_not_ready_message(&self.engines));
             }
         }
 
-        let started_consume = self.maybe_consume_index();
-        if started_unwarmed || started_consume {
-            while Instant::now() < deadline {
-                match self.engines.code_search_call_gate() {
-                    CodeSearchCallGate::Ready => break,
-                    CodeSearchCallGate::Failed(_) => break,
-                    CodeSearchCallGate::Wait => std::thread::sleep(CODE_SEARCH_WARM_POLL),
-                }
-            }
-        }
+        // Kick index work if due, but never block the turn waiting for it.
+        let _ = self.maybe_consume_index();
 
         match self.engines.code_search_call_gate() {
             CodeSearchCallGate::Failed(detail) => {
@@ -157,6 +120,7 @@ impl Tool for CodeSearchTool {
             CodeSearchCallGate::Ready => {}
         }
 
+        let sync = crate::tools::sync_pct_for_workspace(&self.engines, None);
         match self.engines.search(RetrievalQuery {
             query: query.to_string(),
             corpus: RetrievalCorpus::Code,
@@ -174,13 +138,19 @@ impl Tool for CodeSearchTool {
                     let scope = glob
                         .map(|p| format!(" for include_pattern '{p}'"))
                         .unwrap_or_default();
-                    return ToolCallResult::ok(format!("No matching code chunks found{scope}."));
+                    return ToolCallResult::ok(crate::tools::prepend_sync_pct(
+                        &sync,
+                        &format!("No matching code chunks found{scope}."),
+                    ));
                 }
                 let root = self.engines.code_search().workspace_root();
-                ToolCallResult::ok(format_code_search_hits(
-                    root.as_deref(),
-                    &hits,
-                    CODE_SEARCH_TOKEN_BUDGET,
+                ToolCallResult::ok(crate::tools::prepend_sync_pct(
+                    &sync,
+                    &format_code_search_hits(
+                        root.as_deref(),
+                        &hits,
+                        CODE_SEARCH_TOKEN_BUDGET,
+                    ),
                 ))
             }
             Err(e) => ToolCallResult::error(e.to_string()),
@@ -445,25 +415,42 @@ fn snippet_for_hit(
     }
 }
 
+fn enable_retrieval_message() -> String {
+    "code_search is not enabled. Enable retrieval in Settings → Engines.".into()
+}
+
+/// Defensive surface when the tool was invoked while hidden from the LLM table.
+fn defensive_not_ready_message(engines: &WorkspaceEngines) -> String {
+    if let Some(root) = engines.code_search().workspace_root() {
+        if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
+            return enable_retrieval_message();
+        }
+    } else {
+        // No workspace root → cannot be Warm/desired; point at Settings.
+        return enable_retrieval_message();
+    }
+    indexing_wait_message(engines)
+}
+
 fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     let root = engines.code_search().workspace_root();
     let state = engines.state("code_search");
-    if let Some(root) = root {
-        let view = resolve_index_view(&root, state);
+    if let Some(root) = root.as_ref() {
+        let view = resolve_index_view(root, state);
         if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
-            return format_index_progress(&view, read_pending_hint(&root));
+            return format_index_progress(&view, read_pending_hint(root));
         }
         if matches!(
             view.status,
             IndexStatus::Stale | IndexStatus::NeedsRebuild | IndexStatus::Absent
         ) {
-            return "code_search index is stale. Try again shortly.".into();
+            return "code_search index is not ready yet.".into();
         }
     }
     if engines.is_refresh_busy() {
-        return "code_search index is refreshing. Try again shortly.".into();
+        return "code_search index is refreshing.".into();
     }
-    "code_search engine is still starting. Try again shortly.".into()
+    "code_search engine is not ready (Warming). It is hidden from the tool list until Warm.".into()
 }
 
 fn format_index_progress(view: &ResolvedIndexView, pending: usize) -> String {
@@ -507,9 +494,80 @@ mod tests {
     use super::*;
 
     #[test]
-    fn waits_up_to_thirty_seconds_then_searches_not_loading() {
-        assert_eq!(CODE_SEARCH_WARM_WAIT, Duration::from_secs(30));
-        assert_eq!(CODE_SEARCH_WARM_POLL, Duration::from_millis(50));
+    fn warm_wait_constants_removed() {
+        let src = include_str!("code_search.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            !prod.contains("const CODE_SEARCH_WARM_"),
+            "CODE_SEARCH_WARM_* constants must be deleted"
+        );
+        let sleep_needle = format!("{}::{}", "thread", "sleep");
+        assert!(
+            !prod.contains(&sleep_needle),
+            "code_search must not sleep on the call path"
+        );
+    }
+
+    #[test]
+    fn warming_returns_immediately_without_sleeping() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        let tool = CodeSearchTool::new(engines);
+        let started = std::time::Instant::now();
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "defensive Warming path must not block"
+        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
+        assert!(
+            result.content.contains("Warming")
+                || result.content.contains("not ready")
+                || result.content.contains("building"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn empty_hits_lead_with_sync_pct() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        // Ready index with no embeddings → search returns empty (or wait). Prefer ok path via gate Ready.
+        // Mark ready meta so call_gate is Ready when possible.
+        let sync = crate::tools::sync_pct_for_workspace(&engines, Some(root));
+        let line = crate::tools::format_sync_pct_line(&sync);
+        assert!(line.starts_with("sync_pct: "), "{line}");
+        let body = crate::tools::prepend_sync_pct(&sync, "No matching code chunks found.");
+        assert!(body.lines().next().unwrap().starts_with("sync_pct: "));
+    }
+
+    #[test]
+    fn desired_false_defensive_points_at_settings() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false)
+            .unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Idle);
+        let tool = CodeSearchTool::new(engines);
+        let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
+        assert!(
+            result.content.contains("Settings → Engines"),
+            "{}",
+            result.content
+        );
     }
 
     #[test]
@@ -617,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_refreshing_returns_wait_not_hits() {
+    fn warm_refreshing_does_not_block_on_wait() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::engines::code_search::init_workspace_index(root).unwrap();
@@ -626,45 +684,62 @@ mod tests {
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(
+            engines.code_search_call_gate(),
+            CodeSearchCallGate::Ready,
+            "silent refresh must not Wait"
+        );
 
+        let started = std::time::Instant::now();
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
-        assert!(result.content.contains("refreshing"), "{}", result.content);
         assert!(
-            !result.content.contains("0/0"),
-            "placeholder progress must not look finished: {}",
-            result.content
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "refresh must not sleep"
         );
+        // No worker → search error is fine; must not be the old Wait warning.
         assert!(
-            !result.content.contains("No matching code"),
-            "must not search stale corpus while refreshing: {}",
+            result.level != crate::types::ToolSignalLevel::Warning
+                || !result.content.contains("Try again shortly"),
+            "must not Wait on Refreshing: {}",
             result.content
         );
     }
 
     #[test]
-    fn warm_refresh_busy_returns_wait_not_hits() {
+    fn warm_refresh_busy_does_not_block_on_wait() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
+        // Ready-ish index so Absent doesn't Wait; then flip refresh_busy.
         crate::engines::code_search::init_workspace_index(root).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(root);
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        crate::engines::code_search::write_pending_hint(root, 1);
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Ready);
         engines.set_refresh_busy_for_test(true);
+        assert_eq!(
+            engines.code_search_call_gate(),
+            CodeSearchCallGate::Ready,
+            "refresh_busy must not Wait"
+        );
 
+        let started = std::time::Instant::now();
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
         assert!(
-            result.content.contains("refreshing") || result.content.contains("Try again shortly"),
-            "{}",
-            result.content
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "refresh_busy must not sleep"
         );
         assert!(
-            !result.content.contains("No matching code"),
-            "{}",
+            result.level != crate::types::ToolSignalLevel::Warning
+                || !result.content.contains("Try again shortly"),
+            "must not Wait on refresh_busy: {}",
             result.content
         );
     }
@@ -904,7 +979,9 @@ mod tests {
     }
 
     #[test]
-    fn warm_stale_returns_wait_not_empty_hits() {
+    fn warm_stale_is_searchable_without_warm_wait() {
+        // WP-057/060: Warm + Stale ⇒ gate Ready (silent refresh). Tools visibility /
+        // result-head sync% remain WP-061; this test only tracks the engine gate.
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::engines::code_search::init_workspace_index(root).unwrap();
@@ -920,23 +997,24 @@ mod tests {
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(
+            engines.code_search_call_gate(),
+            crate::engines::CodeSearchCallGate::Ready
+        );
+        assert!(engines.is_searchable("code_search"));
 
-        let started = Instant::now();
+        let started = std::time::Instant::now();
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "stale without a live worker must not wait the 30s budget"
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "stale Warm must not burn the 30s warm-wait budget"
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
+        // No live worker → search errors; must not be the old Stale-Wait warning path.
         assert!(
-            result.content.contains("stale") || result.content.contains("Try again shortly"),
-            "{}",
-            result.content
-        );
-        assert!(
-            !result.content.contains("No matching code"),
-            "must not return empty hits on a stale index: {}",
+            result.level != crate::types::ToolSignalLevel::Warning
+                || !result.content.contains("Try again shortly"),
+            "must not Wait on Stale: {}",
             result.content
         );
     }

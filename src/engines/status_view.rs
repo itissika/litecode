@@ -100,6 +100,9 @@ impl WorkspaceEngines {
             .is_some_and(|m| crate::engines::code_search::needs_rebuild(m) || !vectors_ready);
         let index_view =
             crate::engines::code_search::resolve_index_view(workspace_root, retrieval_status.state);
+        let pending_updates =
+            crate::engines::code_search::read_pending_hint(workspace_root);
+        let sync = crate::engines::code_search::sync_pct_from_view(&index_view, pending_updates);
         let session_status = crate::engines::session_search::session_index_status(workspace_root);
         let status = merge_retrieval_status(index_view.status, session_status);
         let code_work = crate::engines::code_search::index_work_from_disk(workspace_root);
@@ -136,7 +139,9 @@ impl WorkspaceEngines {
             "model_id": meta.as_ref().map(|m| m.model_id.clone()),
             "embedder_id": meta.as_ref().map(|m| m.embedder_id.clone()),
             "pipeline_version": meta.as_ref().map(|m| m.pipeline_version),
-            "pending_updates": crate::engines::code_search::read_pending_hint(workspace_root),
+            "pending_updates": pending_updates,
+            "sync_pct": sync.sync_pct,
+            "sync_label": sync.sync_label,
             "work": work,
             "code": { "work": code_work },
             "session": {

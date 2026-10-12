@@ -48,13 +48,18 @@
   "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib waits_up_to_thirty_seconds_then_searches_not_loading -- --nocapture（常量断言）。体验：desired=true 冷仓首次 code_search，观察 turn 阻塞至 warning/timeout。",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T03:40:00+08:00",
       "by": "ide",
       "change": "WP-011: warm-wait vs tool-timeout usability bug"
+    },
+    {
+      "ts": "2026-10-12T21:22:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-058 验收：按 WP-057 口径落地（IDE WP-060 + Tools WP-061）。status→closed。"
     }
   ]
 }

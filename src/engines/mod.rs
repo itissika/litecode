@@ -174,9 +174,8 @@ pub fn merge_index_work(
     use code_search::{IndexRebuildReason, IndexWork};
     fn rebuild_rank(reason: IndexRebuildReason) -> u8 {
         match reason {
-            IndexRebuildReason::FirstDesired => 3,
-            IndexRebuildReason::Incompatible => 2,
-            IndexRebuildReason::DirtyTooLarge => 1,
+            IndexRebuildReason::FirstDesired => 2,
+            IndexRebuildReason::Incompatible => 1,
         }
     }
     match (code, session) {
@@ -592,11 +591,26 @@ impl WorkspaceEngines {
         self.state(id) == Some(EngineState::Warm)
     }
 
+    /// WP-057: searchable when Warm (up and able to answer). Warming / Failed /
+    /// Stopped / Idle are not searchable. Tools WP-061 hide tools when this is false
+    /// (or desired=false). Silent refresh does **not** clear searchability.
+    pub fn is_searchable(&self, id: &str) -> bool {
+        if id != "code_search" {
+            return self.is_warmed(id);
+        }
+        matches!(self.state("code_search"), Some(EngineState::Warm))
+            && matches!(self.code_search_call_gate(), CodeSearchCallGate::Ready)
+    }
+
     pub fn is_refresh_busy(&self) -> bool {
         self.refresh_busy.load(Ordering::SeqCst)
     }
 
-    /// Whether the retrieval worker is in-flight (not corpus Stale).
+    /// Whether a retrieval *job* blocks search.
+    ///
+    /// WP-057: silent incremental refresh (`Refreshing` / `refresh_busy`) must
+    /// **not** block search while Warm. Only Building (first/incompatible) or
+    /// Failed block; Warming itself is handled via `!is_warmed`.
     pub fn retrieval_job_gate(&self) -> CodeSearchCallGate {
         if matches!(self.state("code_search"), Some(EngineState::Failed)) {
             return CodeSearchCallGate::Failed(
@@ -604,13 +618,10 @@ impl WorkspaceEngines {
                     .unwrap_or_else(|| "code_search engine failed".into()),
             );
         }
-        if self.is_refresh_busy() {
-            return CodeSearchCallGate::Wait;
-        }
         if let Some(root) = self.code_search.workspace_root() {
             let view = code_search::resolve_index_view(&root, self.state("code_search"));
             match view.status {
-                code_search::IndexStatus::Building | code_search::IndexStatus::Refreshing => {
+                code_search::IndexStatus::Building => {
                     return CodeSearchCallGate::Wait;
                 }
                 code_search::IndexStatus::Failed => {
@@ -652,9 +663,9 @@ impl WorkspaceEngines {
 
     /// Whether Agent semantic search may hit the worker now.
     ///
-    /// Wait = index is building/refreshing (return "try again", do not search).
-    /// Code Stale/NeedsRebuild/Absent also waits so the tool can consume first.
-    /// Failed = job failed; do not return hits from a possibly stale corpus.
+    /// WP-057: Warm ⇒ searchable. Stale / Refreshing do **not** Wait (silent
+    /// background refresh). Building / Absent / NeedsRebuild Wait (Warming bucket
+    /// / not yet searchable). Failed stays Failed.
     pub fn code_search_call_gate(&self) -> CodeSearchCallGate {
         match self.retrieval_job_gate() {
             CodeSearchCallGate::Ready => {}
@@ -663,9 +674,8 @@ impl WorkspaceEngines {
         if let Some(root) = self.code_search.workspace_root() {
             let view = code_search::resolve_index_view(&root, self.state("code_search"));
             match view.status {
-                code_search::IndexStatus::Stale
-                | code_search::IndexStatus::NeedsRebuild
-                | code_search::IndexStatus::Absent => {
+                code_search::IndexStatus::NeedsRebuild | code_search::IndexStatus::Absent => {
+                    // Should normally still be Warming; keep closed if mis-labeled Warm.
                     return CodeSearchCallGate::Wait;
                 }
                 _ => {}
@@ -941,9 +951,18 @@ impl WorkspaceEngines {
             });
         }
 
+        // WP-057 Warming bucket: incompatible/first rebuild ⇒ not searchable.
+        let rebuild_cooling = touch_code_job && matches!(mode, RefreshAcceptedMode::Rebuild);
+        if rebuild_cooling {
+            if let Ok(mut states) = self.states.write() {
+                states.insert("code_search".into(), EngineState::Warming);
+            }
+        }
+
         let engine = Arc::clone(&self.code_search);
         let busy = Arc::clone(busy);
         let errors = Arc::clone(&self.last_errors);
+        let states = Arc::clone(&self.states);
         let root_owned = root.to_path_buf();
 
         let finish = move |result: Result<RefreshMode>| {
@@ -952,6 +971,13 @@ impl WorkspaceEngines {
                 Ok(_) => {
                     if touch_code_job && let Ok(mut guard) = errors.write() {
                         guard.remove("code_search");
+                    }
+                    if rebuild_cooling {
+                        if let Ok(mut guard) = states.write() {
+                            if !matches!(guard.get("code_search"), Some(EngineState::Stopped)) {
+                                guard.insert("code_search".into(), EngineState::Warm);
+                            }
+                        }
                     }
                 }
                 Err(error) => {
@@ -962,6 +988,13 @@ impl WorkspaceEngines {
                         }
                     } else {
                         tracing::warn!(error = %error, "session index consume failed");
+                    }
+                    if rebuild_cooling {
+                        if let Ok(mut guard) = states.write() {
+                            if !matches!(guard.get("code_search"), Some(EngineState::Stopped)) {
+                                guard.insert("code_search".into(), EngineState::Failed);
+                            }
+                        }
                     }
                 }
             }
@@ -1315,8 +1348,9 @@ mod tests {
     }
 
     #[test]
-    fn code_semantic_search_fails_fast_while_index_updating() {
+    fn code_semantic_gate_ready_while_silent_refresh_busy() {
         let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
         let engines = WorkspaceEngines::new();
         engines
             .code_search()
@@ -1324,26 +1358,10 @@ mod tests {
         engines.set_state_for_test("code_search", EngineState::Warm);
         engines.set_refresh_busy_for_test(true);
 
-        let err = engines
-            .search(RetrievalQuery {
-                query: "anything".into(),
-                corpus: RetrievalCorpus::Code,
-                modality: RetrievalModality::Semantic,
-                filters: RetrievalFilters::default(),
-                top_k: 4,
-                offset: 0,
-                workspace_root: Some(dir.path().to_path_buf()),
-            })
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("updating") || msg.contains("try again"),
-            "must fail closed without waiting on the worker: {msg}"
-        );
-        assert!(
-            !msg.contains("worker"),
-            "must not occupy IPC / report a dead worker: {msg}"
-        );
+        // WP-057: silent refresh must not block searchability.
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Ready);
+        assert_eq!(engines.retrieval_job_gate(), CodeSearchCallGate::Ready);
+        assert!(engines.is_searchable("code_search"));
         assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
     }
 
@@ -1374,27 +1392,14 @@ mod tests {
     }
 
     #[test]
-    fn session_semantic_fails_fast_while_code_index_updating() {
+    fn session_semantic_gate_not_blocked_by_code_silent_refresh() {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", EngineState::Warm);
         engines.set_refresh_busy_for_test(true);
-        let err = engines
-            .search(RetrievalQuery {
-                query: "x".into(),
-                corpus: RetrievalCorpus::Session,
-                modality: RetrievalModality::Semantic,
-                filters: RetrievalFilters::default(),
-                top_k: 4,
-                offset: 0,
-                workspace_root: Some(PathBuf::from("/tmp")),
-            })
-            .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("updating") || msg.contains("try again"),
-            "got: {msg}"
-        );
-        assert!(!msg.contains("worker"), "got: {msg}");
+        // WP-057: code silent refresh must not Wait the shared retrieval gate.
+        assert_eq!(engines.retrieval_job_gate(), CodeSearchCallGate::Ready);
+        // Without a live worker_pid, session_semantic_gate stays Wait (unchanged).
+        assert_eq!(engines.session_semantic_gate(), CodeSearchCallGate::Wait);
         assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
     }
 
@@ -1505,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn code_search_call_gate_waits_when_index_is_stale() {
+    fn code_search_call_gate_ready_when_index_is_stale() {
         let dir = TempDir::new().unwrap();
         crate::engines::code_search::init_workspace_index(dir.path()).unwrap();
         let mut meta = crate::engines::code_search::IndexMeta::shell();
@@ -1522,8 +1527,10 @@ mod tests {
             .code_search()
             .set_workspace(dir.path().to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warm);
-        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Wait);
+        // WP-057: Warm + Stale ⇒ searchable (silent refresh); miss ≠ unavailable.
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Ready);
         assert_eq!(engines.retrieval_job_gate(), CodeSearchCallGate::Ready);
+        assert!(engines.is_searchable("code_search"));
         assert!(!engines.is_refresh_busy());
     }
 
@@ -1656,5 +1663,27 @@ mod tests {
                 reason: IndexRebuildReason::FirstDesired
             }
         );
+        assert_eq!(
+            merge_index_work(
+                IndexWork::Rebuild {
+                    reason: IndexRebuildReason::Incompatible
+                },
+                IndexWork::Rebuild {
+                    reason: IndexRebuildReason::FirstDesired
+                }
+            ),
+            IndexWork::Rebuild {
+                reason: IndexRebuildReason::FirstDesired
+            }
+        );
+    }
+
+    #[test]
+    fn warming_is_not_searchable() {
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        assert!(!engines.is_warmed("code_search"));
+        assert!(!engines.is_searchable("code_search"));
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Wait);
     }
 }

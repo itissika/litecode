@@ -414,7 +414,7 @@ pub fn load_surface_seqs(reader: &SessionDataReader, session_id: &str) -> Result
     reader.surface_seqs_blocking(session_id)
 }
 
-/// Gate weak semantic scores.
+/// Gate weak semantic scores (WP-057: prefer omit over false hit — do not lower threshold).
 pub fn gate_semantic_hits(mut semantic: Vec<SessionTextHit>) -> Vec<SessionTextHit> {
     semantic.retain(|h| h.score >= SEMANTIC_MIN_SCORE);
     semantic.sort_by(cmp_hits);

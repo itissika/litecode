@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T12:52:52.986Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T13:24:32.874Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -31,7 +31,7 @@
 | WP-013 | 知识易用性工具增强：引用导航/被引/脚手架（非仅 kb_check） | done | tools_steward | gm |
 | WP-014 | 补测：compact 失败三口径（auto 停 turn / 失败还原 / manual 可重试） | done | runtime | gm |
 | WP-015 | 主链测试打稳跟进包（g2 门改写、debug-fold、瘦包门、Tools WS/websearch） | done | demand_officer | gm |
-| WP-016 | 冻结：检索引擎产品行为（起即可搜 / 刷不挡搜 / 空结果才谈库旧） | blocked | gm | andy |
+| WP-016 | 冻结：检索引擎产品行为（起即可搜 / 刷不挡搜 / 空结果才谈库旧） | cancelled | gm | andy |
 | WP-017 | 稳域钉稳：必过测试清单+交叉审+实跑绿表（禁碰引擎产品/symlink复制） | done | demand_officer | gm |
 | WP-018 | 找不稳实现 + 裁冗余测试（前后端中层，只列不删待 GM 审） | cancelled | backend_mid | gm |
 | WP-019 | 嵌套 WP 工具（顶层，Andy 批） | done | gm | gm |
@@ -72,6 +72,12 @@
 | WP-054 | 　└ WP-053/Runtime：ISSUE-032 take_changes 失败不丢通知 | done | runtime | backend_mid |
 | WP-055 | 　└ WP-053/Tools：ISSUE-034 MCP stdio 超时 + id 匹配 | done | tools | backend_mid |
 | WP-056 | 　└ WP-053/上下文：FileTracker::mark_dirty 供 ISSUE-032 回灌 | done | context | backend_mid |
+| WP-057 | 检索引擎产品口径落地 | done | gm | andy |
+| WP-058 | └ 后端：引擎 Warming 可见性/重建刷新/session 语义 | done | backend_mid | gm |
+| WP-060 | 　└ WP-058/IDE：引擎 Warming 桶 + 废 DirtyTooLarge + 可搜语义 + sync% 数据源 | done | ide | backend_mid |
+| WP-061 | 　└ WP-058/Tools：工具可见性 + 废暖机长等 + 结果头 sync% + session 降级表面 | done | tools | backend_mid |
+| WP-059 | └ 前端：工具结果视图同步百分比 | done | frontend_mid | gm |
+| WP-062 | 　└ WP-059 web：工具结果视图开头同步百分比 | done | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

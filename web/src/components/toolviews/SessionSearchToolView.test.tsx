@@ -179,6 +179,56 @@ describe("SessionSearchToolView", () => {
     expect(raw.className).not.toContain("text-(--_dk-red-500)");
   });
 
+  it("shows sync% above hits when the first line is present", () => {
+    const text = ["sync_pct: 87% (building)", TWO_HITS].join("\n");
+    render(
+      <SessionSearchToolView
+        name="session_search"
+        status="ok"
+        input={{ query: "NEEDLE_QUERY" }}
+        output={output(text)}
+      />,
+    );
+    expect(screen.getByTestId("tool-sync-pct-value").textContent).toBe("87%");
+    expect(screen.getByTestId("tool-sync-pct-label").textContent).toBe(
+      "building",
+    );
+    expect(screen.getAllByTestId("session-search-hit")).toHaveLength(2);
+    expect(screen.queryByText(/sync_pct/)).toBeNull();
+  });
+
+  it("omits sync% when absent and still parses hits", () => {
+    render(
+      <SessionSearchToolView
+        name="session_search"
+        status="ok"
+        input={{ query: "NEEDLE_QUERY" }}
+        output={output(TWO_HITS)}
+      />,
+    );
+    expect(screen.queryByTestId("tool-sync-pct")).toBeNull();
+    expect(screen.getAllByTestId("session-search-hit")).toHaveLength(2);
+  });
+
+  it("shows sync% then empty body without inventing 100%", () => {
+    const empty =
+      "No matching session transcript context for query '残影'.";
+    const text = ["sync_pct: 12%", empty].join("\n");
+    render(
+      <SessionSearchToolView
+        name="session_search"
+        status="ok"
+        input={{ query: "残影" }}
+        output={output(text)}
+      />,
+    );
+    expect(screen.getByTestId("tool-sync-pct-value").textContent).toBe("12%");
+    expect(screen.getByTestId("session-search-empty").textContent).toBe(empty);
+    expect(screen.getByTestId("session-search-empty").textContent).not.toContain(
+      "sync_pct",
+    );
+  });
+
   it("shows an empty result in muted text", () => {
     const text = "No matching session transcript context for query '残影'.";
     render(

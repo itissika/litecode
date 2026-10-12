@@ -57,13 +57,18 @@
   "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib retrieval_desired_drives_readiness -- --nocapture；对照：未写 engines.json 时 workspace_engine_desired(.,\"code_search\")==false 且 readiness 无键。集成：cargo test --test settings_api settings_retrieval_engine_init_and_stop_use_engine_api",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T03:40:00+08:00",
       "by": "ide",
       "change": "WP-011: documented default-off usability failure for code_search"
+    },
+    {
+      "ts": "2026-10-12T21:22:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-058 验收：按 WP-057 口径落地（IDE WP-060 + Tools WP-061）。status→closed。"
     }
   ]
 }

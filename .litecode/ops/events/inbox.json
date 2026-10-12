@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-12T12:52:53.117Z",
+  "updated_at": "2026-10-12T13:24:32.999Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -2035,6 +2035,260 @@
         "owner": "gm",
         "path": [
           "WP-052"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791810513122-82270-WP057-approval_requested",
+      "ts": "2026-10-12T13:08:33.122Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-057 plan awaiting approval by andy (owner gm)",
+      "wp": "WP-057",
+      "acked": [
+        "andy"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-057"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791810608290-13740-WP058-approval_requested",
+      "ts": "2026-10-12T13:10:08.290Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-058 plan awaiting approval by gm (owner backend_mid)",
+      "wp": "WP-058",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-057",
+          "WP-058"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791810646302-27870-WP059-approval_requested",
+      "ts": "2026-10-12T13:10:46.302Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-059 plan awaiting approval by gm (owner frontend_mid)",
+      "wp": "WP-059",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "frontend_mid",
+        "path": [
+          "WP-057",
+          "WP-059"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791810719156-71770-WP060-approval_requested",
+      "ts": "2026-10-12T13:11:59.156Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-060 plan awaiting approval by backend_mid (owner ide)",
+      "wp": "WP-060",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-057",
+          "WP-058",
+          "WP-060"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791810734611-80660-WP062-approval_requested",
+      "ts": "2026-10-12T13:12:14.611Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-062 plan awaiting approval by frontend_mid (owner frontend)",
+      "wp": "WP-062",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-057",
+          "WP-059",
+          "WP-062"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791810796633-10590-WP061-approval_requested",
+      "ts": "2026-10-12T13:13:16.633Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-061 plan awaiting approval by backend_mid (owner tools)",
+      "wp": "WP-061",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "tools",
+        "path": [
+          "WP-057",
+          "WP-058",
+          "WP-061"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791810873653-40950-WP062-acceptance_requested",
+      "ts": "2026-10-12T13:14:33.653Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-062 awaiting acceptance by frontend_mid (owner frontend)",
+      "wp": "WP-062",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-057",
+          "WP-059",
+          "WP-062"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791810889297-48150-WP059-acceptance_requested",
+      "ts": "2026-10-12T13:14:49.297Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-059 awaiting acceptance by gm (owner frontend_mid)",
+      "wp": "WP-059",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "frontend_mid",
+        "path": [
+          "WP-057",
+          "WP-059"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791810961361-6540-WP060-acceptance_requested",
+      "ts": "2026-10-12T13:16:01.361Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-060 awaiting acceptance by backend_mid (owner ide)",
+      "wp": "WP-060",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-057",
+          "WP-058",
+          "WP-060"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791811284068-82320-WP061-acceptance_requested",
+      "ts": "2026-10-12T13:21:24.068Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-061 awaiting acceptance by backend_mid (owner tools)",
+      "wp": "WP-061",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "tools",
+        "path": [
+          "WP-057",
+          "WP-058",
+          "WP-061"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791811330323-99420-WP058-acceptance_requested",
+      "ts": "2026-10-12T13:22:10.323Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-058 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-058",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-057",
+          "WP-058"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791811344740-4170-WP057-acceptance_requested",
+      "ts": "2026-10-12T13:22:24.740Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-057 awaiting acceptance by andy (owner gm)",
+      "wp": "WP-057",
+      "acked": [
+        "andy"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-057"
         ],
         "target": "gm"
       }

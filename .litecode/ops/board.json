@@ -687,7 +687,7 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "blocked",
+      "status": "cancelled",
       "depends_on": [],
       "blocker": {
         "kind": "product",
@@ -695,8 +695,17 @@
       },
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-016.md",
-      "progress": "冻结；核对中",
-      "status_entered_at": null
+      "progress": "closed cancelled by andy: 冻结包使命结束：口径已锁，落地另开顶层包。勿再按本包旧文案施工。",
+      "status_entered_at": null,
+      "history": [
+        {
+          "ts": "2026-10-12T13:08:10.173Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "冻结包使命结束：口径已锁，落地另开顶层包。勿再按本包旧文案施工。",
+          "to": "cancelled"
+        }
+      ]
     },
     {
       "id": "WP-017",
@@ -3517,6 +3526,462 @@
           "actor": "backend_mid",
           "action": "close",
           "note": "验收通过：mark_dirty 仅 snaps.remove、留 order（:91–96）；三测源码齐且语义对。cargo --lib 绿被 Tools WP-055 r3 测 E0502/E0505 挡住——非本包责任；记依赖 Tools 修编译后复跑。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-057",
+      "domain": "team-ops",
+      "title": "检索引擎产品口径落地",
+      "result": "口径落地证据；023–026 收口；前后端汇总",
+      "done_when": [
+        "子包 done；口径可验收；禁区未碰；未擅自 commit"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057.md",
+      "progress": "closed done by andy: Andy 验收通过：引擎口径落地；统一 commit+push。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 2026-10-12 锁定口径落地：Warming=不可搜且工具不可见；非暖必可搜；重建仅首次/不兼容（能刷就刷）；静默刷新+机械比对；结果视图同步百分比；不默认开 retrieval。关闭或改写 ISSUE-023–026。禁区：symlink。不 commit。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-057 检索引擎产品口径落地\n\n## Goal（Andy 2026-10-12 终版锁定）\n按锁定口径改 code_search / session_search / 引擎生命周期与工具面，使人/agent 能用、不傻等、不假可用。\n\n## 锁定口径（施工唯一依据）\n1. **「在暖」一个桶**：凡起来了但还不能搜的（拉进程、不兼容重建中……）都算 Warming。\n2. **Warming ⇒ 搜不了，也看不见工具**（禁止「看得见、点了才难用」）。\n3. **不在暖 ⇒ 总能搜**：索引再瘦也是能搜；没命中=搜不到，不是「还不能用」。\n4. **重建例外**：仅首次 / 不兼容。**不做「脏到不能用 → 全量重建」**——能刷就刷。\n5. **刷新**：静默后台，不挡搜；结果机械比对，宁可不给也不给假的。\n6. **工具结果视图开头固定同步百分比**（agent 可判断索引齐不齐）。\n7. **暂时不默认开** retrieval（开销大）；关着时工具本就不可见——与「Warming 不可见」一致，不靠默认开来解决可用性。\n\n## 废止的旧说法\n- 「空结果才谈库旧」作为主叙事 → 改为：没命中就说没有；可附索引提示，但不代替「没有」。\n- DirtyTooLarge / 「脏到不能用」触发重建 → 废止。\n- 暖机同步睡满与 timeout 对齐 → 废止（Warming 不应进入可调用面）。\n\n## 子包与时序\n```\nWP-057 (gm)\n  ├── WP-058 backend_mid：引擎生命周期 + 工具可见性 + 重建/刷新 + session 语义腿\n  │     └── 中层自建 IDE（主）/ 必要时 Session·Context 窄协助\n  └── WP-059 frontend_mid：工具结果视图开头同步百分比\n```\n- 058 与 059 代码面大致不交，**可并行**；059 依赖「同步百分比」数据字段若后端尚未暴露，先由 058 提供契约再 059 接线（中层协调，禁止抢同一协议文件无序改）。\n- 中层只拆活/交叉审/汇总；不写 src/（前端中层同）。\n- 禁区：symlink 产品口径（WP-004 仍冻）、不擅自 commit。\n\n## 挂单映射（落地关闭或改写）\n| Issue | 方向 |\n|---|---|\n| ISSUE-023 | 不改默认开；确保未就绪（含 Warming、desired=false）不出现在可调用工具表 |\n| ISSUE-024 | 废除同步长等；Warming 不可见/不可用 |\n| ISSUE-025 | 文案跟可见性走；需要启用时才指路 Settings |\n| ISSUE-026 | 非暖可搜；语义腿不可用时不得静默假完整——与可见性/降级表面一致 |\n\n## 验收\n- 口径 1–7 有绿证据或可演示路径\n- 023–026 closed 或明确改写后 closed\n- 中层汇总可验收；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:08:21.308Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 2026-10-12 锁定口径落地：Warming=不可搜且工具不可见；非暖必可搜；重建仅首次/不兼容（能刷就刷）；静默刷新+机械比对；结果视图同步百分比；不默认开 retrieval。关闭或改写 ISSUE-023–026。禁区：symlink。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T13:08:32.273Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-057 检索引擎产品口径落地\n\n## Goal（Andy 2026-10-12 终版锁定）\n按锁定口径改 code_search / session_"
+        },
+        {
+          "ts": "2026-10-12T13:08:33.122Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "口径锁定后落地；子包 058 后端 / 059 前端"
+        },
+        {
+          "ts": "2026-10-12T13:08:33.389Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：终版口径可定"
+        },
+        {
+          "ts": "2026-10-12T13:08:33.660Z",
+          "actor": "gm",
+          "action": "start",
+          "note": "解冻落地开始"
+        },
+        {
+          "ts": "2026-10-12T13:22:24.739Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "前后端均 done；023–026 closed；交 Andy 验收后统一 commit。"
+        },
+        {
+          "ts": "2026-10-12T13:24:32.713Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 验收通过：引擎口径落地；统一 commit+push。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-058",
+      "domain": "team-ops",
+      "title": "后端：引擎 Warming 可见性/重建刷新/session 语义",
+      "result": "分域产物+汇总 WP-057-backend.md；023–026 状态更新",
+      "done_when": [
+        "域子包收口；口径可验收；禁区未碰"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057-backend.md",
+      "progress": "closed done by gm: 验收通过：060/061 done；ISSUE-023–026 closed；口径落地证据齐；禁区未碰；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-057",
+      "goal": "组织 IDE（主）等域按 WP-057 口径落地：Warming 工具不可见不可用；非暖必可搜；重建仅首次/不兼容（废除脏爆重建）；静默增量刷新；机械比对；session_search 降级表面诚实。映射 ISSUE-023–026。若结果同步百分比需后端字段，先定契约供前端。中层不写 src/。禁区 symlink。不 commit。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-058 后端中层 · 检索引擎口径落地（023–026）\n\n父：WP-057（GM / Andy 2026-10-12 终版锁定口径）。中层只拆活 / 批域 plan / 交叉审 / 汇总；**不写 `src/`**。不 commit。与 WP-059 可并行；**同步百分比契约先定、协议文件勿无序抢改**。\n\n## 0. 锁定口径（施工唯一依据 · 摘自 WP-057）\n\n1. Warming = 起来但不能搜的一切（拉进程 / 不兼容重建…）\n2. Warming ⇒ 搜不了且工具不可见（禁止看得见点了才难用）\n3. 非暖 ⇒ 总能搜（没命中 ≠ 不能搜）\n4. 重建仅首次 / 不兼容；能刷就刷；**禁止 DirtyTooLarge 脏爆重建**\n5. 静默后台刷新；机械比对宁可省略也不给假命中\n6. 工具结果视图开头固定同步百分比（字段契约给 WP-059）\n7. **不默认开** retrieval（desired 默认 false 保持）；关着时工具本就不可见\n\n废止：空结果主叙事谈库旧；DirtyTooLarge→全量重建；暖机同步睡满对齐 timeout。\n\n## 1. 目标与 Issue 映射\n\n| Issue | 方向（口径） | 主域 | 子包 |\n|---|---|---|---|\n| ISSUE-023 | 不改默认开；未就绪（Warming / desired=false）不进可调用工具表 | Tools 可见性 + IDE 可搜信号 | WP-061 / WP-060 |\n| ISSUE-024 | 废除同步长等；Warming 不可见/不可用 | Tools | WP-061 |\n| ISSUE-025 | 文案跟可见性；需启用时才指路 Settings | Tools | WP-061 |\n| ISSUE-026 | 非暖可搜；语义腿不可用不得静默假完整 | IDE 可搜 + Tools 降级表面 | WP-060 / WP-061 |\n\n## 2. 子包\n\n```\nWP-058 backend_mid\n  ├── WP-060 IDE   · 引擎 Warming 桶 / 废 DirtyTooLarge / 静默刷新 / sync% 数据源\n  │                  → .litecode/ops/artifacts/WP-057-ide.md\n  └── WP-061 Tools · 工具可见性 / 废暖等 / 结果头 sync% / session 降级表面\n                     → .litecode/ops/artifacts/WP-057-tools.md\n```\n\n- 域 fill → **中层批 plan** → 域 start → 落地 → deliver → 中层验收 close。\n- **本包须 GM 批后再 start**（防竞态）。\n- Session / Context：**本波不开**。sync% 走工具结果 payload 契约（见 §4）；若 WP-059 证明必须改 `client_protocol`，中层再开 Session 窄包，禁止前端/后端抢改同一协议文件。\n- 时序：IDE 先（或并行启动后）给出「可搜 / Warming」信号与 sync% 数据源；Tools 消费信号改可见性与结果头。代码面大致分家（engines vs tools），可并行；交叉点仅信号/契约，由中层钉死。\n\n## 3. 域约束摘要\n\n### WP-060 / IDE（主）\n\n- 主战场：`src/engines/**`（`code_search/index_status.rs` `decide_index_work`、`IndexRebuildReason::DirtyTooLarge`、lifecycle / ipc refresh 路径、`is_warmed` / Warming 状态机）。\n- 必须：\n  1. Warming 桶语义对齐口径 1–2（起来但不能搜一律 Warming）。\n  2. Warm ⇒ 可搜（口径 3）；瘦索引仍可搜，空结果=没命中。\n  3. `decide_index_work`：**删除/永不触发** DirtyTooLarge 升级重建；脏量走 Update/增量刷。\n  4. 静默后台刷新，不挡搜；比对宁缺毋假。\n  5. 稳定暴露同步百分比（或等价 progress→pct）供 Tools 结果头与 WP-059 契约；字段名/含义写入产物 md。\n- 不改：`WorkspaceRetrievalState.desired` 默认 false（口径 7）。\n- 禁区：symlink；不写 `src/tools/**`（可见性由 Tools）；不 commit。\n\n### WP-061 / Tools\n\n- 主战场：`src/tools/code_search.rs`、`src/tools/session_search.rs`；必要时 `src/tool/availability.rs` / readiness 消费点（只读引擎信号，不改引擎状态机）。\n- 必须：\n  1. 废除 `CODE_SEARCH_WARM_WAIT` 同步轮询长等（ISSUE-024）。\n  2. Warming 或 desired=false ⇒ 工具不出现在可调用表（ISSUE-023）；与「看得见点了才难用」对打。\n  3. 文案跟可见性；仅当需启用路径时指路 Settings→Engines（ISSUE-025）。\n  4. session_search：非暖可搜；语义腿不可用时显式降级表面，禁止静默假完整（ISSUE-026）。\n  5. 工具结果**开头**固定同步百分比（消费 IDE 数据源；契约见 §4）。\n- 不改：默认 desired；不改 engines 重建策略核心。\n- 禁区：symlink；不 commit。\n\n## 4. 与 WP-059 的 sync% 契约（先定、后接）\n\n- **来源**：IDE `IndexingProgress` / `resolve_index_view`（或等价）→ 单一可测百分比（0–100；刷新中可标 syncing）。\n- **后端落点（本包）**：`code_search` / `session_search` 工具结果正文**首行/首字段**携带该百分比（人类与 agent 可读）。\n- **前端（WP-059）**：结果视图开头渲染同一字段；**在本包产物公布字段名与示例前，059 不改协议文件**。\n- 若必须进 `client_protocol`：中层开 Session 子包并知会 frontend_mid；禁止无序双改。\n\n## 5. 禁区\n\n- symlink 产品口径（WP-004 仍冻）\n- 擅自把 retrieval 改默认开\n- 前端 / 桌面大块；不擅自 commit/push（GM 收口）\n\n## 6. 交叉审\n\n- IDE ↔ Tools：可搜信号 / Warming 隐藏一致性；sync% 字段对齐\n- 中层抽样 file:line + 关键回归；汇总 `.litecode/ops/artifacts/WP-057-backend.md` → deliver GM\n- 与 frontend_mid：仅契约对齐，不改对方文件\n\n## 7. done-when\n\n- WP-060 / WP-061 均为 done，或 blocked 且仅 product/arch 说明\n- ISSUE-023–026 closed 或板记明确改写后 closed\n- 汇总 md 可验收；禁区未碰；未 commit；sync% 契约已书面给 WP-059\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:08:26.968Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 IDE（主）等域按 WP-057 口径落地：Warming 工具不可见不可用；非暖必可搜；重建仅首次/不兼容（废除脏爆重建）；静默增量刷新；机械比对；session_search 降级表面诚实。映射 ISSUE-023–026。若结果同步百分比需后端字段，先定契约供前端。中层不写 src/。禁区 symlink。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T13:08:32.552Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-058 种子（backend_mid 填完整方案）\n父 WP-057。口径见父包。自建 IDE 主域子包；必要时 Session/Context。与 "
+        },
+        {
+          "ts": "2026-10-12T13:10:07.896Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-058 后端中层 · 检索引擎口径落地（023–026）\n\n父：WP-057（GM / Andy 2026-10-12 终版锁定口径）。中层只拆活 /"
+        },
+        {
+          "ts": "2026-10-12T13:10:08.289Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "完整方案已填；子包 WP-060 IDE + WP-061 Tools；Session/Context 本波不开（sync% 走工具结果契约）；请批后再 start"
+        },
+        {
+          "ts": "2026-10-12T13:10:23.370Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案通过：060 IDE + 061 Tools；不改默认 desired；废 DirtyTooLarge；sync% 契约先定给 059；Session 本波不开。"
+        },
+        {
+          "ts": "2026-10-12T13:10:31.342Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM approved; start; awaiting WP-060/061 domain plan submit"
+        },
+        {
+          "ts": "2026-10-12T13:22:10.026Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-057-backend.md\" -> \".litecode/ops/artifacts/WP-057-backend.md\""
+        },
+        {
+          "ts": "2026-10-12T13:22:10.322Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-060/061 done；023–026 closed；汇总 WP-057-backend.md；sync% 契约已交前端；未 commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T13:22:24.355Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：060/061 done；ISSUE-023–026 closed；口径落地证据齐；禁区未碰；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-059",
+      "domain": "team-ops",
+      "title": "前端：工具结果视图同步百分比",
+      "result": "汇总 WP-057-frontend.md；复跑相关前端测",
+      "done_when": [
+        "结果视图有同步百分比；禁区未碰"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057-frontend.md",
+      "progress": "closed done by gm: 验收通过：WP-062 done；sync% UI 跟契约；缺字段省略；vitest 29 绿；端到端等 061 结果头。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-057",
+      "goal": "组织 web（必要则 desktop）按 WP-057：工具调用结果视图开头固定展示索引/引擎同步百分比，供 agent/人判断。字段契约与后端中层对齐；不默认改 retrieval 开关文案大改除非必要。中层不写产品代码。禁区 symlink。不 commit。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-059 方案（frontend_mid）\n\n父包：WP-057（检索引擎产品口径落地）· 对口口径 **#6**  \n并行：WP-058（backend_mid；其子 WP-060 IDE / WP-061 Tools 已建）  \n产物汇总：`.litecode/ops/artifacts/WP-057-frontend.md`  \n明细：`.litecode/ops/artifacts/WP-057-web.md`（web 子包）\n\n## Goal\n工具调用**结果视图开头**固定展示索引/引擎**同步百分比**，供人/agent 判断索引齐不齐。不默认开 retrieval；不改 Settings 大文案除非接线必需。\n\n## 范围\n- **只动 `web/`**（`ToolContentView` / `toolviews/*` / 相关测）。\n- **不建 desktop 子包**：桌面壳复用 web 工具结果视图，无独立 native 结果面。\n- 中层只拆活 / 交叉审 / 汇总；**不写产品代码**。\n- **禁区**：symlink 产品口径（WP-004 仍冻）；**不 commit**。\n- 不擅自改 `client_protocol` / 共享协议文件；字段与 WP-058 对齐后再接线。\n\n## 契约门禁（与 WP-058 并行但不抢协议）\n| 来源 | 职责 |\n|------|------|\n| WP-060（IDE） | 暴露 sync% **数据源**（引擎/index 侧） |\n| WP-061（Tools） | 工具结果**开头**落地 sync%（文本头或结构化字段；goal 已写「契约对齐 WP-059」） |\n| WP-059（本包） | **消费**约定形态并在结果视图固定置顶展示 |\n\n规则：\n1. 可与 058 **并行**脚手架（挂点、组件壳、假数据单测）。\n2. **正式接线**等 058 侧契约可消费（产物或后端中层书面快照）；中层与后端中层协调，**禁止抢改同一协议文件**。\n3. 缺字段时：**省略**，禁止画假 100% / 假齐。\n4. Warming / desired=false 工具不可见由后端保证；前端本包不另做「看得见点了才难用」补丁，也不默认打开 retrieval。\n\n## 现状锚点（只读）\n- `code_search`：**无**专用 `TOOL_VIEWS` 项 → 现走 `ToolContentView` 默认 output 文本。\n- `session_search`：`SessionSearchToolView` 已有，自管 output（`OUTPUT_OWNED_BY_VIEW`）。\n- 引擎面已有 `IndexingProgress`（`files_done/files_total/...`）与 `engineStore` warming 轮询；**结果视图开头固定 %** 仍缺。\n- 后端今日仍有「索引中警告文案」路径；口径废「暖机长等进可调用面」后，% 展示应对**已可调用且有结果**的视图开头，不替代 Warming 隐藏。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-062** | `frontend` | client-ux | `WP-057-web.md` |\n\n## web 落点（子包实施，中层审）\n1. **统一 Sync 头**：抽小组件（或等价）在结果区**最上方**渲染 sync%（及可选 phase/短状态）；检索类工具共用。\n2. **`code_search`**：新增 `CodeSearchToolView`（或等价挂接）并登记 `TOOL_VIEWS` + `OUTPUT_OWNED_BY_VIEW`；开头固定 Sync 头，再渲 hits/正文。\n3. **`session_search`**：在现有 `SessionSearchToolView` 开头接入同一 Sync 头。\n4. **数据优先级**（契约确认后写死到产物；暂定）：\n   - 工具结果内嵌头 / 结构化字段（WP-061）优先；\n   - 其次 engines detail 实时进度（仅展示，不伪造完成）；\n   - 皆无则省略。\n5. **非检索工具**不加此头。\n6. **测试**：有 %、无字段省略、不出现假 100%；覆盖 code_search + session_search 视图。\n7. 箱内 Node：优先 `/exec-daemon/node`（≥22）跑相关 vitest；写明环境。\n\n## 时序\n```\nfill/submit WP-059 → GM 批 → start\n  → web 子包 fill/submit → 中层批 → start\n  → Step A：契约对齐（读 058/060/061 产物或后端中层快照；未定则只脚手架）\n  → Step B：接线 + 测绿\n  → 中层抽查 → close 子包 → 汇总 WP-057-frontend.md → deliver\n```\n\n## done-when\n1. `code_search` / `session_search` 结果视图开头固定 sync%（契约对齐后接线）。\n2. 缺字段省略、无假齐；相关 vitest 绿并记入产物。\n3. 汇总 `WP-057-frontend.md` 可验收；未碰 desktop/后端协议无序改；未 commit。\n\n## 非目标\n- 不改引擎生命周期 / 工具可见性（属 WP-058）。\n- 不默认开 retrieval；不借 UI 解决 Warming 可用性。\n- 不接桌面 CI；不 symlink。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:08:27.296Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 web（必要则 desktop）按 WP-057：工具调用结果视图开头固定展示索引/引擎同步百分比，供 agent/人判断。字段契约与后端中层对齐；不默认改 retrieval 开关文案大改除非必要。中层不写产品代码。禁区 symlink。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T13:08:32.845Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-059 种子（frontend_mid 填完整方案）\n父 WP-057。结果视图开头同步百分比；字段与后端中层对齐后再接线。\n"
+        },
+        {
+          "ts": "2026-10-12T13:10:46.037Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-059 方案（frontend_mid）\n\n父包：WP-057（检索引擎产品口径落地）· 对口口径 **#6**  \n并行：WP-058（backen"
+        },
+        {
+          "ts": "2026-10-12T13:10:46.301Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子包 WP-062（web）已建；无 desktop（壳复用 web）。契约跟 WP-058/061 对齐后再接线。请审；未 start。"
+        },
+        {
+          "ts": "2026-10-12T13:11:03.877Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "progress: \"plan awaiting approval by gm\" -> \"awaiting_approval；sync% 契约已收：WP-057-sync-pct-contract.md（结果"
+        },
+        {
+          "ts": "2026-10-12T13:11:05.680Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案通过：仅 web WP-062；缺字段省略；接线等 sync% 契约可消费；不建 desktop。"
+        },
+        {
+          "ts": "2026-10-12T13:11:17.858Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批；下发 WP-062；按 WP-057-sync-pct-contract.md 接线"
+        },
+        {
+          "ts": "2026-10-12T13:14:48.999Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-057-frontend.md\" -> \".litecode/ops/artifacts/WP-057-frontend.md\""
+        },
+        {
+          "ts": "2026-10-12T13:14:49.296Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总 WP-057-frontend.md；子包 WP-062 done；中层复跑 29/29；脚手架跟契约；未 commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T13:15:01.723Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：WP-062 done；sync% UI 跟契约；缺字段省略；vitest 29 绿；端到端等 061 结果头。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-060",
+      "domain": "ide-substrate",
+      "title": "WP-058/IDE：引擎 Warming 桶 + 废 DirtyTooLarge + 可搜语义 + sync% 数据源",
+      "result": "引擎口径绿证据；DirtyTooLarge 路径废止；sync% 字段可消费；产物 md；ISSUE-023–026 引擎腿 closed 或移交 Tools 面",
+      "done_when": [
+        "decide_index_work 无 DirtyTooLarge 触发；Warming/Warm 语义与口径一致；sync% 可测；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：中层复跑 8 聚焦测绿；DirtyTooLarge 已废；is_searchable/gate/sync_pct 对齐口径；desired 默认未动。Tools 面余量归 WP-061。",
+      "status_entered_at": null,
+      "parent": "WP-058",
+      "goal": "按 WP-057 锁定口径落地引擎侧：Warming=起来但不能搜的一切；非暖总能搜；重建仅首次/不兼容（废 DirtyTooLarge）；静默后台刷新；机械比对宁可不给假的；暴露同步百分比数据供工具结果/前端契约。主改 src/engines（兼 index_status/decide_index_work/ipc）。不改默认 desired=false。禁区 symlink；不 commit。产物 .litecode/ops/artifacts/WP-057-ide.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-060 IDE · 引擎 Warming 桶 / 废 DirtyTooLarge / 可搜语义 / sync% 数据源\n\n父：WP-058（backend_mid）← WP-057（GM / Andy 2026-10-12 终版锁定口径）。\n本包 **direct**；owner=ide；approver=backend_mid。\n**本步只填方案；批后再 start。批前不改代码、不 commit。**\n\n## 0. 锁定口径（施工唯一依据）\n\n摘自 WP-057 / WP-058 plan + shared memory：\n\n1. **Warming** = 起来但不能搜的一切（拉进程 / 不兼容重建…）\n2. Warming ⇒ 搜不了且工具不可见（Tools WP-061 消费信号）\n3. **非暖 ⇒ 总能搜**（没命中 ≠ 不能搜；瘦索引仍可搜）\n4. 重建仅 **首次 / 不兼容**；能刷就刷；**禁止 DirtyTooLarge 脏爆重建**\n5. 静默后台刷新；机械比对 **宁缺毋假**\n6. 工具结果视图开头固定 sync%；本域暴露数据源\n7. **不改** `WorkspaceRetrievalState.desired` 默认 `false`\n\n废止：空结果主叙事谈库旧；DirtyTooLarge→全量重建；暖机同步睡满对齐 timeout（暖等删在 Tools WP-061）。\n\n## 1. 现状差距（只读核证 · file:line）\n\n| 点 | 现状 | 口径要求 |\n|---|---|---|\n| `EngineState::{Idle,Warming,Warm,Failed,Stopped}` | `src/engines/mod.rs:128–134`；`start` 置 Warming→warmup 完 Warm/Failed `:1009–1032` | Warming 桶须覆盖「up but not searchable」（含不兼容重建中） |\n| `is_warmed` | 仅 `state==Warm` `:591–593` | 可保留；另需明确 **searchable** 信号给 Tools |\n| `code_search_call_gate` | Warm 且非 Building/Refreshing/Failed 后，**Stale/NeedsRebuild/Absent 仍 Wait** `:658–674` | **违反口径 3**：非暖应可搜；Stale 应静默刷而非挡搜 |\n| `retrieval_job_gate` | `refresh_busy` / Building / Refreshing → Wait `:600–630` | 静默刷新时搜应 Ready（Refreshing 不挡）；Building（首次/不兼容）应落 Warming 桶 |\n| `IndexRebuildReason::DirtyTooLarge` | `index_status.rs:59`；`decide_index_work` embed_dirty≥50%→Rebuild `:89–92`；`merge_index_work` rank `:179` | **废止**；脏量一律 `Update` |\n| `IndexingProgress` | `files_done/files_total/chunks_done/phase` `:38–43`；Tools 侧已有临时 `%` 文案 `src/tools/code_search.rs:491–494` | 本域提供 **单一 sync_pct 数据源**；Tools 只消费 |\n| desired 默认 | `src/config/workspace.rs` `WorkspaceRetrievalState { desired: false }` | **本包不改** |\n| session 语义门槛 | `SEMANTIC_MIN_SCORE=0.55` + `gate_semantic_hits` | 保留宁缺毋假；Tools 负责降级表面（WP-061） |\n\n## 2. 方案分块\n\n### 2.1 Warming 桶（状态机 + 可搜信号）\n\n**目标：** 「起来了但不能搜」一律 `Warming`；一旦可对当前索引发搜 → `Warm`。\n\n**改动（计划，批后落地）：**\n\n1. **`WorkspaceEngines::start` / warmup 完成条件**（`mod.rs` start/finish、`code_search_engine` warmup）  \n   - 首次 / 不兼容重建跑完且 worker 可答 → 才进 `Warm`。  \n   - 重建进行中保持 `Warming`（与 `resolve_index_view` Building 一致）。  \n2. **可搜信号（本域提供，Tools 消费）**  \n   - 新增稳定 API（名待定，候选 `is_searchable(\"code_search\")` 或文档约定）：  \n     - `desired==false` → 不可见（Tools 已有 readiness；本域不改 desired）  \n     - `state==Warming` → **不可搜 / 工具应隐藏**  \n     - `state==Warm` → **可搜**（即使 Stale / 后台 Refreshing）  \n     - `Failed` / `Stopped` / `Idle` → 不可搜  \n   - `is_warmed` 可继续 = `Warm`；Tools 以 `Warming` vs `Warm`（或 `is_searchable`）判可见性。  \n3. **闸门对齐口径 3**（`code_search_call_gate` / `retrieval_job_gate`）：  \n   - `Warm` + 索引已存在 → **Ready**，即使 `IndexStatus::Stale` 或后台 `Refreshing`。  \n   - `Building` / 无可用索引 / `Warming` → 非 Ready（对应 Warming 桶；工具面由 WP-061 隐藏，不靠长等）。  \n   - `Failed` → Failed。  \n   - **不再**因 Stale/NeedsRebuild/Absent 在已 Warm 时返回 Wait（Absent/NeedsRebuild 在 warmup 路径应表现为仍 Warming，不提前标 Warm）。\n\n**本域 vs Tools：** 本域只保证状态机 + gate + 可搜信号；**不改** `src/tools/**` 可见性/`CODE_SEARCH_WARM_WAIT`（WP-061）。\n\n### 2.2 废 DirtyTooLarge\n\n**改动文件/符号：**\n\n| 位置 | 动作 |\n|---|---|\n| `src/engines/code_search/index_status.rs` `IndexRebuildReason` | **删除** `DirtyTooLarge` 变体 |\n| 同文件 `decide_index_work` | 去掉 `:89–92` 脏爆分支；`dirty>0` 且兼容 → 一律 `IndexWork::Update { dirty }` |\n| `src/engines/mod.rs` `merge_index_work` / `rebuild_rank` | 去掉 DirtyTooLarge 分支 |\n| 单测 `decide_index_work_small_dirty_updates_large_rebuilds`、`decide_index_work_deletions_stay_on_update`、serde `dirty_too_large` | 改为断言大脏量 → Update；删/改 DirtyTooLarge 断言 |\n| IPC / job 若序列化 reason | 确认无残留 `dirty_too_large` 写入；旧磁盘值若出现当 Update 或忽略（不触发 Rebuild） |\n\n**保留 Rebuild 仅：** `FirstDesired`、`Incompatible`（`index_work_from_disk` / `should_full_rebuild` / session `session_work_from_disk` 已符合，复核不引入第三路径）。\n\n### 2.3 非暖可搜 + 静默刷新\n\n1. **静默：** `consume_*_index_work` / `spawn_scoped_refresh` 继续后台跑；**不**把 Refreshing 映射成挡搜 Wait（见 2.1）。  \n2. **Agent 搜路径：** 去掉「先等 consume 完再搜」的引擎侧强迫（若有）；Tools 侧废暖等属 WP-061。  \n3. **Human Refresh：** `request_refresh` 行为可保留；InProgress 短电路不变。  \n4. **空命中语义：** 引擎返回空列表 = 没命中；不把 Stale 伪装成「还不能用」（与契约：空命中仍可带 sync_pct，由 Tools 拼正文）。\n\n### 2.4 机械比对宁缺毋假\n\n本域落地点（不放宽召回门槛来「假完整」）：\n\n1. **Session 语义腿：** 保留 `SEMANTIC_MIN_SCORE` + `gate_semantic_hits`；低于阈值 **省略**，不降阈值灌假命中。语义腿不可用时引擎返回空语义结果 / Wait→由 Tools 做显式降级表面（WP-061 / ISSUE-026），本域不静默拼「假完整」混合叙事。  \n2. **Code 检索：** `retrieve.rs` 路径去重 / glob 过滤；命中 chunk 若无法解析为 hit（`hit_from_chunk` → None）继续 **跳过**，不造占位假 hit。  \n3. **刷新中搜：** 允许用当前已提交索引答；不把未 commit 的半写入进度当可搜视图；job 失败 → Failed，不返回可能损坏语料的 hit。  \n4. 产物 md 写明「省略点」file:line，供交叉审。\n\n### 2.5 sync% 数据源（对照 WP-057-sync-pct-contract.md）\n\n契约字段：`sync_pct: integer 0–100`；可选 `sync_label: ready|syncing|building`。\n\n**本域暴露（不改前端、不改 `client_protocol`）：**\n\n1. 新增纯函数（建议落 `index_status.rs` 或 `status_view` 旁）：  \n   `pub fn sync_pct_from_view(view: &ResolvedIndexView) -> SyncPct`  \n   - `Ready` 且无 pending → `sync_pct=100`, label=`ready`  \n   - `Stale` → 按 pending/总数估或保守中间值（规则写死可测；缺总数时可用 `max(0, 100 - f(pending))` 或标 `syncing` + 合理 pct）  \n   - `Building`/`Refreshing` + `IndexingProgress` → `files_done*100/files_total`（`files_total==0` 时不报假 100；label=`building`/`syncing`）  \n   - `Warming` 且工具不可见 → **不要求**对外结果视图；API 仍可返回 in-progress pct 供 Settings，**禁止**在 Warming 可调用路径上发假 100%  \n   - `Failed`/`Absent` → 不发假 100（具体值可测约定，写入产物）  \n2. **消费方：** Tools WP-061 在结果首行打 `sync_pct: <n>%`；本域可在 `engines/detail` JSON 附带同字段（便于 WP-059 / 人读），**本波不改协议文件**。  \n3. 单测：progress 样例 → pct；Ready→100；Building 0/0 不报 100。\n\n### 2.6 硬门禁\n\n- ❌ 不改 `desired` 默认 `false`（`src/config/workspace.rs`）  \n- ❌ 不碰 symlink 产品行为（WP-004）  \n- ❌ 不写 `src/tools/**`（可见性/暖等/结果头文案 → WP-061）  \n- ❌ 不 commit / 不 push  \n- ❌ 不抢改 `client_protocol`\n\n### 2.7 与 Tools WP-061 接口约定（一句）\n\n**IDE 保证：`EngineState::Warming`⇔不可搜且应隐藏工具；`Warm`⇔可搜（含静默刷新中）；并提供可测 `sync_pct`/`sync_label` 数据源。Tools 只消费这些信号改可见性、废 `CODE_SEARCH_WARM_WAIT`、结果首行打 sync%、session 降级表面——不改引擎状态机/重建策略。**\n\n### 2.8 ISSUE 映射（引擎腿）\n\n| Issue | 本包 | 移交 Tools |\n|---|---|---|\n| 023 | 提供 Warming/可搜信号；**不**改默认 desired | 未就绪不进可调用表 |\n| 024 | gate 不再靠「暖完才能搜」挡非暖 | 删同步长等 |\n| 025 | — | 文案/Settings 指引 |\n| 026 | 非暖可搜 + 语义门槛宁缺毋假 | 降级表面诚实 |\n\n## 3. 测试计划（批后）\n\n1. `decide_index_work_*`：大脏量 → Update；无 DirtyTooLarge；FirstDesired/Incompatible 仍 Rebuild。  \n2. `merge_index_work`：无 DirtyTooLarge rank。  \n3. gate：`Warm`+Stale/Refreshing → Ready；`Warming`/Building → 非 Ready。  \n4. `sync_pct_from_view` 表驱动。  \n5. 回归：`cargo test` 本域相关（`engines::` / `code_search::index_status` / session_work）；`timeout 600`；共用 target 排队。  \n6. 禁区抽查：desired 默认仍 false；无 symlink 产品改动。\n\n## 4. 产物提纲 · `.litecode/ops/artifacts/WP-057-ide.md`\n\n1. 口径对照表（改前/改后 file:line）  \n2. DirtyTooLarge 废止证据（测试名+断言）  \n3. Warming/可搜信号说明（供 WP-061）  \n4. sync% API / 计算公式 / 示例 JSON 或函数签名  \n5. 宁缺毋假省略点清单  \n6. 测试绿表 + ISSUE-023–026 引擎腿状态  \n7. 交叉审一句 + 禁区确认 + 未 commit\n\n## 5. 工具需求\n\n- 现有：`PATH=/home/box/.cargo/bin:$PATH`（rustc≥1.88/1.99）、`timeout`、`wp.mjs --as ide`。  \n- **本方案阶段无新工具申请。** 落地若需额外 fixture/模型权重再报中层转工具集管家。\n\n## 6. 风险与依赖\n\n- 与 WP-061 并行：先 submit 本 plan；落地时可先合状态机/sync% API，Tools 再接线。  \n- `code_search_call_gate` 行为变更会影响现有「Stale→Wait」测试（如 `warm_stale_returns_wait_not_empty_hits`）——批后按口径改测，不保留旧 Wait 语义。  \n- serde 去掉 `dirty_too_large`：确认无外部持久化依赖；有则兼容读。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:09:50.445Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-057 锁定口径落地引擎侧：Warming=起来但不能搜的一切；非暖总能搜；重建仅首次/不兼容（废 DirtyTooLarge）；静默后台刷新；机械比对宁可不给假的；暴露同步百分比数据供工具结果/前端契约。主改 src/engines（兼 index_status/decide_index_work/ipc）。不改默认 desired=false。禁区 symlink；不 commit。产物 .litecode/ops/artifacts/WP-057-ide.md。"
+        },
+        {
+          "ts": "2026-10-12T13:11:55.227Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-060 IDE · 引擎 Warming 桶 / 废 DirtyTooLarge / 可搜语义 / sync% 数据源\n\n父：WP-058（backe"
+        },
+        {
+          "ts": "2026-10-12T13:11:59.155Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "WP-060 域方案已填：Warming桶/废DirtyTooLarge/非暖可搜+静默刷/宁缺毋假/sync%数据源；硬门禁desired默认与symlink；接口约定Tools WP-061。请批 plan 后再准 start。"
+        },
+        {
+          "ts": "2026-10-12T13:12:26.984Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "plan OK：Warming/可搜信号、废 DirtyTooLarge、Warm+Stale/Refreshing→Ready、sync_pct_from_view、禁区与 WP-061 分界清晰。准 start 并行落地。"
+        },
+        {
+          "ts": "2026-10-12T13:12:39.242Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "方案已批，开工落地 Warming/废DirtyTooLarge/可搜/sync%"
+        },
+        {
+          "ts": "2026-10-12T13:16:01.025Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-057-ide.md\" -> \".litecode/ops/artifacts/WP-057-ide.md\""
+        },
+        {
+          "ts": "2026-10-12T13:16:01.360Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "WP-060 落地完成：废DirtyTooLarge；Warming桶+is_searchable；Warm+Stale/Refreshing可搜；sync_pct_from_view；engines 272绿；未commit。请验收。"
+        },
+        {
+          "ts": "2026-10-12T13:20:47.866Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：中层复跑 8 聚焦测绿；DirtyTooLarge 已废；is_searchable/gate/sync_pct 对齐口径；desired 默认未动。Tools 面余量归 WP-061。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-061",
+      "domain": "tools-permission",
+      "title": "WP-058/Tools：工具可见性 + 废暖机长等 + 结果头 sync% + session 降级表面",
+      "result": "023–026 工具腿 closed；暖等废止；可见性/降级/sync% 绿证据；产物 md",
+      "done_when": [
+        "暖等删除；Warming 不可见；结果头 sync%；回归绿；产物齐；禁区未碰；未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057-tools.md",
+      "progress": "closed done by backend_mid: 验收通过：中层抽查 availability/code_search/session_search 相关测绿；暖等已废；可见性/lexical-only/sync_pct 对齐；ISSUE-023–026 closed。",
+      "status_entered_at": null,
+      "parent": "WP-058",
+      "goal": "按 WP-057 锁定口径落地工具面：Warming/desired=false ⇒ code_search/session_search 不可见不可用；废除 CODE_SEARCH_WARM_WAIT 同步长等；文案跟可见性（需启用才指路 Settings）；非暖可搜；语义腿不可用不得静默假完整；工具结果开头固定同步百分比（契约对齐 WP-059，不抢改协议文件）。主改 src/tools/{code_search,session_search}.rs、tool/availability 若需。不改默认 desired。禁区 symlink/engines 生命周期核心（只消费 IDE 信号）；不 commit。产物 .litecode/ops/artifacts/WP-057-tools.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-061 Tools 方案（tools，direct）— 工具可见性 + 废暖等 + sync% 结果头 + session 降级表面\n\n父包 WP-058（in_progress）← WP-057；产物本文件 `.litecode/ops/artifacts/WP-057-tools.md`。  \n状态：**方案填写，未 start、未改代码、不 commit**。等 backend_mid 批 plan 后再 start。可与 IDE WP-060 并行。\n\n## 0 目标与范围\n\n按 WP-057 锁定口径落地**工具面**（映射 ISSUE-023–026）：\n\n| # | 必须 | Issue |\n|---|---|---|\n| V1 | Warming **或** `desired=false` ⇒ `code_search` / `session_search` **不可见且不可用**（禁「看得见、点了才难用」） | 023 |\n| V2 | 废除 `CODE_SEARCH_WARM_WAIT` 同步轮询长等 | 024 |\n| V3 | 文案跟可见性；仅需启用路径时指路 Settings→Engines | 025 |\n| V4 | 非暖可搜；session 语义腿不可用时**显式降级表面**，禁止静默假完整 | 026 |\n| V5 | 工具结果**正文开头第一行**固定 `sync_pct: <n>%`（契约 `WP-057-sync-pct-contract.md`） | 口径#6 |\n\n**主改**：`src/tools/code_search.rs`、`src/tools/session_search.rs`；`src/tool/availability.rs`（及必要时 `registry`/`build_tool_list` 消费点）。  \n**只消费** IDE 可搜 / Warming / `IndexingProgress`·`resolve_index_view` 信号；**不改** engines 重建核心、**不改** `WorkspaceRetrievalState.desired` 默认 false。  \n**禁区**：symlink 产品口径；不抢改 `client_protocol`；不 commit/push。\n\n## 1 现状锚点（只读核对）\n\n| 点 | 位置 | 现状 vs 口径 |\n|---|---|---|\n| 暖等 | `code_search.rs:25-26,111-156` | `CODE_SEARCH_WARM_WAIT=30s` + `thread::sleep` 轮询；与 tool timeout 30s 对齐 → **废** |\n| desired 可见性 | `workspace.rs` readiness：`desired`→`code_search` Ready；`availability.is_available` 对 optional 看 Ready | **desired=false 已藏 code_search**；**不改默认** |\n| Warming 可见性 | `should_include_in_llm_list` 收 `_workspace_engines` **未用** | Warming 时工具仍可进 LLM 表 → **缺口** |\n| session_search 身份 | `global_db/tools.rs`：**core**（非 optional） | 不受 desired/Warming 门 → **需加引擎门** |\n| 等待文案 | `indexing_wait_message` 仅「Try again shortly」 | 与 webfetch「Enable … Settings → Engines」断裂 → **跟可见性改** |\n| 语义静默降级 | `engines::search_sessions` gate≠Ready → `semantic=Vec::new()` 无表面；工具描述未声明 | Tools 结果面须**显式**降级（不改引擎融合算法也可在工具层标头） |\n| sync% | 结果无首行 `sync_pct`；进度仅在 wait 文案 | 按契约在成功/空命中结果**开头**落行 |\n\n## 2 设计（批后实施）\n\n### 2.1 可见性门（V1 / ISSUE-023）\n\n在 LLM 工具表组装路径（优先 `should_include_in_llm_list`，必要时对称改 `is_available` 对检索类的扩展）增加：\n\n对 `code_search` **与** `session_search`：\n\n1. **`desired=false`**（`workspace_engine_desired(root,\"code_search\")` / 等价 readiness 非 Ready）⇒ **排除**。  \n   - code_search：保持现有 optional Ready 链路即可。  \n   - session_search：虽为 core，本包对这两 id **额外**套同一 desired 门（产品口径：关 retrieval = 两工具都不可见）。\n2. **Warming**（消费 IDE：`!is_warmed(\"code_search\")` 且 state 为 Warming / 或 WP-060 书面「可搜=false」信号；**以 IDE 落地信号为准，交叉审对齐**）⇒ **排除**。  \n   - 禁止仅靠「调用后再 warning」。\n3. 非暖且 desired=true ⇒ **可见**；瘦索引/空命中仍可调用（没命中≠不能搜）。\n\n防御：若绕过列表直接 `call`（测试/内部），`call_inner` / `execute` **立即失败或空可用**，**禁止**再 sleep 暖等。\n\n### 2.2 废除暖机长等（V2 / ISSUE-024）\n\n- 删除 `CODE_SEARCH_WARM_WAIT` / `CODE_SEARCH_WARM_POLL` 及 `call_inner` 内两段 `while … sleep`。  \n- 删除/改写单测 `waits_up_to_thirty_seconds_then_searches_not_loading`。  \n- 可见性已保证 Warming 不进表；若状态竞态仍进调用：直接 `error`/`warning`（短、可行动），**零阻塞轮询**。  \n- 不在 Tools 侧重做「睡到 Ready」。\n\n### 2.3 文案跟可见性（V3 / ISSUE-025）\n\n| 场景 | 文案策略 |\n|---|---|\n| 工具因 desired=false / Warming **不可见** | 无「假可用」结果面；不依赖 agent 读 wait 文案 |\n| 防御路径：desired=false 仍被调用 | 明确：「Enable code search / retrieval in Settings → Engines」（对标 webfetch） |\n| 非暖可搜但索引 Building/Refreshing（若 IDE 仍允许可搜+后台刷） | 结果**仍可返回**；开头 sync_pct；正文可附短提示，**不代替**命中/空命中叙事 |\n| 空命中 | 先 `sync_pct` 行，再「No matching…」；不把「库旧」当主叙事 |\n\n废止主叙事：「空结果才谈库旧」；「Try again shortly」不再作为 desired 关/未启用时的唯一出口。\n\n### 2.4 session 语义腿诚实表面（V4 / ISSUE-026）\n\nTools 层（`session_search.rs` 组结果时）：\n\n1. 探测本趟是否实际带上语义腿（调用前读 `session_semantic_gate` / 或引擎 bundle 侧可观测标记；**优先只读信号**，避免改 `fuse` 核心除非必要且经中层）。  \n2. 仅词法：结果开头（sync_pct 之后）加一行明确降级，例如 `semantic: unavailable (lexical only)`；**禁止**看起来像「完整融合检索」。  \n3. schema/`description`：补一句——语义腿依赖 retrieval/code_search Warm；不可用时降级为词法并在结果中声明。  \n4. **不**在查询前强制 refresh（保持现注释接受 stale）；滞后只许少召回，但表面诚实。\n\n引擎 `search_sessions` 静默 `Vec::new()`：**本包以工具结果表面闭环**；若交叉审要求引擎返回 `semantic_used: bool`，开窄协助或登记 follow-up，不阻塞 V4 最小闭环。\n\n### 2.5 结果头 sync_pct（V5 · 契约）\n\n严格按 `.litecode/ops/artifacts/WP-057-sync-pct-contract.md`：\n\n1. `code_search` / `session_search` **成功或可展示结果**（含空命中）时，正文**第一行**：  \n   `sync_pct: <n>%`  \n   可选同行列 `sync_pct: 87% (syncing)`。  \n2. **数据源**：IDE `IndexingProgress` / `resolve_index_view`（或 WP-060 暴露的单一百分比 API）→ Tools **只消费、不发明第二套进度**。  \n   - 换算：有 `files_total>0` 时 `files_done*100/files_total` clamp 0–100；Ready/非刷且可搜 → 100；Warming/无视图 → **无结果视图**（工具不可见），不发假 100%。  \n3. 刷新中：中间值 + 可选 `sync_label`（syncing/building）。  \n4. **不改** `client_protocol`；前端 WP-059/062 解析首行数字。\n\n辅助：抽 `fn format_sync_pct_line(...)` 两工具共用，单测锁格式。\n\n### 2.6 与 IDE WP-060 交叉点\n\n| 信号 | IDE（060） | Tools（061） |\n|---|---|---|\n| Warming / 可搜 | 状态机 + 可搜语义 | 可见性门消费 |\n| sync% 数据源 | progress→pct | 结果首行 |\n| DirtyTooLarge / 重建 | IDE 废止 | **不改** |\n\n交叉审：双方产物互写「可搜信号名 / sync% 字段对齐」；IDE 信号未稳时 Tools 可先按现有 `is_warmed`+`resolve_index_view` 接线，060 定稿后只改消费点。\n\n## 3 文件与串行\n\n| 序 | 文件 | 要点 |\n|---|---|---|\n| 1 | `src/tool/availability.rs`（± registry 组装） | desired + Warming 门；session_search 例外门；测 |\n| 2 | `src/tools/code_search.rs` | 删暖等；防御失败；sync_pct 头；文案；测 |\n| 3 | `src/tools/session_search.rs` | 可见性防御；降级表面；sync_pct 头；description；测 |\n| 4 | 产物本文件 | 证据表 + 交叉审 + 与 023–026 状态建议 |\n\n不改：`src/engines/**` 重建/`decide_index_work`、desired 默认、symlink、前端、协议文件。\n\n## 4 测试计划（批后绿）\n\n| # | 场景 | 期望 |\n|---|---|---|\n| T1 | desired=false | 两工具不在 LLM/available 表 |\n| T2 | Warming（test set_state） | 两工具不可见；直接 call 无 sleep、快速失败 |\n| T3 | desired=true + Warm | 可见；搜索可跑；无 WARM_WAIT 符号/循环 |\n| T4 | 空命中 | 首行 `sync_pct:` + No matching |\n| T5 | 有命中 | 首行 sync_pct；格式正则 |\n| T6 | session 语义门非 Ready 且工具仍可见（若口径允许非暖可搜仅词法）或等价注入 | 结果含显式 lexical-only/unavailable，非静默 |\n| T7 | 既有 code_search / session_search 单测回归 | 全绿；删/改暖等旧断言 |\n\n## 5 非目标 / 禁区\n\n- 不把 retrieval **改默认开**（口径#7 / ISSUE-023 产品解法是隐藏，不是默认开）。  \n- 不改 engines DirtyTooLarge / 重建策略（属 WP-060）。  \n- 不改 symlink；不 commit。  \n- 不抢 `client_protocol`。  \n- ISSUE-034 不在本包。\n\n## 6 done-when\n\n1. 暖等常量与轮询删除；Warming/desired=false 两工具不可见有测。  \n2. 结果头 sync_pct 契约对齐；空命中亦有。  \n3. session 降级表面诚实；相关测绿。  \n4. 产物齐；交叉审（对 IDE）写入；023–026 建议 closed/改写注记交中层。  \n5. 禁区未碰；未 commit。\n\n## 7 风险与依赖\n\n- **信号名**：以 WP-060 产物为准；未出前用现有 `is_warmed` / `resolve_index_view` / `IndexingProgress`。  \n- **session_search 变相 optional**：core 工具加 desired 门是产品口径显式要求；若中层裁「仅 Warming 藏 session、desired 只藏 code_search」，按批注改门，不扩大。  \n- 并行 WP-060：代码面分家；冲突仅信号，中层钉死。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:09:50.729Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-057 锁定口径落地工具面：Warming/desired=false ⇒ code_search/session_search 不可见不可用；废除 CODE_SEARCH_WARM_WAIT 同步长等；文案跟可见性（需启用才指路 Settings）；非暖可搜；语义腿不可用不得静默假完整；工具结果开头固定同步百分比（契约对齐 WP-059，不抢改协议文件）。主改 src/tools/{code_search,session_search}.rs、tool/availability 若需。不改默认 desired。禁区 symlink/engines 生命周期核心（只消费 IDE 信号）；不 commit。产物 .litecode/ops/artifacts/WP-057-tools.md。"
+        },
+        {
+          "ts": "2026-10-12T13:13:16.362Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-061 Tools 方案（tools，direct）— 工具可见性 + 废暖等 + sync% 结果头 + session 降级表面\n\n父包 WP-0"
+        },
+        {
+          "ts": "2026-10-12T13:13:16.633Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "WP-061 Tools 方案已填：可见性门+废暖等+sync%头+session降级；等批后再 start。产物 WP-057-tools.md"
+        },
+        {
+          "ts": "2026-10-12T13:13:33.453Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "plan OK：可见性门（含 session_search 跟 desired+Warming）、废暖等、文案、lexical-only 表面、sync_pct 首行；只消费 IDE 信号。session 跟 desired 藏工具按口径采纳。准 start 与 WP-060 并行。"
+        },
+        {
+          "ts": "2026-10-12T13:13:44.045Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "plan approved; start Tools visibility+暖等+sync%+session降级"
+        },
+        {
+          "ts": "2026-10-12T13:21:24.067Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "V1-V5 落地：可见性+废暖等+sync%头+session降级；lib --no-run 过；相关 30 测绿；产物 WP-057-tools.md；未 commit"
+        },
+        {
+          "ts": "2026-10-12T13:22:00.651Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：中层抽查 availability/code_search/session_search 相关测绿；暖等已废；可见性/lexical-only/sync_pct 对齐；ISSUE-023–026 closed。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-062",
+      "domain": "client-ux",
+      "title": "WP-059 web：工具结果视图开头同步百分比",
+      "result": "code_search/session_search 结果视图开头有 sync%；相关测绿；产物 WP-057-web.md",
+      "done_when": [
+        "结果视图开头固定 sync%（契约对齐后）；缺字段省略无假齐；相关 vitest 绿；产物齐；未碰 desktop/协议无序改；未 commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-057-web.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：抽查 Sync头/CodeSearch/SessionSearch strip；中层复跑 vitest 4/29 绿；脚手架跟契约；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-059",
+      "goal": "只改 web/。按 WP-057 口径#6：code_search/session_search 工具结果视图开头固定展示索引/引擎同步百分比（人/agent 可判断）。字段契约与 WP-058（WP-061 结果头 / WP-060 数据源）对齐后再接线；可先脚手架，禁止抢改协议文件；缺字段省略不假齐。新增或挂接 CodeSearchToolView + SessionSearchToolView Sync 头；附 vitest。不碰 desktop/后端。不默认开 retrieval。禁区 symlink。不 commit。产物 .litecode/ops/artifacts/WP-057-web.md。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-062 方案（web · sync% 结果头）\n\n父：WP-059（in_progress）· 祖：WP-057 · 审批：frontend_mid · kind=direct\n产物：`.litecode/ops/artifacts/WP-057-web.md`\n禁区：desktop / 后端 / `client_protocol` / symlink · **不 commit** · 未批 plan **不 start**\n\n## 契约一句话（WP-057-sync-pct-contract）\n`code_search` / `session_search` 可展示结果时，正文**首行**为 `sync_pct: <n>%`（可选 `(label)`）；前端解析数字为主；**缺字段则省略、禁止假 100%**；空命中仍先出 sync 行再写「没有」；本波不改协议、不默认开 retrieval。\n\n## 现状（只读核对）\n- `web/src/components/toolviews/registry.tsx`：`TOOL_VIEWS` / `OUTPUT_OWNED_BY_VIEW` 已挂 `session_search`，**无 `code_search`**。\n- `SessionSearchToolView.tsx` + `sessionSearchParse.ts`：现有结果视图/文法解析；首行若加 sync_pct，解析需先剥离或兼容，否则会整段 fallback 成 raw。\n- **无** `CodeSearchToolView`；`code_search` 目前走默认 ToolContent 渲染。\n- 图标/标题：`ToolIcon` / `toolTitle` 已认识两工具名。\n- 正式结果头可消费依赖后端 **WP-061**（仍 drafting；结果开头落 sync_pct）。本包 UI：**有则显、无则省略**；不阻塞脚手架。\n\n## 实施步骤（批后串行）\n1. **抽 Sync 头**  \n   - 新增小模块（建议 `syncPct.ts` + `SyncPctHeader.tsx` 或等价）：从工具 output 文本解析首行  \n     `^\\s*sync_pct:\\s*(\\d{1,3})%\\s*(?:\\(([^)]+)\\))?\\s*$`  \n   - 返回 `{ pct, label?, rest }`；非法/缺行 → `null`（组件不渲染）。  \n   - 结果区最上方渲染 `%`（可选 muted label）；样式贴 dk/玻璃克制，不抢正文。\n\n2. **`code_search`：新建 `CodeSearchToolView`**  \n   - 登记 `TOOL_VIEWS.code_search` + `OUTPUT_OWNED_BY_VIEW`。  \n   - 结构：Sync 头 → 正文（先可：剥首行后的 rest 用现有 raw/pre 或轻量列表；不强做复杂语法除非已有解析器）。  \n   - failed：可不强显 sync（契约针对可展示结果）；若 raw 自带首行仍可试解析。\n\n3. **`session_search`：现有视图开头接入同一头**  \n   - `SessionSearchToolView`：在 scope / 命中列表 / empty 之上渲染 Sync 头。  \n   - `parseSessionSearch`：入参改为剥掉 sync 首行后的 `rest`（或解析前 strip），避免首行破坏 HEADER/EMPTY 文法。  \n   - 空命中：有 sync → 头 + 原 empty 文案；无 sync → 行为与今一致。\n\n4. **接线与 WP-061**  \n   - 脚手架 + 假数据测先绿。  \n   - **正式接线**以 WP-061 结果头可消费为准；后端尚未落行时 UI 省略。  \n   - 测覆盖：**有 sync 行 / 无 sync 行 / 空命中+有 sync / 非法行不假 100%**。\n\n5. **vitest + 产物**  \n   - 单测：parse helper；`SessionSearchToolView` / `CodeSearchToolView` 有无 sync 两种。  \n   - 跑测优先 `/exec-daemon/node`（≥22）；记录命令与结果于 `WP-057-web.md`。  \n   - 产物含：改动文件清单、契约对照、与 WP-061 依赖说明、未决项。\n\n6. **门禁**  \n   - 绿后 **deliver 前私信前端中层交叉审**；审过再 deliver。  \n   - 全程不碰 desktop/后端/协议；不 commit。\n\n## 不做\n- 不改 `client_protocol`；不发明第二套进度；Warming/工具不可见场景不造假头。  \n- 不把 sync% 当成默认开 retrieval。  \n- 本包不替 WP-061 补后端行。\n\n## done-when（对齐派发）\n- [ ] Sync 头组件（或等价）抽出，缺字段省略、不假 100%。  \n- [ ] `CodeSearchToolView` 已登记 TOOL_VIEWS + OUTPUT_OWNED_BY_VIEW，结果区开头 Sync。  \n- [ ] `SessionSearchToolView` 开头同一头；parse 兼容/剥离 sync 首行。  \n- [ ] vitest 覆盖有/无 sync；产物 `WP-057-web.md` 写齐。  \n- [ ] 未批不 start；绿后中层交叉审再 deliver；不 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T13:10:41.301Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只改 web/。按 WP-057 口径#6：code_search/session_search 工具结果视图开头固定展示索引/引擎同步百分比（人/agent 可判断）。字段契约与 WP-058（WP-061 结果头 / WP-060 数据源）对齐后再接线；可先脚手架，禁止抢改协议文件；缺字段省略不假齐。新增或挂接 CodeSearchToolView + SessionSearchToolView Sync 头；附 vitest。不碰 desktop/后端。不默认开 retrieval。禁区 symlink。不 commit。产物 .litecode/ops/artifacts/WP-057-web.md。"
+        },
+        {
+          "ts": "2026-10-12T13:12:14.313Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-062 方案（web · sync% 结果头）\n\n父：WP-059（in_progress）· 祖：WP-057 · 审批：frontend_mid "
+        },
+        {
+          "ts": "2026-10-12T13:12:14.610Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": "方案已填：Sync头+CodeSearchToolView新建+SessionSearch接同一头；有则显无则省略；等WP-061正式接线；请审，未start"
+        },
+        {
+          "ts": "2026-10-12T13:12:42.403Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐契约与 WP-059：Sync头+CodeSearch新建+SessionSearch strip；有则显无则省略；等061正式接线。可 start。"
+        },
+        {
+          "ts": "2026-10-12T13:12:55.181Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": "方案已批，开工落地 Sync头+CodeSearch/SessionSearch"
+        },
+        {
+          "ts": "2026-10-12T13:14:33.652Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T13:14:42.192Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：抽查 Sync头/CodeSearch/SessionSearch strip；中层复跑 vitest 4/29 绿；脚手架跟契约；未 commit",
           "to": "done"
         }
       ]

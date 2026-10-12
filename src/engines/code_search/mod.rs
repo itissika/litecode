@@ -45,10 +45,10 @@ pub use facade::{HumanSearchRequest, HumanSearchResponse, human_search};
 pub use fs_notify::queue_fs_changes;
 pub use index_status::{
     IndexPhase, IndexRebuildReason, IndexStatus, IndexWork, IndexingProgress, ResolvedIndexView,
-    begin_building, begin_refreshing, clear_index_job, decide_index_work, disk_index_status,
-    index_work_from_disk, mark_index_job_failed, pending_work_counts, read_pending_hint,
-    resolve_index_view, should_full_rebuild, update_build_progress, write_pending_hint,
-    write_pending_hint_from,
+    SyncPct, begin_building, begin_refreshing, clear_index_job, decide_index_work,
+    disk_index_status, index_work_from_disk, mark_index_job_failed, pending_work_counts,
+    read_pending_hint, resolve_index_view, should_full_rebuild, sync_pct_from_view,
+    update_build_progress, write_pending_hint, write_pending_hint_from,
 };
 pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_for_agent,

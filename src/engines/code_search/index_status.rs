@@ -56,21 +56,20 @@ pub enum IndexWork {
 pub enum IndexRebuildReason {
     FirstDesired,
     Incompatible,
-    DirtyTooLarge,
 }
 
 /// Pick update vs rebuild from reconcile counts. Compatible index required.
 ///
-/// Only **embed** work (new / content-changed files) can upgrade to rebuild:
-/// `embed_dirty ≥ 50%` of `max(indexed, scannable)` and at least two such files.
-/// Deletions are cheap (`remove_file` + save, no embed) and always stay on update.
+/// Rebuild only for first-time / incompatible indexes (WP-057). Dirty volume —
+/// including large embed dirty — always stays on incremental [`IndexWork::Update`].
+/// `embed_dirty` / corpus counts remain in the signature for callers and tests.
 pub fn decide_index_work(
     compatible: bool,
     has_usable_index: bool,
-    embed_dirty: usize,
+    _embed_dirty: usize,
     dirty: usize,
-    indexed_files: usize,
-    scannable_files: usize,
+    _indexed_files: usize,
+    _scannable_files: usize,
 ) -> IndexWork {
     if !has_usable_index {
         return IndexWork::Rebuild {
@@ -84,12 +83,6 @@ pub fn decide_index_work(
     }
     if dirty == 0 {
         return IndexWork::None;
-    }
-    let corpus = indexed_files.max(scannable_files);
-    if embed_dirty >= 2 && embed_dirty.saturating_mul(2) >= corpus {
-        return IndexWork::Rebuild {
-            reason: IndexRebuildReason::DirtyTooLarge,
-        };
     }
     IndexWork::Update { dirty }
 }
@@ -296,6 +289,71 @@ pub struct ResolvedIndexView {
     pub job_error: Option<String>,
 }
 
+/// Tool-result / UI sync percentage (WP-057-sync-pct-contract).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncPct {
+    pub sync_pct: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sync_label: Option<&'static str>,
+}
+
+/// Map [`ResolvedIndexView`] (+ optional pending hint) to a single 0–100 sync %.
+///
+/// Contract: never report a fake 100 while Building/Refreshing with unknown totals;
+/// Ready with no pending → 100 (`ready`); Stale → below 100 (`syncing`).
+pub fn sync_pct_from_view(view: &ResolvedIndexView, pending_updates: usize) -> SyncPct {
+    match view.status {
+        IndexStatus::Ready if pending_updates == 0 => SyncPct {
+            sync_pct: 100,
+            sync_label: Some("ready"),
+        },
+        IndexStatus::Ready => SyncPct {
+            // Ready disk but pending slipped in between reads — treat as syncing.
+            sync_pct: sync_pct_from_pending(pending_updates),
+            sync_label: Some("syncing"),
+        },
+        IndexStatus::Stale => SyncPct {
+            sync_pct: sync_pct_from_pending(pending_updates),
+            sync_label: Some("syncing"),
+        },
+        IndexStatus::Building => SyncPct {
+            sync_pct: sync_pct_from_progress(view.progress.as_ref()),
+            sync_label: Some("building"),
+        },
+        IndexStatus::Refreshing => SyncPct {
+            sync_pct: sync_pct_from_progress(view.progress.as_ref()),
+            sync_label: Some("syncing"),
+        },
+        IndexStatus::NeedsRebuild | IndexStatus::Absent => SyncPct {
+            sync_pct: 0,
+            sync_label: Some("building"),
+        },
+        IndexStatus::Failed => SyncPct {
+            sync_pct: 0,
+            sync_label: None,
+        },
+    }
+}
+
+fn sync_pct_from_progress(progress: Option<&IndexingProgress>) -> u8 {
+    let Some(p) = progress else {
+        return 0;
+    };
+    if p.files_total == 0 {
+        return 0;
+    }
+    let pct = (p.files_done.saturating_mul(100)) / p.files_total;
+    pct.min(99) as u8 // in-flight never claims 100
+}
+
+fn sync_pct_from_pending(pending: usize) -> u8 {
+    if pending == 0 {
+        return 99;
+    }
+    // Conservative: each pending file knocks ~2pp off a full sync, floor 1.
+    100u8.saturating_sub((pending.saturating_mul(2)).min(99) as u8).max(1)
+}
+
 /// Resolve UI index status from disk job file + meta + pending hint + engine state.
 pub fn resolve_index_view(
     workspace_root: &Path,
@@ -435,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn decide_index_work_small_dirty_updates_large_rebuilds() {
+    fn decide_index_work_dirty_always_updates() {
         assert_eq!(decide_index_work(true, true, 0, 0, 10, 10), IndexWork::None);
         assert_eq!(
             decide_index_work(true, true, 1, 1, 10, 10),
@@ -443,14 +501,13 @@ mod tests {
         );
         assert_eq!(
             decide_index_work(true, true, 5, 5, 10, 10),
-            IndexWork::Rebuild {
-                reason: IndexRebuildReason::DirtyTooLarge
-            }
+            IndexWork::Update { dirty: 5 },
+            "WP-057: large embed dirty must not rebuild"
         );
         assert_eq!(
             decide_index_work(true, true, 1, 1, 1, 1),
             IndexWork::Update { dirty: 1 },
-            "single-file corpus must not upgrade to rebuild"
+            "single-file corpus stays on update"
         );
     }
 
@@ -468,10 +525,8 @@ mod tests {
         );
         assert_eq!(
             decide_index_work(true, true, 5, 9, 10, 6),
-            IndexWork::Rebuild {
-                reason: IndexRebuildReason::DirtyTooLarge
-            },
-            "embed share still upgrades when additions/edits are half the corpus"
+            IndexWork::Update { dirty: 9 },
+            "WP-057: embed share never upgrades to DirtyTooLarge rebuild"
         );
     }
 
@@ -510,10 +565,65 @@ mod tests {
         assert_eq!(update["kind"], "update");
         assert_eq!(update["dirty"], 4);
         let rebuild = serde_json::to_value(IndexWork::Rebuild {
-            reason: IndexRebuildReason::DirtyTooLarge,
+            reason: IndexRebuildReason::Incompatible,
         })
         .unwrap();
         assert_eq!(rebuild["kind"], "rebuild");
-        assert_eq!(rebuild["reason"], "dirty_too_large");
+        assert_eq!(rebuild["reason"], "incompatible");
+    }
+
+    #[test]
+    fn sync_pct_ready_is_100() {
+        let view = ResolvedIndexView {
+            status: IndexStatus::Ready,
+            progress: None,
+            job_error: None,
+        };
+        let s = sync_pct_from_view(&view, 0);
+        assert_eq!(s.sync_pct, 100);
+        assert_eq!(s.sync_label, Some("ready"));
+    }
+
+    #[test]
+    fn sync_pct_building_uses_progress_never_fake_100_on_zero_total() {
+        let empty = ResolvedIndexView {
+            status: IndexStatus::Building,
+            progress: Some(IndexingProgress {
+                phase: IndexPhase::Scanning,
+                files_done: 0,
+                files_total: 0,
+                chunks_done: 0,
+            }),
+            job_error: None,
+        };
+        assert_eq!(sync_pct_from_view(&empty, 0).sync_pct, 0);
+        assert_eq!(sync_pct_from_view(&empty, 0).sync_label, Some("building"));
+
+        let mid = ResolvedIndexView {
+            status: IndexStatus::Refreshing,
+            progress: Some(IndexingProgress {
+                phase: IndexPhase::Syncing,
+                files_done: 3,
+                files_total: 10,
+                chunks_done: 12,
+            }),
+            job_error: None,
+        };
+        let s = sync_pct_from_view(&mid, 0);
+        assert_eq!(s.sync_pct, 30);
+        assert_eq!(s.sync_label, Some("syncing"));
+        assert!(s.sync_pct < 100);
+    }
+
+    #[test]
+    fn sync_pct_stale_below_100() {
+        let view = ResolvedIndexView {
+            status: IndexStatus::Stale,
+            progress: None,
+            job_error: None,
+        };
+        let s = sync_pct_from_view(&view, 5);
+        assert!(s.sync_pct < 100);
+        assert_eq!(s.sync_label, Some("syncing"));
     }
 }

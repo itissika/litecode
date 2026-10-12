@@ -23,6 +23,7 @@ export const TOOL_PARAM_META: Record<string, ToolParamConfig> = {
   subagent_stop: { primary: ["id"] },
   subagent_send: { primary: ["id", "message"] },
   subagent_list: { primary: [] },
+  code_search: { primary: ["query"] },
   session_search: { primary: ["query", "session_id"] },
   litecode_workspace: { primary: ["action"] },
   knowledge: { primary: ["command"] },

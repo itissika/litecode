@@ -42,13 +42,18 @@
   "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib indexing_wait_message_mentions_progress -- --nocapture；对照读 src/tools/webfetch.rs L255-259 与 indexing_wait_message。",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T03:40:00+08:00",
       "by": "ide",
       "change": "WP-011: non-actionable wait copy vs webfetch"
+    },
+    {
+      "ts": "2026-10-12T21:22:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-058 验收：按 WP-057 口径落地（IDE WP-060 + Tools WP-061）。status→closed。"
     }
   ]
 }

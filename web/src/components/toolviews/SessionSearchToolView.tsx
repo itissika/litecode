@@ -11,6 +11,8 @@ import {
   type SessionSearchGroup,
   type SessionSearchHit,
 } from "./sessionSearchParse";
+import { SyncPctHeader } from "./SyncPctHeader";
+import { splitSyncPct } from "./syncPct";
 
 const RAW_PRE =
   "whitespace-pre-wrap break-words font-mono text-dk-sm leading-relaxed";
@@ -192,6 +194,9 @@ export function SessionSearchToolView({
 }: ToolViewProps) {
   const raw = output ? functionCallOutputText(output) : "";
   const failed = status === "failed";
+  // WP-057: strip leading sync_pct so the existing grammar still parses.
+  const { sync, rest } = splitSyncPct(raw);
+  const body = sync ? rest : raw;
   const sessionIdRaw = inputObject(input).session_id;
   const sessionId =
     typeof sessionIdRaw === "string" && sessionIdRaw.trim()
@@ -205,23 +210,26 @@ export function SessionSearchToolView({
     sessionId || meta.length > 0 ? (
       <ScopeRow sessionId={sessionId} meta={meta} />
     ) : null;
+  const syncHead = <SyncPctHeader sync={sync} />;
 
   if (failed) {
     return (
       <div className="flex flex-col gap-1" data-testid="session-search-view">
+        {syncHead}
         {scope}
-        {raw ? <RawBlock text={raw} failed /> : null}
+        {body ? <RawBlock text={body} failed /> : null}
       </div>
     );
   }
 
-  const view = raw ? parseSessionSearch(raw) : null;
+  const view = body ? parseSessionSearch(body) : null;
   if (!view) {
-    if (!raw && !scope) return null;
+    if (!body && !scope && !sync) return null;
     return (
       <div className="flex flex-col gap-1" data-testid="session-search-view">
+        {syncHead}
         {scope}
-        {raw ? <RawBlock text={raw} failed={false} /> : null}
+        {body ? <RawBlock text={body} failed={false} /> : null}
       </div>
     );
   }
@@ -229,12 +237,13 @@ export function SessionSearchToolView({
   if (view.kind === "empty") {
     return (
       <div className="flex flex-col gap-1" data-testid="session-search-view">
+        {syncHead}
         {scope}
         <p
           className={`${RAW_PRE} text-(--_dk-text-muted)`}
           data-testid="session-search-empty"
         >
-          {raw}
+          {view.text}
         </p>
       </div>
     );
@@ -242,6 +251,7 @@ export function SessionSearchToolView({
 
   return (
     <div className="flex flex-col gap-1" data-testid="session-search-view">
+      {syncHead}
       {scope}
       <ul>
         {view.groups.map((group, index) => (

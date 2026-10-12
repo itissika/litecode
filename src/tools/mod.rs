@@ -37,3 +37,41 @@ mod bash_jobs_contract;
 pub(crate) fn description_text(embedded: &str) -> String {
     embedded.trim_end().to_string()
 }
+
+/// First line of `code_search` / `session_search` results (WP-057 sync% contract).
+pub(crate) fn format_sync_pct_line(sync: &crate::engines::code_search::SyncPct) -> String {
+    match sync.sync_label {
+        Some(label) => format!("sync_pct: {}% ({})", sync.sync_pct, label),
+        None => format!("sync_pct: {}%", sync.sync_pct),
+    }
+}
+
+/// Resolve sync% from IDE index view; Tools only consume, never invent a second progress scale.
+pub(crate) fn sync_pct_for_workspace(
+    engines: &crate::engines::WorkspaceEngines,
+    workspace_root: Option<&std::path::Path>,
+) -> crate::engines::code_search::SyncPct {
+    use crate::engines::code_search::{read_pending_hint, resolve_index_view, sync_pct_from_view};
+    let root = workspace_root
+        .map(|p| p.to_path_buf())
+        .or_else(|| engines.code_search().workspace_root());
+    match root {
+        Some(root) => {
+            let view = resolve_index_view(&root, engines.state("code_search"));
+            sync_pct_from_view(&view, read_pending_hint(&root))
+        }
+        None => crate::engines::code_search::SyncPct {
+            sync_pct: 0,
+            sync_label: None,
+        },
+    }
+}
+
+pub(crate) fn prepend_sync_pct(
+    sync: &crate::engines::code_search::SyncPct,
+    body: &str,
+) -> String {
+    format!("{}
+{}", format_sync_pct_line(sync), body)
+}
+

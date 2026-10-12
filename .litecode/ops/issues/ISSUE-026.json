@@ -51,13 +51,18 @@
   "repro": "读码：WorkspaceEngines::search_sessions 在 is_warmed(\"code_search\") 为假时 semantic 为空仍 Ok。对照 description 无 Warm/降级字样。单元：engines 默认 new() 后 SessionSearchTool 仍返回词法结果（src/tools/session_search.rs 测试用 WorkspaceEngines::new()）。",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T03:40:00+08:00",
       "by": "ide",
       "change": "WP-011: silent lexical-only degrade for session_search"
+    },
+    {
+      "ts": "2026-10-12T21:22:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-058 验收：按 WP-057 口径落地（IDE WP-060 + Tools WP-061）。status→closed。"
     }
   ]
 }

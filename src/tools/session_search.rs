@@ -26,6 +26,18 @@ impl SessionSearchTool {
         session_id: Option<&str>,
         active_session_id: Option<&str>,
     ) -> ToolCallResult {
+        // Defensive: LLM table hides when desired=false or not Warm (no sleep).
+        if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
+            return ToolCallResult::error(
+                "session_search is not enabled. Enable retrieval in Settings → Engines.",
+            );
+        }
+        if !self.engines.is_warmed("code_search") {
+            return ToolCallResult::warning(
+                "session_search is unavailable while code_search is Warming. It is hidden from the tool list until Warm.",
+            );
+        }
+
         let include_session = match session_id {
             Some(refer) if !refer.trim().is_empty() => {
                 match session_search::resolve_session_ref(reader, refer.trim()) {
@@ -57,6 +69,11 @@ impl SessionSearchTool {
         // corpus moves on every turn, so "refresh on demand" meant "refresh
         // always, right here". A stale index is the accepted price; being wrong
         // is not.
+        let semantic_ready = matches!(
+            self.engines.session_semantic_gate(),
+            crate::engines::CodeSearchCallGate::Ready
+        );
+
         let bundle = match self.engines.search_sessions(
             query,
             0,
@@ -77,12 +94,21 @@ impl SessionSearchTool {
             Ok(view) => view,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
+
+        let sync = crate::tools::sync_pct_for_workspace(&self.engines, Some(workspace_root));
+        let mut body = String::new();
+        if !semantic_ready {
+            // Honest degradation: never look like a full lexical+semantic fusion.
+            body.push_str("semantic: unavailable (lexical only)\n");
+        }
         if view.trim().is_empty() {
-            return ToolCallResult::ok(format!(
+            body.push_str(&format!(
                 "No matching session transcript context for query '{query}'."
             ));
+        } else {
+            body.push_str(&view);
         }
-        ToolCallResult::ok(view)
+        ToolCallResult::ok(crate::tools::prepend_sync_pct(&sync, &body))
     }
 }
 
@@ -246,6 +272,14 @@ mod tests {
         id
     }
 
+    /// Enable retrieval + mark code_search Warm so session_search is callable in tests.
+    fn warmed_tool(root: &std::path::Path) -> SessionSearchTool {
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        SessionSearchTool::new(engines)
+    }
+
     #[test]
     fn typical_broad_search_renders_handle_and_lines() {
         let dir = tempfile::tempdir().unwrap();
@@ -255,7 +289,7 @@ mod tests {
             "We decided AUTH_REFACTOR_TOKEN moves login to middleware.",
         );
         seed_session(root, "unrelated OTHER_TOPIC_ONLY content");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -295,7 +329,7 @@ mod tests {
             ],
         );
 
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -332,7 +366,7 @@ mod tests {
         }
         seed_items(root, &items);
 
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -361,8 +395,9 @@ mod tests {
     #[test]
     fn rejects_empty_query() {
         let dir = tempfile::tempdir().unwrap();
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let r = call(&tool, dir.path(), serde_json::json!({ "query": "   " }), "");
+        let root = dir.path();
+        let tool = warmed_tool(root);
+        let r = call(&tool, root, serde_json::json!({ "query": "   " }), "");
         assert_eq!(r.level, ToolSignalLevel::Error);
         assert!(r.content.contains("query"), "{}", r.content);
     }
@@ -373,7 +408,7 @@ mod tests {
         let root = dir.path();
         let current_id = seed_session(root, "VISIBLE_IN_WINDOW_MARKER only here");
         let other_id = seed_session(root, "VISIBLE_IN_WINDOW_MARKER also in other");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -395,7 +430,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         seed_session(root, "短词标记在此");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(&tool, root, serde_json::json!({ "query": "短词" }), "");
         // Two characters is an ordinary query: the row is found, with the normal
         // view, and nothing is said about the index.
@@ -429,7 +464,7 @@ mod tests {
         data.compact_from(&sid, &user_text("[summary] prior archived"), Some(2), 10)
             .unwrap();
 
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let archived = call_ok(
             &tool,
             root,
@@ -458,7 +493,7 @@ mod tests {
         let root = dir.path();
         let a = seed_session(root, "SCOPE_MARKER in a");
         seed_session(root, "SCOPE_MARKER in b");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -474,7 +509,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         seed_session(root, "something");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let r = call(
             &tool,
             root,
@@ -490,7 +525,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         seed_session(root, "hello");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -506,7 +541,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let sid = seed_session(root, "alpha\nSEARCH_READ_ALIGN_TOKEN here\ndelta");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let tool = warmed_tool(root);
         let out = call_ok(
             &tool,
             root,
@@ -569,5 +604,61 @@ mod tests {
         assert!(!props.contains_key("session_filter"));
         assert!(!props.contains_key("expand"));
         assert_eq!(schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn semantic_unavailable_is_explicit_and_leads_with_sync_pct() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let id = seed_session(root, "UNIQUE_SESSION_SEARCH_TOKEN alpha");
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        // Warm but no worker_pid ⇒ session_semantic_gate = Wait ⇒ lexical only.
+        let tool = SessionSearchTool::new(engines);
+        let out = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "UNIQUE_SESSION_SEARCH_TOKEN" }),
+            "",
+        );
+        let first = out.lines().next().unwrap_or("");
+        assert!(
+            first.starts_with("sync_pct:"),
+            "first line must be sync_pct, got: {first:?}\n{out}"
+        );
+        assert!(
+            out.contains("semantic: unavailable (lexical only)"),
+            "must declare lexical-only degradation:\n{out}"
+        );
+        assert!(
+            out.contains("UNIQUE_SESSION_SEARCH_TOKEN") || out.contains("No matching"),
+            "unexpected body:\n{out}"
+        );
+        let _ = id;
+    }
+
+    #[test]
+    fn desired_false_session_search_points_at_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false)
+            .unwrap();
+        seed_session(root, "whatever");
+        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let r = call(
+            &tool,
+            root,
+            serde_json::json!({ "query": "whatever" }),
+            "",
+        );
+        assert_eq!(r.level, ToolSignalLevel::Error);
+        assert!(
+            r.content.contains("Settings → Engines"),
+            "{}",
+            r.content
+        );
     }
 }
