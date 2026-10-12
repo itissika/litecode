@@ -5,7 +5,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
 #[test]
-fn server_hello_notification_serializes_correctly() {
+fn server_hello_omits_llm_ecosystem() {
+    // T2: full server/hello snapshot deleted; keep single-field guard — no other test
+    // asserts the removed llm_ecosystem key stays gone.
     use litecode::client_protocol::project;
     use litecode::client_protocol::protocol::{ModelInfo, PrimaryAgentInfo};
     let msg = project::server_hello(
@@ -30,26 +32,10 @@ fn server_hello_notification_serializes_correctly() {
         }],
     );
     let json = serde_json::to_string(&msg).expect("json");
-    assert!(json.contains("server/hello"));
-    assert!(json.contains("workspace_id"));
-    assert!(json.contains("jsonrpc"));
-    assert!(json.contains("2.0"));
     assert!(
         !json.contains("llm_ecosystem"),
-        "server/hello must no longer carry the removed llm_ecosystem field: {json}"
+        "server/hello must not carry removed llm_ecosystem: {json}"
     );
-    let hello: litecode::client_protocol::protocol::ServerHello =
-        serde_json::from_value(msg["params"].clone()).expect("hello params deserialize");
-    assert_eq!(
-        hello.models.len(),
-        1,
-        "models carries the active-model projection"
-    );
-    assert_eq!(hello.models[0].id, "test/test-primary-model");
-    assert_eq!(hello.models[0].api_model_id, "test-primary-model");
-    assert_eq!(hello.models[0].provider_id, "test");
-    assert_eq!(hello.models[0].context_window, 128_000);
-    assert_eq!(hello.host_os, std::env::consts::OS);
 }
 
 #[tokio::test]
@@ -92,6 +78,7 @@ async fn permission_channel_round_trip() {
 
 #[test]
 fn permission_request_serializes_request_id() {
+    // T2: retained full PermissionRequest wire snapshot.
     let req = PermissionRequest {
         session_id: "s1".into(),
         turn_id: "turn-1".into(),
@@ -105,9 +92,19 @@ fn permission_request_serializes_request_id() {
         multi_select: false,
         questions: Vec::new(),
     };
-    let json = serde_json::to_string(&req).expect("json");
-    assert!(json.contains("request_id"));
-    assert!(json.contains("550e8400-e29b-41d4-a716-446655440000"));
+    let v = serde_json::to_value(&req).expect("json");
+    assert_eq!(v["session_id"], "s1");
+    assert_eq!(v["turn_id"], "turn-1");
+    assert_eq!(v["request_id"], "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(v["tool"], "bash");
+    assert_eq!(v["rule_id"], "default");
+    assert_eq!(v["summary"], "ls");
+    assert_eq!(v["kind"], "permission");
+    assert_eq!(v["free_text"], false);
+    assert_eq!(v["multi_select"], false);
+    // Empty options/questions are skip_serializing_if — absent on the wire.
+    assert!(v.get("options").is_none(), "empty options omitted: {v}");
+    assert!(v.get("questions").is_none(), "empty questions omitted: {v}");
 }
 
 #[tokio::test]
@@ -382,18 +379,3 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
     assert_eq!(reply.free_text.as_deref(), Some("too broad"));
 }
 
-#[test]
-fn ask_kind_wire_snake_case() {
-    assert_eq!(
-        serde_json::to_value(AskKind::AskUser).unwrap(),
-        serde_json::json!("ask_user")
-    );
-    assert_eq!(
-        serde_json::to_value(AskKind::Approval).unwrap(),
-        serde_json::json!("approval")
-    );
-    assert_eq!(
-        serde_json::to_value(AskKind::Permission).unwrap(),
-        serde_json::json!("permission")
-    );
-}

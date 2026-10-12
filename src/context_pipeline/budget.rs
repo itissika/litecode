@@ -164,17 +164,18 @@ mod tests {
     use crate::types::user_text;
 
     #[test]
-    fn token_count_prefers_provider_when_set() {
+    fn token_count_prefers_provider_or_falls_back_to_estimate() {
         let budget = BudgetPolicy::new(10_000);
         let tiny = vec![user_text("hi")];
-        assert_eq!(budget.token_count(&tiny, 8_500), 8_500);
-    }
-
-    #[test]
-    fn token_count_falls_back_to_estimate_without_provider() {
-        let budget = BudgetPolicy::new(10_000);
-        let tiny = vec![user_text("hi")];
-        assert_eq!(budget.token_count(&tiny, 0), compute_token_estimate(&tiny));
+        // (provider_tokens, expected)
+        let cases = [(8_500_u64, 8_500_usize), (0, compute_token_estimate(&tiny))];
+        for (provider_tokens, expected) in cases {
+            assert_eq!(
+                budget.token_count(&tiny, provider_tokens),
+                expected,
+                "provider_tokens={provider_tokens}"
+            );
+        }
     }
 
     #[test]

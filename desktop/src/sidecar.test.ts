@@ -25,7 +25,7 @@ function longRunningChild(): SidecarHandle {
 }
 
 describe("formatSidecarBootFailure", () => {
-  it("includes exit code, paths, and sidecar output", () => {
+  it("includes key fields code, bin, and log", () => {
     const text = formatSidecarBootFailure({
       bin: "E:\\litecode\\dist\\product\\litecode.exe",
       workspace: "E:\\proj",
@@ -33,10 +33,8 @@ describe("formatSidecarBootFailure", () => {
       output: "Error: cannot open sessions.db at E:\\proj\\.litecode\\sessions.db",
     });
     assert.match(text, /code=1/);
-    assert.match(text, /binary: /);
-    assert.match(text, /workspace: /);
+    assert.match(text, /binary: E:\\litecode\\dist\\product\\litecode\.exe/);
     assert.match(text, /log file: /);
-    assert.match(text, /cannot open sessions\.db/);
   });
 
   it("notes when sidecar printed nothing", () => {

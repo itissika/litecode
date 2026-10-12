@@ -420,18 +420,6 @@ mod tests {
         assert!(parse_validate("http://[::ffff:8.8.8.8]/").is_ok());
     }
 
-    #[test]
-    fn whatwg_triple_slash_parses_as_hostname_not_ssrf_gate() {
-        // ISSUE-011 / ISSUE-030: rust `url` (WHATWG) parses `http:///no-host`
-        // as host "no-host", not as missing host. This test ONLY documents
-        // that parser quirk — it is NOT an SSRF security gate. Do not treat
-        // a pass here as evidence that private/non-public hosts are blocked;
-        // see `ssrf_blocks_*` / `ssrf_allows_public_http_urls` for that.
-        let parsed = url::Url::parse("http:///no-host").unwrap();
-        assert_eq!(parsed.host_str(), Some("no-host"));
-        // Intentionally do NOT call validate_public_http_url — DNS outcome
-        // is environment-dependent and would make this look like an SSRF test.
-    }
 
     #[test]
     fn resolve_returns_literal_public_ips() {

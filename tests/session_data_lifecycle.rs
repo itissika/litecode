@@ -60,10 +60,13 @@ async fn queue_capacity_keeps_overflow_pending_until_cancelled() {
         Err(litecode::types::LitecodeError::SessionBackpressure)
     ));
 
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel::<()>();
     let pending = tokio::spawn({
         let data = std::sync::Arc::clone(&data);
         let sid = sid.clone();
         async move {
+            // T4: notify when mutate is about to park on the full queue (replaces sleep(50ms)).
+            let _ = entered_tx.send(());
             data.mutate(SessionMutation::InsertDetails {
                 session_id: sid,
                 expected_revision: 1,
@@ -74,7 +77,10 @@ async fn queue_capacity_keeps_overflow_pending_until_cancelled() {
             .await
         }
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    // Poll with deadline until the spawned task signals entry, then yield so
+    // mutate()'s send().await is polled and parks on the full channel.
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), entered_rx).await;
+    tokio::task::yield_now().await;
     pending.abort();
     let aborted = pending.await;
     assert!(aborted.is_err());

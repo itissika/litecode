@@ -377,6 +377,36 @@ mod tests {
         assert!(err.contains("at least 2"), "{err}");
     }
 
+    /// Find `[{qid}] selected_ids: …` / `free_text:` lines without requiring
+    /// an exact full-string concat (WP-050 T2).
+    fn line_for(content: &str, qid: &str, field: &str) -> Option<String> {
+        let prefix = format!("[{qid}] {field}:");
+        content
+            .lines()
+            .find(|l| l.starts_with(&prefix))
+            .map(str::to_string)
+    }
+
+    fn assert_selected_ids(content: &str, qid: &str, ids: &[&str]) {
+        let line = line_for(content, qid, "selected_ids")
+            .unwrap_or_else(|| panic!("missing [{qid}] selected_ids in:\n{content}"));
+        for id in ids {
+            assert!(
+                line.split(':').nth(1).is_some_and(|rest| {
+                    rest.split(',').map(str::trim).any(|tok| tok == *id)
+                }),
+                "expected id {id:?} in {line}"
+            );
+        }
+    }
+
+    fn assert_free_text(content: &str, qid: &str, text: &str) {
+        let line = line_for(content, qid, "free_text")
+            .unwrap_or_else(|| panic!("missing [{qid}] free_text in:\n{content}"));
+        let body = line.split_once(':').map(|(_, b)| b.trim()).unwrap_or("");
+        assert_eq!(body, text, "free_text mismatch in {line}");
+    }
+
     #[test]
     fn legacy_question_normalizes_to_q0() {
         let tool = AskUserTool::new();
@@ -393,16 +423,8 @@ mod tests {
             ]
         }));
         assert_eq!(result.level, ToolSignalLevel::Ok);
-        assert!(
-            result.content.contains("[q0] selected_ids: ship"),
-            "{}",
-            result.content
-        );
-        assert!(
-            result.content.contains("[q0] free_text: lgtm"),
-            "{}",
-            result.content
-        );
+        assert_selected_ids(&result.content, "q0", &["ship"]);
+        assert_free_text(&result.content, "q0", "lgtm");
     }
 
     #[test]
@@ -449,21 +471,9 @@ mod tests {
             ]
         }));
         assert_eq!(result.level, ToolSignalLevel::Ok);
-        assert!(
-            result.content.contains("[color] selected_ids: blue"),
-            "{}",
-            result.content
-        );
-        assert!(
-            result.content.contains("[size] selected_ids: m,l"),
-            "{}",
-            result.content
-        );
-        assert!(
-            result.content.contains("[size] free_text: prefer M"),
-            "{}",
-            result.content
-        );
+        assert_selected_ids(&result.content, "color", &["blue"]);
+        assert_selected_ids(&result.content, "size", &["m", "l"]);
+        assert_free_text(&result.content, "size", "prefer M");
     }
 
     #[test]

@@ -2350,6 +2350,808 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-042",
+      "domain": "team-ops",
+      "title": "测试：先覆盖后裁剪（核心流程 → 合理量级）",
+      "result": "核心流程覆盖有绿表；冗余/过时测试经中层裁决后量级合理；整包交 Andy 一次验收",
+      "done_when": [
+        "前后端子包 done；GM 汇总四件套交 Andy close"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-042.md",
+      "progress": "closed done by andy: Andy 验收通过：先覆盖后裁剪整包完成；统一 commit+push。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "先覆盖后裁剪，基层先列后审再删，中层领导可直接裁决；（你审的是最终整包结果，避免层层报批导致注意力漂移）",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-042 测试：先覆盖后裁剪\n\n## Goal（Andy）\n先覆盖后裁剪，基层先列后审再删，中层领导可直接裁决；（你审的是最终整包结果，避免层层报批导致注意力漂移）\n\n## 职责边界\n| 层 | 做什么 | 不做什么 |\n|---|---|---|\n| 域 bot（基层） | 核对覆盖、列出冗余/过时/重复；提案删/留/放宽 | 未过中层审前不删 |\n| 中层 | 交叉审；**直接裁决**删/留/放宽并组织落地 | 不把单条裁剪报 GM 批 |\n| GM | 批中层总方案与最终整包验收 | 不审每条测试去留 |\n| Andy | 只看顶层最终整包 | — |\n\n## 两步（各中层包内串行）\n1. **覆盖**：核心流程是否有效覆盖（含 WP-033 刚落行为）；绿表 + 缺口。\n2. **裁剪**：作用域内优化到合理量级；基层先列 → 中层裁决 → 再删。\n\n## 子包\n- **WP-043 后端中层**：会话/运行/上下文/工具/IDE…\n- **WP-044 前端中层**：web + desktop（可再拆域子包）\n\n前后端代码面不交，可并行。禁区：引擎产品、symlink 产品行为。不 commit（收口时由 GM 统一提）。\n\n## 时序防竞态\n- 同中层内：先覆盖报告，再裁剪落地（避免边删边缺覆盖结论）。\n- 跨中层：文件面不交，可并行；工具需求仍按指挥链。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:09:40.000Z",
+          "actor": "andy",
+          "action": "create",
+          "note": "goal: 先覆盖后裁剪，基层先列后审再删，中层领导可直接裁决；（你审的是最终整包结果，避免层层报批导致注意力漂移）"
+        },
+        {
+          "ts": "2026-10-12T12:09:47.357Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-042 测试：先覆盖后裁剪\n\n## Goal（Andy）\n先覆盖后裁剪，基层先列后审再删，中层领导可直接裁决；（你审的是最终整包结果，避免层层报批导致"
+        },
+        {
+          "ts": "2026-10-12T12:09:47.665Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-042.md\""
+        },
+        {
+          "ts": "2026-10-12T12:09:47.959Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "方案：两中层并行；中层裁决裁剪；Andy 只看整包"
+        },
+        {
+          "ts": "2026-10-12T12:12:06.453Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 批 plan"
+        },
+        {
+          "ts": "2026-10-12T12:12:06.755Z",
+          "actor": "gm",
+          "action": "start",
+          "note": "启动；043/044 并行，中层裁决裁剪"
+        },
+        {
+          "ts": "2026-10-12T12:26:56.558Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "子包 WP-043（后端五域 cover-then-prune）与 WP-044（前端 web/desktop）均 done；汇总产物已交 Andy 聊天验收。未 commit，待 Andy close→done 后统一提交。"
+        },
+        {
+          "ts": "2026-10-12T12:28:32.558Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 验收通过：先覆盖后裁剪整包完成；统一 commit+push。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-043",
+      "domain": "harness-core",
+      "title": "后端测试：核心流程覆盖核对 + 裁剪裁决",
+      "result": "后端核心覆盖绿表+缺口；裁剪已裁决并落地或列明暂缓理由",
+      "done_when": [
+        "中层交叉审完成；deliver GM"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-backend.md",
+      "progress": "closed done by gm: 验收通过：五域 WP-047..051 均 done；产物 WP-043-backend.md + 分域产物齐全；ISSUE-007 closed；禁区未碰；未 commit。cover-then-prune 后端侧完成。",
+      "status_entered_at": null,
+      "parent": "WP-042",
+      "goal": "组织后端域 bot：先核对会话/运行/上下文/工具/IDE 等核心流程是否有有效覆盖（含刚落的修稳行为），产出绿表与缺口；再在各域作用域列出冗余/过时/重复测试，中层可直接裁决删/留/放宽（基层先列后审再删）。不层层向 GM 报批单条裁剪。禁区：引擎产品、symlink 产品行为。不 commit。汇总交 GM。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "先覆盖后裁剪。参考 WP-042.md、WP-021-backend 旧裁剪清单（可能已漂）、WP-033/036 刚落行为。禁区：引擎产品、symlink 产品行为。不 commit。中层只组织/交叉审/汇总/裁决，不亲手改测试代码。\n\n## 子包\n| 子包 | owner | 产物 |\n|---|---|---|\n| WP-047 | session | WP-043-session.md |\n| WP-048 | runtime | WP-043-runtime.md |\n| WP-049 | context | WP-043-context.md |\n| WP-050 | tools | WP-043-tools.md |\n| WP-051 | ide | WP-043-ide.md |\n\n## 各子包两步硬串行\n1. **覆盖**：核对本域核心流程有效覆盖（含 WP-033/036 刚落），产出绿表+缺口。重点：\n   - Session：开/关/恢复、回合生命周期、compact 错误码与 DB 真相交叉、重连后停回合可再点\n   - Runtime：agent loop、auto/manual compact 失败口径、取消→Cancelled、断线重连停回合\n   - 上下文：compact DB 真相（ISSUE-035）、reminder sources、budget/keep_recent、death_list\n   - Tools：custom/MCP 进程生命周期（ISSUE-039/040）、bash/permission 主链\n   - IDE：workspace 并发 create/跨盘（ISSUE-037/038）、path/terminal/process_contract\n2. **裁剪**：列冗余/过时/重复及删/留/放宽提案 → 交我裁决 → 再落地删/放宽。基层未过我审前不删。可参考 WP-021-backend §5 旧清单但须对照现状重核（已漂的作废）。\n\n## 中层\n- 交叉审：Session↔Runtime；Tools↔IDE；上下文↔Session（compact DB 真相）\n- **直接裁决**删/留/放宽并组织落地；单条裁剪不报 GM\n- 汇总 `.litecode/ops/artifacts/WP-043-backend.md` 后 deliver 给 GM\n\n## 流程\nGM 批 WP-043 → 我 start → 五域先 fill 方案报我审 → 我批后开工（文件面不交可并行）→ **覆盖报告先交** → 我审后再开裁剪落地 → 交叉审 → 汇总 deliver。\n工具需求：域 bot 报我，我认可后转工具集管家。\n\n## 不做\n引擎产品；symlink 产品行为；ISSUE-032/034 改造；前端；不 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:09:40.406Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织后端域 bot：先核对会话/运行/上下文/工具/IDE 等核心流程是否有有效覆盖（含刚落的修稳行为），产出绿表与缺口；再在各域作用域列出冗余/过时/重复测试，中层可直接裁决删/留/放宽（基层先列后审再删）。不层层向 GM 报批单条裁剪。禁区：引擎产品、symlink 产品行为。不 commit。汇总交 GM。"
+        },
+        {
+          "ts": "2026-10-12T12:13:02.330Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: 先覆盖后裁剪。参考 WP-042.md、WP-021-backend 旧裁剪清单（可能已漂）、WP-033/036 刚落行为。禁区：引擎产品、symlink 产"
+        },
+        {
+          "ts": "2026-10-12T12:13:02.699Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-043-backend.md\""
+        },
+        {
+          "ts": "2026-10-12T12:13:03.105Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "子包 WP-047..051 已建（session/runtime/context/tools/ide），请审；未 start"
+        },
+        {
+          "ts": "2026-10-12T12:13:16.939Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "五域拆分+两步硬串行+中层裁决正确；批"
+        },
+        {
+          "ts": "2026-10-12T12:13:25.995Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM 已批；令五域 fill 方案，批后再 start；覆盖→裁剪硬串行"
+        },
+        {
+          "ts": "2026-10-12T12:25:38.633Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "五域 WP-047..051 均 done。汇总 .litecode/ops/artifacts/WP-043-backend.md。cover-then-prune 完成；ISSUE-007 closed；未 commit；禁区未碰。请 GM 验收 close。"
+        },
+        {
+          "ts": "2026-10-12T12:26:28.795Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：五域 WP-047..051 均 done；产物 WP-043-backend.md + 分域产物齐全；ISSUE-007 closed；禁区未碰；未 commit。cover-then-prune 后端侧完成。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-044",
+      "domain": "client-ux",
+      "title": "前端测试：核心流程覆盖核对 + 裁剪裁决",
+      "result": "前端核心覆盖绿表+缺口；裁剪已裁决并落地或列明暂缓理由",
+      "done_when": [
+        "中层交叉审完成；deliver GM"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by gm: 验收通过：覆盖诚实；裁剪落地；web 184 + desktop 127 复跑绿",
+      "status_entered_at": null,
+      "parent": "WP-042",
+      "goal": "组织 web/desktop：先核对核心交互/壳流程是否有有效覆盖（含权限队列、断线 reject、隧道/sidecar 恢复、下载控制等刚落行为），产出绿表与缺口；再列冗余/过时/重复测试，中层可直接裁决删/留/放宽。不层层向 GM 报批单条。桌面 CI 是否接入另列建议不擅自做。不碰后端。不 commit。汇总交 GM。",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "先覆盖后裁剪。参考 WP-042.md、WP-021-frontend 旧裁剪清单、WP-034/035 刚落行为。不碰后端。不 commit。桌面 CI 只列建议不擅自做。\n\n子包：\n- WP-045（前端-web，审批我）→ WP-044-web.md\n- WP-046（前端-desktop，审批我）→ WP-044-desktop.md\n\n各子包两步硬串行：\n1) 覆盖：核对核心交互/壳流程有效覆盖（web：权限队列、断线 reject、Ask 不复活等；desktop：隧道/sidecar 恢复、单飞、下载控制等），产出绿表+缺口。\n2) 裁剪：列冗余/过时/重复及删/留/放宽提案 → 交我裁决 → 再落地删/放宽。基层未过我审前不删。\n\n中层：交叉审两边产物；直接裁决删/留/放宽（单条不报 GM）；组织落地后汇总 WP-044.md deliver 给 GM。\n\n流程：GM 批 WP-044 → 我 start → 两 bot 先 fill 方案报我审 → 我批后开工（可并行，文件面不交）→ 覆盖报告先交 → 我审后再开裁剪落地 → 互审 → 汇总 deliver。\n工具需求：域 bot 报我，我认可后转工具集管家。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:09:40.700Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 web/desktop：先核对核心交互/壳流程是否有有效覆盖（含权限队列、断线 reject、隧道/sidecar 恢复、下载控制等刚落行为），产出绿表与缺口；再列冗余/过时/重复测试，中层可直接裁决删/留/放宽。不层层向 GM 报批单条。桌面 CI 是否接入另列建议不擅自做。不碰后端。不 commit。汇总交 GM。"
+        },
+        {
+          "ts": "2026-10-12T12:12:23.054Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: 先覆盖后裁剪。参考 WP-042.md、WP-021-frontend 旧裁剪清单、WP-034/035 刚落行为。不碰后端。不 commit。桌面 CI 只列"
+        },
+        {
+          "ts": "2026-10-12T12:12:23.450Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子包 WP-045/046 已建，请审；未 start"
+        },
+        {
+          "ts": "2026-10-12T12:12:39.853Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "两步硬串行+中层裁决正确；批"
+        },
+        {
+          "ts": "2026-10-12T12:12:47.535Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "GM 已批，下发 WP-045/046"
+        },
+        {
+          "ts": "2026-10-12T12:21:05.869Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "汇总见 WP-044.md；web/desktop 子包均 done"
+        },
+        {
+          "ts": "2026-10-12T12:22:10.748Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：覆盖诚实；裁剪落地；web 184 + desktop 127 复跑绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-045",
+      "domain": "client-ux",
+      "title": "WP-044 web：核心覆盖核对 + 测试裁剪提案",
+      "result": "只动 web/。(1) 核对核心交互有效覆盖：权限队列/单卡、断线 reject pendingRpc、Ask 不复活等 WP-034 刚落行为，以及既有核心交互；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。不碰 desktop/后端。不 commit。",
+      "done_when": [
+        "覆盖绿表+缺口已写",
+        "裁剪提案已列",
+        "中层裁决后落地",
+        "交叉审通过"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-044-web.md",
+      "progress": "closed done by frontend_mid: 裁决落地已抽查；basename/modelId 假绿已去；deathListGate 就位；vitest 11/45 复跑绿",
+      "status_entered_at": null,
+      "parent": "WP-044",
+      "goal": "只动 web/。(1) 核对核心交互有效覆盖：权限队列/单卡、断线 reject pendingRpc、Ask 不复活等 WP-034 刚落行为，以及既有核心交互；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。不碰 desktop/后端。不 commit。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-045 方案（web，两步硬串行）\n\n父包：WP-044（frontend_mid） / 祖包：WP-042  \n执行：frontend（前端-web）  \n产物：`.litecode/ops/artifacts/WP-044-web.md`  \n范围：仅 `web/`。不碰 desktop / 后端 / 引擎 UI / symlink。不 commit。未过前端中层裁决前不删任何测试。\n\n## 对齐前置\n\n- WP-034（WP-037）已落：`permissionQueue` FIFO、UI 单卡 `key=request_id`、grant 失败不复活（去 `|| !latest`）、cancel/revert/turn 整队清空、`agentWs.rejectAllPendingRpc`（onclose/connect/disconnect）、孤儿 ask 不 snapshot 回灌、未加 `clearPermissionQueue`。\n- WP-021-frontend.md「## web」§3 裁剪清单 T1–T9（含 desktop 交叉审对 T2/T6/T7 的保留/反对意见）作为 Step2 复核基线，不直接照搬旧结论。\n\n## Step 1 — 覆盖核对（先做，只产出不删）\n\n### 目标\n把 web 核心交互映射到现有测试，产出「绿表 + 缺口」写入 `WP-044-web.md`「## 覆盖」节。\n\n### 必核映射（逐条找测试文件:用例名，无则记缺口）\n\n| 域 | 行为点 |\n|----|--------|\n| Ask / 权限 | `permissionQueue` FIFO 双入队；grant 只出队头；同 `request_id` 不双入队 |\n| Ask / UI | 单卡只渲 `queue[0]`；`PermissionCard key=request_id` remount |\n| Ask / 不复活 | grant 失败不回插；cancel / transcript revert / turn start|finish 清空队列 |\n| 断线 RPC | close / disconnect / connect 换代 → `rejectAllPendingRpc` 立刻 reject；清定时器；不 30s 挂；不二次 timeout；不自动重放 |\n| 孤儿 ask | snapshot / 重连不回灌 pending permission（确认仍无回灌路径） |\n| 既有核心 | composer 发送；多 session Ask 隔离（若有测）；message snapshot/delta（若有覆盖）；connection 重连表面状态 |\n\n### 方法\n1. `rg` + 读 `web/src/**/*.test.ts(x)`（重点：`agentWs.test.ts`、`turnStore.test.ts`、`PermissionModal.test.tsx`、`AgentPanel.test.tsx`、`ComposerDock.test.tsx`、`MessageList.test.tsx` 及 session/connection 相关测）。\n2. 可选：只读 `vitest run` 拿基线绿数（不改测、不改产品）。箱内若 Node 版本不够，注明环境与采信方式。\n3. 每行绿表：`行为 | 测试证据(文件:用例) | 状态(绿/缺口/弱)`。缺口单独列表，只建议补测方向，本包不写新测（除非中层另批）。\n\n### Step1 完成标准\n- `WP-044-web.md` 已有「## 覆盖」绿表 + 缺口节；WP-034 五项行为均有证据行或明确缺口行。\n\n## Step 2 — 裁剪提案（Step1 表写完后；未过审不删）\n\n### 目标\n列冗余 / 过时 / 重复 / 假绿，附「删 / 留 / 放宽」提案与理由，追加到同一 `WP-044-web.md`「## 裁剪提案」；**等前端中层裁决后再删**。\n\n### 复核 WP-021 T1–T9（对应当前树，不照搬旧行号）\n- T1 basename 自指假绿（5 处）— 是否仍在；若在，提案：删并换 non-vacuous（替换方案可引用 WP-021 §2，本包默认只提案不落地）。\n- T2 R5 vs R9 重叠 — 对照 desktop 审「保留 R5 文件或 R9 注明含 R5」。\n- T3 多份 `walkTsFiles` 复制 — 抽 helper 提案（本包可不落地 helper）。\n- T4 r9 golden fixture 弱断言 — 加强 vs 删。\n- T5 modelId 近恒真 — 删该行、保留负向针。\n- T6 serve-auth 文案负向针 — **尊重 WP-021 交叉审反对删**，默认提案「留」或改为 testid/组件不存在。\n- T7 PermissionModal `w-full` class — 与 `flex-col` 一并放宽为 role/布局语义；不直接删（ISSUE-008 回归锚）。\n- T8 seq-a/d、r4、r6 主扫描 — 留；仅 basename 用例随 T1。\n- T9 已解决项 — 确认仍已解决，从提案移除。\n\n### 额外扫描\n- `rg`：`it.skip|describe.skip|it.todo|expect\\(true\\)|basename|death-list` 等假绿/空转模式。\n- 与 Step1 绿表交叉：覆盖已由行为测守住的 death-list 纯扫描，标「可放宽/可合并」而非盲目删。\n\n### Step2 完成标准\n- 裁剪表每条含：分类、路径、理由、提案（删/留/放宽）、是否源自 T1–T9 复核。\n- 正文写明：**未裁决前零删除**；本包 deliver 时若尚未裁决，裁剪落地不纳入 done。\n\n## 硬约束\n- 两步硬串行：Step1 绿表落盘后才写 Step2。\n- 未过前端中层审前不删测试；不改产品代码。\n- 不碰 desktop / 后端；不 commit。\n- 若需箱外工具 / 升 Node / 装依赖：先私信前端中层，不擅自扩大范围。\n\n## done-when（建议）\n1. `WP-044-web.md` 含覆盖绿表+缺口，且覆盖 WP-034 权限队列/单卡/不复活/断线 reject/孤儿不回灌。\n2. 同文件含裁剪提案（含 T1–T9 当前树复核），附删/留/放宽理由。\n3. 未擅自删测、未碰 desktop/后端、未 commit。\n4. deliver 前私信前端中层验收。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:16.889Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只动 web/。(1) 核对核心交互有效覆盖：权限队列/单卡、断线 reject pendingRpc、Ask 不复活等 WP-034 刚落行为，以及既有核心交互；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。不碰 desktop/后端。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:13:36.184Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-045 方案（web，两步硬串行）\n\n父包：WP-044（frontend_mid） / 祖包：WP-042  \n执行：frontend（前端-web"
+        },
+        {
+          "ts": "2026-10-12T12:13:36.476Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": "方案待审：两步硬串行 Step1 覆盖绿表+缺口 → Step2 裁剪提案（含 T1–T9 复核）；未裁决不删；产物 WP-044-web.md"
+        },
+        {
+          "ts": "2026-10-12T12:13:57.503Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐；两步硬串行可开工。步1覆盖报告先交我过眼后再开步2提案；裁决前不删。T6 默认留。"
+        },
+        {
+          "ts": "2026-10-12T12:14:12.744Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": "前端中层已批，开工 Step1 覆盖核对"
+        },
+        {
+          "ts": "2026-10-12T12:19:36.234Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "裁决落地：P1/P5删；P3+P13 helper；P7/P10/P11放宽；P4留；45/45绿；产物WP-044-web.md裁决节；未commit"
+        },
+        {
+          "ts": "2026-10-12T12:20:07.050Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "裁决落地已抽查；basename/modelId 假绿已去；deathListGate 就位；vitest 11/45 复跑绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-046",
+      "domain": "release-desktop",
+      "title": "WP-044 desktop：核心覆盖核对 + 测试裁剪提案",
+      "result": "只动 desktop/scripts。(1) 核对壳流程有效覆盖：隧道/sidecar 恢复、生命周期单飞、下载 pause/stop/retry/Range 等 WP-035 刚落行为，以及既有壳流程；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。桌面 CI 只列建议不擅自做。不碰 web/后端。不 commit。",
+      "done_when": [
+        "覆盖绿表+缺口已写",
+        "裁剪提案已列",
+        "中层裁决后落地",
+        "交叉审通过"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-044-desktop.md",
+      "progress": "closed done by frontend_mid: 裁决落地已抽查；npm test 127/127 复跑绿；未接 CI",
+      "status_entered_at": null,
+      "parent": "WP-044",
+      "goal": "只动 desktop/scripts。(1) 核对壳流程有效覆盖：隧道/sidecar 恢复、生命周期单飞、下载 pause/stop/retry/Range 等 WP-035 刚落行为，以及既有壳流程；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。桌面 CI 只列建议不擅自做。不碰 web/后端。不 commit。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-046 方案（两步硬串行：覆盖核对 → 裁剪提案）\n\n范围：只动 `desktop/`、`scripts/`（读 workflows 做核对/建议，不擅自改 CI）。不碰 web/后端。不 commit。未过前端中层裁决前**不删任何测试**。产物：`.litecode/ops/artifacts/WP-044-desktop.md`。\n\n## 步序\n先完成步 (1) 并写进产物；再开步 (2)。步 (2) 只列提案，删/改须等裁决。\n\n---\n\n## 步 (1) 覆盖核对 → 绿表 + 缺口\n\n### 核对对象（对照实现与测试）\n**A. WP-035 / WP-041 刚落行为**\n| 能力 | 实现锚点（以当前树为准） | 期望测到 |\n|---|---|---|\n| 隧道崩溃/退出 → 断开 + 限次自动重连 | `ssh-session` ServerAlive + exit；`process-recovery` / `remote-state` / `main` | 非主动 exit 触发断开；主动停不重连；无历史目标时只断不连 |\n| sidecar READY 后崩溃 → 限次重启 | `sidecar` + main post-ready exit | 非主动 exit → 重启计数；主动停不重启 |\n| 生命周期单飞 | `lifecycle-mutex`；Open Remote / relaunch / connectRemote | 重入拒绝或复用同一 promise；无双 start 孤儿路径 |\n| D8 managedRemote 失败清句柄 | `main` connectRemote catch | 失败后句柄为 null |\n| 下载状态+百分比+网速 | `components` progress 事件 | 字段齐全、滑动窗口网速 |\n| pause / stop / retry | ComponentManager + AbortController | pause 留 `.part`；stop 删半成品；retry 可恢复 |\n| Range 断点续传 | components download | 有 `.part` 发 Range；无 206 降级整下；sha 复核 |\n| 启动清扫 `.tmp` | ComponentManager 构造/首次 download | 过期/无主 `.part`/staging 被清 |\n| before-quit abort | `main` before-quit | 在途下载被 abort |\n\n**B. 既有壳流程（保留清单）**\nbundle-paths 全序 / slim 卫生 / components 清单与校验 / remote-progress 映射 / sidecar stop / SSH 凭证物化与路径控制 / IPC trust / url-policy / window-guard / hub 相关纯函数等——逐 suite 对照是否仍有效覆盖产品不变量。\n\n### 方法\n1. `cd desktop && npm test` 实跑 → 绿表（suite/case 计数 + WP-035 相关 suite 点名）。\n2. 对照上表：每项标 **已覆盖 / 部分覆盖 / 缺口**，缺口给建议补测（只记不写测，除非方案批后另授）。\n3. 扫 `scripts/*smoke*` 与 `windows-*.yml` 中的检查步骤：标「信息输出 / 真断言 / 假绿」。\n\n### 步(1) 产物小节\n`WP-044-desktop.md`：`## 覆盖绿表` + `## 覆盖缺口`。\n\n---\n\n## 步 (2) 裁剪提案（只列不删）\n\n### 输入\n- 步(1) 绿表与缺口\n- `WP-021-frontend.md` 旧 desktop 裁剪清单（18 条）及 web 互审异议（哪些仍成立、哪些因 WP-041 新增测而过时）\n- WP-041 新增：`lifecycle-mutex` / `process-recovery` / `remote-state` / 扩展的 components/ssh/sidecar 测——检查是否与旧测重复或可合并\n\n### 输出表（每条）\n`id | 来源(desktop/scripts/workflows) | 测名或路径 | 类别(可删/可放宽/重复/假绿) | 理由 | 提案(删/留/放宽具体怎么改) | 依赖裁决`\n\n### 桌面 CI\n单独一小节「CI 建议」：是否/何处加 `npm test`（对应旧 D3），**只建议不实施**。\n\n### 纪律\n中层裁决前零删除、零放宽落地；裁决后另开执行或本包续步（听令）。\n\n---\n\n## 不做\nweb；后端；擅自桌面 CI；引擎 UI；symlink；commit。\n\n## 工具\n现有 `npm test` + 读文件即可；无需新工具。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:17.275Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 只动 desktop/scripts。(1) 核对壳流程有效覆盖：隧道/sidecar 恢复、生命周期单飞、下载 pause/stop/retry/Range 等 WP-035 刚落行为，以及既有壳流程；产出绿表+缺口。(2) 列冗余/过时/重复测试及删/留/放宽提案，等中层裁决后再删。桌面 CI 只列建议不擅自做。不碰 web/后端。不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:13:11.849Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-046 方案（两步硬串行：覆盖核对 → 裁剪提案）\n\n范围：只动 `desktop/`、`scripts/`（读 workflows 做核对/建议，不"
+        },
+        {
+          "ts": "2026-10-12T12:13:12.208Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "方案待审：覆盖→裁剪两步串行"
+        },
+        {
+          "ts": "2026-10-12T12:13:24.773Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "方案对齐；两步硬串行可开工。步1覆盖报告先交我过眼后再开步2提案；裁决前不删。"
+        },
+        {
+          "ts": "2026-10-12T12:13:34.313Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "开工：步1覆盖核对"
+        },
+        {
+          "ts": "2026-10-12T12:20:37.452Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "裁决已落地；127 pass；产物 WP-044-desktop.md"
+        },
+        {
+          "ts": "2026-10-12T12:21:05.512Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "裁决落地已抽查；npm test 127/127 复跑绿；未接 CI",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-047",
+      "domain": "harness-core",
+      "title": "WP-043/Session：核心覆盖核对 + 测试裁剪提案",
+      "result": "Session 覆盖绿表+缺口；裁剪提案已交中层；审后落地或列明暂缓",
+      "done_when": [
+        "覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-session.md",
+      "progress": "closed done by backend_mid: 裁剪落地通过：T1–T4 已落地（表驱动/放宽）；T5–T8/N 按裁决未动；复跑 trim 25/0；假红 ISSUE-041。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-043",
+      "goal": "两步硬串行：(1) 覆盖——核对 Session 核心流程有效覆盖（开/关/恢复会话、回合生命周期、compact 错误码与 DB 真相交叉、重连后停回合可再点等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Session 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为。不 commit。产物 WP-043-session.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-047 方案（Session：核心覆盖核对 + 测试裁剪提案）\n\n- owner: session　approver: backend_mid　parent: WP-043　child: WP-047\n- 产物：`.litecode/ops/artifacts/WP-043-session.md`\n- 状态：方案待批（fill → submit；**批前不 start、不改测试/产品代码**）\n- 禁区：引擎产品、symlink 产品行为、ISSUE-032/034；不 commit\n- 工具链：`rustc 1.99.0`；`cargo test` 在 `/workspace/litecode` 直接跑（**无 PATH 前缀**）；共享 target 遇锁排队；本域过滤优先\n- 工具需求：**无**（现有 wp.mjs / cargo / rg 足够）\n\n## 0. 硬串行与边界\n\n两步**硬串行**，覆盖未完成前不做裁剪裁决落地：\n\n1. **覆盖**：核对 Session 核心流程有效覆盖 → 绿表 + 缺口清单  \n2. **裁剪**：列冗余/过时/重复及删/留/放宽提案 → **交 backend_mid 裁决；未过审前不删**\n\n本域范围：`src/{session,client_protocol,serve}` + 对应 `tests/session_*`、`tests/client_protocol_*`、`tests/serve_*`（若有）、以及与 Session 协议入口交叉的 compact 相关集成测（`manual_compact_e2e` / `compact_failure_calibers` / `client_protocol_project` 中本域断言）。不改 Runtime/Context 实现；跨域只读引用。\n\n参考（须**重核现状**，不盲抄）：\n- WP-021-backend §5 Session 旧裁剪清单（8 条）\n- WP-022-session（T1–T8 + G3–G5 落地情况）\n- WP-033 口径 #3：Session DB 为唯一真相；reload 失败不得回滚压缩前内存\n- WP-036 / WP-039：compact DB 真相、`compaction_failed`/`Succeeded`+`Ok(true)`、expected_revision fail-closed；Session 交叉审已有条件接受\n\n---\n\n## 1. 步骤 A — 覆盖核对\n\n### 1.1 核心流程清单（映射表骨架）\n\n开工后产出「流程 → 现有测试(file:line) → 实测结果 → 缺口」表。拟覆盖的核心流：\n\n| # | 流程 | 关注点 | 初步已知锚点（批后重核行号） |\n|---|---|---|---|\n| F1 | 开/关/恢复会话 | open / delete / resume；revision CAS；冷启动后 list | `session_data_{bootstrap,crud,lifecycle,fault}`；`session_delete`；manager `open_*` / `resume_session`（含 WP-024 S1 修后路径） |\n| F2 | 回合生命周期 | Idle→StartingTurn→RunningTurn→Idle；TurnGuard；排队归还；finish_turn | manager 预约/释放；`session_turn_entry`；WP-024 G3/G5 manager 测 |\n| F3 | compact 错误码（协议） | `-32000` + `error.data`：`agent_already_running`(retryable=true) / `compaction_failed`(false)；nothing_to_compact / cancelled | connection `compact_error_response`；`client_protocol_project`（含 `turn_finished_auto_compact_failure_is_compaction_failed`）；connection `compact_error_tests` / G4 |\n| F4 | compact × DB 真相交叉（WP-033/036） | 落库成功后 reload 失败 → 不回滚、Succeeded+Ok(true)；fail-closed revision；Session 持久化侧零 diff 确认 | 只读对照 `context_pipeline/compact.rs` 回归 + Session `SessionMutation::Compact` / writer CAS；本域断言：协议侧生命周期通知与错误码不与「DB 已提交却 Failed」矛盾 |\n| F5 | 重连后停回合、可再点 | 重连用尽 → TurnEndReason::Error → Idle；可再 `start_turn` / 再 compact | calibers `reconnect_then_*`（Runtime 主跑，Session 核协议/投影）；manager `finish_turn_clears_running…`；G5 缺口（JSON-RPC 全链路）是否仍开着 |\n| F6 | Ask / 权限 / 连接（附带） | Ask registry 不互阻；断连不取消回合（设计）；permission wire | `ask_does_not_block…`；`client_protocol_permission`；ws 断连行为只读确认 |\n\n### 1.2 方法\n\n1. **映射**：对 F1–F6 用 `rg` 定位测试名与源码 file:line，写入绿表「覆盖列」。  \n2. **实测**（仅读，不改代码）：  \n   - `rustc -V` 确认 1.99.0  \n   - lib：`cargo test --lib session:: client_protocol:: serve::`（或等价过滤）  \n   - 集成：本域相关 `--test` 文件（session_*、client_protocol_*、serve_*、compact_failure_calibers、manual_compact_e2e）；共享 target 锁则排队；`--no-fail-fast`  \n   - 已知假红：`session_data_sql_death_list`（session_search，WP-011）只登记，不计入本域失败  \n3. **绿表**：每行 = 流程 × 测试 × pass/fail × 日志路径（`.tmp/wp047-*.log`）  \n4. **缺口**：无测试 / 仅 manager 层无 wire / 与 WP-033/036 口径冲突 / G5 协议全链路仍缺 → 列入「缺口」交中层，**本包不擅自补测**（补测另立或经批）\n\n### 1.3 与 WP-033/036 的交叉核对（只读）\n\n- 确认本域协议投影：auto compact 失败 → `compaction_failed` + `retryable=false`（WP-024/025 已落）仍绿  \n- 确认 Session 侧未引入「reload 失败则回滚内存」的路径（WP-039 零 session diff 前提下，抽查 Compact mutation / lifecycle 通知）  \n- pending-cache 同回合重复（Session 交叉审非阻断条件）：覆盖表记「已知软缺口」，不扩 scope\n\n---\n\n## 2. 步骤 B — 裁剪提案（覆盖完成后）\n\n### 2.1 输入与重核\n\n- 以 **WP-021-backend §5 Session（8）** + **WP-022-session T1–T8** 为起点  \n- 对每条：`rg`/读测试确认仍存在、行号是否漂移、是否已被更强测试替代、WP-024 后是否新增重复  \n- 标准：  \n  - **可删**：被更强测试完全覆盖，或测已删除行为  \n  - **可放宽**：过细文案/sleep 时序/源码 grep 守门易抖  \n  - **重复**：同一路径多处断言 → 表驱动或留一条  \n  - **登记**：假红/跨域（如 sql death_list）只登记不删  \n\n### 2.2 输出格式（写入本产物 §裁剪）\n\n| # | 测试路径::名称 | 类别 | 理由（对照现状 file:line） | 建议（删/留/放宽） | 替代覆盖 |\n|---|---|---|---|---|---|\n\n旧清单预期重核项（示意，批后逐条核实）：T1 telemetry 双方法常量；T2 permission 三条快照（已决议留一条完整 wire）；T3 list_empty_filter 六条表驱动；T4 lifecycle sleep(50ms)；T5 manual_compact_e2e vs calibers lease（Runtime 主张留 calibers 快回归）；T6 turn_entry 源码 grep；T7 deferred 死代码（实现侧可删）；T8 sql death_list 假红登记。\n\n**未过 backend_mid 审前：零删除、零 `#[ignore]`、零放宽落地。**\n\n---\n\n## 3. 产物结构（批后填写执行节）\n\n方案通过并 start 后，本文件追加：\n\n1. 覆盖绿表（F1–F6）  \n2. 缺口清单  \n3. 裁剪提案表（重核后）  \n4. 测试命令与日志路径  \n5. 与 Runtime/Context 只读交叉备注（若有）  \n6. 工具需求变更（若有）\n\n---\n\n## 4. 交付与门禁\n\n- done-when（拟）：覆盖绿表+缺口已写；裁剪提案已交中层；本域实测记录完整；无擅自删测/改产品代码；禁区未触  \n- deliver 交 backend_mid 验收；不 commit；不直接找 GM  \n- 停手只停 Session 名下活；卡点先报 backend_mid  \n\n## 5. 工具需求\n\n**无。** 若后续需独占 target 或临时提高并行度，再报中层转工具集管家。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:53.337Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 两步硬串行：(1) 覆盖——核对 Session 核心流程有效覆盖（开/关/恢复会话、回合生命周期、compact 错误码与 DB 真相交叉、重连后停回合可再点等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Session 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为。不 commit。产物 WP-043-session.md。"
+        },
+        {
+          "ts": "2026-10-12T12:14:19.733Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-047 方案（Session：核心覆盖核对 + 测试裁剪提案）\n\n- owner: session　approver: backend_mid　par"
+        },
+        {
+          "ts": "2026-10-12T12:14:20.038Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-043-session.md\" -> \".litecode/ops/artifacts/WP-043-session.md\""
+        },
+        {
+          "ts": "2026-10-12T12:14:20.336Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案已填：覆盖→裁剪硬串行；产物 WP-043-session.md；工具需求无；批前不 start/不改代码"
+        },
+        {
+          "ts": "2026-10-12T12:14:42.540Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：F1–F6+硬串行+未过审不删正确；批后可 start。覆盖报告先交；裁剪只提案，我裁决后再落地；缺口只列不擅自补测；禁区/不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:15:00.990Z",
+          "actor": "session",
+          "action": "start",
+          "note": "WP-047 开工：先覆盖绿表+缺口，裁剪只提案"
+        },
+        {
+          "ts": "2026-10-12T12:16:37.623Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "WP-047 覆盖绿表+缺口+裁剪提案已写入 WP-043-session.md；lib 246/0；集成 107/1（假红 WP-011）；裁剪 T1–T8 重核只提案零删除"
+        },
+        {
+          "ts": "2026-10-12T12:17:17.114Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "覆盖验收通过（抽查锚点+日志成立；353/0 真失败口径采纳；假红归 ISSUE-041 非 WP-011）。裁剪裁决：T1 合并表驱动；T2 留 permission_request 完整 wire，删/收窄 server_hello+ask_kind；T3 六条并表驱动（≤2 极端可留表内）；T4 sleep→notify/轮询；T5 留两者；T6 本包留；T7 本包不落地；T8 只登记 ISSUE-041。请落地 T1–T4 后复跑相关测、更新产物、再 deliver。"
+        },
+        {
+          "ts": "2026-10-12T12:21:50.107Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "T1-T4 landed; related tests 25/0 green; false-red→ISSUE-041; artifact WP-043-session.md §G"
+        },
+        {
+          "ts": "2026-10-12T12:22:22.126Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "裁剪落地通过：T1–T4 已落地（表驱动/放宽）；T5–T8/N 按裁决未动；复跑 trim 25/0；假红 ISSUE-041。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-048",
+      "domain": "harness-core",
+      "title": "WP-043/Runtime：核心覆盖核对 + 测试裁剪提案",
+      "result": "Runtime 覆盖绿表+缺口；裁剪提案已交中层；审后落地或列明暂缓",
+      "done_when": [
+        "覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-runtime.md",
+      "progress": "closed done by backend_mid: 覆盖验收通过（日志 C1–C8 全绿）。裁剪裁决：T1 抽 helper 暂缓（非减测）；T2/T4 留；T3 跟 ISSUE-041 不删；T5 不裁；calibers×e2e 留两者；g2 移交 context。无落地删改。缺口 G1–G4 只列采纳。",
+      "status_entered_at": null,
+      "parent": "WP-043",
+      "goal": "两步硬串行：(1) 覆盖——核对 Runtime 核心流程有效覆盖（agent loop、auto/manual compact 失败口径、取消→Cancelled、断线重连停回合、pending auto-turn 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Runtime 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、take_changes/ISSUE-032。不 commit。产物 WP-043-runtime.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-048 / WP-043-runtime 方案（Runtime，仅方案，未开工）\n\n- 父包：WP-043（后端测试：核心流程覆盖核对 + 裁剪裁决，in_progress）\n- Owner：runtime；Approver：backend_mid\n- 分支：`ops/team-framework`；基线 HEAD `0c75d0a` + 未提交工作区（WP-025 等行为改动仍在 WT）\n- **本阶段只 fill+submit 方案；获批并 `start` 前不改测试/代码、不 commit、不删测。**\n\n## 0. 范围与禁区\n\n**本域文件面（只读核对，开工后才动测）：**\n- 集成/口径：`tests/agent_loop.rs`、`tests/manual_compact_e2e.rs`、`tests/compact_failure_calibers.rs`、`tests/client_protocol_project.rs`（与 Runtime 投影相关条）\n- 单元：`src/runtime/{pending,bash,custom,subagent}_auto_turn.rs` 内测；`src/agent/core.rs`；`src/client_protocol/project.rs`（turn_error / compaction_failed）；`src/runtime/{mod,exec,stream_projection}.rs` 相关测\n- 参照产物：`.litecode/ops/artifacts/WP-022-runtime.md`（WP-025）、`WP-021-backend.md` §5 Runtime、`WP-033.md`、`WP-036-backend.md`、`WP-042.md`\n\n**禁区（不碰）：** 引擎产品行为、symlink 产品行为、`take_changes` / ISSUE-032、ISSUE-034。不 commit。\n\n## 1. 两步硬串行（执行时）\n\n```\nStep 1 覆盖 ──绿表+缺口──▶ 交中层过目（不删测）\n                              │\n                              ▼\nStep 2 裁剪 ──删/留/放宽提案──▶ 中层裁决后才落地删/改\n```\n\n硬约束：未完成 Step 1 绿表不得进入 Step 2 删除；未过中层审前不删任何测试。\n\n---\n\n## 2. Step 1 — 覆盖核对（计划，未执行）\n\n### 2.1 将产出的绿表形状\n\n| # | 核心流程 | 承诺口径 | 现有锚点测试（待跑确认） | 预期 |\n|---|---|---|---|---|\n| C1 | Agent loop 主链 | 文本停 / 工具步进 / max_steps / 取消三态 / 不完整 FC 不执行 / persist 失败回滚 working set | `tests/agent_loop.rs`：`single_text_response_stops_loop`、`function_call_then_text_grows_transcript`、`tool_step_persists_function_call_before_output`、`max_steps_with_perpetual_tools`、`cancelled_*`×3、`incomplete_function_call_is_not_executed`、`persist_failure_rolls_back_working_set` | 绿 |\n| C2 | Auto compact 失败 | `TurnOutcome::Error(CompactionFailed)`，不再 `call_model`；transcript/pipeline 快照还原 | `agent_loop::auto_compact_fail_stops_turn_without_model_call`；`compact_failure_calibers::{compact_failure_restores_transcript_snapshot,auto_compact_failure_restores_pipeline_working_set}` | 绿 |\n| C3 | Manual compact 失败→可重试 | lease 释放；可再 start；失败后重试可完成 | `compact_failure_calibers::manual_compact_failure_releases_lease_for_retry`；`manual_compact_e2e::{manual_compact_failure_e2e_releases_lease_and_retry_starts,manual_compact_retry_after_failure_completes}` | 绿 |\n| C4 | 取消→Cancelled（ISSUE-033） | compact 中 `Canceled` → `TurnOutcome::Cancelled`，不 `call_model` | `agent_loop::cancel_during_auto_compact_is_cancelled_without_model_call` | 绿（WP-025 已修） |\n| C5 | 断线重连后停回合 | reconnect 后 auto compact 失败停回合；终端 LLM 错误停回合 | `compact_failure_calibers::{reconnect_then_auto_compact_failure_stops_turn,reconnect_then_terminal_llm_error_stops_turn}` | 绿 |\n| C6 | 回合错误码 compaction_failed | auto compact 失败 → `ErrorCode::CompactionFailed`，`retryable=false`（非 internal） | `project::wp025_turn_error_tests`；`client_protocol_project::turn_finished_auto_compact_failure_is_compaction_failed` | 绿 |\n| C7 | Pending / idle auto-turn | 空队不备；busy 不抢；idle flush 落 user 行/图片序/mentions；revert 后空；bash/custom/subagent mailbox 去重 | `pending_auto_turn` 9 条；`bash_auto_turn` 4；`custom_auto_turn` 3；`subagent_auto_turn` 3 | 绿 |\n| C8 | WP-036 / ISSUE-035 交界 | Compact **落库成功**后 reload 失败：DB 为真相，Runtime/agent 不得把该路径当「压缩失败→Error」 | 产品测在 context：`compact_persist_ok_reload_err_keeps_db_truth`；Runtime 侧：**核对** auto compact 失败注入仍只覆盖「真失败」路径，不与 Succeeded+Ok(true) 应急缓存混淆 | 读码+必要时补缺口（见 2.3） |\n\n跑法（开工后）：`PATH=/home/box/.cargo/bin:$PATH`（rustc ≥1.88 / 现 1.99）；共享 target 排队；优先本域：\n\n```\ncargo test --test agent_loop --test manual_compact_e2e --test compact_failure_calibers\ncargo test --test client_protocol_project turn_finished_auto_compact_failure_is_compaction_failed\ncargo test --lib runtime::pending_auto_turn runtime::bash_auto_turn runtime::custom_auto_turn runtime::subagent_auto_turn\ncargo test --lib client_protocol::project::wp025_turn_error_tests\n```\n\n每行记：命令、通过数、失败名、日志路径。连跑至少 1 轮全绿记入产物；flake 记入缺口。\n\n### 2.2 WP-033 / WP-036「刚落」与本域\n\n| 落地项 | 归属 | Runtime 覆盖含义 |\n|---|---|---|\n| ISSUE-033 取消→Cancelled | Runtime（WP-025，已 closed） | C4 必绿 |\n| compaction_failed 映射（文案匹配） | Runtime（WP-025）；ISSUE-036 仍 open（类型化） | C6 必绿；类型化**不在本包修**，只登记覆盖仍依赖 Display |\n| ISSUE-035 Compact DB 真相 | 上下文（WP-039/036） | C8：确认 Runtime 失败口径测试仍对准「真失败」，不把 reload-应急当成 CompactionFailed |\n| custom/MCP 进程生命周期 | Tools | 本域不测 |\n| workspace 037/038 | IDE | 本域不测 |\n| ISSUE-032 take_changes | 禁区 | 不测不修 |\n\n### 2.3 缺口候选（Step 1 执行时确认，只列）\n\n1. **协议入口全链路 e2e（WP-021 §7-11 / Session G5）**：重连耗尽后 wire 级再 `start_turn` / compact——Session 已转 Runtime「后续补」；本包 Step 1 判定是否仍缺、是否立缺口行（不擅自开新行为 WP）。\n2. **ISSUE-035 × Runtime**：若现有 calibers 无一断言「persist ok + reload err ≠ TurnOutcome::Error」，记缺口；补测属覆盖，需中层点头后写在 Step 1 收尾（仍非裁剪）。\n3. **ISSUE-036**：文本匹配脆；覆盖上 C6 已绿，类型化另包。\n4. **已知门禁假红**：`session_data_sql_death_list` → **ISSUE-041**（本方案阶段已建）；不挡本域绿表，全量集成会红——产物注明。\n\n---\n\n## 3. Step 2 — 裁剪提案（计划，未执行；未过审不删）\n\n### 3.1 重核 WP-021-backend §5 Runtime 旧清单\n\n| 旧项 | 现状重核（方案阶段读码） | 提案（交中层裁决） |\n|---|---|---|\n| bash/subagent/custom_auto_turn 同构测抽参数化 helper | 仍三文件并列：`idle_without_subscribers_*`、`busy_session_leaves_*`、`idle_with_subscribers_*` 结构同构；pending_auto_turn 更丰富未算入旧「三份」 | **留行为断言；抽公共 helper（tests 或 mod 内）**——属重构测，非删 |\n| session_data_sql_death_list 与 death_list_gate SQL 子串扫描单点化 | 两套仍在；假红已单独立 ISSUE-041 | **单点化推迟到 ISSUE-041 处置后**；本包只提案不删门禁 |\n| death_list_gate::session_seq_g2_* 放宽 | 属 ISSUE-013 / context | **本域不动**；提案栏标注「移交 context」 |\n| calibers×e2e lease 重叠（已撤回合并） | Session/Runtime/中层已一致保留 calibers 快速回归 | **保持保留**；不再提案删 |\n\n### 3.2 本域新增裁剪/放宽候选（执行 Step 1 后可增删行）\n\n| ID | 测试/位置 | 类型 | 提案 | 理由 |\n|---|---|---|---|---|\n| T1 | `*_auto_turn` 三文件同构 | 重复结构 | 抽 helper，**留**各自差异 | 同 3.1 |\n| T2 | `manual_compact_failure_releases_lease_for_retry` vs e2e | 部分重叠 | **留** calibers | 已裁决 |\n| T3 | `session_data_sql_death_list` 假红 | 门禁 drift | **不删**；跟 ISSUE-041 | 假红≠冗余测 |\n| T4 | agent_loop 取消三态 × compact 取消 | 边界 | Step 1 后看是否可表驱动合并；默认 **留** | 取消点不同 |\n| T5 | client_protocol_project 中非 Runtime 投影条 | 越域 | 列表交 Session，Runtime **不裁** | 所有权 |\n\n输出列：`ID | 动作(删/留/放宽/抽helper) | 中层裁决 | 落地证据`。\n\n---\n\n## 4. 产物与交叉审\n\n- 主产物：本文件 `.litecode/ops/artifacts/WP-043-runtime.md`（Step 1 绿表、缺口、Step 2 提案表、裁决记录追加于此）\n- 交叉审：与 Session（WP-047）互审 R 覆盖口径与 compact 错误码；与上下文（WP-049）互审 ISSUE-035 交界 / compact 失败vs应急缓存。各加「交叉审」节。\n- 工具需求：若共享 target 锁严重或需固定 rustc PATH，报 backend_mid → 工具集管家。\n\n## 5. done_when / 风险\n\n**done_when：**\n1. Step 1 绿表每行有实测记录；缺口清单完整（含「无缺口」显式句）\n2. Step 2 提案表交中层裁决；仅裁决为删/放宽的项落地，且复跑相关套件绿\n3. 交叉审节齐；`deliver` → backend_mid `close`\n4. 禁区未碰；无 commit\n\n**风险：** 共享 target 锁；WT 上 WP-025/036 未 commit 与 HEAD 混跑；ISSUE-041 假红干扰「全后端集成」观感；ISSUE-035 交界误判导致误补测。\n\n## 6. 执行步骤（获批 start 后）\n\n1. `wp.mjs start --id WP-048 --as runtime`\n2. Step 1：按 2.1 跑绿表 → 写实测 → 确认 2.3 缺口\n3. 请 Session/上下文交叉审覆盖节\n4. Step 2：定稿提案表 → **等中层裁决** → 仅按裁决删/放宽/抽 helper\n5. 复跑本域套件 → `deliver`\n\n## 7. 附：本方案阶段已办\n\n- 新建 **ISSUE-041**（sql death_list × session_search 假红；`drift`/`gate`；owner 暂 `ide`，请中层确认归属）\n- 无代码/测试改动；未 start；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:53.685Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 两步硬串行：(1) 覆盖——核对 Runtime 核心流程有效覆盖（agent loop、auto/manual compact 失败口径、取消→Cancelled、断线重连停回合、pending auto-turn 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Runtime 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、take_changes/ISSUE-032。不 commit。产物 WP-043-runtime.md。"
+        },
+        {
+          "ts": "2026-10-12T12:15:39.785Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-048 / WP-043-runtime 方案（Runtime，仅方案，未开工）\n\n- 父包：WP-043（后端测试：核心流程覆盖核对 + 裁剪裁决，"
+        },
+        {
+          "ts": "2026-10-12T12:15:40.666Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "方案已填：两步硬串行覆盖→裁剪；产物 WP-043-runtime.md；ISSUE-041 登记 sql death_list 假红；待批后 start"
+        },
+        {
+          "ts": "2026-10-12T12:16:09.924Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：C1–C8+硬串行+旧清单重核正确。ISSUE-041 owner=session（门禁测属 Session；engines 只白名单/收窄检测，不改产品）；本包只登记不修。批后可 start。覆盖绿表先交；裁剪我裁决后再落地；缺口默认只列，补测须再报我。工具链直接 cargo 勿 PATH 前缀。禁区/不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:16:34.448Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-12T12:19:54.668Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "Step1 C1-C8 全绿（agent_loop/calibers/e2e + compaction_failed + auto_turn 19）；缺口 G1-G4 只列不补；Step2 裁剪提案 T1-T5 待裁决未删；产物 WP-043-runtime.md；无 commit"
+        },
+        {
+          "ts": "2026-10-12T12:20:24.125Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "覆盖验收通过（日志 C1–C8 全绿）。裁剪裁决：T1 抽 helper 暂缓（非减测）；T2/T4 留；T3 跟 ISSUE-041 不删；T5 不裁；calibers×e2e 留两者；g2 移交 context。无落地删改。缺口 G1–G4 只列采纳。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-049",
+      "domain": "harness-core",
+      "title": "WP-043/上下文：核心覆盖核对 + 测试裁剪提案",
+      "result": "上下文覆盖绿表+缺口；裁剪提案已交中层；审后落地或列明暂缓",
+      "done_when": [
+        "覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close"
+      ],
+      "owner": "context",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-context.md",
+      "progress": "closed done by backend_mid: 裁剪落地通过：P1–P4 已删；P6/P7 已合并；复跑 30/5/13/46 口径采纳；Session 覆盖交叉审有条件同意已齐。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-043",
+      "goal": "两步硬串行：(1) 覆盖——核对上下文核心流程有效覆盖（compact DB 真相/ISSUE-035、reminder sources、budget/keep_recent、death_list 门禁等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 上下文旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、take_changes。不 commit。产物 WP-043-context.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-049 方案（context：核心覆盖核对 + 测试裁剪提案）\n\n- owner: context　approver: backend_mid　parent: WP-043　child: WP-049\n- 产物：`.litecode/ops/artifacts/WP-043-context.md`\n- 状态：方案待批（fill → submit；**批前不 start、不改测试/产品代码、不删不放宽任何测试**）\n- 禁区：引擎产品、symlink 产品行为、take_changes / file_tracker（ISSUE-032）、Session/Runtime 源码；不 commit\n- 工具链：`rustc 1.99.0`；`PATH=/home/box/.cargo/bin:$PATH cargo test`（中层已确认）；共享 target 遇锁排队；本域过滤优先\n- 工具需求：**无**（现有 wp.mjs / cargo / rg 足够；锁冲突时允许用已编译测试二进制作证据并写明源码状态）\n\n## 0. 硬串行与边界\n\n两步**硬串行**，覆盖报告未交中层前不做裁剪落地：\n\n1. **覆盖**：核对本域核心流程有效覆盖 → 绿表 + 缺口  \n2. **裁剪**：列冗余/过时/重复及删/留/放宽提案 → **交 backend_mid 裁决；未过审前不删**\n\n本域范围：`src/context_pipeline/**`、`src/reminder/**`（含 `sources/tests.rs`）、本域相关门禁 `src/types/death_list_gate.rs` 中 g2 / compact_llm_path、以及 `tests/{stage_a_ctx_consistency,working_set_identity,turn_prefix_stability}.rs`。不改他域实现；跨域只读引用。\n\n参考（须**重核现状**，不盲抄）：\n- WP-021-backend §5 上下文旧裁剪（6 条有动作）\n- WP-022-context / WP-026：(d) 裁剪表 + R3 sources 9 测；Runtime 交叉审\n- WP-017「### 上下文」必过集与实跑\n- WP-036 / WP-039：ISSUE-035 已修；`compact_persist_ok_reload_err_keeps_db_truth`；Session 有条件接受（应急 pending 同回合可能重复，非阻断）；**ISSUE-035 已由 GM closed**\n- WP-033 口径：Session DB 为唯一真相（本域侧已落在 WP-039）\n\n交叉审约定（执行期）：产物交中层后，**Session 审本产物**（compact DB 真相口径，与 WP-043 父包一致）；本域不主动改 Session 文件。\n\n---\n\n## 1. 步骤 A — 覆盖核对\n\n### 1.1 核心流程清单（映射表骨架）\n\n开工后产出「流程 → 现有测试(file:line) → 实测 pass/fail → 缺口」写入 `WP-043-context.md`。拟覆盖：\n\n| # | 流程 | 关注点 | 初步已知锚点（批后重核行号） |\n|---|---|---|---|\n| C1 | compact DB 真相 / ISSUE-035（WP-039） | persist 成功后 reload Err → 不回滚、Succeeded+Ok(true)、应急 pending；expected_revision 快照时捕获 fail-closed；persist 前失败仍回滚+Failed | `compact::tests::compact_persist_ok_reload_err_keeps_db_truth`；LLM/timeout/cancel 测；`compact_failure_calibers`（他域主跑，只读对照）；death_list g2 |\n| C2 | compact 热路径 fold 重载 | Compact→`working_set_blocking`；禁 summary+kept 拼装为权威 | `death_list_gate::session_seq_g2_*`；`stage_a::pipeline_compact_reloads_working_set_from_fold`；`working_set_identity::keep_recent_compact_reader_matches_fold_checkpoint_then_kept` |\n| C3 | compact LLM 统一入口 | `call_llm_compact_with_timeout` → `complete_with_stream_events`；禁旁路 | `death_list_gate::compact_llm_path_does_not_bypass_unified_provider`；compact CountingProvider / request 测 |\n| C4 | reminder sources（WP-026 R3） | 9 个 source 各有正向+抑制 | `reminder::sources::tests`（9）；engine 组合测（restore/sequencing） |\n| C5 | reminder engine / kinds / mentions | seam 顺序；env 首写；serde；mentions 去重（已知 suspect 不修） | `reminder::engine` 测；`kinds`；`mentions` |\n| C6 | budget / keep_recent / media | token 计数、硬上限 TokenBudgetExceeded、keep 切分、media 回合保留 | `budget.rs`、`keep_recent.rs`、`media_budget.rs` 单测 |\n| C7 | 装配 / env / system / summary | prepare_view、系统提示、summary 形态 | `context_pipeline::{mod,env,system,summary}` 测 |\n| C8 | 跨域行为门（本域必过） | stage_a / working_set_identity / turn_prefix_stability | 对应 `tests/*` 全文件或本域相关 filter |\n\nWP-033/036 刚落对本域：仅 WP-039（ISSUE-035）改 `compact.rs`；WP-033 其他项属他域，本表 C1/C2 只核对本域侧与交叉口径。\n\n### 1.2 方法\n\n1. **映射**：对 C1–C8 用 `rg` 定位测试名与源码 file:line，写入绿表「覆盖列」。对照 WP-012/017/022-context/036-context 旧锚点，标行号漂移。  \n2. **实测**（仅读，不改代码）：  \n   - `rustc -V` → 1.99.0  \n   - `cargo test --lib context_pipeline`  \n   - `cargo test --lib reminder::`（含 `reminder::sources::`）  \n   - `cargo test --lib death_list`（或具名 g2 + compact_llm_path）  \n   - `cargo test --test stage_a_ctx_consistency --test working_set_identity --test turn_prefix_stability`  \n   - 共享 target 锁则排队；必要时已编译二进制 + 写明对应源码状态（`git status`/`diff --stat` 本域）  \n   - 日志：`.tmp/wp049-*.log`  \n3. **绿表**：每行 = 流程 × 命令/测试 × pass 数 × 日志路径  \n4. **缺口**：无测试 / 仅门禁无行为 / 与 DB 真相口径冲突 / Session 条件接受的 pending 重复软缺口 → 列入「缺口」交中层；**本包不擅自补测**（补测另立或经批）\n\n### 1.3 已知软缺口（预登记，覆盖期核实）\n\n- Session 交叉审条件：应急 pending 同回合 `sync_turn_working` 可能重复（非阻断；跟进项，不扩 WP-049 scope）  \n- mentions path 去重 suspect（WP-026 #6）：覆盖是否仅有单元、无规范化键 — 记缺口或「已知不修」  \n- budget baseline 误用旧前缀 suspect（WP-026 #7）：核实是否有回归测  \n\n---\n\n## 2. 步骤 B — 裁剪提案（覆盖完成后）\n\n### 2.1 输入与重核\n\n以 **WP-021-backend §5 上下文（6）** + **WP-022-context (d)** 为起点，对每条对照**当前**代码（含 `sources/tests.rs`、`compact_persist_ok_reload_err_keeps_db_truth`）：\n\n| 旧项 | 预期重核焦点 |\n|---|---|\n| engine `bash_exit_names_a_user_kill` | 是否仍与 `sources::bash_exit_distinguishes_kill_and_lists_running` 重复 |\n| engine `custom_tool_settled_names_outcomes` | vs `sources::custom_tool_settled_*` |\n| engine `plan_changed_dedupes_on_revision` | vs `sources::plan_changed_diff_against_seen_and_spine` |\n| engine `step_budget_once_per_turn_inside_the_window` | vs `sources::step_budget_warns_within_three_once_per_turn` |\n| engine `restore_fires_once_after_compaction` | 保留但可收窄文案？是否仍覆盖 view_from_spine→sync |\n| budget `token_count_prefers_provider_*` / `..._falls_back_*` | 可合并为表驱动？ |\n| keep_recent `entire_transcript_within_keep_returns_none` / `empty_returns_none` | 可合并？ |\n| death_list_gate（13） | **不动**；任何改动须先开 issue |\n| stage_a / working_set_identity / turn_prefix_stability | 默认保留；只查是否新增重复 |\n\n标准：\n- **可删**：被更强测试完全覆盖，或测已删除行为  \n- **可放宽**：过细文案/易抖门禁（death_list 除外，须 issue）  \n- **重复**：同源多断言 → 表驱动或留一条  \n- **留**：仍有组合/链路价值（如 engine restore）  \n\n### 2.2 输出格式（写入产物 §裁剪）\n\n| # | 测试路径::名称 | 类别 | 理由（对照现状 file:line） | 建议（删/留/放宽） | 替代覆盖 |\n|---|---|---|---|---|---|\n\n**未过 backend_mid 审前：零删除、零 `#[ignore]`、零放宽落地。Death-list 任何改动提案必须先开 issue。**\n\n---\n\n## 3. 执行顺序 / done_when / 风险\n\n1. 获批 → `wp.mjs start --id WP-049 --as context`  \n2. 步骤 A：映射 + 实跑 → 绿表+缺口写入 `WP-043-context.md` → **先交中层过目覆盖**（私信）  \n3. 中层允许后步骤 B：重核旧清单 → 裁剪提案写入同产物 → 交裁决  \n4. 裁决后才落地删/放宽（若本包要求落地；暂缓则列理由）  \n5. Session 交叉审段写入产物末尾  \n6. `deliver` → 中层 close  \n\ndone_when（对齐 board）：覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close。\n\n风险：共享 cargo 锁；death_list 误触；跨域假红（sql death_list / 引擎 / symlink）不计入本域失败。\n\n## 4. 工具需求\n\n无新增工具。锁冲突时用已编译测试二进制 + 记录源码状态，已获中层先例认可。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:54.014Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 两步硬串行：(1) 覆盖——核对上下文核心流程有效覆盖（compact DB 真相/ISSUE-035、reminder sources、budget/keep_recent、death_list 门禁等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 上下文旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、take_changes。不 commit。产物 WP-043-context.md。"
+        },
+        {
+          "ts": "2026-10-12T12:14:48.888Z",
+          "actor": "context",
+          "action": "fill",
+          "note": "direct: # WP-049 方案（context：核心覆盖核对 + 测试裁剪提案）\n\n- owner: context　approver: backend_mid　par"
+        },
+        {
+          "ts": "2026-10-12T12:14:49.167Z",
+          "actor": "context",
+          "action": "submit",
+          "note": "方案已填：硬串行覆盖→裁剪；产物 WP-043-context.md；ISSUE-035 已由 GM closed；无工具需求；批前不改代码"
+        },
+        {
+          "ts": "2026-10-12T12:15:28.452Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：C1–C8+硬串行+未过审不删正确；ISSUE-035 closed 只复核。批后可 start。覆盖绿表先交并落盘 WP-043-context.md；裁剪我裁决后再落地。工具链：直接 cargo，勿 PATH 前缀（与 WP-032 后口径一致）。禁区/不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:15:44.799Z",
+          "actor": "context",
+          "action": "start",
+          "note": "获批开工：先覆盖后裁剪提案；不删测不 commit"
+        },
+        {
+          "ts": "2026-10-12T12:16:49.646Z",
+          "actor": "context",
+          "action": "deliver",
+          "note": "覆盖全绿（context_pipeline 48 / reminder:: 34 / sources 9 / death_list 13 / stage_a 27 / working_set 5 / turn_prefix 12；ISSUE-035 回归绿）。裁剪提案：删4/合并2/death-list不动。产物 WP-043-context.md。未删测、未 commit。请裁决裁剪并组织 Session 交叉审。"
+        },
+        {
+          "ts": "2026-10-12T12:17:41.624Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "覆盖验收通过（日志全绿；C1 ISSUE-035 锚点成立）。裁剪裁决：P1–P4 删（sources 替代）；P5/P8–P12 留；P6/P7 合并表驱动；death_list 不动。已请 Session 交叉审覆盖节。请落地 P1–P4+P6+P7 → 复跑 reminder::/budget/keep_recent 相关绿 → 更新产物 → 再 deliver。"
+        },
+        {
+          "ts": "2026-10-12T12:21:40.632Z",
+          "actor": "context",
+          "action": "deliver",
+          "note": "prune P1-P4/P6-P7 landed; retest green (reminder:: 30, budget 5, keep_recent 13, context_pipeline 46)"
+        },
+        {
+          "ts": "2026-10-12T12:22:21.862Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "裁剪落地通过：P1–P4 已删；P6/P7 已合并；复跑 30/5/13/46 口径采纳；Session 覆盖交叉审有条件同意已齐。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-050",
+      "domain": "tools-permission",
+      "title": "WP-043/Tools：核心覆盖核对 + 测试裁剪提案",
+      "result": "Tools 覆盖绿表+缺口；裁剪提案已交中层；审后落地或列明暂缓",
+      "done_when": [
+        "覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-tools.md",
+      "progress": "closed done by backend_mid: 裁剪落地抽查通过：T9 whatwg 已删；T2/T3 文案放宽；T4–T6 轮询；T8 reason 留文案减；T1/T7/T10 留。复跑口径采纳。覆盖+裁剪完成。未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-043",
+      "goal": "两步硬串行：(1) 覆盖——核对 Tools 核心流程有效覆盖（custom/MCP 进程生命周期 ISSUE-039/040、bash/permission/knowledge/webfetch 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Tools 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、ISSUE-034 协议层改造。不 commit。产物 WP-043-tools.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-050 Tools 方案（tools，direct）— 核心覆盖核对 + 测试裁剪提案\n父包 WP-043（in_progress）；产物本文件。状态：**方案填写，未 start、未改测试/代码、不 commit**。\n禁区：引擎产品、symlink 产品行为、ISSUE-034 协议层改造。\n\n### 0 目标与硬串行\n两步**硬串行**（批后才 start；未过中层审前不删测试）：\n1. **覆盖**：核对 Tools 域核心流程有效覆盖，产出绿表 + 缺口。\n2. **裁剪**：基于覆盖结果，列冗余/过时/重复及删/留/放宽提案交中层裁决；审前不删。\n\n参考：WP-021-backend §5 Tools 旧清单（10 条）、WP-022-tools.md C/追加裁剪、WP-036-tools.md 执行记录；**必须重核当前工作区**，不照搬旧结论。\n\n### 1 范围（本域）\n| 子域 | 路径 | 备注 |\n|---|---|---|\n| custom / hub | `src/tools/custom.rs`、`custom_hub.rs` | WP-027/038 刚落：EPIPE、组杀、有界 drain、bind、B5/B6 |\n| MCP 生命周期 | `src/mcp/{client,pool}.rs`、`src/tools/mcp_tool.rs` | WP-038 组杀/bind；**不含** ISSUE-034 协议 |\n| bash / jobs | `src/tools/bash*.rs`、`kill_shell`、`wait_shell` | 含 live_* flake 候选 |\n| permission | `src/permission/*`、`tests/{client_protocol_permission,common/permission,permission_pipeline}.rs` | WP-033 权限队列属前端；本域测 Ask/门禁 |\n| knowledge | `src/knowledge/*`、`src/tools/knowledge.rs` | |\n| webfetch / websearch | `src/tools/webfetch.rs`、`websearch.rs` | ISSUE-021 残留只登记 |\n| tool 基座 | `src/tool/{availability,registry,executor,output,signal,write_lock,…}` | |\n| lsp / optional | `src/tools/lsp.rs`、`src/optional/*`、`tests/optional_lsp.rs` | Windows cfg 已落地；B12 poison 已修 |\n| 集成 | `tests/mcp_integration.rs`、`subscribe_bash_hydration.rs` 等本域相关 | |\n\n不碰：引擎产品、symlink、`take_changes`、前端/桌面、`proc_lifetime` 实现、ISSUE-034。\n\n### 2 步骤一：覆盖核对（先做）\n\n#### 2.1 核心流程清单（对照 WP-033/036 刚落）\n| # | 核心流程 | 刚落来源 | 预期覆盖点（批后实核） |\n|---|---|---|---|\n| C1 | custom stdin EPIPE 不判失败 / stdin 写线程不死锁 | WP-027 | `child_ignoring_stdin…`、`large_output_before_reading_stdin…` |\n| C2 | custom 超时/取消组杀 + Finished 后组杀 + 有界 drain | WP-038 / ISSUE-039 | `timeout_kills_grandchild…`、`finished_reaps…`、`finished_kills_orphaned…` |\n| C3 | custom Windows/跨平台父子绑定 | WP-038 / ISSUE-040 | 调用点存在（Linux no-op）；不伪测 Job |\n| C4 | custom wait 失败不 panic；后台 spawn 失败 abandon_job | WP-027 B5/B6 | `wait_failure…`、`background_spawn_failure…` |\n| C5 | custom 后台 mailbox / 输出含 cancelled 不误判 | WP-027 | `background_real_process…`、`background_output_mentioning_cancelled…` |\n| C6 | MCP kill/Drop 杀树 + spawn 组/bind | WP-038 | `kill_reaps_grandchild…`、`drop_reaps_grandchild…`；pool 委托路径读码 |\n| C7 | bash 前台/后台 job 契约（完成视图、exit、大输出） | 既有 | `tools::bash`、`bash_jobs_contract`；标 flake |\n| C8 | permission Ask/拒绝/流水线 | 既有 + WP-033 前端侧 | `permission::*` + 两集成测；与前端队列交叉边界只记录 |\n| C9 | knowledge 索引/校验/mentions | 既有 | `knowledge::*`、`tools::knowledge` |\n| C10 | webfetch SSRF/代理口径 | ISSUE-021 残留 | 现有测是否仍挡产品路径 |\n| C11 | optional 锁中毒不连环 panic | WP-027 B12 | `poisoned_state_lock…` |\n| C12 | lsp 行号格式 / Windows 路径 cfg | WP-027 | `optional_lsp` 编号行断言；`#[cfg(windows)]` |\n\n#### 2.2 实跑命令（批后；共享 target 排队；只跑本域）\n```\nrustc -V   # 期望 1.99.0；直接 cargo，勿 PATH 前缀\ncargo test --lib tools::custom tools::custom_hub\ncargo test --lib mcp::\ncargo test --lib tools::bash tools::bash_jobs_contract tools::bash_safety tools::bash_status\ncargo test --lib permission::\ncargo test --lib knowledge:: tools::knowledge\ncargo test --lib tools::webfetch tools::websearch\ncargo test --lib tool:: optional:: tools::lsp\ncargo test --test client_protocol_permission --test permission_pipeline\n# 抽样：mcp_integration / optional_lsp / subscribe_bash_hydration（按时间）\n```\nflake 候选（bash live_* / bash_jobs_contract）在覆盖阶段只记录失败率，**不修**；放入步骤二提案。\n\n#### 2.3 产物形态（步骤一交付物）\n- **绿表**：上表 C1–C12 ×（测试名 / 结果 ok|fail|skip|缺 / 证据行号）。\n- **缺口**：无测或测弱的核心行为（例：MCP pool 超时后 `stop_on_hub` 杀树仅读码无独立测；Windows Job 行为本 box 无法实跑）。\n- **外域失败**：非本域文件失败只登记不改。\n- ISSUE-039/040：**已 closed**（gm，WP-036/038 验收）；覆盖阶段复核测仍绿即可，不再改 issue。\n\n### 3 步骤二：裁剪提案（覆盖完成后再写；审前不删）\n\n#### 3.1 旧清单重核入口（WP-021-backend §5 Tools，10 条）\n| 旧项 | 旧建议 | 本包动作 |\n|---|---|---|\n| `background_real_process…` 等待放宽到 10s | 放宽 | 重核：WP-027 后 20/20 绿 → 可能改为**保留**或仅文档化超时 |\n| ask_user 多问题文案断言 | 放宽 | 重核现断言是否仍逐字 |\n| plan.rs `\"No plan file was created\"` | 放宽 | 重核 |\n| `tools::bash` 两条 `live_*` | 放宽 | 重核失败率；提案等待完成/轮询 |\n| `bash_jobs_contract` 一条短命令视图 | 放宽 | 同上 |\n| permission_pipeline 纯 sink vs client_protocol_permission | 重复 | 重核重叠面，提案删 sink 往返或合并 |\n| knowledge spec_tests 文案 vs index_tests reason | 重复 | 重核，提案文案只留一条 |\n| webfetch whatwg 解析测 | 可删候选 | 重核是否仍只测第三方 crate |\n\n#### 3.2 追加候选（来自 WP-022 实跑，须再核）\n- 同上 bash 三条 flake（20 连跑失败次数已记）。\n- 其他：步骤一绿表中「重复覆盖同一分支」「只测第三方」「断言过严文案」新发现一并列入。\n\n#### 3.3 提案表模板（步骤二写入本产物）\n| ID | 测试（file::name） | 提案 | 理由 | 替代覆盖 | 中层裁决 |\n|---|---|---|---|---|---|\n| T-… | … | 删/留/放宽 | … | … | （空，等批） |\n\n**硬规则**：表填完 → 私信中层 → **裁决前零删除**；获批项才改测试；未批项写暂缓理由。\n\n### 4 交叉审\n- 覆盖/裁剪涉及进程生命周期结论时，与 IDE 对照 WP-036-ide / `proc_lifetime`（只读）；本包不改 IDE 文件。\n- 权限与前端队列边界：只记录「后端测覆盖到哪」，不改 web。\n- 双方要点写入本产物「交叉审」节；IDE 未回则标待补，不阻塞中层对裁剪表的裁决。\n\n### 5 工具需求\n- **无新增工具**。rustc 1.99.0 已就绪；`cargo test` 直接用。\n- 共享 target 锁：排队；尽量 `tools::` / `mcp::` / `permission::` / `knowledge::` 分片。\n- 若需 20 连跑 flake 复核占久，先报中层时间窗。\n\n### 6 禁区与验收\n- 禁：引擎产品、symlink 产品行为、ISSUE-034 协议改造、改 `proc_lifetime` 实现、commit/push、未审删测。\n- done-when：覆盖绿表+缺口交中层；裁剪提案过裁决并落地或列暂缓；交叉审通过；中层 close。\n\n### 7 执行顺序（仅批准 start 后）\n1. 读码核对 C1–C12 与现测映射 → 跑本域测 → 写绿表+缺口。\n2. 重核 WP-021 §5 + 新发现 → 填裁剪提案表 → 私信中层裁决。\n3. 获批后落地放宽/删除；未批列暂缓。\n4. 交叉审段落 → deliver WP-050。\n\n### 8 ISSUE 状态备忘（方案填写时已确认编号）\n| ID | status | 说明 |\n|---|---|---|\n| ISSUE-039 | **closed**（gm 2026-10-12） | WP-036/038 验收；custom 组杀/有界 drain |\n| ISSUE-040 | **closed**（gm 2026-10-12） | WP-036/038 验收；bind_child_to_parent |\n| ISSUE-034 | open（本包不碰） | MCP 协议无超时/错号 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:54.332Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 两步硬串行：(1) 覆盖——核对 Tools 核心流程有效覆盖（custom/MCP 进程生命周期 ISSUE-039/040、bash/permission/knowledge/webfetch 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 Tools 旧清单但须重核现状。禁区：引擎产品、symlink 产品行为、ISSUE-034 协议层改造。不 commit。产物 WP-043-tools.md。"
+        },
+        {
+          "ts": "2026-10-12T12:14:51.558Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: ## WP-050 Tools 方案（tools，direct）— 核心覆盖核对 + 测试裁剪提案\n父包 WP-043（in_progress）；产物本文件。状"
+        },
+        {
+          "ts": "2026-10-12T12:14:51.833Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "方案已填：两步硬串行覆盖→裁剪；ISSUE-039/040 已 closed 无需再关；产物 WP-043-tools.md；待中层批后再 start"
+        },
+        {
+          "ts": "2026-10-12T12:15:28.775Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：C1–C12+硬串行+旧清单重核正确；039/040 closed 只复核绿。批后可 start。覆盖绿表先交；裁剪我裁决后再落地；bash flake 覆盖期只记不修。禁区含 034；不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:15:43.725Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "中层已批，开始覆盖核对"
+        },
+        {
+          "ts": "2026-10-12T12:17:45.425Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "覆盖绿表C1–C12+缺口已写；裁剪T1–T10提案交裁决（未删未放宽）；ISSUE-039/040仅复核绿；产物WP-043-tools.md"
+        },
+        {
+          "ts": "2026-10-12T12:18:58.414Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "覆盖验收通过（C1–C12 锚点成立；039/040 复核绿；G2 环境超时非产品红）。裁剪裁决：T1/T7/T10 留；T2/T3/T8 放宽文案；T4–T6 放宽时序/轮询；T9 删 whatwg 第三方测。请落地后复跑相关测绿、更新产物裁决列、再 deliver。"
+        },
+        {
+          "ts": "2026-10-12T12:21:41.913Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "裁剪落地：T2/T3/T4–T6/T8放宽、T9删、T1/T7/T10留；相关测全绿；产物裁决列已填。再交验收。"
+        },
+        {
+          "ts": "2026-10-12T12:22:00.610Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "裁剪落地抽查通过：T9 whatwg 已删；T2/T3 文案放宽；T4–T6 轮询；T8 reason 留文案减；T1/T7/T10 留。复跑口径采纳。覆盖+裁剪完成。未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-051",
+      "domain": "ide-substrate",
+      "title": "WP-043/IDE：核心覆盖核对 + 测试裁剪提案",
+      "result": "覆盖绿表+C1/C2放宽落地；hotswitch绿；ISSUE-007 closed；其余裁剪仍提案；未碰禁区未commit",
+      "done_when": [
+        "覆盖报告交中层；裁剪提案过中层裁决并落地（或暂缓理由）；交叉审通过；中层 close"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-043-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：C1/C2 落地；hotswitch_rerun 2 passed；ISSUE-007 closed。C3–C10 留；G7/G8 继续 suspect。未碰引擎/symlink；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-043",
+      "goal": "两步硬串行：(1) 覆盖——核对 IDE 核心流程有效覆盖（workspace 并发 create/跨盘 ISSUE-037/038、path/terminal/process_contract、hotswitch death_list 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 IDE 旧清单但须重核现状。禁区：引擎产品行为、symlink 产品行为（WP-004）。不 commit。产物 WP-043-ide.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-051 方案（ide）——只填方案，不开工\n\n基线：HEAD `0c75d0a`，分支 `ops/team-framework`，2026-10-12（HKT）\n父包：WP-043（in_progress）；审批：backend_mid\n产物：`.litecode/ops/artifacts/WP-043-ide.md`\n本步：fill → submit；**批前不 start、不改测试/代码、不 commit**。\n\n## 0. Goal 对齐\n\n两步硬串行：\n1. **覆盖**：核对 IDE 核心流程有效覆盖（workspace 并发 create/跨盘 ISSUE-037/038、path/terminal/process_contract、hotswitch death_list 等，含 WP-033/036 刚落），产出绿表+缺口。\n2. **裁剪**：列本域冗余/过时/重复及删/留/放宽提案交中层裁决；未过审前不删。参考 WP-021-backend §5 IDE 旧清单与 WP-022-ide，但须重核现状。\n\n禁区：引擎产品行为、symlink 产品行为（WP-004）。不 commit。\n\n## 1. 覆盖核对：范围与方法\n\n### 1.1 拟跑套件（本域，共享 target 排队）\n\n| 组 | 套件 / filter | 约用例数（静态度） | 对应核心流程 |\n|---|---|---|---|\n| A 刚落回归 | `--test wp028_probe_s2_create_race` | 2 | ISSUE-037 并发 create/write 排他 |\n| A 刚落回归 | `--test wp028_probe_s1_xdev_move` | 1 | ISSUE-038 跨盘 overwrite rename |\n| A 刚落回归 | `workspace::file_ops::` / `workspace::service::`（lib） | 8+5 | atomic_create、mkdir/rename/copy；**symlink 拒拷只跑不改** |\n| B workspace API | `--test workspace_api` | ~10–12 | CRUD / mkdir / rename / copy / blob |\n| C path | `--test workspace_path_consumer` / `workspace_path_lap` / `workspace_path_death_list` | ~5+6+4 | LAP 路径契约、canonicalize 白名单 |\n| D terminal | `--test terminal_bypass_death_list` / `terminal_pty_contract` / `terminal_ws_isolation` | ~3+4+1 | PTY 边界、bypass 死亡清单、WS 隔离 |\n| E process | `--test workspace_process_contract` | ~5–7 | 进程契约（含 open 端点已删行为测） |\n| F hotswitch | `--test workspace_hotswitch_death_list` | 1 | 根热切换死亡清单（预期仍假红 → ISSUE-007） |\n| G LSP 本域相关 | `--test optional_lsp`（只读结果；断言属 Tools 输出格式的交 Tools） | ~23（1 ignore） | LSP hub/server 生命周期相关路径 |\n| H WP-033/036 相关 | 上述 A–E 已覆盖 WP-040 刚落；WP-033 无独立 IDE 子测套件则在产物注明「无额外定位」 | — | 刚落行为不回退 |\n\n**不跑**：`optional_code_search` / `code_search_ipc` / engines 相关（引擎产品禁区）；不以改产品为目的触碰 `refuse_top_level_symlink_copy`。\n\n### 1.2 跑法\n\n- `cargo` 直接跑，**不加** `PATH=/home/box/.cargo/bin` 前缀（按开工令）。\n- `HOME=/workspace/litecode/.tmp/home`；命令末 `</dev/null`。\n- 单套件外层：`timeout 600 cargo test --test <name> -- --nocapture`（共享 target 锁则排队等待，不删锁；必要时先 `--no-run` 再跑二进制）。\n- 多域共用 target：遇锁等待；尽量只跑上表本域套件，避免全量 `--tests`。\n- 每条绿表行记录：**套件名 / 通过·失败·忽略数 / 结果 / 源码 HEAD（`git rev-parse --short HEAD`）+ 若工作区脏则附 `git status --short` 摘要或快照路径**。\n- 若某条必须用已编译二进制而源码已变：标注「二进制编译时 HEAD/mtime」与「运行时 HEAD」，与 WP-028 口径一致。\n\n### 1.3 产物「绿表」列\n\n表列：`套件 | 用例数(P/F/I) | 结果 | 源码 HEAD | 备注（假红/跳过原因）`\n\n### 1.4 产物「缺口」列（对照核心流程）\n\n开跑前先列候选缺口，实测后勾选「已覆盖 / 仍缺 / 属禁区不测」：\n\n| 核心流程 | 现状（方案时读码+WP-022/036） | 拟判定 |\n|---|---|---|\n| ISSUE-037 并发 create/write | 探针默认绿（WP-040）；`atomic_create` 单元测 | 覆盖够；绿表确认不回退 |\n| ISSUE-038 跨盘 overwrite | 探针默认绿；无双 FS 时 skip | 覆盖够；注明 skip 条件 |\n| path / LAP / canonicalize | path_consumer / lap / death_list | 重核后列入绿表；裁剪见 §2 |\n| terminal PTY / bypass | bypass death_list + pty_contract + ws_isolation | 重核；Tools 曾记 exit 码丢失（低）——本包只记缺口，不修 |\n| process_contract | 含 `workspace_open_http_endpoint_is_gone` | 重核 |\n| hotswitch death_list | **持续假红**（ISSUE-007，8 处子串误报） | 缺口=门禁不可信；裁剪提案「按已删除符号禁」，不删清单 |\n| LSP kill_child / S3（try_lock 跳过 kill） | WP-028 suspect；公共 API 无探针 | **仍缺测**；本包只列缺口，不加钩子、不改产品（除非中层另令） |\n| S4–S7（孙进程/subreaper/Drop wait/copy tmp） | 只读码 | 缺口=无测；保持 suspect 记录，不扩测除非裁决 |\n| symlink 拒拷 | `refuses_to_copy_symlinks` 存在 | **只跑不改**（WP-004 冻结） |\n| 引擎 code_search / embed | 禁区 | 不测不改；产物写「禁区跳过」 |\n\n## 2. 裁剪：只列不删\n\n对照来源（须重核现状后再提案）：\n- WP-021-backend §5「IDE 基座（6）」\n- WP-022-ide §2 测试清单 T1–T6\n- ISSUE-007（建议：按已删除符号禁，不删清单）\n\n| # | 测试 / 条目 | 提案 | 理由（方案时；开工后按绿表修订） |\n|---|---|---|---|\n| C1 | `workspace_hotswitch_death_list`（FORBIDDEN 子串） | **放宽**（改匹配口径） | ISSUE-007：按**已删除符号**禁，不删清单；去掉/改写泛化子串 `reload_workspace`/`post_open`/`api/workspace/open`；`/api/workspace/open` 交 `workspace_open_http_endpoint_is_gone` 守 |\n| C2 | `workspace_path_death_list` 白名单自检（`death_list_src_canonicalize_whitelist_is_only_path_rs`） | **留**（可选并入） | 与 `no_bare_canonicalize` 弱重复；可并入前置断言，**不删承诺** |\n| C3 | hotswitch 清单中的 `api/workspace/open` 项 | **放宽/移交** | 行为测已有；清单项重复且致假红 |\n| C4 | `rel_path_under_*` 三条（path_consumer / path_lap） | **留或合并** | 疑重复；核对断言后提案合并到 `workspace_path_lap.rs`，未裁决不删 |\n| C5 | `terminal_bypass_death_list`（3） | **留** | 承诺仍有效（PTY 仅 terminal 模块） |\n| C6 | `workspace_api` CRUD | **留** | API/状态码层覆盖；与 service 单测互补 |\n| C7 | 两 wp028 探针 | **留** | WP-040 已升为正式回归；默认绿 |\n| C8 | `optional_lsp` 中非 IDE 输出格式断言 | **不裁本域** | 交 Tools；本包只记归属 |\n\n**硬规则**：未过 backend_mid 裁决前**不删、不改测试文件**（放宽实现属「裁剪落地」阶段，仅在裁决后执行）。覆盖阶段若 hotswitch 红，记入绿表假红，不擅自改清单。\n\n## 3. 产物结构提纲（WP-043-ide.md）\n\n```\n# WP-043 / WP-051 — IDE：核心覆盖核对 + 测试裁剪提案\n- 元信息：HEAD、日期、执行/审批、工具链、禁区声明、不 commit\n## 1. 覆盖\n### 1.1 绿表（套件 / P-F-I / 结果 / HEAD / 备注）\n### 1.2 缺口（核心流程 × 已覆盖/仍缺/禁区）\n### 1.3 WP-033/036 刚落核对结论\n## 2. 裁剪\n### 2.1 提案表（删/留/放宽 + 理由 + 对照旧清单差异）\n### 2.2 待中层裁决项（明确「未裁决不落地」）\n## 3. 交叉审\n- 对 Tools：沿用 WP-028 X1/X2/X4；本包无新子进程则写「无新发现」\n- Tools 对本域：若有回填，否则「待补」\n## 4. 门禁自检\n- 未改引擎/symlink 产品行为；未删测试；未 commit\n```\n\n## 4. 硬门禁\n\n- 不改引擎产品行为；不改 symlink 产品行为（WP-004）。\n- 不删测试直到中层裁决；覆盖阶段不改 death_list 内容。\n- 不 commit；不 start 直至本方案获批。\n- 不修 ISSUE-007 / S3 等（除非中层在裁剪裁决中明确授权「放宽落地」且另开范围）。\n\n## 5. 工具需求\n\n**本方案不需要新工具。**\n- 超时：系统自带 `timeout 600`（及编译排队时更长的 `--no-run` timeout）。\n- 隔离 target：不申请；五域共用 target，遇锁排队。\n- 若开工后共享 target 持续饿死导致无法在合理时间出绿表，再 **报 backend_mid → 工具集管家** 申请隔离 `CARGO_TARGET_DIR` 或错峰；批前不申请。\n\n## 6. 执行顺序（获批 start 后）\n\n1. 记录 HEAD + 工作区快照 → 按 §1.1 逐套跑 → 填绿表。\n2. 对照 §1.4 勾缺口（含 S3/hotswitch）。\n3. 重核 WP-021 §5 / WP-022 T1–T6 → 写裁剪提案表（只列）。\n4. 写交叉审一句 → 写齐 WP-043-ide.md → deliver（不 commit）。\n\n## 7. 本步确认\n\n- 仅 fill 本方案并 submit；**未改** `src/`、`tests/`、issue、产物文件；**未 commit**；**未 start**。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-12T12:12:54.679Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 两步硬串行：(1) 覆盖——核对 IDE 核心流程有效覆盖（workspace 并发 create/跨盘 ISSUE-037/038、path/terminal/process_contract、hotswitch death_list 等，含 WP-033/036 刚落行为），产出绿表+缺口；(2) 裁剪——列本域冗余/过时/重复测试及删/留/放宽提案交中层裁决，未过审前不删。可参考 WP-021-backend §5 IDE 旧清单但须重核现状。禁区：引擎产品行为、symlink 产品行为（WP-004）。不 commit。产物 WP-043-ide.md。"
+        },
+        {
+          "ts": "2026-10-12T12:14:43.386Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-051 方案（ide）——只填方案，不开工\n\n基线：HEAD `0c75d0a`，分支 `ops/team-framework`，2026-10-12"
+        },
+        {
+          "ts": "2026-10-12T12:14:43.659Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "ide 方案已填：覆盖绿表+缺口（037/038探针/path/terminal/process/hotswitch/optional_lsp）；裁剪只列不删（对照 WP-021§5/WP-022/ISSUE-007）；产物 WP-043-ide.md；无新工具；不开工不 commit"
+        },
+        {
+          "ts": "2026-10-12T12:15:09.628Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：覆盖套件+037/038/缺口/硬串行正确；裁剪只列含 ISSUE-007 放宽口径正确。批后可 start。覆盖绿表先交；裁剪我裁决后再落地；产物须写入 WP-043-ide.md；禁区/不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:15:33.030Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开工：覆盖核对+裁剪提案；不改产品/不删测/不 commit"
+        },
+        {
+          "ts": "2026-10-12T12:17:14.790Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-043-ide.md\" -> \".litecode/ops/artifacts/WP-043-ide.md\""
+        },
+        {
+          "ts": "2026-10-12T12:17:15.086Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"覆盖绿表已写；hotswitch 假红记 ISSUE-007；裁剪 10 条只提案；产物 WP-043-ide.md；"
+        },
+        {
+          "ts": "2026-10-12T12:17:15.390Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "result: \"IDE 覆盖绿表+缺口；裁剪提案已交中层；审后落地或列明暂缓\" -> \"IDE 覆盖绿表+缺口；裁剪 10 条提案交中层；未删测未改产品未 commit\""
+        },
+        {
+          "ts": "2026-10-12T12:17:15.639Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "WP-043-ide.md：覆盖 13 套件（hotswitch 假红 ISSUE-007）；缺口 4 类；裁剪提案 10；未改产品/未删测/未 commit；请验收"
+        },
+        {
+          "ts": "2026-10-12T12:22:54.953Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "覆盖验收通过（日志全绿；hotswitch 唯一红=ISSUE-007 假红）。裁剪裁决：C1/C2 批放宽（按已删除符号禁，去泛化子串；api/workspace/open 交 process_contract）；C3/C4 本包留（合并暂缓）；C5–C10 留；G7 继续 suspect 不开钩子包。请落地 C1/C2 → hotswitch 变绿 → 更新产物 → 再 deliver。禁区/不 commit。"
+        },
+        {
+          "ts": "2026-10-12T12:24:41.563Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"acceptance rejected by backend_mid: 覆盖验收通过（日志全绿；hotswitch 唯 -> \"C1/C2 落地；hotswitch 2/0/0 绿；ISSUE-007 closed；产物已更新；待 deliver"
+        },
+        {
+          "ts": "2026-10-12T12:24:41.831Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "result: \"IDE 覆盖绿表+缺口；裁剪 10 条提案交中层；未删测未改产品未 commit\" -> \"覆盖绿表+C1/C2放宽落地；hotswitch绿；ISSUE-007 closed；其余裁剪仍提案；未碰禁区未com"
+        },
+        {
+          "ts": "2026-10-12T12:24:42.090Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "C1/C2 落地：hotswitch 按已删除符号禁，复跑 2 passed；ISSUE-007 closed；产物 §6；C3–C10 未动；未碰禁区未 commit；请验收"
+        },
+        {
+          "ts": "2026-10-12T12:25:07.624Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：C1/C2 落地；hotswitch_rerun 2 passed；ISSUE-007 closed。C3–C10 留；G7/G8 继续 suspect。未碰引擎/symlink；未 commit。",
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

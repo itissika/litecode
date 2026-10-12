@@ -81,30 +81,6 @@ describe("bundle-paths", () => {
     assert.equal(resolveHfModelDir(root), dir);
   });
 
-  it("resolves LITECODE_MODEL_DIR over sidecar models", () => {
-    const dir = writeReadyModel(tmp("litecode-model-env-"));
-    process.env.LITECODE_MODEL_DIR = dir;
-    const sidecar = tmp("litecode-sidecar-");
-    assert.equal(resolveBundledModelDir({ sidecarRoot: sidecar }), dir);
-  });
-
-  it("resolves linux tar from LITECODE_LINUX_BUNDLE", () => {
-    const tar = writeLinuxPair(tmp("litecode-linux-"));
-    process.env.LITECODE_LINUX_BUNDLE = tar;
-    const found = resolveLinuxBundle({});
-    assert.equal(found.tar, tar);
-    assert.equal(found.checksum, `${tar}.sha256`);
-  });
-
-  it("resolves linux tar from LITECODE_BUNDLE_ROOT/linux", () => {
-    const root = tmp("litecode-bundle-");
-    const tar = writeLinuxPair(path.join(root, "linux"));
-    delete process.env.LITECODE_LINUX_BUNDLE;
-    process.env.LITECODE_BUNDLE_ROOT = root;
-    const found = resolveLinuxBundle({});
-    assert.equal(found.tar, tar);
-  });
-
   it("fingerprints a ready model directory stably", () => {
     const dir = writeReadyModel(tmp("litecode-model-hash-"));
     const a = hashModelDir(dir);
@@ -239,27 +215,6 @@ describe("linux resolve order packaged → env → bundles → repo", () => {
     );
   });
 
-  it("candidate list order matches packaged → env → bundle-root → default → development", () => {
-    clearLinuxEnv();
-    const xdg = tmp("lc-cand-xdg-");
-    process.env.XDG_DATA_HOME = xdg;
-    const packaged = path.join(tmp("lc-cand-pack-"), LINUX_TAR_NAME);
-    const envTar = path.join(tmp("lc-cand-env-"), LINUX_TAR_NAME);
-    const bundleRoot = tmp("lc-cand-broot-");
-    const development = path.join(tmp("lc-cand-dev-"), LINUX_TAR_NAME);
-    process.env.LITECODE_LINUX_BUNDLE = envTar;
-    process.env.LITECODE_BUNDLE_ROOT = bundleRoot;
-    assert.deepEqual(
-      linuxBundleCandidateTars({ packagedTar: packaged, developmentTar: development }),
-      [
-        packaged,
-        envTar,
-        path.join(bundleRoot, "linux", LINUX_TAR_NAME),
-        path.join(litecodeBundlesDir(), "linux", LINUX_TAR_NAME),
-        development,
-      ],
-    );
-  });
 });
 
 describe("dev-only repo fallbacks", () => {

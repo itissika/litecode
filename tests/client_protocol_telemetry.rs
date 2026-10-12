@@ -36,20 +36,20 @@ fn log_line_roundtrip() {
 }
 
 #[test]
-fn subscribe_logs_is_jsonrpc_method() {
-    let env: JsonRpcRequestEnvelope =
-        serde_json::from_str(r#"{"jsonrpc":"2.0","id":"1","method":"subscribe_logs","params":{}}"#)
-            .expect("parse");
-    assert_eq!(env.jsonrpc, "2.0");
-    assert_eq!(env.method, methods::SUBSCRIBE_LOGS);
-    assert_eq!(env.id, serde_json::json!("1"));
-}
-
-#[test]
-fn unsubscribe_logs_is_jsonrpc_method() {
-    let env: JsonRpcRequestEnvelope = serde_json::from_str(
-        r#"{"jsonrpc":"2.0","id":"2","method":"unsubscribe_logs","params":{}}"#,
-    )
-    .expect("parse");
-    assert_eq!(env.method, methods::UNSUBSCRIBE_LOGS);
+fn log_subscribe_methods_are_jsonrpc() {
+    // Table-driven: subscribe_logs / unsubscribe_logs method-name constants (T1).
+    for (raw, expected) in [
+        (
+            r#"{"jsonrpc":"2.0","id":"1","method":"subscribe_logs","params":{}}"#,
+            methods::SUBSCRIBE_LOGS,
+        ),
+        (
+            r#"{"jsonrpc":"2.0","id":"2","method":"unsubscribe_logs","params":{}}"#,
+            methods::UNSUBSCRIBE_LOGS,
+        ),
+    ] {
+        let env: JsonRpcRequestEnvelope = serde_json::from_str(raw).expect("parse");
+        assert_eq!(env.jsonrpc, "2.0");
+        assert_eq!(env.method, expected, "method wire for {raw}");
+    }
 }

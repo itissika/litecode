@@ -10,18 +10,27 @@ import {
 } from "./remote-progress";
 
 describe("remoteDownloadRatio", () => {
-  it("maps received/total into the given range bounds", () => {
-    assert.equal(remoteDownloadRatio([0.1, 0.3], 0, 100), 0.1);
-    assert.equal(remoteDownloadRatio([0.1, 0.3], 50, 100), 0.2);
-    assert.equal(remoteDownloadRatio([0.1, 0.3], 100, 100), 0.3);
-  });
+  const cases: Array<{
+    name: string;
+    range: [number, number];
+    received: number | undefined;
+    total: number | undefined;
+    expected: number;
+  }> = [
+    { name: "maps 0 received to low bound", range: [0.1, 0.3], received: 0, total: 100, expected: 0.1 },
+    { name: "maps midpoint into range", range: [0.1, 0.3], received: 50, total: 100, expected: 0.2 },
+    { name: "maps full received to high bound", range: [0.1, 0.3], received: 100, total: 100, expected: 0.3 },
+    { name: "clamps overshoot to high bound", range: [0.06, 0.12], received: 200, total: 100, expected: 0.12 },
+    { name: "missing total uses low bound", range: [0.06, 0.12], received: 50, total: undefined, expected: 0.06 },
+    { name: "zero total uses low bound", range: [0.06, 0.12], received: 50, total: 0, expected: 0.06 },
+    { name: "missing received uses low bound", range: [0.14, 0.38], received: undefined, total: 100, expected: 0.14 },
+  ];
 
-  it("clamps overshoot and treats missing/zero total as the low end", () => {
-    assert.equal(remoteDownloadRatio([0.06, 0.12], 200, 100), 0.12);
-    assert.equal(remoteDownloadRatio([0.06, 0.12], 50, undefined), 0.06);
-    assert.equal(remoteDownloadRatio([0.06, 0.12], 50, 0), 0.06);
-    assert.equal(remoteDownloadRatio([0.14, 0.38], undefined, 100), 0.14);
-  });
+  for (const c of cases) {
+    it(c.name, () => {
+      assert.equal(remoteDownloadRatio(c.range, c.received, c.total), c.expected);
+    });
+  }
 });
 
 describe("mapComponentProgressToRemote", () => {

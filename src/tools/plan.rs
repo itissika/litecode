@@ -421,11 +421,8 @@ mod tests {
             "got: {}",
             result.content
         );
-        assert!(
-            result.content.contains("No plan file was created"),
-            "got: {}",
-            result.content
-        );
+        // WP-050 T3: do not assert exact "No plan file was created" copy;
+        // no-file + active_plan below are the behavioral contract.
         assert!(
             result.content.contains("User opinion: too vague"),
             "got: {}",

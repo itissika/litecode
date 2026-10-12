@@ -254,14 +254,19 @@ mod tests {
     }
 
     #[test]
-    fn entire_transcript_within_keep_returns_none() {
-        let items = vec![user_text("a"), user_text("b")];
-        assert!(find_keep_recent_cut(&items, 100_000).is_none());
-    }
-
-    #[test]
-    fn empty_returns_none() {
-        assert!(find_keep_recent_cut(&[], 100).is_none());
+    fn within_keep_or_empty_returns_none() {
+        // (items, keep_tokens)
+        let cases: [(Vec<Item>, usize); 2] = [
+            (vec![user_text("a"), user_text("b")], 100_000),
+            (vec![], 100),
+        ];
+        for (items, keep) in cases {
+            assert!(
+                find_keep_recent_cut(&items, keep).is_none(),
+                "keep={keep} len={}",
+                items.len()
+            );
+        }
     }
 
     #[test]

@@ -2,6 +2,8 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { composerCardClass } from "../../components/composerCard";
+
 const grantPermission = vi.fn();
 
 vi.mock("../../components/AgentChatInput", () => ({
@@ -59,10 +61,13 @@ describe("ComposerDock permission overlay", () => {
 
   it("wears the dock's own glass — no stripe, no colour of its own", () => {
     render(<ComposerDock sessionId="session-1" />);
-    const cls = screen.getByTestId("permission-card").className;
-    // composerCardClass glass: rounded-md + translucent fill + 12px backdrop blur.
-    expect(cls).toContain("rounded-md");
-    expect(cls).toContain("backdrop-blur-[12px]");
+    const card = screen.getByTestId("permission-card");
+    const cls = card.className;
+    // Shared composer glass token (rounded/blur live in composerCardClass).
+    for (const token of composerCardClass.split(/\s+/)) {
+      expect(cls).toContain(token);
+    }
+    expect(card.classList.contains("permission-card")).toBe(true);
     // The ask is carried by copy + buttons: no accent stripe, no tint.
     expect(cls).not.toContain("border-l-2");
     expect(cls).not.toContain("amber");

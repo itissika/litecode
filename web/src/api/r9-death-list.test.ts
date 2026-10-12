@@ -2,12 +2,13 @@
  * R9 gate: product-pipeline invariants on the FE side.
  * Complements Rust death_list_gate R9 needles (#1 default Responses, #6 HookMessage ban,
  * plus R3–R6 continuity for tool_start / partialText).
+ * Contains R5 needles (partialText / partialReasoning); R5 file kept as ISSUE/regression anchor.
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { collectTsFiles, scanNeedles } from "../test/deathListGate";
 
-const WEB_SRC = join(__dirname, "..");
 const REPO_ROOT = join(__dirname, "../../..");
 
 const FORBIDDEN_PRODUCTION = [
@@ -23,33 +24,10 @@ const FORBIDDEN_PRODUCTION = [
   "compact_messages",
 ] as const;
 
-function walkTsFiles(dir: string, out: string[]): void {
-  for (const name of readdirSync(dir)) {
-    const path = join(dir, name);
-    const st = statSync(path);
-    if (st.isDirectory()) {
-      walkTsFiles(path, out);
-    } else if (/\.(ts|tsx)$/.test(name)) {
-      if (name.includes("death-list")) continue;
-      out.push(path);
-    }
-  }
-}
-
 describe("R9 death list — FE product-pipeline invariants", () => {
   it("bans tool_start / partialText / HookMessage dialects in production adapter sources", () => {
-    const files: string[] = [];
-    walkTsFiles(WEB_SRC, files);
-    const violations: string[] = [];
-    for (const file of files) {
-      const src = readFileSync(file, "utf8");
-      const rel = relative(WEB_SRC, file);
-      for (const needle of FORBIDDEN_PRODUCTION) {
-        if (src.includes(needle)) {
-          violations.push(`${rel}: forbidden \`${needle}\``);
-        }
-      }
-    }
+    const files = collectTsFiles(undefined, { includeTests: true });
+    const violations = scanNeedles(files, FORBIDDEN_PRODUCTION);
     expect(violations, violations.join("\n")).toEqual([]);
   });
 
@@ -65,9 +43,5 @@ describe("R9 death list — FE product-pipeline invariants", () => {
       expect(item.type, name).toBeTruthy();
       expect(["message", "function_call", "reasoning"]).toContain(item.type);
     }
-  });
-
-  it("gate file itself is named for R9", () => {
-    expect(basename(__filename)).toBe("r9-death-list.test.ts");
   });
 });

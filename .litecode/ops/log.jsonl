@@ -267,3 +267,89 @@
 {"ts":"2026-10-12T12:00:06.794Z","kind":"wp_lifecycle","source":"gm","summary":"WP-035: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-12T12:00:07.043Z","kind":"wp_lifecycle","source":"gm","summary":"WP-033: in_progress -> review (submitted for acceptance; approver andy) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-12T12:02:38.555Z","kind":"wp_lifecycle","source":"andy","summary":"WP-033: review -> done (closed by andy) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:40.163Z","kind":"wp_lifecycle","source":"andy","summary":"WP-042: created (parent=- owner=gm approver=andy) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:40.550Z","kind":"wp_lifecycle","source":"gm","summary":"WP-043: created (parent=WP-042 owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:40.853Z","kind":"wp_lifecycle","source":"gm","summary":"WP-044: created (parent=WP-042 owner=frontend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:47.516Z","kind":"wp_lifecycle","source":"gm","summary":"WP-042: content filled (split) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:47.812Z","kind":"wp_lifecycle","source":"gm","summary":"WP-042: set artifact_path (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:09:48.131Z","kind":"wp_lifecycle","source":"gm","summary":"WP-042: drafting -> awaiting_approval (plan; approver andy) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:06.605Z","kind":"wp_lifecycle","source":"andy","summary":"WP-042: awaiting_approval -> ready (plan approved by andy) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:06.911Z","kind":"wp_lifecycle","source":"gm","summary":"WP-042: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:17.083Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-045: created (parent=WP-044 owner=frontend approver=frontend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:17.456Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-046: created (parent=WP-044 owner=frontend_desktop approver=frontend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:23.254Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-044: content filled (split) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:23.665Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-044: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:40.019Z","kind":"wp_lifecycle","source":"gm","summary":"WP-044: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:47.708Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-044: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:53.521Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-047: created (parent=WP-043 owner=session approver=backend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:53.861Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-048: created (parent=WP-043 owner=runtime approver=backend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:54.173Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-049: created (parent=WP-043 owner=context approver=backend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:54.519Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-050: created (parent=WP-043 owner=tools approver=backend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:12:54.846Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-051: created (parent=WP-043 owner=ide approver=backend_mid) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:02.513Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-043: content filled (split) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:02.898Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-043: set artifact_path (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:03.292Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-043: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:12.037Z","kind":"wp_lifecycle","source":"frontend_desktop","summary":"WP-046: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:12.369Z","kind":"wp_lifecycle","source":"frontend_desktop","summary":"WP-046: drafting -> awaiting_approval (plan; approver frontend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:17.123Z","kind":"wp_lifecycle","source":"gm","summary":"WP-043: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:24.977Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-046: awaiting_approval -> ready (plan approved by frontend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:26.169Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-043: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:34.459Z","kind":"wp_lifecycle","source":"frontend_desktop","summary":"WP-046: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:36.342Z","kind":"wp_lifecycle","source":"frontend","summary":"WP-045: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:36.641Z","kind":"wp_lifecycle","source":"frontend","summary":"WP-045: drafting -> awaiting_approval (plan; approver frontend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:13:57.670Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-045: awaiting_approval -> ready (plan approved by frontend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:12.899Z","kind":"wp_lifecycle","source":"frontend","summary":"WP-045: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:19.903Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:20.190Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: set artifact_path (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:20.492Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: drafting -> awaiting_approval (plan; approver backend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:42.683Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-047: awaiting_approval -> ready (plan approved by backend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:43.515Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:43.809Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: drafting -> awaiting_approval (plan; approver backend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:49.024Z","kind":"wp_lifecycle","source":"context","summary":"WP-049: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:49.305Z","kind":"wp_lifecycle","source":"context","summary":"WP-049: drafting -> awaiting_approval (plan; approver backend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:51.707Z","kind":"wp_lifecycle","source":"tools","summary":"WP-050: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:14:51.977Z","kind":"wp_lifecycle","source":"tools","summary":"WP-050: drafting -> awaiting_approval (plan; approver backend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:01.254Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:09.798Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-051: awaiting_approval -> ready (plan approved by backend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:28.610Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-049: awaiting_approval -> ready (plan approved by backend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:28.925Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-050: awaiting_approval -> ready (plan approved by backend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:33.210Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:40.250Z","kind":"wp_lifecycle","source":"runtime","summary":"WP-048: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:41.718Z","kind":"wp_lifecycle","source":"runtime","summary":"WP-048: drafting -> awaiting_approval (plan; approver backend_mid) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:43.923Z","kind":"wp_lifecycle","source":"tools","summary":"WP-050: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:15:44.944Z","kind":"wp_lifecycle","source":"context","summary":"WP-049: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:16:10.065Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-048: awaiting_approval -> ready (plan approved by backend_mid) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:16:34.577Z","kind":"wp_lifecycle","source":"runtime","summary":"WP-048: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:16:37.772Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:16:49.791Z","kind":"wp_lifecycle","source":"context","summary":"WP-049: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:14.946Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: set artifact_path (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:15.234Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: set progress (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:15.521Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: set result (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:15.774Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:17.245Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-047: review -> in_progress (acceptance rejected by backend_mid) (ops.wp reject)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:41.768Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-049: review -> in_progress (acceptance rejected by backend_mid) (ops.wp reject)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:17:45.571Z","kind":"wp_lifecycle","source":"tools","summary":"WP-050: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:18:58.590Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-050: review -> in_progress (acceptance rejected by backend_mid) (ops.wp reject)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:19:36.451Z","kind":"wp_lifecycle","source":"frontend","summary":"WP-045: in_progress -> review (submitted for acceptance; approver frontend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:19:54.850Z","kind":"wp_lifecycle","source":"runtime","summary":"WP-048: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:20:07.219Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-045: review -> done (closed by frontend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:20:24.297Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-048: review -> done (closed by backend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:20:37.621Z","kind":"wp_lifecycle","source":"frontend_desktop","summary":"WP-046: in_progress -> review (submitted for acceptance; approver frontend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:21:05.727Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-046: review -> done (closed by frontend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:21:06.129Z","kind":"wp_lifecycle","source":"frontend_mid","summary":"WP-044: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:21:40.826Z","kind":"wp_lifecycle","source":"context","summary":"WP-049: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:21:42.079Z","kind":"wp_lifecycle","source":"tools","summary":"WP-050: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:21:50.256Z","kind":"wp_lifecycle","source":"session","summary":"WP-047: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:22:00.763Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-050: review -> done (closed by backend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:22:10.887Z","kind":"wp_lifecycle","source":"gm","summary":"WP-044: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:22:22.006Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-049: review -> done (closed by backend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:22:22.267Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-047: review -> done (closed by backend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:22:55.097Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-051: review -> in_progress (acceptance rejected by backend_mid) (ops.wp reject)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:24:41.700Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: set progress (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:24:41.960Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: set result (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:24:42.236Z","kind":"wp_lifecycle","source":"ide","summary":"WP-051: in_progress -> review (submitted for acceptance; approver backend_mid) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:25:07.758Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-051: review -> done (closed by backend_mid) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:25:38.812Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-043: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:26:28.950Z","kind":"wp_lifecycle","source":"gm","summary":"WP-043: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:26:56.746Z","kind":"wp_lifecycle","source":"gm","summary":"WP-042: in_progress -> review (submitted for acceptance; approver andy) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-12T12:28:32.734Z","kind":"wp_lifecycle","source":"andy","summary":"WP-042: review -> done (closed by andy) (ops.wp close)","evidence":[".litecode/ops/board.json"]}

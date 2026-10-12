@@ -112,11 +112,7 @@ try {
     throw "unparseable READY after restart: $Ready2"
   }
   $Base2 = $Matches[1].TrimEnd('/')
-  if ($Base2 -eq $Base) {
-    Write-Host "    note: same port reused after restart (ok)"
-  } else {
-    Write-Host "    port changed after restart ($Base -> $Base2)"
-  }
+  # Port may stay the same or change after restart; neither is asserted here.
   $openUri = "$Base2/api/workspace/" + "open"
   try {
     $openResp = Invoke-WebRequest -Uri $openUri -Method POST -Headers @{ Authorization = "Bearer $Token" } -ContentType "application/json" -Body '{"path":"C:/tmp"}' -UseBasicParsing -TimeoutSec 10

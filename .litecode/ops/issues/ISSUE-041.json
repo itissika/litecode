@@ -1,0 +1,64 @@
+{
+  "id": "ISSUE-041",
+  "grade": "drift",
+  "layer": "gate",
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "basis": [
+    "A4"
+  ],
+  "title": "session_data_sql_death_list 对 session_search 误报（稀疏索引/cfg(test) 文件层 rusqlite）",
+  "promise": "tests/session_data_sql_death_list.rs::sessions_db_sql_and_rusqlite_stay_in_sqlite_module：sessions.db 的 SQL/rusqlite 只许出现在 session/data/sqlite 与 config/global_db；不得误杀引擎侧自有 SQLite 索引或仅 #[cfg(test)] 文件级模块。",
+  "actual": "门禁对任意 rusqlite:: 子串告警。src/engines/session_search/sparse.rs 生产代码用 rusqlite 打开自有 sparse 索引（非 SessionData 写路径）；golden.rs/parity.rs/dense_parity.rs 仅经 mod.rs 的 #[cfg(test)] mod X; 挂载，walk 仍当生产文件扫描。Session 集成 118/1 中唯一失败即此假红。WP-011/012 已关闭且归属分歧（Session→WP-011、Runtime→WP-012），此前无独立 ISSUE。",
+  "evidence": [
+    {
+      "path": "tests/session_data_sql_death_list.rs",
+      "test": "fn sessions_db_sql_and_rusqlite_stay_in_sqlite_module",
+      "lines": "87-148",
+      "commit": "0c75d0a",
+      "note": "is_sqlite_ok 仅放行 session/data/sqlite；production_lines 跳过内联 cfg(test) mod，不跳过文件级 cfg(test) 模块文件"
+    },
+    {
+      "path": "src/engines/session_search/sparse.rs",
+      "lines": "98-98",
+      "commit": "0c75d0a",
+      "note": "生产 use rusqlite；打开 sparse_index_path，非 SessionData sessions.db 写者"
+    },
+    {
+      "path": "src/engines/session_search/mod.rs",
+      "lines": "8-16",
+      "commit": "0c75d0a",
+      "note": "#[cfg(test)] mod dense_parity/golden/parity — 文件仍被 walk 扫到"
+    },
+    {
+      "path": "src/engines/session_search/golden.rs",
+      "lines": "22-22",
+      "commit": "0c75d0a",
+      "note": "仅测试模块文件 use rusqlite::Connection"
+    },
+    {
+      "path": ".litecode/ops/artifacts/WP-021-backend.md",
+      "lines": "149-149",
+      "commit": "0c75d0a",
+      "note": "§7-7：假红无归属，WP-011/012 均已关闭"
+    }
+  ],
+  "repro": "PATH=/home/box/.cargo/bin:$PATH HOME=/workspace/litecode/.tmp/home cargo test --test session_data_sql_death_list sessions_db_sql_and_rusqlite_stay_in_sqlite_module </dev/null",
+  "reporter": "runtime",
+  "owner": "session",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T20:14:58+08:00",
+      "by": "runtime",
+      "change": "WP-048 方案阶段：登记假红为独立 ISSUE；owner 暂 ide（WP-011 归因 / engines 路径）；请后端中层确认 owner（ide vs session vs gate 维护方）与处置（白名单 sparse 索引路径 / 收窄为 sessions.db 专用检测 / 跳过文件级 cfg(test) 模块）"
+    },
+    {
+      "ts": "2026-10-12T20:16:00+08:00",
+      "by": "backend_mid",
+      "change": "WP-048 审批：确认 owner=session（门禁测 session_data_sql_death_list 属 Session；engines/session_search 产品行为冻结，处置为白名单/收窄检测，不改引擎）。ide 暂指撤回。本包 WP-043 只登记不修。"
+    }
+  ]
+}

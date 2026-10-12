@@ -655,6 +655,28 @@ mod tests {
         out
     }
 
+    /// Poll until bash tee logs satisfy `pred` (WP-050 T4/T5: under load,
+    /// disk flush can lag the completed view by a few dozen ms).
+    fn wait_bash_logs(
+        root: &Path,
+        pred: impl Fn(&[(std::path::PathBuf, String)]) -> bool,
+        what: &str,
+    ) -> Vec<(std::path::PathBuf, String)> {
+        use std::time::Instant;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let logs = bash_log_files(root);
+            if pred(&logs) {
+                return logs;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for bash logs ({what}); last={logs:?}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     #[test]
     fn live_small_echo_exit_code_first_file_on_disk_not_in_view() {
         with_workspace(|root, tool| {
@@ -677,13 +699,12 @@ mod tests {
                 "small view must not point at the log, got: {}",
                 result.content
             );
-            let logs = bash_log_files(root);
-            assert_eq!(logs.len(), 1, "expected one tee file, got {logs:?}");
-            assert!(
-                logs[0].1.contains("LITECODE_SMALL_OK"),
-                "disk log missing marker: {}",
-                logs[0].1
+            let logs = wait_bash_logs(
+                root,
+                |logs| logs.len() == 1 && logs[0].1.contains("LITECODE_SMALL_OK"),
+                "one tee file with LITECODE_SMALL_OK",
             );
+            assert_eq!(logs.len(), 1);
         });
     }
 
@@ -730,13 +751,12 @@ mod tests {
                 "tail should include last lines, got: {}",
                 result.content
             );
-            let logs = bash_log_files(root);
-            assert_eq!(logs.len(), 1);
-            assert!(
-                logs[0].1.contains("LINE_1200"),
-                "full log should keep the middle; file len {}",
-                logs[0].1.len()
+            let logs = wait_bash_logs(
+                root,
+                |logs| logs.len() == 1 && logs[0].1.contains("LINE_1200"),
+                "full log containing LINE_1200",
             );
+            assert_eq!(logs.len(), 1);
             assert!(
                 !result.content.contains("LINE_1200"),
                 "middle of a large log must not fill the window"

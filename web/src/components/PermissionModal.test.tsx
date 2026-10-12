@@ -251,14 +251,16 @@ describe("PermissionCard — ask_user", () => {
       ).disabled,
     ).toBe(false);
 
-    // Choices stack one per row — full width, label to the left.
-    expect(screen.getByTestId("ask-user-options-one").className).toContain(
-      "flex-col",
-    );
+    // Choices are role=button controls in the options list (one control per
+    // choice). Layout full-width/stack is theme/btn concern — do not lock
+    // Tailwind flex-col / w-full (WP-045 P7).
+    const optionsList = screen.getByTestId("ask-user-options-one");
     const optionA = screen.getByRole("button", { name: "A" });
-    expect(optionA.className).toContain("w-full");
-    // Options use btn-sm + w-full (AskUserCard); left-align comes from btn styles,
-    // not an explicit justify-start utility (ISSUE-008).
+    expect(optionsList.contains(optionA)).toBe(true);
+    expect(Array.from(optionsList.children)).toContain(optionA);
+    expect((optionA as HTMLButtonElement).disabled).toBe(false);
+    // ISSUE-008: left-align comes from shared btn styles, not justify-start.
+    expect(optionA.className).not.toContain("justify-start");
 
     // The card's own controls carry no fill of their own: the hairline marks them
     // and hover only washes them — the card's glass stays the only surface.

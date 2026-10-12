@@ -33,9 +33,8 @@ describe("slim packaging hygiene", () => {
     );
   });
 
-  it("package_win.ps1 defaults to slim and throws if models/linux leak into the unpacked installer", () => {
+  it("package_win.ps1 throws if models/linux leak into the unpacked installer", () => {
     const src = fs.readFileSync(path.join(repoRoot, "scripts", "package_win.ps1"), "utf8");
-    assert.match(src, /Default = slim/);
     assert.match(src, /\[switch\]\$Full/);
     assert.match(src, /sidecar\\models/);
     assert.match(src, /throw "slim installer unexpectedly contains resources\\\$leak"/);
@@ -44,11 +43,13 @@ describe("slim packaging hygiene", () => {
     assert.match(src, /\$item\.filter = @\("\*\*\/\*"\)/);
   });
 
-  it("assemble_product.ps1 only copies models when -WithModel is set", () => {
+  it("assemble_product.ps1 gates model copy on -WithModel", () => {
     const src = fs.readFileSync(path.join(repoRoot, "scripts", "assemble_product.ps1"), "utf8");
-    assert.match(src, /Default is slim/);
+    // Structural: IncludeModel derives from -WithModel; models Copy-Item only inside that gate.
     assert.match(src, /\$IncludeModel = \[bool\]\$WithModel/);
-    assert.match(src, /slim product: embed model not bundled/);
-    assert.match(src, /if \(\$IncludeModel -and \(Test-Path \(Join-Path \$Root "models"\)\)\)/);
+    assert.match(
+      src,
+      /if \(\$IncludeModel -and \(Test-Path \(Join-Path \$Root "models"\)\)\)[\s\S]*?Copy-Item -Recurse -Force \(Join-Path \$Root "models\\\*"\)/,
+    );
   });
 });

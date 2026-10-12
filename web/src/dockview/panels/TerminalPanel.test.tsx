@@ -126,17 +126,16 @@ describe("TerminalPanel sidebar", () => {
 
     const active = screen.getByText("bash").parentElement as HTMLElement;
     const idle = screen.getByText("npm test").parentElement as HTMLElement;
-    // No standing background: the hover state is the only fill, and it is the
-    // shared file-tree token.
+    // Both rows present; active is not dimmed/raised (brightness is theme).
+    expect(active).toBeTruthy();
+    expect(idle).toBeTruthy();
+    expect(active.className).not.toContain("opacity-");
+    expect(active.className).not.toContain("surface-raised");
+    // No standing fill — hover wash only (one structural class pin).
     const backgrounds = active.className
       .split(/\s+/)
       .filter((name) => name.includes("bg-("));
     expect(backgrounds).toEqual(["hover:bg-(--_dk-ix-bg-hover)"]);
-    // The active terminal is told apart by a brighter icon + label instead.
-    expect(active.className).toContain("text-(--_dk-text-primary)");
-    expect(idle.className).toContain("text-(--_dk-text-secondary)");
-    expect(active.className).not.toContain("opacity-");
-    expect(active.className).not.toContain("surface-raised");
   });
 
   it("draws a visible hairline through the drag strip", () => {

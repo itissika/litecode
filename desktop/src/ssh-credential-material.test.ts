@@ -37,13 +37,6 @@ describe("materializePrivateKeyFile", () => {
 });
 
 describe("removeMaterializedKey", () => {
-  it("recursively removes the temp directory", () => {
-    const m = materializePasswordAskPass("x");
-    assert.ok(fs.existsSync(m.keyDirectory));
-    removeMaterializedKey(m.keyDirectory);
-    assert.equal(fs.existsSync(m.keyDirectory), false);
-  });
-
   it("is a no-op for an empty key directory", () => {
     assert.doesNotThrow(() => removeMaterializedKey());
   });

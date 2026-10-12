@@ -13,7 +13,7 @@
   ],
   "title": "热切换死亡清单子串误伤排除重载 / open_with_default_app",
   "promise": "tests/workspace_hotswitch_death_list.rs 禁止工作区根热切换符号重现；不得误杀合法 API",
-  "actual": "FORBIDDEN 子串匹配在 c6b24df 命中 8 个文件：reload_workspace×6（config/gate、code_search_ipc/server、runtime、workspace/filter/mod、workspace_excludes、watcher）、post_open×1（workspace/routes.rs）、api/workspace/open×1（web/src/api/workspace.ts），均非工作区根热切换。测试失败。",
+  "actual": "已落地（WP-051）：FORBIDDEN 改为仅保留已删除热切换符号，并做标识符边界匹配；去掉泛化子串 reload_workspace / post_open / api/workspace/open（open 由 workspace_open_http_endpoint_is_gone 守）。复跑 timeout 600 cargo test --test workspace_hotswitch_death_list → 2 passed（含边界单测）。",
   "evidence": [
     {
       "path": "tests/workspace_hotswitch_death_list.rs",
@@ -90,12 +90,18 @@
       "lines": "152",
       "commit": "c6b24df",
       "note": "WP-028 实测命中: openWithDefaultApp → /api/workspace/open"
+    },
+    {
+      "path": "tests/workspace_hotswitch_death_list.rs",
+      "test": "fn death_list_forbidden_hot_switch_symbols",
+      "commit": "0c75d0a",
+      "note": "WP-051 工作区未提交改动：禁名单收窄后绿（不 commit）"
     }
   ],
   "repro": "CARGO_MANIFEST_DIR=$PWD HOME=/workspace/litecode/.tmp/home timeout 120 target/debug/deps/workspace_hotswitch_death_list-<hash> </dev/null  （或 PATH=/home/box/.cargo/bin:$PATH HOME=… timeout 600 cargo test --test workspace_hotswitch_death_list </dev/null）",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -117,6 +123,11 @@
       "ts": "2026-10-12T16:10:00+08:00",
       "by": "ide",
       "change": "建议（后端中层裁定）：按已删除的符号来禁，不删清单。FORBIDDEN 里的 reload_workspace / post_open / api/workspace/open 是泛化子串，应换成当初热切换移除时删掉的具体符号全名（handler 名、路由常量、协议帧名），其余条目（commit_workspace_lock、WorkspaceOpenEvent、workspace_root_changed 等）本已是删除符号，保留。HEAD c6b24df 上 git log -S 未找到名为 fn reload_workspace 的已删定义，具体符号名由修复包从热切换移除提交中确认；/api/workspace/open 已有行为测试 workspace_open_http_endpoint_is_gone 兜底。"
+    },
+    {
+      "ts": "2026-10-12T20:25:00+08:00",
+      "by": "ide",
+      "change": "WP-051 裁剪 C1/C2 落地：tests/workspace_hotswitch_death_list.rs 按已删除符号禁 + 标识符边界；移除 reload_workspace/post_open/api/workspace/open；复跑 2/0/0 绿；status→closed"
     }
   ]
 }

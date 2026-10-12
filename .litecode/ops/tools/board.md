@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T12:02:38.559Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-12T12:28:32.739Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -57,6 +57,16 @@
 | WP-038 | 　└ WP-036/Tools：统一 custom+MCP 进程生命周期 | done | tools | backend_mid |
 | WP-039 | 　└ WP-036/上下文：压缩以 Session DB 为唯一真相 | done | context | backend_mid |
 | WP-040 | 　└ WP-036/IDE：workspace 并发覆盖 + 跨盘移动 | done | ide | backend_mid |
+| WP-042 | 测试：先覆盖后裁剪（核心流程 → 合理量级） | done | gm | andy |
+| WP-043 | └ 后端测试：核心流程覆盖核对 + 裁剪裁决 | done | backend_mid | gm |
+| WP-047 | 　└ WP-043/Session：核心覆盖核对 + 测试裁剪提案 | done | session | backend_mid |
+| WP-048 | 　└ WP-043/Runtime：核心覆盖核对 + 测试裁剪提案 | done | runtime | backend_mid |
+| WP-049 | 　└ WP-043/上下文：核心覆盖核对 + 测试裁剪提案 | done | context | backend_mid |
+| WP-050 | 　└ WP-043/Tools：核心覆盖核对 + 测试裁剪提案 | done | tools | backend_mid |
+| WP-051 | 　└ WP-043/IDE：核心覆盖核对 + 测试裁剪提案 | done | ide | backend_mid |
+| WP-044 | └ 前端测试：核心流程覆盖核对 + 裁剪裁决 | done | frontend_mid | gm |
+| WP-045 | 　└ WP-044 web：核心覆盖核对 + 测试裁剪提案 | done | frontend | frontend_mid |
+| WP-046 | 　└ WP-044 desktop：核心覆盖核对 + 测试裁剪提案 | done | frontend_desktop | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

@@ -160,105 +160,90 @@ async fn older_session_stays_listed_when_newer_is_poked() {
     );
 }
 
-// ── working_set error is treated as empty ─────────────────────────────────
+// ── working_set / fold: durable item rows stay listed (T3 table-driven) ────
 
 #[tokio::test(flavor = "multi_thread")]
-async fn seq_hole_still_listed_when_transcript_rows_exist() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("u0"), user_text("u1")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET seq = 3 WHERE session_id = ?1 AND seq = 1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "seq hole").await;
-}
+async fn malformed_transcript_rows_still_listed_after_reopen() {
+    // Six former near-duplicate tests → one table. Extreme samples in-table (≤2):
+    // seq hole, unknown kind.
+    #[derive(Clone, Copy)]
+    enum Poke {
+        SeqHole,
+        UnknownKind,
+        SurfaceOpNotJson,
+        SeqStartsAtOne,
+        EmptySurfaceOp,
+        LegacyDetailKind,
+    }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn unknown_kind_on_one_row_still_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("keep me"), user_text("broken kind")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET kind = 'not-a-kind', event_type = 'item/user'
+    let cases: &[(&str, &[&str], Poke)] = &[
+        ("seq hole", &["u0", "u1"], Poke::SeqHole),
+        ("unknown kind", &["keep me", "broken kind"], Poke::UnknownKind),
+        ("surface_op=append (not json)", &["visible preview"], Poke::SurfaceOpNotJson),
+        ("seq starts at 1", &["shifted seq"], Poke::SeqStartsAtOne),
+        ("empty surface_op", &["no surface_op"], Poke::EmptySurfaceOp),
+        ("legacy detail kind", &["legacy kind conversation"], Poke::LegacyDetailKind),
+    ];
+
+    for (case, texts, poke) in cases {
+        let env = Env::new();
+        let items: Vec<_> = texts.iter().map(|t| user_text(*t)).collect();
+        let sid = {
+            let data = env.open();
+            let sid = persist(&data, &items);
+            data.shutdown();
+            sid
+        };
+        env.poke(|conn| match poke {
+            Poke::SeqHole => {
+                conn.execute(
+                    "UPDATE transcript_items SET seq = 3 WHERE session_id = ?1 AND seq = 1",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+            Poke::UnknownKind => {
+                conn.execute(
+                    "UPDATE transcript_items SET kind = 'not-a-kind', event_type = 'item/user'
              WHERE session_id = ?1 AND seq = 1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "unknown kind").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn surface_op_not_json_still_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("visible preview")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET surface_op = 'append' WHERE session_id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "surface_op=append (not json)").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn seq_starting_at_one_still_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("shifted seq")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET seq = seq + 1 WHERE session_id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "seq starts at 1").await;
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+            Poke::SurfaceOpNotJson => {
+                conn.execute(
+                    "UPDATE transcript_items SET surface_op = 'append' WHERE session_id = ?1",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+            Poke::SeqStartsAtOne => {
+                conn.execute(
+                    "UPDATE transcript_items SET seq = seq + 1 WHERE session_id = ?1",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+            Poke::EmptySurfaceOp => {
+                conn.execute(
+                    "UPDATE transcript_items SET surface_op = '' WHERE session_id = ?1",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+            Poke::LegacyDetailKind => {
+                conn.execute(
+                    "UPDATE transcript_items SET kind = 'detail', event_type = 'detail' WHERE session_id = ?1",
+                    rusqlite::params![sid],
+                )
+                .unwrap();
+            }
+        });
+        assert_listed_after_reopen(&env, &sid, case).await;
+    }
 }
 
 // ── fold succeeds but working_set is empty ────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_surface_op_still_listed_when_item_rows_exist() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("no surface_op")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET surface_op = '' WHERE session_id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "empty surface_op").await;
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn last_message_with_only_control_plane_rows_still_listed() {
@@ -286,25 +271,6 @@ async fn last_message_with_only_control_plane_rows_still_listed() {
         .unwrap();
     });
     assert_listed_after_reopen(&env, &sid, "control-plane + last_message").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn legacy_detail_kind_still_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("legacy kind conversation")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET kind = 'detail', event_type = 'detail' WHERE session_id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "legacy detail kind").await;
 }
 
 // ── blobs / GC on writer open (reinstall) ─────────────────────────────────

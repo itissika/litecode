@@ -486,14 +486,10 @@ fn oversized_and_binary_files_are_unreadable_everywhere() {
         "exactly 10 MiB is readable"
     );
 
+    // WP-050 T8: keep one mention-text sample; reason asserts above cover branches.
     let text = mention_text(ws, "[@ file=\"src/big.rs\" symbol=\"fn alpha\"]");
     assert!(
         text.contains("is not a readable text file (larger than 10 MiB)"),
-        "{text}"
-    );
-    let text = mention_text(ws, "[@ file=\"src/bin.rs\" lines=\"1\"]");
-    assert!(
-        text.contains("is not a readable text file (not UTF-8 text)"),
         "{text}"
     );
 }
@@ -517,11 +513,7 @@ fn directory_texts_match_the_status() {
         "directory"
     );
     assert_eq!(ref_status(&content, "sym:src\0fn a").0, "unreadable_file");
-    let text = mention_text(ws, "[@ file=\"src\" lines=\"1\"]");
-    assert!(
-        text.contains("\"src\" is not a readable text file (directory)."),
-        "{text}"
-    );
+    // WP-050 T8: directory reason already asserted; skip duplicate mention text.
     let hits = index::query_symbols(ws, &[("src".into(), Some("fn a".into()))]);
     assert_eq!(hits[0].status, "unreadable_file");
     assert!(hits[0].file_exists);
@@ -575,11 +567,7 @@ fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
         super::validate::INVALID_LINES_ON_SYMBOL
     );
     assert_eq!(alpha.args["lines"], "1");
-    assert!(
-        alpha.message.contains("do not take lines"),
-        "{}",
-        alpha.message
-    );
+    // WP-050 T8: reason covers this branch; skip duplicate message/mention text.
     let beta = refs
         .iter()
         .find(|r| r.ref_key == "sym:src/a.rs\0fn beta")
@@ -593,11 +581,6 @@ fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
     let (status, args) = ref_status(&content, "range:src/a.rs\0x");
     assert_eq!(status, "invalid_lines");
     assert_eq!(args["reason"], super::validate::INVALID_LINES_FORMAT);
-    let text = mention_text(ws, "[@ file=\"src/a.rs\" symbol=\"fn alpha\" lines=\"1\"]");
-    assert!(
-        text.contains("Symbol citations do not take lines"),
-        "{text}"
-    );
 }
 
 /// KR-LINK-1: links are followed inside the workspace and are an error when
