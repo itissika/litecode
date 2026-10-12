@@ -17,9 +17,11 @@ use litecode::context_pipeline::Context;
 use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextPipeline, ProviderPromptBaseline,
 };
+use litecode::session::event::spine_agent_item;
 use litecode::session::manager::SessionManager;
+use litecode::session::surface::project_working_pairs;
 use litecode::session::task_state::TaskReminders;
-use litecode::session::{WorkingRow, project_items};
+use litecode::session::{WorkingRow, fold_surface, project_items};
 use litecode::types::{
     FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text,
 };
@@ -194,6 +196,80 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
             .iter()
             .any(|e| matches!(e.event_type, litecode::session::EventType::Compacted)),
         "manual compact must persist a compacted event"
+    );
+}
+
+
+/// ISSUE-013 / g2 behavior: CompactPolicy::compact_now (pipeline path) must leave
+/// the reader working set identical to the fold projection — reload from fold
+/// after SessionMutation::Compact, not an in-memory summary+kept rebuild.
+#[tokio::test(flavor = "current_thread")]
+async fn pipeline_compact_reloads_working_set_from_fold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
+    let seed: Vec<Item> = (0..12)
+        .map(|i| user_text(format!("fold-seed-{i}")))
+        .collect();
+    sessions.insert_detail_rows(&sid, &seed).unwrap();
+
+    let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
+    let provider = ScriptedProvider::with_text("fold-reload summary");
+    let compacted = CompactPolicy::compact_now(
+        &budget,
+        &sessions,
+        &sid,
+        litecode::llm::CompactLlmCall {
+            provider: &provider,
+            api_key: "key",
+            model: "m",
+        },
+        "system",
+        1024,
+        &CancellationToken::new(),
+        None,
+    )
+    .await
+    .expect("compact_now");
+    assert!(compacted);
+
+    let reader: Vec<(u64, String)> = sessions
+        .data()
+        .working_set_blocking(&sid)
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.log_seq.expect("reader working row must have seq"),
+                item_text_preview(&row.item),
+            )
+        })
+        .collect();
+    let events = sessions.data().events_blocking(&sid).unwrap();
+    let surface = fold_surface(&events).unwrap();
+    let fold: Vec<(u64, String)> = project_working_pairs(&surface, |seq| {
+        events
+            .iter()
+            .find(|e| e.seq == seq)
+            .ok_or_else(|| {
+                litecode::types::LitecodeError::InvalidSessionEvent(format!(
+                    "surface seq {seq} missing"
+                ))
+            })
+            .and_then(spine_agent_item)
+    })
+    .unwrap()
+    .into_iter()
+    .map(|(seq, item)| (seq, item_text_preview(&item)))
+    .collect();
+
+    assert_eq!(
+        reader, fold,
+        "after pipeline compact, working_set_blocking must equal fold (not summary+kept rebuild)"
+    );
+    assert!(
+        reader[0].1.starts_with("[Conversation summary]")
+            && reader[0].1.contains("fold-reload summary"),
+        "checkpoint summary must lead the working set, got {reader:?}"
     );
 }
 

@@ -51,6 +51,7 @@ import { deleteSecret, getSecret, setSecret } from "./secure-store";
 import { RemoteTargets, type SavedRemoteTarget } from "./remote-targets";
 import {
   REMOTE_PROGRESS_CHANNEL,
+  ensureComponentForRemote as ensureComponentForRemoteCore,
   type RemoteProgressEvent,
 } from "./remote-progress";
 import { startSidecar, stopSidecar, type SidecarHandle } from "./sidecar";
@@ -442,18 +443,18 @@ async function ensureComponentForRemote(
   id: ComponentId,
   range: [number, number],
 ): Promise<EnsureResult> {
-  const [from, to] = range;
-  const listener = (event: ComponentProgressEvent) => {
-    if (event.id !== id || event.phase === "error") return;
-    const frac = event.total ? Math.min(1, (event.received ?? 0) / event.total) : 0;
-    emitRemoteProgress({ stage: "download", ratio: from + (to - from) * frac, message: event.message });
-  };
-  componentListeners.add(listener);
-  try {
-    return await componentManager().ensure(id);
-  } finally {
-    componentListeners.delete(listener);
-  }
+  return ensureComponentForRemoteCore({
+    id,
+    range,
+    ensure: (componentId) => componentManager().ensure(componentId as ComponentId),
+    subscribe: (listener) => {
+      componentListeners.add(listener);
+    },
+    unsubscribe: (listener) => {
+      componentListeners.delete(listener);
+    },
+    emit: emitRemoteProgress,
+  });
 }
 
 function linuxBundlePaths(): { tar: string; checksum: string } {

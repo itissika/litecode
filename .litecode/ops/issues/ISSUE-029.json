@@ -1,0 +1,47 @@
+{
+  "id": "ISSUE-029",
+  "grade": "false-green",
+  "layer": "test",
+  "domain": "client-ux",
+  "core": false,
+  "core_nodes": [],
+  "basis": [
+    "A7"
+  ],
+  "title": "删除或改写 debug-fold.test.tsx 恒真断言（假绿）",
+  "promise": "debug-fold 测试应断言 UI 行为（aria-expanded/children），不应恒真通过。",
+  "actual": "web/src/components/debug-fold.test.tsx 仅 expect(true).toBe(true)；日志显示 children 未挂载仍 pass。",
+  "evidence": [
+    {
+      "path": "web/src/components/debug-fold.test.tsx",
+      "commit": "670db5b"
+    },
+    {
+      "path": ".litecode/ops/artifacts/WP-012.md",
+      "note": "vitest 抽样",
+      "commit": "670db5b"
+    }
+  ],
+  "repro": "cd web && npx vitest run src/components/debug-fold.test.tsx",
+  "reporter": "demand_officer",
+  "owner": "frontend",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012 盘点新建"
+    },
+    {
+      "ts": "2026-10-12T03:52:12Z",
+      "by": "前端-web",
+      "change": "WP-015: deleted debug-fold.test.tsx (expect(true) probe); real coverage remains in FoldCard.test.tsx"
+    },
+    {
+      "ts": "2026-10-12T11:52:32+08:00",
+      "by": "demand_officer",
+      "change": "WP-015: 前端-web 删除恒真探针 debug-fold.test.tsx；FoldCard.test.tsx 15/15；closed"
+    }
+  ]
+}

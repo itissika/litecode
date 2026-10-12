@@ -1,0 +1,57 @@
+{
+  "id": "ISSUE-027",
+  "grade": "gap",
+  "layer": "test",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [
+    "context-compact",
+    "turn-lifecycle"
+  ],
+  "basis": [
+    "A2",
+    "A7"
+  ],
+  "title": "补测：compact 失败三口径（auto→Error / snapshot 还原 / manual 可重试）",
+  "promise": "auto compact 失败应 TurnOutcome::Error 且不 call_model；失败应还原 transcript snapshot；manual compact 失败后可再次取得 Compact lease。",
+  "actual": "COVERED: FakeAgentDeps.compact_fail injects CompactionFailed; agent loop asserts TurnOutcome::Error and model_calls==0. Empty-summary compact_now/compact_step restore snapshot / leave staged working set. Manual path: Compact lease + compact_now fail + drop(lease) → try_begin_operation(Compact) succeeds again; Failed lifecycle emitted.",
+  "evidence": [
+    {
+      "path": "src/agent/core.rs",
+      "note": "compact_if_needed Err → TurnOutcome::Error",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/context_pipeline/compact.rs",
+      "note": "失败应还原 snapshot",
+      "commit": "670db5b"
+    },
+    {
+      "path": ".litecode/ops/artifacts/WP-012.md",
+      "note": "Runtime+Context 域证据交叉",
+      "commit": "670db5b"
+    }
+  ],
+  "repro": "读 FakeAgentDeps compact_if_needed；搜 tests/ 无 CompactionFailed / snapshot restore 失败路径行为测。",
+  "reporter": "demand_officer",
+  "owner": "runtime",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012 盘点新建"
+    },
+    {
+      "ts": "2026-10-12T12:00:00+08:00",
+      "by": "runtime",
+      "change": "WP-014: three green behavior tests — agent_loop::auto_compact_fail_stops_turn_without_model_call; compact_failure_calibers::compact_failure_restores_transcript_snapshot (+ auto_compact_failure_restores_pipeline_working_set); compact_failure_calibers::manual_compact_failure_releases_lease_for_retry (lease→compact_now→Failed→drop mirrors start_manual_compact)"
+    },
+    {
+      "ts": "2026-10-12T12:00:36+08:00",
+      "by": "demand_officer",
+      "change": "WP-015 登记：WP-014 review 中；指针确认"
+    }
+  ]
+}

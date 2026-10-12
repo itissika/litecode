@@ -5,14 +5,44 @@
 
 ## 当前版本
 
-- `tools_version`: **7**
+- `tools_version`: **11**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
+
+<!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
+## WP 状态
+
+> 自动生成于 2026-10-12T04:04:10.245Z，来源 `.litecode/ops/board.json`
+
+| id | 标题 | status | owner | reviewer |
+|---|---|---|---|---|
+| WP-001 | 冻结团队框架 v0：域+面板+工具门禁+冷启动稿 | done | gm | andy |
+| WP-002 | （断点后）装填 Runtime/上下文/IDE/需求官/工具集管家 | done | gm | andy |
+| WP-003 | 管理团队冷启动对齐（事件+tick+职责移交） | done | gm | andy |
+| WP-004 | 修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标 | in_progress | ide | gm |
+| WP-005 | 修 ISSUE-008：PermissionModal 过期 justify-start 断言 | done | frontend | gm |
+| WP-006 | 修 ISSUE-005：repair_agent_models_on_boot 越界 rusqlite | done | runtime | gm |
+| WP-007 | 修 ISSUE-018：CompactionFailed 文案与实现一致 | done | runtime | gm |
+| WP-008 | 可选加固 ISSUE-017：commit_mixed 半写入 | done | runtime | gm |
+| WP-009 | 可选加固 ISSUE-021：webfetch DNS 重绑定窗口 | done | tools | gm |
+| WP-010 | 前端团队扩编论证：按准入规矩钉节点清单并反推 bot 数量 | done | frontend | andy |
+| WP-011 | 深挖 code/session search 易用性失败线；LSP 仅易用性探索（下载/拉起/保活） | done | ide | andy |
+| WP-012 | 主链测试体系打稳：裁剪冗余/过时、补关键链路、排查假绿 | done | demand_officer | andy |
+| WP-013 | 知识易用性工具增强：引用导航/被引/脚手架（非仅 kb_check） | done | tools_steward | gm |
+| WP-014 | 补测：compact 失败三口径（auto 停 turn / 失败还原 / manual 可重试） | done | runtime | gm |
+| WP-015 | 主链测试打稳跟进包（g2 门改写、debug-fold、瘦包门、Tools WS/websearch） | done | demand_officer | gm |
+| WP-016 | 冻结：检索引擎产品行为（起即可搜 / 刷不挡搜 / 空结果才谈库旧） | blocked | gm | andy |
+<!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-12 | v12：新增 ops.kb_nav（按 key 查出边/入边、缺边/无父节点/孤儿）与 ops.kb_scaffold（新节点声明块+domain/上层|父节点/基线脚手架；--write 不覆盖）；selftest 固定夹具+live smoke（工具集管家）|
+| 2026-10-12 | v11：新增 ops.wp_watch 常驻 watcher——每 5 分钟复用 tick 超时判定，新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（Bearer + HMAC，2xx 才算送达，跨重启不重发，失败退避重试；env 未配只记日志）；supervisor 崩溃自动拉起、心跳/日志/状态落 `.litecode/ops/.tmp`（已 gitignore）；tick 每轮查心跳，超 15 分钟 emit team_ops.watcher_down（工具集管家）|
+| 2026-10-12 | v10：kb_check 不再把 Andy（itissika）提交设定的新节点 enabled 报 new_not_pending，改为 warning new_status_by_andy；未提交或非 Andy 的状态改动仍为 error（工具集管家）|
+| 2026-10-12 | v9：基于 WP 状态的超时事件——wp_gate 记 status_entered_at；tick 在 HKT 工作日 9:45–17:45 对 in_progress/review 连续>1h 未封到 done/blocked 的 WP emit team_ops.wp_timeout（可含 reviewer=andy）；无超时则安静（工具集管家）|
+| 2026-10-12 | v8：board.md 新增自动生成的「WP 状态」表（id/标题/status/owner/reviewer），wp_gate 写入状态后与 tick 每轮都会刷新（工具集管家）|
 | 2026-10-11 | v7：新增 ops.kb_check（知识库校验，复刻 litecode 解析，cases.json 87/87）；validate_all 接入 kb_check（有 error 即失败）；wp_gate 对知识类 WP 推到 review/done 前要求涉及节点无 error（工具集管家）|
 | 2026-10-11 | v6：wp_gate 通过后写回 board.json 状态 + 自动 append status_change log + 重跑 validate（失败回滚）；--dry-run 保留只检查（工具集管家）|
 | 2026-10-11 | v5：工具一览补 emit/ack；ops.board 版本对齐；emit/ack 补 stdout_header（工具集管家）|
@@ -26,9 +56,11 @@
 1. 调用前感知版本：读输出首行或跑 `tools_version.mjs`
 2. 推进 WP：`wp_gate.mjs --id WP-xxx --to <status>`（通过即写回 board.json 并记 log；只检查加 `--dry-run`）；done 需产物 + tool_traces
 3. 审计：`append_log.mjs --kind --source --summary [--wp]`
-4. 每轮：`tick.mjs`
-5. 热更：改完 `tools_version++`，并在本表追加一行；破坏性变更用新 tool id
-6. 知识库自查（v7）：改/建知识节点后跑 `kb_check.mjs`（只看一个节点加 `--node <key>`），error 必须清零；`validate_all` 会同样拦截。详见下方「ops.kb_check 用法」
+4. 每轮：`tick.mjs`（刷新「WP 状态」表；v9 起工作时段扫描 WP 超时并发 team_ops.wp_timeout，GM 例行只消费未 ack 超时事件；`--force-timeout-scan` 可绕过工作时段做联调）
+5. WP 超时回调（v11）：`wp_watch.mjs start` 起常驻 watcher（崩溃自动拉起），`status` 看心跳，`stop` 停；tick 发现心跳过期会发 `team_ops.watcher_down`，收到后先 `start` 再 ack。详见下方「ops.wp_watch 用法」
+6. 热更：改完 `tools_version++`，并在本表追加一行；破坏性变更用新 tool id
+7. 知识导航 / 脚手架（v12）：摸引用链用 `kb_nav.mjs --key <key>`，列孤儿加 `--orphans`；起草新节点用 `kb_scaffold.mjs --key --domain`（默认只打印，加 `--write` 才落盘且不覆盖）。详见下方用法
+8. 知识库自查（v7）：改/建知识节点后跑 `kb_check.mjs`（只看一个节点加 `--node <key>`），error 必须清零；`validate_all` 会同样拦截。详见下方「ops.kb_check 用法」
 
 ## 工具一览
 
@@ -38,11 +70,14 @@
 | ops.validate_board | `node .litecode/ops/tools/validate_all.mjs [--wp WP-xxx]` |
 | ops.append_log | `node .litecode/ops/tools/append_log.mjs --kind --source --summary [--evidence] [--wp]` |
 | ops.wp_gate | `node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>] [--kb-nodes k1,k2]` |
-| ops.tick | `node .litecode/ops/tools/tick.mjs [--wp WP-xxx]` |
+| ops.tick | `node .litecode/ops/tools/tick.mjs [--wp WP-xxx] [--force-timeout-scan] [--watcher-stale-min N] [--no-watcher-check]` |
 | ops.board | Read `.litecode/ops/tools/board.md` |
 | ops.emit_event | `node .litecode/ops/tools/emit_event.mjs --type --source --summary [--wp]` |
 | ops.ack_event | `node .litecode/ops/tools/ack_event.mjs --id E-... --by <agent_id> [--wp]` |
 | ops.kb_check | `node .litecode/ops/tools/kb_check.mjs [--node <key>] [--json] [--wp WP-xxx] [--stock-ref <rev>] [--selftest]` |
+| ops.kb_nav | `node .litecode/ops/tools/kb_nav.mjs --key <key> [--json] [--wp WP-xxx]` · `--orphans` · `--selftest` |
+| ops.kb_scaffold | `node .litecode/ops/tools/kb_scaffold.mjs --key <key> --domain <id> [--parent <key>] [--dir knowledge/...] [--write] [--json] [--wp WP-xxx]` |
+| ops.wp_watch | `node .litecode/ops/tools/wp_watch.mjs start\|stop\|status\|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]` |
 
 ## ops.kb_check 用法（v7）
 
@@ -78,17 +113,105 @@
 | `parent_missing` / `parent_multiple` | 新 error · 存量 warning | `上层：` / `父节点：` 二选一且恰好引用一个节点 |
 | `baseline_missing` | 新 error · 存量 warning | 正文缺 `基线：<短哈希>` |
 | `tag_unknown` | 新 error · 存量 warning | 「标签：[@ …]」不在五个里：上层 / 父节点 / 契约展开·框架展开·向下展开 / 相关 / 依据（模板 §7.1 的 `证据：` 视同 依据） |
-| `new_not_pending` | error | 新节点必须 `status : pending` |
+| `new_not_pending` | error | 新节点必须 `status : pending`（除非该状态由 Andy 提交设定） |
+| `new_status_by_andy` | warning | 新节点非 pending，但 `status :` 行最近一次改动是 Andy（itissika）提交且工作区未改动——状态归 Andy，只提示 |
 | `dup_primary_suspect` | warning | 两个节点引用同一符号/行范围作证据，或 summary 完全相同 → 疑似主节点重复 |
 | `ref_in_declaration` | warning | 声明块里的 `[@ …]` 不是引用 |
 | `not_a_node` | warning | 知识根下的 `.md` 没有声明块，不是节点 |
 
 接入：`validate_all` 每次都跑全库，error > 0 即失败；`wp_gate --to review|done` 对知识类 WP（domain=knowledge，或 WP 文本里写了 `knowledge/…md` / `[@ key="…"]` / `node:<key>`，或有节点 `domain :` 等于该 WP 的域，或传 `--kb-nodes`）要求涉及节点无 error，`--dry-run` 同样检查。基线结果：`.litecode/ops/artifacts/kb_check-baseline.md`。
 
+## ops.wp_watch 用法（v11）
+
+常驻 watcher，把 WP 超时从「GM 主动扫」改成「回调触发」。纯 Node，无依赖，不依赖 systemd。
+
+| 命令（在仓库根 `/workspace/litecode` 下） | 作用 |
+|---|---|
+| `node .litecode/ops/tools/wp_watch.mjs start` | 后台起 supervisor（detached），由它拉起 worker；已在跑则直接返回状态，不会双开（pidfile + `/proc` 存活校验） |
+| `node .litecode/ops/tools/wp_watch.mjs status` | JSON：是否在跑、supervisor/worker pid、心跳时间与年龄、最近一轮、last_error、已送达/重试中数量 |
+| `node .litecode/ops/tools/wp_watch.mjs stop` | SIGTERM supervisor → 它先停 worker 再删 pidfile |
+| `node .litecode/ops/tools/wp_watch.mjs once [--force-timeout-scan]` | 前台只跑一轮（排障/联调） |
+| `supervise` / `run` | 内部用：supervisor / worker 本体 |
+
+参数：`--interval-sec`（默认 300）、`--heartbeat-sec`（默认 60）、`--force-timeout-scan`（忽略工作时段，仅联调）、`--wp`（写 tool_traces）。`start` 的参数会透传给 worker。
+
+**每轮**：调 `scanAndEmitWpTimeouts`（与 tick 同一判定：HKT 工作日 9:45–17:45，in_progress/review 连续 >1h；事件 source=`ops.wp_watch`）→ 对 inbox 里**未 ack 且未送达**的 `team_ops.wp_timeout` 各 POST 一次。没有就什么都不发。
+
+**环境变量**（只从进程环境读，绝不写进仓库 / git config）：`LITECODE_WP_WEBHOOK_URL`、`LITECODE_WP_WEBHOOK_KEY`。未配：每轮有待送事件时记一行 `delivery skipped`，继续运行，事件不标记已送达（配好后重启 watcher 即补发）。配置/改动 env 后需 `stop` 再 `start`（在带 env 的 shell 里）。
+
+**回调**：`POST <URL>`，`content-type: application/json`，body：
+
+```json
+{"event_id":"E-…","wp_id":"WP-001","status":"review","age_minutes":73,"owner":"gm","reviewer":"andy","status_entered_at":"…Z","summary":"…","ts":"…Z"}
+```
+
+请求头：`Authorization: Bearer <KEY>`；`X-LiteCode-Event-Id: <event_id>`（幂等键）；`X-LiteCode-Timestamp: <unix 秒>`；`X-LiteCode-Signature: sha256=<hex(HMAC-SHA256(KEY, "<timestamp>.<raw body>"))>`。接收端校验任一即可，建议校验签名并拒绝时间戳偏差 >5 分钟的请求。超时 10 秒。
+
+**送达语义**：只有 2xx 才写入状态文件 `delivered`；非 2xx / 网络错误记 `retry`，按 interval×2^(n-1) 退避（上限 1 小时）在后续轮次重试并记日志；事件被 ack 后不再重试。状态文件跨重启保留 → 同一事件永不重发。
+
+**文件**（均在 `.litecode/ops/.tmp/`，目录内 `.gitignore` = `*`）：
+
+| 文件 | 内容 |
+|---|---|
+| `wp_watch.heartbeat.json` | `{pid, supervisor_pid, ts, last_cycle_at, last_error, cycles, interval_sec, tools_version}`；每轮及每 60 秒刷新 |
+| `wp_watch.log` | 追加日志，>1 MiB 轮转为 `wp_watch.log.1` |
+| `wp_watch.state.json` | `{delivered:{event_id:{at,http_status,wp,attempts}}, retry:{event_id:{attempts,last_error,next_at}}}` |
+| `wp_watch.pid` | supervisor pid（防双开） |
+
+**稳定性**：worker 捕获 `unhandledRejection` / `uncaughtException` → 记日志、写 last_error、非零退出；supervisor 自动重启（1s 起指数退避，上限 60s，稳定运行 >60s 后复位）。**tick** 每轮查心跳：缺失或超过 15 分钟（`--watcher-stale-min` 可调）→ emit 一条 `team_ops.watcher_down`（同一次掉线、未 ack 期间不重发），tick JSON 里的 `watcher` 字段给出心跳年龄。机器重启后 watcher 不会自己回来，靠 tick 的 watcher_down 提醒后 `start`。
+
+
+## ops.kb_nav 用法（v12）
+
+按 key 摸完整引用链（出边 / 入边），并提示缺边、无父节点、孤儿。复用 `kb_parse.mjs` 的 `computeOnce` / `extractCites`；父节点标签与 `kb_check` 准入一致（`上层` / `父节点`）。不改 litecode 本体。
+
+| 参数 | 作用 |
+|---|---|
+| `--key <key>` | 查该节点的 outbound（`[@ key]`）、inbound（谁引用它）、缺边（出边目标不存在）、父节点/基线/孤儿提示；顺带汇总 file/symbol 引用数量 |
+| `--orphans` | 列出全库无人引用的节点（入边为 0；自引用不算入边） |
+| `--json` | 版本头后输出结构化 JSON |
+| `--wp WP-xxx` | 写 tool_traces |
+| `--selftest` | 跑 `kb_nav.test.mjs`（临时夹具 + live smoke + scaffold） |
+
+退出码：0 成功；1 key 不存在 / 无知识根；2 参数错误。
+
+**提示字段**：`missing_targets`（出边悬空）、`parent.missing` / `parent.multiple`（无或多余上层/父节点；存量且无父节点带 `stock_root_hint`）、`orphan`（无入边）、`baseline`。
+
+示例：
+
+```
+node .litecode/ops/tools/kb_nav.mjs --key session-model
+node .litecode/ops/tools/kb_nav.mjs --orphans --json
+node .litecode/ops/tools/kb_nav.mjs --selftest
+```
+
+## ops.kb_scaffold 用法（v12）
+
+新知识节点脚手架。生成声明块（`node` / `status : pending` / `domain`）+ `上层：`（或 `--tag 父节点`）引用 + `基线：<短哈希>` + 关系标签注释。默认 dry-run 打印到 stdout；`--write` 仅在目标文件不存在时创建（已存在则拒绝，不覆盖）。
+
+| 参数 | 作用 |
+|---|---|
+| `--key <key>` | 节点键（须符合知识键规则） |
+| `--domain <id>` | board.json **产品域**（禁止 `team-ops`） |
+| `--parent <key>` | 父节点键；省略则留下 `<parent-key>` 占位 |
+| `--dir knowledge/...` | 目录或完整 `.md` 路径；默认 `knowledge/<key>.md` |
+| `--tag 上层\|父节点` | 父关系标签，默认 `上层` |
+| `--write` | 落盘（文件已存在 → 失败） |
+| `--json` / `--wp` / `--selftest` | 同其他工具；`--selftest` 走 `kb_nav.test.mjs --scaffold-only` |
+
+示例：
+
+```
+node .litecode/ops/tools/kb_scaffold.mjs --key my-node --domain harness-core --parent session --dir knowledge/contracts
+node .litecode/ops/tools/kb_scaffold.mjs --key my-node --domain harness-core --parent session --dir knowledge/contracts --write
+```
+
 ## 待发掘
 
 - kb_check：Go / C / C++ / Java / C# / JSX / TSX 的符号解析是近似实现（仓库目前没有此类符号引用；Rust/TS/JS/Python 已与 litecode 的 tree-sitter 结果逐文件核对一致）
 - kb_check：漂移（symbol_drift）用 git CLI 读 HEAD，litecode 用 git2；快照仓库判定（git_dir_is_snapshot）未复刻
+- wp_watch：机器重启后不会自启（无 systemd）；目前靠 tick 的 watcher_down 提醒 + 手动/GM `start`
+- wp_watch 与 tick 都会写 events/inbox.json，未加文件锁（写入很短，冲突概率低）
 - 使用中发现的其它缺项记在这里，由工具集管家热更
 
 ## 边界

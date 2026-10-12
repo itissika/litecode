@@ -1,0 +1,64 @@
+{
+  "id": "ISSUE-030",
+  "grade": "gap",
+  "layer": "test",
+  "domain": "tools-permission",
+  "core": true,
+  "core_nodes": [],
+  "basis": [
+    "A2",
+    "A4"
+  ],
+  "title": "Tools：AskUser/Approval WS round-trip + custom 真进程 + websearch/authorize 单测",
+  "promise": "AskUser/Approval 线协议有 WS round-trip；custom 异步真进程路径有覆盖；websearch/authorize 有单元门禁。",
+  "actual": "AskUser/Approval WS 契约测已补（questions[]→answers map + Approval free_text）；custom 异步真进程 begin_job→mailbox 已覆盖；websearch 单元门 + authorize 无效 JSON/缺 schema 门已补；ssrf_whatwg_* 已改名为 whatwg_triple_slash_parses_as_hostname_not_ssrf_gate 并不再冒充 SSRF 门。",
+  "evidence": [
+    {
+      "path": "tests/client_protocol_permission.rs",
+      "note": "ws_bridge_ask_user_questions_round_trip_with_answers_map / ws_bridge_approval_round_trip_with_free_text / ask_kind_wire_snake_case",
+      "commit": ""
+    },
+    {
+      "path": "src/tools/custom.rs",
+      "note": "background_real_process_begin_job_then_mailbox_notice",
+      "commit": ""
+    },
+    {
+      "path": "src/tools/websearch.rs",
+      "note": "4 unit gates (empty/missing query, not warmed, not configured)",
+      "commit": ""
+    },
+    {
+      "path": "tests/permission_pipeline.rs",
+      "note": "authorize_invalid_json_arguments_denied / authorize_schema_missing_content_denied",
+      "commit": ""
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "note": "demoted WHATWG triple-slash test (not SSRF gate)",
+      "commit": ""
+    }
+  ],
+  "repro": "对照 permission_pipeline 与 client_protocol_permission；搜 websearch 单测为空。",
+  "reporter": "demand_officer",
+  "owner": "tools",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012 盘点新建"
+    },
+    {
+      "ts": "2026-10-12T12:04:00+08:00",
+      "by": "tools",
+      "change": "WP-015：补 AskUser/Approval 契约、custom 真进程、websearch/authorize 单测；demote ssrf_whatwg；status→review"
+    },
+    {
+      "ts": "2026-10-12T12:17:28+08:00",
+      "by": "demand_officer",
+      "change": "WP-015: Tools 补齐 Ask/Approval WS、custom 真进程、websearch/authorize 门；whatwg 改名非 SSRF 门；测绿；closed（未 commit；Tools 标 review）"
+    }
+  ]
+}

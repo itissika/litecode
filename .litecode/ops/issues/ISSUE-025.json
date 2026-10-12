@@ -1,0 +1,54 @@
+{
+  "id": "ISSUE-025",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [
+    "engine-lifecycle"
+  ],
+  "basis": [
+    "A5"
+  ],
+  "title": "code_search 等待/失败文案只说 Try again shortly，不指引启用 Engines",
+  "promise": "失败表面应可行动。同仓 webfetch 在未 Warm 时明确：「Enable webfetch in Settings → Engines and wait until Warm」。",
+  "actual": "indexing_wait_message 全系列仅「still starting / refreshing / stale … Try again shortly」。当 desired=false 或引擎从未 reconcile 到 Warming 时，agent 无法从文案得知要去 Settings 打开 retrieval；与 webfetch 对比形成体验断裂。门禁测试只断言文案含 progress/Try again，不覆盖「启用指引」。",
+  "evidence": [
+    {
+      "path": "src/tools/code_search.rs",
+      "symbol": "fn indexing_wait_message",
+      "lines": "448-466",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "lines": "255-259",
+      "commit": "670db5b",
+      "note": "对照：明确 Enable … Settings → Engines"
+    },
+    {
+      "path": "src/tools/code_search.rs",
+      "test": "fn indexing_wait_message_mentions_progress",
+      "commit": "670db5b",
+      "note": "只测 progress 文案，不测启用指引"
+    },
+    {
+      "path": "src/tools/descriptions/code_search.md",
+      "lines": "1-1",
+      "commit": "670db5b",
+      "note": "描述要求 Warm，未写如何打开 desired"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib indexing_wait_message_mentions_progress -- --nocapture；对照读 src/tools/webfetch.rs L255-259 与 indexing_wait_message。",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T03:40:00+08:00",
+      "by": "ide",
+      "change": "WP-011: non-actionable wait copy vs webfetch"
+    }
+  ]
+}

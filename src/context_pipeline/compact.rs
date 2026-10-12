@@ -602,6 +602,44 @@ mod tests {
         }
     }
 
+    /// Counts unified-stream entry calls — proves compact LLM uses
+    /// `complete_with_stream_events` (ISSUE-013), not a bypass path.
+    struct CountingProvider {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingProvider {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl LlmProvider for CountingProvider {
+        fn endpoint(&self) -> &str {
+            "https://compact.invalid/v1"
+        }
+
+        fn box_clone(&self) -> Box<dyn LlmProvider> {
+            Box::new(CountingProvider::new())
+        }
+
+        fn complete_with_stream_events<'a>(
+            &'a self,
+            _request: &'a ModelRequest,
+            _api_key: &'a str,
+            _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+            _cancel: &'a CancellationToken,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(
+                async move { Ok::<_, LitecodeError>(vec![assistant_text("## summary\nkept")]) },
+            )
+        }
+    }
+
     fn compact_llm(provider: &dyn LlmProvider) -> CompactLlmCall<'_> {
         CompactLlmCall {
             provider,
@@ -668,8 +706,9 @@ mod tests {
     #[tokio::test]
     async fn compact_request_returns_summary_on_provider_success() {
         let cancel = CancellationToken::new();
+        let provider = CountingProvider::new();
         let summary = CompactPolicy::call_llm_compact_with_timeout(
-            compact_llm(&TextProvider),
+            compact_llm(&provider),
             "system",
             "prompt",
             128,
@@ -680,6 +719,11 @@ mod tests {
         .await
         .expect("provider answered");
         assert_eq!(summary, "## summary\nkept");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "compact LLM must call complete_with_stream_events exactly once"
+        );
     }
 
     #[test]

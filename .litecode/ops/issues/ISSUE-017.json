@@ -36,7 +36,7 @@
   "repro": "缺注入：在 store::replace_all 失败时观察工作区自定义工具/MCP 文件已删而 DB agents 绑定未剥。非日常写崩；建议加固：DB 成功后再落盘，或失败回滚文件，或 temp+rename。",
   "reporter": "runtime",
   "owner": "runtime",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -48,6 +48,11 @@
       "ts": "2026-10-12T00:40:00+08:00",
       "by": "runtime",
       "change": "renumbered from ISSUE-013 to avoid cross-agent collision"
+    },
+    {
+      "ts": "2026-10-12T11:38:54+08:00",
+      "by": "runtime",
+      "change": "WP-008 decision A: commit_mixed snapshots workspace file before write; on mutate/validate/DB failure restores snapshot best-effort then returns Err; unit tests commit_mixed_restores_file_when_{db_step,validate}_fails"
     }
   ]
 }

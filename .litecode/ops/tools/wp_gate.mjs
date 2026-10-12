@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { loadRegistry, printVersionHeader, opsRoot, recordTrace } from "./_lib.mjs";
+import { loadRegistry, printVersionHeader, opsRoot, recordTrace, renderWpStatusTable, applyStatusEnteredAt } from "./_lib.mjs";
 import { kbCheck, summarize, findingsFor } from "./kb_check.mjs";
 const { reg } = loadRegistry(import.meta.url);
 printVersionHeader(reg, "ops.wp_gate");
@@ -80,6 +80,7 @@ if(from===to){
   process.exit(0);
 }
 wp.status=to;
+applyStatusEnteredAt(wp, to);
 fs.writeFileSync(boardPath, JSON.stringify(board,null,2)+(boardRaw.endsWith("\n")?"\n":""));
 const v=spawnSync(process.execPath,[path.join(ops,"validate.mjs")],{encoding:"utf8"});
 if(v.status!==0){
@@ -89,5 +90,6 @@ if(v.status!==0){
   process.exit(1);
 }
 fs.appendFileSync(path.join(ops,"log.jsonl"), JSON.stringify({ts:new Date().toISOString(),kind:"status_change",source,summary:`${id}: ${from} -> ${to} (ops.wp_gate)`,evidence:[".litecode/ops/board.json"]})+"\n");
+const wpTable=renderWpStatusTable(ops);
 recordTrace(ops, id, "ops.wp_gate", reg.tools_version);
-console.log(JSON.stringify({ ok:true, id, from, to, written:true, validated:true, tools_used, tools_version: reg.tools_version, ...(kbGate?{kb_gate:kbGate}:{}) }));
+console.log(JSON.stringify({ ok:true, id, from, to, written:true, board_md_wp_table:wpTable.rows, validated:true, tools_used, tools_version: reg.tools_version, ...(kbGate?{kb_gate:kbGate}:{}) }));

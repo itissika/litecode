@@ -29,7 +29,7 @@
   "repro": "cd web && npx vitest run src/components/PermissionModal.test.tsx -t option",
   "reporter": "前端",
   "owner": "前端",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -41,6 +41,16 @@
       "ts": "2026-10-12T00:00:00Z",
       "by": "前端",
       "change": "Batch3 formalize JSON; still open"
+    },
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012: 登记假红仍存在（PermissionModal justify-start）；归 WP-005，不进瘦包必过集"
+    },
+    {
+      "ts": "2026-10-12T03:35:58Z",
+      "by": "前端-web",
+      "change": "WP-005: removed obsolete justify-start assertion; keep w-full; vitest aligned with AskUserCard"
     }
   ]
 }

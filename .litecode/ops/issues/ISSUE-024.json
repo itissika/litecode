@@ -1,0 +1,60 @@
+{
+  "id": "ISSUE-024",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "engine-lifecycle",
+    "retrieval-contract"
+  ],
+  "basis": [
+    "A5"
+  ],
+  "title": "code_search 暖机同步等待 30s 与工具 timeout 30s 对齐，阻塞 turn 并易超时",
+  "promise": "engine-lifecycle：执行门在消费时给出等待或失败，不应把整段 agent turn 钉死在暖机上。tool.timeout 是管线硬上限。",
+  "actual": "CodeSearchTool::call_inner 在非 Warm 时 thread::sleep 轮询最多 CODE_SEARCH_WARM_WAIT=30s；同文件 timeout() 亦为 Some(30)。executor 用 tokio::time::timeout 包住工具未来。冷启动/建索引场景下：turn 被同步阻塞近满额，或与管线超时竞态；仍未 Ready 则返回 warning「Try again shortly」，迫使 agent 再开一轮。",
+  "evidence": [
+    {
+      "path": "src/tools/code_search.rs",
+      "lines": "25-26",
+      "commit": "670db5b",
+      "note": "CODE_SEARCH_WARM_WAIT=30s"
+    },
+    {
+      "path": "src/tools/code_search.rs",
+      "symbol": "fn call_inner",
+      "lines": "111-156",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/tools/code_search.rs",
+      "symbol": "fn timeout",
+      "lines": "194-196",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/tools/code_search.rs",
+      "test": "fn waits_up_to_thirty_seconds_then_searches_not_loading",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/tool/executor.rs",
+      "lines": "390-391",
+      "commit": "670db5b",
+      "note": "tokio::time::timeout(secs, tool_fut)"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib waits_up_to_thirty_seconds_then_searches_not_loading -- --nocapture（常量断言）。体验：desired=true 冷仓首次 code_search，观察 turn 阻塞至 warning/timeout。",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T03:40:00+08:00",
+      "by": "ide",
+      "change": "WP-011: warm-wait vs tool-timeout usability bug"
+    }
+  ]
+}

@@ -139,7 +139,7 @@ impl ConfigManager {
         let catalog = provider_catalog::shared_for_db(db_path)?;
         global_db::with_conn(db_path, |conn| {
             global_db::legacy::migrate_once(conn, &catalog)?;
-            repair_agent_models_on_boot(conn, &catalog)
+            global_db::repair_agent_models_on_boot(conn, &catalog)
         })?;
         let global = Self::load_global_from(db_path)?;
         Self::validate_structural(&global)?;
@@ -165,43 +165,6 @@ impl ConfigManager {
     }
 }
 
-/// Boot-time sibling of the per-commit repair in `SettingsWriter`.
-///
-/// A provider key removed while the app was closed, or a model this build no
-/// longer ships, leaves agents pointing at a model that cannot run. No settings
-/// write happens at startup to heal that. Writes only the repaired agent rows:
-/// the embedded catalog is the source of truth, a stored ref is derived state.
-fn repair_agent_models_on_boot(
-    conn: &rusqlite::Connection,
-    catalog: &ProviderCatalog,
-) -> Result<()> {
-    let mut settings = global_db::store::load(conn)?;
-    let repaired = super::bridge::repair_agent_models(&mut settings, catalog);
-    if repaired.is_empty() {
-        return Ok(());
-    }
-    tracing::info!(
-        agents = ?repaired,
-        "boot: auto-assigned a runnable model to agents whose model_ref could not run"
-    );
-    for id in repaired {
-        let Some(profile) = settings.agents.get(&id) else {
-            continue;
-        };
-        global_db::store::upsert_agent(
-            conn,
-            &id,
-            profile.role,
-            &profile.model_ref,
-            &profile.system_prompt,
-            profile.temperature,
-            profile.max_steps,
-            &profile.description,
-            &profile.allowed_subagents,
-        )?;
-    }
-    Ok(())
-}
 
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error", "off"];
 

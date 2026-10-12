@@ -1,0 +1,63 @@
+{
+  "id": "ISSUE-026",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "retrieval-contract",
+    "engine-lifecycle"
+  ],
+  "basis": [
+    "A2",
+    "A4"
+  ],
+  "title": "session_search 在 code_search 非 Warm 时静默掉语义腿，描述未声明降级与滞后",
+  "promise": "engine-lifecycle：session 语义门要求共享 worker Warm；retrieval-contract：滞后只许少召回。agent 工具面应让调用方知道何时只有词法腿、索引是否故意不刷新。",
+  "actual": "search_sessions：session_semantic_gate 非 Ready 则 semantic=空向量，融合后仅词法，无 warning。工具注释写明「不在查询前 refresh，接受 stale」。description（session_search.md）只讲字面匹配与硬排除 Surface，不提语义腿依赖 retrieval/code_search Warm，也不提可能漏召回刚写入的行。常关 retrieval（ISSUE-023）时，特色 session 检索长期处于静默降级。",
+  "evidence": [
+    {
+      "path": "src/engines/mod.rs",
+      "symbol": "fn search_sessions",
+      "lines": "386-434",
+      "commit": "670db5b",
+      "note": "gate 非 Ready → semantic Vec::new()，无错误表面"
+    },
+    {
+      "path": "src/tools/session_search.rs",
+      "lines": "52-60",
+      "commit": "670db5b",
+      "note": "stale index is the accepted price"
+    },
+    {
+      "path": "src/tools/descriptions/session_search.md",
+      "lines": "1-1",
+      "commit": "670db5b"
+    },
+    {
+      "path": "knowledge/contracts/engine-lifecycle.md",
+      "lines": "16-17",
+      "commit": "670db5b",
+      "note": "session 语义需 code_search Warm"
+    },
+    {
+      "path": "src/tools/session_search.rs",
+      "symbol": "fn timeout",
+      "lines": "145-147",
+      "commit": "670db5b",
+      "note": "亦 30s；与 code_search 同量级"
+    }
+  ],
+  "repro": "读码：WorkspaceEngines::search_sessions 在 is_warmed(\"code_search\") 为假时 semantic 为空仍 Ok。对照 description 无 Warm/降级字样。单元：engines 默认 new() 后 SessionSearchTool 仍返回词法结果（src/tools/session_search.rs 测试用 WorkspaceEngines::new()）。",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T03:40:00+08:00",
+      "by": "ide",
+      "change": "WP-011: silent lexical-only degrade for session_search"
+    }
+  ]
+}

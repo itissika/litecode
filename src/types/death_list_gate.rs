@@ -508,39 +508,109 @@ fn session_seq_g1_envelope_vocab_matches_mental_model() {
     assert_eq!(t, vec!["d0", "d1", "d2", "d3", "d4"]);
 }
 
+/// ISSUE-013 / g2: after Compact persist, working set reloads from fold — not an
+/// in-memory pi summary+kept reconstruction. Pipeline must not use `checkpoint_seq()`
+/// as the compact/commit cursor.
+///
+/// Behavior coverage (product invariant):
+/// - `tests/working_set_identity.rs::keep_recent_compact_reader_matches_fold_checkpoint_then_kept`
+/// - `tests/stage_a_ctx_consistency.rs::pipeline_compact_reloads_working_set_from_fold`
+///
+/// This gate keeps item-level + dialect rails so a silent regression cannot
+/// reintroduce the old cursor or the pi-view rebuild path.
 #[test]
 fn session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let compact =
+    let compact_src =
         fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
-    let persist = compact
+    let compact = production_lines(&compact_src);
+
+    // Item-level: compact_transcript persists via SessionMutation::Compact, then
+    // reloads the working set from fold (`working_set_blocking`) — not a hand-built
+    // summary+kept view.
+    let body = fn_item_body(&compact, "pub async fn compact_transcript");
+    let persist = body
         .find("SessionMutation::Compact")
-        .expect("compact persist must go through SessionMutation::Compact");
+        .expect("compact_transcript must persist via SessionMutation::Compact");
     assert!(
-        compact[persist..].contains("working_set_blocking"),
-        "after compact persist, working set must reload from fold"
+        body[persist..].contains("working_set_blocking"),
+        "after Compact persist, compact_transcript must reload via working_set_blocking (fold)"
     );
+
+    // Thin dialect ban across context_pipeline (same scan style as g4/g6).
+    let forbidden: &[(&str, &str)] = &[
+        (
+            "checkpoint_seq()",
+            "pipeline must not use checkpoint_seq() as compact/commit cursor",
+        ),
+        (
+            "Align in-memory working set with the pi view",
+            "must not reconstruct the pi summary+kept view after persist",
+        ),
+    ];
+    let mut files = Vec::new();
+    walk_rs_files(&root.join("src/context_pipeline"), &mut files);
+    files.sort();
+    let mut hits = Vec::new();
+    for path in &files {
+        let contents = fs::read_to_string(path).unwrap_or_default();
+        let mut in_tests = false;
+        for (i, line) in contents.lines().enumerate() {
+            if line.trim() == "#[cfg(test)]" {
+                in_tests = true;
+            }
+            if in_tests || is_comment_line(line) {
+                continue;
+            }
+            for (needle, why) in forbidden {
+                if line.contains(needle) {
+                    hits.push(format!(
+                        "{}:{}: `{needle}` ({why})",
+                        path.display(),
+                        i + 1
+                    ));
+                }
+            }
+        }
+    }
     assert!(
-        !compact.contains("Align in-memory working set with the pi view"),
-        "must not reconstruct the pi summary+kept view after persist"
-    );
-    let pipeline = fs::read_to_string(root.join("src/context_pipeline/mod.rs")).expect("mod.rs");
-    assert!(
-        !pipeline.contains("checkpoint_seq()"),
-        "pipeline must not use checkpoint_seq as the compact/commit cursor"
+        hits.is_empty(),
+        "g2 dialect residuals in context_pipeline:\n{}",
+        hits.join("\n")
     );
 }
 
+/// ISSUE-013: compact LLM calls must go through the unified stream provider entry
+/// (`complete_with_stream_events`). context_pipeline must not invent vendor thinking
+/// strings or call a raw `provider.complete(`.
+///
+/// Behavior coverage: `src/context_pipeline/compact.rs` unit tests
+/// (`compact_request_returns_summary_on_provider_success` and siblings) exercise
+/// `call_llm_compact_with_timeout` via `LlmProvider::complete_with_stream_events`
+/// stubs. This gate keeps an item-level symbol check on the production helper plus
+/// dialect bans (same style as other death-list forbidden-token scans).
 #[test]
 fn compact_llm_path_does_not_bypass_unified_provider() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let compact =
+    let compact_src =
         fs::read_to_string(root.join("src/context_pipeline/compact.rs")).expect("compact.rs");
+    let compact = production_lines(&compact_src);
+
+    // Item-level / symbol: the production compact LLM helper must reference the
+    // unified stream entry — not a whole-file "must contain" substring.
+    let body = fn_item_body(&compact, "fn call_llm_compact_with_timeout");
     assert!(
-        compact.contains("complete_with_stream_events"),
-        "compact must send through the unified stream provider entry"
+        body.contains("complete_with_stream_events"),
+        "call_llm_compact_with_timeout must send through complete_with_stream_events"
+    );
+    let stripped = body.replace("complete_with_stream_events", "");
+    assert!(
+        !stripped.contains("provider.complete("),
+        "call_llm_compact_with_timeout must not call provider.complete("
     );
 
+    // Dialect ban: context_pipeline must not invent vendor thinking strings or
+    // call complete() (keep/refine prior forbidden-token style).
     let mut pipeline_hits = Vec::new();
     let mut pipeline_files = Vec::new();
     walk_rs_files(&root.join("src/context_pipeline"), &mut pipeline_files);
@@ -553,9 +623,12 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let stripped = text.replace("complete_with_stream_events", "");
-        if text.contains("thinking_mode:")
-            || text.contains("reasoning_effort:")
+        // Skip cfg(test) modules so stub impls of complete_with_stream_events do
+        // not dilute the production dialect check.
+        let prod = production_lines(&text);
+        let stripped = prod.replace("complete_with_stream_events", "");
+        if prod.contains("thinking_mode:")
+            || prod.contains("reasoning_effort:")
             || stripped.contains("provider.complete(")
         {
             pipeline_hits.push(rel);
@@ -581,7 +654,8 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let stripped = text.replace("complete_with_stream_events", "");
+        let prod = production_lines(&text);
+        let stripped = prod.replace("complete_with_stream_events", "");
         if stripped.contains(".complete(&request")
             || stripped.contains("provider.complete(")
             || stripped.contains("LlmProvider::complete")
@@ -607,6 +681,7 @@ fn compact_llm_path_does_not_bypass_unified_provider() {
         "reasoning_effort belongs to the chat codec"
     );
 }
+
 
 /// Ticket 05: search/revert must not use SQL window pointers as authority.
 #[test]
@@ -671,6 +746,29 @@ fn session_seq_g6_derived_paths_use_surface_not_pointers() {
             );
         }
     }
+}
+
+/// Body of the first item whose signature contains `sig`, through the next
+/// sibling item at the same indent (g6-style). Pass `production_lines` input so
+/// cfg(test) stubs cannot satisfy a production-path gate.
+fn fn_item_body<'a>(source: &'a str, sig: &str) -> &'a str {
+    let start = source
+        .find(sig)
+        .unwrap_or_else(|| panic!("missing item `{sig}`"));
+    let body = &source[start..];
+    let end = [
+        "\n    pub async fn ",
+        "\n    pub(crate) async fn ",
+        "\n    pub fn ",
+        "\n    async fn ",
+        "\n    fn ",
+        "\nfn ",
+    ]
+    .into_iter()
+    .filter_map(|marker| body[1..].find(marker).map(|i| i + 1))
+    .min()
+    .unwrap_or(body.len());
+    &body[..end]
 }
 
 /// Source lines that ship, with `#[cfg(test)]` bodies removed.

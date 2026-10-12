@@ -36,7 +36,7 @@
   "repro": "Read error.rs CompactionFailed + compact.rs first_pass_compaction empty summary branch; rg CompactionCircuitOpen (definition only).",
   "reporter": "runtime",
   "owner": "runtime",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -48,6 +48,16 @@
       "ts": "2026-10-12T00:40:00+08:00",
       "by": "runtime",
       "change": "renumbered from ISSUE-014 to avoid cross-agent collision"
+    },
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012: 仍需修 Display/枚举与单次空 summary 路径对齐并加断言"
+    },
+    {
+      "ts": "2026-10-12T11:35:29+08:00",
+      "by": "runtime",
+      "change": "WP-007: CompactionFailed Display → 'compaction failed: empty summary'; removed unused ErrorCode::CompactionCircuitOpen (+ TS mirror); Display unit test added"
     }
   ]
 }

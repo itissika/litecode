@@ -368,6 +368,10 @@ impl WorkspaceService {
         overwrite: bool,
     ) -> Result<String, WorkspaceError> {
         let sandbox = self.sandbox();
+        // Refuse top-level symlinks before resolve: Sandbox::resolve follows via
+        // canonicalize, so copy_recursive would only see the target file/dir.
+        // Nested symlinks inside a directory copy remain refused in copy_recursive.
+        refuse_top_level_symlink_copy(sandbox.root(), from)?;
         let from_abs = sandbox.resolve(from)?;
         if !from_abs.exists() {
             return Err(WorkspaceError::NotFound(
@@ -427,6 +431,26 @@ impl WorkspaceService {
         let kind = if existed { "modified" } else { "created" };
         self.emit_changed(vec![rel.clone()], kind);
         Ok(rel)
+    }
+}
+
+/// Lexical (non-following) check: if `from` names a symlink under the workspace
+/// root, refuse before [`Sandbox::resolve`] canonicalizes through it.
+fn refuse_top_level_symlink_copy(
+    root: &std::path::Path,
+    from: &str,
+) -> Result<(), WorkspaceError> {
+    use super::agent_path::{PathCandidate, classify_agent_path};
+    let Ok(PathCandidate::Relative(rel)) = classify_agent_path(from) else {
+        // Absolute / traversal / empty: let resolve report the real error.
+        return Ok(());
+    };
+    let lexical = root.join(rel);
+    match std::fs::symlink_metadata(&lexical) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(WorkspaceError::InvalidMove(
+            "refusing to copy symbolic links".into(),
+        )),
+        _ => Ok(()),
     }
 }
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-11T15:46:51.000Z",
+  "updated_at": "2026-10-12T04:18:21.422Z",
   "domains": [
     {
       "id": "team-ops",
@@ -144,23 +144,24 @@
     },
     {
       "id": "frontend",
-      "name": "前端",
-      "place": "/workspace/litecode/{web,desktop}",
+      "name": "前端-web",
+      "place": "/workspace/litecode/web",
       "scope": [
         "Web UI",
-        "Electron 壳",
-        "暂兼发布脚本/组件下载"
+        "client-ux 知识节点",
+        "协议节点仅联查"
       ],
       "tools": [
-        "本机读写 web/desktop/scripts 相关",
+        "本机读写 web",
         "npm/vitest",
         "不 commit/push 除非确认"
       ],
       "accept_tests": [
-        "desktop/web 测试相关目标通过或标明已知失败",
+        "web 测试相关目标通过或标明已知失败",
         "UI 改动小而可逆"
       ],
       "reject_tests": [
+        "改 desktop/打包",
         "改 Rust 内核大块",
         "擅自改 enabled 知识节点"
       ],
@@ -281,6 +282,32 @@
         "去掉 done 门禁"
       ],
       "status": "active"
+    },
+    {
+      "id": "frontend_desktop",
+      "name": "前端-desktop",
+      "place": "/workspace/litecode/{desktop,scripts}",
+      "scope": [
+        "Electron 壳",
+        "瘦包/组件下载",
+        "release-desktop 知识节点",
+        "windows workflows"
+      ],
+      "tools": [
+        "本机读写 desktop/scripts/workflows",
+        "npm test",
+        "不 commit/push 除非确认"
+      ],
+      "accept_tests": [
+        "desktop 测试通过或标明已知失败",
+        "发布改动可逆"
+      ],
+      "reject_tests": [
+        "改 web/src 产品 UI",
+        "改 Rust 内核大块",
+        "擅自改 enabled 知识节点"
+      ],
+      "status": "active"
     }
   ],
   "work_packages": [
@@ -297,12 +324,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-001.md",
-      "progress": "BREAK: team-ops bots 已建；工具 v4 事件总线已立；待管理团队冷启动对齐产物齐套后交 Andy 审；仍禁产品 bot/群启动"
+      "progress": "已交 review：产物已更新；WP-003 done；tools_version=11；请 Andy 书面认可后 wp_gate 封 done",
+      "status_entered_at": null
     },
     {
       "id": "WP-002",
@@ -317,14 +345,15 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [
         "WP-001"
       ],
       "blocker": null,
       "handoff_path": ".litecode/ops/handoffs/WP-001-to-WP-002.md",
-      "artifact_path": null,
-      "progress": "启动信号已收：产品 bot 已建并私信下达 Batch 2；群保持静默"
+      "artifact_path": ".litecode/ops/artifacts/WP-002.md",
+      "progress": "装填完成，准备 done",
+      "status_entered_at": null
     },
     {
       "id": "WP-003",
@@ -339,12 +368,292 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-003.md",
-      "progress": "纠偏中：工具板挂 WP 状态 + v5 待发掘 + wp_gate to review"
+      "progress": "done（Andy 审过，2026-10-12 GM 经 wp_gate 关闭）",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-004",
+      "domain": "ide-substrate",
+      "title": "修 ISSUE-010：copy_path 顶层 symlink 跟随后复制目标",
+      "result": "unix 测试 refuses_to_copy_symlinks 绿；行为拒绝顶层 symlink 复制或明确不跟随",
+      "done_when": [
+        "复现失败→修复→测试绿",
+        "issue ISSUE-010 → closed",
+        "不越界断言仍成立"
+      ],
+      "owner": "ide",
+      "reviewer": "gm",
+      "status": "blocked",
+      "depends_on": [
+        "WP-011"
+      ],
+      "blocker": {
+        "kind": "product",
+        "note": "停等一批提交拉取后再派；symlink 修复未交"
+      },
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-004.md",
+      "progress": "停等提交批次（blocker=product，满足 validate）",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-005",
+      "domain": "client-ux",
+      "title": "修 ISSUE-008：PermissionModal 过期 justify-start 断言",
+      "result": "前端门禁测试与当前 Ask 卡样式一致",
+      "done_when": [
+        "测试改对齐或删过期断言",
+        "ISSUE-008 closed"
+      ],
+      "owner": "frontend",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [
+        "WP-010"
+      ],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-005.md",
+      "progress": "010 done；已派前端-web 修 ISSUE-008",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-006",
+      "domain": "model-config",
+      "title": "修 ISSUE-005：repair_agent_models_on_boot 越界 rusqlite",
+      "result": "启动修复只经 global_db 边界，SQL 死亡清单绿",
+      "done_when": [
+        "代码收回 global_db",
+        "相关死亡清单/测试绿",
+        "ISSUE-005 closed"
+      ],
+      "owner": "runtime",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-006.md",
+      "progress": "repair 已收回 global_db；ISSUE-005 closed；交 review",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-007",
+      "domain": "harness-core",
+      "title": "修 ISSUE-018：CompactionFailed 文案与实现一致",
+      "result": "错误文案不再谎称 3 attempts；死枚举处置明确",
+      "done_when": [
+        "文案/枚举对齐实现",
+        "ISSUE-018 closed"
+      ],
+      "owner": "runtime",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [
+        "WP-006"
+      ],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-007.md",
+      "progress": "已派 Runtime；ISSUE-018",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-008",
+      "domain": "model-config",
+      "title": "可选加固 ISSUE-017：commit_mixed 半写入",
+      "result": "DB 成功后再落盘或失败回滚文件，或文档确认维持边界",
+      "done_when": [
+        "选定加固或文档确认",
+        "ISSUE-017 closed/wontfix"
+      ],
+      "owner": "runtime",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [
+        "WP-007"
+      ],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-008.md",
+      "progress": "已派 Runtime；ISSUE-017",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-009",
+      "domain": "tools-permission",
+      "title": "可选加固 ISSUE-021：webfetch DNS 重绑定窗口",
+      "result": "缩小或消除校验与请求两次 DNS 窗口，或记为接受风险",
+      "done_when": [
+        "方案落地或 wontfix 有理由",
+        "ISSUE-021 closed/wontfix"
+      ],
+      "owner": "tools",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [
+        "WP-013"
+      ],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-009.md",
+      "progress": "已派 Tools；ISSUE-021",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-010",
+      "domain": "client-ux",
+      "title": "前端团队扩编论证：按准入规矩钉节点清单并反推 bot 数量",
+      "result": "一份带证据链的前端节点目录（适用 knowledge-node-admission）；按目录体量/边界反推需要几个前端 bot 及每人 place/scope；不改 enabled、不开工改代码",
+      "done_when": [
+        "对照 .litecode/ops/context/knowledge-node-admission.md 说明规矩是否适用前端（差异写清）",
+        "给出前端待钉/已钉节点清单（含缺块：transcript/composer/stores/settings 等）",
+        "每条节点用 A1–A7 之一说明为何够格；证据指向现有路径/符号",
+        "反推 bot 数量表：每人负责节点子集 + place 路径 + 不重叠边界",
+        "artifact WP-010.md 结论+证据齐；status→review 交 Andy"
+      ],
+      "owner": "frontend",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-010.md",
+      "progress": "已派前端；节点清单→反推 bot 数",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-011",
+      "domain": "ide-substrate",
+      "title": "深挖 code/session search 易用性失败线；LSP 仅易用性探索（下载/拉起/保活）",
+      "result": "code_search/session_search：对照常关、开销大、延迟高、结果不准，深挖易用性失败并落 issue。LSP：不按失败产品线定性；探索下载是否顺、拉起是否稳、保活能否持续可用，产出探索报告+可选 issue。",
+      "done_when": [
+        "code_search + session_search：主路径延迟/开销/结果质量证据 + 可复现体验问题",
+        "说明 Batch3「节点一致」为何未暴露搜索易用性失败",
+        "LSP：下载 → 拉起 → 保活/可用 三条探索结论（证据链），不预设失败",
+        "搜索线正式 ISSUE 优先；LSP 仅在有复现时落 issue",
+        "artifact WP-011.md 交 Andy review"
+      ],
+      "owner": "ide",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-011.md",
+      "progress": "已派 IDE；search 失败线 + LSP 易用探索",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-012",
+      "domain": "team-ops",
+      "title": "主链测试体系打稳：裁剪冗余/过时、补关键链路、排查假绿",
+      "result": "对已判相对稳的域（session/runtime/context/tools/knowledge/瘦包相关）产出测试盘点：缺口、过时、重复、假绿风险；提出裁剪与加固清单并落 issue；不扩大到 IDE 搜索翻车线（归 WP-011）",
+      "done_when": [
+        "按域列出关键链路 vs 现有测试映射",
+        "标出过时/冗余/假绿嫌疑并附证据",
+        "裁剪与补测建议可执行（含死亡清单辩证项）",
+        "正式 issue 落盘；artifact 结论+证据齐"
+      ],
+      "owner": "demand_officer",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-012.md",
+      "progress": "Andy：盘点认可方向；补测包待建；本 WP 待推荐方案后可 done",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-013",
+      "domain": "team-ops",
+      "title": "知识易用性工具增强：引用导航/被引/脚手架（非仅 kb_check）",
+      "result": "团队 bot 能摸完整引用链：按 key 查出边/入边、缺边提示、新节点脚手架；复用 kb_parse 不污染 litecode 本体",
+      "done_when": [
+        "CLI：node 查 key 的引用与被引",
+        "缺边/孤儿提示",
+        "新节点脚手架（声明块+domain/基线模板）",
+        "接入 registry + board 用法；selftest",
+        "artifact 齐"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-013.md",
+      "progress": "gm 已审；wp_gate→done（2026-10-12）；kb_nav/kb_scaffold 签收；待命 WP-009",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-014",
+      "domain": "harness-core",
+      "title": "补测：compact 失败三口径（auto 停 turn / 失败还原 / manual 可重试）",
+      "result": "行为测锁住 Andy 已定 compact 口径；合 ISSUE-027",
+      "done_when": [
+        "三条行为测绿",
+        "ISSUE-027 closed 或证据齐"
+      ],
+      "owner": "runtime",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-014.md",
+      "progress": "已派 Runtime",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-015",
+      "domain": "team-ops",
+      "title": "主链测试打稳跟进包（g2 门改写、debug-fold、瘦包门、Tools WS/websearch）",
+      "result": "按 WP-012 盘点 ISSUE-013/028/029/030 分域落地或再拆",
+      "done_when": [
+        "各 issue 有 owner 处置",
+        "假绿清一批"
+      ],
+      "owner": "demand_officer",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [
+        "WP-012"
+      ],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-015.md",
+      "progress": "跟进项全关（013/027/028/029/030）；新派停；未 commit；等一批提交（2026-10-12T12:17:28+08:00）",
+      "status_entered_at": null
+    },
+    {
+      "id": "WP-016",
+      "domain": "ide-substrate",
+      "title": "冻结：检索引擎产品行为（起即可搜 / 刷不挡搜 / 空结果才谈库旧）",
+      "result": "口径已与 Andy 对齐待落地：暖=进程起来；刷=增量；无全量重建常态；起即可搜；结果机械比对；空才说库旧。本包冻结不派工，等提交批次后再开落地 WP。",
+      "done_when": [
+        "核对 code/session 重建vs刷路径写入 artifact",
+        "Andy 拍板后另开落地 WP",
+        "本包保持 blocked/frozen 直至提交批次"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "blocked",
+      "depends_on": [],
+      "blocker": {
+        "kind": "product",
+        "note": "冻结等一批提交与 Andy 拍板落地；bot 无需再干"
+      },
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-016.md",
+      "progress": "冻结；核对中",
+      "status_entered_at": null
     }
   ],
   "pipelines": [

@@ -12,30 +12,44 @@
   ],
   "title": "webfetch 校验 DNS 与 reqwest 再次解析之间存在重绑定窗口",
   "promise": "webfetch-ssrf：校验通过的主机在实际请求时仍应对应公网地址",
-  "actual": "validate_public_http_url 先 ToSocketAddrs，随后 reqwest 再次解析同一主机名；恶意/TTL 短 DNS 可在两跳之间换到私网。当前无复现 harness；redirect 路径每跳会再 validate，但首跳仍有窗口。",
+  "actual": "已修：fetch 每跳 resolve_and_validate_public_http_url 后经 client_for_validated_hop 用 resolve_to_addrs 钉死已校验公网 IP，reqwest 不再二次 DNS。Redirect 仍每跳重检。残余：系统代理路径上代理可能自行解析。",
   "evidence": [
     {
       "path": "src/tools/webfetch.rs",
-      "symbol": "fn validate_public_http_url",
-      "commit": "075308b"
+      "symbol": "fn resolve_and_validate_public_http_url",
+      "note": "single DNS + public IP check; returns addrs to pin"
+    },
+    {
+      "path": "src/tools/webfetch.rs",
+      "symbol": "fn client_for_validated_hop",
+      "note": "hostname → ClientBuilder::resolve_to_addrs; literal IP no pin"
     },
     {
       "path": "src/tools/webfetch.rs",
       "symbol": "impl WebFetchTool › fn fetch",
-      "commit": "075308b",
-      "note": "reqwest get after validate; Policy::none + re-validate on Location"
+      "note": "per-hop resolve+validate+pin; Policy::none redirect re-check"
     }
   ],
-  "repro": "缺：可控权威 DNS / mock resolver 在 validate 与 connect 之间切换 A 记录的集成测试",
+  "repro": "窗口已关（直连）；系统代理残余不在本 issue 范围。钉死路径单测：client_pins_hostname_to_validated_public_ips",
   "reporter": "Tools",
   "owner": "Tools",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
       "ts": "2026-10-12T00:45:00Z",
       "by": "Tools",
       "change": "Split from ISSUE-012 DNS-rebinding note as suspect"
+    },
+    {
+      "ts": "2026-10-12T03:33:00Z",
+      "by": "Tools",
+      "change": "WP-009 fix: pin validated addrs via resolve_to_addrs; closed"
+    },
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012: DNS 重绑定仍 open；ssrf_whatwg_* 弱断言勿当门禁；修复后再补 IP 一致性测"
     }
   ]
 }

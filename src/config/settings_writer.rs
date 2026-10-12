@@ -411,7 +411,19 @@ impl SettingsWriter {
         })
     }
 
-    fn commit_mixed<W, G>(&self, docs: &[DocId], write: W, mutate: G) -> Result<CommitAck>
+    /// Workspace file + DB under one lock.
+    ///
+    /// Snapshots `file_path` before `write`. If mutate / validate / DB fails
+    /// after a successful write, restores the snapshot best-effort and returns
+    /// the error. Cross-medium is still not a true DB transaction (restore can
+    /// fail); generation advances only after both sides succeed.
+    fn commit_mixed<W, G>(
+        &self,
+        docs: &[DocId],
+        file_path: &Path,
+        write: W,
+        mutate: G,
+    ) -> Result<CommitAck>
     where
         W: FnOnce() -> Result<()>,
         G: FnOnce(&mut GlobalSettings) -> Result<bool>,
@@ -419,12 +431,29 @@ impl SettingsWriter {
         let _guard = Self::commit_lock();
         self.ensure_writable()
             .map_err(|e| LitecodeError::Config(e.to_string()))?;
+        let previous = snapshot_workspace_file(file_path)?;
         write()?;
-        let mut settings = self.load()?;
-        let restart_required = mutate(&mut settings)?;
-        ConfigManager::validate(&settings)?;
-        let conn = global_db::open(&self.db_path)?;
-        store::replace_all(&conn, &settings)?;
+        let after_write = (|| -> Result<(GlobalSettings, bool)> {
+            let mut settings = self.load()?;
+            let restart_required = mutate(&mut settings)?;
+            ConfigManager::validate(&settings)?;
+            let conn = global_db::open(&self.db_path)?;
+            store::replace_all(&conn, &settings)?;
+            Ok((settings, restart_required))
+        })();
+        let (settings, restart_required) = match after_write {
+            Ok(ok) => ok,
+            Err(e) => {
+                if let Err(restore_err) = restore_workspace_file(file_path, previous.as_deref()) {
+                    tracing::error!(
+                        error = %restore_err,
+                        path = %file_path.display(),
+                        "commit_mixed: failed to restore workspace file after DB-side error"
+                    );
+                }
+                return Err(e);
+            }
+        };
         let generation = self.revision.fetch_add(1, Ordering::AcqRel) + 1;
         let docs = docs.to_vec();
         let catalog = self.catalog()?;
@@ -819,8 +848,10 @@ impl SettingsWriter {
             });
         }
         let strip_id = id.to_string();
+        let file_path = workspace::workspace_custom_tools_path(&root);
         self.commit_mixed(
             &[DocId::CustomToolsWorkspace, DocId::Agents],
+            &file_path,
             move || workspace::delete_workspace_custom_tool(&root, &id_owned).map(|_| ()),
             move |settings| {
                 for profile in settings.agents.values_mut() {
@@ -886,8 +917,10 @@ impl SettingsWriter {
             });
         }
         let catalog_id = tools::mcp_catalog_id(id);
+        let file_path = workspace::workspace_mcp_path(&root);
         self.commit_mixed(
             &[DocId::McpWorkspace, DocId::Agents],
+            &file_path,
             move || workspace::delete_workspace_mcp(&root, &id_owned).map(|_| ()),
             move |settings| {
                 for profile in settings.agents.values_mut() {
@@ -1136,6 +1169,40 @@ pub(crate) fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -
         }
     }
     Ok(())
+}
+
+
+/// Capture current bytes of a workspace settings file (or `None` if missing).
+fn snapshot_workspace_file(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(LitecodeError::Config(format!(
+            "snapshot {}: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Restore a workspace settings file from [`snapshot_workspace_file`].
+fn restore_workspace_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
+    match previous {
+        Some(bytes) => {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| LitecodeError::Config(e.to_string()))?;
+            }
+            std::fs::write(path, bytes).map_err(|e| LitecodeError::Config(e.to_string()))
+        }
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(LitecodeError::Config(format!(
+                "restore remove {}: {e}",
+                path.display()
+            ))),
+        },
+    }
 }
 
 /// Custom tool rules shared by the settings page and `litecode_workspace refresh`.
@@ -1686,5 +1753,91 @@ max_output = 1024
         workspace.insert("demo".into(), custom_def("demo", Vec::new()));
         let safe = super::merged_custom_rules(&global, &workspace);
         assert!(safe.is_empty());
+    }
+
+    /// ISSUE-017 / WP-008: after a successful file write, a DB-side failure
+    /// must restore the prior file bytes (no durable half-write).
+    #[test]
+    fn commit_mixed_restores_file_when_db_step_fails() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = TempDir::new().unwrap();
+        let root = ws.path().to_path_buf();
+        let path = workspace::workspace_custom_tools_path(&root);
+        workspace::upsert_workspace_custom_tool(&root, custom_def("demo", Vec::new())).unwrap();
+        let before = std::fs::read(&path).expect("snapshot before write");
+
+        let err = writer
+            .commit_mixed(
+                &[DocId::CustomToolsWorkspace, DocId::Agents],
+                &path,
+                {
+                    let root = root.clone();
+                    move || workspace::delete_workspace_custom_tool(&root, "demo").map(|_| ())
+                },
+                |_settings| {
+                    Err(LitecodeError::Config(
+                        "injected replace_all failure".into(),
+                    ))
+                },
+            )
+            .expect_err("DB-side failure must surface");
+        assert!(
+            err.to_string().contains("injected replace_all failure"),
+            "got: {err}"
+        );
+        let after = std::fs::read(&path).expect("file must still exist after restore");
+        assert_eq!(
+            after, before,
+            "workspace file must be restored to pre-write bytes"
+        );
+        let restored = workspace::read_workspace_custom_tools(&root).unwrap();
+        assert!(
+            restored.tools.contains_key("demo"),
+            "demo tool must be present again after restore"
+        );
+    }
+
+    /// Same restore path when validate rejects the mutated settings.
+    #[test]
+    fn commit_mixed_restores_file_when_validate_fails() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = TempDir::new().unwrap();
+        let root = ws.path().to_path_buf();
+        let path = workspace::workspace_mcp_path(&root);
+        let def = McpServerDefinition {
+            command: "echo".into(),
+            ..Default::default()
+        };
+        workspace::upsert_workspace_mcp(&root, "demo_mcp", def).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let err = writer
+            .commit_mixed(
+                &[DocId::McpWorkspace, DocId::Agents],
+                &path,
+                {
+                    let root = root.clone();
+                    move || workspace::delete_workspace_mcp(&root, "demo_mcp").map(|_| ())
+                },
+                |settings| {
+                    // Empty tool id fails ConfigManager::validate.
+                    if let Some(profile) = settings.agents.values_mut().next() {
+                        profile.tools.insert(String::new(), dial_binding(None));
+                    }
+                    Ok(false)
+                },
+            )
+            .expect_err("validate failure must surface");
+        assert!(
+            err.to_string().contains("empty tool binding"),
+            "got: {err}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            workspace::read_workspace_mcp(&root)
+                .unwrap()
+                .servers
+                .contains_key("demo_mcp")
+        );
     }
 }

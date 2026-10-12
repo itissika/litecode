@@ -1,0 +1,43 @@
+{
+  "id": "ISSUE-028",
+  "grade": "gap",
+  "layer": "test",
+  "domain": "release-desktop",
+  "core": false,
+  "core_nodes": [],
+  "basis": [
+    "A2"
+  ],
+  "title": "瘦包：Open Remote 组件下载 + bundle-paths 全序 + 打包 slim 卫生门",
+  "promise": "Open Remote 下载进度/失败可测；bundle 解析序 env→bundles→sidecar→repo 锁死；slim 包默认不含 models。",
+  "actual": "ensureComponentForRemote / remote-progress 无单测；bundle-paths 未测全序；slim !models 靠打包时 throw/人工。",
+  "evidence": [
+    {
+      "path": "desktop/src",
+      "note": "components/bundle-paths/sidecar 现有测见 WP-012 前端节",
+      "commit": "670db5b"
+    },
+    {
+      "path": ".litecode/ops/artifacts/WP-012.md",
+      "note": "前端域证据",
+      "commit": "670db5b"
+    }
+  ],
+  "repro": "扫 remote-progress / ensureComponentForRemote 无 *.test；对照 package 脚本 slim 过滤。",
+  "reporter": "demand_officer",
+  "owner": "frontend",
+  "status": "closed",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012 盘点新建"
+    },
+    {
+      "ts": "2026-10-12T11:55:33+08:00",
+      "by": "demand_officer",
+      "change": "WP-015: 前端-desktop 补齐 Open Remote/bundle全序/slim卫生门；desktop npm test 109 pass；closed"
+    }
+  ]
+}

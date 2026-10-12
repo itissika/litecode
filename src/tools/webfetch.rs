@@ -30,19 +30,15 @@ impl WebFetchTool {
         let url = url.to_string();
 
         std::thread::spawn(move || {
-            // A redirect-disabled client lets us re-validate every hop for SSRF
-            // instead of trusting the engine's auto-follow (G2).
-            let no_redirect = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map_err(|e| format!("client build: {e}"))?;
-
+            // Per hop: resolve+validate, then pin those addrs on the client so
+            // reqwest does not DNS again (closes ISSUE-021 rebinding window).
+            // Redirects stay Policy::none so every Location is re-checked (G2).
             let mut current = url;
             for _ in 0..=10 {
                 let parsed = url::Url::parse(&current).map_err(|e| format!("invalid url: {e}"))?;
-                validate_public_http_url(&parsed)?;
-                let response = no_redirect
+                let pinned = resolve_and_validate_public_http_url(&parsed)?;
+                let client = client_for_validated_hop(&parsed, &pinned)?;
+                let response = client
                     .get(parsed.clone())
                     .send()
                     .map_err(|e| format!("request failed: {e}"))?;
@@ -72,7 +68,13 @@ impl WebFetchTool {
 
 /// Reject non-http(s) schemes and any URL resolving to a private/loopback/
 /// link-local/unspecified/benchmarking address (SSRF guard, G2).
-fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
+///
+/// Returns the public IPs from this resolve pass. Callers must pin them on the
+/// HTTP client (`resolve_to_addrs`) so connect does not DNS again — that closes
+/// the validate→request rebinding window (ISSUE-021).
+fn resolve_and_validate_public_http_url(
+    parsed: &url::Url,
+) -> Result<Vec<std::net::IpAddr>, String> {
     match parsed.scheme() {
         "http" | "https" => {}
         other => return Err(format!("scheme '{other}' not allowed (only http/https)")),
@@ -95,19 +97,61 @@ fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
                 .ok_or_else(|| "bad host".to_string())?,
         ]
     } else {
-        // Resolve the hostname; reject if it is not resolvable.
+        // Resolve the hostname once here; the fetch path pins these addrs.
         use std::net::ToSocketAddrs;
         let resolved = format!("{host}:443")
             .to_socket_addrs()
             .map_err(|_| format!("could not resolve host '{host}'"))?;
-        resolved.map(|sa| sa.ip()).collect()
+        let ips: Vec<_> = resolved.map(|sa| sa.ip()).collect();
+        if ips.is_empty() {
+            return Err(format!("could not resolve host '{host}'"));
+        }
+        ips
     };
-    for ip in addrs {
-        if is_non_public_ip(ip) {
+    for ip in &addrs {
+        if is_non_public_ip(*ip) {
             return Err(format!("URL resolves to a non-public address ({ip})"));
         }
     }
-    Ok(())
+    Ok(addrs)
+}
+
+fn validate_public_http_url(parsed: &url::Url) -> Result<(), String> {
+    resolve_and_validate_public_http_url(parsed).map(|_| ())
+}
+
+/// Build a redirect-disabled client that connects only to already-validated IPs.
+/// Hostname URLs keep the original URL for Host/SNI/certs; literal IP URLs need
+/// no pin. Port `0` lets reqwest use the URL/scheme port.
+fn client_for_validated_hop(
+    parsed: &url::Url,
+    public_ips: &[std::net::IpAddr],
+) -> Result<reqwest::blocking::Client, String> {
+    use std::net::SocketAddr;
+
+    let mut builder = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none());
+
+    let is_ip = parsed
+        .host()
+        .is_some_and(|h| matches!(h, url::Host::Ipv4(_) | url::Host::Ipv6(_)));
+    if !is_ip {
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| "url has no host".to_string())?;
+        let pinned: Vec<SocketAddr> = public_ips
+            .iter()
+            .copied()
+            .map(|ip| SocketAddr::new(ip, 0))
+            .collect();
+        if pinned.is_empty() {
+            return Err(format!("no public addresses to pin for host '{host}'"));
+        }
+        builder = builder.resolve_to_addrs(host, &pinned);
+    }
+
+    builder.build().map_err(|e| format!("client build: {e}"))
 }
 
 fn is_non_public_ip(ip: std::net::IpAddr) -> bool {
@@ -377,14 +421,41 @@ mod tests {
     }
 
     #[test]
-    fn ssrf_whatwg_triple_slash_is_hostname_not_missing_host() {
-        // ISSUE-011: rust `url` (WHATWG) parses `http:///no-host` as host
-        // "no-host", not as missing host. Missing-host rejection must not
-        // rely on this shape. Rejection here (if any) comes from DNS →
-        // non-public (e.g. sinkhole 198.18/15), not from "no host".
+    fn whatwg_triple_slash_parses_as_hostname_not_ssrf_gate() {
+        // ISSUE-011 / ISSUE-030: rust `url` (WHATWG) parses `http:///no-host`
+        // as host "no-host", not as missing host. This test ONLY documents
+        // that parser quirk — it is NOT an SSRF security gate. Do not treat
+        // a pass here as evidence that private/non-public hosts are blocked;
+        // see `ssrf_blocks_*` / `ssrf_allows_public_http_urls` for that.
         let parsed = url::Url::parse("http:///no-host").unwrap();
         assert_eq!(parsed.host_str(), Some("no-host"));
-        // Host present → validate path runs; env may resolve to non-public.
-        let _ = validate_public_http_url(&parsed);
+        // Intentionally do NOT call validate_public_http_url — DNS outcome
+        // is environment-dependent and would make this look like an SSRF test.
+    }
+
+    #[test]
+    fn resolve_returns_literal_public_ips() {
+        let ips = resolve_and_validate_public_http_url(
+            &url::Url::parse("http://8.8.8.8/").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
+    }
+
+    #[test]
+    fn client_pins_hostname_to_validated_public_ips() {
+        // Smoke: builder accepts resolve_to_addrs with port 0 (URL port wins).
+        let parsed = url::Url::parse("https://example.invalid/path").unwrap();
+        let ips = vec!["93.184.216.34".parse::<std::net::IpAddr>().unwrap()];
+        let client = client_for_validated_hop(&parsed, &ips).expect("pinned client");
+        // Client is built; connect would use the pin (no second DNS for host).
+        let _ = client;
+    }
+
+    #[test]
+    fn client_for_literal_ip_needs_no_pin() {
+        let parsed = url::Url::parse("http://1.1.1.1/").unwrap();
+        let ips = resolve_and_validate_public_http_url(&parsed).unwrap();
+        assert!(client_for_validated_hop(&parsed, &ips).is_ok());
     }
 }

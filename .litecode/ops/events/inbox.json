@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-11T13:56:40.104Z",
+  "updated_at": "2026-10-12T02:56:59.177Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -21,7 +21,9 @@
       "source": "gm",
       "summary": "steward: fix board gaps emit/ack listing, ops.board version, stdout_header; bump tools_version",
       "wp": "WP-003",
-      "acked": []
+      "acked": [
+        "tools_steward"
+      ]
     },
     {
       "id": "E-1791726612994",
@@ -30,7 +32,9 @@
       "source": "gm",
       "summary": "steward: fix board gaps; bump tools_version",
       "wp": "WP-003",
-      "acked": []
+      "acked": [
+        "tools_steward"
+      ]
     },
     {
       "id": "E-1791726633576",
@@ -39,7 +43,9 @@
       "source": "gm",
       "summary": "steward: fix board gaps; bump tools_version",
       "wp": "WP-003",
-      "acked": []
+      "acked": [
+        "tools_steward"
+      ]
     },
     {
       "id": "E-1791727000104",
@@ -48,7 +54,9 @@
       "source": "gm",
       "summary": "WP status must appear on tools board; team-ops must close WPs via wp_gate; no verbal-only done",
       "wp": "WP-003",
-      "acked": []
+      "acked": [
+        "tools_steward"
+      ]
     }
   ],
   "note": "append-only events via tools/emit_event.mjs; consumers ack via tools/ack_event.mjs"

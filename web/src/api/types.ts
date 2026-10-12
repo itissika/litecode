@@ -5,7 +5,6 @@ export type ErrorCode =
   | "llm_parse"
   | "max_steps"
   | "compaction_failed"
-  | "compaction_circuit_open"
   | "permission_denied"
   | "tool_panic"
   | "tool_validation"

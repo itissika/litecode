@@ -13,7 +13,7 @@
   ],
   "title": "Death-list g2 asserts Compact→reload via source substrings (fragile gate)",
   "promise": "session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept guards fold reload after Compact",
-  "actual": "Gate uses source substring assertions; product invariant still holds. Prefer symbol/behavior test later; do not silently green by deleting.",
+  "actual": "WP-015 rewrite landed: g2 is item-level (compact_transcript body: SessionMutation::Compact → working_set_blocking) + thin dialect ban (checkpoint_seq(), old pi-view comment) across context_pipeline; compact_llm_path uses item-level check on call_llm_compact_with_timeout for complete_with_stream_events (no whole-file must-contain) and keeps forbidden-token dialect bans. Behavior: working_set_identity::keep_recent_compact_reader_matches_fold_checkpoint_then_kept, stage_a::pipeline_compact_reloads_working_set_from_fold, compact.rs CountingProvider call-count on unified stream entry.",
   "evidence": [
     {
       "path": "src/types/death_list_gate.rs",
@@ -29,7 +29,7 @@
   "repro": "Read death_list_gate g2; compare to compact_transcript reload path.",
   "reporter": "context",
   "owner": "context",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -46,6 +46,21 @@
       "ts": "2026-10-12T00:30:24+08:00",
       "by": "context",
       "change": "GM authorized schedule: rewrite g2 gate from source-substring asserts to symbol/behavior test. Keep open until rewrite lands. Deleting or loosening the death-list entry still requires an issue-recorded reason; no silent green."
+    },
+    {
+      "ts": "2026-10-12T11:34:39+08:00",
+      "by": "demand_officer",
+      "change": "WP-012: 确认仍 open；拟把 g2 + compact_llm_path 子串门一并改写为符号/行为测；禁静默删"
+    },
+    {
+      "ts": "2026-10-12T11:54:00+08:00",
+      "by": "context",
+      "change": "WP-015 / ISSUE-013: rewrote fragile substring gates → symbol/behavior. Removed whole-file asserts compact.contains(\"complete_with_stream_events\") and adjacency-only working_set_blocking / \"Align in-memory…\" / checkpoint_seq() file-level contains. Added: fn_item_body helper; session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept (item-level compact_transcript + dialect scan); compact_llm_path_does_not_bypass_unified_provider (item-level call_llm_compact_with_timeout + kept dialect bans); stage_a pipeline_compact_reloads_working_set_from_fold; compact.rs CountingProvider asserts complete_with_stream_events call count. Product invariants still gated. Suggest status=closed."
+    },
+    {
+      "ts": "2026-10-12T12:15:42+08:00",
+      "by": "demand_officer",
+      "change": "WP-015: 上下文改写 g2+compact_llm 为符号/行为测并加 stage_a 行为测；cargo 相关绿；closed（未 commit）"
     }
   ]
 }

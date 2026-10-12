@@ -257,7 +257,8 @@ describe("PermissionCard — ask_user", () => {
     );
     const optionA = screen.getByRole("button", { name: "A" });
     expect(optionA.className).toContain("w-full");
-    expect(optionA.className).toContain("justify-start");
+    // Options use btn-sm + w-full (AskUserCard); left-align comes from btn styles,
+    // not an explicit justify-start utility (ISSUE-008).
 
     // The card's own controls carry no fill of their own: the hairline marks them
     // and hover only washes them — the card's glass stays the only surface.

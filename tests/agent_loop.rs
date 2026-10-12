@@ -255,3 +255,35 @@ async fn persist_failure_rolls_back_working_set() {
         "persist failure must not land the model output"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn auto_compact_fail_stops_turn_without_model_call() {
+    // Andy caliber 1: compact_if_needed Err → TurnOutcome::Error, no further call_model.
+    let mut deps = FakeAgentDeps::with_text_response("must-not-run");
+    deps.compact_fail = true;
+
+    let outcome = agent::run(&mut deps).await;
+    match outcome {
+        litecode::agent::TurnOutcome::Error(err) => {
+            assert!(
+                matches!(err, litecode::types::LitecodeError::CompactionFailed),
+                "expected CompactionFailed, got {err:?}"
+            );
+        }
+        other => panic!("expected Error(CompactionFailed), got {other:?}"),
+    }
+    assert_eq!(
+        deps.compact_calls.get(),
+        1,
+        "compact_if_needed must run once before the turn stops"
+    );
+    assert_eq!(
+        deps.model_calls(),
+        0,
+        "call_model must not run after auto compact fails"
+    );
+    assert!(
+        deps.landed.borrow().is_empty(),
+        "no model output may land when compact aborts the turn"
+    );
+}

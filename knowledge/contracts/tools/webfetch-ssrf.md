@@ -18,4 +18,4 @@ domain : tools-permission
 **核实结论：一致，无漂移。**（基线 075308b；Batch3 已修 ISSUE-012）
 - 出站门只许 http(s) 且拒绝非公网 —— [@ file="src/tools/webfetch.rs" symbol="fn validate_public_http_url"]；分类见 [@ file="src/tools/webfetch.rs" symbol="fn is_non_public_ip"]（含 IPv4-mapped、`is_unicast_link_local`、198.18/15）。
 - 每跳重校验 —— [@ file="src/tools/webfetch.rs" symbol="impl WebFetchTool › fn fetch"]（redirect Policy::none）。
-- 回归：`webfetch::tests::ssrf_*`（含 mapped/fe80/198.18）；ISSUE-011 测试改写。残余 DNS 重绑定见 ISSUE-021（suspect）。
+- 回归：`webfetch::tests::ssrf_*`（含 mapped/fe80/198.18）；ISSUE-011 测试改写。每跳 `resolve_to_addrs` 钉死已校验 IP（ISSUE-021 closed）；系统代理路径仍可能由代理解析。

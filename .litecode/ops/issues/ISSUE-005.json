@@ -4,8 +4,12 @@
   "layer": "product",
   "domain": "model-config",
   "core": false,
-  "core_nodes": ["config-commit"],
-  "basis": ["A7"],
+  "core_nodes": [
+    "config-commit"
+  ],
+  "basis": [
+    "A7"
+  ],
   "title": "repair_agent_models_on_boot holds rusqlite::Connection outside global_db",
   "promise": "SQL death list: rusqlite only in session/data/sqlite and config/global_db (tests/session_data_sql_death_list.rs fn is_global_db_ok)",
   "actual": "src/config/manager.rs fn repair_agent_models_on_boot takes &rusqlite::Connection and calls global_db::store::* from manager.rs, which is outside the allowed path prefix.",
@@ -25,7 +29,7 @@
   "repro": "rg -n 'rusqlite::Connection' src/config/manager.rs; cargo test --test session_data_sql_death_list (expect hit on manager.rs if gate scans use rusqlite)",
   "reporter": "runtime",
   "owner": "runtime",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -37,6 +41,11 @@
       "ts": "2026-10-12T00:30:00+08:00",
       "by": "runtime",
       "change": "Batch 3 formalize; confirmed still present at 075308b"
+    },
+    {
+      "ts": "2026-10-12T11:32:27+08:00",
+      "by": "runtime",
+      "change": "WP-006: moved repair_agent_models_on_boot into global_db/mod.rs; manager.rs has no rusqlite; manager+bridge tests green; close"
     }
   ]
 }

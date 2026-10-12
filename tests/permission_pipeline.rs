@@ -387,3 +387,86 @@ async fn authorize_ask_aborted_is_not_deny() {
         "cancel during Ask must abort, not permission-denied, got {result:?}"
     );
 }
+
+
+#[tokio::test(flavor = "current_thread")]
+async fn authorize_invalid_json_arguments_denied() {
+    let _grants = grant_lock();
+    clear_runtime_grants_for("auth_bad_json");
+    let dir = TempDir::new().unwrap();
+    let engine = engine_for(
+        "auth_bad_json",
+        AgentRole::Primary,
+        0,
+        all_tools(&["write"]),
+    );
+    let sink = recording_sink((false, false));
+    let inv = FunctionToolCall {
+        arguments: "{not-json".into(),
+        call_id: "call_bad".into(),
+        name: "write".into(),
+        namespace: None,
+        id: Some("fc_bad".into()),
+        status: None,
+    };
+    let result = authorize(
+        &inv,
+        &WriteTool::new(),
+        &engine,
+        &ctx_for(&dir),
+        "auth_bad_json",
+        &sink,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    match result {
+        AuthResult::Denied(msg) => {
+            assert!(
+                msg.to_lowercase().contains("invalid")
+                    || msg.to_lowercase().contains("json")
+                    || msg.to_lowercase().contains("parse"),
+                "denied message should mention invalid/json: {msg}"
+            );
+        }
+        other => panic!("expected Denied for bad JSON, got {other:?}"),
+    }
+    assert!(
+        sink.calls.lock().unwrap().is_empty(),
+        "invalid JSON must not reach Ask sink"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn authorize_schema_missing_content_denied() {
+    let _grants = grant_lock();
+    clear_runtime_grants_for("auth_schema");
+    let dir = TempDir::new().unwrap();
+    let engine = engine_for("auth_schema", AgentRole::Primary, 0, all_tools(&["write"]));
+    let sink = recording_sink((true, false));
+    let result = authorize(
+        &tool_call("write", serde_json::json!({"file_path": "out.txt"})),
+        &WriteTool::new(),
+        &engine,
+        &ctx_for(&dir),
+        "auth_schema",
+        &sink,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await;
+    match result {
+        AuthResult::Denied(msg) => {
+            assert!(
+                msg.to_lowercase().contains("content")
+                    || msg.to_lowercase().contains("required")
+                    || msg.to_lowercase().contains("invalid"),
+                "missing content should fail schema: {msg}"
+            );
+        }
+        other => panic!("expected Denied for missing content, got {other:?}"),
+    }
+    assert!(
+        sink.calls.lock().unwrap().is_empty(),
+        "schema failure must not reach Ask sink"
+    );
+}
+

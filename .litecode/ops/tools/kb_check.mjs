@@ -69,6 +69,22 @@ export function stockSet(ref) {
   return { ref, source, ok: true, paths: new Set(r.stdout.split("\n").filter(Boolean)) };
 }
 
+// v10: status changes are Andy's call. A new node's non-pending status counts as Andy-set when the
+// working tree's status line matches HEAD and the latest commit touching that file's `status :` line
+// is authored by Andy's identity (itissika). Uncommitted or non-Andy status changes stay errors.
+const ANDY_IDENTITIES = [/^itissika$/i, /^itissika@users\.noreply\.github\.com$/i, /^andy lee$/i];
+export function statusSetByAndy(relPath) {
+  const diff = spawnSync("git", ["diff", "HEAD", "-U0", "--", relPath], { cwd: REPO, encoding: "utf8" });
+  if (diff.status !== 0) return { ok: false, reason: "git diff failed" };
+  if (/^[+-]\s*status\s*:/m.test(diff.stdout)) return { ok: false, reason: "status line has uncommitted changes" };
+  const log = spawnSync("git", ["log", "-1", "-G", "^\\s*status\\s*:", "--format=%h%x09%an%x09%ae", "--", relPath], { cwd: REPO, encoding: "utf8" });
+  const line = (log.stdout || "").trim();
+  if (log.status !== 0 || !line) return { ok: false, reason: "no commit found for status line" };
+  const [hash, an, ae] = line.split("\t");
+  const byAndy = ANDY_IDENTITIES.some((re) => re.test(an) || re.test(ae));
+  return { ok: byAndy, hash, author: an, reason: byAndy ? "set by Andy" : `last status change by ${an}` };
+}
+
 // ------------------------------------------------------------ malformed citations
 
 function diagnose(snippet) {
@@ -195,7 +211,11 @@ export function kbCheck(opts = {}) {
     for (const t of tags) {
       if (t.followedByCite && !ALLOWED_TAGS.includes(t.tag)) add(n, { severity: sev, code: "tag_unknown", line: t.line, message: `关系标签「${t.tag}：」不在规定的五个里（上层/父节点/契约展开·框架展开·向下展开/相关/依据）${tagNote}`, args: { tag: t.tag }, source: "ops" });
     }
-    if (!st && n.status !== "pending") add(n, { severity: "error", code: "new_not_pending", message: `新节点必须 status : pending（状态升降由 Andy 决定），当前 ${n.invalid_status ?? n.status}`, source: "ops" });
+    if (!st && n.status !== "pending") {
+      const andy = n.invalid_status ? { ok: false } : statusSetByAndy(`${root}/${n.path}`);
+      if (andy.ok) add(n, { severity: "warning", code: "new_status_by_andy", message: `新节点 status 为 ${n.status}，由 Andy 在 ${andy.hash} 设定（状态升降归 Andy，按准入规则不报 error）`, args: { commit: andy.hash, author: andy.author }, source: "ops" });
+      else add(n, { severity: "error", code: "new_not_pending", message: `新节点必须 status : pending（状态升降由 Andy 决定），当前 ${n.invalid_status ?? n.status}${andy.reason ? `；${andy.reason}` : ""}`, source: "ops" });
+    }
   }
 
   // 4. suspected duplicate main nodes: same symbol/range cited as evidence by >1 node, or same summary

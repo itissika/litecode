@@ -1,0 +1,69 @@
+{
+  "id": "ISSUE-023",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": true,
+  "core_nodes": [
+    "retrieval-contract",
+    "engine-lifecycle"
+  ],
+  "basis": [
+    "A2"
+  ],
+  "title": "code_search 默认 desired=false：特色检索常关，agent 工具表不可见",
+  "promise": "featured-tools 将 code_search 列为特色宽找工具；engine-lifecycle 以 desired 表达启用意图。默认工作区应能让 agent 用上该工具，或至少可发现启用路径。",
+  "actual": "WorkspaceRetrievalState.desired 默认 false；workspace_readiness_from_engines 不写 code_search→available_tools 不含该 id→LLM 工具表不可见。人类须在 Settings→Engines 打开 retrieval；集成测试也需手工 enable + agent 绑定。结果：常关=agent 默认无语义代码检索。",
+  "evidence": [
+    {
+      "path": "src/config/workspace.rs",
+      "symbol": "struct WorkspaceRetrievalState",
+      "lines": "41-45",
+      "commit": "670db5b",
+      "note": "#[serde(default)] desired: bool → false"
+    },
+    {
+      "path": "src/config/workspace.rs",
+      "symbol": "fn workspace_readiness_from_engines",
+      "lines": "315-325",
+      "commit": "670db5b"
+    },
+    {
+      "path": "src/tool/availability.rs",
+      "symbol": "fn is_available",
+      "lines": "14-21",
+      "commit": "670db5b",
+      "note": "workspace optional 仅 Ready 才 available"
+    },
+    {
+      "path": "tests/settings_api.rs",
+      "test": "fn settings_retrieval_engine_init_and_stop_use_engine_api",
+      "commit": "670db5b",
+      "note": "stop 后 desired=false 且 available-tools 无 code_search"
+    },
+    {
+      "path": "tests/optional_code_search.rs",
+      "symbol": "fn workspace_with_code_search",
+      "lines": "37-58",
+      "commit": "670db5b",
+      "note": "测试必须 enable_code_search_engine + 手工 agent 绑定"
+    },
+    {
+      "path": "knowledge/framework/featured-tools.md",
+      "lines": "34-35",
+      "commit": "670db5b"
+    }
+  ],
+  "repro": "HOME=/workspace/litecode/.tmp/home cargo test --lib retrieval_desired_drives_readiness -- --nocapture；对照：未写 engines.json 时 workspace_engine_desired(.,\"code_search\")==false 且 readiness 无键。集成：cargo test --test settings_api settings_retrieval_engine_init_and_stop_use_engine_api",
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "history": [
+    {
+      "ts": "2026-10-12T03:40:00+08:00",
+      "by": "ide",
+      "change": "WP-011: documented default-off usability failure for code_search"
+    }
+  ]
+}

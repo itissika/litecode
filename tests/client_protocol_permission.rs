@@ -168,3 +168,223 @@ async fn ws_permission_bridge_abort_on_cancel_is_not_deny() {
         .expect("join");
     assert_eq!(reply, permission::AskOutcome::Aborted);
 }
+
+#[tokio::test]
+async fn ws_bridge_ask_user_questions_round_trip_with_answers_map() {
+    use litecode::permission::{AskAnswer, AskOption, AskPrompt, AskQuestion};
+    use std::collections::HashMap;
+
+    let (perm_tx, mut perm_rx) = mpsc::unbounded_channel::<PendingPermission>();
+    let sink: Arc<dyn PermissionSink> =
+        Arc::new(WsPermissionBridge::new("s-ask", "t-ask", "default", perm_tx));
+
+    let questions = vec![
+        AskQuestion {
+            id: "q_lang".into(),
+            prompt: "Which language?".into(),
+            options: vec![
+                AskOption {
+                    id: "zh".into(),
+                    label: "中文".into(),
+                },
+                AskOption {
+                    id: "en".into(),
+                    label: "English".into(),
+                },
+            ],
+            multi_select: false,
+            free_text: true,
+        },
+        AskQuestion {
+            id: "q_scope".into(),
+            prompt: "Scope?".into(),
+            options: vec![
+                AskOption {
+                    id: "a".into(),
+                    label: "A".into(),
+                },
+                AskOption {
+                    id: "b".into(),
+                    label: "B".into(),
+                },
+            ],
+            multi_select: true,
+            free_text: false,
+        },
+    ];
+
+    let sink2 = sink.clone();
+    let ask = tokio::task::spawn_blocking(move || {
+        sink2.ask(
+            &AskPrompt::ask_user("ask_user", "default", "Card title", &questions),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+    });
+
+    let perm = tokio::time::timeout(std::time::Duration::from_secs(2), perm_rx.recv())
+        .await
+        .expect("timeout")
+        .expect("recv");
+    assert_eq!(perm.kind, AskKind::AskUser);
+    assert_eq!(perm.tool, "ask_user");
+    assert_eq!(perm.summary, "Card title");
+    assert_eq!(perm.questions.len(), 2);
+    assert_eq!(perm.questions[0].id, "q_lang");
+    assert_eq!(perm.questions[1].multi_select, true);
+
+    // Outbound wire shape (agent/permission_request params).
+    let wire_req = PermissionRequest {
+        session_id: perm.session_id.clone(),
+        turn_id: perm.turn_id.clone(),
+        request_id: perm.request_id.clone(),
+        tool: perm.tool.clone(),
+        rule_id: perm.rule_id.clone(),
+        summary: perm.summary.clone(),
+        kind: perm.kind,
+        free_text: perm.free_text,
+        options: perm.options.clone(),
+        multi_select: perm.multi_select,
+        questions: perm.questions.clone(),
+    };
+    let req_json = serde_json::to_value(&wire_req).expect("ser");
+    assert_eq!(req_json["kind"], "ask_user");
+    assert_eq!(req_json["questions"][0]["id"], "q_lang");
+    assert_eq!(req_json["questions"][1]["options"][1]["id"], "b");
+    let round: PermissionRequest = serde_json::from_value(req_json).expect("de");
+    assert_eq!(round.questions.len(), 2);
+
+    // Inbound agent/permission grant params (answers map) — mirror ws.rs PermissionParams.
+    #[derive(serde::Deserialize)]
+    struct PermissionParams {
+        request_id: String,
+        tool: String,
+        approved: bool,
+        #[serde(default)]
+        always: bool,
+        #[serde(default)]
+        free_text: Option<String>,
+        #[serde(default)]
+        selected: Vec<String>,
+        #[serde(default)]
+        answers: HashMap<String, AskAnswer>,
+    }
+    let grant_raw = serde_json::json!({
+        "request_id": perm.request_id,
+        "tool": "ask_user",
+        "approved": true,
+        "always": false,
+        "answers": {
+            "q_lang": { "selected": ["zh"], "free_text": "  prefer zh  " },
+            "q_scope": { "selected": ["a", "b"] }
+        }
+    });
+    let params: PermissionParams = serde_json::from_value(grant_raw).expect("grant de");
+    assert_eq!(params.request_id, perm.request_id);
+    assert_eq!(params.tool, "ask_user");
+    assert!(params.approved);
+    assert!(!params.always);
+    assert_eq!(params.answers["q_lang"].selected, vec!["zh"]);
+    assert_eq!(params.answers["q_scope"].selected, vec!["a", "b"]);
+
+    perm.reply_tx
+        .send(AskReply::from_grant(
+            params.approved,
+            params.always,
+            params.free_text,
+            params.selected,
+            params.answers,
+        ))
+        .ok();
+
+    let reply = ask.await.expect("join");
+    assert_eq!(reply.outcome, permission::AskOutcome::Allow { always: false });
+    assert_eq!(
+        reply.answers["q_lang"].selected,
+        vec!["zh".to_string()]
+    );
+    assert_eq!(
+        reply.answers["q_lang"].free_text.as_deref(),
+        Some("prefer zh"),
+        "from_grant trims free_text"
+    );
+    assert_eq!(
+        reply.answers["q_scope"].selected,
+        vec!["a".to_string(), "b".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn ws_bridge_approval_round_trip_with_free_text() {
+    use litecode::permission::AskPrompt;
+
+    let (perm_tx, mut perm_rx) = mpsc::unbounded_channel::<PendingPermission>();
+    let sink: Arc<dyn PermissionSink> =
+        Arc::new(WsPermissionBridge::new("s-appr", "t-appr", "default", perm_tx));
+
+    let sink2 = sink.clone();
+    let ask = tokio::task::spawn_blocking(move || {
+        sink2.ask(
+            &AskPrompt::approval("plan", "default", "Write plan for X"),
+            &tokio_util::sync::CancellationToken::new(),
+        )
+    });
+
+    let perm = tokio::time::timeout(std::time::Duration::from_secs(2), perm_rx.recv())
+        .await
+        .expect("timeout")
+        .expect("recv");
+    assert_eq!(perm.kind, AskKind::Approval);
+    assert!(perm.free_text, "approval prompts request free_text");
+    assert!(perm.questions.is_empty());
+
+    let wire_req = PermissionRequest {
+        session_id: perm.session_id.clone(),
+        turn_id: perm.turn_id.clone(),
+        request_id: perm.request_id.clone(),
+        tool: perm.tool.clone(),
+        rule_id: perm.rule_id.clone(),
+        summary: perm.summary.clone(),
+        kind: perm.kind,
+        free_text: perm.free_text,
+        options: Vec::new(),
+        multi_select: false,
+        questions: Vec::new(),
+    };
+    let req_json = serde_json::to_value(&wire_req).expect("ser");
+    assert_eq!(req_json["kind"], "approval");
+    assert_eq!(req_json["free_text"], true);
+    assert!(
+        req_json.get("questions").is_none() || req_json["questions"].as_array().is_none_or(|a| a.is_empty()),
+        "approval omits empty questions on wire when skip_serializing_if"
+    );
+
+    // Reject with opinion.
+    perm.reply_tx
+        .send(AskReply::from_grant(
+            false,
+            false,
+            Some("  too broad  ".into()),
+            Vec::new(),
+            Default::default(),
+        ))
+        .ok();
+    let reply = ask.await.expect("join");
+    assert_eq!(reply.outcome, permission::AskOutcome::Deny);
+    assert_eq!(reply.free_text.as_deref(), Some("too broad"));
+}
+
+#[test]
+fn ask_kind_wire_snake_case() {
+    assert_eq!(
+        serde_json::to_value(AskKind::AskUser).unwrap(),
+        serde_json::json!("ask_user")
+    );
+    assert_eq!(
+        serde_json::to_value(AskKind::Approval).unwrap(),
+        serde_json::json!("approval")
+    );
+    assert_eq!(
+        serde_json::to_value(AskKind::Permission).unwrap(),
+        serde_json::json!("permission")
+    );
+}

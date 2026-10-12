@@ -61,7 +61,6 @@ pub enum ErrorCode {
     LlmParse,
     MaxSteps,
     CompactionFailed,
-    CompactionCircuitOpen,
     PermissionDenied,
     ToolPanic,
     ToolValidation,

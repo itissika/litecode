@@ -65,6 +65,8 @@ pub struct FakeAgentDeps {
     pub execute_calls: Cell<u32>,
     pub stop_on_text: bool,
     pub compact_calls: Cell<u64>,
+    /// When true, `compact_if_needed` returns `CompactionFailed` (Andy auto-fail caliber).
+    pub compact_fail: bool,
     /// Ordered snapshots from `persist_new` (for timing assertions).
     pub persist_log: RefCell<Vec<PersistSnapshot>>,
     /// Items accepted by `persist_new`, in order. The loop no longer holds a
@@ -84,6 +86,7 @@ impl Default for FakeAgentDeps {
             execute_calls: Cell::new(0),
             stop_on_text: true,
             compact_calls: Cell::new(0),
+            compact_fail: false,
             persist_log: RefCell::new(Vec::new()),
             landed: RefCell::new(Vec::new()),
         }
@@ -100,6 +103,11 @@ impl FakeAgentDeps {
 
     pub fn with_text_response(text: &str) -> Self {
         Self::with_responses(vec![vec![assistant_text_item(text, "msg_fake_1")]])
+    }
+
+    /// How many times `call_model` has been entered.
+    pub fn model_calls(&self) -> usize {
+        self.call_index.get()
     }
 }
 
@@ -155,6 +163,9 @@ impl AgentDeps for FakeAgentDeps {
     async fn compact_if_needed(&self, _step: u64) -> Result<bool> {
         self.compact_calls
             .set(self.compact_calls.get().saturating_add(1));
+        if self.compact_fail {
+            return Err(LitecodeError::CompactionFailed);
+        }
         Ok(false)
     }
 

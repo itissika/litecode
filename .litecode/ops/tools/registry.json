@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "tools_version": 7,
-  "updated_at": "2026-10-11T15:36:46.651Z",
+  "tools_version": 12,
+  "updated_at": "2026-10-12T03:30:32.869Z",
   "hot_reload": true,
   "tools": [
     {
@@ -27,8 +27,8 @@
     },
     {
       "id": "ops.wp_gate",
-      "version": 6,
-      "purpose": "检查工作包是否可推进（依赖、产物、工具痕迹、阻断规则）；通过后写回 board.json 状态、append 状态变更 log 并重跑 validate，失败则回滚；--dry-run 只检查不写；v7 起知识类 WP 推到 review/done 前要求涉及节点 kb_check 无 error",
+      "version": 8,
+      "purpose": "检查工作包是否可推进；通过后写回 board.json、记 status_entered_at（进 in_progress/review 起算）、append status_change log、刷新 board.md「WP 状态」、失败回滚；--dry-run 只检查",
       "invoke": "node .litecode/ops/tools/wp_gate.mjs --id WP-xxx --to <status> [--dry-run] [--source <agent_id>] [--kb-nodes k1,k2]",
       "required_for": [
         "WP status 变更"
@@ -37,9 +37,9 @@
     },
     {
       "id": "ops.tick",
-      "version": 4,
-      "purpose": "事件/tick：扫描需求板与 WP，输出本轮可开工清单与断点",
-      "invoke": "node .litecode/ops/tools/tick.mjs",
+      "version": 7,
+      "purpose": "事件/tick：扫描需求板与 WP；刷新 board.md「WP 状态」；工作时段内对 in_progress/review 超 1h 的 WP emit team_ops.wp_timeout（无未封超时则安静）；v11 起每轮检查 wp_watch 心跳，缺失或超 15 分钟 emit 一条 team_ops.watcher_down（未 ack 期间不重发）",
+      "invoke": "node .litecode/ops/tools/tick.mjs [--wp WP-xxx] [--force-timeout-scan] [--watcher-stale-min N] [--no-watcher-check]",
       "required_for": [
         "总经理/team-ops 每轮开工前"
       ],
@@ -57,7 +57,7 @@
     },
     {
       "id": "ops.board",
-      "version": 6,
+      "version": 11,
       "purpose": "打开工具聚合面板（最近更新/教程/版本）",
       "invoke": "type .litecode/ops/tools/board.md  # or Read",
       "required_for": [
@@ -88,13 +88,47 @@
     },
     {
       "id": "ops.kb_check",
-      "version": 1,
+      "version": 2,
       "purpose": "知识库校验：复刻 litecode 节点/引用解析（cases.json 对照全过才可用），报 litecode 状态码 + 准入规则（写错被静默当文本的引用、key=文件名、新节点 domain/上层|父节点/基线/五标签、主节点重复疑似）；error 使 validate_all 失败",
       "invoke": "node .litecode/ops/tools/kb_check.mjs [--node <key>] [--json] [--wp WP-xxx] [--stock-ref <rev>] [--selftest]",
       "required_for": [
         "validate_all",
         "知识类 WP 推进 review/done",
         "知识节点提交前自查"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.wp_watch",
+      "version": 1,
+      "purpose": "常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起",
+      "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
+      "required_for": [
+        "WP 超时回调触发",
+        "watcher 稳定性（tick 查心跳）"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.kb_nav",
+      "version": 1,
+      "purpose": "知识引用导航：按 key 查出边/入边、缺边/无父节点/孤儿提示；--orphans 列无人引用的节点；复用 kb_parse",
+      "invoke": "node .litecode/ops/tools/kb_nav.mjs --key <key> [--json] [--wp WP-xxx] | --orphans | --selftest",
+      "required_for": [
+        "知识易用性",
+        "引用链摸底",
+        "WP-013"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.kb_scaffold",
+      "version": 1,
+      "purpose": "新知识节点脚手架：声明块(key/status pending/domain)+上层|父节点+基线短哈希；默认 stdout dry-run，--write 仅在文件不存在时创建；domain 须为 board 产品域（禁 team-ops）",
+      "invoke": "node .litecode/ops/tools/kb_scaffold.mjs --key <key> --domain <id> [--parent <key>] [--dir knowledge/...] [--write] [--json] [--wp WP-xxx]",
+      "required_for": [
+        "新节点起草",
+        "WP-013"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
     }

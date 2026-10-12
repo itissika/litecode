@@ -24,5 +24,5 @@ h : 432
 
 **核实结论：一致，无漂移。**（基线 075308b）
 - 唯一写门 + generation 提交世代 —— [@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_partial"]；活动 turn 拒写见 [@ file="src/config/turn_guard.rs" symbol="impl TurnGuard › fn is_turn_in_progress"]（ensure_writable）。
-- 跨介质非事务（半写入边界）—— [@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_mixed"]：先 `write()` 工作区文件再 DB `replace_all`；DB 失败时文件可能已变、generation 未推进。节点主张已写清「不承诺错误必无变更」。建议加固见 ISSUE-017（非日常写崩；可选 DB 成功后再落盘/回滚）。
+- 跨介质非事务（半写入边界）—— [@ file="src/config/settings_writer.rs" symbol="impl SettingsWriter › fn commit_mixed"]：仍非真事务；WP-008 已对 `commit_mixed` 做 best-effort 加固：写盘前 snapshot 文件字节，mutate/validate/`replace_all` 失败则 restore 再返回 Err，generation 仍仅在两侧都成功后推进。restore 自身失败仍可能留下漂移，故主张「不承诺错误必无变更」不变。
 - 目录是构建事实 —— 与 [@ key="provider-catalog"] 一致；非可写设置文档。

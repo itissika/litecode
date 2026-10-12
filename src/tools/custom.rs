@@ -636,4 +636,87 @@ mod tests {
         let result = result_from_stdout(r#"{"level":123}"#.into());
         assert_eq!(result.level, ToolSignalLevel::Error);
     }
+
+    #[tokio::test]
+    async fn background_real_process_begin_job_then_mailbox_notice() {
+        use crate::tool::trait_::ToolExecutionContext;
+        use std::time::Duration;
+
+        let hub = Arc::new(CustomToolHub::new());
+        let tool = CustomTool::new(
+            CustomToolDefinition {
+                name: "echo_bg".into(),
+                description: "bg echo".into(),
+                schema: crate::config::schema::ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: vec![],
+                },
+                // Real process (not a stub helper): shell echoes a marker.
+                command: "sh".into(),
+                args: vec!["-c".into(), "echo custom-bg-marker".into()],
+                timeout: 15,
+                rules: Vec::new(),
+                suite: None,
+                suite_label: None,
+            },
+            Arc::clone(&hub),
+        );
+
+        let cwd = std::env::temp_dir();
+        let result = tool
+            .execute(
+                serde_json::json!({ "run_in_background": true }),
+                ToolExecutionContext {
+                    path_mode: crate::workspace::ToolPathMode::All,
+                    workspace_root: cwd,
+                    call_id: "call-bg-1".into(),
+                    cancel: CancellationToken::new(),
+                    output_limit: 8_000,
+                    session_id: "sess-bg-1".into(),
+                    session: None,
+                },
+            )
+            .await;
+
+        assert!(
+            result.content.contains("background job"),
+            "immediate ack must mention background job: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains('`'),
+            "ack should include backtick-wrapped job_id: {}",
+            result.content
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !hub.mailbox_pending("sess-bg-1") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for custom mailbox notice"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        let notices = hub.take_mailbox("sess-bg-1");
+        assert_eq!(notices.len(), 1, "exactly one settled notice");
+        assert_eq!(notices[0].session_id, "sess-bg-1");
+        assert_eq!(notices[0].call_id, "call-bg-1");
+        assert_eq!(notices[0].tool_name, "echo_bg");
+        assert!(!notices[0].job_id.is_empty());
+        match &notices[0].outcome {
+            CustomToolOutcome::Ok { output } => {
+                assert!(
+                    output.contains("custom-bg-marker"),
+                    "stdout must reach mailbox: {output}"
+                );
+            }
+            other => panic!("expected Ok outcome, got {other:?}"),
+        }
+        assert!(
+            !hub.mailbox_pending("sess-bg-1"),
+            "take_mailbox drains pending"
+        );
+    }
 }

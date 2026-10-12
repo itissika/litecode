@@ -91,3 +91,72 @@ impl Tool for WebSearchTool {
         Some(30)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ToolSignalLevel;
+
+    fn cold_tool() -> WebSearchTool {
+        WebSearchTool::new(
+            Arc::new(RwLock::new(None)),
+            Arc::new(RwLock::new(None)),
+        )
+    }
+
+    #[test]
+    fn empty_query_is_error() {
+        let tool = cold_tool();
+        let result = tool.call_inner(serde_json::json!({ "query": "   " }));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result.content.to_lowercase().contains("query")
+                || result.content.to_lowercase().contains("empty")
+                || result.content.to_lowercase().contains("required"),
+            "empty query should name the field: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn missing_query_is_error() {
+        let tool = cold_tool();
+        let result = tool.call_inner(serde_json::json!({}));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+    }
+
+    #[test]
+    fn not_warmed_surfaces_configuration_hint() {
+        let tool = cold_tool();
+        let result = tool.call_inner(serde_json::json!({ "query": "rust async" }));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result.content.contains("not warmed") || result.content.contains("not configured"),
+            "cold engine must say not warmed/configured: {}",
+            result.content
+        );
+        assert!(
+            result.content.contains("EXA_API_KEY") || result.content.contains("Exa"),
+            "must hint how to configure: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn client_without_endpoint_is_not_configured() {
+        // Client present but endpoint empty → configured-path error, not "not warmed".
+        let client = reqwest::blocking::Client::new();
+        let tool = WebSearchTool::new(
+            Arc::new(RwLock::new(Some(client))),
+            Arc::new(RwLock::new(Some(String::new()))),
+        );
+        let result = tool.call_inner(serde_json::json!({ "query": "rust" }));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result.content.contains("not configured"),
+            "empty endpoint → not configured: {}",
+            result.content
+        );
+    }
+}
+
