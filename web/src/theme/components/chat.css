@@ -888,13 +888,43 @@
   --perm-step-from: -6px;
 }
 
-/* ask_user choices: labels can be long; general .btn keeps nowrap for toolbars. */
+/* ask_user choices: labels can be long; general .btn keeps nowrap for toolbars.
+   `anywhere` (not `break-word`): the label is an anonymous flex item, so its
+   min-content size is the floor — only `anywhere` lets an unbroken run (a path,
+   a hash, a URL) count as breakable and stop overflowing the button. */
 .permission-card__option {
   min-width: 0;
   align-items: flex-start;
   justify-content: flex-start;
   text-align: left;
   white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* The option's seat, in a square: small, mono, lowercase — chrome, not copy, so
+   it stays quiet at rest (L1 line, muted text) and only comes up with the pick
+   (L2 line, secondary text) the way the option's own border does. Sits on the
+   first line of the label: 1px down from the flex start, one line box of 18px
+   under a 16px box. */
+.permission-card__mark {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-top: 1px;
+  border: 1px solid var(--_dk-line);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  color: var(--_dk-text-muted);
+}
+
+.permission-card__option.btn-primary .permission-card__mark {
+  border-color: var(--_dk-line-visible);
+  color: var(--_dk-text-secondary);
 }
 
 @keyframes permission-card-step-in {
@@ -913,8 +943,14 @@
   transition: border-color 120ms ease;
 }
 
-.permission-card__input:focus {
+/* Focus is the dk line and nothing else: the base layer's focus-visible accent
+   ring (a 2px box-shadow, index.css) is dropped here, so the field's own
+   hairline carries the state -- `--_dk-line` at rest, `--_dk-line-visible` on
+   focus. One line, one knob. */
+.permission-card__input:focus,
+.permission-card__input:focus-visible {
   outline: none;
+  box-shadow: none;
   border-color: var(--_dk-line-visible);
 }
 

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -44,9 +44,7 @@ describe("AskUserCard last-item free text (WP-082)", () => {
     ]);
     for (const id of ["q1", "q2", "q3"]) {
       const input = screen.getByTestId(`ask-user-free-text-${id}`);
-      const item = screen.getByTestId(`ask-user-other-${id}`);
-      expect(item.contains(input)).toBe(true);
-      expect(item.parentElement?.lastElementChild).toBe(item);
+      expect(input.parentElement?.lastElementChild).toBe(input);
       expect(input.hasAttribute("data-option-id")).toBe(false);
       await user.click(screen.getByRole("button", { name: "Next question" })).catch(() => {});
     }
@@ -131,77 +129,185 @@ describe("AskUserCard last-item free text (WP-082)", () => {
   });
 });
 
-describe("AskUserCard last item: visible label + selected state (WP-083)", () => {
+/* WP-083 gave the last item a visible label and the options' own selected look;
+   that dressing is gone again (user call): the row is a bare field, and the
+   answer it carries is the only state it has. */
+describe("AskUserCard last item: a bare field", () => {
   afterEach(cleanup);
 
-  const other = (qid: string) => screen.getByTestId(`ask-user-other-${qid}`);
   const box = () => screen.getByRole("textbox", { name: OTHER_LABEL });
   const pressed = (name: string) =>
     screen.getByRole("button", { name }).getAttribute("aria-pressed");
-  const looksOn = (el: HTMLElement) => {
-    expect(el.classList.contains("btn-primary")).toBe(true);
-    expect(el.classList.contains("btn-ghost")).toBe(false);
-  };
-  const looksOff = (el: HTMLElement) => {
-    expect(el.classList.contains("btn-ghost")).toBe(true);
-    expect(el.classList.contains("btn-primary")).toBe(false);
-  };
 
-  it("a. label text stays visible before and after typing", async () => {
-    const user = userEvent.setup();
+  it("a. the row is the field itself — no label, no option chrome", () => {
     renderCard([single]);
-    expect(screen.getByText(OTHER_LABEL).tagName).toBe("SPAN");
-    expect(box()).toBeTruthy();
-    await user.type(box(), "mine");
-    expect(screen.getByText(OTHER_LABEL)).toBeTruthy();
-    expect(box()).toBeTruthy();
+    const field = box();
+    expect(field.tagName).toBe("INPUT");
+    expect(screen.queryByText(OTHER_LABEL)).toBeNull(); // placeholder only
+    expect(field.getAttribute("placeholder")).toBe(OTHER_LABEL);
+    expect(field.className).toContain("permission-card__input");
+    expect(field.className).not.toContain("btn-primary");
+    expect(field.className).not.toContain("btn-ghost");
+    expect(field.hasAttribute("data-selected")).toBe(false);
+    expect(field.hasAttribute("aria-pressed")).toBe(false);
+    expect(field.hasAttribute("aria-describedby")).toBe(false);
   });
 
-  it("b. single: typing selects the last item like an option", async () => {
+  it("b. single: typing answers the question and clears the pick", async () => {
     const user = userEvent.setup();
-    renderCard([single]);
-    looksOff(other("s"));
-    looksOff(screen.getByRole("button", { name: "A" }));
+    const { onGrant, submit } = renderCard([single]);
+    await user.click(screen.getByRole("button", { name: "A" }));
     await user.type(box(), "mine");
-    expect(other("s").dataset.selected).toBe("true");
-    const desc = document.getElementById(box().getAttribute("aria-describedby")!);
-    expect(desc?.textContent).toBe("已选中");
-    looksOn(other("s"));
     expect(pressed("A")).toBe("false");
     expect(pressed("B")).toBe("false");
+    await user.click(submit());
+    expect(onGrant).toHaveBeenCalledWith(true, false, {
+      answers: { s: { selected: [], free_text: "mine" } },
+    });
   });
 
-  it("c. single: a pick after typing deselects the last item", async () => {
+  it("c. multi: the field and the picks coexist", async () => {
     const user = userEvent.setup();
-    renderCard([single]);
-    await user.type(box(), "mine");
-    await user.click(screen.getByRole("button", { name: "A" }));
-    expect(other("s").dataset.selected).toBe("false");
-    expect(box().getAttribute("aria-describedby")).toBeNull();
-    looksOff(other("s"));
-    expect(pressed("A")).toBe("true");
-    looksOn(screen.getByRole("button", { name: "A" }));
-  });
-
-  it("d. single: whitespace only leaves the last item unselected", async () => {
-    const user = userEvent.setup();
-    renderCard([single]);
-    await user.type(box(), "   ");
-    expect(other("s").dataset.selected).toBe("false");
-    expect(box().getAttribute("aria-describedby")).toBeNull();
-    looksOff(other("s"));
-  });
-
-  it("e. multi: selected options and the last item coexist", async () => {
-    const user = userEvent.setup();
-    renderCard([multi]);
-    looksOff(other("m"));
+    const { onGrant, submit } = renderCard([multi]);
     await user.click(screen.getByRole("button", { name: "A" }));
     await user.type(box(), "also");
     expect(pressed("A")).toBe("true");
-    expect(other("m").dataset.selected).toBe("true");
-    expect(box().getAttribute("aria-describedby")).toBeTruthy();
-    looksOn(other("m"));
-    looksOn(screen.getByRole("button", { name: "A" }));
+    await user.click(submit());
+    expect(onGrant).toHaveBeenCalledWith(true, false, {
+      answers: { m: { selected: ["a"], free_text: "also" } },
+      selected: ["a"],
+    });
+  });
+});
+
+describe("AskUserCard prose: markdown", () => {
+  afterEach(cleanup);
+
+  it("renders the question's markdown — bold, code, list, emphasis", () => {
+    renderCard([
+      {
+        id: "md",
+        prompt: "Pick **one**:\n\n- `alpha` first\n- beta with _emphasis_",
+        options: [{ id: "a", label: "A" }],
+      },
+    ]);
+    expect(screen.getByText("one").tagName).toBe("STRONG");
+    expect(screen.getByText("alpha").tagName).toBe("CODE");
+    expect(
+      screen.getAllByRole("listitem").map((li) => li.textContent),
+    ).toEqual(["alpha first", "beta with emphasis"]);
+    expect(screen.getByText("emphasis").tagName).toBe("EM");
+    // Options stay plain text: no markdown dialect inside a button.
+    expect(screen.getByRole("button", { name: "A" })).toBeTruthy();
+  });
+
+  it("renders the intro/summary markdown too", () => {
+    render(
+      <AskUserCard
+        tool="ask_user"
+        summary="Which **approach**?"
+        options={[]}
+        multiSelect={false}
+        questions={[
+          { id: "q", prompt: "Which one?", options: [{ id: "a", label: "A" }] },
+        ]}
+        onGrant={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByTestId("ask-user-intro").querySelector("strong")?.textContent,
+    ).toBe("approach");
+  });
+});
+
+describe("AskUserCard Enter key", () => {
+  afterEach(cleanup);
+
+  it("single: Enter answers the ask", async () => {
+    const user = userEvent.setup();
+    const { onGrant } = renderCard([single]);
+    await user.type(screen.getByTestId("ask-user-free-text-s"), "mine{Enter}");
+    expect(onGrant).toHaveBeenCalledWith(true, false, {
+      answers: { s: { selected: [], free_text: "mine" } },
+    });
+  });
+
+  it("multi: Enter steps on and keeps the text; the last Enter sends", async () => {
+    const user = userEvent.setup();
+    const { onGrant } = renderCard([single, multi]);
+    await user.type(screen.getByTestId("ask-user-free-text-s"), "x{Enter}");
+    expect(onGrant).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ask-user-count").textContent).toBe("2 / 2");
+    expect(screen.getByTestId("ask-user-question-m")).toBeTruthy();
+    await user.type(screen.getByTestId("ask-user-free-text-m"), "y{Enter}");
+    expect(onGrant).toHaveBeenCalledWith(true, false, {
+      answers: {
+        s: { selected: [], free_text: "x" },
+        m: { selected: [], free_text: "y" },
+      },
+    });
+  });
+
+  it("blank: Enter neither steps on nor sends", () => {
+    const { onGrant } = renderCard([single, multi]);
+    fireEvent.keyDown(screen.getByTestId("ask-user-free-text-s"), {
+      key: "Enter",
+    });
+    expect(onGrant).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ask-user-question-s")).toBeTruthy();
+  });
+
+  it("an IME's own Enter belongs to the IME", async () => {
+    const user = userEvent.setup();
+    const { onGrant } = renderCard([single, multi]);
+    const box = screen.getByTestId("ask-user-free-text-s");
+    await user.type(box, "x");
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    expect(onGrant).not.toHaveBeenCalled();
+    expect(screen.getByTestId("ask-user-question-s")).toBeTruthy();
+  });
+});
+
+describe("AskUserCard option marks", () => {
+  afterEach(cleanup);
+
+  const marks = () =>
+    Array.from(
+      screen.getByTestId("ask-user-options").querySelectorAll("button"),
+    ).map((b) => b.querySelector(".permission-card__mark")?.textContent ?? "");
+
+  it("gives each option its own seat letter, out of the accessible name", () => {
+    renderCard([
+      {
+        id: "many",
+        prompt: "Pick one?",
+        options: [
+          { id: "a", label: "First" },
+          { id: "b", label: "Second" },
+          { id: "c", label: "Third" },
+        ],
+      },
+    ]);
+    expect(marks()).toEqual(["a", "b", "c"]);
+    expect(screen.getByRole("button", { name: "First" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "a First" })).toBeNull();
+  });
+
+  it("numbers the seats past z", () => {
+    renderCard([
+      {
+        id: "long",
+        prompt: "Pick one?",
+        options: Array.from({ length: 28 }, (_, i) => ({
+          id: `o${i}`,
+          label: `Option ${i}`,
+        })),
+      },
+    ]);
+    const seat = marks();
+    expect(seat[0]).toBe("a");
+    expect(seat[25]).toBe("z");
+    expect(seat[26]).toBe("27");
+    expect(seat[27]).toBe("28");
   });
 });

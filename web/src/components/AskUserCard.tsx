@@ -1,5 +1,15 @@
 import { CaretDown, CaretUp } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import type { AskAnswer, AskOption, AskQuestion } from "../api/types";
 import { normalizeAskQuestions } from "../lib/askUser";
@@ -18,6 +28,73 @@ const STEP_LOCK_MS = 260;
 
 /** Label of the fixed last item every question ends in. */
 export const OTHER_LABEL = "其他（自己填写）";
+
+/** The option's own seat in its question — a, b, c … so a list can be told apart
+ *  at a glance, one square per option. Past z a list of 27+ falls back to
+ *  numbers; nothing else changes. */
+function optionMark(i: number): string {
+  return i < 26 ? String.fromCharCode(97 + i) : String(i + 1);
+}
+
+/* ── The ask's own prose, in markdown ────────────────────────────────
+   The agent writes the question, so the question may carry markdown: bold,
+   inline code, a list, a link. Compact on purpose — a dock card has no room for
+   `AgentMarkdown`'s shiki, mermaid and copy buttons, and the toast's renderer
+   stops at inline. Type comes from the caller's wrapper (which also owns the
+   wrap-anywhere rule); every mapping here is spacing and inline treatment. */
+function AskProse({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        p: ({ children }: { children?: ReactNode }) => (
+          <p className="m-0 leading-snug [&+p]:mt-1.5">{children}</p>
+        ),
+        ul: ({ children }: { children?: ReactNode }) => (
+          <ul className="m-0 mt-1.5 list-disc pl-5 first:mt-0">{children}</ul>
+        ),
+        ol: ({ children }: { children?: ReactNode }) => (
+          <ol className="m-0 mt-1.5 list-decimal pl-5 first:mt-0">{children}</ol>
+        ),
+        li: ({ children }: { children?: ReactNode }) => (
+          <li className="marker:text-(--_dk-text-muted) [&+li]:mt-0.5">
+            {children}
+          </li>
+        ),
+        strong: ({ children }: { children?: ReactNode }) => (
+          <strong className="font-semibold text-(--_dk-text-primary)">
+            {children}
+          </strong>
+        ),
+        em: ({ children }: { children?: ReactNode }) => (
+          <em className="italic">{children}</em>
+        ),
+        code: ({ children }: { children?: ReactNode }) => (
+          <code className="rounded-sm bg-(--_dk-side) px-1 py-px font-mono text-[12px] text-(--_dk-text-primary)">
+            {children}
+          </code>
+        ),
+        pre: ({ children }: { children?: ReactNode }) => (
+          <pre className="m-0 mt-1.5 overflow-x-auto rounded-sm bg-(--_dk-side) p-2 font-mono text-[12px] leading-snug first:mt-0 [&>code]:bg-transparent [&>code]:p-0">
+            {children}
+          </pre>
+        ),
+        a: ({ href, children }: { href?: string; children?: ReactNode }) => (
+          <a
+            href={href}
+            className="text-(--_dk-accent-hover) underline"
+            target="_blank"
+            rel="noreferrer"
+          >
+            {children}
+          </a>
+        ),
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  );
+}
 
 /* ── 3/3 · ask_user: one question at a time → Submit / Cancel ──────────
    The pane renders the question in view and nothing else — one item container
@@ -187,6 +264,20 @@ export function AskUserCard({
     });
   };
 
+  /** Enter keeps the ask moving: the next question while there is one, the ask
+   *  itself on the last. Only a question that counts as answered steps on, so a
+   *  stray keypress can never skip a blank; and an IME's Enter (picking a
+   *  candidate) belongs to the IME, never to the ask. */
+  const keyFree = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter" || e.nativeEvent.isComposing || !active) return;
+    const answered =
+      (pickedByQ[active.id] ?? []).length > 0 || freeFor(active) !== "";
+    if (!answered) return;
+    e.preventDefault();
+    if (index < questions.length - 1) goTo(index + 1);
+    else if (allAnswered) submit(true);
+  };
+
   const showIntro =
     questions.length > 0 &&
     (multi || questions[0].prompt !== summary) &&
@@ -248,17 +339,17 @@ export function AskUserCard({
       }
     >
       {showIntro && (
-        <p
-          className="mt-1.5 text-dk-base text-(--_dk-text-body)"
+        <div
+          className="mt-1.5 min-w-0 text-dk-base text-(--_dk-text-body) [overflow-wrap:anywhere]"
           data-testid="ask-user-intro"
         >
-          {summary}
-        </p>
+          <AskProse text={summary} />
+        </div>
       )}
       {!multi && !showIntro && (
-        <p className="mt-1.5 text-dk-base text-(--_dk-text-body)">
-          {questions[0].prompt || summary}
-        </p>
+        <div className="mt-1.5 min-w-0 text-dk-base text-(--_dk-text-body) [overflow-wrap:anywhere]">
+          <AskProse text={questions[0].prompt || summary} />
+        </div>
       )}
 
       {active && (
@@ -272,19 +363,19 @@ export function AskUserCard({
             className="permission-card__question flex min-w-0 flex-col gap-2"
           >
             {multi && (
-              <p className="min-w-0 text-dk-base font-medium text-(--_dk-text-primary)">
-                {active.prompt}
-              </p>
+              <div className="min-w-0 text-dk-base font-medium text-(--_dk-text-primary) [overflow-wrap:anywhere]">
+                <AskProse text={active.prompt} />
+              </div>
             )}
             <div
-              className="flex min-w-0 flex-col gap-2"
+              className="flex min-w-0 flex-col gap-1.5"
               role={qMulti ? "group" : "radiogroup"}
               aria-label={active.prompt || "Options"}
               data-testid={
                 multi ? `ask-user-options-${active.id}` : "ask-user-options"
               }
             >
-              {active.options.map((opt) => {
+              {active.options.map((opt, i) => {
                 const pickedOn = picked.includes(opt.id);
                 return (
                   <button
@@ -295,48 +386,28 @@ export function AskUserCard({
                     onClick={() => pick(opt.id)}
                     className={`permission-card__option ${pickedOn ? "btn-primary" : "btn-ghost"} btn-sm w-full`}
                   >
-                    {opt.label}
+                    {/* Chrome, not content: the mark never joins the option's
+                        accessible name (the label alone is the name). */}
+                    <span aria-hidden className="permission-card__mark">
+                      {optionMark(i)}
+                    </span>
+                    <span className="min-w-0 flex-1">{opt.label}</span>
                   </button>
                 );
               })}
-              {(() => {
-                /* The last item wears the options' own selected look. A textbox
-                   cannot sit in a button nor carry aria-pressed, so the state is
-                   data-selected plus a described-by "已选中". */
-                const otherOn = freeFor(active) !== "";
-                const selId = `ask-user-other-sel-${active.id}`;
-                return (
-                  <label
-                    data-testid={`ask-user-other-${active.id}`}
-                    data-selected={otherOn ? "true" : "false"}
-                    className={`permission-card__option ${otherOn ? "btn-primary" : "btn-ghost"} btn-sm flex w-full items-center gap-2`}
-                  >
-                    <span
-                      id={`ask-user-other-label-${active.id}`}
-                      className="shrink-0 whitespace-nowrap"
-                    >
-                      {OTHER_LABEL}
-                    </span>
-                    <input
-                      type="text"
-                      data-testid={`ask-user-free-text-${active.id}`}
-                      aria-labelledby={`ask-user-other-label-${active.id}`}
-                      aria-describedby={otherOn ? selId : undefined}
-                      placeholder={OTHER_LABEL}
-                      className={`${ASK_FIELD} min-w-0 flex-1`}
-                      value={textByQ[active.id] ?? ""}
-                      onChange={(e) =>
-                        typeFree(active.id, e.target.value, qMulti)
-                      }
-                    />
-                    {otherOn && (
-                      <span id={selId} className="sr-only">
-                        已选中
-                      </span>
-                    )}
-                  </label>
-                );
-              })()}
+              {/* The last item is a bare field — no option chrome, no visible
+                 label: the text *is* the answer, so the field speaks for itself
+                 (the placeholder shows the words, `aria-label` names it). */}
+              <input
+                type="text"
+                data-testid={`ask-user-free-text-${active.id}`}
+                aria-label={OTHER_LABEL}
+                placeholder={OTHER_LABEL}
+                className={`${ASK_FIELD} w-full`}
+                value={textByQ[active.id] ?? ""}
+                onChange={(e) => typeFree(active.id, e.target.value, qMulti)}
+                onKeyDown={keyFree}
+              />
             </div>
           </div>
         </div>
