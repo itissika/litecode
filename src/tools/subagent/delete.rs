@@ -11,7 +11,7 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
-use super::{ParentNotice, SubagentHub};
+use super::SubagentHub;
 
 pub struct SubagentDeleteTool {
     sessions: Arc<SessionManager>,
@@ -58,13 +58,7 @@ impl SubagentDeleteTool {
         }
         match delete_session_tree(&self.sessions, &self.hub, &child_id).await {
             Ok(deleted) => {
-                // K5: only the requested layer notifies its parent; never wakes it.
-                self.hub.notify_parent_no_wake(
-                    &parent,
-                    ParentNotice::ChildDeleted {
-                        child_session_id: child_id.clone(),
-                    },
-                );
+                // WP-094 L5: the parent deleted it itself — no ChildDeleted to self.
                 let mut result = ToolCallResult::ok(format!(
                     "status: deleted\nchild_session_id: {child_id}\ndeleted_session_ids: {}\n",
                     deleted.removed.join(",")
@@ -201,14 +195,16 @@ mod tests {
         // Cascade: grandchild removed too.
         assert!(env.sessions.reader().meta_blocking(&env.child).is_err());
         assert!(env.sessions.reader().meta_blocking(&grandchild).is_err());
-        // Exactly one ChildDeleted, for the direct child; no wake.
         assert!(!env.hub.has_pending(&env.parent));
-        assert_eq!(
-            env.hub.take_notices(&env.parent),
-            vec![ParentNotice::ChildDeleted {
-                child_session_id: env.child.clone()
-            }]
-        );
+    }
+
+    #[tokio::test]
+    async fn delete_by_parent_no_notice_to_self() {
+        let env = env().await;
+        let result = delete(&env, &env.child).await;
+        assert!(ok(&result), "{}", result.content);
+        assert!(!env.hub.has_notices(&env.parent));
+        assert!(env.hub.take_notices(&env.parent).is_empty());
     }
 
     #[tokio::test]

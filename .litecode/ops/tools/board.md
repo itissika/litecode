@@ -5,14 +5,14 @@
 
 ## 当前版本
 
-- `tools_version`: **15**
+- `tools_version`: **17**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T06:56:26.575Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T12:25:00.671Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -109,12 +109,35 @@
 | WP-088 | └ 前端中层：子会话 停/删 入口与展示 | done | frontend_mid | gm |
 | WP-089 | 　└ WP-088 web：子会话 停止/删除 入口与删除后展示/重连 | done | frontend | frontend_mid |
 | WP-093 | 　└ WP-088 web 补：listSessions 进行中再请求则结束后补拉一次 | done | frontend | frontend_mid |
+| WP-094 | subagent 发送模式与结算收口 | done | gm | andy |
+| WP-095 | └ WP-094 后端中层：发送模式/结算/停止不唤醒/来源字段/测试/知识库 | done | backend_mid | gm |
+| WP-098 | 　└ WP-095/Runtime：send 三模式原语 + 最新结算邮箱 + 停止不唤醒 + 通知 by | done | runtime | backend_mid |
+| WP-099 | 　└ WP-095/Session：用户停/删写 by=user + 协议 by 字段 + 子只读保持 | done | session | backend_mid |
+| WP-100 | 　└ WP-095/Tools：send mode 参数 + stop/delete 不给自己发通知 + wait 最新 + 描述/知识库 | done | tools | backend_mid |
+| WP-096 | └ WP-094 前端中层：侧栏用户停止标记 | done | frontend_mid | gm |
+| WP-097 | 　└ WP-096 web：Workers 名单 用户停止标记 | done | frontend | frontend_mid |
+| WP-101 | 向量检索引擎开销与体验调研 | in_progress | gm | andy |
+| WP-102 | └ 引擎开销与体验调研执行 | in_progress | backend_mid | gm |
+| WP-103 | 　└ WP-102/IDE：引擎内存与嵌入耗时实测 + 性能杠杆 + 断点续嵌调研 | in_progress | ide | backend_mid |
+| WP-104 | 　└ WP-102/Session：会话语料构成只读统计 | done | session | backend_mid |
+| WP-105 | provider 供应商与模型更新调研 | done | gm | andy |
+| WP-106 | └ provider 调研执行 | done | backend_mid | gm |
+| WP-107 | 　└ WP-106/A 一方直连：openai/deepseek/mimo/zhipu + 两种 codec 对照 | done | provider | backend_mid |
+| WP-108 | 　└ WP-106/B 国内云套餐：ark-coding/ark-agent/tencent-token/aliyun-token | done | provider | backend_mid |
+| WP-109 | 　└ WP-106/C 聚合/网关：opencode/opencode-go/commandcode + Q4 新供应商候选 | done | provider | backend_mid |
+| WP-110 | provider 补模型/新加两家 + 前端分组 | in_progress | gm | andy |
+| WP-111 | └ provider 目录落地 | in_progress | backend_mid | gm |
+| WP-113 | 　└ WP-111 目录落地执行 | in_progress | provider | backend_mid |
+| WP-112 | └ provider 列表分组 | in_progress | frontend_mid | gm |
+| WP-114 | 　└ WP-112 web：provider 列表 plan/api 分组 | drafting | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-13 | v17：validate_board v9 新规则「每个 WP.domain 必须在 board.domains」；ops.wp v5 已封包可 `set --field domain` 重新归类（其他字段仍拒）；WP-070/071→ide-substrate、WP-082/083/089/093/097→client-ux；wp.test 组 7 / ops_harden 组 9 老包数改为从 board 动态计算（>0）并逐包校验（工具集管家）|
+| 2026-10-13 | v16：ops.wp v4 `set --field domain`（owner/approver；须为 board.domains 已有 id；history+log+trace；校验失败回滚）；新增 `reassign --owner`（包 approver 或父包 owner；新 owner 须已注册；只改 owner；history+log；回滚）；用它们把 WP-103 domain ide-base→ide-substrate；新 agent provider（model-config 域 provider/模型部分，bot id 记 agents_cold/bot_ids.json）（工具集管家）|
 | 2026-10-12 | v15（WP-032）：超时按父子链合并、只叫离卡点最近真正要动手的人（有未封子包的 in_progress 父包不算卡点），matter 去重，已 ack 60 分钟内不重发（老 WP 同）；tick 在 watcher 健康时只报告、watcher 挂了自动拉起并记 team_ops.watcher_restarted；事件加锁 + fsync 原子写，先落 inbox+events/outbox.jsonl 再发，重启排空 outbox，所有告警类型都走 webhook（payload 带 target/type/actor/merged/matter_key）；新增 ops.issue_new（加锁分配 issue 号，独占创建）、issues/.reserved.json（031/006 作废）、validate_all 查 issue 名实/重复；新增 ops.toolchain_check；ops.wp v3 加 set；~/.cargo/bin 换 wrapper、~/.rustup 指向 ops toolchain（备份在 ~/.litecode-toolchain-backup-20261012-184910）（工具集管家）|
 | 2026-10-12 | v14：ops.wp v2——方案审批与完工验收分开（submit→approve / start→deliver→close，reject 分方案退回与验收退回）；split 方案只需至少 1 个子包；父包方案未批前子包不能交方案或开工；awaiting_approval 与 review 两种等待都超时升级（顶层止于 gm）；ops.wp.test 入 registry；写明工具需求指挥链（工具集管家，Andy 批）|
 | 2026-10-12 | v13：新增 ops.wp（嵌套 WP 生命周期 new/fill/submit/approve/reject/close + tree/summary/history）；schema 加 parent/goal/approver/content/history 与 drafting/awaiting_approval；validate 查 parent 环/封包；wp_gate 对新模型包加批准/子包封包/approver 推 done 门禁；超时扩到 awaiting_approval 并按层级升级（顶层只到 gm）；webhook 加 level/parent/path/target/escalated；「WP 状态」表按父包缩进；老 WP 行为不变（工具集管家，WP-020）|
@@ -158,7 +181,7 @@
 | ops.kb_nav | `node .litecode/ops/tools/kb_nav.mjs --key <key> [--json] [--wp WP-xxx]` · `--orphans` · `--selftest` |
 | ops.kb_scaffold | `node .litecode/ops/tools/kb_scaffold.mjs --key <key> --domain <id> [--parent <key>] [--dir knowledge/...] [--write] [--json] [--wp WP-xxx]` |
 | ops.wp_watch | `node .litecode/ops/tools/wp_watch.mjs start\|stop\|status\|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]` |
-| ops.wp | `node .litecode/ops/tools/wp.mjs <new\|fill\|submit\|approve\|start\|deliver\|reject\|close\|set\|tree\|summary\|history> --as <agent_id\|andy> ...`（v14，见「ops.wp 用法」；`--as` 自报无鉴权） |
+| ops.wp | `node .litecode/ops/tools/wp.mjs <new\|fill\|submit\|approve\|start\|deliver\|reject\|close\|set\|reassign\|tree\|summary\|history> --as <agent_id\|andy> ...`（v14，见「ops.wp 用法」；`--as` 自报无鉴权） |
 | ops.wp.test | `node .litecode/ops/tools/wp.test.mjs [--json] [--keep]` |
 | ops.issue_new | `node .litecode/ops/tools/issue_new.mjs --as <agent_id> --title T --domain D [--grade G] [--layer L] [--owner O] [--wp WP-x] [--json-file F] [--dry-run]` |
 | ops.toolchain_check | `node .litecode/ops/tools/toolchain_check.mjs [--json] [--wp WP-x]` |
@@ -313,7 +336,9 @@ node .litecode/ops/tools/wp.mjs close   --as <approver> --id WP-x --to done|bloc
 node .litecode/ops/tools/wp.mjs reject  --as <approver> --id WP-x --note N [--reopen WP-a,WP-b]  # 验收退回 → in_progress（方案仍有效），子包重开回 drafting
 node .litecode/ops/tools/wp.mjs close   --as <approver> --id WP-x --to cancelled [--note N]      # 任意时刻取消
 node .litecode/ops/tools/wp.mjs tree|summary|history [--id WP-x] [--json]
-node .litecode/ops/tools/wp.mjs set     --as <owner|approver> --id WP-x --field artifact_path|handoff_path|progress|result|done_when --value V   # v3；路径须为 .litecode/ops/...；done_when 用 ; 分隔；已封包不可改
+node .litecode/ops/tools/wp.mjs set     --as <owner|approver> --id WP-x --field artifact_path|handoff_path|progress|result|done_when|domain --value V   # v3；v4 domain 须为 board.domains 已有 id；
+node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x --owner O [--note N]   # v4；O 须为已注册 agent；只改 owner；已封包不可改；v5 已封包仅 domain 可重新归类
+#路径须为 .litecode/ops/...；done_when 用 ; 分隔；已封包不可改
 ```
 
 - 父包方案未批之前：子包可以 new/fill，但不能 submit 方案，也不能 start（wp start 与 wp_gate in_progress 都拦）。

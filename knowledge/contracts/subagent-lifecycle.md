@@ -11,10 +11,12 @@ h : 396
 **主张：** subagent 是完整 session；调度工具是同一 turn 基座的另一种入口。
 
 - 同一原语：launch / send 与人类消息走同一条预占与启动路径，stop 走取消；Hub 只是完成路由器，不持有运行真相或生命周期。
+- 父发消息三种方式（send.mode）：queue（默认，子在跑时排队，当前 turn 结束后逐条各起一个新 turn）、steer（注入当前 turn 的下一个请求缝隙）、stop_and_send（停当前 turn 再起新 turn）。用户对子会话只读。
 - 完整会话：child 有自己的持久会话行（父子关系与深度记在其中）与独立执行配置；其事件按自身 session 分发，不混入父 turn。
 - 深度是产品规则：上限一层、不可嵌套；不设 per-parent 并发上限。
 - 取消不传播：父 turn 取消不连带取消 child；停止必须显式指向对应会话。
-- 完成靠事实与唤醒：结果来自 child 的持久记录；运行中的父在请求缝隙收到完成提醒，空闲父满足条件时被唤醒消费，不靠隐形注入。
+- 完成靠事实与唤醒：结果来自 child 的持久记录；父邮箱每个 child 只留最新一条结果；运行中的父在请求缝隙收到完成提醒，空闲父满足条件时被唤醒消费，不靠隐形注入。
+- 停止只告知不唤醒：被停 turn 的结果只进邮箱；用户停/删以 `stopped by user` / `deleted by user` 通知父；父自己停/删不给自己发通知。
 
 上层：[@ key="featured-tools"]。
 依据：[@ file="src/tools/subagent/turn.rs"]、[@ file="src/tools/subagent/hub.rs"]。

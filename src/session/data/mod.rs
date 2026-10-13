@@ -316,6 +316,18 @@ impl SessionData {
         &self,
         session_id: &str,
     ) -> Result<Option<(String, String)>> {
+        Ok(self
+            .latest_turn_end_blocking(session_id)?
+            .map(|(turn, reason, _)| (turn, reason)))
+    }
+
+    /// WP-098: last durable `turn/end` as `(turn_id, reason, cancelled_by)`.
+    /// Logs written before WP-098 have no `cancelled_by` → `None`.
+    #[allow(clippy::type_complexity)]
+    pub fn latest_turn_end_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String, Option<crate::types::StopOrigin>)>> {
         let events = self.events_blocking(session_id)?;
         Ok(events.iter().rev().find_map(|event| {
             if event.event_type != crate::session::event::EventType::TurnEnd {
@@ -327,7 +339,12 @@ impl SessionData {
                 .get("reason")
                 .and_then(|value| value.as_str())
                 .unwrap_or("unknown");
-            Some((turn_id.to_string(), reason.to_string()))
+            let cancelled_by = event
+                .data
+                .get("cancelled_by")
+                .and_then(|value| value.as_str())
+                .and_then(crate::types::StopOrigin::parse);
+            Some((turn_id.to_string(), reason.to_string(), cancelled_by))
         }))
     }
 

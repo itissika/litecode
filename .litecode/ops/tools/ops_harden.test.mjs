@@ -249,12 +249,12 @@ await group("8 toolchain_check: broken rustup proxy on PATH → FAIL; wrapper �
   ok(j.results.find((x) => x.flavour === "inherited").ok && j.results.find((x) => x.flavour.startsWith("bash -c")).ok, "working cargo first on PATH → inherited + bash -c ok");
 });
 
-await group("9 old-WP compat: 19 old WPs validate/gate unchanged; old alert summary; old WPs re-alert after 60m, never escalate", async () => {
+await group("9 old-WP compat: old-model WPs (dynamic count) validate/gate unchanged; old alert summary; old WPs re-alert after 60m, never escalate", async () => {
   const ops = fresh(); const L = await lib(ops);
   ok(spawnSync(process.execPath, [path.join(ops, "validate.mjs")]).status === 0, "validate OK");
   const olds = board(ops).work_packages.filter((w) => !w.goal && !w.parent && !Array.isArray(w.history));
-  ok(olds.length === 19, "19 old WPs");
-  for (const id of ["WP-001", "WP-003", "WP-017", "WP-019"]) { const r = runSync(ops, "wp_gate.mjs", ["--id", id, "--to", "review", "--dry-run", "--source", "gm"]); ok(r.status === 0 && /"dry_run":true/.test(r.stdout), id + " gate dry-run ok"); }
+  ok(olds.length > 0, `old-model WPs present (dynamic count): ${olds.length}`); // v17: no hardcoded count
+  for (const id of olds.map((w) => w.id)) { const r = runSync(ops, "wp_gate.mjs", ["--id", id, "--to", "review", "--dry-run", "--source", "gm"]); ok(r.status === 0 && /"dry_run":true/.test(r.stdout), id + " gate dry-run ok"); }
   patch(ops, (b) => { for (const w of b.work_packages) w.status_entered_at = null; const o = b.work_packages.find((w) => w.id === "WP-017"); o.status = "review"; o.status_entered_at = iso(T0 - 2 * 3600e3); });
   let s = L.scanAndEmitWpTimeouts(ops, { force: true, now: new Date(T0) });
   ok(s.emitted.length === 1 && /^WP-017 review open \d+m since .* owner=demand_officer reviewer=gm$/.test(s.emitted[0].summary) && s.emitted[0].meta.target === "gm", "old summary format unchanged, target reviewer");

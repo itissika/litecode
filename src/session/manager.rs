@@ -58,6 +58,8 @@ pub struct LiveTurnState {
     pub progress: TurnProgress,
     /// True after a cancel request while the runtime is still winding down.
     pub stopping: bool,
+    /// WP-098: who requested the cancel (first writer wins).
+    pub cancelled_by: Option<crate::types::StopOrigin>,
 }
 
 /// Process-local exclusive activity for one session.
@@ -73,6 +75,8 @@ enum SessionActivity {
         /// WP-090 R1: a cancel arrived before `start_turn` installed the
         /// RunningTurn; `start_turn` cancels the handle token immediately.
         cancel_requested: bool,
+        /// WP-098: origin of the Starting-window cancel.
+        cancelled_by: Option<crate::types::StopOrigin>,
     },
     RunningTurn(LiveTurnState),
     Exclusive {
@@ -90,6 +94,38 @@ pub enum CancelOutcome {
     Starting,
     /// Idle / Exclusive / unknown session: nothing to stop. No side effects.
     Idle,
+}
+
+/// WP-098 R-Q result of `enqueue_follow_up` / `cancel_and_follow_up`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FollowUpOutcome {
+    /// Child idle: nothing queued; the caller starts the turn directly.
+    Idle,
+    /// Queued behind the live turn; 1-based position.
+    Queued { position: usize },
+}
+
+/// Single-lock cancel body shared by `cancel_turn_sync` and
+/// `cancel_and_follow_up`. First cancel origin wins.
+fn cancel_locked(record: &mut SessionRecord, by: crate::types::StopOrigin) -> CancelOutcome {
+    match &mut record.activity {
+        SessionActivity::RunningTurn(live) => {
+            live.stopping = true;
+            live.cancelled_by.get_or_insert(by);
+            live.cancel.cancel();
+            CancelOutcome::Running
+        }
+        SessionActivity::StartingTurn {
+            cancel_requested,
+            cancelled_by,
+            ..
+        } => {
+            *cancel_requested = true;
+            cancelled_by.get_or_insert(by);
+            CancelOutcome::Starting
+        }
+        SessionActivity::Idle | SessionActivity::Exclusive { .. } => CancelOutcome::Idle,
+    }
 }
 
 impl CancelOutcome {
@@ -230,6 +266,9 @@ pub struct SessionRecord {
     /// Queued user messages for the live turn. Outlives a turn (a cancel keeps
     /// the queue for the follow-up flush) but never touches the session log.
     pending_messages: Vec<PendingMessage>,
+    /// WP-098 R-Q: child follow-up turns. Separate from `pending_messages`,
+    /// never claimed at a step seam, memory-only (ISSUE on restart loss).
+    follow_ups: VecDeque<crate::types::UserInput>,
     subscriber_count: usize,
     /// Sticky agent selection 锟?isomorphic with `sessions.agent_id`.
     pub agent_id: String,
@@ -266,6 +305,7 @@ impl SessionRecord {
             event_tx,
             event_buffer: VecDeque::new(),
             pending_messages: Vec::new(),
+            follow_ups: VecDeque::new(),
             subscriber_count: 0,
             agent_id: meta.agent_id.clone(),
             model_id: meta.model_id.clone(),
@@ -914,6 +954,7 @@ impl SessionManager {
             turn_id,
             progress: progress.clone(),
             cancel_requested: false,
+            cancelled_by: None,
         };
         drop(records);
 
@@ -997,6 +1038,7 @@ impl SessionManager {
                 cancel,
                 progress: progress.clone(),
                 stopping: false,
+                cancelled_by: None,
             });
         }
 
@@ -1059,16 +1101,20 @@ impl SessionManager {
         };
         let (progress, status_after) = progress;
         self.turn_guard.end_turn();
-        let reason = self
+        // WP-098: reason and cancelled_by both come from the durable turn/end,
+        // so the live event carries exactly what was persisted.
+        let (reason, cancelled_by) = self
             .data()
-            .latest_turn_end_reason_blocking(session_id)
+            .latest_turn_end_blocking(session_id)
             .ok()
             .flatten()
-            .and_then(|(turn_id, reason)| (turn_id == progress.turn_id).then_some(reason));
+            .filter(|(turn_id, _, _)| *turn_id == progress.turn_id)
+            .map_or((None, None), |(_, reason, by)| (Some(reason), by));
         self.emit_lifecycle(LifecycleEvent::TurnFinished {
             session_id: session_id.to_string(),
             progress: progress.clone(),
             reason,
+            cancelled_by,
         });
         self.activity_changed.notify_all();
         self.fire_turn_status(session_id, status_after);
@@ -1091,12 +1137,13 @@ impl SessionManager {
                 LitecodeError::ToolExecution(format!("session {session_id} not found"))
             })?;
             let activity = std::mem::replace(&mut record.activity, SessionActivity::Idle);
-            let (reserved_turn_id, progress, cancel_requested) = match activity {
+            let (reserved_turn_id, progress, cancel_requested, cancelled_by) = match activity {
                 SessionActivity::StartingTurn {
                     turn_id,
                     progress,
                     cancel_requested,
-                } => (turn_id, progress, cancel_requested),
+                    cancelled_by,
+                } => (turn_id, progress, cancel_requested, cancelled_by),
                 other => {
                     record.activity = other;
                     cancel.cancel();
@@ -1108,6 +1155,7 @@ impl SessionManager {
                     turn_id: reserved_turn_id,
                     progress,
                     cancel_requested,
+                    cancelled_by,
                 };
                 cancel.cancel();
                 return Err(LitecodeError::AgentAlreadyRunning);
@@ -1119,6 +1167,7 @@ impl SessionManager {
                 cancel: cancel.clone(),
                 progress: progress.clone(),
                 stopping: cancel_requested,
+                cancelled_by,
             });
             if cancel_requested {
                 // R1: cancel requested during the Starting window takes effect
@@ -1188,31 +1237,168 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn cancel_turn(&self, session_id: &str) -> CancelOutcome {
-        self.cancel_turn_sync(session_id)
+    pub async fn cancel_turn(
+        &self,
+        session_id: &str,
+        by: crate::types::StopOrigin,
+    ) -> CancelOutcome {
+        self.cancel_turn_sync(session_id, by)
     }
 
     /// Cancel a live turn without taking the exclusive lease. Decision and
     /// action happen under one `records` lock. Never touches pending queues,
     /// mailboxes or completion inboxes (K3), and emits no parent notice.
-    pub fn cancel_turn_sync(&self, session_id: &str) -> CancelOutcome {
+    pub fn cancel_turn_sync(
+        &self,
+        session_id: &str,
+        by: crate::types::StopOrigin,
+    ) -> CancelOutcome {
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.get_mut(session_id) else {
             return CancelOutcome::Idle;
         };
-        match &mut record.activity {
-            SessionActivity::RunningTurn(live) => {
-                live.stopping = true;
-                live.cancel.cancel();
-                CancelOutcome::Running
+        cancel_locked(record, by)
+    }
+
+    /// WP-098: who cancelled the live turn `turn_id`, if anyone. Read by the
+    /// runtime right before it writes `turn/end`.
+    pub fn turn_cancelled_by(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Option<crate::types::StopOrigin> {
+        let records = self.records.lock().unwrap();
+        match &records.get(session_id)?.activity {
+            SessionActivity::RunningTurn(live) if live.turn_id == turn_id => live.cancelled_by,
+            _ => None,
+        }
+    }
+
+    // ── follow-up queue (WP-098 R-Q, children only, memory-only) ──
+
+    /// Queue a follow-up turn for a busy child. Never claimed at a step seam;
+    /// the end-of-turn flush runs one turn per message, FIFO. `Idle` means
+    /// nothing was queued: the caller starts the turn itself.
+    pub fn enqueue_follow_up(
+        &self,
+        session_id: &str,
+        input: crate::types::UserInput,
+    ) -> Result<FollowUpOutcome> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        if record
+            .parent_session_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(LitecodeError::ToolExecution(
+                "follow-up queue is only for child sessions".into(),
+            ));
+        }
+        if !record.activity.is_busy() {
+            return Ok(FollowUpOutcome::Idle);
+        }
+        record.follow_ups.push_back(input);
+        Ok(FollowUpOutcome::Queued {
+            position: record.follow_ups.len(),
+        })
+    }
+
+    /// WP-098 R-SS: cancel the live turn and put `input` at the head of the
+    /// follow-up queue under one `records` lock. Emits nothing.
+    pub fn cancel_and_follow_up(
+        &self,
+        session_id: &str,
+        input: crate::types::UserInput,
+        by: crate::types::StopOrigin,
+    ) -> Result<(CancelOutcome, FollowUpOutcome)> {
+        let mut records = self.records.lock().unwrap();
+        let record = records.get_mut(session_id).ok_or_else(|| {
+            LitecodeError::ToolExecution(format!("session {session_id} not found"))
+        })?;
+        if record
+            .parent_session_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            return Err(LitecodeError::ToolExecution(
+                "follow-up queue is only for child sessions".into(),
+            ));
+        }
+        if !record.activity.is_busy() {
+            return Ok((CancelOutcome::Idle, FollowUpOutcome::Idle));
+        }
+        let outcome = cancel_locked(record, by);
+        record.follow_ups.push_front(input);
+        Ok((outcome, FollowUpOutcome::Queued { position: 1 }))
+    }
+
+    pub fn has_follow_ups(&self, session_id: &str) -> bool {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|record| !record.follow_ups.is_empty())
+    }
+
+    pub fn follow_ups_len(&self, session_id: &str) -> usize {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map_or(0, |record| record.follow_ups.len())
+    }
+
+    /// Reserve an idle turn and pop exactly one follow-up for it, in one
+    /// critical section. `Ok(None)` = queue empty.
+    pub(crate) fn reserve_turn_and_pop_follow_up(
+        &self,
+        session_id: &str,
+        turn_id: String,
+        step_max: u32,
+        primary_agent: &str,
+        project: &str,
+    ) -> Result<Option<(TurnProgress, crate::types::UserInput)>> {
+        let progress = TurnProgress {
+            turn_id: turn_id.clone(),
+            phase: TurnPhase::Starting,
+            step: 1,
+            step_max,
+            started_at_ms: chrono::Utc::now().timestamp_millis(),
+            awaiting_permission: false,
+        };
+        let input = {
+            let mut records = self.records.lock().unwrap();
+            let record = records.get_mut(session_id).ok_or_else(|| {
+                LitecodeError::ToolExecution(format!("session {session_id} not found"))
+            })?;
+            if record.follow_ups.is_empty() {
+                return Ok(None);
             }
-            SessionActivity::StartingTurn {
-                cancel_requested, ..
-            } => {
-                *cancel_requested = true;
-                CancelOutcome::Starting
+            if record.activity.is_busy() {
+                return Err(LitecodeError::AgentAlreadyRunning);
             }
-            SessionActivity::Idle | SessionActivity::Exclusive { .. } => CancelOutcome::Idle,
+            let input = record.follow_ups.pop_front().expect("non-empty");
+            record.agent_id = primary_agent.to_string();
+            record.project = Some(project.to_string());
+            record.event_buffer.clear();
+            record.activity = SessionActivity::StartingTurn {
+                turn_id,
+                progress: progress.clone(),
+                cancel_requested: false,
+                cancelled_by: None,
+            };
+            input
+        };
+        self.turn_guard.begin_turn();
+        Ok(Some((progress, input)))
+    }
+
+    pub(crate) fn restore_follow_up_front(&self, session_id: &str, input: crate::types::UserInput) {
+        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+            record.follow_ups.push_front(input);
         }
     }
 
@@ -1426,6 +1612,7 @@ impl SessionManager {
                 turn_id,
                 progress: progress.clone(),
                 cancel_requested: false,
+                cancelled_by: None,
             };
             let claimed = std::mem::take(&mut record.pending_messages);
             emit_pending_messages_locked(record);
@@ -1817,7 +2004,7 @@ impl SessionManager {
     pub async fn shutdown_cleanup(&self) {
         let ids: Vec<String> = self.records.lock().unwrap().keys().cloned().collect();
         for id in &ids {
-            let _ = self.cancel_turn(id).await;
+            let _ = self.cancel_turn(id, crate::types::StopOrigin::User).await;
         }
         self.data.shutdown();
     }
@@ -3156,8 +3343,14 @@ mod child_session_tests {
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
         mgr.reserve_turn(&sid, "t-start".into(), 5, "default", "/proj")
             .unwrap();
-        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Starting);
-        assert_eq!(mgr.cancel_turn(&sid).await, CancelOutcome::Starting);
+        assert_eq!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User),
+            CancelOutcome::Starting
+        );
+        assert_eq!(
+            mgr.cancel_turn(&sid, crate::types::StopOrigin::User).await,
+            CancelOutcome::Starting
+        );
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let token = CancellationToken::new();
         let handle = crate::runtime::TurnHandle {
@@ -3175,9 +3368,15 @@ mod child_session_tests {
             "token cancelled the moment it installs"
         );
         assert_eq!(mgr.session_status(&sid), Some(SessionStatus::Stopping));
-        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Running);
+        assert_eq!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User),
+            CancelOutcome::Running
+        );
         assert!(mgr.finish_turn(&sid, "t-start").is_some());
-        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Idle);
+        assert_eq!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User),
+            CancelOutcome::Idle
+        );
     }
 
     #[tokio::test]
@@ -3185,9 +3384,15 @@ mod child_session_tests {
         let dir = tempfile::tempdir().unwrap();
         let (_guard, mgr) = wp090_mgr(&dir);
         let sid = mgr.open_session("/proj", "default", None).await.unwrap();
-        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Idle);
+        assert_eq!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User),
+            CancelOutcome::Idle
+        );
         assert!(!CancelOutcome::Idle.cancelled());
-        assert_eq!(mgr.cancel_turn_sync("missing"), CancelOutcome::Idle);
+        assert_eq!(
+            mgr.cancel_turn_sync("missing", crate::types::StopOrigin::User),
+            CancelOutcome::Idle
+        );
         assert_eq!(mgr.session_status(&sid), Some(SessionStatus::Idle));
         assert!(CancelOutcome::Running.cancelled() && CancelOutcome::Starting.cancelled());
     }
@@ -3207,7 +3412,10 @@ mod child_session_tests {
         )
         .unwrap();
         mgr.enqueue_pending_message(&sid, "queued").unwrap();
-        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Running);
+        assert_eq!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User),
+            CancelOutcome::Running
+        );
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
         assert!(mgr.finish_turn(&sid, "t-run").is_some());
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
@@ -4151,7 +4359,10 @@ mod child_session_tests {
             Some(SessionStatus::RunningWithSubagent)
         );
 
-        assert!(mgr.cancel_turn_sync(&child).cancelled());
+        assert!(
+            mgr.cancel_turn_sync(&child, crate::types::StopOrigin::User)
+                .cancelled()
+        );
         assert_eq!(mgr.session_status(&child), Some(SessionStatus::Stopping));
         assert_eq!(
             mgr.session_status(&parent),
@@ -4512,7 +4723,10 @@ mod pending_message_tests {
         assert_eq!(restored, vec!["a", "b", "c"]);
 
         // Cancel marks the turn stopping: it may no longer claim the queue.
-        assert!(mgr.cancel_turn_sync(&sid).cancelled());
+        assert!(
+            mgr.cancel_turn_sync(&sid, crate::types::StopOrigin::User)
+                .cancelled()
+        );
         assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").is_none());
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 3);
     }

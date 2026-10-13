@@ -62,6 +62,9 @@ pub enum LifecycleEvent {
         progress: TurnProgress,
         /// Durable `turn/end.reason` when the log has it (`completed` / `cancelled` / `error` / `max_steps`).
         reason: Option<String>,
+        /// WP-098: durable `turn/end.cancelled_by` (same value as persisted);
+        /// `None` unless the turn was cancelled with a recorded origin.
+        cancelled_by: Option<crate::types::StopOrigin>,
     },
     /// `sessions.last_message` / `last_assistant` changed — session list preview patch.
     SessionPreviewUpdated {

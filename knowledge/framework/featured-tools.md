@@ -19,8 +19,8 @@ h : 517
   - 知识需要稳定，知识之间的引用关系必须保持稳定，且基于事实。知识库的核心在于关系，知识节点之间的关系，知识正文中与文件的关系，这些关系是机械式的，可验证的稳定关系，通过关系，能够知道，知识飘了没，知识该不该更新。
   - 对话中可以引用，自动展开内容给agent，方便引用知识节点，对人来说很重要，方便，才能够经常用；而对agent来说，知识本身很重要，没有知识的定义，agent实现起来就会谨慎，偏离了知识要求的轨道，agent则能够自省；
 
-- tool：subagent（launch / send / wait / stop / list）
-  - 由于底层完全共享同一套基础设施，所以primary agent和subagent session之间的关系就是人类和primary的关系，primary能够对subagent做大部分事情。
+- tool：subagent（launch / send / wait / stop / list / delete）
+  - 由于底层完全共享同一套基础设施，所以primary agent和subagent session之间的关系就是人类和primary的关系，primary能够对subagent做大部分事情：看（list / wait 取最新结果）、发（send：queue / steer / stop_and_send）、停（stop）、删（delete）。
   - 刻意排除的操作，成本敏感：模型，上下文，思考强度；工作范围：agent类型；复杂度：revert回退会话；
 
 - tool：litecode_workspace

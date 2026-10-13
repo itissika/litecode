@@ -145,6 +145,9 @@ pub enum InternalEvent {
         /// Typed in-memory error category when `reason == Error` (not on wire/disk).
         #[serde(default)]
         error_kind: Option<TurnErrorKind>,
+        /// WP-098: cancel origin, same value as `turn/end.cancelled_by`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cancelled_by: Option<crate::types::StopOrigin>,
     },
     PhaseChanged {
         phase: TurnPhase,
@@ -394,6 +397,7 @@ mod tests {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
             error_kind: Some(TurnErrorKind::CompactionFailed),
+            cancelled_by: None,
         };
         let v = serde_json::to_value(&ev).unwrap();
         assert_eq!(v["TurnCompleted"]["error_kind"], "compaction_failed");

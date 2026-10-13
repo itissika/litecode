@@ -35,6 +35,22 @@ pub fn project_lifecycle(sessions: &SessionManager, ev: &LifecycleEvent) -> Valu
         return session_lifecycle_status_changed(session_id, status);
     }
     let mut base = super::project::lifecycle_event_to_wire(ev);
+    // WP-099 P2 / Q5: turn_finished keeps `reason` and adds `cancelled_by`
+    // next to it (explicit null).
+    if let LifecycleEvent::TurnFinished {
+        reason,
+        cancelled_by,
+        ..
+    } = ev
+    {
+        // From WP-098's TurnFinished (same value as persisted in turn/end).
+        let cancelled_by = (reason.as_deref() == Some("cancelled"))
+            .then(|| cancelled_by.map(|b| b.as_str()))
+            .flatten();
+        if let Some(params) = base.get_mut("params").and_then(Value::as_object_mut) {
+            params.insert("cancelled_by".into(), json!(cancelled_by));
+        }
+    }
     if let LifecycleEvent::TurnStarted { session_id, .. }
     | LifecycleEvent::TurnFinished { session_id, .. } = ev
     {
@@ -46,6 +62,34 @@ pub fn project_lifecycle(sessions: &SessionManager, ev: &LifecycleEvent) -> Valu
         }
     }
     base
+}
+
+/// WP-099: the latest durable `turn/end` record of a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnEndRecord {
+    pub turn_id: String,
+    pub reason: String,
+    /// `"user"` | `"parent"`; only when `reason == "cancelled"` and the record
+    /// carries `cancelled_by` (WP-098 §3). Old logs → None.
+    pub cancelled_by: Option<String>,
+}
+
+/// Latest `turn/end` via WP-098 `SessionData::latest_turn_end_blocking`.
+/// `cancelled_by` is kept only when `reason == "cancelled"`.
+pub fn latest_turn_end(sessions: &SessionManager, session_id: &str) -> Option<TurnEndRecord> {
+    let (turn_id, reason, by) = sessions
+        .data()
+        .latest_turn_end_blocking(session_id)
+        .ok()
+        .flatten()?;
+    let cancelled_by = (reason == "cancelled")
+        .then(|| by.map(|b| b.as_str().to_string()))
+        .flatten();
+    Some(TurnEndRecord {
+        turn_id,
+        reason,
+        cancelled_by,
+    })
 }
 
 /// Process-wide memory of the last aggregate pushed per ancestor.
@@ -184,5 +228,112 @@ mod tests {
                 "unchanged aggregate must not push: {ev:?}"
             );
         }
+    }
+
+    fn wp099_turn_end(m: &SessionManager, sid: &str, turn: &str, reason: &str, by: Option<&str>) {
+        let mut data = json!({"turn": turn, "reason": reason, "final_text": ""});
+        if let Some(by) = by {
+            data["cancelled_by"] = json!(by);
+        }
+        m.apply(
+            sid,
+            crate::session::store::SessionApply::Append(crate::session::EventDraft {
+                time: 1,
+                event_type: crate::session::EventType::TurnEnd,
+                data,
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::LogState::Final,
+            }),
+        )
+        .unwrap();
+    }
+
+    fn wp099_mgr(dir: &std::path::Path) -> Arc<SessionManager> {
+        Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.join("s.db").to_string_lossy().to_string(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn turn_end_cancelled_by_user_parent_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = wp099_mgr(dir.path());
+        let parent = m.open_session("/proj", "default", None).await.unwrap();
+        let child = m.test_child_session("/proj", &parent, "c").unwrap();
+
+        wp099_turn_end(&m, &child, "t1", "cancelled", Some("user"));
+        assert_eq!(
+            latest_turn_end(&m, &child).unwrap().cancelled_by.as_deref(),
+            Some("user")
+        );
+        wp099_turn_end(&m, &child, "t2", "cancelled", Some("parent"));
+        assert_eq!(
+            latest_turn_end(&m, &child).unwrap().cancelled_by.as_deref(),
+            Some("parent")
+        );
+        // Not cancelled → null even if a stray key exists.
+        wp099_turn_end(&m, &child, "t3", "completed", Some("user"));
+        let end = latest_turn_end(&m, &child).unwrap();
+        assert_eq!((end.reason.as_str(), end.cancelled_by), ("completed", None));
+        // Old log without the key → null.
+        wp099_turn_end(&m, &child, "t4", "cancelled", None);
+        assert_eq!(latest_turn_end(&m, &child).unwrap().cancelled_by, None);
+    }
+
+    #[tokio::test]
+    async fn last_turn_cancelled_by_survives_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let (parent, child) = {
+            let m = wp099_mgr(dir.path());
+            let parent = m.open_session("/proj", "default", None).await.unwrap();
+            let child = m.test_child_session("/proj", &parent, "c").unwrap();
+            wp099_turn_end(&m, &child, "t1", "cancelled", Some("user"));
+            (parent, child)
+        };
+        let _ = parent;
+        let m = wp099_mgr(dir.path());
+        let end = latest_turn_end(&m, &child).unwrap();
+        assert_eq!(end.turn_id, "t1");
+        assert_eq!(end.cancelled_by.as_deref(), Some("user"));
+    }
+
+    #[tokio::test]
+    async fn turn_finished_event_carries_cancelled_by() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = wp099_mgr(dir.path());
+        let parent = m.open_session("/proj", "default", None).await.unwrap();
+        let child = m.test_child_session("/proj", &parent, "c").unwrap();
+        wp099_turn_end(&m, &child, "t1", "cancelled", Some("parent"));
+        let progress = crate::session::TurnProgress {
+            turn_id: "t1".into(),
+            phase: crate::runtime::observer::TurnPhase::Idle,
+            step: 0,
+            step_max: 1,
+            started_at_ms: 0,
+            awaiting_permission: false,
+        };
+        let mk = |reason: Option<&str>, progress: crate::session::TurnProgress| {
+            LifecycleEvent::TurnFinished {
+                session_id: child.clone(),
+                progress,
+                reason: reason.map(str::to_string),
+                cancelled_by: Some(crate::types::StopOrigin::Parent),
+            }
+        };
+        let v = project_lifecycle(&m, &mk(Some("cancelled"), progress.clone()));
+        assert_eq!(v["params"]["reason"], "cancelled");
+        assert_eq!(v["params"]["cancelled_by"], "parent");
+        assert!(
+            v["params"].get("last_turn_cancelled_by").is_none(),
+            "one name per location"
+        );
+        // reason != cancelled → null even if an origin were attached.
+        let v = project_lifecycle(&m, &mk(Some("completed"), progress));
+        let params = v["params"].as_object().unwrap();
+        assert!(params.contains_key("cancelled_by"), "explicit null");
+        assert!(params["cancelled_by"].is_null());
     }
 }

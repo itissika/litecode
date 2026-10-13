@@ -246,6 +246,8 @@ mod tests {
             parent_session_id: parent.into(),
             child_session_id: "child-a".into(),
             turn_id: "turn-a".into(),
+            cancelled: false,
+            cancelled_by: None,
         });
     }
 

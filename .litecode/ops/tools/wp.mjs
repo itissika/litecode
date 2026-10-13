@@ -1,4 +1,4 @@
-// ops.wp (v3, tools_version 15; v3 adds `set`, durable events) — nested WP lifecycle. Plan approval and completion acceptance are separate:
+// ops.wp (v5, tools_version 17; v3 adds `set`, durable events; v4 `set --field domain` + `reassign`; v5 domain reclassification allowed on closed packages) — nested WP lifecycle. Plan approval and completion acceptance are separate:
 //   drafting --submit--> awaiting_approval --approve--> ready --start--> in_progress --deliver--> review --close--> done|blocked
 //   reject on awaiting_approval → drafting (plan);  reject on review → in_progress (acceptance, optional --reopen children)
 //   A child cannot submit its plan or start until its parent's plan is approved.
@@ -37,7 +37,8 @@ const USAGE = `usage: wp.mjs <cmd> --as <agent_id|andy> ...   (v2: plan approval
   deliver  --id WP-x [--note N]          # owner: submit for acceptance → review (all children done/blocked/cancelled)
   reject   --id WP-x --note N [--reopen WP-a,WP-b]   # approver: plan → drafting | acceptance → in_progress (+reopen children)
   close    --id WP-x --to done|blocked|cancelled [--note N]   # approver: done only from review
-  set      --id WP-x --field artifact_path|handoff_path|progress|result|done_when --value V   # owner or approver; not when closed
+  set      --id WP-x --field artifact_path|handoff_path|progress|result|done_when|domain --value V   # owner or approver; not when closed (except domain); domain must exist in board.domains
+  reassign --id WP-x --owner O [--note N]   # v4: approver of WP-x or owner of its parent; O must be a registered agent; not when closed
   tree     [--id WP-x] [--json]
   summary  --id WP-x [--json]
   history  --id WP-x [--json]`;
@@ -46,7 +47,7 @@ function die(msg, code = 1) { console.error(msg); process.exit(code); }
 const known = new Set([...board.agents.map((a) => a.id), "andy"]);
 const as = opt("--as");
 const READ = new Set(["tree", "summary", "history"]);
-if (!cmd || !["new", "fill", "submit", "approve", "start", "deliver", "reject", "close", "set", ...READ].includes(cmd)) die(USAGE, 2);
+if (!cmd || !["new", "fill", "submit", "approve", "start", "deliver", "reject", "close", "set", "reassign", ...READ].includes(cmd)) die(USAGE, 2);
 if (!READ.has(cmd)) {
   if (!as) die("--as <agent_id|andy> required (self-declared identity)", 2);
   if (!known.has(as)) die(`--as ${as}: unknown agent`, 2);
@@ -219,21 +220,40 @@ switch (cmd) {
   }
   case "set": { // v3: owner/approver edit safe descriptive fields; validate + rollback like other writes
     const id = opt("--id"); const w = need(id); const field = opt("--field"); const value = opt("--value");
-    const SAFE = ["artifact_path", "handoff_path", "progress", "result", "done_when"];
+    const SAFE = ["artifact_path", "handoff_path", "progress", "result", "done_when", "domain"];
     if (!field || value === null) die("set: --field F --value V required", 2);
     if (!SAFE.includes(field)) die(`set: field ${field} not allowed (safe: ${SAFE.join(", ")})`, 2);
     if (as !== w.owner && as !== approverOf(w)) die(`set ${id}: --as ${as} is neither owner (${w.owner}) nor approver (${approverOf(w)})`);
-    if (CLOSED_STATUSES.has(w.status)) die(`set ${id}: package is ${w.status}`);
+    if (CLOSED_STATUSES.has(w.status) && field !== "domain") die(`set ${id}: package is ${w.status} (only --field domain may be reclassified on closed packages)`);
     let v = value === "" || value === "null" ? null : value;
     if (field === "artifact_path" || field === "handoff_path") {
       if (v !== null && !/^\.litecode\/ops\/[^\s]+$/.test(v)) die(`set: ${field} must be a repo-relative path under .litecode/ops/ (convention), got ${v}`, 2);
     }
     if (field === "done_when") { v = String(value).split(";").map((x) => x.trim()).filter(Boolean); if (!v.length) die("set: done_when needs ≥1 item", 2); }
+    if (field === "domain") { // v4 (tools_version 16): must be an existing board.domains id
+      const ids = board.domains.map((d) => d.id);
+      if (v === null || !ids.includes(v)) die(`set: domain must be an existing domain id (${ids.join(", ")}), got ${value}`, 2);
+    }
     if ((field === "result" || field === "progress") && v === null) die(`set: ${field} cannot be null`, 2);
     const old = w[field];
     w[field] = v;
     hist(w, "set", `${field}: ${JSON.stringify(old ?? null).slice(0, 60)} -> ${JSON.stringify(v).slice(0, 60)}`);
     commit(id, `${id}: set ${field}`, { field, value: v });
+    break;
+  }
+  case "reassign": { // v4 (tools_version 16): change owner only; every other field unchanged
+    const id = opt("--id"); const w = need(id); const to = opt("--owner"); const note = opt("--note");
+    if (!to) die("reassign: --owner O required", 2);
+    const agentIds = board.agents.map((a) => a.id);
+    if (!agentIds.includes(to)) die(`reassign: --owner ${to} is not a registered agent`, 2);
+    const parent = w.parent ? wpById(board, w.parent) : null;
+    const allowed = [approverOf(w), parent?.owner].filter(Boolean);
+    if (!allowed.includes(as)) die(`reassign ${id}: --as ${as} is neither approver (${approverOf(w)}) nor parent owner (${parent?.owner ?? "-"})`);
+    if (CLOSED_STATUSES.has(w.status)) die(`reassign ${id}: package is ${w.status}`);
+    if (w.owner === to) die(`reassign ${id}: already owned by ${to}`, 2);
+    const from = w.owner; w.owner = to;
+    hist(w, "reassign", `owner: ${from} -> ${to}${note ? "; " + note : ""}`);
+    commit(id, `${id}: reassign owner ${from} -> ${to}`, { from, to });
     break;
   }
   case "tree": {

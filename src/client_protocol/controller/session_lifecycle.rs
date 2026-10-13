@@ -369,6 +369,7 @@ impl SessionController {
                 parent,
                 crate::tools::subagent::ParentNotice::ChildDeleted {
                     child_session_id: id.to_string(),
+                    by: crate::types::StopOrigin::User,
                 },
             );
         }
@@ -436,16 +437,18 @@ impl SessionController {
                 row.agent_id,
                 row.model_id,
             );
-            let last_turn_reason = if running || row.parent_session_id.is_none() {
-                String::new()
+            // WP-099 P1: reason and cancelled_by come from the same durable
+            // turn/end record, under the same visibility rule.
+            let (last_turn_reason, last_turn_cancelled_by) = if running
+                || row.parent_session_id.is_none()
+            {
+                (String::new(), None)
             } else {
-                sessions_mgr
-                    .data()
-                    .latest_turn_end_reason_blocking(&row.id)
-                    .ok()
-                    .flatten()
-                    .map(|(_, reason)| reason)
-                    .unwrap_or_default()
+                match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id)
+                {
+                    Some(end) => (end.reason, end.cancelled_by),
+                    None => (String::new(), None),
+                }
             };
             result.push(SessionInfo {
                 id: row.id,
@@ -464,6 +467,7 @@ impl SessionController {
                 parent_call_id: row.parent_call_id,
                 responsibility: row.responsibility,
                 last_turn_reason,
+                last_turn_cancelled_by,
             });
         }
         Ok(result)

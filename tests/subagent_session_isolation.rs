@@ -814,7 +814,11 @@ async fn subagent_list_reports_raw_session_statuses() {
         running.content
     );
 
-    assert!(sessions.cancel_turn_sync(&first).cancelled());
+    assert!(
+        sessions
+            .cancel_turn_sync(&first, litecode::types::StopOrigin::User)
+            .cancelled()
+    );
     let stopping = tool.call_inner(serde_json::json!({}));
     assert!(
         child_block(&stopping.content, &first).contains("  state: stopping\n"),

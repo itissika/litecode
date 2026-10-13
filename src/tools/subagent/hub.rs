@@ -130,12 +130,18 @@ impl Router {
         }
     }
 
+    /// WP-098 R-W: a cancelled turn lands in the mailbox (overwriting any
+    /// unread older result) but never runs the exit handler / wakes the parent.
     fn deliver(&mut self, completion: CompletionRef) {
         self.delivered.insert(
             completion.child_session_id.clone(),
             completion.turn_id.clone(),
         );
+        let cancelled = completion.cancelled;
         self.completions.push(completion.clone());
+        if cancelled {
+            return;
+        }
         if let Some(handler) = self.exit_handler.lock().expect("exit handler lock").clone() {
             handler(completion);
         }
@@ -147,7 +153,8 @@ impl Router {
             Ok(LifecycleEvent::TurnFinished {
                 session_id,
                 progress,
-                ..
+                reason,
+                cancelled_by,
             }) => {
                 let Ok(meta) = self.sessions.reader().meta_blocking(&session_id) else {
                     return true;
@@ -159,6 +166,8 @@ impl Router {
                     parent_session_id,
                     child_session_id: session_id,
                     turn_id: progress.turn_id,
+                    cancelled: reason.as_deref() == Some("cancelled"),
+                    cancelled_by,
                 });
             }
             Ok(LifecycleEvent::SessionRemoved { session_id, .. }) => {
@@ -184,8 +193,8 @@ impl Router {
         let mut children = self.sessions.idle_child_session_ids();
         children.sort();
         for (child, parent) in children {
-            let Ok(Some((turn_id, _))) =
-                self.sessions.data().latest_turn_end_reason_blocking(&child)
+            let Ok(Some((turn_id, reason, cancelled_by))) =
+                self.sessions.data().latest_turn_end_blocking(&child)
             else {
                 continue;
             };
@@ -196,6 +205,8 @@ impl Router {
                 parent_session_id: parent,
                 child_session_id: child,
                 turn_id,
+                cancelled: reason == "cancelled",
+                cancelled_by,
             });
         }
     }
@@ -294,6 +305,7 @@ mod tests {
     fn child_stopped_notice_writes_mailbox_without_wake() {
         notice_without_wake(ParentNotice::ChildStopped {
             child_session_id: "child-a".into(),
+            by: crate::types::StopOrigin::User,
         });
     }
 
@@ -301,12 +313,14 @@ mod tests {
     fn child_deleted_notice_writes_mailbox_without_wake() {
         notice_without_wake(ParentNotice::ChildDeleted {
             child_session_id: "child-a".into(),
+            by: crate::types::StopOrigin::User,
         });
         let hub = SubagentHub::new();
         hub.notify_parent_no_wake(
             "parent",
             ParentNotice::ChildDeleted {
                 child_session_id: "c".into(),
+                by: crate::types::StopOrigin::Parent,
             },
         );
         hub.purge_parent("parent");
@@ -321,6 +335,7 @@ mod tests {
             &parent,
             ParentNotice::ChildStopped {
                 child_session_id: child.clone(),
+                by: crate::types::StopOrigin::User,
             },
         );
         let progress = TurnProgress {
@@ -335,6 +350,7 @@ mod tests {
             session_id: child.clone(),
             progress,
             reason: None,
+            cancelled_by: None,
         })));
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
         assert!(router.completions.pending(&parent));
@@ -364,5 +380,87 @@ mod tests {
         append_turn_end(&sessions, &parent, "p-turn");
         assert!(router.handle(Err(broadcast::error::RecvError::Lagged(1))));
         assert_eq!(wakes.load(Ordering::SeqCst), 1);
+    }
+
+    fn progress(turn: &str) -> TurnProgress {
+        TurnProgress {
+            turn_id: turn.into(),
+            phase: crate::runtime::observer::TurnPhase::Starting,
+            step: 1,
+            step_max: 5,
+            started_at_ms: 0,
+            awaiting_permission: false,
+        }
+    }
+
+    #[test]
+    fn hub_stopped_turn_result_mailbox_only_no_wake() {
+        let (_dir, sessions, parent, child) = fixture();
+        let (mut router, wakes) = counting_router(&sessions);
+        assert!(router.handle(Ok(LifecycleEvent::TurnFinished {
+            session_id: child.clone(),
+            progress: progress("t1"),
+            reason: Some("completed".into()),
+            cancelled_by: None,
+        })));
+        assert_eq!(wakes.load(Ordering::SeqCst), 1, "normal completion wakes");
+        assert!(router.handle(Ok(LifecycleEvent::TurnFinished {
+            session_id: child.clone(),
+            progress: progress("t2"),
+            reason: Some("cancelled".into()),
+            cancelled_by: Some(crate::types::StopOrigin::User),
+        })));
+        assert_eq!(wakes.load(Ordering::SeqCst), 1, "cancelled must not wake");
+        assert!(
+            !router.notices.pending(&parent),
+            "no ChildStopped from router"
+        );
+        let taken = router.completions.take_all(&parent);
+        assert_eq!(taken.len(), 1, "cancelled overwrote unread completed");
+        assert_eq!(taken[0].turn_id, "t2");
+        assert!(taken[0].cancelled);
+        assert_eq!(taken[0].cancelled_by, Some(crate::types::StopOrigin::User));
+    }
+
+    #[test]
+    fn hub_notice_carries_by_user_parent() {
+        use crate::types::StopOrigin;
+        let hub = SubagentHub::new();
+        hub.notify_parent_no_wake(
+            "p",
+            ParentNotice::ChildStopped {
+                child_session_id: "a".into(),
+                by: StopOrigin::User,
+            },
+        );
+        hub.notify_parent_no_wake(
+            "p",
+            ParentNotice::ChildDeleted {
+                child_session_id: "b".into(),
+                by: StopOrigin::Parent,
+            },
+        );
+        let taken = hub.take_notices("p");
+        assert_eq!(taken[0].by(), StopOrigin::User);
+        assert_eq!(taken[1].by(), StopOrigin::Parent);
+        assert!(!hub.has_pending("p"));
+    }
+
+    #[test]
+    fn hub_lagged_rescan_dedups_per_child() {
+        let (_dir, sessions, parent, child) = fixture();
+        let (mut router, wakes) = counting_router(&sessions);
+        append_turn_end(&sessions, &child, "t1");
+        assert!(router.handle(Err(broadcast::error::RecvError::Lagged(1))));
+        // Simulate a restart that lost `delivered` while the result is unread.
+        router.delivered.clear();
+        assert!(router.handle(Err(broadcast::error::RecvError::Lagged(1))));
+        assert_eq!(
+            router.completions.take_all(&parent).len(),
+            1,
+            "unread same turn is not duplicated"
+        );
+        // Wake count still rises on the replay (ISSUE-054 remains partial).
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
     }
 }

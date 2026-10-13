@@ -352,6 +352,7 @@ impl Projection {
                 turn_token_stats,
                 committed_next_seq: _,
                 error_kind,
+                cancelled_by,
             } => InternalEvent::TurnCompleted {
                 turn_id,
                 final_text,
@@ -359,6 +360,7 @@ impl Projection {
                 turn_token_stats,
                 committed_next_seq: self.turn_committed_next_seq,
                 error_kind,
+                cancelled_by,
             },
             other => other,
         };
@@ -877,6 +879,7 @@ impl Projection {
                 turn_token_stats,
                 committed_next_seq: _,
                 error_kind: _,
+                cancelled_by: _,
             } => {
                 if self.turn_completed_emitted {
                     return;
@@ -1851,6 +1854,7 @@ mod compact_item_wire_tests {
                 turn_token_stats: crate::runtime::observer::TurnTokenStats::default(),
                 committed_next_seq: 0,
                 error_kind: None,
+                cancelled_by: None,
             },
             "/p",
             &binding(),

@@ -14,7 +14,6 @@ use super::status;
 
 pub struct SubagentStopTool {
     sessions: Arc<SessionManager>,
-    hub: Option<Arc<super::SubagentHub>>,
     session_id: Mutex<String>,
 }
 
@@ -22,15 +21,8 @@ impl SubagentStopTool {
     pub fn new(sessions: Arc<SessionManager>) -> Self {
         Self {
             sessions,
-            hub: None,
             session_id: Mutex::new(String::new()),
         }
-    }
-
-    /// Parent mailbox for `ChildStopped` (K5: written, never wakes the parent).
-    pub fn with_hub(mut self, hub: Arc<super::SubagentHub>) -> Self {
-        self.hub = Some(hub);
-        self
     }
 
     fn session_id(&self) -> String {
@@ -54,15 +46,12 @@ impl SubagentStopTool {
 
         // K3: check and cancel happen under one records lock (WP-090
         // CancelOutcome). Cancel never touches the child's pending queue.
-        if self.sessions.cancel_turn_sync(child_id).cancelled() {
-            if let Some(hub) = &self.hub {
-                hub.notify_parent_no_wake(
-                    &parent,
-                    super::ParentNotice::ChildStopped {
-                        child_session_id: child_id.to_string(),
-                    },
-                );
-            }
+        if self
+            .sessions
+            .cancel_turn_sync(child_id, crate::types::StopOrigin::Parent)
+            .cancelled()
+        {
+            // WP-094 L5: the parent stopped it itself — no ChildStopped to self.
             return ToolCallResult::ok(status::format_stopped(child_id));
         }
 
@@ -114,7 +103,6 @@ impl Tool for SubagentStopTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let tool = SubagentStopTool {
             sessions: Arc::clone(&self.sessions),
-            hub: self.hub.clone(),
             session_id: Mutex::new(execution.session_id),
         };
         Box::pin(async move { tool.call_stop(input) })
@@ -187,38 +175,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_writes_child_stopped_notice_without_wake() {
+    async fn stop_by_parent_no_notice_to_self() {
         let (_dir, sessions, parent, child) = parent_and_child().await;
+        // The stop tool holds no hub at all: it cannot write a ParentNotice.
         let hub = Arc::new(crate::tools::subagent::SubagentHub::new());
         sessions
             .reserve_turn(&child, "t1".into(), 10, "reviewer", "/proj")
             .unwrap();
-        let tool = SubagentStopTool::new(Arc::clone(&sessions)).with_hub(Arc::clone(&hub));
-        tool.set_active_session(parent.clone());
-        let result = tool.call(serde_json::json!({ "id": child }));
+        let result = stop(&sessions, &parent, &child);
         assert!(
             result.content.contains("status: stopped"),
             "{}",
             result.content
         );
-        assert!(hub.has_notices(&parent));
-        assert!(!hub.has_pending(&parent));
-        assert_eq!(
-            hub.take_notices(&parent),
-            vec![crate::tools::subagent::ParentNotice::ChildStopped {
-                child_session_id: child.clone()
-            }]
-        );
-        // Idle stop writes nothing (repeat cancel inside Starting is idempotent
-        // `Starting` per WP-090 §1, so release the reservation first).
-        sessions.release_turn_reservation(&child, "t1");
-        let idle = tool.call(serde_json::json!({ "id": child }));
-        assert!(
-            idle.content.contains("status: nothing running"),
-            "{}",
-            idle.content
-        );
         assert!(!hub.has_notices(&parent));
+        assert!(!hub.has_pending(&parent));
     }
 
     #[tokio::test]

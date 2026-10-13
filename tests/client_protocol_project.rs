@@ -387,6 +387,7 @@ fn turn_completed_projects_to_turn_finished() {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
             error_kind: None,
+            cancelled_by: None,
         },
         &snap,
     )
@@ -560,6 +561,7 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
             error_kind: None,
+            cancelled_by: None,
         },
         &snap,
     )
@@ -585,6 +587,7 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
             error_kind: None,
+            cancelled_by: None,
         },
         &snap,
     )
@@ -607,6 +610,7 @@ fn turn_finished_auto_compact_failure_is_compaction_failed() {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
             error_kind: Some(TurnErrorKind::CompactionFailed),
+            cancelled_by: None,
         },
         &snap,
     )

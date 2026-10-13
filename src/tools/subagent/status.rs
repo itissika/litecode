@@ -18,10 +18,24 @@ pub fn format_started(child_id: &str, turn_id: &str, responsibility: Option<&str
     out
 }
 
-pub fn format_queued(child_id: &str, pending_id: &str) -> String {
+pub fn format_queued(child_id: &str, position: usize) -> String {
     format!(
-        "status: queued\nqueued: true\nchild_session_id: {child_id}\npending_id: {pending_id}\n\
-         The child is running; this message is queued and will be delivered at its next opportunity.\n"
+        "status: queued\nchild_session_id: {child_id}\nposition: {position}\n\
+         The child is running; this message runs as its own new turn after the current turn ends.\n"
+    )
+}
+
+pub fn format_steered(child_id: &str, pending_id: &str) -> String {
+    format!(
+        "status: steered\nchild_session_id: {child_id}\npending_id: {pending_id}\n\
+         The child is running; this message is injected into its current turn at the next request.\n"
+    )
+}
+
+pub fn format_stopped_and_queued(child_id: &str) -> String {
+    format!(
+        "status: stopped_and_queued\nchild_session_id: {child_id}\n\
+         The current turn was stopped; this message runs as the next new turn.\n"
     )
 }
 
@@ -140,7 +154,16 @@ pub fn format_batch_results(sessions: &SessionManager, completions: &[Completion
                     agent.as_deref(),
                     responsibility.as_deref(),
                     &result,
-                ))
+                ));
+                if result.reason == "cancelled" || completion.cancelled {
+                    out.push_str(&format!(
+                        "cancelled_by: {}\n",
+                        completion
+                            .cancelled_by
+                            .map(|by| by.as_str())
+                            .unwrap_or("null")
+                    ));
+                }
             }
             Err(error) => out.push_str(&format!(
                 "child_session_id: {}\nturn_id: {}\nreason: unknown\nresult_error: {error}\n",

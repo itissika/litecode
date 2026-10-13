@@ -444,6 +444,7 @@ fn turn_finished_snapshot_next_seq_matches_db_max_plus_one() {
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 99,
             error_kind: None,
+            cancelled_by: None,
         },
         "/p",
         &binding(),

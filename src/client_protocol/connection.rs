@@ -444,7 +444,10 @@ pub async fn handle_jsonrpc(
             });
             let sid = resolve_sid(session, &params.session_id);
             // WP-091 R1 / P2: report truthfully; children are allowed.
-            let outcome = session.sessions.cancel_turn(&sid).await;
+            let outcome = session
+                .sessions
+                .cancel_turn(&sid, crate::types::StopOrigin::User)
+                .await;
             // K5 / Q5: only a real stop of a child notes its parent (no wake).
             if outcome.cancelled()
                 && let Some(parent) = session.sessions.parent_session_id_of(&sid)
@@ -453,6 +456,7 @@ pub async fn handle_jsonrpc(
                     &parent,
                     crate::tools::subagent::ParentNotice::ChildStopped {
                         child_session_id: sid.clone(),
+                        by: crate::types::StopOrigin::User,
                     },
                 );
             }
@@ -1741,7 +1745,7 @@ pub async fn run_session_loop(
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            let _ = session.sessions.cancel_turn(sid).await;
+                            let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
                         }
                         break;
                     }
@@ -1754,7 +1758,7 @@ pub async fn run_session_loop(
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            let _ = session.sessions.cancel_turn(sid).await;
+                            let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
                         }
                         for msg in session.take_all_outgoing() {
                             emit(&response_tx, msg);
@@ -1885,7 +1889,10 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
-                        let _ = session.sessions.cancel_turn(&sid).await;
+                        let _ = session
+                            .sessions
+                            .cancel_turn(&sid, crate::types::StopOrigin::User)
+                            .await;
                         return;
                     }
                     SessionRequest::Cancel => {
@@ -1899,7 +1906,10 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
-                        let _ = session.sessions.cancel_turn(&sid).await;
+                        let _ = session
+                            .sessions
+                            .cancel_turn(&sid, crate::types::StopOrigin::User)
+                            .await;
                         if let Some(proj) = session.projection_mut(&sid) {
                             for msg in proj.take_outgoing() {
                                 emit(&response_tx, msg);
@@ -2662,7 +2672,8 @@ mod ask_loop_tests {
         assert_eq!(
             hub.take_notices(&parent),
             vec![crate::tools::subagent::ParentNotice::ChildStopped {
-                child_session_id: child.clone()
+                child_session_id: child.clone(),
+                by: crate::types::StopOrigin::User,
             }]
         );
         assert!(s.finish_turn(&child, "t-run").is_some());
@@ -2735,7 +2746,8 @@ mod ask_loop_tests {
         assert_eq!(
             hub.take_notices(&parent),
             vec![crate::tools::subagent::ParentNotice::ChildDeleted {
-                child_session_id: child.clone()
+                child_session_id: child.clone(),
+                by: crate::types::StopOrigin::User,
             }]
         );
     }
@@ -2781,5 +2793,123 @@ mod ask_loop_tests {
             result["subagent_bindings"]["call_wp091"],
             serde_json::json!(child)
         );
+    }
+
+    // ── WP-099 ──
+
+    fn wp099_turn_end(s: &SessionManager, sid: &str, turn: &str, reason: &str, by: Option<&str>) {
+        let mut data = serde_json::json!({"turn": turn, "reason": reason, "final_text": ""});
+        if let Some(by) = by {
+            data["cancelled_by"] = serde_json::json!(by);
+        }
+        s.apply(
+            sid,
+            crate::session::store::SessionApply::Append(crate::session::EventDraft {
+                time: 1,
+                event_type: crate::session::EventType::TurnEnd,
+                data,
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::LogState::Final,
+            }),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp099_session_info_last_turn_cancelled_by_user_parent_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, parent, child) = wp091_parent_child(dir.path()).await;
+        let row = |list: &[crate::client_protocol::protocol::SessionInfo], id: &str| {
+            list.iter().find(|r| r.id == id).cloned().unwrap()
+        };
+        // No turn yet → null, and serialized explicitly.
+        let list = c.list_sessions().await.unwrap();
+        let json = serde_json::to_value(row(&list, &child)).unwrap();
+        assert!(
+            json.as_object()
+                .unwrap()
+                .contains_key("last_turn_cancelled_by")
+        );
+        assert!(json["last_turn_cancelled_by"].is_null());
+
+        wp099_turn_end(&s, &child, "t1", "cancelled", Some("user"));
+        let r = row(&c.list_sessions().await.unwrap(), &child);
+        assert_eq!(r.last_turn_reason, "cancelled");
+        assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("user"));
+
+        wp099_turn_end(&s, &child, "t2", "cancelled", Some("parent"));
+        let r = row(&c.list_sessions().await.unwrap(), &child);
+        assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("parent"));
+
+        wp099_turn_end(&s, &child, "t3", "completed", None);
+        let r = row(&c.list_sessions().await.unwrap(), &child);
+        assert_eq!(r.last_turn_cancelled_by, None);
+
+        // Main session: same rule as last_turn_reason → always null (Q6).
+        wp099_turn_end(&s, &parent, "p1", "cancelled", Some("user"));
+        let r = row(&c.list_sessions().await.unwrap(), &parent);
+        assert_eq!(r.last_turn_cancelled_by, None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp099_user_cancel_child_notice_by_user_and_no_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, parent, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        s.begin_turn(
+            &child,
+            "t-run".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            &project,
+        )
+        .expect("begin child turn");
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/cancel",
+            serde_json::json!({"session_id": child}),
+        )
+        .await;
+        assert_eq!(reply["result"]["cancelled"], true, "{reply}");
+        let hub = &c.runtime.subagent_hub;
+        assert!(
+            !hub.has_pending(&parent),
+            "user stop must not wake the parent"
+        );
+        assert_eq!(
+            hub.take_notices(&parent),
+            vec![crate::tools::subagent::ParentNotice::ChildStopped {
+                child_session_id: child.clone(),
+                by: crate::types::StopOrigin::User,
+            }]
+        );
+        assert!(s.finish_turn(&child, "t-run").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp099_child_still_readonly_for_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, _p, child) = wp091_parent_child(dir.path()).await;
+        for (method, params) in [
+            (
+                "agent/run",
+                serde_json::json!({"session_id": child, "input": "hi"}),
+            ),
+            (
+                "agent/run",
+                serde_json::json!({"session_id": child, "input": "hi", "plan_execution": true}),
+            ),
+            ("agent/retry", serde_json::json!({"session_id": child})),
+            (
+                "session/pending-enqueue",
+                serde_json::json!({"session_id": child, "text": "x"}),
+            ),
+        ] {
+            let reply = wp091_rpc(&mut c, method, params).await;
+            wp091_assert_readonly(&reply);
+        }
     }
 }

@@ -486,6 +486,7 @@ fn project_with(
             turn_token_stats,
             committed_next_seq: _,
             error_kind,
+            ..
         } => {
             let snapshot = snapshot?;
             let error = turn_error(reason, final_text, *error_kind, snapshot.llm_reconnect);
@@ -893,6 +894,7 @@ pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
             session_id,
             progress,
             reason,
+            ..
         } => session_lifecycle_turn_finished(
             session_id,
             &turn_progress_to_snapshot(progress),

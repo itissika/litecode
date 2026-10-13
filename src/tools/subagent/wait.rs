@@ -35,6 +35,18 @@ impl SubagentWaitTool {
         self.session_id.lock().unwrap().clone()
     }
 
+    /// `turn/end.cancelled_by` for `turn_id` when it is the child's latest turn end.
+    fn latest_cancelled_by(
+        &self,
+        child_id: &str,
+        turn_id: &str,
+    ) -> Option<crate::types::StopOrigin> {
+        match self.sessions.data().latest_turn_end_blocking(child_id) {
+            Ok(Some((tid, _, by))) if tid == turn_id => by,
+            _ => None,
+        }
+    }
+
     async fn call_wait(&self, input: Value) -> ToolCallResult {
         let parent = self.session_id();
         if parent.is_empty() {
@@ -78,11 +90,16 @@ impl SubagentWaitTool {
                 continue;
             }
             match self.sessions.data().latest_turn_result_blocking(&child_id) {
-                Ok(Some(result)) => completed.push(CompletionRef {
-                    parent_session_id: parent.clone(),
-                    child_session_id: child_id,
-                    turn_id: result.turn_id,
-                }),
+                Ok(Some(result)) => {
+                    let cancelled_by = self.latest_cancelled_by(&child_id, &result.turn_id);
+                    completed.push(CompletionRef {
+                        parent_session_id: parent.clone(),
+                        child_session_id: child_id,
+                        cancelled: result.reason == "cancelled",
+                        turn_id: result.turn_id,
+                        cancelled_by,
+                    })
+                }
                 Ok(None) => skipped.push((child_id, "no completed turn".into())),
                 Err(error) => skipped.push((child_id, format!("result unavailable: {error}"))),
             }
@@ -116,13 +133,15 @@ impl SubagentWaitTool {
                 }
                 event = lifecycle.recv() => {
                     match event {
-                        Ok(LifecycleEvent::TurnFinished { session_id, progress, .. }) => {
+                        Ok(LifecycleEvent::TurnFinished { session_id, progress, reason, cancelled_by }) => {
                             if selected.get(&session_id) == Some(&progress.turn_id) {
                                 selected.remove(&session_id);
                                 completed.push(CompletionRef {
                                     parent_session_id: parent.clone(),
                                     child_session_id: session_id,
                                     turn_id: progress.turn_id,
+                                    cancelled: reason.as_deref() == Some("cancelled"),
+                                    cancelled_by,
                                 });
                             }
                         }
@@ -145,10 +164,13 @@ impl SubagentWaitTool {
                                 .collect::<Vec<_>>();
                             for (child_id, turn_id) in settled {
                                 selected.remove(&child_id);
+                                let cancelled_by = self.latest_cancelled_by(&child_id, &turn_id);
                                 completed.push(CompletionRef {
                                     parent_session_id: parent.clone(),
                                     child_session_id: child_id,
                                     turn_id,
+                                    cancelled: cancelled_by.is_some(),
+                                    cancelled_by,
                                 });
                             }
                         }

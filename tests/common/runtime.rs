@@ -171,6 +171,27 @@ pub fn build_runtime_with_provider_and_observer(
     provider: Arc<dyn LlmProvider>,
     observer: Arc<dyn RuntimeObserver>,
 ) -> AgentRuntime {
+    build_runtime_inner(cwd, spec, provider, observer, false)
+}
+
+/// WP-098: same product path, but the runtime drives a child session
+/// (`parent_session_id` set) so child-only behaviour can be exercised.
+#[allow(dead_code)]
+pub fn build_child_runtime_with_provider(
+    cwd: &Path,
+    spec: TestAgentSpec,
+    provider: Arc<dyn LlmProvider>,
+) -> AgentRuntime {
+    build_runtime_inner(cwd, spec, provider, Arc::new(NoopObserver), true)
+}
+
+fn build_runtime_inner(
+    cwd: &Path,
+    spec: TestAgentSpec,
+    provider: Arc<dyn LlmProvider>,
+    observer: Arc<dyn RuntimeObserver>,
+    child: bool,
+) -> AgentRuntime {
     let workspace = test_workspace(cwd);
     set_runtime_paths(workspace.paths.clone());
 
@@ -199,9 +220,14 @@ pub fn build_runtime_with_provider_and_observer(
         Arc::new(TurnGuard::new()),
         db_path.to_string_lossy().to_string(),
     ));
-    let session_id = sessions
+    let mut session_id = sessions
         .open_session_sync(&project, "default", model_ref)
         .unwrap();
+    if child {
+        session_id = sessions
+            .open_child_session(&project, "default", model_ref, &session_id, "call-wp098")
+            .unwrap();
+    }
 
     let model_ref = resolved
         .agents()

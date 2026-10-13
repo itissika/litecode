@@ -82,9 +82,16 @@ async fn send_to_busy_child_queues_without_starting_a_turn() {
     let sent = harness.send("call_send_busy", &child, "again").await;
     // WP-092 K2 (ISSUE-053): a busy child queues the message instead of failing.
     assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
-    assert!(sent.content.contains("queued: true"), "{}", sent.content);
+    // WP-100: default mode is queue → a follow-up turn, not a steer.
+    assert!(sent.content.contains("status: queued"), "{}", sent.content);
     assert_eq!(turn_starts(&harness, &child), 1, "no second turn may start");
-    assert_eq!(harness.sessions.pending_messages_snapshot(&child).len(), 1);
+    assert!(harness.sessions.has_follow_ups(&child));
+    assert!(
+        harness
+            .sessions
+            .pending_messages_snapshot(&child)
+            .is_empty()
+    );
     assert!(
         harness.sessions.is_turn_running_blocking(&child),
         "a queued send must not stop the first running turn"
@@ -145,6 +152,72 @@ async fn send_then_stop_cancels_the_new_turn() {
         "{}",
         waited.content
     );
+    assert!(
+        waited.content.contains("cancelled_by: parent"),
+        "{}",
+        waited.content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_returns_cancelled_when_user_stopped() {
+    let hang = HangProvider::until_cancel();
+    let started = Arc::clone(&hang.started);
+    let harness = SubagentHarness::new(Arc::new(hang));
+    let child = harness.launch_reviewer("call_first", "first").await;
+    harness.wait_for(|| started.load(Ordering::SeqCst), "turn start");
+    harness
+        .sessions
+        .cancel_turn_sync(&child, litecode::types::StopOrigin::User);
+    harness.wait_child_settled(&child);
+    let waited = harness
+        .wait(
+            "call_wait_user",
+            serde_json::json!({ "ids": [child.clone()] }),
+        )
+        .await;
+    assert!(
+        waited.content.contains("reason: cancelled"),
+        "{}",
+        waited.content
+    );
+    assert!(
+        waited.content.contains("cancelled_by: user"),
+        "{}",
+        waited.content
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_returns_latest_only() {
+    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_texts(&[
+        "alpha result",
+        "beta result",
+    ])));
+    let child = harness.launch_reviewer("call_launch", "first").await;
+    harness.wait_child_settled(&child);
+    let sent = harness.send("call_send", &child, "again").await;
+    assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
+    harness.wait_for(|| turn_starts(&harness, &child) == 2, "second turn start");
+    harness.wait_child_settled(&child);
+    let waited = harness
+        .wait(
+            "call_wait_latest",
+            serde_json::json!({ "ids": [child.clone()] }),
+        )
+        .await;
+    assert!(waited.content.contains("settled: 1"), "{}", waited.content);
+    assert!(waited.content.contains("beta result"), "{}", waited.content);
+    assert!(
+        !waited.content.contains("alpha result"),
+        "{}",
+        waited.content
+    );
+    assert!(
+        !waited.content.contains("cancelled_by"),
+        "{}",
+        waited.content
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -169,11 +242,11 @@ async fn concurrent_sends_only_one_wins() {
     // the other is queued for the running child.
     let started_turn = results
         .iter()
-        .filter(|result| result.content.contains("queued: false"))
+        .filter(|result| result.content.contains("status: started"))
         .count();
     let queued = results
         .iter()
-        .filter(|result| result.content.contains("queued: true"))
+        .filter(|result| result.content.contains("status: queued"))
         .count();
     assert_eq!(ok, 2, "both sends succeed: {results:?}");
     assert_eq!(

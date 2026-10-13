@@ -11,6 +11,10 @@ pub struct CompletionRef {
     pub parent_session_id: String,
     pub child_session_id: String,
     pub turn_id: String,
+    /// WP-098 R-W: the turn ended `cancelled` (mailbox only, no parent wake).
+    pub cancelled: bool,
+    /// WP-098 v1.1: same value as `turn/end.cancelled_by`; for subagent_wait.
+    pub cancelled_by: Option<crate::types::StopOrigin>,
 }
 
 #[derive(Default)]
@@ -19,16 +23,27 @@ pub struct CompletionInbox {
 }
 
 impl CompletionInbox {
-    pub fn push(&self, completion: CompletionRef) {
+    /// WP-098 R-L: at most one unread result per child. A newer turn replaces
+    /// the unread older one in place; the same turn again is a no-op.
+    /// Returns true when the inbox changed.
+    pub fn push(&self, completion: CompletionRef) -> bool {
         let mut inner = self.inner.lock().expect("completion inbox lock");
         let queue = inner
             .entry(completion.parent_session_id.clone())
             .or_default();
-        if !queue.iter().any(|existing| {
-            existing.child_session_id == completion.child_session_id
-                && existing.turn_id == completion.turn_id
-        }) {
-            queue.push_back(completion);
+        match queue
+            .iter_mut()
+            .find(|existing| existing.child_session_id == completion.child_session_id)
+        {
+            Some(existing) if existing.turn_id == completion.turn_id => false,
+            Some(existing) => {
+                *existing = completion;
+                true
+            }
+            None => {
+                queue.push_back(completion);
+                true
+            }
         }
     }
 
@@ -57,6 +72,13 @@ impl CompletionInbox {
         let mut inner = self.inner.lock().expect("completion inbox lock");
         let queue = inner.entry(parent_session_id.to_string()).or_default();
         for completion in completions.into_iter().rev() {
+            // A result pushed for the same child since the take is newer: keep it.
+            if queue
+                .iter()
+                .any(|existing| existing.child_session_id == completion.child_session_id)
+            {
+                continue;
+            }
             queue.push_front(completion);
         }
     }
@@ -80,17 +102,47 @@ impl CompletionInbox {
 /// WP-090 K5: parent-side notice that never wakes the parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParentNotice {
-    ChildStopped { child_session_id: String },
-    ChildDeleted { child_session_id: String },
+    ChildStopped {
+        child_session_id: String,
+        by: crate::types::StopOrigin,
+    },
+    ChildDeleted {
+        child_session_id: String,
+        by: crate::types::StopOrigin,
+    },
 }
 
 impl ParentNotice {
     pub fn child_session_id(&self) -> &str {
         match self {
-            Self::ChildStopped { child_session_id } | Self::ChildDeleted { child_session_id } => {
-                child_session_id
+            Self::ChildStopped {
+                child_session_id, ..
             }
+            | Self::ChildDeleted {
+                child_session_id, ..
+            } => child_session_id,
         }
+    }
+
+    pub fn by(&self) -> crate::types::StopOrigin {
+        match self {
+            Self::ChildStopped { by, .. } | Self::ChildDeleted { by, .. } => *by,
+        }
+    }
+
+    /// WP-098 dedup key: same kind about the same child.
+    fn same_slot(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+            && self.child_session_id() == other.child_session_id()
+    }
+
+    /// Reminder reason, e.g. "stopped by user" / "deleted by parent".
+    pub fn reason_text(&self) -> String {
+        let verb = match self {
+            Self::ChildStopped { .. } => "stopped",
+            Self::ChildDeleted { .. } => "deleted",
+        };
+        format!("{verb} by {}", self.by().as_str())
     }
 }
 
@@ -104,8 +156,12 @@ impl NoticeInbox {
     pub fn push(&self, parent_session_id: &str, notice: ParentNotice) {
         let mut inner = self.inner.lock().expect("notice inbox lock");
         let queue = inner.entry(parent_session_id.to_string()).or_default();
-        if !queue.contains(&notice) {
-            queue.push_back(notice);
+        match queue
+            .iter_mut()
+            .find(|existing| existing.same_slot(&notice))
+        {
+            Some(existing) => *existing = notice,
+            None => queue.push_back(notice),
         }
     }
 
@@ -134,7 +190,7 @@ impl NoticeInbox {
         let mut inner = self.inner.lock().expect("notice inbox lock");
         let queue = inner.entry(parent_session_id.to_string()).or_default();
         for notice in notices.into_iter().rev() {
-            if !queue.contains(&notice) {
+            if !queue.iter().any(|existing| existing.same_slot(&notice)) {
                 queue.push_front(notice);
             }
         }
@@ -157,6 +213,8 @@ mod tests {
             parent_session_id: parent.into(),
             child_session_id: child.into(),
             turn_id: turn.into(),
+            cancelled: false,
+            cancelled_by: None,
         }
     }
 
@@ -177,5 +235,98 @@ mod tests {
         inbox.push(completion("p", "b", "t2"));
         inbox.forget_child("a");
         assert_eq!(inbox.take_all("p"), vec![completion("p", "b", "t2")]);
+    }
+
+    #[test]
+    fn hub_latest_only_one_result_per_child() {
+        let inbox = CompletionInbox::default();
+        inbox.push(completion("p", "a", "t1"));
+        inbox.push(completion("p", "b", "u1"));
+        inbox.push(completion("p", "a", "t2"));
+        inbox.push(completion("p", "a", "t3"));
+        let taken = inbox.take_all("p");
+        assert_eq!(taken.len(), 2, "one entry per child");
+        assert_eq!(taken[0], completion("p", "a", "t3"));
+        assert_eq!(taken[1], completion("p", "b", "u1"));
+    }
+
+    #[test]
+    fn hub_newer_result_overwrites_unread() {
+        let inbox = CompletionInbox::default();
+        assert!(inbox.push(completion("p", "a", "t1")));
+        assert!(
+            !inbox.push(completion("p", "a", "t1")),
+            "same turn is a no-op"
+        );
+        let mut cancelled = completion("p", "a", "t2");
+        cancelled.cancelled = true;
+        cancelled.cancelled_by = Some(crate::types::StopOrigin::User);
+        assert!(inbox.push(cancelled.clone()));
+        assert_eq!(inbox.take_all("p"), vec![cancelled]);
+    }
+
+    #[test]
+    fn hub_restore_front_does_not_clobber_newer() {
+        let inbox = CompletionInbox::default();
+        inbox.push(completion("p", "a", "t1"));
+        inbox.push(completion("p", "b", "u1"));
+        let taken = inbox.take_all("p");
+        inbox.push(completion("p", "a", "t2"));
+        inbox.restore_front("p", taken);
+        let after = inbox.take_all("p");
+        assert_eq!(after.len(), 2);
+        assert!(after.contains(&completion("p", "a", "t2")));
+        assert!(!after.contains(&completion("p", "a", "t1")));
+        assert_eq!(after[0], completion("p", "b", "u1"), "restored ahead");
+    }
+
+    #[test]
+    fn notice_dedup_is_per_kind_and_child_latest_by_wins() {
+        use crate::types::StopOrigin;
+        let inbox = NoticeInbox::default();
+        let stop = |by| ParentNotice::ChildStopped {
+            child_session_id: "c".into(),
+            by,
+        };
+        inbox.push("p", stop(StopOrigin::Parent));
+        inbox.push("p", stop(StopOrigin::User));
+        inbox.push(
+            "p",
+            ParentNotice::ChildDeleted {
+                child_session_id: "c".into(),
+                by: StopOrigin::User,
+            },
+        );
+        let taken = inbox.take_all("p");
+        assert_eq!(taken.len(), 2);
+        assert_eq!(taken[0], stop(StopOrigin::User));
+    }
+
+    #[test]
+    fn settled_reminder_text_stopped_by_user() {
+        use crate::types::StopOrigin;
+        let n = |stop: bool, by| {
+            if stop {
+                ParentNotice::ChildStopped {
+                    child_session_id: "c".into(),
+                    by,
+                }
+            } else {
+                ParentNotice::ChildDeleted {
+                    child_session_id: "c".into(),
+                    by,
+                }
+            }
+        };
+        assert_eq!(n(true, StopOrigin::User).reason_text(), "stopped by user");
+        assert_eq!(
+            n(true, StopOrigin::Parent).reason_text(),
+            "stopped by parent"
+        );
+        assert_eq!(n(false, StopOrigin::User).reason_text(), "deleted by user");
+        assert_eq!(
+            n(false, StopOrigin::Parent).reason_text(),
+            "deleted by parent"
+        );
     }
 }

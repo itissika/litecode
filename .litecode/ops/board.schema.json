@@ -301,7 +301,8 @@
                     "return",
                     "reopen",
                     "close",
-                    "set"
+                    "set",
+                    "reassign"
                   ]
                 },
                 "note": {

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::context_pipeline::Context;
 use crate::runtime::{RuntimeHandle, TurnOptions};
+use crate::session::manager::FollowUpOutcome;
 use crate::session::manager::SessionManager;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
@@ -60,13 +61,17 @@ impl SubagentSendTool {
                 "subagent '{child_id}' is not a child session of this session"
             ));
         }
-        // K2: a running child gets the message queued into its pending inbox;
-        // pending_auto_turn / the step seam deliver it at the next opportunity.
-        if self.sessions.is_turn_running_blocking(&child_id) {
-            return self.enqueue(&child_id, message);
-        }
+        let mode = match SendMode::parse(&input) {
+            Ok(mode) => mode,
+            Err(e) => return ToolCallResult::error(e),
+        };
         if let Err(error) = self.sessions.ensure_entry(&child_id).await {
             return ToolCallResult::error(format!("subagent '{child_id}' is unavailable: {error}"));
+        }
+        // WP-100: route the message by mode. A busy child never gets a second
+        // turn; an idle child (FollowUpOutcome::Idle) gets a turn started here.
+        if let Some(result) = self.deliver_to_busy(&child_id, &message, mode) {
+            return result;
         }
         let agent_id = match self.sessions.agent_id(&child_id) {
             Some(agent) if !agent.is_empty() => agent,
@@ -97,42 +102,130 @@ impl SubagentSendTool {
         {
             Ok(turn_id) => turn_id,
             // Lost the race: the child started a turn between the check and the
-            // reservation. Queue instead of failing.
+            // reservation. Deliver per mode instead of failing.
             Err(LitecodeError::AgentAlreadyRunning) => {
-                return self.enqueue(&child_id, retry_message);
+                return self
+                    .deliver_to_busy(&child_id, &retry_message, mode)
+                    .unwrap_or_else(|| {
+                        ToolCallResult::error(format!(
+                            "subagent '{child_id}' changed state during send; retry"
+                        ))
+                    });
             }
             Err(error) => {
                 return ToolCallResult::error(format!("subagent_send failed: {error}"));
             }
         };
         let mut text = status::format_started(&child_id, &turn_id, None);
-        text.push_str("queued: false\n");
+        text.push_str("status: started\n");
         let mut result = ToolCallResult::ok(text);
         result.metadata = Some(serde_json::json!({
             "child_session_id": child_id,
             "turn_id": turn_id,
-            "queued": false,
+            "mode": mode.as_str(),
+            "status": "started",
         }));
         result
     }
 
-    fn enqueue(&self, child_id: &str, message: String) -> ToolCallResult {
-        match self
-            .sessions
-            .enqueue_user_input(child_id, crate::types::UserInput::text(message))
-        {
-            Ok(pending) => {
-                let mut result = ToolCallResult::ok(status::format_queued(child_id, &pending.id));
-                result.metadata = Some(serde_json::json!({
-                    "child_session_id": child_id,
-                    "queued": true,
-                    "pending_id": pending.id,
-                }));
-                result
+    /// `Some(result)` when the child was busy and the message was handled by
+    /// `mode`; `None` when the child is idle and the caller must start a turn.
+    fn deliver_to_busy(
+        &self,
+        child_id: &str,
+        message: &str,
+        mode: SendMode,
+    ) -> Option<ToolCallResult> {
+        let input = crate::types::UserInput::text(message.to_string());
+        let meta = |status: &str, extra: Value| {
+            let mut m = serde_json::json!({
+                "child_session_id": child_id,
+                "mode": mode.as_str(),
+                "status": status,
+            });
+            if let (Some(obj), Value::Object(more)) = (m.as_object_mut(), extra) {
+                obj.extend(more);
             }
-            Err(error) => ToolCallResult::error(format!(
-                "subagent '{child_id}' message could not be queued: {error}"
-            )),
+            m
+        };
+        match mode {
+            SendMode::Queue => match self.sessions.enqueue_follow_up(child_id, input) {
+                Ok(FollowUpOutcome::Idle) => None,
+                Ok(FollowUpOutcome::Queued { position }) => {
+                    let mut r = ToolCallResult::ok(status::format_queued(child_id, position));
+                    r.metadata = Some(meta("queued", serde_json::json!({ "position": position })));
+                    Some(r)
+                }
+                Err(error) => Some(ToolCallResult::error(format!(
+                    "subagent '{child_id}' message could not be queued: {error}"
+                ))),
+            },
+            SendMode::Steer => {
+                if !self.sessions.is_turn_running_blocking(child_id) {
+                    return None;
+                }
+                match self.sessions.enqueue_user_input(child_id, input) {
+                    Ok(pending) => {
+                        let mut r =
+                            ToolCallResult::ok(status::format_steered(child_id, &pending.id));
+                        r.metadata = Some(meta(
+                            "steered",
+                            serde_json::json!({ "pending_id": pending.id }),
+                        ));
+                        Some(r)
+                    }
+                    Err(error) => Some(ToolCallResult::error(format!(
+                        "subagent '{child_id}' message could not be steered: {error}"
+                    ))),
+                }
+            }
+            SendMode::StopAndSend => match self.sessions.cancel_and_follow_up(
+                child_id,
+                input,
+                crate::types::StopOrigin::Parent,
+            ) {
+                Ok((_, FollowUpOutcome::Idle)) => None,
+                Ok((_, FollowUpOutcome::Queued { .. })) => {
+                    let mut r = ToolCallResult::ok(status::format_stopped_and_queued(child_id));
+                    r.metadata = Some(meta("stopped_and_queued", serde_json::json!({})));
+                    Some(r)
+                }
+                Err(error) => Some(ToolCallResult::error(format!(
+                    "subagent '{child_id}' could not be stopped and sent: {error}"
+                ))),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SendMode {
+    Queue,
+    Steer,
+    StopAndSend,
+}
+
+impl SendMode {
+    fn parse(input: &Value) -> Result<Self, String> {
+        match input.get("mode") {
+            None | Some(Value::Null) => Ok(Self::Queue),
+            Some(Value::String(s)) => match s.as_str() {
+                "queue" => Ok(Self::Queue),
+                "steer" => Ok(Self::Steer),
+                "stop_and_send" => Ok(Self::StopAndSend),
+                other => Err(format!(
+                    "unknown mode '{other}'; expected one of queue, steer, stop_and_send"
+                )),
+            },
+            Some(_) => Err("mode must be a string: queue, steer, or stop_and_send".into()),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+            Self::StopAndSend => "stop_and_send",
         }
     }
 }
@@ -153,6 +246,12 @@ impl Tool for SubagentSendTool {
                 "message": {
                     "type": "string",
                     "description": "Next assignment within this child session's established responsibility"
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["queue", "steer", "stop_and_send"],
+                    "default": "queue",
+                    "description": "queue: run as a new turn after the current one (default); steer: inject into the running turn; stop_and_send: stop the current turn, then run this next"
                 }
             },
             "required": ["id", "message"]
@@ -187,6 +286,10 @@ impl Tool for SubagentSendTool {
 
     fn is_cancellable(&self) -> bool {
         true
+    }
+
+    fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
+        SendMode::parse(input).map(|_| ())
     }
 
     fn set_active_session(&self, session_id: String) {
@@ -239,10 +342,10 @@ mod tests {
         (runtime, sessions)
     }
 
-    #[tokio::test]
-    async fn enqueues_while_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions) = test_runtime(dir.path());
+    async fn running_child(
+        dir: &std::path::Path,
+    ) -> (SubagentSendTool, Arc<SessionManager>, String) {
+        let (runtime, sessions) = test_runtime(dir);
         let parent = sessions
             .open_session("/proj", "default", None)
             .await
@@ -253,39 +356,105 @@ mod tests {
         sessions
             .reserve_turn(&child, "t1".into(), 10, "reviewer", "/proj")
             .unwrap();
-
         let tool = SubagentSendTool::new(runtime, Arc::clone(&sessions), 0);
-        tool.set_active_session(parent.clone());
-        let result = tool
-            .call_send(serde_json::json!({"id": child, "message": "next step"}))
-            .await;
+        tool.set_active_session(parent);
+        (tool, sessions, child)
+    }
 
+    fn assert_ok(result: &ToolCallResult) {
         assert_eq!(
             result.level,
             crate::types::ToolSignalLevel::Ok,
             "{}",
             result.content
         );
+    }
+
+    #[tokio::test]
+    async fn send_mode_defaults_to_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        let schema = tool.schema();
+        assert_eq!(schema["properties"]["mode"]["default"], "queue");
+        assert_eq!(schema["required"], serde_json::json!(["id", "message"]));
+        let result = tool
+            .call_send(serde_json::json!({"id": child, "message": "next step"}))
+            .await;
+        assert_ok(&result);
         assert!(
-            result.content.contains("queued: true"),
+            result.content.contains("status: queued"),
             "{}",
             result.content
         );
         let meta = result.metadata.clone().unwrap();
-        assert_eq!(meta["queued"], serde_json::json!(true));
-        let pending = sessions.pending_messages_snapshot(&child);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].text, "next step");
-        assert_eq!(meta["pending_id"], serde_json::json!(pending[0].id));
+        assert_eq!(meta["mode"], "queue");
+        assert_eq!(meta["status"], "queued");
+        assert!(sessions.has_follow_ups(&child));
+        assert!(sessions.pending_messages_snapshot(&child).is_empty());
     }
 
-    #[test]
-    fn schema_has_no_mode_parameter() {
+    #[tokio::test]
+    async fn send_queue_while_running_returns_queued() {
         let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions) = test_runtime(dir.path());
-        let tool = SubagentSendTool::new(runtime, sessions, 0);
-        let schema = tool.schema();
-        assert!(schema["properties"].get("mode").is_none());
-        assert_eq!(schema["required"], serde_json::json!(["id", "message"]));
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        for msg in ["one", "two"] {
+            let result = tool
+                .call_send(serde_json::json!({"id": child, "message": msg, "mode": "queue"}))
+                .await;
+            assert_ok(&result);
+            assert_eq!(result.metadata.unwrap()["status"], "queued");
+        }
+        assert_eq!(sessions.follow_ups_len(&child), 2);
+    }
+
+    #[tokio::test]
+    async fn send_steer_injects_current_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        let result = tool
+            .call_send(serde_json::json!({"id": child, "message": "adjust", "mode": "steer"}))
+            .await;
+        assert_ok(&result);
+        assert!(
+            result.content.contains("status: steered"),
+            "{}",
+            result.content
+        );
+        let meta = result.metadata.clone().unwrap();
+        let pending = sessions.pending_messages_snapshot(&child);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "adjust");
+        assert_eq!(meta["pending_id"], serde_json::json!(pending[0].id));
+        assert!(!sessions.has_follow_ups(&child));
+    }
+
+    #[tokio::test]
+    async fn send_stop_and_send_no_stopped_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        let result = tool
+            .call_send(serde_json::json!({"id": child, "message": "redo", "mode": "stop_and_send"}))
+            .await;
+        assert_ok(&result);
+        assert!(
+            result.content.contains("status: stopped_and_queued"),
+            "{}",
+            result.content
+        );
+        assert_eq!(result.metadata.unwrap()["mode"], "stop_and_send");
+        assert!(sessions.has_follow_ups(&child));
+        assert!(sessions.pending_messages_snapshot(&child).is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_mode_rejects_unknown() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        let bad = serde_json::json!({"id": child, "message": "x", "mode": "interrupt"});
+        assert!(tool.validate_input(&bad).is_err());
+        let result = tool.call_send(bad).await;
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert!(!sessions.has_follow_ups(&child));
+        assert!(sessions.pending_messages_snapshot(&child).is_empty());
     }
 }

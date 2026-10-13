@@ -31,6 +31,8 @@ pub enum PendingFlush {
         /// `item/user` seq written for this flush, before mentions.
         anchor_user_seq: u64,
         sink: Arc<dyn PermissionSink>,
+        /// WP-098: child session → spawn with the child's named identity.
+        child: bool,
     },
     SkippedBusy,
     SkippedEmpty,
@@ -53,16 +55,31 @@ pub fn try_begin_pending_flush(
     if sid.is_empty() || sid == "_" {
         return PendingFlush::SkippedSessionGone;
     }
-    if !sessions.has_pending_messages(sid) {
+    // WP-098 Q7: steer leftovers (pending) flush first; child follow-ups only
+    // once pending is empty, one message per turn, FIFO.
+    let use_follow_up = if sessions.has_pending_messages(sid) {
+        false
+    } else if sessions.has_follow_ups(sid) {
+        true
+    } else {
         return PendingFlush::SkippedEmpty;
-    }
+    };
 
-    let default_primary = runtime.desired_primary_agent();
-    let primary_agent =
+    // WP-098: a child runs its own (subagent) profile; only roots validate
+    // against the primary-agent list.
+    let child = sessions.parent_session_id_of(sid).is_some();
+    let primary_agent = if child {
+        match sessions.agent_id(sid) {
+            Some(agent) if !agent.is_empty() => agent,
+            _ => return PendingFlush::SkippedSessionGone,
+        }
+    } else {
+        let default_primary = runtime.desired_primary_agent();
         match sessions.resolve_primary_agent(sid, default_primary, &runtime.resolved) {
             Ok(id) => id,
             Err(_) => return PendingFlush::SkippedSessionGone,
-        };
+        }
+    };
     let project = sessions
         .project(sid)
         .unwrap_or_else(|| workspace_root.display().to_string());
@@ -70,6 +87,41 @@ pub fn try_begin_pending_flush(
         .map(|a| a.max_steps)
         .unwrap_or(50);
     let turn_id = uuid::Uuid::new_v4().to_string();
+    if use_follow_up {
+        let input = match sessions.reserve_turn_and_pop_follow_up(
+            sid,
+            turn_id.clone(),
+            step_max,
+            &primary_agent,
+            &project,
+        ) {
+            Ok(Some((_progress, input))) => input,
+            Ok(None) => return PendingFlush::SkippedEmpty,
+            Err(LitecodeError::AgentAlreadyRunning) => return PendingFlush::SkippedBusy,
+            Err(_) => return PendingFlush::SkippedSessionGone,
+        };
+        let anchor_user_seq =
+            match sessions.append_user_message_with_mentions(sid, input.clone(), workspace_root) {
+                Ok(seq) => seq,
+                Err(error) => {
+                    tracing::warn!(session_id = sid, %error, "failed to persist follow-up");
+                    sessions.restore_follow_up_front(sid, input);
+                    sessions.release_turn_reservation(sid, &turn_id);
+                    return PendingFlush::SkippedSessionGone;
+                }
+            };
+        let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
+        return PendingFlush::Prepared {
+            session_id: sid.to_string(),
+            turn_id,
+            primary_agent,
+            project,
+            input,
+            anchor_user_seq,
+            sink,
+            child,
+        };
+    }
     let claimed = match sessions.reserve_turn_and_claim_pending(
         sid,
         turn_id.clone(),
@@ -104,6 +156,7 @@ pub fn try_begin_pending_flush(
         input,
         anchor_user_seq,
         sink,
+        child,
     }
 }
 
@@ -120,6 +173,7 @@ fn spawn_prepared_pending_flush(
         input: _,
         anchor_user_seq,
         sink,
+        child,
     } = decision
     else {
         return;
@@ -134,7 +188,11 @@ fn spawn_prepared_pending_flush(
         },
         sink,
         turn_id.clone(),
-        TurnOptions::default(),
+        if child {
+            TurnOptions::child(primary_agent.clone())
+        } else {
+            TurnOptions::default()
+        },
     ) {
         Ok(h) => h,
         Err(error) => {
@@ -654,5 +712,157 @@ mod tests {
             "primary keeps last sink (Q1)"
         );
         // try_begin_pending_flush goes through the same helper (see sink selection in this module).
+    }
+
+    /// WP-098: a busy child with a queued follow-up. Returns (sessions, child, project).
+    fn busy_child_with_follow_ups(
+        dir: &std::path::Path,
+        texts: &[&str],
+    ) -> (RuntimeHandle, Arc<SessionManager>, String) {
+        let (runtime, sessions) = test_runtime(dir);
+        let project = dir.display().to_string();
+        let parent = sessions
+            .open_session_sync(&project, "default", None)
+            .unwrap();
+        let child = sessions
+            .test_child_session(&project, &parent, "call-1")
+            .unwrap();
+        sessions
+            .reserve_turn(&child, "turn-busy".into(), 10, "default", &project)
+            .unwrap();
+        for text in texts {
+            sessions
+                .enqueue_follow_up(&child, UserInput::text(*text))
+                .unwrap();
+        }
+        assert!(sessions.release_turn_reservation(&child, "turn-busy"));
+        (runtime, sessions, child)
+    }
+
+    fn prepared_input(flush: PendingFlush) -> (String, String) {
+        match flush {
+            PendingFlush::Prepared { input, turn_id, .. } => (input.text, turn_id),
+            _ => panic!("expected Prepared"),
+        }
+    }
+
+    #[test]
+    fn runtime_queue_while_running_runs_new_turn_after_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions, child) = busy_child_with_follow_ups(dir.path(), &["later"]);
+        let (text, turn_id) = prepared_input(try_begin_pending_flush(
+            &runtime,
+            &sessions,
+            dir.path(),
+            &child,
+        ));
+        assert_eq!(text, "later");
+        assert!(
+            sessions.is_session_busy_blocking(&child),
+            "new turn reserved"
+        );
+        assert_eq!(sessions.follow_ups_len(&child), 0);
+        let rows: Vec<_> = sessions
+            .data()
+            .events_blocking(&child)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == crate::session::EventType::ItemUser)
+            .collect();
+        assert_eq!(rows.len(), 1, "one ordinary user row for the follow-up");
+        sessions.release_turn_reservation(&child, &turn_id);
+    }
+
+    #[test]
+    fn runtime_queue_multiple_runs_one_turn_each_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions, child) =
+            busy_child_with_follow_ups(dir.path(), &["one", "two", "three"]);
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let (text, turn_id) = prepared_input(try_begin_pending_flush(
+                &runtime,
+                &sessions,
+                dir.path(),
+                &child,
+            ));
+            // While that turn runs, nothing else may start.
+            assert!(!matches!(
+                try_begin_pending_flush(&runtime, &sessions, dir.path(), &child),
+                PendingFlush::Prepared { .. }
+            ));
+            seen.push(text);
+            sessions.release_turn_reservation(&child, &turn_id);
+        }
+        assert_eq!(
+            seen,
+            vec!["one", "two", "three"],
+            "one turn per message, FIFO"
+        );
+        assert!(matches!(
+            try_begin_pending_flush(&runtime, &sessions, dir.path(), &child),
+            PendingFlush::SkippedEmpty
+        ));
+    }
+
+    #[test]
+    fn pending_flushes_before_follow_ups() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions, child) = busy_child_with_follow_ups(dir.path(), &["queued"]);
+        sessions.enqueue_pending_message(&child, "steer").unwrap();
+        let (text, turn_id) = prepared_input(try_begin_pending_flush(
+            &runtime,
+            &sessions,
+            dir.path(),
+            &child,
+        ));
+        assert_eq!(text, "steer", "Q7: steer leftovers first");
+        assert_eq!(sessions.follow_ups_len(&child), 1);
+        sessions.release_turn_reservation(&child, &turn_id);
+        let (text, turn_id) = prepared_input(try_begin_pending_flush(
+            &runtime,
+            &sessions,
+            dir.path(),
+            &child,
+        ));
+        assert_eq!(text, "queued");
+        sessions.release_turn_reservation(&child, &turn_id);
+    }
+
+    #[test]
+    fn runtime_stop_and_send_starting_window() {
+        use crate::session::manager::{CancelOutcome, FollowUpOutcome};
+        let dir = tempfile::tempdir().unwrap();
+        let (_runtime, sessions, child) = busy_child_with_follow_ups(dir.path(), &["older"]);
+        let project = dir.path().display().to_string();
+        sessions
+            .reserve_turn(&child, "turn-start".into(), 10, "default", &project)
+            .unwrap();
+        let out = sessions
+            .cancel_and_follow_up(
+                &child,
+                UserInput::text("urgent"),
+                crate::types::StopOrigin::Parent,
+            )
+            .unwrap();
+        assert_eq!(
+            out,
+            (
+                CancelOutcome::Starting,
+                FollowUpOutcome::Queued { position: 1 }
+            )
+        );
+        assert_eq!(sessions.follow_ups_len(&child), 2);
+        sessions.release_turn_reservation(&child, "turn-start");
+        // Idle child: nothing cancelled, nothing queued.
+        let out = sessions
+            .cancel_and_follow_up(
+                &child,
+                UserInput::text("x"),
+                crate::types::StopOrigin::Parent,
+            )
+            .unwrap();
+        assert_eq!(out, (CancelOutcome::Idle, FollowUpOutcome::Idle));
+        assert_eq!(sessions.follow_ups_len(&child), 2);
     }
 }

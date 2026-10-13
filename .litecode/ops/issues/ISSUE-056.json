@@ -1,0 +1,53 @@
+{
+  "id": "ISSUE-056",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [],
+  "reporter": "runtime",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "title": "subagent_send queue/stop_and_send：进程重启后已回 queued:true 的 follow-up 消息静默丢失",
+  "basis": [
+    "A5"
+  ],
+  "promise": "WP-094 L1 / WP-098 R-Q：subagent_send mode=queue（及 stop_and_send）在子忙时返回 queued，承诺「当前 turn 结束后该消息作为新 turn 运行」。父已得到 queued:true 后，消息不得无声消失。",
+  "actual": "follow-up 队列是 SessionRecord.follow_ups（内存 VecDeque，不落盘，WP-098 Q5 定为内存态）。进程在子 turn 结束前重启/崩溃，队列丢失；父既不会收到结果也不会收到失败通知，仍以为消息已排队。本包不修；Andy 五档=2 产品缺陷，处置口径待定（undecided/pending，等 Andy/GM 裁）。",
+  "evidence": [
+    {
+      "path": "src/session/manager.rs",
+      "symbol": "SessionRecord::follow_ups",
+      "lines": "268-271",
+      "commit": "dea8c53",
+      "note": "WP-098 工作树（未 commit）：内存态，from_meta 初始化为空"
+    },
+    {
+      "path": "src/session/manager.rs",
+      "symbol": "SessionManager::enqueue_follow_up / cancel_and_follow_up",
+      "lines": "1282-1340",
+      "commit": "dea8c53",
+      "note": "WP-098 工作树：返回 Queued{position}，供 Tools 回 queued:true"
+    },
+    {
+      "path": "src/runtime/pending_auto_turn.rs",
+      "symbol": "try_begin_pending_flush (follow-up 分支)",
+      "commit": "dea8c53",
+      "note": "WP-098 工作树：仅由进程内 TurnFinished 触发，重启后无来源"
+    }
+  ],
+  "repro": "缺自动化测。手工：子忙时 subagent_send mode=queue → 父得到 queued:true → 杀进程重启 → 子 load 后 follow_ups 为空，消息不在子 transcript，父无任何通知。",
+  "history": [
+    {
+      "ts": "2026-10-13T11:54:09.093Z",
+      "by": "runtime",
+      "change": "ops.issue_new 分配（WP-098）"
+    },
+    {
+      "ts": "2026-10-13T20:30:00+08:00",
+      "by": "runtime",
+      "change": "WP-098 中层批 Q5（队列内存态）时点名登记。Andy 五档：2 产品缺陷；status 待定（undecided/pending 裁决）。建议持久化方案：(a) 入队即写 durable 行（新事件类型 follow_up/queued，消费时写 follow_up/consumed，load 时重建队列）；(b) 入队即落为子 transcript 的 item/user（标记 deferred），turn 起时认领——复用 pending 去重；(c) 不持久化但重启时向父写 ParentNotice::FollowUpLost{child,n}（最小补救，至少不静默）。本包不修。"
+    }
+  ]
+}

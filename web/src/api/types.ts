@@ -366,6 +366,9 @@ export interface LogLine {
   message: string;
 }
 
+/** WP-095: initiator of a cancelled turn (stop_and_send internal stop = parent). */
+export type CancelledBy = "user" | "parent" | null;
+
 export type SessionStatus =
   | "idle"
   | "running"
@@ -391,6 +394,8 @@ export interface SessionInfo {
   responsibility?: string;
   /** Last durable `turn/end.reason` once the session is idle. */
   last_turn_reason?: string;
+  /** WP-095: who cancelled the last turn; null unless reason is `cancelled`. */
+  last_turn_cancelled_by?: CancelledBy;
   /** Accumulated turn-step kinds for the current (or just-finished) turn.
    *  Appended on each `turn_step` event, cleared on `turn_started`. Purely a
    *  client-side flourish counter — never persisted, not sent back to the server. */
@@ -432,6 +437,8 @@ export interface SessionLifecycle {
   step_kind?: TurnStepKind;
   /** Durable `turn/end.reason` on `turn_finished`. */
   reason?: string;
+  /** WP-095: on `turn_finished`, beside `reason`; absent on older backends. */
+  cancelled_by?: CancelledBy;
   /** WP-086: raw SessionStatus on turn_started / turn_finished / status_changed. */
   status?: SessionStatus;
 }

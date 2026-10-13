@@ -271,13 +271,14 @@ group("6 timeout: awaiting_approval & review >1h → approver; unacked next cycl
   ok(!process.env.__never && !("LITECODE_WP_WEBHOOK_URL" in env), "child env has no webhook URL");
 });
 
-group("7 compat: old 19 WPs (WP-001..019) unchanged (validate, gate dry-run, table rows, timeout/no escalation, payload)", () => {
+group("7 compat: old-model WPs (dynamic count) unchanged (validate, gate dry-run, table rows, timeout/no escalation, payload)", () => {
   const ops = fresh();
   ok(validate(ops).status === 0, "validate OK");
   const b = board(ops);
   const olds = b.work_packages.filter((w) => !w.goal && !w.parent && !Array.isArray(w.history));
-  ok(olds.length === 19 && olds.every((w) => w.id <= "WP-019"), `19 old WPs (WP-001..019, no goal/parent/history): ${olds.length}`);
-  for (const id of ["WP-001", "WP-003", "WP-017", "WP-019"]) {
+  // v17: count computed from the board (old-model = no goal/parent/history); must be >0, behaviour checked per package
+  ok(olds.length > 0 && olds.every((w) => w.id <= "WP-019"), `old-model WPs present and all within WP-001..019: ${olds.length}`);
+  for (const id of olds.map((w) => w.id)) {
     const r = gate(ops, "--id", id, "--to", "review", "--dry-run", "--source", "gm");
     ok(r.status === 0 && /"dry_run":true/.test(r.stdout), `${id} dry-run review still ok`);
   }
@@ -325,6 +326,62 @@ group("10 set: owner/approver set safe fields; others/unsafe/closed rejected; ro
   const before = fs.readFileSync(path.join(ops, "board.json"), "utf8");
   r = wp(ops, "set", "--as", "tools_steward", "--id", kid, "--field", "progress", "--value", "y");
   ok(r.status !== 0 && fs.readFileSync(path.join(ops, "board.json"), "utf8") === before, "validate failure rolls back");
+});
+
+group("11 set domain (v4) + new agent provider usable as owner", () => {
+  const ops = fresh();
+  const { kid } = twoLayer(ops);
+  let r = wp(ops, "set", "--as", "gm", "--id", kid, "--field", "domain", "--value", "ide-substrate");
+  ok(r.status === 0 && W(ops, kid).domain === "ide-substrate", "approver sets existing domain");
+  const h = W(ops, kid).history.slice(-1)[0];
+  ok(h.action === "set" && /domain/.test(h.note), "history entry for domain set");
+  ok(/set domain/.test(fs.readFileSync(path.join(ops, "log.jsonl"), "utf8")), "log.jsonl records domain set");
+  r = wp(ops, "set", "--as", "gm", "--id", kid, "--field", "domain", "--value", "ide-base");
+  ok(r.status !== 0 && /existing domain/.test(r.stderr) && W(ops, kid).domain === "ide-substrate", "unknown domain rejected, unchanged");
+  r = wp(ops, "set", "--as", "gm", "--id", kid, "--field", "domain", "--value", "");
+  ok(r.status !== 0, "empty domain rejected");
+  patch(ops, (b) => { b.work_packages.find((x) => x.id === kid).domain = "nope"; });
+  ok(validate(ops).status !== 0, "validator rejects WP with unknown domain (v17)");
+  patch(ops, (b) => { b.work_packages.find((x) => x.id === kid).domain = "ide-substrate"; });
+  r = wp(ops, "set", "--as", "runtime", "--id", kid, "--field", "domain", "--value", "knowledge");
+  ok(r.status !== 0 && W(ops, kid).domain === "ide-substrate", "non owner/approver cannot set domain");
+  { const o = fresh(); const { kid: k2 } = twoLayer(o); patch(o, (b) => { b.work_packages.find((x) => x.id === k2).status = "cancelled"; });
+    let q = wp(o, "set", "--as", "gm", "--id", k2, "--field", "domain", "--value", "knowledge");
+    ok(q.status === 0 && W(o, k2).domain === "knowledge", "closed package: domain reclassification allowed (v17)");
+    q = wp(o, "set", "--as", "gm", "--id", k2, "--field", "progress", "--value", "x");
+    ok(q.status !== 0, "closed package: other fields still refused"); }
+  const hasProvider = board(ops).agents.some((a) => a.id === "provider");
+  ok(hasProvider, "board has agent provider");
+  if (hasProvider) {
+    r = wp(ops, "new", "--as", "gm", "--title", "P", "--goal", "g", "--owner", "provider", "--approver", "backend_mid", "--domain", "model-config");
+    const pid = lastId(ops);
+    ok(r.status === 0 && W(ops, pid).owner === "provider", "wp new --owner provider");
+    r = wp(ops, "set", "--as", "provider", "--id", pid, "--field", "progress", "--value", "p");
+    ok(r.status === 0 && W(ops, pid).progress === "p", "provider as owner can set");
+  }
+});
+
+group("12 reassign (v4): approver or parent owner; registered agent only; history+log; rollback", () => {
+  const ops = fresh();
+  const { top, kid } = twoLayer(ops);
+  const snap = (id) => { const x = { ...W(ops, id) }; delete x.owner; delete x.history; return JSON.stringify(x); };
+  const before = snap(kid);
+  let r = wp(ops, "reassign", "--as", "runtime", "--id", kid, "--owner", "context");
+  ok(r.status !== 0 && W(ops, kid).owner === "tools_steward", "stranger cannot reassign");
+  r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "nobody");
+  ok(r.status !== 0 && /not a registered agent/.test(r.stderr), "unregistered owner rejected");
+  r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "runtime", "--note", "move");
+  ok(r.status === 0 && W(ops, kid).owner === "runtime", "approver reassigns");
+  ok(snap(kid) === before, "other fields unchanged");
+  const h = W(ops, kid).history.slice(-1)[0];
+  ok(h.action === "reassign" && /tools_steward -> runtime/.test(h.note), "history entry");
+  ok(/reassign owner tools_steward -> runtime/.test(fs.readFileSync(path.join(ops, "log.jsonl"), "utf8")), "log entry");
+  ok(validate(ops).status === 0, "board validates after reassign");
+  patch(ops, (b) => { b.agents.find((a) => a.id === "context").place = "/elsewhere"; });
+  const raw = fs.readFileSync(path.join(ops, "board.json"), "utf8");
+  r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "tools_steward");
+  ok(r.status !== 0 && fs.readFileSync(path.join(ops, "board.json"), "utf8") === raw, "validate failure rolls back");
+  void top;
 });
 
 if (!keep) for (const r of tmpRoots) fs.rmSync(r, { recursive: true, force: true });

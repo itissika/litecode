@@ -813,16 +813,24 @@ impl AgentRuntime {
         // as a SessionEvent so replay never infers completion from a disconnected
         // stream.
         let reason_name = reason.as_log_reason();
+        // WP-098: cancel origin lives on the live turn until finish_turn.
+        let cancelled_by = (reason == TurnEndReason::Cancelled)
+            .then(|| self.sessions.turn_cancelled_by(&self.session_id, turn_id))
+            .flatten();
+        let mut turn_end = serde_json::json!({
+            "turn": turn_id,
+            "reason": reason_name,
+            "final_text": &text,
+        });
+        if let Some(by) = cancelled_by {
+            turn_end["cancelled_by"] = serde_json::json!(by.as_str());
+        }
         if let Err(error) = self.sessions.apply(
             &self.session_id,
             SessionApply::Append(EventDraft {
                 time: chrono::Utc::now().timestamp_millis(),
                 event_type: EventType::TurnEnd,
-                data: serde_json::json!({
-                    "turn": turn_id,
-                    "reason": reason_name,
-                    "final_text": &text,
-                }),
+                data: turn_end,
                 surface_op: None,
                 source_seqs: None,
                 ignorable: false,
@@ -839,6 +847,7 @@ impl AgentRuntime {
             turn_token_stats: stats,
             committed_next_seq: 0,
             error_kind,
+            cancelled_by,
         });
         match reason {
             TurnEndReason::Error => Err(LitecodeError::Llm(if text.is_empty() {

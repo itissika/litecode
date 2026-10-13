@@ -16,3 +16,29 @@ pub use transcript::{
     ReasoningItem, Response, StreamEvents, Transcript, UserInput, assistant_text,
     item_text_preview, user_message, user_text,
 };
+
+/// WP-098 L5: who stopped or deleted a turn/session. Persisted as
+/// `turn/end.cancelled_by` and carried on `ParentNotice` / `TurnFinished`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StopOrigin {
+    User,
+    Parent,
+}
+
+impl StopOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Parent => "parent",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user" => Some(Self::User),
+            "parent" => Some(Self::Parent),
+            _ => None,
+        }
+    }
+}

@@ -351,6 +351,31 @@
         "直接找 Andy"
       ],
       "status": "active"
+    },
+    {
+      "id": "provider",
+      "name": "Provider",
+      "place": "/workspace/litecode/src/{llm,provider_catalog}",
+      "scope": [
+        "model-config 域的 provider/模型部分",
+        "provider 目录与模型元数据",
+        "LLM 适配层"
+      ],
+      "tools": [
+        "本机读写上述路径",
+        "cargo test 相关目标",
+        "不 commit/push 除非 Andy/总经理确认"
+      ],
+      "accept_tests": [
+        "provider/模型相关测试可复现",
+        "产物含结论+证据"
+      ],
+      "reject_tests": [
+        "改配置提交/回滚通用层未经 handoff",
+        "改 tools/permission",
+        "改 enabled 知识节点"
+      ],
+      "status": "active"
     }
   ],
   "work_packages": [
@@ -4535,7 +4560,7 @@
     },
     {
       "id": "WP-070",
-      "domain": "backend",
+      "domain": "ide-substrate",
       "title": "LSP/Tools 收尾小活",
       "result": "Tools: ISSUE-042 + :1409 格式裁定; IDE: 版本探测 stdin null + -32801 有限重试；验绿后提交推送",
       "done_when": [
@@ -4600,12 +4625,18 @@
           "action": "close",
           "note": "Andy 10-13 授权改完就推（GM 代录）",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:57.110Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "domain: \"backend\" -> \"ide-substrate\""
         }
       ]
     },
     {
       "id": "WP-071",
-      "domain": "backend",
+      "domain": "ide-substrate",
       "title": "后端中层：LSP/Tools 收尾协调",
       "result": "拆 Tools/IDE 子包、交叉审、汇总",
       "done_when": [
@@ -4676,6 +4707,12 @@
           "action": "close",
           "note": "子包全 done，验证绿",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:57.434Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "domain: \"backend\" -> \"ide-substrate\""
         }
       ]
     },
@@ -5483,7 +5520,7 @@
     },
     {
       "id": "WP-082",
-      "domain": "client-ux-web",
+      "domain": "client-ux",
       "title": "WP-078 web：AskUserCard 末项固定自由输入（方案B）",
       "result": "web 落地+测试绿；证据写入 WP-076-web.md",
       "done_when": [
@@ -5551,12 +5588,18 @@
           "action": "close",
           "note": "交叉审通过：diff 仅 AskUserCard.tsx/askUser.ts/turnStore.ts/types.ts注释+测试；AskCard/PermissionModal.tsx 未动(git diff 空)；口径逐条核对符合（末项「其他（自己填写）」每题都有、无 option id、单选互斥 selected []、多选共存、仅文本即答、trim 空不发）；中层复跑 node v22.14.0：3 files/71 passed，tsc -b 0；lint N/A（web 未配置 lint 工具，不阻塞）；未 commit。后端联调与 desktop 手点为后续",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:57.701Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "domain: \"client-ux-web\" -> \"client-ux\""
         }
       ]
     },
     {
       "id": "WP-083",
-      "domain": "client-ux-web",
+      "domain": "client-ux",
       "title": "WP-078 web 补：末项常驻文案+单选选中态",
       "result": "web 落地+测试绿；证据追加 WP-076-web.md",
       "done_when": [
@@ -5624,6 +5667,12 @@
           "action": "close",
           "note": "交叉审通过：仅 AskUserCard.tsx+测试；末项常驻可见 label「其他（自己填写）」(aria-labelledby)；选中态与选项同用 btn-primary/btn-ghost，测试有 classList 断言；node v22 复跑 3 files/76 passed，tsc -b 0；lint N/A；未 commit",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:57.964Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "domain: \"client-ux-web\" -> \"client-ux\""
         }
       ]
     },
@@ -6020,7 +6069,7 @@
     },
     {
       "id": "WP-089",
-      "domain": "client-ux-web",
+      "domain": "client-ux",
       "title": "WP-088 web：子会话 停止/删除 入口与删除后展示/重连",
       "result": "web 落地+测试绿；证据写入 WP-086-web.md",
       "done_when": [
@@ -6089,6 +6138,12 @@
           "action": "close",
           "note": "交叉审通过：16 文件均在 web/，符合 GM 裁定与 P1-P8（停止 底栏+名单，cancelled:false 中性提示；删除 置灰+确认+错误码映射；deleted 关两种面板；墓碑 binding_states；原始 status+status_changed；connected 统一 listSessions+去重）；子会话无输入，审批卡/desktop 未动。复跑 node v22：6 files/166 passed，tsc -b 0；lint N/A。重连接线缺单测：一行接线已人工核对、去重有测试，connectionStore 无现成 ws mock，补测成本不低 → 不阻塞，记为后续。未 commit",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:58.221Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "domain: \"client-ux-web\" -> \"client-ux\""
         }
       ]
     },
@@ -6388,7 +6443,7 @@
     },
     {
       "id": "WP-093",
-      "domain": "client-ux-web",
+      "domain": "client-ux",
       "title": "WP-088 web 补：listSessions 进行中再请求则结束后补拉一次",
       "result": "web 落地+测试绿；证据追加 WP-086-web.md",
       "done_when": [
@@ -6455,6 +6510,1534 @@
           "action": "close",
           "note": "复跑 listDedupe+reconnect 8/8 绿，tsc 0；只改 sessionStore.ts+新测；未 commit",
           "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:58.482Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "domain: \"client-ux-web\" -> \"client-ux\""
+        }
+      ]
+    },
+    {
+      "id": "WP-094",
+      "domain": "team-ops",
+      "title": "subagent 发送模式与结算收口",
+      "result": "subagent 发送模式/结算只给最新/停止不唤醒/来源标记：1) subagent_send 加 mode=queue(默认，在跑则当前回合结束后新回合跑，不再 step 间 drain)|steer(现行插话)|stop_and_send(先停再新回合，此停不发 stopped 通知不叫醒父)，subagent_stop 保留，用户对子仍只读，人类主会话 steer 不动；2) 父收件箱每子会话只留最新一条结果（key 改子会话，新覆盖未读旧，不带回合数），subagent_wait 返回最新；3) 被停回合结果只进 mailbox 不触发父自动唤醒（用户停/父停皆然），删除不动；4) stopped/deleted 通知加 by: user|parent（参照 bash user_killed），文本如 stopped by user，父自己停/删不再给自己发通知，前端侧栏对用户停掉的子会话加标记，不做新旧双格式兼容；5) 补测试，知识库 subagent 节点改新口径（enabled 节点可润色不改状态）",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy：改完就推（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "subagent 发送模式/结算只给最新/停止不唤醒/来源标记：1) subagent_send 加 mode=queue(默认，在跑则当前回合结束后新回合跑，不再 step 间 drain)|steer(现行插话)|stop_and_send(先停再新回合，此停不发 stopped 通知不叫醒父)，subagent_stop 保留，用户对子仍只读，人类主会话 steer 不动；2) 父收件箱每子会话只留最新一条结果（key 改子会话，新覆盖未读旧，不带回合数），subagent_wait 返回最新；3) 被停回合结果只进 mailbox 不触发父自动唤醒（用户停/父停皆然），删除不动；4) stopped/deleted 通知加 by: user|parent（参照 bash user_killed），文本如 stopped by user，父自己停/删不再给自己发通知，前端侧栏对用户停掉的子会话加标记，不做新旧双格式兼容；5) 补测试，知识库 subagent 节点改新口径（enabled 节点可润色不改状态）",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "split: WP-095 后端中层, WP-096 前端中层；口径见 goal（Andy 10-13 19:28 批准开包）"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:29:14.448Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: subagent 发送模式/结算只给最新/停止不唤醒/来源标记：1) subagent_send 加 mode=queue(默认，在跑则当前回合结束后新回合跑，不再 step 间 drain)|steer(现行插话)|stop_and_send(先停再新回合，此停不发 stopped 通知不叫醒父)，subagent_stop 保留，用户对子仍只读，人类主会话 steer 不动；2) 父收件箱每子会话只留最新一条结果（key 改子会话，新覆盖未读旧，不带回合数），subagent_wait 返回最新；3) 被停回合结果只进 mailbox 不触发父自动唤醒（用户停/父停皆然），删除不动；4) stopped/deleted 通知加 by: user|parent（参照 bash user_killed），文本如 stopped by user，父自己停/删不再给自己发通知，前端侧栏对用户停掉的子会话加标记，不做新旧双格式兼容；5) 补测试，知识库 subagent 节点改新口径（enabled 节点可润色不改状态）"
+        },
+        {
+          "ts": "2026-10-13T11:29:25.023Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: split: WP-095 后端中层, WP-096 前端中层；口径见 goal（Andy 10-13 19:28 批准开包）"
+        },
+        {
+          "ts": "2026-10-13T11:29:25.322Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:29:25.683Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：整体没问题，可以开包发下去（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T11:29:25.946Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:25:00.178Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "095/096 均 done"
+        },
+        {
+          "ts": "2026-10-13T12:25:00.502Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：改完就推（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-095",
+      "domain": "team-ops",
+      "title": "WP-094 后端中层：发送模式/结算/停止不唤醒/来源字段/测试/知识库",
+      "result": "负责 WP-094 范围 1、2、3、4 后端部分（by: user|parent 协议字段先定并告知前端中层）、5；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-backend.md",
+      "progress": "closed done by gm: GM 封：子包全 done，集成复跑绿；Q1–Q4 按此前裁定。ISSUE-054/055/056 另记。",
+      "status_entered_at": null,
+      "parent": "WP-094",
+      "goal": "负责 WP-094 范围 1、2、3、4 后端部分（by: user|parent 协议字段先定并告知前端中层）、5；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-094-backend · 后端中层方案（WP-095）\n\n- 角色：backend_mid；父 WP-094（gm，Andy 已批口径）；本包 WP-095（split，approver=gm）；前端兄弟包 WP-096（frontend_mid）。\n- 基线：分支 `ops/team-framework`；中层只拆活/交叉审/汇总；不写 `src/`、`tests/`；不 commit；不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13 19:3x HKT。依据：GM 口径（Andy 批）+ WP-087 产物（WP-086-backend/runtime/session/tools.md、`.tmp/wp090_interface.md`）+ 代码核对。\n- 本口径**替代** WP-087 K2（send 只入 pending）、K5（停通知不加来源字段）中与下表冲突的部分。\n\n## 1. Goal\n父发子消息有三种方式；父邮箱每个子只留最新结果；停止只告知不唤醒；停/删通知标明是用户还是父做的；补测试、更新知识库。\n\n## 2. 裁定表（锁定口径）\n| # | 项 | 裁定 |\n|---|---|---|\n| L1 | `subagent_send.mode` | `queue`（默认）：子在跑→消息作为**当前 turn 结束后的新 turn** 运行，**不在 step seam 注入**；子空闲→直接起新 turn。`steer`：保持今天行为（入 pending，step seam 注入当前 turn）。`stop_and_send`：停当前 turn→起新 turn；这次停**不发 stopped 通知、不唤醒父**。`subagent_stop` 保留。 |\n| L2 | 主会话 | 人类主会话 steer 语义**不变**：pending 是共享的，主会话 step-seam 注入不许被改；用户对子会话仍只读（WP-091 K1 不变）。 |\n| L3 | 最新结算 | 父邮箱每个子只留一条结果；去重键 (child, turn) → child；新结果覆盖未读旧结果；不计 turn 数；`subagent_wait` 返回最新。 |\n| L4 | 停止不唤醒 | 被停 turn 的结果**只进邮箱**，不触发父 auto-wake；用户停与父停相同。删除不变。 |\n| L5 | 来源 | stopped/deleted 通知带 `by: user|parent`（参照 bash `user_killed`）；提醒文案如 `stopped by user` / `deleted by parent`。父自己用工具停/删→**不给自己发通知**（实际只剩 by=user 进父 mailbox；by=parent 只用于状态字段，见 P2）。单一格式，不做新旧双格式兼容。协议字段先告知前端中层。 |\n| L6 | 测试/KB | 各域补测试；subagent 相关 KB 节点改为新语义（enabled 节点可润色，**不改 status**）。 |\n\n## 3. 代码定位（核对结果）\n- 现 send 在跑走 `enqueue_user_input`（send.rs:63-66）→ 共享 `pending_messages` → `exec.rs:131-157 sync_request_seam` 的 `claim_pending_messages_for_turn` 注入；`agent/core.rs:166-174` 有 pending 时 turn 不结束。queue 模式必须**不进这条路**。\n- 停止唤醒父：`hub.rs` Router 对任意 `TurnFinished` 都 `deliver`（push + exit_handler 唤醒），不区分 Cancelled。\n- 去重：`jobs.rs CompletionInbox::push` 按 (child, turn) 去重、VecDeque 累积。\n- 通知：`jobs.rs ParentNotice::{ChildStopped,ChildDeleted}{child_session_id}`；文案 `exec.rs:1066 parent_notice_reason`。写入点：用户停 `connection.rs:454`、用户删 `session_lifecycle.rs:370`、父停 `stop.rs:61`、父删 `delete.rs:64`。\n- `SessionInfo.last_turn_reason`（protocol.rs:217）由 `session_lifecycle.rs:439-449` 从 `data().latest_turn_end_reason_blocking` 现取；运行中或主会话为空串。\n\n## 4. 子包树\n```\nWP-094 (gm)\n  ├── WP-095 (backend_mid, approver=gm, split)  ← 本包\n  │     ├── WP-098 owner=runtime  harness-core      queue/steer/stop_and_send 原语 + 最新结算邮箱 + 被停不唤醒 + 通知 by + cancelled_by 落盘\n  │     ├── WP-099 owner=session  harness-core      用户停/删写 by=user + SessionInfo/lifecycle 协议字段 + 子只读保持\n  │     └── WP-100 owner=tools    tools-permission  send mode schema + 父停/删不给自己发通知 + wait 最新 + 描述 + KB\n  └── WP-096 (frontend_mid)  侧栏用户停止标记\n```\n产物：WP-098→`WP-094-runtime.md`；WP-099→`WP-094-session.md`；WP-100→`WP-094-tools.md`。接口冻结：`.tmp/wp098_interface.md`（WP-098 goal 文字里写成 wp097 为笔误，以本文为准）。\n\n## 5. 串并行与域口径\n**顺序**：WP-098 先交接口（冻结 v1）→ WP-099 与 WP-100 并行 → 中层集成复跑 → deliver。\n\n### WP-098 · Runtime（src/runtime、src/agent、src/types、hub.rs/jobs.rs、manager.rs pending/cancel 段）\n- R-Q 队列：新增 per-session **follow-up 队列**（与共享 `pending_messages` 分开），`SessionManager::enqueue_follow_up(session, input)`；step seam **不认领**；turn 结束由 pending_auto_turn 同路径起**一个新 turn**（多条按序合并或逐条，接口中写明，建议逐条 FIFO）。`has_pending_user_messages`/core.rs:166-174 只看 pending，不看 follow-up。主会话不用此队列 → 主会话行为零改动。\n- R-S steer：保持 `enqueue_user_input` 原路径。\n- R-SS stop_and_send：`cancel_and_follow_up(session, input, by)` 单锁：标记取消 + 把消息放 follow-up，取消结束后起新 turn；此次取消**不写 ChildStopped、不唤醒**（结果照 L3 覆盖进邮箱）。\n- R-L 最新结算：`CompletionInbox` 改为 `HashMap<parent, IndexMap<child, CompletionRef>>`，push 覆盖；`restore_front` 不覆盖更新的条目；R11 rescan 随之按 child 去重（ISSUE-054 自然缓解）。\n- R-W 不唤醒：Router 对 end reason=cancelled 的 TurnFinished 只 push 不调 exit_handler；wait 若在等该子照常返回 cancelled。\n- R-B 来源：`ParentNotice::{ChildStopped,ChildDeleted}{child_session_id, by: StopOrigin}`，`enum StopOrigin{User,Parent}`；`cancel_turn_sync(session, by)` 把 by 记到 turn 结束记录（`cancelled_by`，与 end reason 同行落盘）；提醒文案 `stopped by user|parent` / `deleted by user|parent`。\n- 测试（done_when）：`runtime_queue_while_running_runs_new_turn_after_end`、`runtime_queue_not_drained_at_step_seam`、`runtime_steer_still_injects_at_step_seam`、`runtime_main_session_pending_still_injects_at_seam`、`runtime_stop_and_send_cancels_then_runs_new_turn_no_notice`、`hub_latest_only_one_result_per_child`、`hub_newer_result_overwrites_unread`、`hub_stopped_turn_result_mailbox_only_no_wake`、`hub_notice_carries_by_user_parent`、`settled_reminder_text_stopped_by_user`；fmt 干净；未 commit。\n\n### WP-099 · Session（src/session（除 Runtime 段）、src/client_protocol、src/serve）\n- 用户 `agent/cancel{child}` → `cancel_turn_sync(child, User)` + `ChildStopped{by:User}`（不唤醒）；用户删 → `ChildDeleted{by:User}`。\n- 协议字段 P1-P3（见 §6）；wire 快照注明；用户对子仍只读。\n- 测试：`user_cancel_child_notice_by_user`、`user_delete_child_notice_by_user`、`user_stop_does_not_wake_parent`、`child_still_readonly_for_user`，另补 `session_info_last_turn_cancelled_by_user_parent_null`、`last_turn_cancelled_by_survives_reload`、`turn_finished_event_carries_cancelled_by`；未 commit。\n\n### WP-100 · Tools（src/tools/subagent、descriptions、registry、knowledge/）\n- `subagent_send` 新参数 `mode: \"queue\"|\"steer\"|\"stop_and_send\"`，缺省 queue，未知值报错；结果文案标明 queued/started/steered。\n- `subagent_stop` 调 `cancel_turn_sync(child, Parent)`，**不再写 ChildStopped**（不给自己发）；`subagent_delete` 同理不写 ChildDeleted。\n- `subagent_wait` 返回最新结果（随 L3）。\n- 描述：subagent_send/stop/delete/wait .md 更新；KB：`knowledge/contracts/subagent-lifecycle.md`、`knowledge/framework/session.md`、`knowledge/framework/featured-tools.md`、`knowledge/contracts/tools/tool-authorization.md`（仅涉 subagent 部分），不改 status，`kb_check` 绿。\n- 测试：`send_mode_defaults_to_queue`、`send_queue_while_running_returns_queued`、`send_steer_injects_current_turn`、`send_stop_and_send_no_stopped_notice`、`send_mode_rejects_unknown`、`stop_by_parent_no_notice_to_self`、`delete_by_parent_no_notice_to_self`、`wait_returns_latest_only`；未 commit。\n\n## 6. 协议（告知前端中层 WP-096，单一格式）\n| # | 字段 | 形状 |\n|---|---|---|\n| P1 | `SessionInfo.last_turn_cancelled_by` | `\"user\" \\| \"parent\" \\| null`，紧邻 `last_turn_reason`；出现在 `session/list`、snapshot；随每次 turn 结束与 `last_turn_reason` 一并更新；`last_turn_reason != \"cancelled\"` 时为 null；**持久化**（turn 结束记录里与 end reason 同行），重连不丢。规则与 `last_turn_reason` 一致（主会话/运行中为 null）。 |\n| P2 | `session/lifecycle {event:\"turn_finished\", ..., last_turn_reason, last_turn_cancelled_by}` | 同 P1 取值。 |\n| P3 | 无新事件 | 父 mailbox 通知 by 只进模型提醒，不上 wire。 |\n采纳前端中层提议（代码核对：`last_turn_reason` 已从 turn 结束数据现取，加同行列即可持久化，无障碍）。\n\n## 7. 不在本包\n用户给子发消息（仍只读）；删除语义（不变，仅加 by）；turn 计数；新旧双格式兼容；R9 整树停；ISSUE-053/055。\n\n## 8. 风险\n- 主会话 steer 被误改：follow-up 队列与 pending 物理分开 + `runtime_main_session_pending_still_injects_at_seam` 守护。\n- stop_and_send 竞态（Starting 窗口）：复用 WP-090 `cancel_requested`，单锁内完成。\n- 覆盖丢信息：被覆盖的旧结果仍在子 transcript，可经 subagent_list transcript 路径读取。\n\n## 9. 待 GM 裁（档位）\n- Q1（档位 3，可中层定，默认采纳）：stop_and_send 的内部停 `last_turn_cancelled_by` = `\"parent\"`（被停 turn 状态如实），但不发通知。请确认。\n- Q2（档位 3）：queue 模式多条排队时逐条各起一个 turn（FIFO）还是合并为一个 turn？建议逐条。\n- Q3（档位 2，Andy 档）：父正在 `subagent_wait` 该子时用户停子——wait 返回 cancelled 结果（父在 wait 即醒，属\"已在等\"不算唤醒）。建议保留。\n- Q4（档位 3）：已读后到来的新结果照常唤醒父（仅 cancelled 不唤醒）。默认如此。\n\n## 10. 验收清单\n- [ ] WP-098/099/100 done 或明确 blocked；测试名全绿，中层集成复跑\n- [ ] §6 与 WP-096 交叉审一致；wire 快照已注明\n- [ ] kb_check 绿；`validate_all.mjs` ok:true；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:29:20.346Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 负责 WP-094 范围 1、2、3、4 后端部分（by: user|parent 协议字段先定并告知前端中层）、5；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动"
+        },
+        {
+          "ts": "2026-10-13T11:37:06.160Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-094-backend · 后端中层方案（WP-095）\n\n- 角色：backend_mid；父 WP-094（gm，Andy 已批口径）；本包 WP"
+        },
+        {
+          "ts": "2026-10-13T11:37:06.473Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-094-backend.md\""
+        },
+        {
+          "ts": "2026-10-13T11:37:06.740Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "split→WP-098 runtime/WP-099 session/WP-100 tools；协议 last_turn_cancelled_by 见 §6；Q1-Q4 见 §9"
+        },
+        {
+          "ts": "2026-10-13T11:37:56.650Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：Q1 记 parent；Q2 每条一回合按序；Q3 wait 返回取消结果；Q4 正常结束照常唤醒"
+        },
+        {
+          "ts": "2026-10-13T11:38:16.292Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:03:34.891Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:08:48.911Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 封：子包全 done，集成复跑绿；Q1–Q4 按此前裁定。ISSUE-054/055/056 另记。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-096",
+      "domain": "team-ops",
+      "title": "WP-094 前端中层：侧栏用户停止标记",
+      "result": "负责 WP-094 范围 4 前端部分：侧栏对用户停掉的子会话加标记；等后端协议字段定了再动，不做新旧双格式兼容；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-frontend.md",
+      "progress": "closed done by gm: GM 封：标记对齐 WP-095；测试绿；真机 Andy 验",
+      "status_entered_at": null,
+      "parent": "WP-094",
+      "goal": "负责 WP-094 范围 4 前端部分：侧栏对用户停掉的子会话加标记；等后端协议字段定了再动，不做新旧双格式兼容；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-096 方案（frontend_mid · split）\n\n- 父包：WP-094（GM，Andy 已批）。并行包：WP-095（backend_mid）。\n- 审批：gm。产物：本文件 + 子包产物 `WP-094-web.md`。\n- **GM 未批 plan 不 start；不 commit。协议定稿前不实现，不预设字段位置；只支持一种格式，不做新旧兼容。**\n\n## Goal（只做一项）\nWorkers 名单（SubagentRosterPanel）里，**被用户停止**的子会话在状态文字上加标记。\n\n## 现状落点（只读核实，2026-10-13）\n- **名单条目数据**：\n  - `web/src/components/SubagentRosterPanel.tsx:31-33` 定义 `RosterEntry.runState`、`lastTurnReason`。\n  - 赋值有两处：正常条目在 `:160-167`，取 `s.last_turn_reason`；兜底条目在 `:186-193`。\n- **名单结束态文字**：`SubagentRosterPanel.tsx:338-344`。\n  - 直接显示原始的 `lastTurnReason`（例如英文 `cancelled`），没有就显示 failed / idle。\n  - 运行中文字在 `:324-334`（running / cancelling）。\n  - 图标状态在 `:90-100`：cancelled 和 max_steps 显示 warning。\n- **cancelled 的来源**：\n  - 写入 `SessionInfo.last_turn_reason`：lifecycle `turn_finished` 的 `reason` 在 `stores/sessionStore.ts`（turn_finished 分支），`session/list` 里也带这个字段。\n  - 后端目前没有\"谁停的\"信息。\n- **tool card 用的推导函数不同**：\n  - tool card 走 `web/src/lib/subagentUi.ts:67-88` 的 `childStatusWord`，结束后也返回原始 `last_turn_reason`。\n  - 使用处：`toolviews/SubagentLaunchToolView.tsx:30`，以及 `SubagentSendToolView.tsx:32` 经 `sendStatusWord`（`subagentUi.ts:90-96`）。\n  - **名单不经过 `childStatusWord`**，有自己的文字逻辑。所以只改名单时，tool card 自然保持不变。\n- **现有文案语言**：\n  - 状态文字是英文原始值（running / cancelling / cancelled / idle / failed）。\n  - 行内按钮是中文：「停止」「删除」（`:289-309`）。\n  - tool card 有中文「已删除」。\n\n## 协议占位（等 WP-095 定稿）\n- **字段名和来源都待定**。可能的来源有三个：\n  1. lifecycle `turn_finished` 带 `by`；\n  2. `session/list` 的 `SessionInfo` 带上一次停止的来源；\n  3. binding state 带。\n- 前端只按定稿的那**一种**格式实现：\n  - `by:\"user\"` 才显示标记；\n  - `by:\"parent\"` 不显示；\n  - 字段缺失不显示；\n  - 只在 reason 为 cancelled 时才考虑显示。\n- **重连 / 刷新后标记是否还在，取决于后端持久化**。如果 `by` 只出现在实时通知里，重连后拉 `session/list` 时就会丢。请 backend_mid 确认是否持久化，以及是否进入 `session/list` 或快照。\n\n## 文案建议\n- 和名单现有的英文状态文字保持一致：**`cancelled · by you`**。\n- 如果 GM 想让名单状态改用中文，那就整列一起改成中文（**另开一项，不在本包**），届时用 `已取消 · 由你停止`。\n- 本包默认用英文。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-097** | `frontend`（前端-web） | client-ux-web | `WP-094-web.md` |\n\n## web 落点（等协议定稿后实施）\n- `api/types.ts`：按定稿加 `by` 字段（只加一种）。\n- 数据进入 store：\n  - 如果来源是 lifecycle 或 list，改 `stores/sessionStore.ts`，写入 `SessionInfo`；\n  - 如果来源是 binding state，改 `stores/messageStore.ts`。\n- `SubagentRosterPanel.tsx`：\n  - `RosterEntry` 加 `stoppedBy`，在 `:160-167` 和 `:186-193` 两处赋值；\n  - `:338-344` 在 `lastTurnReason===\"cancelled\" && stoppedBy===\"user\"` 时显示 `cancelled · by you`，其余逻辑不变；\n  - 加 testid / data 属性方便测试。\n- 不改 `subagentUi.ts` 的 `childStatusWord`，也不改 tool card（除非 GM 裁定 tool card 也要跟进）。\n\n## 测试清单（vitest）\n1. `cancelled` + `by:user`：名单显示 `cancelled · by you`。\n2. `cancelled` + `by:parent`：显示 `cancelled`，无标记。\n3. `cancelled` + 字段缺失：显示 `cancelled`，无标记。\n4. 非 cancelled（completed / error / max_steps）+ `by:user`：无标记。\n5. 重连后（session/list 或快照重新加载）标记仍在（前提是后端持久化，由协议决定）。\n6. 新一轮 turn 开始或结束后，旧标记清掉，不残留。\n7. 回归：tool card 文字不变；名单的停止 / 删除 / 计数行为不变。\n\n## desktop\ndesktop 内嵌 web，预计不用改。只做静态核对（`git status desktop` + 加载同一套 web/dist），真机由 Andy 验。\n\n## 不在范围\n- tool card 的标记（待 GM 定）。\n- 名单状态整列改中文。\n- 父会话自己停止时的标记，以及其他来源的显示。\n- 后端（WP-095）。\n- 不 commit。\n\n## 验收标准\n- 测试 1–7 全绿；`tsc -b` 0 错误；lint 不适用（web 未配置 lint 工具）。\n- 和 WP-095 静态 e2e 一致：字段名、位置、取值逐项对上。\n- desktop 静态核对通过；未 commit。\n\n## 待 GM / backend_mid 确认\n1. **GM**：tool card（launch / send 那一行）是否也要显示「by you」？默认不跟进。\n2. **GM**：文案用英文 `cancelled · by you`（默认，和现有状态一致），还是 `已取消 · 由你停止`？\n3. **backend_mid**：`by` 放在哪里（lifecycle `turn_finished` / `SessionInfo` / binding state），具体字段名是什么。\n4. **backend_mid**：`by` 是否持久化，是否出现在 `session/list` 或快照里，以保证重连后还在。\n5. **backend_mid**：新一轮 turn 时 `by` 是否清空（或者只随 `last_turn_reason` 一起更新）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:29:20.666Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 负责 WP-094 范围 4 前端部分：侧栏对用户停掉的子会话加标记；等后端协议字段定了再动，不做新旧双格式兼容；只拆活交叉审不写代码，嵌套方案提交后由 GM 审批再启动"
+        },
+        {
+          "ts": "2026-10-13T11:35:21.732Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-096 方案（frontend_mid · split）\n\n- 父包：WP-094（GM，Andy 已批）。并行包：WP-095（backend_mi"
+        },
+        {
+          "ts": "2026-10-13T11:35:22.013Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-094-frontend.md\""
+        },
+        {
+          "ts": "2026-10-13T11:35:22.340Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "名单用户停止标记 plan；web 子包 WP-097；by 字段位置/持久化待 WP-095；tool card 是否跟进、文案中英待 GM 定"
+        },
+        {
+          "ts": "2026-10-13T11:36:06.849Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：tool card 不跟；文案英文 cancelled · by you"
+        },
+        {
+          "ts": "2026-10-13T11:36:16.449Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:24:41.978Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "WP-096 deliver（侧栏用户停止标记）\n- 子包 WP-097 done；Workers 名单在 last_turn_reason===cancelled 且 last_turn_cancelled_by===user 时显示 cancelled · by you；parent/null/缺失/非 cancelled 不显示；tool card 未改。\n- 协议对齐 WP-095：session/list → SessionInfo.last_turn_cancelled_by；lifecycle turn_finished → cancelled_by（显式 null）；不进 snapshot；重连靠 list。\n- 证据：vitest 7/7；tsc -b 0；lint N/A。静态对照 backend 字段名一致。\n- desktop：未改源码，静态核对通过（sidecar 同一 web/dist）；真机请 Andy 验。\n- 未 commit。"
+        },
+        {
+          "ts": "2026-10-13T12:24:59.806Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 封：标记对齐 WP-095；测试绿；真机 Andy 验",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-097",
+      "domain": "client-ux",
+      "title": "WP-096 web：Workers 名单 用户停止标记",
+      "result": "web 落地+测试绿；证据写入 WP-094-web.md",
+      "done_when": [
+        "7项测试绿",
+        "tsc -b 0",
+        "lint N/A",
+        "tool card 未改",
+        "未commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-web.md",
+      "progress": "closed done by frontend_mid: 返工核对：lifecycle 读 cancelled_by，SessionInfo last_turn_cancelled_by；tool card 未动；新测 7/7，tsc 0；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-096",
+      "goal": "按 WP-094-frontend.md：等 WP-095 协议定稿后，名单里 cancelled 且 by=user 的子会话显示 'cancelled · by you'（文案以 GM 裁定为准）；by=parent 或字段缺失不显示；只支持一种格式；tool card 不改（除非 GM 另定）；测试 7 条；不 commit。产物 .litecode/ops/artifacts/WP-094-web.md",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-097 方案（前端-web；只改 web/，不 commit，未批不 start）\n口径：WP-094-frontend.md + GM 定稿 + WP-094-backend.md §6 P1/P2。只改 Workers 名单（SubagentRosterPanel），tool card / subagentUi.childStatusWord 不动。文案英文 `cancelled · by you`，仅 last_turn_reason==='cancelled' 且 last_turn_cancelled_by==='user' 显示；parent / null / 缺失 / 其他原因都不显示。后端未开工 → 所有新字段容忍缺失。\n\n### 改动点\n1. web/src/api/types.ts\n   - SessionInfo：紧邻 last_turn_reason 加 `last_turn_cancelled_by?: 'user' | 'parent' | null`（导出类型 CancelledBy）。\n   - SessionLifecycle：加同名可选字段（turn_finished 携带）。\n   - SessionSnapshot：加同名可选字段（快照携带）。\n2. web/src/stores/sessionStore.ts\n   - session/list：onSessionList / listSessions 直接整行替换 SessionInfo，字段随行进入，无需额外合并；缺失即 undefined。\n   - lifecycle turn_finished（已存在会话）：与 last_turn_reason 同步写入——事件带该 key 则用其值（含 null），不带则：有 reason 时置 undefined（避免旧标记挂到新原因上），无 reason 时保留原值。\n   - lifecycle turn_finished（未知会话 upsert）：fresh 行带上该字段。\n   - turn_started：与 last_turn_reason 一起清为 undefined（新一轮不残留）。\n   - applySnapshot：快照带该 key 时，patch sessions 中对应行的 last_turn_cancelled_by（不带则不动）。\n3. web/src/components/SubagentRosterPanel.tsx\n   - RosterEntry 加 `stoppedBy?: 'user' | 'parent' | null`；两处构建（session 主路径、bindings 兜底路径）从 last_turn_cancelled_by 赋值。\n   - SubagentStatus 静态分支：lastTurnReason==='cancelled' && stoppedBy==='user' 时文字为 `cancelled · by you`，加 data-testid=\"subagent-roster-cancelled-by-user\"；其余文字/颜色/图标逻辑不变。\n   - 停止 / 删除 / 计数逻辑不动。\n\n### 测试（vitest，新文件 components/SubagentRosterPanel.cancelledBy.test.tsx）\n1. cancelled + by:user → 名单显示 `cancelled · by you`。\n2. cancelled + by:parent → 显示 `cancelled`，无标记。\n3. cancelled + 字段缺失（及 null）→ 显示 `cancelled`，无标记。\n4. 非 cancelled（completed / error / max_steps）+ by:user → 无标记。\n5. 重连：session/list 返回带 by:user 的行 → 标记在；applySnapshot 带 by:user → 标记在；快照不带字段 → 不清掉已有值。\n6. 新一轮：turn_started 后标记清掉；turn_finished(reason:completed, 无字段) 后不残留；turn_finished(cancelled, by:user) 后出现。\n7. 回归：tool card（SubagentLaunchToolView）文字不变（仍 `cancelled`）；名单停止/删除按钮与 SessionStatusLine 计数不变。\n另跑 web 全量 vitest（/exec-daemon/node v22）+ tsc -b；产物 .litecode/ops/artifacts/WP-094-web.md。\n\n### desktop\n内嵌 web，不改；只做静态核对。\n\n### 不在范围\ntool card 标记、状态列中文化、父会话自停标记、后端 WP-095、commit。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:35:17.929Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-094-frontend.md：等 WP-095 协议定稿后，名单里 cancelled 且 by=user 的子会话显示 'cancelled · by you'（文案以 GM 裁定为准）；by=parent 或字段缺失不显示；只支持一种格式；tool card 不改（除非 GM 另定）；测试 7 条；不 commit。产物 .litecode/ops/artifacts/WP-094-web.md"
+        },
+        {
+          "ts": "2026-10-13T11:38:50.661Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: ## WP-097 方案（前端-web；只改 web/，不 commit，未批不 start）\n口径：WP-094-frontend.md + GM 定稿 + "
+        },
+        {
+          "ts": "2026-10-13T11:38:50.954Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:39:22.146Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准；快照中字段确切位置待 backend_mid 确认，e2e 时核对"
+        },
+        {
+          "ts": "2026-10-13T11:39:51.907Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:43:40.008Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "名单 cancelled · by you；快照更正已回退；7 新测 + 全量 1287/1287，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T11:44:16.679Z",
+          "actor": "frontend_mid",
+          "action": "return",
+          "note": "键名不符：lifecycle turn_finished 里后端键名为 cancelled_by（与 reason 并列），前端 sessionStore.ts:405-406 读 last_turn_cancelled_by，会永远拿不到。SessionInfo 侧 last_turn_cancelled_by 正确。改 lifecycle 读取+类型(types.ts:441)+测试；wire 显式 null"
+        },
+        {
+          "ts": "2026-10-13T11:47:24.380Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "返工：lifecycle 键名改 cancelled_by；7 新测 + 全量 1287/1287，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T11:48:06.174Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "返工核对：lifecycle 读 cancelled_by，SessionInfo last_turn_cancelled_by；tool card 未动；新测 7/7，tsc 0；未 commit",
+          "to": "done"
+        },
+        {
+          "ts": "2026-10-13T12:03:58.734Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "domain: \"client-ux-web\" -> \"client-ux\""
+        }
+      ]
+    },
+    {
+      "id": "WP-098",
+      "domain": "harness-core",
+      "title": "WP-095/Runtime：send 三模式原语 + 最新结算邮箱 + 停止不唤醒 + 通知 by",
+      "result": "见 WP-094-backend.md §5 Runtime；先交接口 .tmp/wp097_interface.md",
+      "done_when": [
+        "先交接口 .tmp/wp098_interface.md 给中层",
+        "runtime_queue_while_running_runs_new_turn_after_end",
+        "runtime_queue_not_drained_at_step_seam",
+        "runtime_steer_still_injects_at_step_seam",
+        "runtime_main_session_pending_still_injects_at_seam",
+        "runtime_stop_and_send_cancels_then_runs_new_turn_no_notice",
+        "hub_latest_only_one_result_per_child",
+        "hub_newer_result_overwrites_unread",
+        "hub_stopped_turn_result_mailbox_only_no_wake",
+        "hub_notice_carries_by_user_parent",
+        "settled_reminder_text_stopped_by_user",
+        "fmt 干净",
+        "未 commit"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-runtime.md",
+      "progress": "closed done by backend_mid: Mid resample green: wp098_follow_up_queue 6/6 (incl red-line main-session seam), pending_auto_turn 14/14, architecture_layers 5/5, session_isolation 15/15. Follow-up: e2e stop_and_send->follow-up test requested before WP-095 deliver. ISSUE-056 filed.",
+      "status_entered_at": null,
+      "parent": "WP-095",
+      "goal": "见 WP-094-backend.md §5 Runtime；先交接口 .tmp/wp097_interface.md",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-098 计划（runtime）\n\n接口：`.tmp/wp098_interface.md`（FROZEN v1）。产物：`.litecode/ops/artifacts/WP-094-runtime.md`。分支 ops/team-framework，不 commit/push。\n\n## 步骤\n1. 类型：`crate::types::StopOrigin`；`ParentNotice` 加 by；`CompletionRef.cancelled`；`InternalEvent::TurnCompleted.cancelled_by`；`LifecycleEvent::TurnFinished.cancelled_by`。\n2. manager.rs（Runtime 段）：cancel_turn(_sync) 加 by，LiveTurnState/StartingTurn 记 cancelled_by；follow_ups 队列 + enqueue_follow_up / has_follow_ups / pop_follow_up_and_reserve / restore_follow_up_front / cancel_and_follow_up。\n3. turn/end 写 cancelled_by；SessionData::latest_turn_end_blocking。\n4. pending_auto_turn：pending 为空后调度 follow-up（逐条 FIFO）。\n5. jobs.rs：CompletionInbox 每 child 一条、覆盖、restore 不覆盖更新；NoticeInbox 去重键 (kind, child)。\n6. hub.rs：cancelled 不调 exit_handler；rescan 带 cancelled。\n7. exec.rs：parent_notice_reason → \"stopped by user\" 等。\n8. 修本域测试编译（新参数）；在 src/runtime 测试中只用 `test_child_session`（architecture_layers 约束）。\n9. 测试：接口 §12 全部，含红线 `runtime_main_session_pending_still_injects_at_seam`。\n10. 验证：cargo fmt --check；scoped cargo test（hub/jobs 单测、pending_auto_turn、architecture_layers、新测试文件）；clippy 能跑则跑。\n11. 写产物，`wp.mjs deliver`，通知后端中层 + Session/Tools。\n\n## 跨域依赖\n- Session（WP-099）：调用 cancel_turn(.., User)、ChildStopped/Deleted{by:User}、P1/P2 字段读取 §3。\n- Tools（WP-100）：send mode 路由、stop 传 Parent 且不写通知、delete 不写通知、wait 最新。\n- 在 Session/Tools 落地前，Runtime 对其调用点做最小机械改动（只加 by 参数）以保持编译——需中层授权，否则交由对方（见风险）。\n\n## 风险\n- 主会话 steer 回归 → 红线测试 + follow_ups 与 pending 物理分开。\n- 签名变更打断 Session/Tools 编译：建议 Runtime 一并做机械加参（`StopOrigin::User/Parent`），语义改动留给对方。\n- 共享 build 目录：只跑 scoped 测试。\n\n## done_when\n接口 §12 测试全绿；fmt 干净；产物已写；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:35:49.952Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-094-backend.md §5 Runtime；先交接口 .tmp/wp097_interface.md"
+        },
+        {
+          "ts": "2026-10-13T11:36:02.462Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"先交接口 .tmp/wp097_interface.md 给中层\",\"runtime_queue_while_run -> [\"先交接口 .tmp/wp098_interface.md 给中层\",\"runtime_queue_while_run"
+        },
+        {
+          "ts": "2026-10-13T11:39:33.646Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-098 计划（runtime）\n\n接口：`.tmp/wp098_interface.md`（FROZEN v1）。产物：`.litecode/ops/"
+        },
+        {
+          "ts": "2026-10-13T11:39:33.963Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "接口 .tmp/wp098_interface.md FROZEN v1；计划 .tmp/wp098_plan.md；Q1-Q9 带默认值"
+        },
+        {
+          "ts": "2026-10-13T11:40:13.722Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:40:38.100Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:54:25.380Z",
+          "actor": "runtime",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-094-runtime.md\" -> \".litecode/ops/artifacts/WP-094-runtime.md\""
+        },
+        {
+          "ts": "2026-10-13T11:54:25.683Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "接口 v1.1 落地；ISSUE-056；产物 WP-094-runtime.md；测试全绿；未 commit"
+        },
+        {
+          "ts": "2026-10-13T11:57:45.380Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Mid resample green: wp098_follow_up_queue 6/6 (incl red-line main-session seam), pending_auto_turn 14/14, architecture_layers 5/5, session_isolation 15/15. Follow-up: e2e stop_and_send->follow-up test requested before WP-095 deliver. ISSUE-056 filed.",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-099",
+      "domain": "harness-core",
+      "title": "WP-095/Session：用户停/删写 by=user + 协议 by 字段 + 子只读保持",
+      "result": "见 WP-094-backend.md §5 Session",
+      "done_when": [
+        "user_cancel_child_notice_by_user",
+        "user_delete_child_notice_by_user",
+        "user_stop_does_not_wake_parent",
+        "child_still_readonly_for_user",
+        "wire 快照注明 by 字段",
+        "未 commit"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-session.md",
+      "progress": "closed done by backend_mid: Mid resample: WP-099 lib tests 5/5, architecture_layers 5/5. fmt diff only in tests/wp098_follow_up_queue.rs (Runtime e2e test in progress), not Session.",
+      "status_entered_at": null,
+      "parent": "WP-095",
+      "goal": "见 WP-094-backend.md §5 Session",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-099 方案（Session）：用户停/删写 by=user + SessionInfo.last_turn_cancelled_by + 子只读保持\n- 依据：WP-094-backend.md §2 L4/L5、§5 WP-099、§6 P1-P3；GM 裁：stop_and_send 内部停记作 parent。字段名/取值照抄，不改名。\n- 产物：.litecode/ops/artifacts/WP-094-session.md（开工后写）。只改 Session 域。不 commit。\n- 开工条件：Runtime `.tmp/wp098_interface.md`（当前不存在）冻结 + backend_mid 批。\n\n## 1. 用户停/删 → by=user，不唤醒\n- `src/client_protocol/connection.rs:446-470` agent/cancel：`cancel_turn(&sid)` 改为 WP-098 的带来源调用（预期 `cancel_turn(_sync)(sid, StopOrigin::User)`），`cancelled()` 且有父 → `notify_parent_no_wake(parent, ChildStopped{child_session_id, by: User})`。Idle 不写（WP-091 Q5 保持）。\n- `src/client_protocol/controller/session_lifecycle.rs:370` 用户删子 → `ChildDeleted{child_session_id, by: User}`。\n- `connection.rs` 其它 4 处连接级 cancel（WS 断开/SessionRequest::Cancel，约 :1734/:1747/:1878/:1892）：同样是用户侧，传 `User`（待确认，见 Q3）。\n- 不唤醒：由 WP-098 R-W（Router 对 cancelled 只 push）保证；本包测试断言 `!hub.has_pending` 之外再断言父未起 auto-turn。\n- 测试：`user_cancel_child_notice_by_user`、`user_delete_child_notice_by_user`、`user_stop_does_not_wake_parent`；改写 WP-091 的 `wp091_agent_cancel_child_writes_parent_notice_no_wake`、`wp091_delete_child_tombstone_and_notice` 的期望值（加 by）。\n\n## 2. SessionInfo.last_turn_cancelled_by\n- `src/client_protocol/protocol.rs:217` 旁新增 `pub last_turn_cancelled_by: Option<String>`（\"user\"|\"parent\"），**不加 skip_serializing_if**，null 必须上 wire（与 `last_turn_reason` 的空串省略规则不同，见 Q2）。\n- `session_lifecycle.rs:439-449`：与 `last_turn_reason` 同处取值，同一规则（运行中/主会话 → null；reason != \"cancelled\" → null）。\n- 读取：`src/session/data/mod.rs:315 latest_turn_end_reason_blocking` 扩为同时读 turn/end 事件 data 的 `cancelled_by`（或新增 `latest_turn_end_blocking` 返回 (turn, reason, cancelled_by)，保留旧函数签名以免波及 Runtime 调用点 manager.rs:1064）。\n- turn_finished：`src/session/live.rs` `LifecycleEvent::TurnFinished` 加 `cancelled_by: Option<String>`（manager.rs:1064 附近由 Runtime 段填，见依赖）；`src/client_protocol/project.rs:763 session_lifecycle_turn_finished` 输出 `last_turn_reason` 与 `last_turn_cancelled_by`。\n- snapshot：`protocol.rs:363 SessionSnapshot` 目前**没有** last_turn_reason/SessionInfo；新增 `last_turn_reason`？（只要求 cancelled_by，见 Q4）+ `last_turn_cancelled_by`，在 `project.rs:1150 buffer_snapshot` 或 connection.rs session/snapshot 注入（同 WP-091 的 binding_states 做法）。\n- 持久化：见 §4 冲突——turn 结束原因今天存在 transcript 的 turn/end **事件 data**（runtime/mod.rs:820-826 写 `{\"turn\",\"reason\",\"final_text\"}`），不是 sessions 表列；cancelled_by 同行写进该 data 即持久化、重连不丢，**无需 DB 迁移**。\n- 测试：`session_info_last_turn_cancelled_by_user_parent_null`、`last_turn_cancelled_by_survives_reload`、`turn_finished_event_carries_cancelled_by`、snapshot 带字段、wire 快照（null 显式出现）。\n\n## 3. 子只读保持\n- WP-091 的 `reject_child_turn_start`（connection.rs:87，调用 :300/:394/:561）不动。\n- 测试：`child_still_readonly_for_user`（run/plan_execution/retry/enqueue 四入口回归）。\n\n## 4. 对 WP-098 的依赖（来源如何到达 Session 层）\n- D1 `enum StopOrigin { User, Parent }` 的模块与 pub use 路径。\n- D2 `cancel_turn_sync(session, by)` / `cancel_turn(session, by).await` 新签名（返回仍为 CancelOutcome）。Session 在用户入口传 User；Tools 传 Parent；stop_and_send 内部传 Parent（GM 裁）。\n- D3 `ParentNotice::{ChildStopped,ChildDeleted}{child_session_id, by: StopOrigin}` 字段名。\n- D4 by 落盘位置：Runtime 在写 turn/end（runtime/mod.rs:820）时把 `cancelled_by` 同行写入 data；Session 只读。需接口写明 key 名（建议 `cancelled_by`，值 \"user\"/\"parent\"）与 Starting 窗口取消时的写法。\n- D5 `LifecycleEvent::TurnFinished` 是否由 Runtime 加 `cancelled_by` 字段（manager.rs:1060-1070 finish 段属 Runtime）；否则 Session 在投影时从 data 现读（有竞态风险：TurnFinished 先于读）。建议 Runtime 带上。\n- D6 R-W 不唤醒由 Runtime 实现，Session 只测。\n\n## 5. 歧义 / 与代码冲突（只标注，不改名）\n- Q1 \"持久化（DB migration, additive）\"与代码不符：reason 存在 turn/end 事件 data 而非表列；按事件 data 同行加 key 即可，不建列。若中层坚持加列，需说明列放哪（sessions 表？）以及与事件真相源如何一致。\n- Q2 null 呈现：P1 要 `\"user\"|\"parent\"|null`；同级 `last_turn_reason` 是空串且省略。新字段按 null 显式输出（不省略）。确认前端能接受 list 中每行都带 null。\n- Q3 连接级 cancel（WS 断开、SessionRequest::Cancel）算 user 吗？它们不是用户点\"停止\"，但也不是父。建议记 user（唯一非父来源）；或断开不写通知只记状态。请裁。\n- Q4 snapshot：今天 snapshot 没有 last_turn_reason。P1 只说 cancelled_by 出现在 snapshot；是否一并加 last_turn_reason？建议一并加（加法）。\n- Q5 P2 写 turn_finished 带 `last_turn_reason`；今天 wire 用的键是 `reason`（project.rs:763）。是新增 `last_turn_reason` 并保留 `reason`，还是只加 `last_turn_cancelled_by`？建议两键都出（加法，不改 `reason`）。\n- Q6 \"主会话为 null\"：用户停主会话的 turn 也是 by=user，但 P1 规则跟 last_turn_reason（主会话为空）→ 主会话恒 null。照做，标注。\n- Q7 用户 cancel 落在 Starting 窗口或被 Runtime release_turn_reservation 放弃（无 turn/end）：无持久记录 → cancelled_by 为 null，但仍写 ChildStopped{by:User}。确认可接受。\n\n## 6. done_when\n§1-§3 测试全绿；WP-091 相关测试同步更新后全绿；`cargo test` 本域全绿；wire 快照注明新增字段；本域 rustfmt --check 干净；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:35:50.250Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-094-backend.md §5 Session"
+        },
+        {
+          "ts": "2026-10-13T11:39:54.548Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-099 方案（Session）：用户停/删写 by=user + SessionInfo.last_turn_cancelled_by + 子只读保持"
+        },
+        {
+          "ts": "2026-10-13T11:39:54.797Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案已填，待 backend_mid 批；开工需 wp098_interface 冻结"
+        },
+        {
+          "ts": "2026-10-13T11:40:56.124Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:41:25.784Z",
+          "actor": "session",
+          "action": "start",
+          "note": "按 wp098_interface v1；Runtime 代码未落地部分待其落地后接"
+        },
+        {
+          "ts": "2026-10-13T11:56:12.018Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-094-session.md\" -> \".litecode/ops/artifacts/WP-094-session.md\""
+        },
+        {
+          "ts": "2026-10-13T11:58:36.366Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "用户停/删写 ChildStopped/ChildDeleted{by:User} 不唤醒；SessionInfo.last_turn_cancelled_by（显式 null，取自 turn/end）；turn_finished 带 reason+cancelled_by；snapshot 不动；子只读保持；by 取值逐处核对（shutdown_cleanup=User 已裁接受）；新增 7 测试全绿；已知失败 ISSUE-046/055；产物 WP-094-session.md"
+        },
+        {
+          "ts": "2026-10-13T11:59:29.424Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Mid resample: WP-099 lib tests 5/5, architecture_layers 5/5. fmt diff only in tests/wp098_follow_up_queue.rs (Runtime e2e test in progress), not Session.",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-100",
+      "domain": "tools-permission",
+      "title": "WP-095/Tools：send mode 参数 + stop/delete 不给自己发通知 + wait 最新 + 描述/知识库",
+      "result": "见 WP-094-backend.md §5 Tools",
+      "done_when": [
+        "send_mode_defaults_to_queue",
+        "send_queue_while_running_returns_queued",
+        "send_steer_injects_current_turn",
+        "send_stop_and_send_no_stopped_notice",
+        "send_mode_rejects_unknown",
+        "stop_by_parent_no_notice_to_self",
+        "delete_by_parent_no_notice_to_self",
+        "wait_returns_latest_only",
+        "descriptions 与 KB 节点更新 kb_check 绿",
+        "未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-094-tools.md",
+      "progress": "closed done by backend_mid: Mid resample: tools::subagent 38/38, subagent_send 10/10, registry 7/8 (ISSUE-055 pre-existing). Confirmed: stop_and_send on idle -> started; stop_and_send pushes front.",
+      "status_entered_at": null,
+      "parent": "WP-095",
+      "goal": "见 WP-094-backend.md §5 Tools",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-100 方案（Tools）：send mode + 父停/删不给自己发通知 + wait 最新 + 描述/KB\n依据：WP-095 / artifacts/WP-094-backend.md §2 L1-L6、§5 WP-100。产物 .litecode/ops/artifacts/WP-094-tools.md。不 commit；不碰 hub.rs/jobs.rs/manager.rs（Runtime）、client_protocol/session（Session）。\n\n## T1 subagent_send.mode（L1）\n- send.rs schema 加 `mode: {enum: [queue, steer, stop_and_send], default: queue}`；缺省 queue；非字符串/未知值 → validate_input 与 call 均报错（列出合法值）。\n- queue：子在跑 → `enqueue_follow_up`（WP-098，不走 pending/step seam）→ `status: queued`；子空闲 → 起新 turn `status: started`。\n- steer：子在跑 → 现有 `enqueue_user_input`（step seam 注入）→ `status: steered`；子空闲 → 起新 turn（started）。\n- stop_and_send：子在跑 → `cancel_and_follow_up(child, input, Parent)`（WP-098 单锁）→ `status: stopped_and_queued`，不写 ChildStopped；子空闲 → 起新 turn。\n- 现有 reserve 竞态降级（AgentAlreadyRunning）按 mode 走对应入队路径。metadata 带 mode + queued/steered。\n\n## T2 stop / delete 不给自己发通知（L5）\n- stop.rs：cancel_turn_sync(child) → cancel_turn_sync(child, StopOrigin::Parent)（WP-098 新签名）；删除 notify_parent_no_wake(ChildStopped) 与 with_hub（registry 同步去掉注入）。\n- delete.rs：删除 notify_parent_no_wake(ChildDeleted)；hub 仍传给 delete_session_tree（Session 接口要求）。\n\n## T3 subagent_wait 返回最新（L3/Q3）\n- wait.rs：随 WP-098 最新结算邮箱（每子一条，新覆盖旧）返回该子最新 TurnResult；空闲子照旧 latest_turn_result_blocking。\n- 用户停子且父正在 wait 该子 → 返回该 cancelled 结果（GM 裁定 Q3）；结果附 `cancelled_by: user|parent`（若 WP-098 落盘 cancelled_by 并提供读取）。\n- 不新增唤醒逻辑（cancelled 不唤醒归 Runtime）。\n\n## T4 描述\nsubagent_send.md（三模式语义、默认 queue）、subagent_stop.md（只停当前 turn，被停结果只进邮箱、不唤醒；父自己停不收通知）、subagent_delete.md（父自己删不收通知）、subagent_wait.md（每子只返回最新结果；用户停也返回 cancelled）。launch.md 权限句保留。\n\n## T5 KB（L6，只润色文案、不改 status）\nknowledge/contracts/subagent-lifecycle.md、knowledge/framework/session.md、knowledge/framework/featured-tools.md、knowledge/contracts/tools/tool-authorization.md（仅 subagent 段）：send 三模式、最新结算、停止不唤醒、通知 by=user|parent、父不给自己发通知。`node .litecode/ops/tools/kb_check.mjs` 绿。\n\n## 文件\nsrc/tools/subagent/{send,stop,delete,wait,status}.rs、src/tool/registry.rs（去 stop with_hub）、src/tools/descriptions/subagent_{send,stop,delete,wait}.md、上述 4 个 KB 节点。\n\n## 测试（§5 done_when）\nsend_mode_defaults_to_queue、send_queue_while_running_returns_queued、send_steer_injects_current_turn、send_stop_and_send_no_stopped_notice、send_mode_rejects_unknown、stop_by_parent_no_notice_to_self、delete_by_parent_no_notice_to_self、wait_returns_latest_only。另补 wait_returns_cancelled_when_user_stopped（Q3）。\n\n## 因去通知而过时的测试（本包内改写，非他域，不开 ISSUE）\n- src/tools/subagent/stop.rs::stop_writes_child_stopped_notice_without_wake → 改写为 stop_by_parent_no_notice_to_self（断言 has_notices=false）。\n- src/tools/subagent/delete.rs::deletes_idle_child_and_notifies_without_wake → 改为只断言级联删除，通知断言移入 delete_by_parent_no_notice_to_self。\n- tests/subagent_send.rs::send_to_busy_child_queues_without_starting_a_turn 断言 pending 有 1 条 → queue 模式改走 follow-up，需改为断言 follow-up（或改用 mode=steer 保留原断言）。\n- tests/subagent_send.rs::concurrent_sends_only_one_wins：queued 文案随 mode 文案调整。\n- 他域测试（hub.rs child_stopped/deleted_notice_* 等）归 Runtime，随 WP-098 处理；如发现他域过时测试再按规则先查号后开 ISSUE。\n\n## 验证\ncargo test --lib tools::subagent；cargo test --lib tool::registry；cargo test --test subagent_send --test subagent_child_turn_contract --test subagent_tool_pipeline；cargo test --lib --no-run；rustfmt --check（改动文件）；node .litecode/ops/tools/kb_check.mjs。\n\n## 依赖 WP-098（.tmp/wp098_interface.md 尚不存在 → 全部 blocker）\n- D1 enqueue_follow_up(session, input) 签名与 FIFO 语义（Q2）。\n- D2 cancel_and_follow_up(session, input, by) 签名与返回值（Running/Starting/Idle？）。\n- D3 cancel_turn_sync(session, by) 新签名 + StopOrigin 类型路径。\n- D4 最新结算邮箱 API（wait 读取最新 / 是否消费）与 cancelled_by 读取接口。\n接口冻结前不 start；T4/T5 文案可先行但需与接口一致。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:35:50.554Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-094-backend.md §5 Tools"
+        },
+        {
+          "ts": "2026-10-13T11:39:48.966Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-100 方案（Tools）：send mode + 父停/删不给自己发通知 + wait 最新 + 描述/KB\n依据：WP-095 / artifac"
+        },
+        {
+          "ts": "2026-10-13T11:39:49.227Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "send mode/父停删不自通知/wait 最新/描述+KB；D1-D4 依赖 WP-098 接口（未出）"
+        },
+        {
+          "ts": "2026-10-13T11:40:56.553Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:41:37.497Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "开工"
+        },
+        {
+          "ts": "2026-10-13T11:54:23.425Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:57:45.642Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Mid resample: tools::subagent 38/38, subagent_send 10/10, registry 7/8 (ISSUE-055 pre-existing). Confirmed: stop_and_send on idle -> started; stop_and_send pushes front.",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-101",
+      "domain": "team-ops",
+      "title": "向量检索引擎开销与体验调研",
+      "result": "向量检索引擎开销调研（只调研不改码）。现状：引擎拉起 2GB+；session 语料涨得最快，嵌入量大且慢，堆积后需小时级；关掉 litecode 后整批进度全丢。现用模型是同量级里质量最好的。要回答：1) 性能：先清洗/去重/裁剪语料降量级再嵌入？换更小模型（质量代价多少）？上云嵌入？其它（量化、批处理、只嵌部分内容）？各给代价与收益，有数据就给数据。2) 体验：假设引擎常开持续刷新，刷新量大时如何不丢进度（断点续嵌/增量落盘/优先级），关掉重开后能接着干。参考成熟开源实现并注明出处。产出：结论+推荐组合+明确不做的项。",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T11:45:38.979Z",
+      "parent": null,
+      "goal": "向量检索引擎开销调研（只调研不改码）。现状：引擎拉起 2GB+；session 语料涨得最快，嵌入量大且慢，堆积后需小时级；关掉 litecode 后整批进度全丢。现用模型是同量级里质量最好的。要回答：1) 性能：先清洗/去重/裁剪语料降量级再嵌入？换更小模型（质量代价多少）？上云嵌入？其它（量化、批处理、只嵌部分内容）？各给代价与收益，有数据就给数据。2) 体验：假设引擎常开持续刷新，刷新量大时如何不丢进度（断点续嵌/增量落盘/优先级），关掉重开后能接着干。参考成熟开源实现并注明出处。产出：结论+推荐组合+明确不做的项。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "研究包，拆一个子包给后端中层组织（涉及 engines、session 索引）。方向见 goal，实现方案由下面自定。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:45:29.506Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 向量检索引擎开销调研（只调研不改码）。现状：引擎拉起 2GB+；session 语料涨得最快，嵌入量大且慢，堆积后需小时级；关掉 litecode 后整批进度全丢。现用模型是同量级里质量最好的。要回答：1) 性能：先清洗/去重/裁剪语料降量级再嵌入？换更小模型（质量代价多少）？上云嵌入？其它（量化、批处理、只嵌部分内容）？各给代价与收益，有数据就给数据。2) 体验：假设引擎常开持续刷新，刷新量大时如何不丢进度（断点续嵌/增量落盘/优先级），关掉重开后能接着干。参考成熟开源实现并注明出处。产出：结论+推荐组合+明确不做的项。"
+        },
+        {
+          "ts": "2026-10-13T11:45:37.419Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: 研究包，拆一个子包给后端中层组织（涉及 engines、session 索引）。方向见 goal，实现方案由下面自定。"
+        },
+        {
+          "ts": "2026-10-13T11:45:37.918Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:45:38.422Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：开调研包（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T11:45:38.979Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-102",
+      "domain": "team-ops",
+      "title": "引擎开销与体验调研执行",
+      "result": "按 WP-101 goal 调研，由后端中层组织 IDE 基座（engines 域）等执行",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-101-research.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T11:48:04.858Z",
+      "parent": "WP-101",
+      "goal": "按 WP-101 goal 调研，由后端中层组织 IDE 基座（engines 域）等执行",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-101-research · 向量检索引擎开销与体验调研（WP-102 方案 + 发现骨架）\n\n- 角色：backend_mid；父 WP-101（gm，approver=andy）；本包 WP-102（split，approver=gm）。\n- 规则：**只读调研**；不改 `src/`、`tests/`；测量脚本只放 `.tmp/wp102/`；不 commit；不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13 19:4x HKT。\n\n## 1. 背景（Andy）\n引擎启动后 >2GB；会话语料增长最快、嵌入量大且慢，积压可达数小时；嵌入中途关 litecode 丢整批进度。现模型在同尺寸档质量最好。\n\n## 2. 锁定引擎规则（结论必须遵守）\n静默后台刷新；只在首次/不兼容时重建；Warming = 已起但不可检索；Warming 期间检索工具隐藏。机制从简。\n\n## 3. 子包\n| 包 | owner | 范围 |\n|---|---|---|\n| WP-103 | ide（IDE 基座，`src/engines/**`，session_search 在 `src/engines/session_search`） | 主力：A1-A4 |\n| WP-104 | session | 小包只读：B1-B4 会话语料构成。理由：语料/transcript 归 Session 域，\"清洗/去重/裁剪能省多少\"必须先有语料构成数据，IDE 不掌握数据模型 |\n顺序：WP-103 与 WP-104 **并行**；WP-104 的 B 结果交 WP-103 用于 A3 清洗杠杆的收益估算（经中层转）。产物：`WP-101-research-ide.md`、`WP-101-research-session.md`。\n\n## 4. 每包问题\n### A · WP-103 IDE\n- A1 内存：2GB 去向——模型权重、运行时/推理库（ORT/candle 等）、tokenizer、索引（向量+稀疏/词法）、缓存、进程数（code_search_ipc 等）。测法：box 上冷启动→Warm→刷新中三个时点的 RSS/PSS（`/proc/<pid>/smaps_rollup`）、按库映射拆分；空语料 vs 实际语料对照。\n- A2 慢：嵌入吞吐（chunks/s、tokens/s）、batch/线程/序列长度影响、CPU 利用率；切块（chunk.rs/trimmer.rs）产出量；一次积压的总 chunk 数与耗时外推。\n- A3 杠杆（每项：预期节省、质量代价、复杂度、证据）：①清洗/去重/裁剪（用 B 数据）；②更小模型（MTEB 检索分数对比，附 https://huggingface.co/spaces/mteb/leaderboard 链接与具体模型）；③量化（int8/fp16）；④云嵌入（费用/延迟/隐私/离线不可用）；⑤其他：截断长度、按需/懒加载模型、空闲卸载、批量与线程调参、增量只嵌新消息。\n- A4 体验：常驻刷新下如何不丢进度、重启续嵌。要求调研 ≥3 个成熟开源实现并给引用（文件/文档链接），如 Continue（代码库索引 + 内容哈希缓存）、Sourcegraph/Zoekt、LanceDB/Chroma 增量写、Qdrant WAL、Tabby 等；归纳最小机制（建议方向：按 chunk 内容哈希逐批提交 + 已嵌集合持久化，重启从未嵌部分继续；不引入新状态）。\n### B · WP-104 Session\n- B1 语料构成：按来源（用户/助手/工具输出/子会话 transcript）、类型占比（条数+token）。\n- B2 重复/近重复率（精确哈希 + 简单 shingle）。\n- B3 可裁剪内容占比：工具大输出、日志、大 diff、base64/图片引用、重复 system/提醒文本。\n- B4 增长速率（每日/每会话）。\n- 测法：只读 `.litecode/sessions` 与 sqlite（只读打开），脚本 `.tmp/wp102/`；写清样本范围。\n\n## 5. 证据要求\n- 实测：每个数字附方法（命令/脚本路径）、环境（box CPU/内存/OS）、样本规模、重复次数。\n- 公开：附链接（MTEB leaderboard、模型卡、云厂商定价页、开源实现源码链接）；注明日期。\n- 区分\"实测/公开/推断\"。\n\n## 6. 发现（各节由子包回填，中层合并）\n### 6.1 2GB 去向（A1）\n### 6.2 慢在哪（A2）\n### 6.3 语料构成与可省量（B1-B4）\n### 6.4 杠杆成本收益表（A3）\n| 杠杆 | 省多少 | 质量代价 | 复杂度 | 证据 |\n|---|---|---|---|---|\n### 6.5 不丢进度与续嵌（A4，含开源对照）\n### 6.6 结论\n### 6.7 推荐组合\n### 6.8 不做清单\n### 6.9 待 Andy/GM 裁定\n\n## 7. 合并计划\n子包 deliver → 中层审证据（无方法的数字退回）→ 将 A/B 合并进 §6，写 §6.6-6.9 → WP-102 deliver 给 GM。\n\n## 8. 不在本包\n任何代码改动/实现；换模型落地；云接入；UI。\n\n## 9. 验收\n- [ ] WP-103/104 done 或明确 blocked；§6 每节有带方法的数字或带链接的公开数据\n- [ ] 推荐组合符合 §2 规则；有不做清单\n- [ ] 未改 src/tests、脚本仅 .tmp；validate_all ok:true；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:45:36.873Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-101 goal 调研，由后端中层组织 IDE 基座（engines 域）等执行"
+        },
+        {
+          "ts": "2026-10-13T11:47:11.399Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-101-research · 向量检索引擎开销与体验调研（WP-102 方案 + 发现骨架）\n\n- 角色：backend_mid；父 WP-101（g"
+        },
+        {
+          "ts": "2026-10-13T11:47:11.666Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "split→WP-103 ide（A1-A4）/WP-104 session（B1-B4 语料只读统计）；骨架见 WP-101-research.md"
+        },
+        {
+          "ts": "2026-10-13T11:47:52.116Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：方案对齐 goal"
+        },
+        {
+          "ts": "2026-10-13T11:48:04.858Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-103",
+      "domain": "ide-substrate",
+      "title": "WP-102/IDE：引擎内存与嵌入耗时实测 + 性能杠杆 + 断点续嵌调研",
+      "result": "见 WP-101-research.md §4 A（只读；脚本仅 .tmp）",
+      "done_when": [
+        "A1 内存/2GB 去向实测(方法+数字)",
+        "A2 嵌入耗时分解实测",
+        "A3 杠杆成本收益表(清洗/小模型/云/其他)含 MTEB 等链接",
+        "A4 断点续嵌与常驻刷新方案(≥3 个开源实现带引用)",
+        "推荐组合+不做清单",
+        "未改 src/tests、未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-101-research-ide.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T11:50:52.611Z",
+      "parent": "WP-102",
+      "goal": "见 WP-101-research.md §4 A（只读；脚本仅 .tmp）",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-103 方案（IDE）：向量检索引擎内存/速度/杠杆/续嵌调研\n\n依据：.litecode/ops/artifacts/WP-101-research.md §2/§4A/§5；board WP-103（产物 .litecode/ops/artifacts/WP-101-research-ide.md）。只读调研：不改 src/、tests/，脚本仅 .tmp/wp102/，不 commit，不碰 windows-*.yml。\n每条结论标【实测/公开/推断】；实测写方法（脚本路径+命令）、环境、样本量、重复次数；公开写链接+访问日期。\n\n## 0. 环境与已知事实（只读核实）\n- box：8 vCPU、15 GiB RAM（`nproc`/`free`；实测前再记 `lscpu`、内核、负载）。共享盒子，测量前后记录 load avg，与其他 agent 的 cargo 作业错开（在 cargo-target.lock 上排队后再测，避免 CPU 争用污染吞吐）。\n- 模型：models/ibm-granite/granite-embedding-97m-multilingual-r2/artifacts/ort-lin-q8-emb-q4-bs128-a1.onnx(+.data，约 66 MB，已是 q8/q4 量化)。→ 推断：2 GB 主体不是权重，需实测拆分。\n- 现有调参开关（src/engines/code_search/ort_embed.rs，无需改代码即可做矩阵）：LITECODE_ORT_INTRA_THREADS(:192)、LITECODE_ORT_BATCH(:204，默认 EMBED_INDEX_BATCH)、LITECODE_ORT_CPU_ARENA / LITECODE_ORT_LEAN / LITECODE_ORT_MEM_PATTERN(:221-)、LITECODE_ORT_NO_SPIN、LITECODE_ORT_FORCE_CPU、LITECODE_ORT_ONNX（换模型文件）；冷却：LITECODE_EMBEDDER_COOL_SECS、LITECODE_INDEX_COOL_SECS。截断 EMBED_MAX_LENGTH（ort_embed.rs:52-66）为常量，序列长度维度改用「按长度分桶的输入」测，不改常量。\n- 进程：serve 主进程 + code_search worker 子进程（code_search_ipc），会话 dense lane 也在 worker 内。\n\n## 1. A1 内存：2 GB 去向\n- 驱动：`target/debug` 与 `target/release` 各一次（release 用独立 CARGO_TARGET_DIR=.tmp/wp102/target-rel 构建，排队、timeout 1500）；以 `litecode serve --bind 127.0.0.1:<port> --loopback-only` + LITECODE_WEB_DIST 指向空 dist 起服务（我 12:22 已验证可行），engines.json retrieval.desired=true。\n- 语料两档：空语料（仅 1 文件）vs 实际语料（本仓库只读副本 rsync 到 .tmp/wp102/ws_repo，排除 target/.git；会话语料见 §5）。\n- 时点：T0 冷启动后、T1 Warm、T2 首建中（每 1s 采样峰值）、T3 增量刷新中、T4 空闲 120s 后（观察冷却 COOL_SECS）。\n- 工具：`.tmp/wp102/mem_sample.py`：对 serve 与 worker 两个 pid 读 `/proc/<pid>/smaps_rollup`（RSS/PSS/Anon/File）、`/proc/<pid>/smaps` 按映射归类（libonnxruntime*.so、模型 .onnx.data mmap、[heap]/anon、tantivy/usearch 索引文件 mmap、tokenizers），`/proc/<pid>/status` VmHWM 作峰值；进程数 `pgrep -P`。\n- 对照拆分：LITECODE_ORT_CPU_ARENA=0/1、LITECODE_ORT_MEM_PATTERN=0/1、LITECODE_ORT_BATCH=8/32/128、hash 嵌入（LITECODE_CODE_SEARCH_USE_HASH=1，去掉 ORT 后的基线 = 索引+进程开销）。差值法：ORT 相关 = 真模型 − hash；arena/激活 = arena on − off；索引 = 实际语料 − 空语料（同为 hash）。\n- 重复：每配置 3 次，报中位数与极差。\n\n## 2. A2 慢在哪\n- 微基准：`.tmp/wp102/bench/`（独立小 crate，path 依赖 litecode，不改 src；CARGO_TARGET_DIR=.tmp/wp102/target-bench；仅调用公开 API：open_production_embedder / Embedder::embed_batch、chunk 切块函数）。若公开 API 不够，退回方案 B：用 serve 首建日志里的 `[build_full_index] progress ... chunks/s` 行（已存在）+ 墙钟。\n- 矩阵：threads ∈ {1,2,4,8} × batch ∈ {1,8,32,128} × 序列长度桶 ∈ {≈32,128,256,EMBED_MAX_LENGTH tokens}；固定 512 条输入/格，预热 1 批后计时；每格 3 次取中位数。指标：chunks/s、tokens/s、p50/p95 单批延迟、CPU 利用率（`/proc/<pid>/stat` utime+stime 差 / 墙钟）、峰值 RSS。\n- 管线分解：扫描/切块（chunk.rs、session_search/chunk.rs、trimmer.rs）、tokenize、ORT 推理、写索引（usearch/tantivy）各段计时（bench 内分段计时；方案 B 用日志时间戳）。\n- 外推：用 §5 语料的 chunk 数 × 实测吞吐，估一次积压耗时，并与 Andy「数小时」对比。\n\n## 3. A3 杠杆（每项：省多少、质量代价、复杂度、证据）\n1. 清洗/去重/裁剪：用 WP-104 的 B1-B3 占比 × A2 吞吐 → 省时与省内存【实测×推断】。\n2. 小模型：MTEB 检索分对比（https://huggingface.co/spaces/mteb/leaderboard ，记访问日期与具体模型行），候选：granite-embedding-30m-english / -107m、bge-small / bge-m3、multilingual-e5-small、all-MiniLM-L6-v2、jina-embeddings-v2-small；注意多语言（中文会话）需求【公开】。若批准下载（§7），对 1-2 个候选跑 A2 同矩阵测吞吐/内存【实测】。\n3. 量化：现已 q8/q4；对比 fp32/fp16 公开数据（模型卡/ORT 文档）【公开+推断】；如有现成 fp32 onnx 才实测。\n4. 云嵌入：OpenAI/Voyage/Cohere/Jina 定价页（链接+日期），按 §5 token 量算月费；延迟与隐私、离线不可用【公开+推断】。不调用任何付费 API。\n5. 其他：截断长度、懒加载/空闲卸载（COOL_SECS 实测冷却后 RSS）、batch/线程调参（A2 最优点）、仅嵌新消息、会话 dense lane 只嵌摘要等。\n\n## 4. A4 不丢进度与续嵌\n- 对标（≥3，读源码给文件/行链接，shallow/sparse clone 到 .tmp/ref/）：\n  - continuedev/continue：core/indexing（CodebaseIndexer、按内容哈希的 tag/catalog 增量，refreshIndex 分批提交）。\n  - TabbyML/tabby：crates/tabby-index（增量索引、按文件 hash 跳过）。\n  - qdrant/qdrant：lib/collection WAL（崩溃恢复的提交语义）。\n  - lancedb/lancedb 或 chroma-core/chroma：增量写/批提交。\n  - sourcegraph/zoekt（索引分片原子替换）作为备选。\n- 现状只读核实：src/engines/code_search/build.rs、store.rs、meta.rs、session_search/semantic_index.rs 的提交粒度（整批 save？）与中断点；实测：首建中途 SIGTERM serve，重启后看是否从头重建（记录已嵌数与耗时）。\n- 输出最小机制，遵守锁定口径（静默后台刷新、仅首次/不兼容重建、Warming 不可检索）：方向「按 chunk 内容哈希逐批提交 + 已嵌集合随索引持久化，重启时把未嵌部分当增量续做，不新增状态机/不新增 Warming」。只出设计，不实现。\n\n## 5. 对 WP-104 的依赖\n- 需要：B1 来源/类型占比（条数+token）、B2 重复率、B3 可裁剪占比、B4 增长速率，及其样本范围。\n- 拿不到时的备选：本 box 上 /workspace/litecode/.litecode/sessions.db 只读打开（`sqlite3 'file:...?mode=ro'` 或 python sqlite3 uri=True，拷贝到 .tmp/wp102 后再读）做粗统计，标【推断，非 Session 口径】；或用 session_search 的 chunk/trimmer 对副本跑切块计数。A3①在 B 数据到位前只给公式与区间。\n\n## 6. 资源约束\n- cargo 均 `timeout`、`HOME=/workspace/litecode/.tmp/home`、`</dev/null`；主树构建在 .tmp/cargo-target.lock 上排队；release 与 bench 构建用独立 CARGO_TARGET_DIR（.tmp/wp102/target-rel、target-bench），避免覆盖共享产物（WP-079 教训）。\n- 测量期间 serve 用独立端口与 .tmp/wp102 下临时工作区；测完杀掉自己启动的进程（按记录的 pid），清理临时工作区，保留脚本与原始 CSV。\n- 磁盘：独立 target 约数 GB，测完可删（先报告）。\n\n## 7. 需要中层批的事项\n1. 联网 shallow/sparse clone 对标仓库（continue、tabby、qdrant、lancedb 或 chroma、可选 zoekt）到 .tmp/ref/（只读）。\n2. 下载 1-2 个候选小模型的 ONNX（HuggingFace 公开权重，数十至数百 MB，存 .tmp/wp102/models/，用 LITECODE_ORT_ONNX 指向测吞吐）——若不批，A3② 只用公开数据。注：现有加载器针对 granite 输出/pooling（ensure_official_cls_pooling），换模型可能跑不起来，届时只记录不改代码。\n3. 两个独立 CARGO_TARGET_DIR 的额外构建（release 二进制 + bench crate），各一次。\n4. WebFetch 公开页面（MTEB、模型卡、云定价）——无需新工具。\n无需新增系统工具（python3、/proc、sqlite3 已有；如缺 sqlite3 CLI 用 python 内置）。\n\n## 8. 产物结构\nWP-101-research-ide.md：§A1-A4 各节（结论+证据标签+方法），杠杆表（填 WP-101 §6.4），推荐组合草案与不做清单草案（供中层 §6.6-6.8 合并），原始数据 CSV 路径。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:46:42.918Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-101-research.md §4 A（只读；脚本仅 .tmp）"
+        },
+        {
+          "ts": "2026-10-13T11:49:32.501Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-103 方案（IDE）：向量检索引擎内存/速度/杠杆/续嵌调研\n\n依据：.litecode/ops/artifacts/WP-101-research"
+        },
+        {
+          "ts": "2026-10-13T11:49:32.832Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "A1-A4 调研方案；需批：clone 对标仓库、下载候选小模型、两个独立 target 构建"
+        },
+        {
+          "ts": "2026-10-13T11:50:21.521Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:50:52.611Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:02:08.434Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "domain: \"ide-base\" -> \"ide-substrate\""
+        }
+      ]
+    },
+    {
+      "id": "WP-104",
+      "domain": "harness-core",
+      "title": "WP-102/Session：会话语料构成只读统计",
+      "result": "见 WP-101-research.md §4 B（只读；脚本仅 .tmp）",
+      "done_when": [
+        "B1 语料按来源/角色/类型占比(条数+token)",
+        "B2 重复与近重复率",
+        "B3 可裁剪内容占比(工具输出/日志/大 diff/base64 等)",
+        "B4 增长速率",
+        "方法与样本说明",
+        "未改 src/tests、未 commit"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-101-research-session.md",
+      "progress": "closed done by backend_mid: 验收通过：方法与可重跑脚本到位，合成自测 9/9；box 语料为 0 已按方案标「小样本，不代表实际」。真实数字等 Andy 副本后由 Session 重跑补人工核对。",
+      "status_entered_at": null,
+      "parent": "WP-102",
+      "goal": "见 WP-101-research.md §4 B（只读；脚本仅 .tmp）",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-104 方案（Session）：会话语料构成只读调研（B1–B4）\n- 依据：WP-101-research.md §4 B、§5 证据要求。产物：`.litecode/ops/artifacts/WP-101-research-session.md`，B 节结果经中层转 WP-103（A3 清洗杠杆）。\n- 规则：只读；不改 src/tests；脚本只放 `.tmp/wp102/`（本包用 `.tmp/wp102/session/`）；不 commit；开工需 backend_mid 批。\n\n## 1. 数据源\n- 主源：工作区 `.litecode/sessions.db`（路径来自 `config/resolved.rs:35 sessions_db`），**只读打开** `sqlite3 'file:<path>?mode=ro&immutable=1'`（Python `sqlite3.connect(uri, uri=True)`）。\n  - `sessions`（id, parent_session_id, subagent_depth, created_at, updated_at, deleted_children_json…）：来源分\"主会话 / 子会话\"、按日分组。\n  - `transcript_items`（session_id, seq, item_type, kind, body, body_ref, token_estimate, created_at, event_type, state）：B1–B4 主表。\n  - `session_blobs`/`session_blob_refs`（bytes, sha256）：外置大 body / 图片的字节量（B3 base64/图片引用）。\n- 辅源：`sessions/<id>/` 目录（若有落盘产物，仅统计字节，不读内容到产物）。\n- 对照\"实际进嵌入的语料\"：`src/engines/session_search/corpus.rs`（Final 策略：人话全留、工具调用留、工具产出按预算截断、压缩总结剔掉）。B1–B3 分两层报：(a) 全部 transcript；(b) 按 corpus.rs 准入规则（kind/item_type 过滤，仅复刻判定，不调引擎）后的可嵌语料。\n- **样本问题（风险 R1）**：box 上目前唯一库是 `.tmp/wp102/ws_repo/.litecode/sessions.db`（测试仓，量小、非真实）。Andy 的真实语料在其机器上；读取需中层/Andy 授权并经 machine 工具只读复制（CopyToBox 后只读打开）。未授权则只报 box 样本并明确标\"样本不代表实际\"。\n\n## 2. 指标与方法\n### B1 构成\n- 维度：来源 {用户 item/user, 助手 文本/推理, 工具调用, 工具输出, 系统/提醒, 压缩总结} × 会话 {主, 子(depth≥1)}；kind/item_type 实际取值先 `SELECT DISTINCT` 列出再映射（映射表写入产物）。\n- 计数：条数（行）、字符数、token 数。\n- token 估算：主法 = 与产品一致的 cl100k_base（`estimate.rs:56 count_text_tokens` 同编码；脚本用 Python `tiktoken` cl100k_base，若 box 无则 pip 装到 .tmp venv）；对照 = 库内 `token_estimate` 列求和，报两者偏差。嵌入模型自身 tokenizer 的 token 数由 WP-103 负责，本包注明差异。\n### B2 重复\n- 精确：对规范化文本（去首尾空白、CRLF→LF）取 sha256，重复率 = 1 − 唯一哈希数/总条数；分来源报，并报\"重复部分占 token 比\"。\n- 近重复：字符 5-gram shingle → MinHash（128 perm，`datasketch` 或自写），LSH 阈值 Jaccard ≥ 0.8（另报 0.9 敏感性）；只对 ≥ 200 字符的条目做（短文本噪声大）；近重复率 = 落在某簇非代表成员的条目占比（条数/token）。抽 20 对人工核对精度（只在本地看，不入产物，产物仅报精度比例）。\n### B3 可裁剪\n- 大工具输出：单条工具输出 > 2,000 token（另报 > 8,000）；可省量 = 超出部分 token 之和（按\"截到阈值\"口径）。\n- 日志：工具输出中 ≥ 50% 行匹配时间戳/日志级别正则（`^\\[?\\d{4}-\\d{2}-\\d{2}`、`\\b(INFO|WARN|ERROR|DEBUG|TRACE)\\b`、cargo `Compiling`/`test ... ok`）。\n- 大 diff：行首 `diff --git`/`@@ ` 或 ≥ 50% 行以 `+`/`-` 开头，且 > 1,000 token。\n- base64：正则 `[A-Za-z0-9+/]{200,}={0,2}` 命中字节；`data:image/` 引用；blob 外置字节（session_blobs.bytes）。\n- 重复提醒文本：系统/提醒类条目按精确哈希聚合，出现 ≥ 5 次的文本模板的总 token（与 B2 去重口径分开报，避免双算；交集单列）。\n- 各类可能重叠：报\"各类单独\"+\"并集\"（按行 id 去重）。\n### B4 增长\n- 时间戳：`transcript_items.created_at`、`sessions.created_at`（ms epoch，先抽查确认单位）。\n- 指标：每日新增条数/token（按 Asia/Hong_Kong 日界）、每会话平均 token 与 P50/P90、主 vs 子会话贡献；近 7/30 日均值与线性外推；可嵌语料（层 b）同口径。\n- 若样本跨度 < 7 天，标注外推不可靠。\n\n## 3. 产出与证据格式\n- 每个数字附：脚本路径（`.tmp/wp102/session/b{1..4}.py`）、命令、库路径与只读 URI、样本规模（会话数/行数/日期范围）、运行时间与环境（box CPU/内存/OS）。区分实测/推断。\n- 脚本输出只含聚合数值（JSON 到 `.tmp/wp102/session/out/`）。\n\n## 4. 风险\n- R1 样本代表性（见 §1）。\n- R2 隐私：**只出聚合**；绝不把消息正文、路径片段、文件名或命令原文写入产物/日志/消息；人工核对只在本地终端，不落盘；out/ JSON 不含文本字段。\n- R3 只读保证：URI `mode=ro`（+`immutable=1` 防锁/WAL 写）；不对源库执行 VACUUM/ANALYZE；运行中的 litecode 若在写库，改用先 `CopyToBox`/cp 快照再读。\n- R4 估算偏差：cl100k ≠ 嵌入模型 tokenizer，注明；token_estimate 列可能为 0（旧行），以重算为准。\n- R5 body_ref 外置条目：body 为空时按 blob 字节计，不读 blob 内容（base64 判断仅对内联 body）。\n\n## 5. done_when\nB1–B4 四节均有带方法的数字；产物 WP-101-research-session.md 写成；脚本在 `.tmp/wp102/session/`；未改 src/tests；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:46:43.206Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-101-research.md §4 B（只读；脚本仅 .tmp）"
+        },
+        {
+          "ts": "2026-10-13T11:57:38.729Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-104 方案（Session）：会话语料构成只读调研（B1–B4）\n- 依据：WP-101-research.md §4 B、§5 证据要求。产物：`"
+        },
+        {
+          "ts": "2026-10-13T11:57:39.025Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "只读调研方案已填，待 backend_mid 批"
+        },
+        {
+          "ts": "2026-10-13T11:59:29.778Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:59:55.025Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:02:03.156Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-101-research-session.md\" -> \".litecode/ops/artifacts/WP-101-research-session.md\""
+        },
+        {
+          "ts": "2026-10-13T12:02:03.493Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "只读调研：box 唯一 sessions.db（IDE 测试仓）为 0 行，B1–B4 小样本全 0、不代表实际；交付一步重跑脚本 .tmp/wp102/session/run.sh（只读/快照）+ 合成自测 9/9；Andy 清洗副本放 .tmp/wp102/corpus/sessions.db 后一条命令重跑；产物 WP-101-research-session.md"
+        },
+        {
+          "ts": "2026-10-13T12:04:06.388Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：方法与可重跑脚本到位，合成自测 9/9；box 语料为 0 已按方案标「小样本，不代表实际」。真实数字等 Andy 副本后由 Session 重跑补人工核对。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-105",
+      "domain": "team-ops",
+      "title": "provider 供应商与模型更新调研",
+      "result": "provider 调研（只调研不改码）。对现有支持的每家供应商查官方文档：1) 协议、模型、端点、请求/响应格式有无更新，与仓内实现的差异；2) 现存模型有无可升级的能力（如推理、缓存、工具调用、上下文长度等）；3) 现存供应商有无新的高性价比模型可加入；4) 有无其它高性价比供应商值得加入。每条附官方文档链接与日期，区分已核实/推断。产出：差异清单、建议加/升级/不做的项。",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy：MiMo 不改；腾讯补 k3+mimo-v2.6-flash；新加 moonshot+minimax（双套端点）；前端 plan/按量分组；其余按 GM 收敛（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "provider 调研（只调研不改码）。对现有支持的每家供应商查官方文档：1) 协议、模型、端点、请求/响应格式有无更新，与仓内实现的差异；2) 现存模型有无可升级的能力（如推理、缓存、工具调用、上下文长度等）；3) 现存供应商有无新的高性价比模型可加入；4) 有无其它高性价比供应商值得加入。每条附官方文档链接与日期，区分已核实/推断。产出：差异清单、建议加/升级/不做的项。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "研究包，交后端中层组织；方向见 goal，执行方式自定。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:54:33.545Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: provider 调研（只调研不改码）。对现有支持的每家供应商查官方文档：1) 协议、模型、端点、请求/响应格式有无更新，与仓内实现的差异；2) 现存模型有无可升级的能力（如推理、缓存、工具调用、上下文长度等）；3) 现存供应商有无新的高性价比模型可加入；4) 有无其它高性价比供应商值得加入。每条附官方文档链接与日期，区分已核实/推断。产出：差异清单、建议加/升级/不做的项。"
+        },
+        {
+          "ts": "2026-10-13T11:54:41.635Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: 研究包，交后端中层组织；方向见 goal，执行方式自定。"
+        },
+        {
+          "ts": "2026-10-13T11:54:41.885Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T11:54:42.258Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：开 provider 调研包（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T11:54:42.529Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:20:55.050Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "调研完成，裁定已写入 §11"
+        },
+        {
+          "ts": "2026-10-13T12:20:55.410Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：MiMo 不改；腾讯补 k3+mimo-v2.6-flash；新加 moonshot+minimax（双套端点）；前端 plan/按量分组；其余按 GM 收敛（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-106",
+      "domain": "team-ops",
+      "title": "provider 调研执行",
+      "result": "按 WP-105 goal 调研，后端中层组织，可提议新增 provider 维护成员",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-105-research.md",
+      "progress": "closed done by gm: GM 封：三子包 done，§6 合并完整；产品裁定呈 Andy",
+      "status_entered_at": null,
+      "parent": "WP-105",
+      "goal": "按 WP-105 goal 调研，后端中层组织，可提议新增 provider 维护成员",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-105-research · 供应商与模型更新调研（WP-106 方案 + 发现骨架）\n\n- 角色：backend_mid；父 WP-105（gm，approver=andy）；本包 WP-106（split，approver=gm）。\n- 规则：只读调研；不改 `src/`、`tests/`；脚本（若有）只放 `.tmp/wp106/`；不 commit；不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13 19:5x HKT。\n\n## 1. 目标\n对每个已支持供应商查官方文档：Q1 协议/模型/端点/请求响应格式更新及与仓库实现的差异；Q2 现有模型可升级能力（推理、缓存、工具调用、上下文长度）；Q3 现有供应商的新性价比模型；Q4 值得新增的其他性价比供应商。最终产出差异清单与 新增/升级/不做 建议。\n\n## 2. 仓库盘点（中层已核，2026-10-13）\n- 没有 `src/providers`。供应商目录：`src/provider_catalog/default_catalog.toml`（11 个 provider、62 个 model 条目）；加载/解析 `src/provider_catalog/{mod,store,resolve}.rs`；key 与选型 `src/config/{resolved,settings_writer,bridge}.rs`。\n- 线协议只有两种：`src/llm/codec/mod.rs:31-33` 按 `endpoint_type` 分 `responses`（`codec/responses.rs` + `responses_harden.rs`）与 `chat_completions`（`codec/chat.rs`、`chat_synth.rs`、`chat_usage.rs`）；SSE `codec/sse.rs`；推理回放 `codec/replay.rs`、`llm/replay_compat.rs`；重连 `llm/reconnect.rs`。\n- 目录用到的能力字段：`reasoning.tiers/summary/replay`、`context_window(_max)`、`max_output`、`modalities`、`usage_patch`、`extra_body`、`quirks`（`reasoning_replay`、`thinking_type_switch`）、`headers`、auth 全为 bearer。\n\n| provider | 行 | endpoint | endpoint_type | quirks | 模型数 |\n|---|---|---|---|---|---|\n| openai | src/provider_catalog/default_catalog.toml:42 | https://api.openai.com/v1 | responses | – | 1（gpt-5.6-sol） |\n| deepseek | src/provider_catalog/default_catalog.toml:49 | https://api.deepseek.com | responses | reasoning_replay | 1（deepseek-flash） |\n| mimo | src/provider_catalog/default_catalog.toml:59 | https://api.xiaomimimo.com/v1 | responses | reasoning_replay | 2 |\n| ark-coding | src/provider_catalog/default_catalog.toml:68 | ark.cn-beijing.volces.com/api/coding/v3 | responses | thinking_type_switch | 7 |\n| opencode | src/provider_catalog/default_catalog.toml:78 | opencode.ai/zen/v1 | chat_completions | 头 x-opencode-session | 9 |\n| opencode-go | src/provider_catalog/default_catalog.toml:86 | opencode.ai/zen/go/v1 | chat_completions | 同上 | 10 |\n| commandcode | src/provider_catalog/default_catalog.toml:94 | api.commandcode.ai/provider/v1 | chat_completions | 自有 tiers | 10 |\n| zhipu | src/provider_catalog/default_catalog.toml:106 | open.bigmodel.cn/api/paas/v4 | chat_completions | – | 2 |\n| ark-agent | src/provider_catalog/default_catalog.toml:116 | ark.cn-beijing.volces.com/api/plan/v3 | responses | thinking_type_switch | 9 |\n| tencent-token | src/provider_catalog/default_catalog.toml:127 | api.lkeap.cloud.tencent.com/plan/v3 | chat_completions | – | 7 |\n| aliyun-token | src/provider_catalog/default_catalog.toml:136 | token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1 | responses | – | 4 |\n执行者须把每个模型条目补到 file:line 级。\n\n## 3. 执行者建议（GM 裁定项 G1）\n- 现状：`src/llm` 归 Runtime，Runtime 正做 WP-098（WP-095），排队会拖。目录在 `src/provider_catalog` + `src/config` 的模型配置部分，对应已有产品域 `model-config`（board 中 owner_agent 为空）。\n- **建议**：GM 新设 **Provider** 成员（agent id 建议 `provider`），担 `model-config` 域：\n  - 范围：`src/provider_catalog/**`、`src/llm/codec/**` 中与供应商差异相关的适配（quirks、extra_body、usage_patch）、`src/config` 的模型/key 配置部分（resolved/settings_writer/bridge 中 provider 段）。本调研内**只读**。\n  - 与 Runtime 边界：Runtime 保留 `src/llm/{provider,request,reconnect}.rs` 的流式/重试/turn 集成与 codec 公共框架（`codec/mod.rs`、`sse.rs`、`stream_contract.rs`）；Provider 只动供应商条目与差异适配；公共框架改动须 Runtime 审。\n- 工具限制：`wp new --owner provider` 校验失败（agent 不存在），无法用占位 owner。故三个子包暂建为 owner=runtime 并**排在 WP-098 之后**；若 GM 批 G1，GM 新增 agent 后由 GM 取消这三个包、按同样范围在 provider 名下重建（或 GM 用其权限改 owner）。\n\n## 4. 子包（按供应商组切分）\n| 包 | 组 | 额外问题 | 产物 |\n|---|---|---|---|\n| WP-107 | A 一方直连：openai、deepseek、mimo、zhipu | 两种 codec 与 OpenAI Responses / Chat Completions 官方规范逐项对照（流事件、tool call、usage、reasoning 字段、prompt cache） | WP-105-research-a.md |\n| WP-108 | B 国内云套餐：ark-coding、ark-agent、tencent-token、aliyun-token | 套餐计价、限额、可用模型清单变更 | WP-105-research-b.md |\n| WP-109 | C 聚合/网关：opencode、opencode-go、commandcode；+ Q4 新供应商 | Q4：≥5 个候选（如 OpenRouter、Moonshot 直连、MiniMax 直连、Google Gemini、Anthropic、xAI、硅基流动等，执行者定），价格页链接、协议兼容性（能否走现有两种 codec） | WP-105-research-c.md |\n顺序：三包可并行（只读，互不冲突）；若仍由 Runtime 执行，统一排在 WP-098 deliver 之后。\n\n## 5. 证据要求\n- 每条结论：官方文档链接 + 访问日期（HKT）+ 标签 `已证实`（官方文档原文/实测请求）或 `推断`。\n- 仓库对照：file:line。\n- 若实测请求（需 key）：只在 `.tmp/wp106/`，不落 key，不提交；无 key 则标\"未实测\"。\n- 价格：官方价格页链接 + 币种 + 日期；聚合商标明是否加价。\n\n## 6. 发现（子包回填，中层合并）\n### 6.1 各供应商 Q1 差异\n| provider | 项 | 官方现状(链接/日期) | 仓库(file:line) | 差异 | 标签 |\n|---|---|---|---|---|---|\n### 6.2 Q2 可升级能力\n### 6.3 Q3 同家新模型\n### 6.4 Q4 新供应商候选\n### 6.5 差异清单（汇总）\n### 6.6 建议：新增 / 升级 / 不做\n### 6.7 待 Andy/GM 裁定\n\n## 7. 合并计划\n子包 deliver → 中层审证据（缺链接/日期/标签的退回）→ 合并 §6 → 写 6.5-6.7 → WP-106 deliver 给 GM。\n\n## 8. 不在本包\n任何目录/代码改动；接入新供应商；key 管理；UI。\n\n## 9. 待 GM 裁定\n- G1（档位 2）：是否新设 Provider 成员（见 §3）；否则由 Runtime 在 WP-098 后执行。\n- G2（档位 3）：Q4 候选范围是否限国内可直连/可开票供应商。\n\n## 10. 验收\n- [ ] WP-107/108/109 done 或明确 blocked；每条结论有链接+日期+标签\n- [ ] 差异清单 + 新增/升级/不做 建议齐全\n- [ ] 未改 src/tests；validate_all ok:true；未 commit\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:54:41.375Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-105 goal 调研，后端中层组织，可提议新增 provider 维护成员"
+        },
+        {
+          "ts": "2026-10-13T11:56:37.637Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-105-research · 供应商与模型更新调研（WP-106 方案 + 发现骨架）\n\n- 角色：backend_mid；父 WP-105（gm，a"
+        },
+        {
+          "ts": "2026-10-13T11:56:37.979Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "split→WP-107 一方直连/WP-108 国内云套餐/WP-109 聚合+新供应商；G1 建议新设 Provider 成员（暂 owner=runtime，排 WP-098 后）"
+        },
+        {
+          "ts": "2026-10-13T11:58:54.435Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：G1 同意，已建 Provider bot（e310cad5-aff8-488e-837b-1c950e26305c），注册 owner=provider 后改派 107/108/109；G2 不限定，候选注明大陆直连/开票情况即可"
+        },
+        {
+          "ts": "2026-10-13T12:00:15.263Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:09:08.654Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "三子包 done；合并见 WP-105-research.md §6；高优先级裁定 6.7 上交"
+        },
+        {
+          "ts": "2026-10-13T12:09:27.958Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 封：三子包 done，§6 合并完整；产品裁定呈 Andy",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-107",
+      "domain": "model-config",
+      "title": "WP-106/A 一方直连：openai/deepseek/mimo/zhipu + 两种 codec 对照",
+      "result": "见 WP-105-research.md §4 A；排在 WP-098 之后；若 GM 设 Provider 成员则移交",
+      "done_when": [
+        "Q1 协议/端点/格式 diff(file:line)",
+        "Q2 现有模型可升级能力",
+        "Q3 同家新性价比模型",
+        "每条结论带官方链接+访问日期+已证实/推断",
+        "只读未改 src、未 commit",
+        "Responses/Chat Completions codec 与官方规范逐项对照"
+      ],
+      "owner": "provider",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-105-research-a.md",
+      "progress": "closed done by backend_mid: §5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+      "status_entered_at": null,
+      "parent": "WP-106",
+      "goal": "见 WP-105-research.md §4 A；排在 WP-098 之后；若 GM 设 Provider 成员则移交",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-107 方案（provider）：一方直连 openai/deepseek/mimo/zhipu + codec 对照\n范围：openai(toml:42, 模型 149)、deepseek(49, 164)、mimo(59, 177/190)、zhipu(106, 模型约 547-566 段逐条补行号)。\n步骤：1) 逐家查官方 API 文档/模型列表/价格页，填 Q1-Q3（端点、endpoint_type、reasoning tiers/summary/replay、context/max_output、cache、tool call、新模型）。\n2) codec 对照：responses.rs(1849 行)+responses_harden.rs vs OpenAI Responses 规范（流事件类型、function_call、usage/cached_tokens、reasoning item/encrypted_content、prompt_cache_key）；chat.rs/chat_synth.rs/chat_usage.rs vs Chat Completions（delta.tool_calls、stream_options.include_usage、reasoning_content 方言）。逐条 file:line。\n3) 有 key 才实测，否则「未测」。产物 .litecode/ops/artifacts/WP-105-research-a.md，按 §6 表格回填。\n完成条件：4 家 Q1-Q3 齐、两 codec 对照表齐、每条有链接+日期+标签。\n\nG2补充：每家结论注明大陆能否直连、能否开发票（已核实/推断）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:55:58.973Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-105-research.md §4 A；排在 WP-098 之后；若 GM 设 Provider 成员则移交"
+        },
+        {
+          "ts": "2026-10-13T12:02:08.853Z",
+          "actor": "backend_mid",
+          "action": "reassign",
+          "note": "owner: runtime -> provider; provider agent registered; GM/backend_mid reassignment"
+        },
+        {
+          "ts": "2026-10-13T12:04:38.280Z",
+          "actor": "provider",
+          "action": "fill",
+          "note": "direct: # WP-107 方案（provider）：一方直连 openai/deepseek/mimo/zhipu + codec 对照\n范围：openai(toml:"
+        },
+        {
+          "ts": "2026-10-13T12:04:42.637Z",
+          "actor": "provider",
+          "action": "submit",
+          "note": "plan filled; await backend_mid approval before start"
+        },
+        {
+          "ts": "2026-10-13T12:05:12.349Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案对齐 WP-105-research §4/§5；G2 已写入；批，可并行 start"
+        },
+        {
+          "ts": "2026-10-13T12:05:35.862Z",
+          "actor": "provider",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:08:00.504Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-105-research-a.md\" -> \".litecode/ops/artifacts/WP-105-research-a.md\""
+        },
+        {
+          "ts": "2026-10-13T12:08:00.892Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"research doc written; awaiting acceptance\""
+        },
+        {
+          "ts": "2026-10-13T12:08:01.193Z",
+          "actor": "provider",
+          "action": "deliver",
+          "note": "read-only research complete; artifact .litecode/ops/artifacts/WP-105-research-a.md; no src changes; no commit; all live tests 未测"
+        },
+        {
+          "ts": "2026-10-13T12:08:50.206Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "§5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-108",
+      "domain": "model-config",
+      "title": "WP-106/B 国内云套餐：ark-coding/ark-agent/tencent-token/aliyun-token",
+      "result": "见 WP-105-research.md §4 B；排在 A 之后或并行（由执行者定）",
+      "done_when": [
+        "Q1 协议/端点/格式 diff(file:line)",
+        "Q2 现有模型可升级能力",
+        "Q3 同家新性价比模型",
+        "每条结论带官方链接+访问日期+已证实/推断",
+        "只读未改 src、未 commit",
+        "套餐计价与限额核对"
+      ],
+      "owner": "provider",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-105-research-b.md",
+      "progress": "closed done by backend_mid: §5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+      "status_entered_at": null,
+      "parent": "WP-106",
+      "goal": "见 WP-105-research.md §4 B；排在 A 之后或并行（由执行者定）",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-108 方案（provider）：国内云套餐 ark-coding/ark-agent/tencent-token/aliyun-token\n范围：ark-coding(toml:68, 模型 203-287 段)、ark-agent(116)、tencent-token(127, 含 hy4-preview:491)、aliyun-token(137)。\n步骤：查火山方舟 Coding/Agent Plan、腾讯云 LKEAP Token Plan、阿里云百炼 Token Plan 官方文档：端点、协议(responses/chat)、套餐价格/币种/限额/可用模型变化、thinking_type_switch 是否仍需要；对照 file:line；无 key 标「未测」。\n产物 WP-105-research-b.md。\n\nG2补充：每家结论注明大陆能否直连、能否开发票（国内套餐预期可直连可开票，仍须官方证据）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:55:59.235Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-105-research.md §4 B；排在 A 之后或并行（由执行者定）"
+        },
+        {
+          "ts": "2026-10-13T12:02:09.267Z",
+          "actor": "backend_mid",
+          "action": "reassign",
+          "note": "owner: runtime -> provider; provider agent registered; GM/backend_mid reassignment"
+        },
+        {
+          "ts": "2026-10-13T12:04:38.572Z",
+          "actor": "provider",
+          "action": "fill",
+          "note": "direct: # WP-108 方案（provider）：国内云套餐 ark-coding/ark-agent/tencent-token/aliyun-token\n范围：a"
+        },
+        {
+          "ts": "2026-10-13T12:04:42.959Z",
+          "actor": "provider",
+          "action": "submit",
+          "note": "plan filled; await backend_mid approval before start"
+        },
+        {
+          "ts": "2026-10-13T12:05:12.712Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案对齐 WP-105-research §4/§5；G2 已写入；批，可并行 start"
+        },
+        {
+          "ts": "2026-10-13T12:05:36.179Z",
+          "actor": "provider",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:08:01.649Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-105-research-b.md\" -> \".litecode/ops/artifacts/WP-105-research-b.md\""
+        },
+        {
+          "ts": "2026-10-13T12:08:01.978Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"research doc written; awaiting acceptance\""
+        },
+        {
+          "ts": "2026-10-13T12:08:02.323Z",
+          "actor": "provider",
+          "action": "deliver",
+          "note": "read-only research complete; artifact .litecode/ops/artifacts/WP-105-research-b.md; no src changes; no commit; all live tests 未测"
+        },
+        {
+          "ts": "2026-10-13T12:08:50.545Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "§5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-109",
+      "domain": "model-config",
+      "title": "WP-106/C 聚合/网关：opencode/opencode-go/commandcode + Q4 新供应商候选",
+      "result": "见 WP-105-research.md §4 C",
+      "done_when": [
+        "Q1 协议/端点/格式 diff(file:line)",
+        "Q2 现有模型可升级能力",
+        "Q3 同家新性价比模型",
+        "每条结论带官方链接+访问日期+已证实/推断",
+        "只读未改 src、未 commit",
+        "Q4 ≥5 个候选新供应商性价比对比(价格页链接)"
+      ],
+      "owner": "provider",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-105-research-c.md",
+      "progress": "closed done by backend_mid: §5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+      "status_entered_at": null,
+      "parent": "WP-106",
+      "goal": "见 WP-105-research.md §4 C",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-109 方案（provider）：聚合网关 opencode/opencode-go/commandcode + Q4\n范围：opencode(toml:78, 按模型选 responses/chat 见 291-292)、opencode-go(86)、commandcode(94, 模型级 tiers 见 389)。查官方模型表、价格、是否加价、头 x-opencode-session 现状。\nQ4：≥5 候选（OpenRouter、Moonshot、MiniMax、硅基流动、Google Gemini、Anthropic、xAI 中取），每家：价格页+币种、协议能否走现有 responses/chat codec、大陆能否直连、能否开发票（均标已核实/推断）。\n产物 WP-105-research-c.md。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T11:55:59.483Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-105-research.md §4 C"
+        },
+        {
+          "ts": "2026-10-13T12:02:09.738Z",
+          "actor": "backend_mid",
+          "action": "reassign",
+          "note": "owner: runtime -> provider; provider agent registered; GM/backend_mid reassignment"
+        },
+        {
+          "ts": "2026-10-13T12:04:38.911Z",
+          "actor": "provider",
+          "action": "fill",
+          "note": "direct: # WP-109 方案（provider）：聚合网关 opencode/opencode-go/commandcode + Q4\n范围：opencode(tom"
+        },
+        {
+          "ts": "2026-10-13T12:04:43.268Z",
+          "actor": "provider",
+          "action": "submit",
+          "note": "plan filled; await backend_mid approval before start"
+        },
+        {
+          "ts": "2026-10-13T12:05:13.094Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案对齐 WP-105-research §4/§5；G2 已写入；批，可并行 start"
+        },
+        {
+          "ts": "2026-10-13T12:05:36.571Z",
+          "actor": "provider",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:08:02.779Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-105-research-c.md\" -> \".litecode/ops/artifacts/WP-105-research-c.md\""
+        },
+        {
+          "ts": "2026-10-13T12:08:03.171Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"research doc written; awaiting acceptance\""
+        },
+        {
+          "ts": "2026-10-13T12:08:03.528Z",
+          "actor": "provider",
+          "action": "deliver",
+          "note": "read-only research complete; artifact .litecode/ops/artifacts/WP-105-research-c.md; no src changes; no commit; all live tests 未测"
+        },
+        {
+          "ts": "2026-10-13T12:08:50.837Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "§5 证据审过：链接+HKT日期+标签齐；G2 总表齐；file:line 抽查 catalog/codec 对齐；无 key 标未测可接受。高优先级裁定上交 GM/Andy。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-110",
+      "domain": "team-ops",
+      "title": "provider 补模型/新加两家 + 前端分组",
+      "result": "落地 WP-105 裁定（改完就推）：1) tencent-token 补 kimi-k3、mimo-v2.6-flash；2) 新增 Moonshot、MiniMax 两家 provider，若有 plan 则双套端点（plan + 按量）；3) 前端 provider 列表分组：plan 一组、api 按量一组，其它 UI 不变。OpenCode base 探测/迁移可同包或子包。不做：MiMo 改协议、Anthropic codec、硅基流动、Gemini 直连。",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T12:20:57.438Z",
+      "parent": null,
+      "goal": "落地 WP-105 裁定（改完就推）：1) tencent-token 补 kimi-k3、mimo-v2.6-flash；2) 新增 Moonshot、MiniMax 两家 provider，若有 plan 则双套端点（plan + 按量）；3) 前端 provider 列表分组：plan 一组、api 按量一组，其它 UI 不变。OpenCode base 探测/迁移可同包或子包。不做：MiMo 改协议、Anthropic codec、硅基流动、Gemini 直连。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "落地 Andy 裁定：后端补模型+两家新 provider（双端点）；前端分组。方向见 goal，实现自定。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T12:20:49.523Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 落地 WP-105 裁定（改完就推）：1) tencent-token 补 kimi-k3、mimo-v2.6-flash；2) 新增 Moonshot、MiniMax 两家 provider，若有 plan 则双套端点（plan + 按量）；3) 前端 provider 列表分组：plan 一组、api 按量一组，其它 UI 不变。OpenCode base 探测/迁移可同包或子包。不做：MiMo 改协议、Anthropic codec、硅基流动、Gemini 直连。"
+        },
+        {
+          "ts": "2026-10-13T12:20:56.441Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: 落地 Andy 裁定：后端补模型+两家新 provider（双端点）；前端分组。方向见 goal，实现自定。"
+        },
+        {
+          "ts": "2026-10-13T12:20:56.811Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:20:57.130Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 定稿落地（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T12:20:57.438Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-111",
+      "domain": "team-ops",
+      "title": "provider 目录落地",
+      "result": "tencent 补模型；Moonshot/MiniMax 双套端点；OpenCode base 探测后对齐",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-110-backend.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T12:21:57.884Z",
+      "parent": "WP-110",
+      "goal": "tencent 补模型；Moonshot/MiniMax 双套端点；OpenCode base 探测后对齐",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-110-backend · WP-111 方案（backend_mid → Provider）\n\n- 父：WP-110（gm，Andy 已批）；本包：WP-111（split，approver=gm）；子：WP-113（provider，approver=backend_mid）。\n- 时间：2026-10-13 20:2x HKT。落地 WP-105/106 裁定；**改完绿测，不 commit**；总包封完由 GM 推。\n- 前端 WP-112 并行（plan 一组 / api 按量一组）；后端只管 catalog/config，不改 web UI。\n\n## 1. 范围（做）\n1. **tencent-token**：在 `default_catalog.toml` 补挂 `kimi-k3`、`mimo-v2.6-flash`（**不加** `minimax-m3`）。对齐腾讯 Token Plan 文档模型名/上下文/协议；可参考同仓 ark-coding / opencode-go 已有同名条目的能力字段，再按腾讯端点核对。\n2. **新增 Moonshot、MiniMax**：\n   - 查官方是否有 **plan（套餐）+ 按量** 两套端点；有则拆成两个 provider（命名与 ark-coding / ark-agent 同类：一家 plan、一家 payg），无则只建按量一家。\n   - 协议走现有 `chat_completions`（或官方明确的 responses）；auth bearer；不新增 codec。\n   - 模型：首批挂官方主力（Kimi K3 / MiniMax M2.7 或 M3 等，以官方当前列表为准）；`context_window`/`max_output`/`reasoning`/`quirks` 有据再填。\n   - `src/config` 中 provider key / 选型若需登记新 id，只改 provider 相关段（resolved/settings_writer/bridge），保持与现有 ark 双套登记方式一致。\n3. **OpenCode / OpenCode-Go base**：\n   - 先探 `zen` 是否仍可用（有 key 再探；无 key 按官方文档迁到 `inference` / `inference/go`，并在产物记 **未测**）。\n   - 保留 `x-opencode-session` 头。\n\n## 2. 不做\n- MiMo 改协议（仍 responses）\n- 硅基流动\n- Anthropic codec / Gemini 直连\n- 前端分组（WP-112）\n- commit / 推送 / 动 `windows-*.yml`\n\n## 3. 切分\n| 包 | owner | 工作 |\n|---|---|---|\n| WP-111 | backend_mid | 方案、批 WP-113、抽测、汇总 WP-110-backend.md、deliver |\n| WP-113 | provider | 查官方 → 改 catalog/config → 绿测 → 写 WP-110-provider.md |\n\n## 4. 执行步骤（批后）\n1. GM 批 WP-111 → `start` WP-111 → Provider fill/submit WP-113 → 中层批 → Provider `start`。\n2. Provider：官方文档核对（链接+HKT 日期）→ 改 `src/provider_catalog/default_catalog.toml`（+ 必要 config）→ `cargo fmt` / 相关测绿（catalog resolve、provider 配置测；中层复跑抽样）。\n3. OpenCode：探测记录写入产物；无 key 则文档迁 + 标未测。\n4. 中层抽测 + 交叉：与 WP-112 对齐新 provider id（plan vs api 命名），私信前端中层一次。\n5. WP-113 deliver → 中层 close → 汇总 → WP-111 deliver → GM。\n\n## 5. 验收 / done_when\n- tencent-token 已有 kimi-k3、mimo-v2.6-flash；无 minimax-m3 新增\n- Moonshot、MiniMax 已进目录；有 plan 则双套端点，命名可区分 plan/按量\n- OpenCode/Go endpoint 已对齐官方或文档迁并记未测\n- 相关测绿；`cargo fmt --check` 干净；未 commit\n- 产物：WP-110-backend.md（汇总）+ WP-110-provider.md（执行明细+链接）\n\n## 6. 风险\n- 官方 plan 端点不存在或文档含糊 → 只建按量，产物写明\n- 无 OpenCode key → 无法实测 zen vs inference，按文档迁\n- 模型 id 与腾讯侧大小写/路径不一致 → 以官方模型表为准并在产物附链接\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T12:20:55.761Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: tencent 补模型；Moonshot/MiniMax 双套端点；OpenCode base 探测后对齐"
+        },
+        {
+          "ts": "2026-10-13T12:21:35.836Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-110-backend · WP-111 方案（backend_mid → Provider）\n\n- 父：WP-110（gm，Andy 已批）；本包："
+        },
+        {
+          "ts": "2026-10-13T12:21:36.169Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "方案：子包 WP-113→provider；tencent 补两模型；Moonshot/MiniMax 双端点若有 plan；OpenCode 先探再迁；不做项按 GM"
+        },
+        {
+          "ts": "2026-10-13T12:21:49.753Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：对齐 Andy 定稿"
+        },
+        {
+          "ts": "2026-10-13T12:21:57.884Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM 已批；派发 WP-113 给 Provider"
+        }
+      ]
+    },
+    {
+      "id": "WP-112",
+      "domain": "team-ops",
+      "title": "provider 列表分组",
+      "result": "前端 provider 列表：plan 一组、api 按量一组，其它不变",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-110-frontend.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T12:24:08.630Z",
+      "parent": "WP-110",
+      "goal": "前端 provider 列表：plan 一组、api 按量一组，其它不变",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-112 方案（frontend_mid · split）\n\n- 父包：WP-110（GM，Andy 已批）。并行包：WP-111（backend_mid → WP-113 provider）。\n- 审批：gm。产物：本文件 + 子包产物 `WP-110-web.md`。\n- **GM 未批 plan 不 start；不 commit。只支持一种分组规则，不做新旧双格式兼容。**\n\n## Goal（只做一项）\nSettings → **Providers** 列表按计费形态分成两组：**Plan** 一组、**API 按量** 一组。卡片形态、密钥保存、其它 Settings / 选模 UI **不变**。\n\n## 现状落点（只读核实，2026-10-13 HKT）\n- **Providers 页**：`web/src/dockview/panels/settings/ProvidersSection.tsx`\n  - `providers = (llm?.providers ?? []).filter(p => p.visible)`（约 :81-84）\n  - 渲染为 **扁平** `grid grid-cols-2`（约 :129-141），无分组标题。\n  - 单卡：`ProviderCard` — logo + `name` + API key 字段；`key={provider.id}`。\n- **DTO**：`web/src/api/settings.ts` `CatalogProviderDto`（约 :58-69）— `id/name/visible/configured/masked_api_key/endpoint/endpoint_type/models`；**无** `billing_kind` / group 字段。\n- **后端投影**：`src/config/settings_writer.rs` `LlmProviderView` 同上，无分组字段。\n- **目录现状**（`src/provider_catalog/default_catalog.toml`）：尚无 Moonshot/MiniMax；现有 plan 名产品为 `ark-coding` / `ark-agent` / `tencent-token` / `aliyun-token`；按量/直连为 `openai` / `deepseek` / `mimo` / `zhipu`；网关 `opencode` / `opencode-go` / `commandcode` 桶待与 backend_mid 对齐。\n- **不改**：`ModelsSection.tsx`（按已配置 provider 折卡）、`ModelSwitcher.tsx`（按 `provider_id` 聚模型）— 属「其它 UI 不变」。\n\n## 分组规则（与 WP-111/113 对齐）\n1. **本波默认**：前端用**稳定规则**分区（实现自定：allowlist 和/或 id/name/endpoint 启发式），与后端「一家 plan、一家 payg」双 provider 命名对齐（WP-110-backend：命名类比 ark-coding / ark-agent）。\n2. **临时归桶（现 catalog）**\n   - **Plan**：`ark-coding`、`ark-agent`、`tencent-token`、`aliyun-token`\n   - **API 按量**：`openai`、`deepseek`、`mimo`、`zhipu`\n   - **待 backend_mid 确认**：`opencode`、`opencode-go`、`commandcode`（网关/订阅，先占位；定稿后只改规则表，不引入第二套格式）\n3. **Moonshot / MiniMax**：WP-113 落地后若有 plan+按量 → **两个 provider id**；分别落入 Plan / API 组。最终 id 以 backend_mid 私信 / `WP-110-provider.md` 为准；前端规则表跟上一次。\n4. **可选后续**：若后端日后在 catalog / `LlmProviderView` 增加 `billing_kind: \"plan\"|\"api\"`，前端可改读该字段；**本包不阻塞**，可先靠前端规则上线。\n5. **单一格式**：只维护一套分区表/规则；不做「有字段用字段、无字段用启发式」双路径长期并存。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-114** | `frontend`（前端-web） | client-ux | `WP-110-web.md` |\n\n## web 落点（批后由子包实施）\n- `ProvidersSection.tsx`：visible providers 分成 Plan / API 两组，各组保留现有两列网格与 `ProviderCard`；组标题文案建议 `Plan` / `API`（或中文「套餐 Plan」/「按量 API」— 实现自定，保持简短）。\n- 抽出纯函数（如 `partitionProviders`）便于单测；规则表与 WP-113 新 id 同文件或邻接常量。\n- `ProvidersSection.test.tsx`：覆盖两组标题出现、已知 plan/api id 落点、未知 id 默认桶（需在方案/测试中写明默认：建议落入 API 或单独「其它」— **本包默认未知进 API 按量**，避免 Plan 误收）。\n- `ProviderLogos.tsx`：若新 id 无 logo，可补或走 fallback（不挡分组）。\n- **不改** Models / ModelSwitcher / Agents / 密钥 PUT 语义。\n\n## 测试清单（vitest）\n1. 现有 plan 四家出现在 Plan 组。\n2. openai/deepseek/mimo/zhipu 出现在 API 组。\n3. 两组各有可见 section 标题（或等价 a11y 标记）。\n4. 模拟 moonshot-plan + moonshot-payg（或 WP-113 最终 id）分别落入正确组。\n5. 未知 id → API 组（默认）。\n6. 回归：key 草稿/autosave、configured 灰态、`visible:false` 仍不展示。\n7. `tsc -b` 0；lint N/A（web 无 lint 工具）。\n\n## desktop\nSettings 为 web 内嵌；预计 **不改 desktop**。静态核对即可（`git status desktop` 应干净）；真机 Andy 验。\n\n## 不在范围\n- ModelsSection / ModelSwitcher 再分组\n- 后端 catalog / config 编辑（WP-111/113）\n- 双格式兼容、commit / push\n\n## 验收标准\n- 子包测 1–7 绿；中层交叉审 diff 仅 web/\n- Providers 页可见 **Plan** 与 **API 按量** 两组；现网 plan/api 归桶正确\n- WP-113 双端点 id 出现后规则表已纳入且测覆盖\n- 与 backend_mid 对过 OpenCode/commandcode 桶与最终 Moonshot/MiniMax id（可在联调笔记写明）\n- 未 commit\n\n## 待确认\n1. **backend_mid**：`opencode` / `opencode-go` / `commandcode` 归 Plan 还是 API 按量？\n2. **backend_mid / WP-113**：Moonshot、MiniMax 最终 provider id（有 plan 则两套）— 对齐后改规则表一次。\n3. **GM**（可选）：组标题中英偏好；未知 id 默认进 API 是否认可。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T12:20:56.102Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 前端 provider 列表：plan 一组、api 按量一组，其它不变"
+        },
+        {
+          "ts": "2026-10-13T12:23:11.868Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-112 方案（frontend_mid · split）\n\n- 父包：WP-110（GM，Andy 已批）。并行包：WP-111（backend_mi"
+        },
+        {
+          "ts": "2026-10-13T12:23:12.006Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-110-frontend.md\" -> \".litecode/ops/artifacts/WP-110-frontend.md\""
+        },
+        {
+          "ts": "2026-10-13T12:23:12.147Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "Providers 列表 Plan/API 分组 plan；web 子包 WP-114；规则前端 allowlist/启发式先行，billing_kind 可选后续；OpenCode/commandcode 桶与 Moonshot/MiniMax id 待 backend_mid"
+        },
+        {
+          "ts": "2026-10-13T12:23:34.484Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "GM 批：Plan/API 两组，其它 UI 不变；新 id 等 WP-113 定稿后补规则"
+        },
+        {
+          "ts": "2026-10-13T12:24:08.630Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-113",
+      "domain": "model-config",
+      "title": "WP-111 目录落地执行",
+      "result": "catalog 落地见 WP-110-provider.md",
+      "done_when": [
+        "tencent 两模型已挂",
+        "Moonshot/MiniMax 已加(有plan则双套)",
+        "OpenCode/Go base 已对齐或文档迁并记未测",
+        "相关测绿",
+        "未 commit"
+      ],
+      "owner": "provider",
+      "reviewer": "backend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-110-provider.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T12:23:19.654Z",
+      "parent": "WP-111",
+      "goal": "tencent 补 kimi-k3/mimo-v2.6-flash；新增 Moonshot/MiniMax（有 plan 则双端点）；OpenCode base 探测后对齐 inference",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-113 方案（provider，direct）\n\n父：WP-111（backend_mid）；approver=backend_mid；产物：`.litecode/ops/artifacts/WP-110-provider.md`。\n规则：改完绿测，**不 commit**；不动 `windows-*.yml`；不做 MiMo 改协议 / 硅基流动 / Anthropic codec / Gemini 直连。\n\n## 目标\n落地 WP-110/111 裁定三项：tencent-token 补模型；新增 Moonshot、MiniMax（有 plan+按量则双 provider）；OpenCode/Go base 对齐官方。\n\n## 范围（改动面）\n- 主：`src/provider_catalog/default_catalog.toml`（+ 必要时 schema 旁注/既有字段）\n- 次：`src/config` 中 provider key / 选型与 ark 双套登记同模式的段（resolved / settings_writer / bridge）\n- 不做：`src/llm` 公共 codec 框架；web UI（WP-112）\n\n## 步骤\n1. **tencent-token**  \n   - 在 catalog 为 `tencent-token` 新增模型 `kimi-k3`、`mimo-v2.6-flash`。  \n   - **不加** `minimax-m3`。  \n   - 对齐腾讯 Token Plan 官方模型表（id/上下文/协议）；可参考仓内 ark-coding / opencode-go 同名条目的 `context_window`/`reasoning`/`modalities`，再按腾讯端点（chat_completions @ `api.lkeap.cloud.tencent.com/plan/v3`）核对。  \n   - 证据：官方链接 + 查阅日期（HKT）+ 已核实/推断，写入产物。\n\n2. **Moonshot、MiniMax 新 provider**  \n   - 查官方是否同时提供 **plan（套餐）端点** 与 **按量（payg）端点**。  \n     - 有 → 拆两个 provider（命名仿 ark-coding / ark-agent：一家 plan、一家 payg）。  \n     - 无或不清 → 只建按量一家，产物写明。  \n   - 协议：现有 `chat_completions`（仅当官方明确要求 responses 时用 responses）；auth=`bearer`；**不新增 codec**。  \n   - 首批模型：官方主力（Kimi K3；MiniMax M2.7 或 M3，以查阅日官方列表为准）；`reasoning`/`quirks`/`extra_body` 有据再填。  \n   - `src/config`：新 provider id 的 key/选型登记与现有双端点模式一致。\n\n3. **OpenCode / OpenCode-Go base**  \n   - 先探 catalog 现用 `zen` / `zen/go` 是否仍可用。  \n   - **有 key**：live 探测，记录请求状态（脚本仅 `.tmp/wp113/`，不落 key）。  \n   - **无 key**：按官方文档迁到 `https://opencode.ai/inference/v1` 与 `https://opencode.ai/inference/go/v1`，产物标 **未测**。  \n   - 保留 `headers.x-opencode-session = \"{{session_id}}\"`。\n\n4. **验证与产物**  \n   - 跑相关测（catalog resolve、provider 配置测；中层可复跑抽样）。  \n   - `cargo fmt --check` 干净。  \n   - 写 `.litecode/ops/artifacts/WP-110-provider.md`：每条结论官方链接 + HKT 日期 + 已核实/推断；OpenCode 探测结果；新 provider 命名与 plan/payg 决策。\n\n## done_when\n- [ ] tencent-token 已有 kimi-k3、mimo-v2.6-flash；无新增 minimax-m3  \n- [ ] Moonshot、MiniMax 已进目录；有 plan 则双套端点且命名可区分  \n- [ ] OpenCode/Go endpoint 已对齐官方，或文档迁并记未测；session 头保留  \n- [ ] 相关测绿；`cargo fmt --check` 干净；未 commit  \n- [ ] 产物 WP-110-provider.md 齐证据  \n\n## 风险\n- 官方无 plan 端点或文档含糊 → 只建按量。  \n- 无 OpenCode key → 无法实测 zen vs inference，按文档迁并标未测。  \n- 腾讯模型 id 大小写/路径与他仓同名条目不一致 → 以腾讯官方表为准。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T12:21:21.979Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: tencent 补 kimi-k3/mimo-v2.6-flash；新增 Moonshot/MiniMax（有 plan 则双端点）；OpenCode base 探测后对齐 inference"
+        },
+        {
+          "ts": "2026-10-13T12:22:34.167Z",
+          "actor": "provider",
+          "action": "fill",
+          "note": "direct: # WP-113 方案（provider，direct）\n\n父：WP-111（backend_mid）；approver=backend_mid；产物：`.li"
+        },
+        {
+          "ts": "2026-10-13T12:22:34.555Z",
+          "actor": "provider",
+          "action": "submit",
+          "note": "WP-113 direct plan filled; await backend_mid approval before start"
+        },
+        {
+          "ts": "2026-10-13T12:22:52.249Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "对齐 WP-110-backend；可 start"
+        },
+        {
+          "ts": "2026-10-13T12:23:19.654Z",
+          "actor": "provider",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-114",
+      "domain": "client-ux",
+      "title": "WP-112 web：provider 列表 plan/api 分组",
+      "result": "Providers 页 Plan/API 两组；测绿；产物 WP-110-web.md",
+      "done_when": [
+        "Plan/API 两组可见",
+        "现网 plan/api 归桶正确",
+        "Moonshot/MiniMax 双 id 规则已纳或注明未到",
+        "vitest+tsc 绿",
+        "未 commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-110-web.md",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": "WP-112",
+      "goal": "按 WP-110-frontend.md：Settings Providers 列表分成 Plan / API 按量两组；卡片与密钥逻辑不变；不改 Models/ModelSwitcher；规则与 WP-111/113 provider id 对齐；只支持一种分组规则；vitest+tsc 绿；不 commit",
+      "approver": "frontend_mid",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-13T12:23:06.608Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-110-frontend.md：Settings Providers 列表分成 Plan / API 按量两组；卡片与密钥逻辑不变；不改 Models/ModelSwitcher；规则与 WP-111/113 provider id 对齐；只支持一种分组规则；vitest+tsc 绿；不 commit"
         }
       ]
     }

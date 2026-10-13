@@ -1064,9 +1064,6 @@ mod estimate_body_bytes_tests {
 }
 
 /// WP-090 K5: reason text for a non-waking parent notice in subagent_settled.
-fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> &'static str {
-    match notice {
-        crate::tools::subagent::ParentNotice::ChildStopped { .. } => "stopped",
-        crate::tools::subagent::ParentNotice::ChildDeleted { .. } => "deleted",
-    }
+fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String {
+    notice.reason_text()
 }

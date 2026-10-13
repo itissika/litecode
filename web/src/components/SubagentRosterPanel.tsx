@@ -35,6 +35,8 @@ interface RosterEntry {
   finished: FinishedStatus;
   /** Latest-message preview of the child session, when the list has it. */
   preview?: string;
+  /** WP-097: who cancelled the last turn (only `user` is shown). */
+  stoppedBy?: "user" | "parent" | null;
   /** WP-086: child (or its subtree) busy → delete disabled, stop enabled. */
   busy?: boolean;
 }
@@ -165,6 +167,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
               : "idle",
         startedAt: s.turn?.started_at_ms,
         lastTurnReason: s.last_turn_reason,
+        stoppedBy: s.last_turn_cancelled_by,
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: s.assistant_preview || s.preview || undefined,
@@ -191,6 +194,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
               : "idle",
         startedAt: session?.turn?.started_at_ms,
         lastTurnReason: session?.last_turn_reason,
+        stoppedBy: session?.last_turn_cancelled_by,
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: session?.assistant_preview || session?.preview || undefined,
@@ -342,6 +346,9 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
       : entry.finished === "failed"
         ? "failed"
         : "idle");
+  // WP-097: trust the field only (stop_and_send internal stop = parent → no mark).
+  const byYou =
+    entry.lastTurnReason === "cancelled" && entry.stoppedBy === "user";
   return (
     <span
       className={`ml-auto shrink-0 ${
@@ -351,7 +358,13 @@ function SubagentStatus({ entry }: { entry: RosterEntry }) {
       }`}
       data-testid="subagent-roster-finished"
     >
-      {text}
+      {byYou ? (
+        <span data-testid="subagent-roster-cancelled-by-user">
+          cancelled · by you
+        </span>
+      ) : (
+        text
+      )}
     </span>
   );
 }

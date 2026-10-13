@@ -215,6 +215,11 @@ pub struct SessionInfo {
     /// Last durable `turn/end.reason` when the session is idle.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub last_turn_reason: String,
+    /// WP-099 P1: who cancelled the last turn — `"user"` | `"parent"` | null.
+    /// Always serialized (explicit null). Same visibility rule as
+    /// `last_turn_reason`; non-null only when that reason is `cancelled`.
+    #[serde(default)]
+    pub last_turn_cancelled_by: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

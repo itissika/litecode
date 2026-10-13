@@ -24,6 +24,7 @@ pub mod transcript_file;
 pub mod working;
 pub mod workspace_lock;
 
+pub use crate::types::StopOrigin;
 pub use data::{
     CommitReceipt, FaultKind, MutationId, ReadValue, SessionData, SessionDataReader,
     SessionMutation, SessionRead, SessionRevision, WRITER_QUEUE_CAPACITY,
@@ -34,7 +35,7 @@ pub use estimate::{
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};
-pub use manager::{CancelOutcome, SessionManager, SessionRecord};
+pub use manager::{CancelOutcome, FollowUpOutcome, SessionManager, SessionRecord};
 pub use media_tokens::{
     AUDIO_FALLBACK_TOKENS, FILE_FALLBACK_TOKENS, IMAGE_BASE_TOKENS, IMAGE_FALLBACK_TOKENS,
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,

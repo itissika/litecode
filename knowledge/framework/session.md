@@ -13,7 +13,7 @@ h : 373
 - 业务日志表达会话事实；Item 是 item/* 载荷与模型投影，不是全部业务数据。
 - 三原语：append / seal / truncate；Surface 从日志折叠。
 - 单写者：一工作区一 writer actor + 只读池；消费者走类型化命令，不自行开库。
-- subagent session 与 primary session 底层完全等价。
+- subagent session 与 primary session 底层完全等价；差别只在入口：用户对子会话只读，父经 subagent 工具发消息、停止与删除。
 
 契约展开：[@ key="session-model"]、[@ key="turn-lifecycle"]。
 上层：[@ key="agent-design"]。

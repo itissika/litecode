@@ -59,7 +59,9 @@ for (const a of board.agents) {
     fail("agent " + a.id + ": place must be inside /workspace/litecode (cloud repo contract)");
   }
 }
+const domainIds = new Set(board.domains.map((d) => d.id));
 for (const w of board.work_packages) {
+  if (!domainIds.has(w.domain)) fail("WP " + w.id + ": domain " + JSON.stringify(w.domain) + " not in board.domains"); // tools_version 17
   for (const d of w.depends_on) if (!wpIds.has(d)) fail("WP " + w.id + " depends_on missing " + d);
   if (w.owner && !agentIds.has(w.owner)) fail("WP " + w.id + " owner unknown");
   if (w.reviewer && !agentIds.has(w.reviewer) && !humanIds.has(w.reviewer)) {

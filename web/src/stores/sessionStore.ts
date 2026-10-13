@@ -402,6 +402,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         reason,
         status,
       } = params;
+      // Wire key on the event is `cancelled_by`; stored as last_turn_cancelled_by.
+      const hasCancelledBy = "cancelled_by" in params;
+      const cancelledBy = params.cancelled_by ?? null;
       set((state) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
@@ -460,6 +463,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             parent_call_id: parent_call_id ?? null,
             responsibility: responsibility ?? "",
             last_turn_reason: event === "turn_finished" ? reason : undefined,
+            last_turn_cancelled_by:
+              event === "turn_finished" && hasCancelledBy
+                ? cancelledBy
+                : undefined,
           };
           return { sessions: sortSessions([...state.sessions, fresh]) };
         }
@@ -503,6 +510,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                     turn: turn ?? s.turn,
                     step_kinds: [],
                     last_turn_reason: undefined,
+                    last_turn_cancelled_by: undefined,
                   }
                 : s,
             );
@@ -539,6 +547,13 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                     status: status ?? ("idle" as const),
                     turn: null,
                     last_turn_reason: reason ?? s.last_turn_reason,
+                    // In lockstep with reason: a new reason without the field
+                    // must not inherit the previous turn's initiator.
+                    last_turn_cancelled_by: hasCancelledBy
+                      ? cancelledBy
+                      : reason !== undefined
+                        ? undefined
+                        : s.last_turn_cancelled_by,
                   }
                 : s,
             );
