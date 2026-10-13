@@ -185,7 +185,9 @@ fn a_late_echo_result_is_excluded_by_the_settled_seed() {
         "an echo copy must never be searchable: {chunks:?}"
     );
     assert!(
-        !chunks.iter().any(|line| line.contains("session_search") || line.contains("query")),
+        !chunks
+            .iter()
+            .any(|line| line.contains("session_search") || line.contains("query")),
         "tool_call must not enter the dense index: {chunks:?}"
     );
     // Settled still tracks the call for echo closure.

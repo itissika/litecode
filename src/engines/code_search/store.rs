@@ -32,6 +32,10 @@ pub struct CodeSearchIndex {
     next_id: u64,
     indexed_files: usize,
     embedder_id: String,
+    /// WP-141: mtime/len taken *before* each file was read by a full build
+    /// (paths read OK, including ones that yielded no chunks). Handed to the
+    /// runtime once, after the index is saved.
+    build_stamps: HashMap<String, super::FileStamp>,
 }
 
 impl CodeSearchIndex {
@@ -43,6 +47,7 @@ impl CodeSearchIndex {
             next_id: 1,
             indexed_files: 0,
             embedder_id: production_embedder_id().into(),
+            build_stamps: HashMap::new(),
         })
     }
 
@@ -64,6 +69,7 @@ impl CodeSearchIndex {
             next_id: 1,
             indexed_files: 0,
             embedder_id,
+            build_stamps: HashMap::new(),
         };
 
         let file = File::open(&chunks_path).map_err(|e| LitecodeError::Config(e.to_string()))?;
@@ -124,6 +130,14 @@ impl CodeSearchIndex {
         }
     }
 
+    pub(crate) fn set_build_stamps(&mut self, stamps: HashMap<String, super::FileStamp>) {
+        self.build_stamps = stamps;
+    }
+
+    pub(crate) fn take_build_stamps(&mut self) -> HashMap<String, super::FileStamp> {
+        std::mem::take(&mut self.build_stamps)
+    }
+
     pub fn set_embedder_id(&mut self, id: impl Into<String>) {
         self.embedder_id = id.into();
     }
@@ -179,6 +193,37 @@ impl CodeSearchIndex {
         old.iter().zip(new_chunks.iter()).all(|(o, n)| {
             o.start_line == n.start_line && o.end_line == n.end_line && o.text == n.text
         })
+    }
+
+    /// WP-141: of `candidates` (path, freshly cut chunks), the paths whose
+    /// indexed chunks are identical (same lines and text). One pass over the
+    /// store, so a full-read reconcile stays linear.
+    pub fn paths_with_identical_chunks<'a>(
+        &self,
+        candidates: impl Iterator<Item = (&'a str, &'a [ChunkRecord])>,
+    ) -> std::collections::HashSet<String> {
+        let wanted: HashMap<&str, &[ChunkRecord]> = candidates.collect();
+        let mut old: HashMap<&str, Vec<&ChunkRecord>> = HashMap::new();
+        for c in self.chunks.values() {
+            if let Some((key, _)) = wanted.get_key_value(c.path.as_str()) {
+                old.entry(*key).or_default().push(c);
+            }
+        }
+        let mut same = std::collections::HashSet::new();
+        for (path, new_chunks) in wanted {
+            let Some(mut prev) = old.remove(path) else {
+                continue;
+            };
+            prev.sort_by_key(|c| (c.start_line, c.end_line, c.id));
+            if prev.len() == new_chunks.len()
+                && prev.iter().zip(new_chunks.iter()).all(|(o, n)| {
+                    o.start_line == n.start_line && o.end_line == n.end_line && o.text == n.text
+                })
+            {
+                same.insert(path.to_string());
+            }
+        }
+        same
     }
 
     pub fn add_chunks_with_vectors(

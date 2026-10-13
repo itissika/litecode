@@ -1,29 +1,43 @@
-# WP-057 sync% 契约（后端书面定稿 · 供 WP-059）
+# WP-057 sync% 契约（后端书面定稿 · v2 · WP-131 重定）
 
-生效：2026-10-12。后端 WP-058 / 前端 WP-059。**勿改 `client_protocol`**，除非双方中层另开 Session 窄包。
+生效：2026-10-14（GM 拍板方案 B，替代 2026-10-12 v1）。后端 WP-132（Tools WP-137）/ 前端 WP-133 同步落地，**不做新旧兼容**。**勿改 `client_protocol`**。
 
-## 字段
+## 首行语法
 
-| 名 | 类型 | 含义 |
-|---|---|---|
-| `sync_pct` | integer 0–100 | 索引同步完成度。100=与当前可搜视图一致（非「库永远完美」）。刷新中可为中间值。 |
-| `sync_label` | string（可选） | 短标签，如 `ready` / `syncing` / `building`；给人读，不代替 `sync_pct`。 |
+`code_search` / `session_search` 工具结果**正文第一行**固定为：
 
-## 落点（本波）
+```
+sync_pct: <value>[ (<label>)][ chunks <done>/<total>]
+```
 
-1. **工具结果**：`code_search` / `session_search` 成功或可展示结果时，**正文开头第一行**固定为：
-   - `sync_pct: <n>%`（例：`sync_pct: 87%`）
-   - 若有 label：同行列 `sync_pct: 87% (syncing)` 亦可；前端以解析 `sync_pct` 数字为主。
-2. **数据源**：IDE `IndexingProgress` / `resolve_index_view`（或等价）→ 单一百分比；Tools 只消费、不发明第二套进度。
-3. **Warming / 工具不可见**：无结果视图；不发假 100%。
-4. **空命中**：仍先出 `sync_pct` 行，再写「没有匹配」类正文（没命中 ≠ 不能搜）。
+- `value` 只能取四种之一，**全部小写**：
+  - `<n>%`：n 为 0–100 整数，取自 `CorpusProgress::percent()`（向下取整；运行中最高 99，仅 ready 且无待处理时为 100）。
+  - `scanning`：total 处于扫描阶段（`chunks_total=null`），无数字。
+  - `failed`：total.state=failed（模型缺失 / 引擎不可用 / 引擎已停止且 desired=true / 索引失败），无数字。
+  - `unknown`：拿不到进度（进度读取失败），或工具可见时 total.state=needs_rebuild；无数字。
+- `label` 可选：英文圆括号，括号内不嵌套括号，可含逗号。例：`(refreshing, embedding)`、`(ready)`、`(model_missing)`、`(needs_rebuild)`。
+- `chunks <done>/<total>` 可选：仅当 value 为 `<n>%`（total 确定）时输出；scanning / failed / unknown 不输出。
+- 各段之间单个空格；行尾无其它内容。
 
-## 前端 WP-059
+示例：
+```
+sync_pct: 98% (refreshing, embedding) chunks 9800/10000
+sync_pct: 100% (ready) chunks 5/5
+sync_pct: scanning (refreshing, scanning)
+sync_pct: failed (model_missing)
+sync_pct: unknown (needs_rebuild)
+```
 
-- 工具结果视图**开头**渲染该百分比（读首行 `sync_pct` 或结构化字段若后续同形加入 JSON 结果）。
-- **本波不改协议文件**；若必须进 `client_protocol`，经后端中层开 Session 子包后再动。
+## 数据源
 
-## 非目标
+IDE `retrieval_progress_for_workspace(...).total`（WP-134 `src/engines/progress.rs`）→ 单一来源；Tools 只消费，不发明第二套进度，不估算。
 
-- 不把 sync% 当成「默认开 retrieval」的替代。
-- 不在 Warming 时展示可点工具。
+## 不变的口径
+
+1. Warming：工具隐藏，无结果视图，不出首行。
+2. 空命中：仍先出首行，再写「没有匹配」（没命中 ≠ 不能搜）。
+3. 不在 Warming 时展示可点工具；sync% 不替代「默认开 retrieval」。
+
+## 验收
+
+前后端各一测试，覆盖 `N%` / `scanning` / `failed` / `unknown` 四种首行；前端解析器按本语法；旧 `sync_label` 与 v1 单数字格式一并删除。

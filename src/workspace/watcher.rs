@@ -30,13 +30,13 @@ impl WorkspaceWatcher {
     pub fn start(workspace: Arc<WorkspaceService>) -> anyhow::Result<Arc<Self>> {
         let root = workspace.sandbox().root().to_path_buf();
         let change_tx = workspace.change_sender();
+        let rescan_tx = workspace.rescan_sender();
 
-        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel();
+        // `None` = the backend reported an error (WP-141: never dropped).
+        let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<Option<Event>>();
         let mut watcher = RecommendedWatcher::new(
             move |res: Result<Event, notify::Error>| {
-                if let Ok(event) = res {
-                    let _ = notify_tx.send(event);
-                }
+                let _ = notify_tx.send(notify_signal(res));
             },
             notify::Config::default(),
         )?;
@@ -55,6 +55,13 @@ impl WorkspaceWatcher {
                 tokio::select! {
                     maybe_event = notify_rx.recv() => {
                         let Some(event) = maybe_event else { break };
+                        // WP-141: a watcher error, a Rescan flag, or a queue
+                        // overflow means events were lost; the consumers run a
+                        // full disk reconcile instead of trusting the stream.
+                        let Some(event) = event.filter(|e| !event_requests_rescan(e)) else {
+                            let _ = rescan_tx.send(());
+                            continue;
+                        };
                         if let Some((paths, deleted)) = classify_event(&event, &rel_base) {
                             if deleted {
                                 pending_deleted.extend(paths);
@@ -91,6 +98,24 @@ impl WorkspaceWatcher {
 
         Ok(handle)
     }
+}
+
+/// Watcher callback result → loop signal. `None` = backend error: events may
+/// be lost, so the loop requests a full rescan instead of dropping it.
+fn notify_signal(res: Result<Event, notify::Error>) -> Option<Event> {
+    match res {
+        Ok(event) => Some(event),
+        Err(error) => {
+            tracing::warn!(error = %error, "workspace watcher error; requesting full rescan");
+            None
+        }
+    }
+}
+
+/// Backend says its event stream is incomplete (inotify `Q_OVERFLOW`,
+/// FSEvents `MustScanSubDirs`, Windows buffer overflow all map to `Rescan`).
+fn event_requests_rescan(event: &Event) -> bool {
+    event.need_rescan()
 }
 
 fn classify_event(event: &Event, root: &Path) -> Option<(Vec<String>, bool)> {
@@ -254,6 +279,23 @@ pub async fn restart_watcher(
 
 #[cfg(test)]
 mod tests {
+    // WP-141: lost-event signals must request a full reconcile, plain events
+    // must not.
+    #[test]
+    fn rescan_flag_and_overflow_request_full_rescan() {
+        use notify::event::{CreateKind, Flag};
+        let overflow = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        assert!(event_requests_rescan(&overflow));
+        let rescan_on_create =
+            Event::new(EventKind::Create(CreateKind::File)).set_flag(Flag::Rescan);
+        assert!(event_requests_rescan(&rescan_on_create));
+        let plain = Event::new(EventKind::Create(CreateKind::File));
+        assert!(!event_requests_rescan(&plain));
+        // Backend error is not dropped: it becomes the rescan signal.
+        assert!(notify_signal(Err(notify::Error::generic("boom"))).is_none());
+        assert!(notify_signal(Ok(plain)).is_some());
+    }
+
     use super::*;
     use notify::event::{AccessKind, CreateKind, EventAttributes, ModifyKind, RemoveKind};
     use notify::{Event, EventKind};

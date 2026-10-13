@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T15:32:21.548Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T17:59:41.399Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -143,9 +143,21 @@
 | WP-125 | └ WP-124 真引擎续测执行 | done | backend_mid | gm |
 | WP-126 | 　└ WP-125/Session：可对齐金标 query 集（白名单语料） | done | session | backend_mid |
 | WP-127 | 　└ WP-125/IDE：真引擎 ANN+RRF 与切块小样本 | done | ide | backend_mid |
-| WP-128 | 语义检索落地：白名单准入 | in_progress | gm | andy |
+| WP-128 | 语义检索落地：白名单准入 | review | gm | andy |
 | WP-129 | └ WP-128 白名单准入执行 | done | backend_mid | gm |
 | WP-130 | 　└ WP-129/IDE：白名单准入落地（稠密三态 / 稀疏+tool_call） | done | ide | backend_mid |
+| WP-131 | 引擎进度条：code+session 合并状态 | review | gm | andy |
+| WP-132 | └ 后端：code+session 统一 chunk 进度上报 | done | backend_mid | gm |
+| WP-134 | 　└ 引擎进度：code 侧 + 两库合并 | done | ide | backend_mid |
+| WP-135 | 　└ 引擎进度：session 侧上报 | done | session | backend_mid |
+| WP-137 | 　└ 引擎进度：tool sync% 改用新 total | done | tools | backend_mid |
+| WP-133 | └ 前端：进度条按合并状态呈现 | done | frontend_mid | gm |
+| WP-136 | 　└ WP-133 web：引擎进度条 code+session 合并 | done | frontend | frontend_mid |
+| WP-138 | 　└ WP-133 web：sync_pct 首行新契约解析 | done | frontend | frontend_mid |
+| WP-142 | 　└ WP-133 web：retrieval 待处理改看 files_pending | done | frontend | frontend_mid |
+| WP-139 | code 索引刷新：定期扫盘+持久化元数据 | review | gm | andy |
+| WP-140 | └ 后端：扫盘对账+印章持久化落地 | done | backend_mid | gm |
+| WP-141 | 　└ IDE：code 定期扫盘对账+印章持久化 | done | ide | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

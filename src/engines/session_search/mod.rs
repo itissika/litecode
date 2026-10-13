@@ -27,9 +27,10 @@ mod trimmer;
 pub use lexical::{ensure_sparse_index, spawn_sparse_maintenance};
 pub use ranking::{ContentRole, HitEvidence, LayerId, LayerTrace, RankBand, RankKey, StopReason};
 pub use semantic_index::{
-    SessionSemanticIndex, consume_session_index, ensure_session_index, load_session_index,
-    queue_session_dirty, read_session_pending_hint, session_index_status, session_should_rebuild,
-    session_work_from_disk, session_work_now, write_session_pending_hint,
+    SessionEngineFacts, SessionQueue, SessionSemanticIndex, consume_session_index,
+    ensure_session_index, load_session_index, queue_session_dirty, read_session_queue,
+    session_corpus_progress, session_has_pending_work, session_index_status,
+    session_should_rebuild, session_work_from_disk, session_work_now,
 };
 pub use sparse::sparse_index_path;
 
@@ -2046,7 +2047,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(hits.len(), 1, "sparse whitelist: call matches, result does not");
+        assert_eq!(
+            hits.len(),
+            1,
+            "sparse whitelist: call matches, result does not"
+        );
         assert_eq!(hits[0].item_type, "function_call");
 
         let view = build_agent_view(&reader, &hits, dir.path()).unwrap();

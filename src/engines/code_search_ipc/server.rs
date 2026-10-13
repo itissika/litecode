@@ -15,7 +15,7 @@ use crate::engines::code_search::{
     CodeSearchRuntime, SemanticEngine, SharedRuntime, decide_index_work, init_workspace_index,
     open_production_embedder, pending_work_counts, queue_fs_changes, queue_reconcile_dirty,
     rebuild_index_in_runtime, refresh_index_incremental, scannable_files, should_full_rebuild,
-    warmup_index, write_pending_hint,
+    warmup_index, write_code_queue,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -92,6 +92,11 @@ impl WorkerState {
 
         reload_worker_excludes(&root);
         init_workspace_index(&root)?;
+        // Worker load: no task of ours runs yet, so a Building/Refreshing
+        // job.json is left over from a dead worker — clear + re-queue it.
+        if crate::engines::code_search::reclaim_stale_index_job(&root) {
+            tracing::info!("code_search worker: reclaimed stale index job on load");
+        }
         let rebuilt = should_full_rebuild(&root);
         let mut embedder = open_production_embedder()?;
         let index = warmup_index(&root, &mut *embedder)?;
@@ -103,7 +108,7 @@ impl WorkerState {
         );
         reload_worker_excludes(&root);
         if rebuilt {
-            write_pending_hint(&root, 0);
+            write_code_queue(&root, &Default::default());
         } else {
             queue_reconcile_dirty(&runtime);
         }
@@ -252,7 +257,7 @@ fn refresh_code_corpus(root: &std::path::Path, runtime: &CodeSearchRuntime) -> R
             Ok(RefreshMode::Rebuild)
         }
         crate::engines::code_search::IndexWork::None => {
-            write_pending_hint(root, 0);
+            write_code_queue(root, &Default::default());
             Ok(RefreshMode::Incremental)
         }
         crate::engines::code_search::IndexWork::Update { .. } => {

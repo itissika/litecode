@@ -219,7 +219,33 @@ pub async fn listen(
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                let _ = engines.code_index_tick();
+                // WP-141: the tick now runs the stat-only disk scan (worker IPC),
+                // so it leaves the async runtime; the next tick waits for it.
+                let engines = engines.clone();
+                let _ = tokio::task::spawn_blocking(move || engines.code_index_tick()).await;
+            }
+        });
+    }
+    // WP-141: watcher error / Rescan / overflow → full disk reconcile, same
+    // entry as the Lagged arm above.
+    {
+        let workspace = state.workspace.clone();
+        let engines = state.workspace_engines.clone();
+        tokio::spawn(async move {
+            let mut rx = workspace.subscribe_rescan();
+            loop {
+                match rx.recv().await {
+                    Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!("workspace watcher lost events; requesting index reconcile");
+                        let engines = engines.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            engines.code_search().request_reconcile();
+                            engines.path_index().request_rescan();
+                        })
+                        .await;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         });
     }

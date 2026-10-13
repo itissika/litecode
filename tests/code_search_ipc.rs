@@ -1,7 +1,7 @@
 //! IPC integration: spawn worker, warmup with hash embedder, search round-trip.
 
 use litecode::engines::code_search::{
-    index_dir, init_workspace_index, read_meta, read_pending_hint, write_meta,
+    index_dir, init_workspace_index, read_code_queue, read_meta, write_meta,
 };
 use litecode::engines::code_search_ipc::CodeSearchWorkerClient;
 use litecode::engines::code_search_ipc::protocol::{RefreshMode, RefreshScope};
@@ -130,7 +130,7 @@ fn notify_fs_changes_then_search_hits_new_file() {
         .notify_fs_changes(&["later.rs".into()], false)
         .expect("notify");
     assert!(
-        read_pending_hint(root) > 0,
+        read_code_queue(root).queued > 0,
         "watcher must queue dirty without consuming"
     );
     let queued = client
@@ -209,7 +209,7 @@ fn warmup_existing_index_reconciles_without_digest() {
     std::fs::write(root.join("later.rs"), "pub fn later_unique_symbol() {}\n").unwrap();
     let mut client = spawn_warmed(root);
     assert!(
-        read_pending_hint(root) > 0,
+        read_code_queue(root).queued > 0,
         "second warmup must reconcile later.rs into the dirty hint"
     );
     let meta = read_meta(root).unwrap().expect("meta after second warmup");
@@ -449,7 +449,7 @@ fn warmup_session_index_reconciles_without_digest() {
         "warmup must load session ANN, not embed the new row"
     );
     assert!(
-        litecode::engines::session_search::read_session_pending_hint(root) > 0,
+        litecode::engines::session_search::read_session_queue(root).queued > 0,
         "new session row must be queued as dirty"
     );
 
@@ -463,7 +463,7 @@ fn warmup_session_index_reconciles_without_digest() {
         "code-only refresh must not consume session drift"
     );
     assert!(
-        litecode::engines::session_search::read_session_pending_hint(root) > 0,
+        litecode::engines::session_search::read_session_queue(root).queued > 0,
         "session pending must survive a code-only refresh"
     );
 

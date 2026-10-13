@@ -9136,13 +9136,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-128.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T14:57:24.882Z",
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-13T15:37:21.755Z",
       "parent": null,
       "goal": "落地实现。稠密只取三态（user/助手消息/思考）；稀疏=三态+tool_call；其余不要。切块默认维持 448；算法维持现状 RRF 不调参。带失败排查等验收用例。机制从简，不新 Warming/状态机。",
       "approver": "andy",
@@ -9180,6 +9180,12 @@
           "actor": "gm",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T15:37:21.755Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "云端 session_search 161 passed；已 push bd57f34；待 Andy 真机"
         }
       ]
     },
@@ -9344,6 +9350,908 @@
           "actor": "backend_mid",
           "action": "close",
           "note": "PASS抽查：admits_dense/sparse+入口；DOC_SCHEMA=3 INDEX_SCHEMA=15；448/RRF/权重未动；无Warming；IDE 161ok；未commit。证据 WP-128-backend.md§9",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-131",
+      "domain": "ide-substrate",
+      "title": "引擎进度条：code+session 合并状态",
+      "result": "检索引擎进度条的 fill、颜色、hover 由 code+session 统一 chunk 进度模型推出，准确且实时",
+      "done_when": [
+        "fill=code+session 按 chunk 归一的总体进度",
+        "颜色四态符合 GM 拍板",
+        "hover 三行与接口一致",
+        "后台刷新≤5s 可见",
+        "估算值与写死值全部删除"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "review",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/ENGINE-STATUS-research.md",
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-13T17:59:41.251Z",
+      "parent": null,
+      "goal": "检索引擎进度条的 fill、颜色、hover 由 code+session 统一 chunk 进度模型推出，准确且实时",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "## 方向\n依据 .litecode/ops/artifacts/ENGINE-STATUS-research.md。检索进度条改为由一份统一模型推出：每个语料（code、session）上报 {state, chunks_done, chunks_total, error}，state ∈ ready|refreshing|needs_rebuild|failed；total = Σdone/Σtotal。前后端不再各自猜。\n\n## GM 已拍板\n1. 任一语料失败 → 整条红，hover 注明是哪个引擎；model 缺失/引擎不可用也算失败。\n2. chunk 总数先切完块拿精确值再 embed，开头允许有\"扫描中\"阶段。\n3. 分母按整个索引（总体进度）：total = 已入库 chunk /（已入库 + 待处理）。\n4. 有待处理但未开始刷 → 橙不闪；在刷 → 橙闪。\n5. 实时性用持续轮询：在刷 1 秒一次，空闲约 5 秒一次；不做推送。\n6. LSP 状态不动。\n\n## 拆分\n- WP-132 后端（owner 后端中层，涉及 IDE 基座 / Session）：统一 chunk 进度上报接口。\n- WP-133 前端（owner 前端中层，前端-web）：按合并状态呈现，依赖 WP-132 接口。\n\n## 验收\n- 后端：两语料各自 chunks_done ≤ chunks_total，进行中单调递增，完成后 done==total；只刷 session 时 detail 也显示 refreshing 且进度在走；不出现\"进行中但 total=0\"超过一个上报周期；单测覆盖合并规则（failed > needs_rebuild > refreshing > ready）与 Σ归一化。\n- 前端：真机触发 code 重建、session 重建、两者同时，fill 都连续增长到 100% 后变绿；agent 后台触发刷新时不重开页面，进度条 ≤5s 内开始动；needs_rebuild 显示空条，点重建后 ≤1 个周期变橙闪；删掉/损坏模型显示红（hover 注明引擎）；hover 三行（Total / Code · done/total chunks / Session · done/total chunks）数字与 detail 接口一致。\n- 所有估算值和写死值都要删掉（如按 pending 扣 2% 的 sync_pct 估算、写死 45%、静止时一律 100%）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:09:25.394Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 检索引擎进度条的 fill、颜色、hover 由 code+session 统一 chunk 进度模型推出，准确且实时"
+        },
+        {
+          "ts": "2026-10-13T16:09:38.140Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: ## 方向\n依据 .litecode/ops/artifacts/ENGINE-STATUS-research.md。检索进度条改为由一份统一模型推出：每个语料"
+        },
+        {
+          "ts": "2026-10-13T16:09:38.694Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "依据 ENGINE-STATUS 调研 + GM 六项拍板，待 Andy 批"
+        },
+        {
+          "ts": "2026-10-13T16:11:02.212Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:11:02.539Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:59:41.251Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-132",
+      "domain": "ide-substrate",
+      "title": "后端：code+session 统一 chunk 进度上报",
+      "result": "detail 接口按语料（code/session）上报 state/chunks_done/chunks_total/error 及 total，session 刷新也上报进度",
+      "done_when": [
+        "两语料 done≤total 单调递增完成后相等",
+        "只刷 session 也显示 refreshing 且进度在走",
+        "进行中 total=0 不超过一个上报周期",
+        "合并规则与Σ归一化单测覆盖",
+        "估算/写死值删除"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/ENGINE-STATUS-research.md",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
+      "parent": "WP-131",
+      "goal": "detail 接口按语料（code/session）上报 state/chunks_done/chunks_total/error 及 total，session 刷新也上报进度",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "## 方向（后端中层；涉及 IDE 基座 src/engines,workspace 与 Session）\n依据 ENGINE-STATUS-research.md 与 WP-131 拍板：\n- code 与 session 都上报 {state, chunks_done, chunks_total, error}，state ∈ ready|refreshing|needs_rebuild|failed；detail 接口返回按语料拆开的块 + total。\n- session 刷新/重建也上报进行中状态和进度，与 code 同一机制。\n- 进行中的 chunk 总数先切块拿精确值再 embed，允许开头扫描阶段。\n- 分母按整个索引：total = 已入库 /（已入库 + 待处理）。\n- 任一语料失败 → 总体 failed 并标明哪个引擎；model 缺失/引擎不可用归 failed。\n- 不做推送；LSP 不动。\n- 接口形态需先交给前端子包 WP-133 确认。\n\n## 验收\n- 两语料各自 chunks_done ≤ chunks_total，进行中单调递增，完成后 done==total；\n- 只刷 session 时 detail 也显示 refreshing 且进度在走；\n- 不出现\"进行中但 total=0\"超过一个上报周期；\n- 单测覆盖合并规则（failed > needs_rebuild > refreshing > ready）与 Σ归一化；\n- 所有估算值和写死值删除（含 sync_pct 按 pending 扣 2% 的估算）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:09:28.861Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: detail 接口按语料（code/session）上报 state/chunks_done/chunks_total/error 及 total，session 刷新也上报进度"
+        },
+        {
+          "ts": "2026-10-13T16:11:35.298Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: ## 方向（后端中层；涉及 IDE 基座 src/engines,workspace 与 Session）\n依据 ENGINE-STATUS-research."
+        },
+        {
+          "ts": "2026-10-13T16:11:35.604Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:12:31.356Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:13:27.708Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "GM 已批，按拆法开工"
+        },
+        {
+          "ts": "2026-10-13T17:44:05.644Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "子包 134/135/137 done；旧字段已删；files_pending 已落地。推送勿夹带 WP-141 半成品。详见 WP-131-backend.md 交付摘要。"
+        },
+        {
+          "ts": "2026-10-13T17:46:06.629Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-133",
+      "domain": "client-ux",
+      "title": "前端：进度条按合并状态呈现",
+      "result": "前端-web 进度条 fill/颜色/hover/轮询完全由后端合并状态推出（依赖后端子包接口）",
+      "done_when": [
+        "真机 code/session/同时重建 fill 连续增长到100%变绿",
+        "后台刷新≤5s 开始动",
+        "needs_rebuild 空条点重建后≤1周期橙闪",
+        "模型损坏显示红",
+        "hover 三行与接口一致",
+        "写死45%/100%删除"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-frontend.md",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
+      "parent": "WP-131",
+      "goal": "前端-web 进度条 fill/颜色/hover/轮询完全由后端合并状态推出（依赖后端子包接口）",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "## 方向（前端中层；前端-web）\n依赖 WP-132 的接口，fill/颜色/hover/轮询全部由后端合并状态推出：\n- fill = total 百分比，只来自后端。\n- 颜色：ready 且 100% → 绿；在刷 → 橙闪；有待处理未开始刷 → 橙不闪；failed → 红（hover 注明哪个引擎）；needs_rebuild → 空条，开始重建后转橙。\n- hover 三行：Total xx%；Code xx% · done/total chunks；Session xx% · done/total chunks。\n- 设置页可见时持续轮询：在刷 1s，空闲约 5s；不做推送。LSP 标签不动。\n\n## 验收\n- 真机：触发 code 重建、session 重建、两者同时，fill 都连续增长到 100% 后变绿；\n- agent 后台触发刷新时，不重开页面，进度条 ≤5s 内开始动；\n- needs_rebuild 显示空条，点重建后 ≤1 个周期变橙闪；\n- 删掉/损坏模型显示红；\n- hover 三行的数字与 detail 接口一致；\n- 所有估算值和写死值删除（写死 45%、静止一律 100% 等）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:09:29.144Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 前端-web 进度条 fill/颜色/hover/轮询完全由后端合并状态推出（依赖后端子包接口）"
+        },
+        {
+          "ts": "2026-10-13T16:11:44.959Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "direct: ## 方向（前端中层；前端-web）\n依赖 WP-132 的接口，fill/颜色/hover/轮询全部由后端合并状态推出：\n- fill = total 百分比"
+        },
+        {
+          "ts": "2026-10-13T16:11:45.075Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "WP-131 引擎进度条前端方案；依赖 WP-132 接口，接口定稿后再派前端-web"
+        },
+        {
+          "ts": "2026-10-13T16:13:29.938Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/ENGINE-STATUS-research.md\" -> \".litecode/ops/artifacts/WP-131-frontend.md\""
+        },
+        {
+          "ts": "2026-10-13T16:14:06.418Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:15:03.657Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:57:32.532Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "静态 e2e 通过：web 1348/1348 + tsc0；子包 WP-136/138/142 均 done；sync_pct v2 与 files_pending 已与后端同批；产物 WP-131-frontend.md"
+        },
+        {
+          "ts": "2026-10-13T17:59:40.990Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-134",
+      "domain": "ide-substrate",
+      "title": "引擎进度：code 侧 + 两库合并",
+      "result": ".litecode/ops/artifacts/WP-131-ide.md",
+      "done_when": [
+        "done≤total单调完成相等",
+        "运行中total=0≤一周期",
+        "合并优先级+Σ单测",
+        "估算删除",
+        "旧字段封包前删除",
+        "云端绿"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-ide.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-132",
+      "goal": "code IndexingProgress 加 chunks_total+scanning；增量持续上报；status_view 合并两库+优先级；共享进度记录+合并单测；删估算；不可用→failed；sync%用新total",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-134 方案（IDE）：引擎进度 code 侧 + 两库合并\n\n- owner ide · approver backend_mid · 父 WP-132 / WP-131 · 产物 `.litecode/ops/artifacts/WP-131-ide.md`\n- 本步只 fill+submit；approve 后 start。不 commit；不动 windows-*.yml；LSP 不动；448/RRF 不动；通用、不按语言特化。\n- 接口冻结：`WP-131-backend.md`（键名不改）。共享类型：`.tmp/wp134_shared_progress.md`（**先定，Session WP-135 复用**）。\n\n## 0. 共享进度记录（最优先）\n新 `src/engines/progress.rs`（`CorpusState/CorpusPhase/ProgressEngine/FailReason/CorpusError/CorpusProgress/RetrievalProgress` + 构造器 + `merge_total`），`engines/mod.rs` L7–11 加 `pub mod progress;`。签名见共享文档，approve 即冻结并通知 Session。\n\n## 1. 拟改文件:行（现状核实 2026-10-14）\n\n| # | 文件:行 | 现状 | 改动 |\n|---|---|---|---|\n| 1 | `code_search/index_status.rs` L37–43 `IndexingProgress` | phase/files_done/files_total/chunks_done | 加 `chunks_total: Option<usize>`（`#[serde(default)]` 兼容旧 job.json）、`chunks_index_base: usize`（增量时索引已有块，用于“分母=整个索引”）。files_* 保留（内部日志/工具旧行，WP-131 封包前删）。 |\n| 2 | `code_search/build.rs` L25–125 | 先报 Scanning(files_total=0)，后边切边嵌，只有 files_total | 两遍：①Scanning：遍历文件 `chunk_file` 收集 `Vec<ChunkRecord>`（每 N 文件写一次 job：phase=Scanning, chunks_total=None, chunks_done=0）；②Embedding：chunks_total=Some(len)，每批 `update_build_progress` 写 chunks_done。内存：只存 ChunkRecord 文本（与现 pending_chunks 同量级的全量），如超阈值（实测确认）退化为“先只数 token 切块计数、二次读文件嵌入”——同样精确，无估算。 |\n| 3 | `code_search/index_status.rs` L188–200 `begin_refreshing` + `code_search/mod.rs` L679–687 `refresh_index_incremental` / `sync_index_with_disk` / `update_files` | files_total=0 只报一次，增量无进度 | `begin_refreshing(root, base_chunks)` 写 Scanning；脏文件切块得 `dirty_chunks` 后写 Embedding：`chunks_total = base_chunks_kept + dirty_chunks`，`chunks_done = base_chunks_kept + embedded_so_far`（≈98%→100%）；每批持续写；结束 clear。watcher 触发的 `update_files` 同口径（批内上报）。 |\n| 4 | `code_search/index_status.rs` L304–357 `sync_pct_from_view` / `sync_pct_from_progress` / **`sync_pct_from_pending`** | 2%/pending 估算 | **删除 `sync_pct_from_pending`**；`sync_pct_from_view` 改为 `CorpusProgress::percent()` 的薄壳（无 total→None→工具显示 “scanning”）。加死名单测试（见 §3）。 |\n| 5 | `code_search/index_status.rs` L360+ `resolve_index_view` 旁新增 `code_corpus_progress(root, engine_state, model_ready) -> CorpusProgress` | — | 映射：模型缺失→failed(model, model_missing)；EngineState::Failed→failed(code, engine_unavailable)；desired 但 Stopped/Off→failed(code, engine_stopped)；job Failed→failed(code, index_failed, msg)；Building/Refreshing→scanning/embedding；NeedsRebuild/Absent→needs_rebuild；Ready/Stale→ready(indexed_chunks, pending)。Warming 不是第四态：Warming+无 job→按磁盘（ready/needs_rebuild）。 |\n| 6 | `engines/status_view.rs` L91–175 `retrieval_detail`；L195–222 `status_rank`/`merge_retrieval_status` | 旧 rank：Building>Refreshing>Failed>…（与新优先级相反） | 新增 `\"retrieval\": RetrievalProgress::merge(code, session)`（`total/code/session`）；session 侧在 WP-135 前用临时适配 `session_index_status`+meta→CorpusProgress。旧 `index.status/progress/sync_pct/indexed_chunks` 保留（deprecated）。`merge_retrieval_status` 改委托新优先级或删除（调用方仅本文件）。 |\n| 7 | `engines/mod.rs` L7–20 | — | `pub mod progress;` + re-export。 |\n\n### 跨域（不自己改）\n- **Tools 域**：`src/tools/mod.rs` L42–68 `format_sync_pct_line`/`sync_pct_for_workspace`、`src/tools/code_search.rs` L436–490（files_total 进度行）、`src/tools/session_search.rs` L98–111。需 Tools 改为读 `RetrievalProgress.total.percent()`（scanning 时 “scanning”）。IDE 提供 `pub fn retrieval_progress_for_workspace(engines, root) -> RetrievalProgress` 作为唯一入口；Tools 只换调用。\n- **Session 域（WP-135）**：实现 `session_corpus_progress`；IDE 临时适配器在其落地后删除。\n- **前端**：只读冻结接口，无 IDE 动作。\n\n## 2. 旧字段删除时点\n`index.progress` / `index.sync_pct` / `index.indexed_chunks`（status_view JSON）+ `IndexingProgress.files_*` 外露：\n- WP-134 deliver 时：保留，标 `deprecated`（注释+产物）。\n- 删除条件：前端切到 `retrieval.*` 且 Tools 切到新 total、WP-135 落地后，由 IDE 在 **WP-131 封包前单独一步**删除（同包 follow-up commit 前，中层发令）；删除时附 `rg` 证明无引用。\n\n## 3. 测试计划（`engines::progress` 单测 + code 侧）\n1. **合并优先级**：failed>needs_rebuild>refreshing>ready 全组合（4×4）表驱动。\n2. **Σ**：done/pending 求和；total 求和；一侧 scanning ⇒ total=None；phase 合并（scanning 优先）。\n3. **error**：首个 failed（code 优先于 session）；无 failed ⇒ None。\n4. **不变式**：构造器 property 测（phase⇔refreshing，total None⇔scanning，embedding total>0，done≤total 夹紧，ready total==done）。\n5. **percent**：scanning→None；embedding 99 封顶；ready pending=0→100、pending>0→<100 但不估算（=done/(done+pending)，精确值）。\n6. **scanning 阶段**：build fixture（HashEmbedder）记录 job.json 序列：先 Scanning(total=None) 后 Embedding(total=N)，done 单调、结束 done==N；运行中 total 为 None 的写入只出现在 scanning 段（≤一个上报周期）。\n7. **分母=整个索引**：已有 K 块 + 改 1 文件(m 块) ⇒ 首个 Embedding 上报 total=K'+m、done≥K'（K'=保留块）。\n8. **failed 四情况**：model_missing / engine_unavailable(EngineState::Failed) / engine_stopped(desired 且 Stopped) / index_failed(job Failed) → state=failed, error.engine/reason 正确；合并 total 也 failed。\n9. **死名单**：测试 `rg`-式断言：`include_str!(\"code_search/index_status.rs\")` 不含 `sync_pct_from_pending`（防回潮）。\n10. 回归：`cargo test --lib engines::` + code_search；HOME=.tmp/home、timeout、</dev/null、-j1、共享 target 排队。\n\n## 4. 验收（done_when 对齐）\ndone≤total 单调、完成相等；运行中 total=None ≤ 一周期；合并优先级+Σ 单测绿；估算删除；旧字段封包前删除（§2）；云端绿。\n\n## 5. 需中层批 / 跨域\n1. 批共享类型签名（`.tmp/wp134_shared_progress.md`）→ 通知 Session WP-135。\n2. 批 build 两遍切块（scanning 内存/时间代价）；如需大仓退化策略确认。\n3. 协调 Tools 改 sync% 调用点（IDE 只提供 `retrieval_progress_for_workspace`）。\n4. 旧字段删除发令时点（WP-131 封包前）。\n5. `engine_stopped` 判定口径：desired=true 且状态 Stopped/Off 算 failed；desired=false 不报 failed（按“未启用”显示 ready/needs_rebuild）——请确认。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:13:27.989Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: code IndexingProgress 加 chunks_total+scanning；增量持续上报；status_view 合并两库+优先级；共享进度记录+合并单测；删估算；不可用→failed；sync%用新total"
+        },
+        {
+          "ts": "2026-10-13T16:14:45.685Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-134 方案（IDE）：引擎进度 code 侧 + 两库合并\n\n- owner ide · approver backend_mid · 父 WP-1"
+        },
+        {
+          "ts": "2026-10-13T16:14:45.963Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "进度方案：共享 engines::progress 签名待批；build 两遍切块；增量分母=全索引；删估算；Tools 需配合"
+        },
+        {
+          "ts": "2026-10-13T16:15:15.919Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:15:52.448Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开干：progress.rs 先落；不碰 tools；旧字段仅 deprecated"
+        },
+        {
+          "ts": "2026-10-13T16:41:54.567Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:42:40.131Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "验收退回：chunks_pending 按文件计，增量刷新 total 偏大、结束校正，违反 GM『先切块拿精确 chunk 总数，不留估算』。需增量刷新同样先切块得精确 chunks_total/chunks_pending（scanning 阶段 total=null），done≤total 单调。其余（queue.json、tick 必查、测试）通过。"
+        },
+        {
+          "ts": "2026-10-13T17:09:57.077Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:26:31.760Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-135",
+      "domain": "harness-core",
+      "title": "引擎进度：session 侧上报",
+      "result": ".litecode/ops/artifacts/WP-131-session.md",
+      "done_when": [
+        "只刷session显示refreshing且进度在走",
+        "done≤total单调完成相等",
+        "运行中total=0≤一周期",
+        "无估算",
+        "云端绿"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-135-session.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-132",
+      "goal": "session refresh/rebuild 经共享记录上报 state+进度；done 取 meta indexed_chunks；精确 pending/total；复用 IDE 记录类型",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-135 / Session：session 语料进度上报（parent WP-132 / WP-131）\n\n依据：WP-131-session.md（seed）、WP-131-backend.md（冻结接口）。本包**未开始**，无代码改动。\n\n## 阻塞（BLOCKER）\n- **WP-134 共享进度记录类型尚未定义**：src/engines 中无该类型；现有仅 code 侧 `IndexingProgress{phase,files_done,files_total,chunks_done}`（code_search/index_status.rs:38），没有 chunks_total/chunks_pending/error，也未见 `.tmp/*wp134*` 约定。\n- Session 不另造平行类型。实现必须等 IDE 落类型/签名（或与 IDE 书面约定），本方案中的字段名仅按冻结接口书写，最终以 WP-134 为准。\n\n## 触点（file:line）\n- session_search/semantic_index.rs:468 `reconcile`：在 derive（~:511-560，切块）完成、embed（~:574 `for batch in staged.chunks(EMBED_BATCH)`）之前得到精确总数；每 batch 后推进 chunks_done。\n- semantic_index.rs:851 `consume_session_index`：rebuild 分支（清空后 indexed=0）与增量分支的入口/出口上报。\n- semantic_index.rs:831 `queue_session_dirty`：现以 `latest.abs_diff(indexed).max(1)` 作 pending（change-id 差值，**属估算**）→ 改为精确 chunk 数或在 detail 中不再使用该值作 chunks_pending。\n- semantic_index.rs:723/737 pending_hint.json：保留为\"是否有活\"的提示，不再作为进度数值。\n- engines/mod.rs:983 `spawn_scoped_refresh`（touch_code_job=false 分支，:1037-1060 finish）：session 失败目前只 `tracing::warn`，需写 failed 记录（error{engine:\"session\",reason:\"index_failed\",message}）；成功则清除。\n- engines/mod.rs:864 `consume_session_index_work`：起跑即写 refreshing/scanning（total=null），满足\"只刷 session 也显示 refreshing\"。\n- status_view.rs:105-150 读侧合并属 IDE（WP-134），Session 仅提供 session 语料记录。\n\n## 精确 total / pending 计算\n- 分母=整个索引（GM 拍板）：chunks_total = 保留的已有块数（indexed_chunks − to_remove 释放的块）+ staged.len()（本轮 derive 出的新块，已经过白名单/echo/448 切块，即真实要 embed 的块）。\n- chunks_done 起点 = 保留块数（增量约 98%→100%），每个 embed batch 后 += batch.len()；结束 done==total==meta.indexed_chunks。\n- chunks_pending = total − done（运行中）；ready 时 pending = 0，除非 queue 检测到新行——此时不估算：未切块前只能知道\"有活\"，不给数字 → 建议 ready 时 pending 取 0 并由 state 体现，或以 Q1 由 backend_mid 裁决。\n- rebuild：保留块数=0，total=staged.len()。\n\n## 状态转换\nready/needs_rebuild →(consume 起跑) refreshing/scanning(total=null, done=保留数) →(derive 完成) refreshing/embedding(total>0 精确) →(每 batch) done 单调递增 →(save_meta 成功) ready(done==total, pending=0)；\n任一步 Err → failed + error{engine:\"session\",reason:\"index_failed\",message}；下次成功刷新清除。\ntotal=0 窗口：仅在 scanning 前的一次上报内（起跑立刻写 scanning/null，不写 0）。\n引擎不可用/已停止 → failed(reason engine_unavailable/engine_stopped)，与 IDE 同口径。\n\n## 测试（plain cargo test）\n1. 增量：done 起点=保留块数，单调，结束 done==total==indexed_chunks。\n2. rebuild：scanning 期间 total=null，embedding 期间 total=staged 数>0。\n3. 只刷 session：记录为 refreshing，code 记录不变（扩展 mod.rs:1691 用例）。\n4. embedder 报错 → failed + error.engine==\"session\"。\n5. 无估算：断言不再使用 change-id 差值作 chunks_pending。\n6. HashEmbedder + tempdir，不依赖真实模型。\n\n## 风险\n- 所有权：session_search 位于 src/engines/**（IDE 领域）；seed 指派 Session 实现上报，需 backend_mid 确认 Session 可改 semantic_index.rs 与 mod.rs 的 session 分支（Q2）。\n- reconcile 持有 &mut self 时上报：需轻量 sink（回调/Arc 写记录），避免把 IO 放进热循环（按 batch 上报即可）。\n- 与 IDE 并行改 mod.rs/status_view.rs 易冲突，需排序：IDE 先落 WP-134。\n- 大 rebuild（~1.7M tokens 级）scanning 时间可能较长，期间 total=null 属预期。\n\n## 开放问题\n- Q1：ready 但检测到新行（未切块）时 chunks_pending 报什么？0 + state 不变，还是允许短暂转 refreshing/scanning？\n- Q2：确认 Session 对 session_search/semantic_index.rs 及 engines/mod.rs session 分支的修改权。\n- Q3：记录存储：WP-134 若用文件（类 job.json），session 用独立文件（session-index/ 下）还是共享内存记录？以 IDE 类型为准。\n- Q4：pending_hint.json 是否随旧字段在 WP-131 封包前一并删除？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:13:28.300Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: session refresh/rebuild 经共享记录上报 state+进度；done 取 meta indexed_chunks；精确 pending/total；复用 IDE 记录类型"
+        },
+        {
+          "ts": "2026-10-13T16:15:15.451Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-135 / Session：session 语料进度上报（parent WP-132 / WP-131）\n\n依据：WP-131-session.md（"
+        },
+        {
+          "ts": "2026-10-13T16:15:15.776Z",
+          "actor": "session",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:15:50.290Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:16:39.982Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:55:09.026Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-131-session.md\" -> \".litecode/ops/artifacts/WP-135-session.md\""
+        },
+        {
+          "ts": "2026-10-13T16:55:09.569Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:23:35.937Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-136",
+      "domain": "client-ux",
+      "title": "WP-133 web：引擎进度条 code+session 合并",
+      "result": "进度条 fill/颜色/hover/轮询由合并状态推出；测绿；产物 WP-131-web.md",
+      "done_when": [
+        "真机 code/session/同时重建 fill 连续增长到100%变绿",
+        "后台刷新≤5s 开始动",
+        "needs_rebuild 空条点重建后≤1周期橙闪",
+        "模型损坏显示红",
+        "hover 三行与接口一致",
+        "写死45%/100%删除"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-web.md",
+      "progress": "closed done by frontend_mid: 中层交叉审通过：规则/轮询/Q4 全符合；48/48、1307/1307、tsc -b 0；desktop 无改动；详见 WP-131-frontend.md「中层交叉审」。另记 WP-137 sync_pct 首行新格式与 syncPct.ts 解析不兼容风险（非本包）。",
+      "status_entered_at": null,
+      "parent": "WP-133",
+      "goal": "按 WP-131-frontend.md：进度条 fill/颜色/hover/轮询完全由 GET /api/workspace/engines/detail 的 retrieval 合并状态推出；依赖 WP-132 接口定稿；只支持一种呈现规则；vitest+tsc 绿；不 commit",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-136 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：WP-131-frontend.md「GM 拍板」「接口键名定稿」+ WP-131-backend.md 接口。只一种进度模型：只读 `retrieval.{total,code,session}`，不读 `progress` / `sync_pct` / `indexed_chunks`，不做兼容。\n\n## 改动点\n1. **`web/src/api/workspace.ts`（类型，必要附带）**：`RetrievalEngineDetail` 加\n   `total` / `code` / `session: RetrievalCorpusStatus`，其中\n   `{ state: \"ready\"|\"refreshing\"|\"needs_rebuild\"|\"failed\"; phase: null|\"scanning\"|\"embedding\"; chunks_done: number; chunks_total: number|null; chunks_pending: number; error: null|{ engine: \"code\"|\"session\"|\"model\"; reason: \"model_missing\"|\"engine_unavailable\"|\"engine_stopped\"|\"index_failed\"; message: string } }`。\n   旧 `index.progress` / `index.indexed_chunks` 等字段：前端不再读；类型是否删除见疑问 Q2。\n2. **`EngineView.tsx`**\n   - 删除 `barWidth`（含写死 45%、静止 100%）与旧 `indexTone`，换成纯函数 `retrievalBar(retrieval, rebuildRequestedAt?)` → `{ tone: \"ok\"|\"pending\"|\"busy\"|\"failed\"|\"empty\", pulse, pct: number|null, indeterminate }`：\n     - 任一 failed（total.state=failed）→ 红（红优先）。\n     - needs_rebuild → 空条（fill 0，不闪）；点「重建」后本地标记 `rebuildRequested`，在下一个轮询周期内显示橙+闪，直到后端返回 refreshing / ready / failed 后清除。\n     - refreshing + embedding → 橙闪，pct=done/total。\n     - refreshing + scanning（chunks_total=null）→ 橙闪 + 不确定条（CSS 动画，不写百分比、不显示 0%）。\n     - ready 且 pending>0 → 橙不闪，pct=done/total（增量约 98%）。\n     - ready 且 pending=0 → 绿，pct=done/total（=100%）。\n     - pct 一律 `chunks_done/chunks_total`（整个索引）；chunks_total=null 或 0 → null（不编）。\n   - `detailTip` 改为三行：`Total xx%` / `Code xx% · done/total chunks` / `Session xx% · done/total chunks`；某侧 scanning → 该行写 `scanning`（不写假 %）。failed 时再加一行 `Failed: <engine> · <reason 人话>`（model_missing→模型缺失 / engine_unavailable→引擎不可用 / engine_stopped→引擎已停止 / index_failed→索引失败）+ message。\n   - 条 UI：保留 `engine-index-fill`，加 tone class / `data-tone` / `data-indeterminate`，`title` 用新三行 tip。\n   - Warming 仍走现有引擎级显示，不进四态；LSP 标签不动。\n3. **`EnginesSection.tsx`（轮询）**：Settings 可见时持续轮询——任一 total.state=refreshing 或引擎 warming 或 rebuildRequested → 1s；否则约 5s。用 `document.visibilityState` + 组件挂载判断可见；不可见停轮询，回到可见立即拉一次。无推送。\n4. **`web/src/theme/components/settings.css`**：新增 tone 颜色（绿/橙/红/空）、`.is-pulse` 复用、`.is-indeterminate` 来回滑动动画；去掉依赖写死宽度的样式。\n\n## 测试（vitest /exec-daemon/node v22；EngineView.test.tsx / EnginesSection.test.tsx + retrievalBar 纯函数单测）\n1. 四色各一例：failed 红；needs_rebuild 空条；refreshing 橙闪；ready+pending=0 绿 100%。\n2. ready+pending>0 → 橙不闪。\n3. scanning（chunks_total=null）→ 不确定态，无 `%`、无 0%。\n4. 增量：done=980,total=1000 → 98%。\n5. 红优先：code failed + session ready → 红；hover 写明 engine 与 reason（三种 reason 各断言人话）。\n6. hover 三行文本格式与数字。\n7. needs_rebuild 点重建 → 下一周期内橙闪（fake timers）。\n8. 轮询间隔：refreshing → 1s；空闲 → 5s；不可见停止。\n9. 不读旧字段：fixture 只给旧字段 / 给矛盾旧值时，显示完全由新字段决定（如旧 progress=45、sync_pct=100 不影响）。\n另：`tsc -b` 0；lint N/A。\n\n## desktop\n内嵌 web，不改；静态核对。\n\n## 不在范围\n后端（WP-132）、LSP、推送、工具结果 sync_pct 头（WP-062 已有，按输出文本解析，不读 detail）、commit。\n\n## 疑问（待中层确认，不阻塞方案）\n- Q1 新块挂载位置：合同写 `retrieval: {total, code, session}`，但现 `retrieval` 已有引擎级 `desired/state/usable/error/index`。方案按「total/code/session 作为 `retrieval` 下新增的三个键，与引擎级字段并存」实现；若是替换整个 retrieval 对象请告知。\n- Q2 类型清理：合同说旧字段后端在封包前删除。前端本包是否同时从 `api/workspace.ts` 类型里删掉 `progress/indexed_chunks/sync_pct`（推荐删，可让 tsc 兜底\"不读旧字段\"），还是等后端删除后再删？\n- Q3 改动面多一个文件 `api/workspace.ts`（类型），派工范围里未列，属必要附带。\n- Q4 「点重建后一个周期内变橙并闪」：后端若一周期内仍返回 needs_rebuild，前端本地乐观显示橙闪；乐观态超时（如 3 个周期仍未变）是否回落空条？方案默认回落并保持可再点。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:15:06.990Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-131-frontend.md：进度条 fill/颜色/hover/轮询完全由 GET /api/workspace/engines/detail 的 retrieval 合并状态推出；依赖 WP-132 接口定稿；只支持一种呈现规则；vitest+tsc 绿；不 commit"
+        },
+        {
+          "ts": "2026-10-13T16:16:34.087Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-136 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：WP-131-frontend.md「"
+        },
+        {
+          "ts": "2026-10-13T16:16:34.362Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:18:25.990Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:19:15.630Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:25:12.901Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "进度条只读 retrieval.{total,code,session}；Q1–Q4 按批复；48 相关 + 全量 1307，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T16:31:53.057Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "中层交叉审通过：规则/轮询/Q4 全符合；48/48、1307/1307、tsc -b 0；desktop 无改动；详见 WP-131-frontend.md「中层交叉审」。另记 WP-137 sync_pct 首行新格式与 syncPct.ts 解析不兼容风险（非本包）。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-137",
+      "domain": "ide-substrate",
+      "title": "引擎进度：tool sync% 改用新 total",
+      "result": "code_search/session_search/tools/mod.rs 的 sync% 改读 retrieval_progress_for_workspace 的 total（chunks_done/chunks_total；scanning 时不给假百分比），删除旧估算",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-tools.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-132",
+      "goal": "code_search/session_search/tools/mod.rs 的 sync% 改读 retrieval_progress_for_workspace 的 total（chunks_done/chunks_total；scanning 时不给假百分比），删除旧估算",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-137 方案（tools）· 工具 sync% 改由新 total 计算\n\n父：WP-132（WP-131 引擎进度条）。依据：WP-131-backend.md（冻结接口 + GM 拍板）、.tmp/wp134_shared_progress.md（WP-134 共享类型草案）。不碰 `src/engines/**`；不 commit。\n\n## 1. 改动文件与函数\n- `src/tools/mod.rs`\n  - `sync_pct_for_workspace`：改为调用 IDE `retrieval_progress_for_workspace(..)`，取 `.total: CorpusProgress`；不再调 `resolve_index_view` / `read_pending_hint` / `sync_pct_from_view`。\n  - `format_sync_pct_line`：入参改为 `&CorpusProgress`（不再用 `engines::code_search::SyncPct`）。\n  - `prepend_sync_pct`：签名同步换成 `&CorpusProgress`，行为不变（sync 行仍是第一行）。\n- `src/tools/code_search.rs`：`call` 内 `sync` 取值点（~123/141/147）换新类型；测试 `empty_hits_lead_with_sync_pct` 改造。\n- `src/tools/session_search.rs`：~98/111 同上；测试 `semantic_unavailable_is_explicit_and_leads_with_sync_pct` 改造。\n- 描述 `descriptions/code_search.md`、`session_search.md`：补一句「scanning 阶段显示阶段而非百分比」。\n\n## 2. 删除的旧估算（Tools 侧）\n- `tools/mod.rs` 中基于 `sync_pct_from_view(view, read_pending_hint(root))` 的整条推导及 `root=None ⇒ sync_pct: 0` 的写死兜底（改为渲染 state，不给数字）。\n- Tools 对 `engines::code_search::SyncPct` / `sync_label` 的全部引用（3 个文件）。\n- 引擎侧 `index_status.rs` 的 `sync_pct_from_view` / `sync_pct_from_progress`（files 比估算）/ `sync_pct_from_pending`（2%/pending）及 `SyncPct` 属 IDE 域（WP-134 / WP-131 封包前删除），本包只保证 Tools 不再引用，便于 IDE 删除；`status_view.rs:104` 也还在用，归 IDE。\n\n## 3. 首行措辞（sync 行永远是结果第一行，前缀 `sync_pct:` 不变，兼容 WP-059 前端解析）\n- 有 total（embedding / ready / needs_rebuild）：`sync_pct: {pct}% ({state}[, {phase}]) chunks {done}/{total}`；pct = `CorpusProgress::percent()`（= done/total，运行中封顶 99，ready 且 pending==0 才 100）。例：`sync_pct: 98% (refreshing, embedding) chunks 9800/10000`。\n- scanning（chunks_total=null）：`sync_pct: scanning (refreshing; chunks_done {done}, total pending)`——**不出任何 %**。\n- failed：`sync_pct: failed ({reason})`，不给数字。\n- 工作区未知 / 无进度：`sync_pct: unknown`（替代旧写死 0%）。\n\n## 4. 测试\n- `sync_line_percent_from_chunks`：embedding(9800,10000) → 首行含 `98%`、`9800/10000`；ready(n,0) → `100%`。\n- `sync_line_scanning_has_no_fake_percent`：scanning(5,3) → 首行 `sync_pct: scanning`，且不含 `%`。\n- `sync_line_failed_has_no_percent`。\n- `code_search_result_leads_with_sync` / `session_search_result_leads_with_sync`：结果首行以 `sync_pct:` 开头（改造现有两条测试）。\n- 合并优先级/Σ 由 WP-134 单测负责，本包不重复。\n\n## 5. 验证命令\n- `cargo test --lib tools::code_search tools::session_search tools::tests`\n- `cargo test --lib tool::registry`（ISSUE-055 已知失败）\n- `cargo test --no-run`\n- `rustfmt --edition 2024 --check src/tools/mod.rs src/tools/code_search.rs src/tools/session_search.rs`\n- `rg -n \"SyncPct|sync_pct_from_view|read_pending_hint|sync_label\" src/tools` 结果为空\n- `node .litecode/ops/tools/kb_check.mjs`\n\n## 6. 依赖 / 阻塞\n- **阻塞（WP-134，in_progress）**：`src/engines/progress.rs` 尚未落地（核查时文件不存在）；`CorpusProgress` / `percent()` / `RetrievalProgress` 未可用。\n- **阻塞**：`retrieval_progress_for_workspace` 在代码与 WP-134 草案中均不存在；需 IDE 给出签名（建议 `pub fn retrieval_progress_for_workspace(engines: &WorkspaceEngines, root: &Path) -> RetrievalProgress`）。Session 腿（WP-135，ready）未接时 total 是否用 IDE 临时适配器，由 IDE 保证。\n- start 条件：WP-134 合入上述类型 + 函数后再 start。\n\n## 7. WP-061 旧路径核查\n- WP-061（WP-057-tools.md）建立了「结果首行 sync_pct」契约与 `format_sync_pct_line`/`sync_pct_for_workspace`/`prepend_sync_pct`；本包保留首行契约与 `sync_pct:` 前缀，只换数据源与措辞。\n- WP-061 的 Warming 隐藏工具 / 可见性逻辑（availability）不动。\n- `code_search.rs:978` 注释引用 WP-061，测试只锁引擎 gate，不受影响。\n\n## done_when\n- 三文件不再引用旧 SyncPct/估算；sync% = chunks_done/chunks_total；scanning 无 %；首行仍 sync；上述测试与验证全绿（ISSUE-055 除外）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:15:20.358Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: code_search/session_search/tools/mod.rs 的 sync% 改读 retrieval_progress_for_workspace 的 total（chunks_done/chunks_total；scanning 时不给假百分比），删除旧估算"
+        },
+        {
+          "ts": "2026-10-13T16:16:44.586Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-137 方案（tools）· 工具 sync% 改由新 total 计算\n\n父：WP-132（WP-131 引擎进度条）。依据：WP-131-back"
+        },
+        {
+          "ts": "2026-10-13T16:16:44.906Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "plan filled; blocked on WP-134 (progress.rs + retrieval_progress_for_workspace not landed)"
+        },
+        {
+          "ts": "2026-10-13T16:18:01.694Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:18:36.605Z",
+          "actor": "tools",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:27:35.386Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-131-tools.md\""
+        },
+        {
+          "ts": "2026-10-13T17:27:35.689Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:27:53.073Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-138",
+      "domain": "client-ux",
+      "title": "WP-133 web：sync_pct 首行新契约解析",
+      "result": "syncPct 解析器与视图支持四种首行（N%/scanning/failed/unknown）；前端测试覆盖四种；tsc -b 0；与 WP-137 同批可验收。",
+      "done_when": [
+        "frontend test covers four first-line kinds (N%/scanning/failed/unknown)",
+        "parser accepts only the new format (no old WP-057-only regex compatibility)",
+        "tool views show progress head for N%/scanning/failed/unknown",
+        "tsc -b 0",
+        "lands with WP-137"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-web-syncpct.md",
+      "progress": "closed done by frontend_mid",
+      "status_entered_at": null,
+      "parent": "WP-133",
+      "goal": "按 GM 拍板 B 重定 WP-057 首行契约：更新 toolviews/syncPct.ts（及必要时 SyncPctHeader）只接受新格式 sync_pct: <N%|scanning|failed|unknown> (label)[ chunks done/total]，覆盖 code_search/session_search 工具结果进度头；与后端 WP-137 同步落地，不做新旧兼容。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-138 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：`WP-057-sync-pct-contract.md` **v2**（权威）+ `WP-131-frontend.md`「GM 拍板：sync_pct 首行契约重定（B）」。与后端 WP-137 同步落地，不做新旧兼容。\n\n## 首行语法（严格）\n`sync_pct: <value>[ (<label>)][ chunks <done>/<total>]`\n- value ∈ `<0–100 整数>%` | `scanning` | `failed` | `unknown`（全小写）\n- label：ASCII `(...)`，内无括号，可含逗号\n- chunks：仅 value 为 `<n>%` 时允许\n- 段间单空格；行尾无其它内容\n\n## 改动点\n1. **`web/src/components/toolviews/syncPct.ts`**\n   - 类型改为判别联合：\n     ```ts\n     type SyncPct =\n       | { kind: \"pct\"; pct: number; label?: string; chunks?: { done: number; total: number } }\n       | { kind: \"scanning\" | \"failed\" | \"unknown\"; label?: string };\n     ```\n   - 严格正则（锚定整行，单空格）：\n     `^sync_pct: (?:(\\d{1,3})%|(scanning|failed|unknown))(?: \\(([^()]*)\\))?(?: chunks (\\d+)\\/(\\d+))?$`\n     - pct 必须 0–100 整数（`\\d{1,3}` 后再判范围，拒绝前导多余如 `101%`）。\n     - chunks 只在数字分支接受；非数字 value 带 chunks → 整行不认。\n     - 大写 / 多空格 / 尾随内容 / 未知 value → 不认。\n   - 不认时：`sync: null`，`rest = raw`（首行原样当正文显示，不编造）——见疑问 Q1。\n   - `splitSyncPct(raw)` 签名不变（返回 `{ sync, rest }`），调用方无需改调用方式。\n   - 删除任何 v1 专用分支 / 注释；web 中无 `sync_label` 引用（已 rg 确认，无需删）。\n2. **`SyncPctHeader.tsx`**\n   - `kind:\"pct\"` → `98%`，有 chunks 再显示 `9800/10000 chunks`；`scanning` / `failed` / `unknown` → 显示该词本身（failed 用红色，其它 muted）；label 照旧显示在后。\n   - `data-testid`：`tool-sync-pct`、`-value`、`-label`、`-chunks`；`data-kind` 便于测试。\n3. **`CodeSearchToolView.tsx` / `SessionSearchToolView.tsx`**：仅随类型变化做最小跟改（若只透传 `sync` 则无需改代码，只回归测试）。\n\n## 测试（vitest `/exec-daemon/node` v22）\n- `syncPct.test.ts`（重写）：\n  - 接受：`98% (refreshing, embedding) chunks 9800/10000`、`100% (ready) chunks 5/5`、`0%`、`42% (ready)`、`scanning (refreshing, scanning)`、`scanning`、`failed (model_missing)`、`unknown (needs_rebuild)`、`unknown`。\n  - 拒绝（sync=null，rest=raw）：v1 无百分号单数字 `sync_pct: 87`、`101%`、`-1%`、大写 `Scanning` / `FAILED`、`failed chunks 1/2`、`scanning (x) chunks 1/2`、双空格、尾随内容、嵌套括号、`sync_label:` 行。\n  - rest：首行剥掉后正文正确；空命中「没有匹配」仍在 rest。\n- `SyncPctHeader` / `CodeSearchToolView.test.tsx` / `SessionSearchToolView.test.tsx`：四种 value 渲染（含 label/chunks 组合）；failed 红；无首行不渲染头。\n- web 全量 vitest + `tsc -b` 0；lint N/A。\n\n## 不在范围\n后端 WP-137、engines 进度条（WP-136 已关）、client_protocol、desktop、commit。\n\n## 疑问（待中层确认，不阻塞提交）\n- **Q1 旧格式被拒后 UI 显示**：方案按现行口径「不认 → 不出头部、首行原样留在正文」。是否改为剥掉以 `sync_pct:` 开头的坏首行（不显示）或显示 `unknown`？\n- **Q2 v1 与 v2 重叠**：v1 `sync_pct: 87%`、`sync_pct: 87% (syncing)` 在 v2 语法下本身合法（`<n>%` + 可选 label）。\"拒绝旧格式\"能拒的只有 v1 中 v2 不允许的形状（如无 `%`）。是否接受这一理解？\n- **Q3 label 字符集**：契约只说\"无括号、可含逗号\"。方案接受除 `(` `)` 与换行外任意字符（含空格、下划线），不允许空括号 `()`？请确认空 label 处理（方案：`()` 视为不认）。\n- **Q4 chunks 约束**：done ≤ total、total > 0 是否需前端校验？方案：只校验为非负整数，不做 done≤total 校验（以后端为准）。非数字 value 带 chunks 按契约整行不认。\n- **Q5 落地顺序**：须与 WP-137 同批。若 web 先合、后端仍出 v1 以外旧形状，首行会按 Q1 处理；需要中层协调同步合入时机。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:33:45.124Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 GM 拍板 B 重定 WP-057 首行契约：更新 toolviews/syncPct.ts（及必要时 SyncPctHeader）只接受新格式 sync_pct: <N%|scanning|failed|unknown> (label)[ chunks done/total]，覆盖 code_search/session_search 工具结果进度头；与后端 WP-137 同步落地，不做新旧兼容。"
+        },
+        {
+          "ts": "2026-10-13T16:35:45.364Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-138 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：`WP-057-sync-pct-co"
+        },
+        {
+          "ts": "2026-10-13T16:35:45.645Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:36:25.394Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:36:56.368Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:41:05.211Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "sync_pct v2 严格解析 + 头部四值；Q1–Q5 按批复；toolviews 100 + 全量 1344，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T17:28:16.476Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-139",
+      "domain": "ide-substrate",
+      "title": "code 索引刷新：定期扫盘+持久化元数据",
+      "result": "扫盘为事实来源、watcher 仅加速、印章持久化，运行期不再永久漏文件",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "review",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-139.md",
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-13T17:55:47.824Z",
+      "parent": null,
+      "goal": "扫盘为事实来源、watcher 仅加速、印章持久化，运行期不再永久漏文件",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# code 索引刷新：定期扫盘 + 持久化元数据\n\n## 背景\n后端中层只读核实（2026-10-14）：启动时会全盘对账，不会漏文件；但运行期间以 watcher 为唯一事实来源。notify 报错和 Rescan/溢出事件被丢弃（watcher.rs:36-38, :98-103），也没有定时扫盘，大批量改动可能一直滞后。mtime+len 印章只存在内存，启动时要把所有文件读一遍（reconcile.rs:18-19, :73）。\n\n## 方向（Andy 已定口径）\n- 定期扫盘是事实来源，watcher 只用来加速发现变化。按固定周期 walk 一遍，只 stat，比较 mtime+大小，有变化的才读内容、切块。\n- watcher 的事件、报错、溢出一律触发一次同样的扫盘，不再丢弃。\n- mtime+大小印章持久化到磁盘，重启后的首次扫盘也只需要 stat。\n- 刻意不做：内容 hash 比对、watcher 事件去重合并优化、Watchman 或变更日志游标。session 引擎不改。语言通用，不针对特定语言做特判。\n\n## 验收\n- 进程停机期间增、改、删文件，重启后都能补上。\n- 关掉或打断 watcher 后在运行中改文件，一个扫盘周期内补上。\n- watcher 报错或溢出时会触发对账。\n- 文件都没改时重启，不重读任何文件内容（用测试证明只做了 stat）。\n- 只 touch 不改内容时，不重复 embed。\n- 索引被内存冷却卸载后，变化仍然不会永久漏掉。\n- 和 WP-131 的进度上报兼容：扫盘发现的待处理文件能计入 chunks_pending，进度条能看到。\n- 对应单测和集成测试都是绿的。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:33:56.991Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 扫盘为事实来源、watcher 仅加速、印章持久化，运行期不再永久漏文件"
+        },
+        {
+          "ts": "2026-10-13T16:34:03.387Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-SCAN.md\" -> \".litecode/ops/artifacts/WP-139.md\""
+        },
+        {
+          "ts": "2026-10-13T16:34:03.670Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # code 索引刷新：定期扫盘 + 持久化元数据\n\n## 背景\n后端中层只读核实（2026-10-14）：启动时会全盘对账，不会漏文件；但运行期间以 watc"
+        },
+        {
+          "ts": "2026-10-13T16:34:04.259Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:35:51.422Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:35:51.719Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:55:47.824Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-140",
+      "domain": "ide-substrate",
+      "title": "后端：扫盘对账+印章持久化落地",
+      "result": "按 WP-139 方向与验收落地",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-139-backend.md",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
+      "parent": "WP-139",
+      "goal": "按 WP-139 方向与验收落地",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-140 后端中层方案：code 索引定期扫盘对账 + 印章持久化（隶属 WP-139）\n\nkind=direct（执行由 IDE 子包 WP-139-ide 承担，approver=backend_mid）。依据 /workspace/wp-drafts/scan.md（WP-139）与后端中层只读核实（2026-10-14）。\n\n## 1. 范围\n- 定期扫盘为事实来源：固定周期 walk，只 stat，比 mtime+size；有变化才读内容/切块。watcher 仅加速发现。\n- watcher 事件、notify 报错（watcher.rs:36-38 现丢弃）、Rescan/溢出（:98-103 现过滤）一律触发同一次全量扫盘。\n- mtime+size 印章持久化到磁盘（现仅内存，reconcile.rs:18-19/:69/:73），重启首扫只 stat。\n- 冷卸载（reconcile.rs:23 现跳过）：变化不得永久漏掉——卸载期间仍做 stat 扫盘并入队，或重载时强制全量对账（二选一由 IDE 方案定，须测）。\n- 刻意不做：内容 hash、事件去重合并、Watchman/变更日志游标；session 引擎不改；不做语言特判。\n\n## 2. 文件边界与并行冲突（git status 2026-10-14 实测）\n| 文件 | WP-140 要做 | 当前在改 | 结论 |\n|---|---|---|---|\n| code_search/reconcile.rs | 扫盘只 stat、读写持久印章、冷卸载 | WP-134 已改（write_code_queue） | 冲突，等 134 |\n| code_search/fs_notify.rs | 入队路径 | WP-134 已改 | 冲突，等 134 |\n| code_search/mod.rs | mod 声明/runtime 字段/扫盘入口 | WP-134 已改 | 冲突，等 134 |\n| code_search/index_status.rs | 30s tick 读新 pending 信号 | WP-134 重写中 | 冲突，等 134 |\n| engines/mod.rs (:931/:981) | 定期扫盘调度 | WP-134 + WP-135 已改 | 冲突，等 134/135 |\n| engines/progress.rs | 扫盘计入 scanning / chunks_pending（只用不改） | WP-134 新建 | 只读依赖 |\n| code_search/meta.rs, store.rs | 印章存储/schema | 未改 | 可独立，但需 mod.rs 接线 |\n| code_search_ipc/server.rs (:108/:201) | 启动/Lagged 全量对账入口 | 未改 | 无冲突 |\n| workspace/watcher.rs | 报错/Rescan 上报而非丢弃 | 未改 | 无冲突 |\n| serve/router.rs (:156-164/:215-224) | tick/Lagged 路由 | 未改 | 无冲突 |\n| tools/*, session_search/* | 不碰 | WP-135/137 | 禁止触碰 |\n\n## 3. 顺序（中层定）\n- Phase 0（现在）：IDE 只做方案/设计，不改代码；方案须给出对 progress.rs 与新 pending 信号的接线点。\n- Phase 1：WP-134 deliver 且我验收（progress 记录 + 替代 pending_hint 的精确信号稳定、Session 交叉审完）后才 start 编码。理由：扫盘结果必须进同一 pending 队列/信号并在 progress 报 scanning，核心文件 reconcile/fs_notify/mod/index_status 正被 134 改。\n- 无冲突文件（watcher.rs/router.rs/server.rs/meta.rs/store.rs）也不提前：它们单独改无法独立验收，且印章模块需 mod.rs 接线；提前收益小于合并风险。\n- WP-137/135 不受影响；WP-140 不改 tools/ 与 session 分支。\n\n## 4. 硬门\n1. 语言通用，不做语言/扩展名特判（沿用既有 scan_policy/filter）。\n2. 不新增 Warming 或状态机状态；只用 WP-134 的 CorpusState/CorpusPhase，扫盘期间 phase=Scanning、chunks_total=null。\n3. 扫盘发现的待处理计入 chunks_pending（精确，不估算、不写死）。不复活 pending_hint。\n4. watcher 报错/Rescan/溢出/Lagged → 全量扫盘对账，不丢弃。\n5. 冷卸载后变化不永久漏。\n6. 持久印章失效：DOC/INDEX schema bump、印章格式版本变、workspace root 变、索引重建/损坏 → 丢弃印章并全量读；印章写入与索引提交一致（先索引后印章，崩溃时宁可多读不漏读）。\n7. 不改 DENSE_CHUNK_TOKENS/CHUNK_TOKENS=448、RRF 常量。\n\n## 5. 验收（来自 WP-139）\n- 停机期间增/改/删，重启后补上。\n- 关掉/打断 watcher 后运行中改文件，一个扫盘周期内补上。\n- watcher 报错或溢出触发对账（测试注入）。\n- 未改文件重启不读任何内容（测试证明只 stat）。\n- 只 touch 不改内容不重复 embed。\n- 冷卸载后变化不永久漏。\n- 扫盘待处理计入 chunks_pending，进度条可见；扫盘阶段 total=null。\n- 单测与集成测试全绿；deliver 前 rg 证 448/RRF 未动、无 pending_hint 新引用。\n\n## 6. 待定（tier-1，需 GM/Andy 拍板）\n- 扫盘周期取值（建议默认 60s，可配置？是否复用 30s tick）。\n- 印章存储位置/格式（建议与 code 索引同目录独立文件 stamps.v1，随索引失效）。\n- 冷卸载策略：卸载期间继续 stat 扫盘 vs 重载时全量对账。\n- 大仓库单次 stat 扫盘耗时上限/是否需要节流。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:34:03.953Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-139 方向与验收落地"
+        },
+        {
+          "ts": "2026-10-13T16:36:52.258Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-140 后端中层方案：code 索引定期扫盘对账 + 印章持久化（隶属 WP-139）\n\nkind=direct（执行由 IDE 子包 WP-139-"
+        },
+        {
+          "ts": "2026-10-13T16:36:52.527Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "顺序：Phase0 方案；WP-134 验收后才编码（reconcile/fs_notify/mod/index_status 与 134 冲突）"
+        },
+        {
+          "ts": "2026-10-13T16:37:39.537Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:37:58.789Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:54:21.056Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-141 done；Session 审过 router；NotWarm 扫盘已按方案 a。详见 WP-139-backend.md。"
+        },
+        {
+          "ts": "2026-10-13T17:55:47.532Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-141",
+      "domain": "ide-substrate",
+      "title": "IDE：code 定期扫盘对账+印章持久化",
+      "result": "按 WP-139-backend.md 落地定期 stat 扫盘、watcher 报错/溢出触发对账、mtime+size 印章持久化、冷卸载不漏；编码等 WP-134 验收后开始",
+      "done_when": [
+        "WP-139 验收全部满足",
+        "单测集成测绿",
+        "448/RRF 未动",
+        "无估算无新状态"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-139-ide.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-140",
+      "goal": "按 WP-139-backend.md 落地定期 stat 扫盘、watcher 报错/溢出触发对账、mtime+size 印章持久化、冷卸载不漏；编码等 WP-134 验收后开始",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-141 方案（阶段 0，IDE / ide-substrate）— code 索引定期扫盘对账 + stamps.v1\n依据：WP-139-ide.md、WP-139-backend.md、WP-134 progress.rs / .tmp/wp134_signature_final.md、GM 拍板 1-4。\n**顺序：本方案获批后仍不 start；须等 WP-134 被后端中层验收、中层通知后才 start 编码。** 行号为 2026-10-14 只读快照，WP-134 落地后重新定位。\n\n## 1. 拟改文件（全在 ide 域）\n| 文件 | 改动 |\n|---|---|\n| engines/code_search/reconcile.rs:20-25 | 删掉 `!index_is_loaded()` 直接 return；卸载时走\"只 stat\"分支（见 §4） |\n| reconcile.rs:44-47/:69/:73-96/:102-109 | 印章来源改为 stamps.v1 加载的 map；印章命中即跳过；不命中才读内容/入队；不再在扫盘里读内容做比对（改为直接入队，由 update_files 读）——保证\"未改文件只 stat\" |\n| reconcile.rs:130-131 | 入队后只写 WP-134 的 `write_code_queue`（不写 pending_hint） |\n| 新 engines/code_search/stamps.rs | stamps.v1 读/写/失效（§2） |\n| engines/code_search/mod.rs:118/:139/:167/:595 | `mod stamps;`；runtime.file_stamps 启动时从 stamps.v1 加载；update 提交后落盘 |\n| engines/code_search/index_status.rs | 扫盘期间 CorpusProgress::scanning(done,pending)，结束后 chunks_pending 精确 |\n| engines/mod.rs:931-969 code_index_tick | 在 `index_work_from_disk` 判 Clean 之前先跑一次扫盘对账（复用 30s tick，不加计时器/配置）；扫出变化 → 同一 code queue → 同轮 Update 路径消化；NotWarm/冷卸载时仅扫盘入队不 spawn 消化 |\n| workspace/watcher.rs:36-38 | notify Err 不再丢弃 → 发\"全量对账\"信号 |\n| workspace/watcher.rs:98-103 classify_event | Rescan / Other(溢出) 事件不再过滤 → 发\"全量对账\"信号 |\n| serve/router.rs:156-164/:215-224、code_search_ipc/server.rs:108/:201 | 全量对账信号与 Lagged 路由到 request_reconcile（同一函数） |\n| meta.rs | 不改 schema；只复用 needs_rebuild/index_dir |\n不碰：tools/*、session_search/*、progress.rs（只用）、448/RRF 常量、windows-*.yml。\n\n## 2. stamps.v1\n- 路径：`.litecode/index/stamps.v1`（meta::index_dir 下，独立文件）。\n- 格式：首行 JSON 头 `{\"v\":1,\"pipeline_version\":N,\"embedder_id\":\"…\",\"root\":\"<canonical workspace root>\",\"index_created_at\":\"<meta.created_at>\"}`；其后每行 `<mtime_ns>\\t<len>\\t<rel_path>`（路径放最后，允许含 tab 外任意字符；含 \\n 的路径不记印章→每次走读内容，安全侧）。\n- 写入：临时文件 + rename 原子替换；**先提交索引、后写印章**（崩溃只会多读不会漏读）。\n- 失效（任一即删文件并按\"无印章\"处理，等价全量读）：头解析失败/v≠1；pipeline_version/embedder_id 与当前不符（覆盖 DOC/INDEX schema bump）；root 不同；index_created_at≠meta.created_at（索引重建/替换）；meta 缺失或 needs_rebuild；重建流程开头主动删除。\n- 印章只记\"已成功入索引\"的文件；删除/失败的路径移除。\n\n## 3. 对账算法（只 stat，语言通用，沿用 scannable_files 过滤）\n1. disk = scannable_files(root)；对每个 path stat 得 (mtime_ns,len)。\n2. indexed = 已加载时 index.indexed_paths()；卸载时 = stamps.v1 的键集合（印章即已索引集合的持久镜像；若印章失效则见 §4）。\n3. 删除：indexed − disk → (path, deleted=true)。\n4. 新增：disk − indexed → (path,false)。\n5. 变化：同时存在且 stamp≠记录（mtime 或 len 任一不同）→ (path,false)。相等 → 跳过，不读内容。\n6. 全部进同一 pending_updates 队列 → write_code_queue → chunks_pending 精确；不估算。\n7. 只 touch：mtime 变 → 入队 → update_files 读内容后与已存块比对（现有 file_content_matches），内容未变则只刷新印章、不 embed。\n扫盘期间 phase=Scanning、chunks_total=None；不新增状态、不 Warming。\n\n## 4. 冷卸载后\n选\"卸载期间继续 stat 扫盘并入队\"（GM 拍板 3）。不加载索引；indexed 集合取 stamps.v1。若 stamps.v1 失效/缺失而索引卸载：不加载索引，标记 `full_reconcile_on_load` 内存标志，下次加载时先全量对账（只此兜底，不新增对外状态）。入队的变化在下次消费（加载）时由现有 flush 路径消化。\n\n## 5. watcher 触发全量对账\nwatcher Err、Rescan、溢出、IPC Lagged → 统一调用 request_reconcile（全量扫盘，同 §3）；多次信号合并为一次（已在跑则置 again 标志）。\n\n## 6. 测试计划（单测/集成，均不跑真 embedding，用 pass embedder）\n1. 停机期间增/改/删 → 新 runtime 加载 stamps.v1 后一次 tick 全部入队且消化。\n2. watcher 关闭时运行中改文件 → 一次 code_index_tick 内补上。\n3. 注入 notify Err / Rescan / Overflow / Lagged → 触发全量对账（计数器断言）。\n4. \"只 stat\"证明：未改文件重启后 tick，读内容计数器（cfg(test) 计数钩子在 read 路径）=0。\n5. 只 touch：embed 调用次数=0，印章更新。\n6. 冷卸载：卸载后改/删文件 → tick 入队、index_is_loaded 仍为 false、chunks_pending 精确；加载后消化。\n7. stamps.v1 失效矩阵：坏头、v 不符、embedder 变、root 变、created_at 变、rebuild → 文件被删、走全量读。\n8. 崩溃一致性：索引提交后、印章写前中断 → 下次多读不漏。\n9. 无 pending_hint：仅 code queue 时 tick 仍消化（沿用 WP-134 的测试）。\n10. deliver 前 rg：448/RRF 未动、无新 pending_hint 引用、无语言/扩展名特判。\n\n## 7. 实测（不设上限，只报数）\n- 对象：大仓库（如 box 上 rust-lang/rust 或 linux 内核浅克隆，≥10 万文件），提前 clone 到 .tmp/wp141/ide/。\n- 方法：release 小二进制/`#[ignore]` 基准只调用\"扫盘对账\"函数（stat，无 embedding、无模型加载），冷 cache（drop_caches 不可用则首轮）与热 cache 各 5 次，报 文件数、中位/最大耗时、峰值 RSS。\n- 经 .tmp/wp102/run_limited.sh 跑；cargo 走共享锁、timeout、HOME=.tmp/home、</dev/null、独立 CARGO_TARGET_DIR。产物只写 .tmp/wp141/ide/。\n\n## 8. 域边界\n只改 ide 域（engines/code_search、engines/mod.rs 中 code tick、workspace/watcher.rs）与 serve/router.rs、code_search_ipc 的 code 对账接线（若 router 属他域则只提供函数、请中层转派）。不碰 session/tools；不 commit。\n\n## 9. 待中层裁定\n1. serve/router.rs 是否归 ide 可改（否则我只提供 request_reconcile 入口）。\n2. 扫盘改为\"不命中印章直接入队、内容比对挪到 update_files\"——确认可接受（换来\"只 stat\"可证）。\n3. 印章失效且索引卸载时的兜底：下次加载全量对账（内存标志，不新增状态）。\n4. 实测用哪一个大仓库作为标准样本。\n5. 冷卸载/NotWarm 时 tick 只扫盘不消化：确认符合\"变化记为待处理\"。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:36:51.976Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-139-backend.md 落地定期 stat 扫盘、watcher 报错/溢出触发对账、mtime+size 印章持久化、冷卸载不漏；编码等 WP-134 验收后开始"
+        },
+        {
+          "ts": "2026-10-13T16:39:18.746Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-141 方案（阶段 0，IDE / ide-substrate）— code 索引定期扫盘对账 + stamps.v1\n依据：WP-139-ide.m"
+        },
+        {
+          "ts": "2026-10-13T16:39:19.091Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "阶段0方案；等WP-134验收后start"
+        },
+        {
+          "ts": "2026-10-13T16:40:09.038Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:26:49.300Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T17:49:03.951Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-139-ide.md\" -> \".litecode/ops/artifacts/WP-139-ide.md\""
+        },
+        {
+          "ts": "2026-10-13T17:49:04.257Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "stamps.v1+stat-only reconcile+cold scan+watcher rescan; 951+78 tests green, fmt 0; linux 95,921 files cold med 3.6s hot med 3.0s (debug); router.rs diff in .tmp/wp141/ide/router.diff for Session review"
+        },
+        {
+          "ts": "2026-10-13T17:54:20.668Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-142",
+      "domain": "client-ux",
+      "title": "WP-133 web：retrieval 待处理改看 files_pending",
+      "result": "GET /api/workspace/engines/detail 的 retrieval.{total,code,session} 各增必填 files_pending:number（非负整数，total=code+session）。前端仅用 files_pending>0 判「有待处理」（ready 橙且不闪）；chunks_pending 不再驱动橙色、不算进度。类型三块补字段；retrievalBar 改判据；测试覆盖 files_pending>0/chunks_pending=0 与反例；全量 vitest + tsc -b 0；与后端同批落地，不做新旧兼容。",
+      "done_when": [
+        "types: RetrievalCorpusStatus 三块均有 files_pending:number；retrievalBar 橙色仅 files_pending>0（chunks_pending 不驱动）；tests: files_pending>0+chunks_pending=0 与反例；full vitest + tsc -b 0；与后端同批落地无兼容"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-131-web-filespending.md",
+      "progress": "closed done by frontend_mid",
+      "status_entered_at": null,
+      "parent": "WP-133",
+      "goal": "GET /api/workspace/engines/detail 的 retrieval.{total,code,session} 各增必填 files_pending:number（非负整数，total=code+session）。前端仅用 files_pending>0 判「有待处理」（ready 橙且不闪）；chunks_pending 不再驱动橙色、不算进度。类型三块补字段；retrievalBar 改判据；测试覆盖 files_pending>0/chunks_pending=0 与反例；全量 vitest + tsc -b 0；与后端同批落地，不做新旧兼容。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-142 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：`WP-131-frontend.md`「接口增补：files_pending」。与后端同批落地，不做新旧兼容。\n\n## 改动点\n1. **`web/src/api/workspace.ts`**：`RetrievalCorpusStatus` 加必填 `files_pending: number`（注释：非负整数、实际待处理文件数；total = code + session；不进进度）。total / code / session 共用该类型，三块自动都有。\n2. **`web/src/dockview/panels/settings/engines/retrievalBar.ts`**（约 :55，ready 分支）：\n   - `if (t.chunks_pending > 0)` → `if (t.files_pending > 0)`：ready + files_pending>0 → 橙、不闪；否则绿。\n   - `chunks_pending` 不再参与任何颜色判断；`files_pending` 不参与 pct（pct 仍 = chunks_done / chunks_total）。\n   - failed / needs_rebuild / refreshing 分支不变（refreshing 仍橙闪，与 files_pending 无关）。\n   - hover 文本不变（见疑问 Q2）。\n3. **测试 fixture 补 `files_pending`**（tsc 必填兜底）：`retrievalBar.wp136.test.tsx`（`c()` 默认 `files_pending: 0`）、`EngineView.test.tsx`、`EnginesSection.test.tsx`、`stores/engineStore.test.ts`、`api/workspace.test.ts`。\n\n## 测试\n- 新增：ready + `files_pending>0` 且 `chunks_pending=0` → tone `pending`、不闪。\n- 新增：ready + `files_pending=0` 且 `chunks_pending>0` → 不橙（tone `ok`）。\n- 改：原 wp136 第 2 条「ready + chunks_pending>0 → 橙」改用 files_pending 驱动。\n- 新增：refreshing + files_pending>0 → 仍为 busy 橙闪（不被降级成不闪橙）。\n- web 全量 vitest（/exec-daemon/node v22）+ `tsc -b` 0；lint N/A。\n\n## 不在范围\n后端、hover 文案扩展、轮询逻辑、desktop、commit。\n\n## 疑问（待中层确认，不阻塞提交）\n- **Q1 橙与闪烁关系**：方案按优先级 failed > needs_rebuild > refreshing（橙闪）> ready+files_pending>0（橙不闪）> 绿；即 refreshing 时不看 files_pending。是否认可？\n- **Q2 hover 是否展示 files_pending**：方案不改 hover（三行仍只写 chunks）。是否需要加如 `· N files pending`？若要，加在哪一行（Total 还是各侧）？\n- **Q3 绿色但 <100%**：ready + files_pending=0 而 chunks_pending>0（done<total）时，按新规则为绿，但 pct 可能 <100%。方案照实显示绿色 + 实际 pct，不改成 100%。是否认可，还是绿色时强制满条？\n- **Q4 total 求和校验**：前端不校验 total.files_pending == code + session，只读 total。是否认可？"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T16:44:24.337Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: GET /api/workspace/engines/detail 的 retrieval.{total,code,session} 各增必填 files_pending:number（非负整数，total=code+session）。前端仅用 files_pending>0 判「有待处理」（ready 橙且不闪）；chunks_pending 不再驱动橙色、不算进度。类型三块补字段；retrievalBar 改判据；测试覆盖 files_pending>0/chunks_pending=0 与反例；全量 vitest + tsc -b 0；与后端同批落地，不做新旧兼容。"
+        },
+        {
+          "ts": "2026-10-13T16:45:37.657Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-142 方案（前端-web；父包 WP-133；只改 web/，不 commit，未批不 start）\n\n口径：`WP-131-frontend.md"
+        },
+        {
+          "ts": "2026-10-13T16:45:37.971Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:46:08.099Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:46:40.548Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T16:50:09.777Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "橙色改看 files_pending；Q1–Q4 按批复；相关 52 + 全量 1348，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T17:57:28.258Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": null,
           "to": "done"
         }
       ]

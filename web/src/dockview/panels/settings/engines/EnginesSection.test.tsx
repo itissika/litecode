@@ -36,13 +36,14 @@ function warmingDetail(): EnginesDetail {
         tokenizer_found: false,
         ready: false,
       },
+      total: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
+      code: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
+      session: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
       index: {
-        status: "building",
         exists: false,
         needs_rebuild: false,
         vectors_ready: false,
         indexed_files: 0,
-        indexed_chunks: 0,
       },
       policy: {
         product_internal_dirs: [],
@@ -86,7 +87,7 @@ describe("EnginesSection", () => {
   it("refetches when an embed model install settles, even when idle (no poll)", async () => {
     const idle = warmingDetail();
     idle.retrieval = { ...idle.retrieval, state: "failed", usable: "unavailable" };
-    idle.retrieval.index = { ...idle.retrieval.index, status: "absent" };
+    idle.retrieval.index = { ...idle.retrieval.index, exists: false };
     idle.lsp = { ...idle.lsp, state: "stopped", usable: "stopped" };
     mockedDetail.mockReset().mockResolvedValue(idle);
     const { unmount } = render(<EnginesSection />);

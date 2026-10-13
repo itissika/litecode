@@ -23,8 +23,6 @@ import {
   probeLspServers,
   refreshRetrieval,
   type EnginesDetail,
-  type IndexStatus,
-  type IndexingProgress,
   type LspServerProbe,
   type RetrievalEngineDetail,
 } from "../../../../api/workspace";
@@ -32,6 +30,7 @@ import type { WorkspaceEnginesDoc } from "../../../../api/settings";
 import { useSettingsStore } from "../../../../stores/settingsStore";
 import { EmbedModelDownloadCard, useEmbedModelDownload } from "./EmbedModelDownload";
 import { restartRetrievalAfterEmbedInstall } from "./embedInstall";
+import { retrievalBar, retrievalTip } from "./retrievalBar";
 import { useToastStore } from "../../../../stores/toastStore";
 import {
   SETTINGS_PERSIST_ERROR_CHANNEL,
@@ -55,7 +54,6 @@ function snapshotEngines(): WorkspaceEnginesDoc {
 /* ------------------------------------------------------------------ */
 
 type EngineUsable = RetrievalEngineDetail["usable"];
-type IndexTone = "ready" | "stale" | "rebuild" | "busy" | "idle";
 
 function engineTag(usable: EngineUsable): {
   label: string;
@@ -83,53 +81,6 @@ function intentControl(desired: boolean): {
     return { icon: "stop", action: "stop", label: "Stop engine" };
   }
   return { icon: "play", action: "start", label: "Start engine" };
-}
-
-function resolveIndexStatus(
-  index: RetrievalEngineDetail["index"],
-): IndexStatus {
-  return (
-    index.status ??
-    (index.needs_rebuild ? "needs_rebuild" : index.exists ? "ready" : "absent")
-  );
-}
-
-function indexTone(status: IndexStatus, engineUsable: EngineUsable): IndexTone {
-  if (engineUsable === "stopped" || engineUsable === "unavailable")
-    return "idle";
-  switch (status) {
-    case "ready":
-      return "ready";
-    case "stale":
-      return "stale";
-    case "needs_rebuild":
-    case "failed":
-      return "rebuild";
-    case "building":
-    case "refreshing":
-      return "busy";
-    case "absent":
-    default:
-      return "idle";
-  }
-}
-
-function barWidth(
-  status: IndexStatus,
-  progress?: IndexingProgress | null,
-): { width: string; pulse: boolean } {
-  if (status === "building" || status === "refreshing") {
-    if (progress && progress.files_total > 0) {
-      const pct = Math.min(
-        100,
-        Math.round((progress.files_done * 100) / progress.files_total),
-      );
-      return { width: `${pct}%`, pulse: true };
-    }
-    return { width: "45%", pulse: true };
-  }
-  if (status === "absent") return { width: "0%", pulse: false };
-  return { width: "100%", pulse: false };
 }
 
 function modelDisplay(model: RetrievalEngineDetail["model"]): {
@@ -188,9 +139,11 @@ function IconSquareButton({
 function RetrievalSection({
   detail,
   onChanged,
+  onRefreshRequested,
 }: {
   detail: RetrievalEngineDetail;
   onChanged: () => void;
+  onRefreshRequested?: () => void;
 }) {
   const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
   const saveEngines = useSettingsStore((s) => s.saveEngines);
@@ -225,35 +178,17 @@ function RetrievalSection({
   const shownError = offerEmbedDownload ? null : detail.error;
   const control = intentControl(desired);
   const index = detail.index;
-  const status = resolveIndexStatus(index);
-  const tone = indexTone(status, detail.usable);
-  const { width, pulse } = barWidth(status, index.progress);
+  // WP-136: bar is derived only from backend retrieval.{total,code,session}.
+  const bar = retrievalBar(detail);
+  const detailTip = retrievalTip(detail);
+  const width = bar.indeterminate ? undefined : `${bar.pct ?? 0}%`;
   const model = modelDisplay(detail.model);
   const relative = formatRelative(index.created_at);
   const refreshDisabled =
     busy ||
-    tone === "busy" ||
+    bar.tone === "busy" ||
     detail.usable === "warming" ||
     (detail.usable === "unavailable" && !detail.model.ready);
-  const pending = index.pending_updates ?? 0;
-  const work = index.work;
-  const workTip =
-    work?.kind === "rebuild"
-      ? "needs rebuild"
-      : work?.kind === "update"
-        ? `${work.dirty} to update`
-        : pending > 0
-          ? `${pending} pending`
-          : "";
-  const stats =
-    index.indexed_files > 0 || index.indexed_chunks > 0
-      ? `${index.indexed_files} files · ${index.indexed_chunks} chunks`
-      : status === "building" || status === "refreshing"
-        ? index.progress
-          ? `${index.progress.files_done}/${index.progress.files_total || "?"} files · ${index.progress.chunks_done} chunks`
-          : "indexing…"
-        : "no index stats";
-  const detailTip = workTip ? `${stats} · ${workTip}` : stats;
   const skipTip = (() => {
     const dirs = detail.policy.product_internal_dirs ?? [];
     const globs = detail.policy.exclude_globs ?? [];
@@ -344,24 +279,31 @@ function RetrievalSection({
             <div
               className="engine-index-track min-w-0 flex-1"
               title={detailTip}
-              data-tone={tone}
+              data-tone={bar.tone}
+              data-testid="engine-index-track"
             >
               <div
-                className={`engine-index-fill ${pulse ? "is-pulse" : ""}`}
-                data-tone={tone}
-                style={{ width }}
+                className={`engine-index-fill${bar.pulse ? " is-pulse" : ""}${bar.indeterminate ? " is-indeterminate" : ""}`}
+                data-tone={bar.tone}
+                data-indeterminate={bar.indeterminate ? "true" : "false"}
+                data-testid="engine-index-fill"
+                style={width === undefined ? undefined : { width }}
               />
             </div>
             <IconSquareButton
               label="Refresh index"
               size="xs"
               disabled={refreshDisabled}
-              onClick={() => void run(refreshRetrieval)}
+              onClick={() => {
+                // Only tightens polling; bar colour follows the backend.
+                onRefreshRequested?.();
+                void run(refreshRetrieval);
+              }}
             >
               <ArrowsClockwise
                 size={14}
                 weight="bold"
-                className={tone === "busy" ? "animate-spin" : undefined}
+                className={bar.tone === "busy" ? "animate-spin" : undefined}
               />
             </IconSquareButton>
             <span
@@ -813,13 +755,20 @@ function LspSection({
 export function EngineView({
   detail,
   onChanged,
+  onRefreshRequested,
 }: {
   detail: EnginesDetail;
   onChanged: () => void;
+  /** WP-136: refresh/rebuild clicked → caller polls at 1s for a few cycles. */
+  onRefreshRequested?: () => void;
 }) {
   return (
     <div className="space-y-6">
-      <RetrievalSection detail={detail.retrieval} onChanged={onChanged} />
+      <RetrievalSection
+        detail={detail.retrieval}
+        onChanged={onChanged}
+        onRefreshRequested={onRefreshRequested}
+      />
       <LspSection detail={detail.lsp} refresh={onChanged} />
     </div>
   );

@@ -338,10 +338,7 @@ fn golden_query_ladder_and_exclusions() {
     let hits = index.search(Lane::Like, "NEEDLE_TOOL", 50).unwrap();
     let keys: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
     assert_eq!(keys, ["S1:4".to_string()].into_iter().collect());
-    assert!(
-        !keys.contains("S1:5"),
-        "tool_result must not be searchable"
-    );
+    assert!(!keys.contains("S1:5"), "tool_result must not be searchable");
 
     // CJK substring is answerable by both the LIKE path and the trigram table.
     assert!(

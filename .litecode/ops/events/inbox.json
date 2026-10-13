@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-13T15:31:51.912Z",
+  "updated_at": "2026-10-13T17:59:41.254Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -5276,6 +5276,510 @@
         "path": [
           "WP-128",
           "WP-129"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791905841759-31780-WP128-acceptance_requested",
+      "ts": "2026-10-13T15:37:21.759Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-128 awaiting acceptance by andy (owner gm)",
+      "wp": "WP-128",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-128"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791907778695-77220-WP131-approval_requested",
+      "ts": "2026-10-13T16:09:38.695Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-131 plan awaiting approval by andy (owner gm)",
+      "wp": "WP-131",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-131"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791907895605-94660-WP132-approval_requested",
+      "ts": "2026-10-13T16:11:35.605Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-132 plan awaiting approval by gm (owner backend_mid)",
+      "wp": "WP-132",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-131",
+          "WP-132"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791907905076-3910-WP133-approval_requested",
+      "ts": "2026-10-13T16:11:45.076Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-133 plan awaiting approval by gm (owner frontend_mid)",
+      "wp": "WP-133",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "frontend_mid",
+        "path": [
+          "WP-131",
+          "WP-133"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791908085964-60930-WP134-approval_requested",
+      "ts": "2026-10-13T16:14:45.964Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-134 plan awaiting approval by backend_mid (owner ide)",
+      "wp": "WP-134",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-134"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791908115776-73970-WP135-approval_requested",
+      "ts": "2026-10-13T16:15:15.776Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-135 plan awaiting approval by backend_mid (owner session)",
+      "wp": "WP-135",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "session",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-135"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791908194363-8320-WP136-approval_requested",
+      "ts": "2026-10-13T16:16:34.363Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-136 plan awaiting approval by frontend_mid (owner frontend)",
+      "wp": "WP-136",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-136"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791908204907-13230-WP137-approval_requested",
+      "ts": "2026-10-13T16:16:44.907Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-137 plan awaiting approval by backend_mid (owner tools)",
+      "wp": "WP-137",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "tools",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-137"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791908712904-19780-WP136-acceptance_requested",
+      "ts": "2026-10-13T16:25:12.904Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-136 awaiting acceptance by frontend_mid (owner frontend)",
+      "wp": "WP-136",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-136"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791909244261-13440-WP139-approval_requested",
+      "ts": "2026-10-13T16:34:04.261Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-139 plan awaiting approval by andy (owner gm)",
+      "wp": "WP-139",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-139"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791909345646-54820-WP138-approval_requested",
+      "ts": "2026-10-13T16:35:45.646Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-138 plan awaiting approval by frontend_mid (owner frontend)",
+      "wp": "WP-138",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-138"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791909412528-85420-WP140-approval_requested",
+      "ts": "2026-10-13T16:36:52.528Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-140 plan awaiting approval by gm (owner backend_mid)",
+      "wp": "WP-140",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-139",
+          "WP-140"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791909559091-15000-WP141-approval_requested",
+      "ts": "2026-10-13T16:39:19.091Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-141 plan awaiting approval by backend_mid (owner ide)",
+      "wp": "WP-141",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-139",
+          "WP-140",
+          "WP-141"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791909665213-64560-WP138-acceptance_requested",
+      "ts": "2026-10-13T16:41:05.213Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-138 awaiting acceptance by frontend_mid (owner frontend)",
+      "wp": "WP-138",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-138"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791909714568-84490-WP134-acceptance_requested",
+      "ts": "2026-10-13T16:41:54.568Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-134 awaiting acceptance by backend_mid (owner ide)",
+      "wp": "WP-134",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-134"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791909937972-80330-WP142-approval_requested",
+      "ts": "2026-10-13T16:45:37.972Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-142 plan awaiting approval by frontend_mid (owner frontend)",
+      "wp": "WP-142",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-142"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791910209778-74980-WP142-acceptance_requested",
+      "ts": "2026-10-13T16:50:09.778Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-142 awaiting acceptance by frontend_mid (owner frontend)",
+      "wp": "WP-142",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-131",
+          "WP-133",
+          "WP-142"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1791910509570-15380-WP135-acceptance_requested",
+      "ts": "2026-10-13T16:55:09.570Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-135 awaiting acceptance by backend_mid (owner session)",
+      "wp": "WP-135",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "session",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-135"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791911397081-93150-WP134-acceptance_requested",
+      "ts": "2026-10-13T17:09:57.081Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-134 awaiting acceptance by backend_mid (owner ide)",
+      "wp": "WP-134",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-134"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791912455690-6040-WP137-acceptance_requested",
+      "ts": "2026-10-13T17:27:35.690Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-137 awaiting acceptance by backend_mid (owner tools)",
+      "wp": "WP-137",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "tools",
+        "path": [
+          "WP-131",
+          "WP-132",
+          "WP-137"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791913445645-35240-WP132-acceptance_requested",
+      "ts": "2026-10-13T17:44:05.645Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-132 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-132",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-131",
+          "WP-132"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791913744258-71430-WP141-acceptance_requested",
+      "ts": "2026-10-13T17:49:04.258Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-141 awaiting acceptance by backend_mid (owner ide)",
+      "wp": "WP-141",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-139",
+          "WP-140",
+          "WP-141"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1791914061057-80140-WP140-acceptance_requested",
+      "ts": "2026-10-13T17:54:21.057Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-140 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-140",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-139",
+          "WP-140"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791914147825-4940-WP139-acceptance_requested",
+      "ts": "2026-10-13T17:55:47.825Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-139 awaiting acceptance by andy (owner gm)",
+      "wp": "WP-139",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-139"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791914252533-16630-WP133-acceptance_requested",
+      "ts": "2026-10-13T17:57:32.533Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-133 awaiting acceptance by gm (owner frontend_mid)",
+      "wp": "WP-133",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "frontend_mid",
+        "path": [
+          "WP-131",
+          "WP-133"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1791914381252-61060-WP131-acceptance_requested",
+      "ts": "2026-10-13T17:59:41.252Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-131 awaiting acceptance by andy (owner gm)",
+      "wp": "WP-131",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "andy",
+        "owner": "gm",
+        "path": [
+          "WP-131"
         ],
         "target": "gm"
       }

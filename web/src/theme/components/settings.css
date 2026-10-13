@@ -407,21 +407,36 @@
   transition: width 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.engine-index-fill[data-tone="ready"] {
+/* WP-136: tones come only from backend retrieval.{total,code,session}. */
+.engine-index-fill[data-tone="ok"] {
   background: var(--_dk-emerald-500);
 }
 
-.engine-index-fill[data-tone="stale"],
+.engine-index-fill[data-tone="pending"],
 .engine-index-fill[data-tone="busy"] {
   background: var(--_dk-amber-500);
 }
 
-.engine-index-fill[data-tone="rebuild"] {
+.engine-index-fill[data-tone="failed"] {
   background: var(--_dk-red-500);
 }
 
-.engine-index-fill[data-tone="idle"] {
-  background: var(--_dk-text-disabled);
+/* needs_rebuild: empty bar (width 0). */
+.engine-index-fill[data-tone="empty"] {
+  background: transparent;
+}
+
+/* Scanning: total unknown → sliding segment, never a fake percentage. */
+.engine-index-fill.is-indeterminate {
+  width: 30%;
+  animation:
+    engine-index-slide 1.2s ease-in-out infinite,
+    engine-index-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes engine-index-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
 }
 
 .engine-index-fill.is-pulse {

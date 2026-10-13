@@ -108,7 +108,7 @@ impl SessionSearchTool {
         } else {
             body.push_str(&view);
         }
-        ToolCallResult::ok(crate::tools::prepend_sync_pct(&sync, &body))
+        ToolCallResult::ok(crate::tools::prepend_sync_pct(sync.as_ref(), &body))
     }
 }
 

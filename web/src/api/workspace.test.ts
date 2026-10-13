@@ -47,11 +47,12 @@ describe("workspace engine API", () => {
               usable: "ready",
               model: { ready: true },
               index: {
-                status: "ready",
+                exists: true,
                 indexed_files: 1,
-                indexed_chunks: 2,
-                progress: null,
               },
+              total: { state: "ready", phase: null, chunks_done: 2, chunks_total: 2, chunks_pending: 0, files_pending: 0, error: null },
+              code: { state: "ready", phase: null, chunks_done: 2, chunks_total: 2, chunks_pending: 0, files_pending: 0, error: null },
+              session: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
               policy: {},
               embed_device: "cuda-ort",
             },
@@ -67,8 +68,8 @@ describe("workspace engine API", () => {
     );
     const detail = await getEnginesDetail();
     expect(detail.retrieval.usable).toBe("ready");
-    expect(detail.retrieval.index.status).toBe("ready");
-    expect(detail.retrieval.index.indexed_chunks).toBe(2);
+    expect(detail.retrieval.index.exists).toBe(true);
+    expect(detail.retrieval.total.chunks_done).toBe(2);
     expect(detail.retrieval.embed_device).toBe("cuda-ort");
     expect(detail.lsp.usable).toBe("stopped");
   });

@@ -2151,7 +2151,9 @@ async fn settings_retrieval_refresh_endpoint_accepts_when_cold() {
         .json()
         .await
         .expect("detail json");
-    assert!(detail["data"]["retrieval"]["index"]["status"].is_string());
+    // WP-131: status lives in retrieval.total; legacy index.status is gone.
+    assert!(detail["data"]["retrieval"]["total"]["state"].is_string());
+    assert!(detail["data"]["retrieval"]["index"]["status"].is_null());
 }
 
 #[tokio::test]
@@ -2180,7 +2182,8 @@ async fn settings_engines_detail_exposes_engine_native_state() {
     assert_eq!(body["data"]["retrieval"]["desired"], true);
     assert!(body["data"]["retrieval"]["model"].is_object());
     assert!(body["data"]["retrieval"]["index"].is_object());
-    assert!(body["data"]["retrieval"]["index"]["status"].is_string());
+    assert!(body["data"]["retrieval"]["total"]["state"].is_string());
+    assert!(body["data"]["retrieval"]["index"]["status"].is_null());
     assert!(body["data"]["retrieval"]["policy"].is_object());
     assert_eq!(body["data"]["lsp"]["desired"], true);
     assert_eq!(

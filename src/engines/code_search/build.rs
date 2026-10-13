@@ -5,15 +5,22 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::types::{LitecodeError, Result};
-use crate::workspace::filter::{FilterPreset, RelPathCtx, is_indexable_rel_path, walk_builder};
+use crate::workspace::filter::{
+    FilterPreset, MAX_INDEX_FILE_BYTES, RelPathCtx, WalkOptions, is_indexable_rel_path,
+    is_scannable_rel_path, walk_builder, walk_builder_with,
+};
 
 use super::chunk::{ChunkRecord, chunk_file};
 use super::embed::Embedder;
 use super::index_status::{
-    IndexPhase, IndexingProgress, begin_building, clear_index_job, update_build_progress,
+    IndexPhase, IndexingProgress, begin_building, mark_index_job_failed, update_build_progress,
+    update_chunk_progress,
 };
 use super::store::CodeSearchIndex;
 use super::{EMBED_BATCH, index_dir};
+
+/// Pass-1 in-memory budget for chunk text before falling back to re-chunking.
+const PASS1_HOLD_BYTES: usize = 256 * 1024 * 1024;
 
 pub fn build_full_index(
     workspace_root: &Path,
@@ -23,10 +30,12 @@ pub fn build_full_index(
         .map_err(|e| LitecodeError::Config(e.to_string()))?;
 
     begin_building(workspace_root);
+    // WP-141: stamps describe the index being replaced; drop them up front.
+    super::stamps::discard(workspace_root);
     let files = match scannable_files(workspace_root) {
         Ok(f) => f,
         Err(e) => {
-            clear_index_job(workspace_root);
+            mark_index_job_failed(workspace_root, e.to_string());
             return Err(e);
         }
     };
@@ -54,67 +63,128 @@ pub fn build_full_index(
 
     let mut index = CodeSearchIndex::new_empty()?;
     index.set_embedder_id(embedder.embedder_id());
+
+    // Pass 1 (WP-131): chunk everything so the denominator is exact before
+    // embedding starts. Keep chunks in memory unless they exceed the budget,
+    // then fall back to counting only and re-chunk in pass 2 (ids are
+    // deterministic, so the total stays exact).
     let mut next_id = 1u64;
+    let mut held: Option<Vec<ChunkRecord>> = Some(Vec::new());
+    let mut held_bytes = 0usize;
+    let mut total_chunks = 0u64;
+    // WP-141: stamps are taken before each read, so a file that changes
+    // during the build carries an older stamp and is re-checked next pass.
+    let mut build_stamps = std::collections::HashMap::new();
+    for (i, rel) in files.iter().enumerate() {
+        let stamp = super::reconcile::read_stamp(&workspace_root.join(rel));
+        let Ok(content) = std::fs::read_to_string(workspace_root.join(rel)) else {
+            continue;
+        };
+        if let Some(stamp) = stamp {
+            build_stamps.insert(rel.clone(), stamp);
+        }
+        let (chunks, new_id) = chunk_file(rel, &content, next_id);
+        next_id = new_id;
+        total_chunks += chunks.len() as u64;
+        if let Some(h) = held.as_mut() {
+            held_bytes += chunks.iter().map(|c| c.text.len()).sum::<usize>();
+            if held_bytes > PASS1_HOLD_BYTES {
+                held = None;
+            } else {
+                h.extend(chunks);
+            }
+        }
+        if i % 256 == 0 {
+            update_chunk_progress(workspace_root, 0, None);
+        }
+    }
+    let final_next_id = next_id;
+    update_chunk_progress(workspace_root, 0, Some(total_chunks));
+
+    // Pass 2: embed in EMBED_BATCH batches, reporting after every batch.
     let mut pending_chunks: Vec<ChunkRecord> = Vec::new();
     let mut embedded = 0usize;
     let mut files_done = 0usize;
     let mut batch_i = 0usize;
-
-    for rel in &files {
-        let abs = workspace_root.join(rel);
-        let content = match std::fs::read_to_string(&abs) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let (chunks, new_id) = chunk_file(rel, &content, next_id);
-        next_id = new_id;
-        pending_chunks.extend(chunks);
-        files_done += 1;
-        while pending_chunks.len() >= EMBED_BATCH {
-            batch_i += 1;
-            let batch: Vec<ChunkRecord> = pending_chunks.drain(..EMBED_BATCH).collect();
-            let n = batch.len();
-            let batch_t0 = Instant::now();
-            if let Err(e) = index.embed_and_add(batch, embedder) {
-                clear_index_job(workspace_root);
-                return Err(e);
-            }
-            let batch_ms = batch_t0.elapsed().as_secs_f64() * 1000.0;
-            embedded += n;
-            log_progress(
-                workspace_root,
-                t0,
-                embedded,
-                files_done,
-                files.len(),
-                batch_i,
-                n,
-                batch_ms,
-            );
+    let mut source: Box<dyn Iterator<Item = Vec<ChunkRecord>>> = match held {
+        Some(all) => {
+            files_done = files.len();
+            Box::new(std::iter::once(all))
         }
-    }
-    if !pending_chunks.is_empty() {
-        batch_i += 1;
-        let n = pending_chunks.len();
+        None => {
+            let mut id = 1u64;
+            let root = workspace_root.to_path_buf();
+            Box::new(files.clone().into_iter().filter_map(move |rel| {
+                let content = std::fs::read_to_string(root.join(&rel)).ok()?;
+                let (chunks, new_id) = chunk_file(&rel, &content, id);
+                id = new_id;
+                Some(chunks)
+            }))
+        }
+    };
+    let held_mode = files_done == files.len();
+    let flush = |index: &mut CodeSearchIndex,
+                 batch: &mut Vec<ChunkRecord>,
+                 embedded: &mut usize,
+                 batch_i: &mut usize,
+                 files_done: usize,
+                 embedder: &mut dyn Embedder|
+     -> Result<()> {
+        *batch_i += 1;
+        let n = batch.len();
         let batch_t0 = Instant::now();
-        if let Err(e) = flush_batch(&mut index, &mut pending_chunks, embedder) {
-            clear_index_job(workspace_root);
-            return Err(e);
-        }
-        let batch_ms = batch_t0.elapsed().as_secs_f64() * 1000.0;
-        embedded += n;
+        flush_batch(index, batch, embedder)?;
+        *embedded += n;
+        update_chunk_progress(workspace_root, *embedded as u64, Some(total_chunks));
         log_progress(
             workspace_root,
             t0,
-            embedded,
+            *embedded,
             files_done,
             files.len(),
-            batch_i,
+            *batch_i,
             n,
-            batch_ms,
+            batch_t0.elapsed().as_secs_f64() * 1000.0,
         );
+        Ok(())
+    };
+    while let Some(chunks) = source.next() {
+        if !held_mode {
+            files_done += 1;
+        }
+        pending_chunks.extend(chunks);
+        while pending_chunks.len() >= EMBED_BATCH {
+            let mut batch: Vec<ChunkRecord> = pending_chunks.drain(..EMBED_BATCH).collect();
+            if let Err(e) = flush(
+                &mut index,
+                &mut batch,
+                &mut embedded,
+                &mut batch_i,
+                files_done,
+                embedder,
+            ) {
+                mark_index_job_failed(workspace_root, e.to_string());
+                return Err(e);
+            }
+        }
     }
-    index.set_next_id(next_id);
+    if !pending_chunks.is_empty() {
+        if let Err(e) = flush(
+            &mut index,
+            &mut pending_chunks,
+            &mut embedded,
+            &mut batch_i,
+            files_done,
+            embedder,
+        ) {
+            mark_index_job_failed(workspace_root, e.to_string());
+            return Err(e);
+        }
+    }
+    // A file may change between passes; pin done == total at the end.
+    update_chunk_progress(workspace_root, embedded as u64, Some(embedded as u64));
+    index.set_next_id(final_next_id.max(index.next_id()));
+    index.set_build_stamps(build_stamps);
 
     update_build_progress(
         workspace_root,
@@ -210,6 +280,50 @@ fn flush_batch(
     }
     let batch: Vec<ChunkRecord> = std::mem::take(pending);
     index.embed_and_add(batch, embedder)
+}
+
+/// WP-141 periodic scan: the same walk and path filter as
+/// [`scannable_files`], but metadata only (stat for size + stamp). The binary
+/// sniff, which opens the file, is left to `update_files` for paths whose
+/// stamp changed, so an unchanged tree is never opened.
+pub(crate) fn scan_stat_candidates(
+    workspace_root: &Path,
+) -> Result<Vec<(String, Option<super::FileStamp>)>> {
+    let mut out = Vec::new();
+    let rel_ctx =
+        RelPathCtx::new(workspace_root).unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
+    // No binary sniff in the walk either: that opens every file.
+    let walker = walk_builder_with(
+        workspace_root,
+        FilterPreset::Search,
+        WalkOptions {
+            skip_binary: Some(false),
+            ..WalkOptions::default()
+        },
+    );
+    for result in walker.build() {
+        let Ok(entry) = result else { continue };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        let Some(rel_str) = rel_ctx.rel(entry.path()) else {
+            continue;
+        };
+        if !is_scannable_rel_path(&rel_str) {
+            continue;
+        }
+        let meta = std::fs::metadata(entry.path()).ok();
+        if meta
+            .as_ref()
+            .is_some_and(|m| !m.is_file() || m.len() > MAX_INDEX_FILE_BYTES)
+        {
+            continue;
+        }
+        let stamp = meta.as_ref().and_then(super::reconcile::stamp_from_meta);
+        out.push((rel_str, stamp));
+    }
+    out.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
 }
 
 pub fn scannable_files(workspace_root: &Path) -> Result<Vec<String>> {

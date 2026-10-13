@@ -5,7 +5,7 @@
 
 use crate::workspace::filter::should_queue_index_update;
 
-use super::{SharedRuntime, write_pending_hint_from};
+use super::SharedRuntime;
 
 /// Queue workspace-relative paths into `pending_updates` after Search gates.
 pub fn queue_fs_changes(runtime: &SharedRuntime, paths: &[String], deleted: bool) {
@@ -28,7 +28,7 @@ pub fn queue_fs_changes(runtime: &SharedRuntime, paths: &[String], deleted: bool
         for path in filtered {
             pending.insert((path, deleted));
         }
-        write_pending_hint_from(&rt.workspace_root, &pending);
+        rt.persist_queue(&pending); // WP-131 exact signal
     }
 }
 

@@ -88,13 +88,21 @@ fn preview_mime(path: &str) -> &'static str {
 pub struct WorkspaceService {
     sandbox: Sandbox,
     change_tx: broadcast::Sender<WorkspaceChange>,
+    /// WP-141: the watcher lost track (notify error, Rescan flag, queue
+    /// overflow). Consumers run a full disk reconcile; no paths attached.
+    rescan_tx: broadcast::Sender<()>,
 }
 
 impl WorkspaceService {
     pub fn new(project_root: std::path::PathBuf) -> Result<Arc<Self>, WorkspaceError> {
         let sandbox = Sandbox::new(project_root)?;
         let (change_tx, _) = broadcast::channel(512);
-        Ok(Arc::new(Self { sandbox, change_tx }))
+        let (rescan_tx, _) = broadcast::channel(16);
+        Ok(Arc::new(Self {
+            sandbox,
+            change_tx,
+            rescan_tx,
+        }))
     }
 
     pub fn sandbox(&self) -> &Sandbox {
@@ -107,6 +115,14 @@ impl WorkspaceService {
 
     pub fn change_sender(&self) -> broadcast::Sender<WorkspaceChange> {
         self.change_tx.clone()
+    }
+
+    pub fn subscribe_rescan(&self) -> broadcast::Receiver<()> {
+        self.rescan_tx.subscribe()
+    }
+
+    pub fn rescan_sender(&self) -> broadcast::Sender<()> {
+        self.rescan_tx.clone()
     }
 
     fn emit_changed(&self, paths: Vec<String>, kind: &str) {
@@ -730,6 +746,16 @@ fn copy_recursive(
 
 #[cfg(test)]
 mod tests {
+    // WP-141: rescan requests reach every subscriber (router → full reconcile).
+    #[tokio::test]
+    async fn rescan_signal_reaches_subscribers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let mut rx = service.subscribe_rescan();
+        service.rescan_sender().send(()).unwrap();
+        assert!(rx.recv().await.is_ok());
+    }
+
     use super::*;
 
     #[tokio::test]

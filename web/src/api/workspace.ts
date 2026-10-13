@@ -295,22 +295,39 @@ export async function probeLspServers(): Promise<LspServerProbe[]> {
   return data.servers;
 }
 
-export type IndexStatus =
-  | "absent"
+/** WP-131/132: per-corpus retrieval progress (single format; total = merged). */
+export type RetrievalCorpusState =
   | "ready"
-  | "stale"
-  | "needs_rebuild"
-  | "building"
   | "refreshing"
+  | "needs_rebuild"
   | "failed";
 
-export type IndexPhase = "scanning" | "embedding" | "saving" | "syncing";
+export interface RetrievalCorpusError {
+  engine: "code" | "session" | "model";
+  reason:
+    | "model_missing"
+    | "engine_unavailable"
+    | "engine_stopped"
+    | "index_failed";
+  message: string;
+}
 
-export interface IndexingProgress {
-  phase: IndexPhase;
-  files_done: number;
-  files_total: number;
+export interface RetrievalCorpusStatus {
+  state: RetrievalCorpusState;
+  /** Non-null only while `state === "refreshing"`. */
+  phase: null | "scanning" | "embedding";
   chunks_done: number;
+  /**
+   * Whole-index denominator. null while that corpus (or, when this is
+   * `total`, either side) is scanning — not only when `state === "scanning"`.
+   * > 0 during embedding.
+   */
+  chunks_total: number | null;
+  chunks_pending: number;
+  /** WP-142: files actually awaiting work (total = code + session). Drives
+   *  the "pending" orange only; never part of the percentage. */
+  files_pending: number;
+  error: RetrievalCorpusError | null;
 }
 
 export type IndexWork =
@@ -318,7 +335,7 @@ export type IndexWork =
   | { kind: "update"; dirty: number }
   | {
       kind: "rebuild";
-      reason: "first_desired" | "incompatible" | "dirty_too_large";
+      reason: "first_desired" | "incompatible";
     };
 
 export type RefreshAcceptedMode =
@@ -373,29 +390,28 @@ export interface RetrievalEngineDetail {
     model_dir?: string;
     model_path?: string;
     tokenizer_path?: string;
-    model_found: boolean;
-    tokenizer_found: boolean;
+    /** Absent when the probe failed and the backend only sends `{ ready: false }`. */
+    model_found?: boolean;
+    tokenizer_found?: boolean;
     ready: boolean;
   };
+  /** WP-132 merged progress (failed > needs_rebuild > refreshing > ready). */
+  total: RetrievalCorpusStatus;
+  code: RetrievalCorpusStatus;
+  session: RetrievalCorpusStatus;
   index: {
-    status: IndexStatus;
-    progress?: IndexingProgress | null;
     exists: boolean;
     needs_rebuild: boolean;
     vectors_ready: boolean;
     indexed_files: number;
-    indexed_chunks: number;
     created_at?: string | null;
     model_id?: string | null;
     embedder_id?: string | null;
     pipeline_version?: number | null;
-    pending_updates?: number;
     work?: IndexWork;
     code?: { work?: IndexWork };
     session?: {
-      status?: IndexStatus;
       work?: IndexWork;
-      pending_updates?: number;
     };
   };
   policy: {

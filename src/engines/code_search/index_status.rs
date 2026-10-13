@@ -34,6 +34,9 @@ pub enum IndexPhase {
     Syncing,
 }
 
+/// File-level build phase kept inside `job.json` for logs (no longer exposed
+/// in engines detail since the WP-131 cleanup). Consumers read
+/// [`code_corpus_progress`] (chunk-exact).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexingProgress {
     pub phase: IndexPhase,
@@ -106,8 +109,12 @@ pub fn index_work_from_disk(workspace_root: &Path) -> IndexWork {
             },
         };
     }
-    let dirty = read_pending_hint(workspace_root);
-    let embed_dirty = read_pending_embed_hint(workspace_root);
+    // WP-131: exact queue record.
+    let CodeQueue {
+        queued: dirty,
+        embed_dirty,
+        ..
+    } = read_code_queue(workspace_root);
     let indexed = meta::read_meta(workspace_root)
         .ok()
         .flatten()
@@ -131,22 +138,21 @@ struct IndexJobFile {
     progress: Option<IndexingProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// Chunk-exact progress (WP-131). `total == None` ⇔ scanning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chunks: Option<JobChunks>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PendingHintFile {
-    pending_updates: usize,
-    /// New / modified files that need embedding. Absent on old hints → treat as all pending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    embed_dirty: Option<usize>,
+/// Chunk counters for the in-flight job. Denominator = the whole index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct JobChunks {
+    done: u64,
+    #[serde(default)]
+    total: Option<u64>,
 }
 
 fn job_path(workspace_root: &Path) -> PathBuf {
     meta::index_dir(workspace_root).join("job.json")
-}
-
-fn pending_hint_path(workspace_root: &Path) -> PathBuf {
-    meta::index_dir(workspace_root).join("pending_hint.json")
 }
 
 fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -155,7 +161,47 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
     }
     let body =
         serde_json::to_string_pretty(value).map_err(|e| LitecodeError::Config(e.to_string()))?;
-    std::fs::write(path, body).map_err(|e| LitecodeError::Config(e.to_string()))
+    // L5: atomic — temp file in the same dir, then rename over the target, so
+    // readers never see a torn job.json / queue.json.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(
+        ".{}.{}.{seq}.tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("state"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, body).map_err(|e| LitecodeError::Config(e.to_string()))?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        LitecodeError::Config(e.to_string())
+    })
+}
+
+/// Clear a job left Building/Refreshing by a dead worker. **Worker load path
+/// only** (code_search_ipc initialize, before warmup): at that point no task
+/// of this workspace's worker can be running, so any running job is stale.
+/// The serve process (tick / start / status) never calls this — a worker
+/// process may own the job, and in-process flags cannot see it.
+/// A stale incremental job is re-queued via `queue.json` so the next tick
+/// reconciles; a stale full build needs no entry (warmup rebuilds).
+/// Returns true when a stale job was reclaimed.
+pub fn reclaim_stale_index_job(workspace_root: &Path) -> bool {
+    let Some(job) = read_job(workspace_root) else {
+        return false;
+    };
+    match job.status {
+        JobKind::Failed => false,
+        JobKind::Building => {
+            clear_index_job(workspace_root);
+            true
+        }
+        JobKind::Refreshing => {
+            clear_index_job(workspace_root);
+            let q = read_code_queue(workspace_root);
+            write_code_queue_counts(workspace_root, q.queued.max(1), q.embed_dirty.max(1), None);
+            true
+        }
+    }
 }
 
 fn read_job(workspace_root: &Path) -> Option<IndexJobFile> {
@@ -180,11 +226,26 @@ pub fn begin_building(workspace_root: &Path) {
                 chunks_done: 0,
             }),
             error: None,
+            chunks: Some(JobChunks {
+                done: 0,
+                total: None,
+            }),
         },
     );
 }
 
+/// Chunks currently in the on-disk index (0 when absent).
+pub fn indexed_chunk_count(workspace_root: &Path) -> u64 {
+    meta::read_meta(workspace_root)
+        .ok()
+        .flatten()
+        .map_or(0, |m| m.indexed_chunks as u64)
+}
+
 pub fn begin_refreshing(workspace_root: &Path) {
+    let done = done_floor(workspace_root);
+    #[cfg(test)]
+    CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().push((done, None)));
     let _ = write_json(
         &job_path(workspace_root),
         &IndexJobFile {
@@ -196,8 +257,42 @@ pub fn begin_refreshing(workspace_root: &Path) {
                 chunks_done: 0,
             }),
             error: None,
+            chunks: Some(JobChunks { done, total: None }),
         },
     );
+}
+
+/// `done` to report while no chunk is being embedded: the chunks that survive
+/// the queued work when something is queued, else the whole index.
+fn done_floor(workspace_root: &Path) -> u64 {
+    let q = read_code_queue(workspace_root);
+    if q.queued > 0 {
+        q.kept_chunks
+    } else {
+        indexed_chunk_count(workspace_root)
+    }
+}
+
+/// Report chunk-exact progress for the in-flight job (keeps status + legacy
+/// progress). `total == None` = still scanning. No-op without a running job.
+#[cfg(test)]
+thread_local! {
+    /// Test-only trace of every chunk progress report on this thread.
+    pub(crate) static CHUNK_PROGRESS_TRACE: std::cell::RefCell<Vec<(u64, Option<u64>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn update_chunk_progress(workspace_root: &Path, done: u64, total: Option<u64>) {
+    #[cfg(test)]
+    CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().push((done, total)));
+    let Some(mut job) = read_job(workspace_root) else {
+        return;
+    };
+    if job.status == JobKind::Failed {
+        return;
+    }
+    job.chunks = Some(JobChunks { done, total });
+    let _ = write_json(&job_path(workspace_root), &job);
 }
 
 pub fn update_build_progress(workspace_root: &Path, progress: IndexingProgress) {
@@ -207,6 +302,7 @@ pub fn update_build_progress(workspace_root: &Path, progress: IndexingProgress) 
             status: JobKind::Building,
             progress: Some(progress),
             error: None,
+            chunks: read_job(workspace_root).and_then(|j| j.chunks),
         },
     );
 }
@@ -218,52 +314,87 @@ pub fn mark_index_job_failed(workspace_root: &Path, error: impl Into<String>) {
             status: JobKind::Failed,
             progress: None,
             error: Some(error.into()),
+            chunks: None,
         },
     );
 }
 
-pub fn write_pending_hint(workspace_root: &Path, pending_updates: usize) {
-    write_pending_hint_counts(workspace_root, pending_updates, pending_updates);
+/// Exact pending-queue record (WP-131). Written by the worker whenever its
+/// `pending_updates` queue changes; read by the parent tick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeQueue {
+    /// Queued paths (including deletions).
+    pub queued: usize,
+    /// Queued paths that need embedding (deletions excluded).
+    pub embed_dirty: usize,
+    /// Index chunks that survive this queue (index minus old chunks of every
+    /// queued path), fixed at enqueue time. Idle and refresh views report
+    /// `done = kept_chunks` while work is queued, so `done` never drops when
+    /// the refresh starts (same rule as Session's `SessionQueue.kept_chunks`).
+    #[serde(default)]
+    pub kept_chunks: u64,
 }
 
-/// Persist pending totals from `(path, deleted)` rows so disk work ignores deletions.
-pub fn write_pending_hint_from(workspace_root: &Path, pending: &HashSet<(String, bool)>) {
-    let (embed_dirty, dirty) = pending_work_counts(pending);
-    write_pending_hint_counts(workspace_root, dirty, embed_dirty);
+fn queue_path(workspace_root: &Path) -> PathBuf {
+    meta::index_dir(workspace_root).join("queue.json")
 }
 
-fn write_pending_hint_counts(workspace_root: &Path, pending_updates: usize, embed_dirty: usize) {
-    if pending_updates == 0 {
-        let _ = std::fs::remove_file(pending_hint_path(workspace_root));
+/// Persist the worker queue (exact counts; `kept_chunks` falls back to the
+/// previous / on-disk value).
+pub fn write_code_queue(workspace_root: &Path, pending: &HashSet<(String, bool)>) {
+    let (embed_dirty, queued) = pending_work_counts(pending);
+    write_code_queue_counts(workspace_root, queued, embed_dirty, None);
+}
+
+/// Like [`write_code_queue`] with the exact surviving chunk count (worker side,
+/// computed from the live index).
+pub fn write_code_queue_kept(
+    workspace_root: &Path,
+    pending: &HashSet<(String, bool)>,
+    kept_chunks: u64,
+) {
+    let (embed_dirty, queued) = pending_work_counts(pending);
+    write_code_queue_counts(workspace_root, queued, embed_dirty, Some(kept_chunks));
+}
+
+/// `kept == None` (writer without index access): keep the previous exact
+/// value, else fall back to the on-disk chunk count.
+fn write_code_queue_counts(
+    workspace_root: &Path,
+    queued: usize,
+    embed_dirty: usize,
+    kept: Option<u64>,
+) {
+    if queued == 0 {
+        let _ = std::fs::remove_file(queue_path(workspace_root));
         return;
     }
     let _ = write_json(
-        &pending_hint_path(workspace_root),
-        &PendingHintFile {
-            pending_updates,
-            embed_dirty: Some(embed_dirty),
+        &queue_path(workspace_root),
+        &CodeQueue {
+            queued,
+            embed_dirty,
+            kept_chunks: kept.unwrap_or_else(|| {
+                let prev = read_code_queue(workspace_root);
+                if prev.queued > 0 {
+                    prev.kept_chunks
+                } else {
+                    indexed_chunk_count(workspace_root)
+                }
+            }),
         },
     );
 }
 
-pub fn read_pending_hint(workspace_root: &Path) -> usize {
-    read_pending_hint_file(workspace_root)
-        .map(|h| h.pending_updates)
-        .unwrap_or(0)
+/// Exact signal for the periodic tick: queued work on disk (no hint needed).
+pub fn read_code_queue(workspace_root: &Path) -> CodeQueue {
+    std::fs::read_to_string(queue_path(workspace_root))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
-pub fn read_pending_embed_hint(workspace_root: &Path) -> usize {
-    read_pending_hint_file(workspace_root)
-        .map(|h| h.embed_dirty.unwrap_or(h.pending_updates))
-        .unwrap_or(0)
-}
-
-fn read_pending_hint_file(workspace_root: &Path) -> Option<PendingHintFile> {
-    let content = std::fs::read_to_string(pending_hint_path(workspace_root)).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
-/// Disk-only classification (ignores in-flight jobs and pending hints).
+/// Disk-only classification (ignores in-flight jobs and the queue).
 pub fn disk_index_status(workspace_root: &Path) -> IndexStatus {
     let meta = meta::read_meta(workspace_root).ok().flatten();
     let vectors_ready = store::index_files_exist(workspace_root);
@@ -289,74 +420,7 @@ pub struct ResolvedIndexView {
     pub job_error: Option<String>,
 }
 
-/// Tool-result / UI sync percentage (WP-057-sync-pct-contract).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncPct {
-    pub sync_pct: u8,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sync_label: Option<&'static str>,
-}
-
-/// Map [`ResolvedIndexView`] (+ optional pending hint) to a single 0–100 sync %.
-///
-/// Contract: never report a fake 100 while Building/Refreshing with unknown totals;
-/// Ready with no pending → 100 (`ready`); Stale → below 100 (`syncing`).
-pub fn sync_pct_from_view(view: &ResolvedIndexView, pending_updates: usize) -> SyncPct {
-    match view.status {
-        IndexStatus::Ready if pending_updates == 0 => SyncPct {
-            sync_pct: 100,
-            sync_label: Some("ready"),
-        },
-        IndexStatus::Ready => SyncPct {
-            // Ready disk but pending slipped in between reads — treat as syncing.
-            sync_pct: sync_pct_from_pending(pending_updates),
-            sync_label: Some("syncing"),
-        },
-        IndexStatus::Stale => SyncPct {
-            sync_pct: sync_pct_from_pending(pending_updates),
-            sync_label: Some("syncing"),
-        },
-        IndexStatus::Building => SyncPct {
-            sync_pct: sync_pct_from_progress(view.progress.as_ref()),
-            sync_label: Some("building"),
-        },
-        IndexStatus::Refreshing => SyncPct {
-            sync_pct: sync_pct_from_progress(view.progress.as_ref()),
-            sync_label: Some("syncing"),
-        },
-        IndexStatus::NeedsRebuild | IndexStatus::Absent => SyncPct {
-            sync_pct: 0,
-            sync_label: Some("building"),
-        },
-        IndexStatus::Failed => SyncPct {
-            sync_pct: 0,
-            sync_label: None,
-        },
-    }
-}
-
-fn sync_pct_from_progress(progress: Option<&IndexingProgress>) -> u8 {
-    let Some(p) = progress else {
-        return 0;
-    };
-    if p.files_total == 0 {
-        return 0;
-    }
-    let pct = (p.files_done.saturating_mul(100)) / p.files_total;
-    pct.min(99) as u8 // in-flight never claims 100
-}
-
-fn sync_pct_from_pending(pending: usize) -> u8 {
-    if pending == 0 {
-        return 99;
-    }
-    // Conservative: each pending file knocks ~2pp off a full sync, floor 1.
-    100u8
-        .saturating_sub((pending.saturating_mul(2)).min(99) as u8)
-        .max(1)
-}
-
-/// Resolve UI index status from disk job file + meta + pending hint + engine state.
+/// Resolve UI index status from disk job file + meta + queue.json + engine state.
 pub fn resolve_index_view(
     workspace_root: &Path,
     engine_state: Option<EngineState>,
@@ -407,8 +471,7 @@ pub fn resolve_index_view(
         };
     }
 
-    let pending = read_pending_hint(workspace_root);
-    if pending > 0 {
+    if read_code_queue(workspace_root).queued > 0 {
         return ResolvedIndexView {
             status: IndexStatus::Stale,
             progress: None,
@@ -420,6 +483,103 @@ pub fn resolve_index_view(
         status: IndexStatus::Ready,
         progress: None,
         job_error: None,
+    }
+}
+
+/// Inputs for [`code_corpus_progress`] that live outside the index directory.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeEngineFacts {
+    /// Persisted workspace intent (engine enabled).
+    pub desired: bool,
+    pub state: Option<EngineState>,
+    pub model_ready: bool,
+}
+
+/// Chunk-exact code corpus progress (WP-131 frozen interface).
+///
+/// Failure order: model missing → engine unavailable → engine stopped (only
+/// when desired) → index job failed. Warming is not a state of its own.
+pub fn code_corpus_progress(
+    workspace_root: &Path,
+    facts: CodeEngineFacts,
+) -> crate::engines::progress::CorpusProgress {
+    use crate::engines::progress::{CorpusError, CorpusProgress, FailReason, ProgressEngine};
+    let indexed = indexed_chunk_count(workspace_root);
+    if facts.desired {
+        if !facts.model_ready {
+            return CorpusProgress::failed(
+                CorpusError::new(
+                    ProgressEngine::Model,
+                    FailReason::ModelMissing,
+                    "embedding model is missing",
+                ),
+                indexed,
+            );
+        }
+        match facts.state {
+            Some(EngineState::Failed) => {
+                return CorpusProgress::failed(
+                    CorpusError::new(
+                        ProgressEngine::Code,
+                        FailReason::EngineUnavailable,
+                        "code search engine is unavailable",
+                    ),
+                    indexed,
+                );
+            }
+            Some(EngineState::Stopped) => {
+                return CorpusProgress::failed(
+                    CorpusError::new(
+                        ProgressEngine::Code,
+                        FailReason::EngineStopped,
+                        "code search engine is stopped",
+                    ),
+                    indexed,
+                );
+            }
+            _ => {}
+        }
+    }
+    // files_pending = exact queued files; chunks_pending only when exact.
+    let files = read_code_queue(workspace_root).queued as u64;
+    if let Some(job) = read_job(workspace_root) {
+        match job.status {
+            JobKind::Failed => {
+                return CorpusProgress::failed(
+                    CorpusError::new(
+                        ProgressEngine::Code,
+                        FailReason::IndexFailed,
+                        job.error.unwrap_or_else(|| "index job failed".into()),
+                    ),
+                    indexed,
+                );
+            }
+            JobKind::Building | JobKind::Refreshing => {
+                return match job.chunks {
+                    Some(JobChunks {
+                        done,
+                        total: Some(total),
+                    }) => CorpusProgress::embedding(done, total, total.saturating_sub(done))
+                        .with_files_pending(files),
+                    Some(JobChunks { done, total: None }) => {
+                        CorpusProgress::scanning(done, 0).with_files_pending(files)
+                    }
+                    // Job written by an older binary: no chunk counters yet.
+                    None => CorpusProgress::scanning(indexed, 0).with_files_pending(files),
+                };
+            }
+        }
+    }
+    match disk_index_status(workspace_root) {
+        IndexStatus::Absent | IndexStatus::NeedsRebuild => {
+            if facts.desired && matches!(facts.state, Some(EngineState::Warming)) {
+                // Build about to start; job.json not written yet.
+                CorpusProgress::scanning(0, 0).with_files_pending(files)
+            } else {
+                CorpusProgress::needs_rebuild(indexed, indexed)
+            }
+        }
+        _ => CorpusProgress::ready(done_floor(workspace_root), 0).with_files_pending(files),
     }
 }
 
@@ -450,19 +610,9 @@ mod tests {
     }
 
     #[test]
-    fn pending_hint_marks_stale_when_ready() {
+    fn queue_marks_stale_when_ready() {
         let dir = TempDir::new().unwrap();
         init_workspace_index(dir.path()).unwrap();
-        // Pretend compatible ready by writing meta that matches + fake vectors flag:
-        // without vectors, disk is needs_rebuild — write meta with matching pipeline
-        // and create empty vector files via store helpers is heavy; use Ready path by
-        // only testing hint when we force Ready via job absence + mock:
-        write_pending_hint(dir.path(), 3);
-        assert_eq!(read_pending_hint(dir.path()), 3);
-        write_pending_hint(dir.path(), 0);
-        assert_eq!(read_pending_hint(dir.path()), 0);
-
-        // Full ready+stale path: create meta that needs_rebuild is false AND touch vector files.
         let mut meta = IndexMeta::shell();
         meta.indexed_files = 1;
         meta.indexed_chunks = 1;
@@ -470,11 +620,16 @@ mod tests {
         let index_dir = meta::index_dir(dir.path());
         std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
         std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        // empty usearch may or may not count as exist — check helper
         if store::index_files_exist(dir.path()) {
-            write_pending_hint(dir.path(), 2);
+            let mut q = HashSet::new();
+            q.insert(("a.rs".to_string(), false));
+            q.insert(("b.rs".to_string(), false));
+            write_code_queue(dir.path(), &q);
             let view = resolve_index_view(dir.path(), Some(EngineState::Warm));
             assert_eq!(view.status, IndexStatus::Stale);
+            write_code_queue(dir.path(), &HashSet::new());
+            let view = resolve_index_view(dir.path(), Some(EngineState::Warm));
+            assert_eq!(view.status, IndexStatus::Ready);
         }
     }
 
@@ -533,7 +688,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_hint_embed_dirty_keeps_deletes_on_update() {
+    fn queue_embed_dirty_keeps_deletes_on_update() {
         let dir = TempDir::new().unwrap();
         init_workspace_index(dir.path()).unwrap();
         let mut meta = IndexMeta::shell();
@@ -550,9 +705,9 @@ mod tests {
         for i in 0..8 {
             pending.insert((format!("gone{i}.rs"), true));
         }
-        write_pending_hint_from(dir.path(), &pending);
-        assert_eq!(read_pending_hint(dir.path()), 8);
-        assert_eq!(read_pending_embed_hint(dir.path()), 0);
+        write_code_queue(dir.path(), &pending);
+        let q = read_code_queue(dir.path());
+        assert_eq!((q.queued, q.embed_dirty), (8, 0));
         assert_eq!(
             index_work_from_disk(dir.path()),
             IndexWork::Update { dirty: 8 }
@@ -574,58 +729,166 @@ mod tests {
         assert_eq!(rebuild["reason"], "incompatible");
     }
 
-    #[test]
-    fn sync_pct_ready_is_100() {
-        let view = ResolvedIndexView {
-            status: IndexStatus::Ready,
-            progress: None,
-            job_error: None,
-        };
-        let s = sync_pct_from_view(&view, 0);
-        assert_eq!(s.sync_pct, 100);
-        assert_eq!(s.sync_label, Some("ready"));
+    fn facts(state: Option<EngineState>) -> CodeEngineFacts {
+        CodeEngineFacts {
+            desired: true,
+            state,
+            model_ready: true,
+        }
     }
 
     #[test]
-    fn sync_pct_building_uses_progress_never_fake_100_on_zero_total() {
-        let empty = ResolvedIndexView {
-            status: IndexStatus::Building,
-            progress: Some(IndexingProgress {
-                phase: IndexPhase::Scanning,
-                files_done: 0,
-                files_total: 0,
-                chunks_done: 0,
-            }),
-            job_error: None,
-        };
-        assert_eq!(sync_pct_from_view(&empty, 0).sync_pct, 0);
-        assert_eq!(sync_pct_from_view(&empty, 0).sync_label, Some("building"));
+    fn corpus_failed_reasons() {
+        use crate::engines::progress::{CorpusState, FailReason, ProgressEngine};
+        let dir = tempfile::TempDir::new().unwrap();
+        let p = code_corpus_progress(
+            dir.path(),
+            CodeEngineFacts {
+                desired: true,
+                state: Some(EngineState::Warm),
+                model_ready: false,
+            },
+        );
+        let e = p.error.clone().unwrap();
+        assert_eq!(p.state, CorpusState::Failed);
+        assert_eq!(
+            (e.engine, e.reason),
+            (ProgressEngine::Model, FailReason::ModelMissing)
+        );
 
-        let mid = ResolvedIndexView {
-            status: IndexStatus::Refreshing,
-            progress: Some(IndexingProgress {
-                phase: IndexPhase::Syncing,
-                files_done: 3,
-                files_total: 10,
-                chunks_done: 12,
-            }),
-            job_error: None,
-        };
-        let s = sync_pct_from_view(&mid, 0);
-        assert_eq!(s.sync_pct, 30);
-        assert_eq!(s.sync_label, Some("syncing"));
-        assert!(s.sync_pct < 100);
+        let e = code_corpus_progress(dir.path(), facts(Some(EngineState::Failed)))
+            .error
+            .unwrap();
+        assert_eq!(e.reason, FailReason::EngineUnavailable);
+        let e = code_corpus_progress(dir.path(), facts(Some(EngineState::Stopped)))
+            .error
+            .unwrap();
+        assert_eq!(e.reason, FailReason::EngineStopped);
+
+        // Stopped but not desired: not a failure.
+        let p = code_corpus_progress(
+            dir.path(),
+            CodeEngineFacts {
+                desired: false,
+                state: Some(EngineState::Stopped),
+                model_ready: false,
+            },
+        );
+        assert_ne!(p.state, CorpusState::Failed);
+
+        mark_index_job_failed(dir.path(), "disk full");
+        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warm)));
+        let e = p.error.unwrap();
+        assert_eq!(
+            (e.engine, e.reason),
+            (ProgressEngine::Code, FailReason::IndexFailed)
+        );
+        assert_eq!(e.message, "disk full");
     }
 
     #[test]
-    fn sync_pct_stale_below_100() {
-        let view = ResolvedIndexView {
-            status: IndexStatus::Stale,
-            progress: None,
-            job_error: None,
-        };
-        let s = sync_pct_from_view(&view, 5);
-        assert!(s.sync_pct < 100);
-        assert_eq!(s.sync_label, Some("syncing"));
+    fn corpus_job_scanning_then_embedding() {
+        use crate::engines::progress::CorpusPhase;
+        let dir = tempfile::TempDir::new().unwrap();
+        begin_building(dir.path());
+        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
+        assert_eq!(p.phase, Some(CorpusPhase::Scanning));
+        assert_eq!(p.chunks_total, None);
+        update_chunk_progress(dir.path(), 3, Some(10));
+        // Legacy progress write must not drop the chunk counters.
+        update_build_progress(
+            dir.path(),
+            IndexingProgress {
+                phase: IndexPhase::Embedding,
+                files_done: 1,
+                files_total: 2,
+                chunks_done: 3,
+            },
+        );
+        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
+        assert_eq!(p.phase, Some(CorpusPhase::Embedding));
+        assert_eq!((p.chunks_done, p.chunks_total), (3, Some(10)));
+    }
+
+    #[test]
+    fn removed_legacy_helpers_stay_gone() {
+        let src = include_str!("index_status.rs");
+        // Built from parts so this test does not match itself.
+        for (a, b) in [
+            ("sync_", "pct_from_pending"),
+            ("sync_", "pct_from_view"),
+            ("write_", "pending_hint"),
+            ("read_", "pending_hint"),
+            ("Sync", "Pct"),
+        ] {
+            let needle = format!("{a}{b}");
+            assert!(
+                !src.contains(&needle),
+                "WP-131 cleanup: {needle} must stay deleted"
+            );
+        }
+    }
+
+    // Stuck-Running (worker load): a stale Refreshing job is cleared and
+    // re-queued; a stale Building is just cleared; Failed is kept.
+    #[test]
+    fn stale_running_job_is_reclaimed_and_requeued() {
+        let dir = TempDir::new().unwrap();
+        begin_refreshing(dir.path());
+        assert!(reclaim_stale_index_job(dir.path()));
+        assert!(read_job(dir.path()).is_none());
+        assert_eq!(read_code_queue(dir.path()).queued, 1, "re-queued");
+        assert!(matches!(
+            index_work_from_disk(dir.path()),
+            IndexWork::Update { .. } | IndexWork::Rebuild { .. }
+        ));
+
+        begin_building(dir.path());
+        assert!(reclaim_stale_index_job(dir.path()));
+        assert!(read_job(dir.path()).is_none());
+
+        mark_index_job_failed(dir.path(), "x");
+        assert!(!reclaim_stale_index_job(dir.path()), "failed is not stale");
+    }
+
+    // L5: state files are written via temp + rename; no temp left behind and
+    // a reader never sees partial JSON.
+    #[test]
+    fn job_and_queue_writes_are_atomic() {
+        let dir = TempDir::new().unwrap();
+        let mut q = HashSet::new();
+        q.insert(("a.rs".to_string(), false));
+        write_code_queue(dir.path(), &q);
+        begin_building(dir.path());
+        update_chunk_progress(dir.path(), 1, Some(2));
+        let idx = meta::index_dir(dir.path());
+        let names: Vec<String> = std::fs::read_dir(&idx)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+        assert!(
+            serde_json::from_str::<IndexJobFile>(
+                &std::fs::read_to_string(idx.join("job.json")).unwrap()
+            )
+            .is_ok()
+        );
+        assert_eq!(read_code_queue(dir.path()).queued, 1);
+        // Concurrent writer/reader: every read parses.
+        let root = dir.path().to_path_buf();
+        let w = std::thread::spawn(move || {
+            for i in 0..300 {
+                update_chunk_progress(&root, i, Some(300));
+            }
+        });
+        for _ in 0..300 {
+            if let Ok(s) = std::fs::read_to_string(idx.join("job.json")) {
+                assert!(
+                    serde_json::from_str::<IndexJobFile>(&s).is_ok(),
+                    "torn read: {s}"
+                );
+            }
+        }
+        w.join().unwrap();
     }
 }

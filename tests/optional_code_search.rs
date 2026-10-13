@@ -11,7 +11,7 @@ use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{
     CodeSearchRuntime, EMBEDDER_ID_HASH, HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
     build_full_index, index_dir, init_workspace_index, needs_rebuild, open_production_embedder,
-    production_embedder_id, read_meta, read_pending_hint, resolve_index_view, search, warmup_index,
+    production_embedder_id, read_code_queue, read_meta, resolve_index_view, search, warmup_index,
     write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
@@ -487,11 +487,11 @@ async fn code_search_lifecycle_rebuild_stale_consume_stop() {
         .code_search()
         .notify_fs_changes(&["later.rs".into()], false);
     let hint_deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while read_pending_hint(root) == 0 && std::time::Instant::now() < hint_deadline {
+    while read_code_queue(root).queued == 0 && std::time::Instant::now() < hint_deadline {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     assert!(
-        read_pending_hint(root) > 0,
+        read_code_queue(root).queued > 0,
         "watcher must mark the index stale without consuming"
     );
     let stale = resolve_index_view(root, engines.state("code_search"));
@@ -508,7 +508,7 @@ async fn code_search_lifecycle_rebuild_stale_consume_stop() {
     engines.request_refresh(&resolved).expect("consume");
     let consume_deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
-        if read_pending_hint(root) == 0
+        if read_code_queue(root).queued == 0
             && engines
                 .code_search()
                 .search("later_unique_symbol", None, 5)
@@ -560,7 +560,10 @@ async fn code_index_tick_syncs_without_refresh() {
     engines
         .code_search()
         .notify_fs_changes(&["b.rs".to_string()], false);
-    assert!(read_pending_hint(root) > 0, "change must be pending first");
+    assert!(
+        read_code_queue(root).queued > 0,
+        "change must be pending first"
+    );
 
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let mut started = false;
@@ -573,13 +576,13 @@ async fn code_index_tick_syncs_without_refresh() {
             .search("zebra_tick_unique_token", None, 5)
             .map(|h| h.iter().any(|h| h.path.contains("b.rs")))
             .unwrap_or(false);
-        if read_pending_hint(root) == 0 && hit && !engines.is_refresh_busy() {
+        if read_code_queue(root).queued == 0 && hit && !engines.is_refresh_busy() {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
             "tick did not sync: pending={} started={started}",
-            read_pending_hint(root)
+            read_code_queue(root).queued
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

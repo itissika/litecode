@@ -1,7 +1,7 @@
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
-    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, enclosing_scopes, format_breadcrumb,
-    lines_slice, read_pending_hint, resolve_index_view, syntax_ancestor_snippet,
+    DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, enclosing_scopes, format_breadcrumb, lines_slice,
+    resolve_index_view, syntax_ancestor_snippet,
 };
 use crate::engines::{
     CodeSearchCallGate, EngineState, RetrievalCorpus, RetrievalFilters, RetrievalHit,
@@ -139,13 +139,13 @@ impl Tool for CodeSearchTool {
                         .map(|p| format!(" for include_pattern '{p}'"))
                         .unwrap_or_default();
                     return ToolCallResult::ok(crate::tools::prepend_sync_pct(
-                        &sync,
+                        sync.as_ref(),
                         &format!("No matching code chunks found{scope}."),
                     ));
                 }
                 let root = self.engines.code_search().workspace_root();
                 ToolCallResult::ok(crate::tools::prepend_sync_pct(
-                    &sync,
+                    sync.as_ref(),
                     &format_code_search_hits(root.as_deref(), &hits, CODE_SEARCH_TOKEN_BUDGET),
                 ))
             }
@@ -434,7 +434,17 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     if let Some(root) = root.as_ref() {
         let view = resolve_index_view(root, state);
         if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
-            return format_index_progress(&view, read_pending_hint(root));
+            let kind = if matches!(view.status, IndexStatus::Building) {
+                "building"
+            } else {
+                "refreshing"
+            };
+            // WP-137: progress comes only from IDE's merged chunk total.
+            let sync = crate::tools::sync_pct_for_workspace(engines, Some(root));
+            return format!(
+                "code_search index is {kind}. {}. Try again shortly.",
+                crate::tools::format_sync_pct_line(sync.as_ref())
+            );
         }
         if matches!(
             view.status,
@@ -449,45 +459,16 @@ fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
     "code_search engine is not ready (Warming). It is hidden from the tool list until Warm.".into()
 }
 
-fn format_index_progress(view: &ResolvedIndexView, pending: usize) -> String {
-    let kind = match view.status {
-        IndexStatus::Building => "building",
-        IndexStatus::Refreshing => "refreshing",
-        other => {
-            return format!("code_search index status is {other:?}. Try again shortly.");
-        }
-    };
-    let Some(p) = &view.progress else {
-        return format!("code_search index is {kind}. Try again shortly.");
-    };
-    let phase = format!("{:?}", p.phase).to_lowercase();
-    // Incremental refresh stamps `syncing` with 0/0 before any counts exist.
-    // Dumping that placeholder reads as "already done".
-    if p.files_total == 0 {
-        if matches!(view.status, IndexStatus::Refreshing) && pending > 0 {
-            return format!(
-                "code_search index is {kind} ({phase}): {pending} files pending. Try again shortly."
-            );
-        }
-        return format!("code_search index is {kind} ({phase}). Try again shortly.");
-    }
-    let eta = if p.files_done > 0 {
-        format!(
-            " (~{}% files)",
-            (p.files_done.saturating_mul(100)) / p.files_total
-        )
-    } else {
-        String::new()
-    };
-    format!(
-        "code_search index is {kind} ({phase}): {}/{} files, {} chunks done{eta}. Try again shortly.",
-        p.files_done, p.files_total, p.chunks_done,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Queue `n` modified (non-deleted) files via the engines queue record (WP-134).
+    fn write_queue(root: &std::path::Path, n: usize) {
+        let pending: std::collections::HashSet<(String, bool)> =
+            (0..n).map(|i| (format!("src/f{i}.rs"), false)).collect();
+        crate::engines::code_search::write_code_queue(root, &pending);
+    }
 
     #[test]
     fn warm_wait_constants_removed() {
@@ -530,7 +511,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_hits_lead_with_sync_pct() {
+    fn code_search_result_leads_with_sync() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::engines::code_search::init_workspace_index(root).unwrap();
@@ -540,9 +521,9 @@ mod tests {
         // Ready index with no embeddings → search returns empty (or wait). Prefer ok path via gate Ready.
         // Mark ready meta so call_gate is Ready when possible.
         let sync = crate::tools::sync_pct_for_workspace(&engines, Some(root));
-        let line = crate::tools::format_sync_pct_line(&sync);
+        let line = crate::tools::format_sync_pct_line(sync.as_ref());
         assert!(line.starts_with("sync_pct: "), "{line}");
-        let body = crate::tools::prepend_sync_pct(&sync, "No matching code chunks found.");
+        let body = crate::tools::prepend_sync_pct(sync.as_ref(), "No matching code chunks found.");
         assert!(body.lines().next().unwrap().starts_with("sync_pct: "));
     }
 
@@ -563,48 +544,6 @@ mod tests {
             "{}",
             result.content
         );
-    }
-
-    #[test]
-    fn indexing_wait_message_mentions_progress() {
-        let view = ResolvedIndexView {
-            status: IndexStatus::Building,
-            progress: Some(crate::engines::code_search::IndexingProgress {
-                phase: crate::engines::code_search::IndexPhase::Embedding,
-                files_done: 3,
-                files_total: 10,
-                chunks_done: 12,
-            }),
-            job_error: None,
-        };
-        let msg = format_index_progress(&view, 0);
-        assert!(msg.contains("building"), "{msg}");
-        assert!(msg.contains("3/10"), "{msg}");
-    }
-
-    #[test]
-    fn indexing_wait_message_omits_placeholder_zero_counts() {
-        let view = ResolvedIndexView {
-            status: IndexStatus::Refreshing,
-            progress: Some(crate::engines::code_search::IndexingProgress {
-                phase: crate::engines::code_search::IndexPhase::Syncing,
-                files_done: 0,
-                files_total: 0,
-                chunks_done: 0,
-            }),
-            job_error: None,
-        };
-        let bare = format_index_progress(&view, 0);
-        assert!(bare.contains("refreshing"), "{bare}");
-        assert!(bare.contains("syncing"), "{bare}");
-        assert!(!bare.contains("0/0"), "{bare}");
-        assert!(!bare.contains("chunks done"), "{bare}");
-        assert!(!bare.contains("pending"), "{bare}");
-
-        let pending = format_index_progress(&view, 53);
-        assert!(pending.contains("53 files pending"), "{pending}");
-        assert!(!pending.contains("0/0"), "{pending}");
-        assert!(!pending.contains("chunks done"), "{pending}");
     }
 
     #[test]
@@ -629,7 +568,8 @@ mod tests {
 
         let msg = indexing_wait_message(&engines);
         assert!(msg.contains("building"), "{msg}");
-        assert!(msg.contains("2/8"), "{msg}");
+        assert!(msg.contains("sync_pct: "), "{msg}");
+        assert!(!msg.contains("2/8"), "no files-ratio estimate: {msg}");
         assert!(
             !msg.contains("No matching code"),
             "must not fake empty hits while indexing: {msg}"
@@ -637,12 +577,12 @@ mod tests {
     }
 
     #[test]
-    fn indexing_wait_message_uses_pending_when_refresh_counts_are_placeholder() {
+    fn indexing_wait_message_uses_chunk_progress_not_pending_hint() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::engines::code_search::init_workspace_index(root).unwrap();
         crate::engines::code_search::begin_refreshing(root);
-        crate::engines::code_search::write_pending_hint(root, 53);
+        write_queue(root, 53);
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
@@ -650,8 +590,11 @@ mod tests {
 
         let msg = indexing_wait_message(&engines);
         assert!(msg.contains("refreshing"), "{msg}");
-        assert!(msg.contains("53 files pending"), "{msg}");
-        assert!(!msg.contains("0/0"), "{msg}");
+        assert!(msg.contains("sync_pct: "), "{msg}");
+        assert!(
+            !msg.contains("files pending"),
+            "no pending-hint estimate: {msg}"
+        );
     }
 
     #[test]
@@ -711,7 +654,7 @@ mod tests {
         std::fs::create_dir_all(&index_dir).unwrap();
         std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
         std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        crate::engines::code_search::write_pending_hint(root, 1);
+        write_queue(root, 1);
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
@@ -987,7 +930,7 @@ mod tests {
         let index_dir = crate::engines::code_search::index_dir(root);
         std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
         std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        crate::engines::code_search::write_pending_hint(root, 2);
+        write_queue(root, 2);
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());

@@ -95,10 +95,8 @@ pub fn derive_row(
 ) -> Result<DerivedRow> {
     let decoded = decode_row(row, data_root)?;
     let slot = slots::classify(&row.kind, &row.item_type);
-    let admitted = decoded.text.is_some()
-        && row.kind != "compacted"
-        && !echo_excluded
-        && admits_sparse(slot);
+    let admitted =
+        decoded.text.is_some() && row.kind != "compacted" && !echo_excluded && admits_sparse(slot);
     let chunks = match (admitted, decoded.text.as_deref()) {
         (true, Some(text)) => chunk::chunk_text(cfg.tk, text, cfg.chunk),
         _ => Vec::new(),
@@ -251,7 +249,10 @@ mod tests {
 
         let result = result_row(8, "c3");
         let derived = derive_row(&result, &dir, &cfg, false).unwrap();
-        assert!(!derived.in_chunks, "sparse rejects tool_result even when not an echo");
+        assert!(
+            !derived.in_chunks,
+            "sparse rejects tool_result even when not an echo"
+        );
         assert!(derived.chunks.is_empty());
         assert_eq!(derived.call_id.as_deref(), Some("c3"));
     }

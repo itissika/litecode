@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   getEnginesDetail,
@@ -9,6 +9,12 @@ import {
   useEngineStore,
 } from "../../../../stores/engineStore";
 import { EngineView } from "./EngineView";
+import { retrievalBusy } from "./retrievalBar";
+
+export const POLL_FAST_MS = 1000;
+export const POLL_IDLE_MS = 5000;
+/** After a refresh/rebuild click: poll at 1s for this many cycles. */
+export const FAST_CYCLES_AFTER_REFRESH = 3;
 import { ENGINES_CHANGED_EVENT } from "./embedInstall";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
@@ -16,6 +22,8 @@ import { SettingsPageShell } from "../shared";
 export function EnginesSection() {
   const [detail, setDetail] = useState<EnginesDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Bumps after every fetch settles, so polling re-arms even when the payload is identical. */
+  const [pollTick, setPollTick] = useState(0);
   useEffect(() => {
     setEngineDetailPolling(true);
     return () => setEngineDetailPolling(false);
@@ -27,7 +35,8 @@ export function EnginesSection() {
         setError(null);
         useEngineStore.getState().applyFromDetail(next);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setPollTick((t) => t + 1));
   }, []);
   useEffect(() => {
     refresh();
@@ -36,18 +45,43 @@ export function EnginesSection() {
     window.addEventListener(ENGINES_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(ENGINES_CHANGED_EVENT, refresh);
   }, [refresh]);
+  // WP-136: poll the whole time Settings is visible — 1s while the backend is
+  // refreshing / an engine warms / just after a refresh click, else ~5s.
+  // Fast cycles after a click only tighten polling; the bar follows the backend.
+  const fastCycles = useRef(0);
+  const [pollNonce, setPollNonce] = useState(0);
+  const onRefreshRequested = useCallback(() => {
+    fastCycles.current = FAST_CYCLES_AFTER_REFRESH;
+    setPollNonce((n) => n + 1); // re-arm at the fast interval now
+  }, []);
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
   useEffect(() => {
-    if (!detail) return;
-    const indexStatus = detail.retrieval.index.status;
-    const busy =
+    const onVis = () => {
+      const visible = document.visibilityState !== "hidden";
+      setPageVisible(visible);
+      if (visible) refresh();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refresh]);
+  useEffect(() => {
+    if (!detail || !pageVisible) return;
+    const fast =
+      fastCycles.current > 0 ||
+      retrievalBusy(detail.retrieval) ||
       detail.retrieval.usable === "warming" ||
-      detail.lsp.usable === "warming" ||
-      indexStatus === "building" ||
-      indexStatus === "refreshing";
-    if (!busy) return;
-    const timer = window.setInterval(refresh, 1000);
-    return () => window.clearInterval(timer);
-  }, [detail, refresh]);
+      detail.lsp.usable === "warming";
+    const timer = window.setTimeout(
+      () => {
+        if (fastCycles.current > 0) fastCycles.current -= 1;
+        refresh();
+      },
+      fast ? POLL_FAST_MS : POLL_IDLE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [detail, refresh, pageVisible, pollNonce, pollTick]);
 
   if (error) {
     return (
@@ -65,7 +99,11 @@ export function EnginesSection() {
   }
   return (
     <SettingsPageShell title="Engines">
-      <EngineView detail={detail} onChanged={refresh} />
+      <EngineView
+        detail={detail}
+        onChanged={refresh}
+        onRefreshRequested={onRefreshRequested}
+      />
     </SettingsPageShell>
   );
 }

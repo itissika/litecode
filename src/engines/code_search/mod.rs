@@ -29,6 +29,7 @@ mod reconcile;
 mod retrieve;
 pub mod scan_policy;
 mod semantic_engine;
+mod stamps;
 mod store;
 
 pub use build::{build_full_index, scannable_files};
@@ -44,11 +45,12 @@ pub use enclosing::{
 pub use facade::{HumanSearchRequest, HumanSearchResponse, human_search};
 pub use fs_notify::queue_fs_changes;
 pub use index_status::{
-    IndexPhase, IndexRebuildReason, IndexStatus, IndexWork, IndexingProgress, ResolvedIndexView,
-    SyncPct, begin_building, begin_refreshing, clear_index_job, decide_index_work,
-    disk_index_status, index_work_from_disk, mark_index_job_failed, pending_work_counts,
-    read_pending_hint, resolve_index_view, should_full_rebuild, sync_pct_from_view,
-    update_build_progress, write_pending_hint, write_pending_hint_from,
+    CodeEngineFacts, CodeQueue, IndexPhase, IndexRebuildReason, IndexStatus, IndexWork,
+    IndexingProgress, ResolvedIndexView, begin_building, begin_refreshing, clear_index_job,
+    code_corpus_progress, decide_index_work, disk_index_status, index_work_from_disk,
+    indexed_chunk_count, mark_index_job_failed, pending_work_counts, read_code_queue,
+    reclaim_stale_index_job, resolve_index_view, should_full_rebuild, update_build_progress,
+    update_chunk_progress, write_code_queue, write_code_queue_kept,
 };
 pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_for_agent,
@@ -58,7 +60,7 @@ pub use lexical_primitive::LexicalPrimitive;
 pub use meta::{
     IndexMeta, index_dir, init_workspace_index, meta_path, needs_rebuild, read_meta, write_meta,
 };
-pub use reconcile::{queue_reconcile_dirty, sync_index_with_disk};
+pub use reconcile::{queue_reconcile_dirty, queue_reconcile_from_stamps, sync_index_with_disk};
 pub use retrieve::{CODE_SEMANTIC_CC_ALPHA, SEARCH_MODE_BM25_CC, SEARCH_MODE_BM25_RRF, SearchHit};
 pub use scan_policy::{
     MAX_INDEX_FILE_BYTES, SKIP_DIRS, is_indexable_rel_path, is_scannable_rel_path, looks_binary,
@@ -115,7 +117,8 @@ pub fn index_cool_idle() -> Duration {
 /// Lightweight on-disk identity for stamp fast-path during reconcile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileStamp {
-    pub mtime_ms: u64,
+    /// Nanoseconds since the Unix epoch (WP-141: ms could hide same-ms edits).
+    pub mtime_ns: u64,
     pub len: u64,
 }
 
@@ -135,7 +138,11 @@ pub struct CodeSearchRuntime {
     /// File changes from serve watcher via IPC; consumed on refresh / agent.
     pub pending_updates: Mutex<HashSet<(String, bool)>>, // (relative_path, deleted)
     /// mtime/len after a successful index of a path (reconcile fast path).
+    /// Persisted to `stamps.v1` after every index commit (WP-141).
     pub file_stamps: Mutex<HashMap<String, FileStamp>>,
+    /// WP-141: set when a cooled index had no valid `stamps.v1` to scan
+    /// against; the next index load runs a full reconcile. Internal only.
+    full_reconcile_on_load: std::sync::atomic::AtomicBool,
     /// Last successful embed (query or incremental). Drives L1 OrtCold.
     last_embed_at: Mutex<Instant>,
     /// Last search / incremental update / cold index load. Drives L2 IndexCold.
@@ -145,7 +152,7 @@ pub struct CodeSearchRuntime {
 impl CodeSearchRuntime {
     pub fn new(
         workspace_root: PathBuf,
-        index: CodeSearchIndex,
+        mut index: CodeSearchIndex,
         embedder: Option<Box<dyn embed::Embedder>>,
         session_reader: Option<crate::session::SessionDataReader>,
     ) -> Self {
@@ -154,6 +161,22 @@ impl CodeSearchRuntime {
             .as_ref()
             .map(|emb| emb.inference_device().to_string())
             .unwrap_or_default();
+        // WP-141: a fresh build hands over its pre-read stamps; otherwise the
+        // persisted `stamps.v1` (validated against meta.json) seeds the map.
+        let built = index.take_build_stamps();
+        let fresh_build = !built.is_empty();
+        let file_stamps: HashMap<String, FileStamp> = if fresh_build {
+            built
+        } else {
+            stamps::load(&workspace_root)
+                .map(|entries| {
+                    entries
+                        .into_iter()
+                        .filter_map(|(p, s)| s.map(|s| (p, s)))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
         let runtime = Self {
             workspace_root,
             session_reader: Mutex::new(session_reader),
@@ -163,14 +186,47 @@ impl CodeSearchRuntime {
             embedder: Mutex::new(embedder),
             embed_device: Mutex::new(device),
             pending_updates: Mutex::new(HashSet::new()),
-            file_stamps: Mutex::new(HashMap::new()),
+            file_stamps: Mutex::new(file_stamps),
+            full_reconcile_on_load: std::sync::atomic::AtomicBool::new(false),
             last_embed_at: Mutex::new(now),
             last_index_at: Mutex::new(now),
         };
         if let Err(e) = runtime.resync_bm25() {
             tracing::warn!(error = %e, "code_search BM25 sidecar build failed at warmup");
         }
+        if fresh_build {
+            runtime.persist_stamps();
+        }
         runtime
+    }
+
+    /// WP-141: write `stamps.v1` after an index commit. Keys = every path the
+    /// index holds (unstamped ones as `?`) plus stamped paths that produced no
+    /// chunks, so a cooled index still knows its full path set. Loaded index
+    /// only; a cooled index has nothing new to commit.
+    pub(crate) fn persist_stamps(&self) {
+        let Ok(guard) = self.index.lock() else {
+            return;
+        };
+        let Some(index) = guard.as_ref() else {
+            return;
+        };
+        let indexed = index.indexed_paths();
+        drop(guard);
+        let Ok(stamps) = self.file_stamps.lock() else {
+            return;
+        };
+        let mut entries: stamps::StampEntries = indexed.into_iter().map(|p| (p, None)).collect();
+        for (path, stamp) in stamps.iter() {
+            entries.insert(path.clone(), Some(*stamp));
+        }
+        drop(stamps);
+        stamps::save(&self.workspace_root, &entries);
+    }
+
+    pub(crate) fn request_full_reconcile_on_load(&self) {
+        self.full_reconcile_on_load
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn touch_embed_at(&self) {
@@ -190,6 +246,28 @@ impl CodeSearchRuntime {
         self.touch_index_at();
     }
 
+    /// Persist the worker queue with its exact surviving chunk count
+    /// (`queue.json`, WP-131). Takes the index lock briefly.
+    pub(crate) fn persist_queue(&self, pending: &HashSet<(String, bool)>) {
+        // Loaded index only: never reload a cooled index under the queue lock.
+        // Lock order pending -> index matches update paths (none take the
+        // reverse). Falls back to the previous / on-disk value when cooled.
+        let kept = self.index.lock().ok().and_then(|guard| {
+            let index = guard.as_ref()?;
+            let paths: HashSet<&str> = pending.iter().map(|(p, _)| p.as_str()).collect();
+            let old = index
+                .chunks()
+                .values()
+                .filter(|c| paths.contains(c.path.as_str()))
+                .count() as u64;
+            Some((index.chunks().len() as u64).saturating_sub(old))
+        });
+        match kept {
+            Some(kept) => write_code_queue_kept(&self.workspace_root, pending, kept),
+            None => write_code_queue(&self.workspace_root, pending),
+        }
+    }
+
     pub(crate) fn has_pending_updates(&self) -> bool {
         let code_dirty = self
             .pending_updates
@@ -199,7 +277,7 @@ impl CodeSearchRuntime {
         if code_dirty {
             return true;
         }
-        crate::engines::session_search::read_session_pending_hint(&self.workspace_root) > 0
+        crate::engines::session_search::read_session_queue(&self.workspace_root).queued > 0
     }
 
     pub(crate) fn index_is_loaded(&self) -> bool {
@@ -369,6 +447,14 @@ impl CodeSearchRuntime {
         }
         self.ensure_bm25_open()?;
         self.touch_index_at();
+        // WP-141: the cooled scan could not trust its stamps; reconcile now
+        // that the index (the real path set) is back. Stat + queue only.
+        if self
+            .full_reconcile_on_load
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            reconcile::queue_reconcile_dirty(self);
+        }
         Ok(())
     }
 
@@ -588,11 +674,8 @@ impl CodeSearchRuntime {
         }
     }
 
-    fn note_file_stamp(&self, rel_path: &str) {
-        let abs = self.workspace_root.join(rel_path);
-        if let Some(stamp) = reconcile::read_stamp(&abs)
-            && let Ok(mut stamps) = self.file_stamps.lock()
-        {
+    fn set_file_stamp(&self, rel_path: &str, stamp: FileStamp) {
+        if let Ok(mut stamps) = self.file_stamps.lock() {
             stamps.insert(rel_path.to_string(), stamp);
         }
     }
@@ -633,7 +716,7 @@ pub fn warmup_index(
     match &result {
         Ok(_) => {
             clear_index_job(workspace_root);
-            write_pending_hint(workspace_root, 0);
+            write_code_queue(workspace_root, &Default::default());
         }
         Err(e) => mark_index_job_failed(workspace_root, e.to_string()),
     }
@@ -644,12 +727,16 @@ pub fn warmup_index(
 pub fn rebuild_index_in_runtime(runtime: &CodeSearchRuntime) -> Result<()> {
     begin_building(&runtime.workspace_root);
     let built = runtime.with_embedder(|emb| {
-        let index = build::build_full_index(&runtime.workspace_root, emb)?;
+        let mut index = build::build_full_index(&runtime.workspace_root, emb)?;
         index.save(&runtime.workspace_root)?;
-        Ok(index)
+        let stamps = index.take_build_stamps();
+        Ok((index, stamps))
     });
     match built {
-        Ok(index) => {
+        Ok((index, stamps)) => {
+            if let Ok(mut guard) = runtime.file_stamps.lock() {
+                *guard = stamps;
+            }
             {
                 let mut guard = runtime
                     .index
@@ -661,8 +748,9 @@ pub fn rebuild_index_in_runtime(runtime: &CodeSearchRuntime) -> Result<()> {
                 tracing::warn!(error = %e, "code_search BM25 resync after rebuild failed");
             }
             runtime.note_index_activity();
+            runtime.persist_stamps();
             clear_index_job(&runtime.workspace_root);
-            write_pending_hint(&runtime.workspace_root, 0);
+            write_code_queue(&runtime.workspace_root, &Default::default());
             if let Ok(mut pending) = runtime.pending_updates.lock() {
                 pending.clear();
             }
@@ -677,85 +765,146 @@ pub fn rebuild_index_in_runtime(runtime: &CodeSearchRuntime) -> Result<()> {
 
 /// Incremental disk sync while Warm (refresh path when index is compatible).
 pub fn refresh_index_incremental(runtime: &CodeSearchRuntime) -> Result<()> {
+    // Reconcile first so `queue.json.kept_chunks` already covers every dirty
+    // path when the job starts: done never drops between start and pass 1.
+    reconcile::queue_reconcile_dirty(runtime);
     begin_refreshing(&runtime.workspace_root);
-    sync_index_with_disk(runtime);
+    flush_pending_updates(runtime);
     if let Ok(pending) = runtime.pending_updates.lock() {
-        write_pending_hint_from(&runtime.workspace_root, &pending);
+        runtime.persist_queue(&pending); // WP-131 exact signal
     }
     clear_index_job(&runtime.workspace_root);
     Ok(())
 }
 
 /// Incremental update for changed relative paths (debounced watcher / reconcile).
+///
+/// WP-131 two-pass progress (denominator = whole index):
+/// 1. scanning (`total = null`): classify paths and chunk every dirty file;
+///    `done = kept` = index chunks minus old chunks of removed + re-indexed files.
+/// 2. embedding: `total = kept + new`, `done` rises from `kept` per file and is
+///    pinned to the real index size at the end (`done == total`).
+///
+/// Progress writes are no-ops when no refresh job is in flight.
 pub fn update_files(runtime: &CodeSearchRuntime, updates: &[(String, bool)]) -> Result<()> {
-    let mut changed = false;
+    let root = &runtime.workspace_root;
 
-    // One pass for deletions: a single index save + stamp clear for the batch.
-    let deleted: Vec<&str> = updates
-        .iter()
-        .filter(|(_, d)| *d)
-        .map(|(p, _)| p.as_str())
-        .collect();
-    if !deleted.is_empty() {
-        runtime.with_index_mut(|index| {
-            for path in &deleted {
-                index.remove_file(path);
-            }
-            index.save(&runtime.workspace_root)?;
-            meta::write_meta(&runtime.workspace_root, &index.meta_snapshot())?;
-            Ok(())
-        })?;
-        for path in &deleted {
-            runtime.clear_file_stamp(path);
-        }
-        changed = true;
-    }
-
+    // ---- Pass 1: classify + chunk (scanning) ----
+    // WP-141: reconcile only stats, so a stamp mismatch lands here; the
+    // content comparison happens in this pass. Stamps are taken before each
+    // read (a write racing the read leaves an older stamp ⇒ re-checked).
+    let mut removals: Vec<String> = Vec::new();
+    let mut candidates: Vec<(String, Vec<chunk::ChunkRecord>, Option<FileStamp>)> = Vec::new();
+    // Paths whose stamp is refreshed without any embedding.
+    let mut stamp_only: Vec<(String, FileStamp)> = Vec::new();
     for (path, is_deleted) in updates {
-        if *is_deleted {
-            continue;
-        }
-        if !is_indexable_rel_path(path, &runtime.workspace_root) {
-            if let Err(e) = runtime.with_index_mut(|index| {
-                index.remove_file(path);
-                Ok(())
-            }) {
-                tracing::warn!(path = %path, error = %e, "code_search remove non-indexable path failed");
+        if *is_deleted || !is_indexable_rel_path(path, root) || !root.join(path).is_file() {
+            // WP-141: a file that exists but is not indexable (binary, too
+            // large) is accounted with a stamp so the stat scan skips it.
+            if !*is_deleted
+                && root.join(path).is_file()
+                && let Some(stamp) = reconcile::read_stamp(&root.join(path))
+            {
+                stamp_only.push((path.clone(), stamp));
             }
-            runtime.clear_file_stamp(path);
-            changed = true;
+            removals.push(path.clone());
             continue;
         }
-        let abs = runtime.workspace_root.join(path);
-        if !abs.is_file() {
-            if let Err(e) = runtime.with_index_mut(|index| {
-                index.remove_file(path);
-                Ok(())
-            }) {
-                tracing::warn!(path = %path, error = %e, "code_search remove missing file failed");
-            }
-            runtime.clear_file_stamp(path);
-            changed = true;
-            continue;
-        }
-        let content = match std::fs::read_to_string(&abs) {
+        let stamp = reconcile::read_stamp(&root.join(path));
+        let content = match std::fs::read_to_string(root.join(path)) {
             Ok(c) => c,
             Err(e) => {
+                // Not text: account for it so it is not re-queued every pass.
+                if e.kind() == std::io::ErrorKind::InvalidData
+                    && let Some(stamp) = stamp
+                {
+                    stamp_only.push((path.clone(), stamp));
+                }
+                // Unreadable: keep its old chunks; excluded from the work set.
                 tracing::warn!(path = %path, error = %e, "code_search incremental read failed");
                 continue;
             }
         };
-        let next_id = match runtime.with_index(|index| Ok(index.next_id())) {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(path = %path, error = %e, "code_search incremental index read failed");
-                continue;
-            }
-        };
-        let (chunks, new_id) = chunk::chunk_file(path, &content, next_id);
+        // Ids are provisional here; re-assigned from the index in pass 2.
+        let (chunks, _) = chunk::chunk_file(path, &content, 1);
         if chunks.is_empty() {
-            continue;
+            removals.push(path.clone());
+            if let Some(stamp) = stamp {
+                stamp_only.push((path.clone(), stamp));
+            }
+        } else {
+            candidates.push((path.clone(), chunks, stamp));
         }
+    }
+    // Same chunks as indexed (touch, or a stamp lost to invalidation):
+    // refresh the stamp only, never re-embed.
+    let unchanged: HashSet<String> = if candidates.is_empty() {
+        HashSet::new()
+    } else {
+        runtime
+            .with_index(|index| {
+                Ok(index.paths_with_identical_chunks(
+                    candidates
+                        .iter()
+                        .map(|(p, c, _)| (p.as_str(), c.as_slice())),
+                ))
+            })
+            .unwrap_or_default()
+    };
+    let mut reindex: Vec<(String, Vec<chunk::ChunkRecord>, Option<FileStamp>)> = Vec::new();
+    for (path, chunks, stamp) in candidates {
+        if unchanged.contains(&path) {
+            if let Some(stamp) = stamp {
+                stamp_only.push((path, stamp));
+            }
+        } else {
+            reindex.push((path, chunks, stamp));
+        }
+    }
+    let touched: HashSet<&str> = removals
+        .iter()
+        .map(String::as_str)
+        .chain(reindex.iter().map(|(p, _, _)| p.as_str()))
+        .collect();
+    let (current, old_touched) = runtime
+        .with_index(|index| {
+            let old = index
+                .chunks()
+                .values()
+                .filter(|c| touched.contains(c.path.as_str()))
+                .count() as u64;
+            Ok((index.chunks().len() as u64, old))
+        })
+        .unwrap_or((0, 0));
+    let kept = current.saturating_sub(old_touched);
+    update_chunk_progress(root, kept, None);
+    let new_total: u64 = reindex.iter().map(|(_, c, _)| c.len() as u64).sum();
+    let total = kept + new_total;
+
+    let mut changed = false;
+    if !removals.is_empty() {
+        runtime.with_index_mut(|index| {
+            for path in &removals {
+                index.remove_file(path);
+            }
+            index.save(root)?;
+            meta::write_meta(root, &index.meta_snapshot())?;
+            Ok(())
+        })?;
+        for path in &removals {
+            runtime.clear_file_stamp(path);
+        }
+        changed = true;
+    }
+    let stamps_touched = !stamp_only.is_empty();
+    for (path, stamp) in stamp_only {
+        runtime.set_file_stamp(&path, stamp);
+    }
+
+    // ---- Pass 2: embed (exact total) ----
+    let mut done = kept;
+    update_chunk_progress(root, done, Some(total));
+    for (path, chunks, stamp) in reindex {
         let texts: Vec<String> = chunks.iter().map(|c| c.text.clone()).collect();
         let vectors = match runtime.with_embedder(|emb| emb.embed_batch(&texts)) {
             Ok(v) => v,
@@ -764,28 +913,55 @@ pub fn update_files(runtime: &CodeSearchRuntime, updates: &[(String, bool)]) -> 
                 continue;
             }
         };
+        let n = chunks.len() as u64;
         match runtime.with_index_mut(|index| {
-            index.remove_file(path);
+            // Assign real ids (chunk_file numbers sequentially from next_id).
+            let base_id = index.next_id();
+            let new_id = base_id + chunks.len() as u64;
+            let chunks: Vec<chunk::ChunkRecord> = chunks
+                .into_iter()
+                .enumerate()
+                .map(|(i, mut c)| {
+                    c.id = base_id + i as u64;
+                    c
+                })
+                .collect();
+            index.remove_file(&path);
             index.set_next_id(new_id);
             index.add_chunks_with_vectors(chunks, vectors)?;
-            index.save(&runtime.workspace_root)?;
-            meta::write_meta(&runtime.workspace_root, &index.meta_snapshot())?;
+            index.save(root)?;
+            meta::write_meta(root, &index.meta_snapshot())?;
             Ok(())
         }) {
             Ok(()) => {
-                runtime.note_file_stamp(path);
+                match stamp {
+                    Some(stamp) => runtime.set_file_stamp(&path, stamp),
+                    None => runtime.clear_file_stamp(&path),
+                }
                 changed = true;
+                done += n;
+                update_chunk_progress(root, done.min(total), Some(total));
             }
             Err(e) => {
                 tracing::warn!(path = %path, error = %e, "code_search incremental index update failed");
             }
         }
     }
+    // Failed files keep old chunks; pin to the real index size so done == total.
+    let actual = runtime
+        .with_index(|index| Ok(index.chunks().len() as u64))
+        .unwrap_or(done);
+    update_chunk_progress(root, actual, Some(actual));
+
     if changed {
         if let Err(e) = runtime.resync_bm25() {
             tracing::warn!(error = %e, "code_search BM25 resync after incremental update failed");
         }
         runtime.note_index_activity();
+    }
+    // WP-141: stamps follow the index commit above (crash ⇒ extra reads only).
+    if changed || stamps_touched {
+        runtime.persist_stamps();
     }
     Ok(())
 }
@@ -797,13 +973,13 @@ pub fn flush_pending_updates(runtime: &CodeSearchRuntime) {
         Err(_) => vec![],
     };
     if pending.is_empty() {
-        write_pending_hint(&runtime.workspace_root, 0);
+        write_code_queue(&runtime.workspace_root, &Default::default());
         return;
     }
     // Single merged pass: one index save + one BM25 resync for the whole batch.
     let _ = update_files(runtime, &pending);
     if let Ok(remaining) = runtime.pending_updates.lock() {
-        write_pending_hint_from(&runtime.workspace_root, &remaining);
+        runtime.persist_queue(&remaining); // WP-131 exact signal
     }
 }
 
@@ -823,6 +999,7 @@ pub type SharedRuntime = Arc<RwLock<Option<CodeSearchRuntime>>>;
 #[cfg(test)]
 mod cool_tests {
     use super::*;
+    use crate::engines::EngineState;
     use crate::engines::code_search::build::build_full_index;
     use crate::engines::code_search::embed::HashEmbedder;
     use tempfile::TempDir;
@@ -837,6 +1014,187 @@ mod cool_tests {
             Some(Box::new(HashEmbedder)),
             None,
         )
+    }
+
+    // WP-131 acceptance: with pending_hint.json gone, the periodic refresh
+    // path still sees and drains the worker queue via queue.json.
+    #[test]
+    fn tick_drains_queue_without_pending_hint() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.rs"), "fn wp131_base() {}\n").unwrap();
+        let runtime = runtime_with_hash(root);
+        meta::write_meta(
+            root,
+            &runtime.with_index(|i| Ok(i.meta_snapshot())).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(root.join("added.rs"), "fn wp131_queued_target() {}\n").unwrap();
+        {
+            let mut q = runtime.pending_updates.lock().unwrap();
+            q.insert(("added.rs".into(), false));
+            write_code_queue(root, &q);
+        }
+        assert_eq!(read_code_queue(root).queued, 1);
+        assert_eq!(index_work_from_disk(root), IndexWork::Update { dirty: 1 });
+
+        refresh_index_incremental(&runtime).unwrap();
+
+        assert_eq!(read_code_queue(root), CodeQueue::default(), "queue drained");
+        assert_eq!(index_work_from_disk(root), IndexWork::None);
+        assert!(runtime.pending_updates.lock().unwrap().is_empty());
+        let hits = SemanticEngine::search(&runtime, "wp131_queued_target", None, 5).unwrap();
+        assert!(hits.iter().any(|h| h.path.contains("added.rs")));
+    }
+
+    fn lines(tag: &str, n: usize) -> String {
+        (0..n).map(|i| format!("fn {tag}_{i}() {{}}\n")).collect()
+    }
+
+    // WP-131: incremental refresh two-pass — scanning (null total) first, then
+    // exact total = kept + new; done monotonic from kept, done <= total, ends equal.
+    // Covers re-indexed (shrunk), deleted and added files.
+    #[test]
+    fn incremental_refresh_total_exact_with_delete_and_reindex() {
+        use crate::engines::code_search::index_status::CHUNK_PROGRESS_TRACE;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), lines("a", 300)).unwrap();
+        std::fs::write(root.join("b.rs"), lines("b", 150)).unwrap();
+        std::fs::write(root.join("c.rs"), lines("c", 100)).unwrap();
+        let runtime = runtime_with_hash(root);
+        let count = |p: &str| {
+            runtime
+                .with_index(|i| Ok(i.chunks().values().filter(|c| c.path == p).count() as u64))
+                .unwrap()
+        };
+        let initial = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+        let (old_a, old_b) = (count("a.rs"), count("b.rs"));
+        assert!(old_a > 2 && old_b > 1, "fixture must span several chunks");
+
+        std::fs::write(root.join("a.rs"), lines("a2", 70)).unwrap(); // re-index, shrinks
+        std::fs::remove_file(root.join("b.rs")).unwrap(); // delete
+        std::fs::write(root.join("d.rs"), lines("d", 130)).unwrap(); // add
+        let kept = initial - old_a - old_b;
+
+        begin_refreshing(root);
+        CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().clear());
+        update_files(
+            &runtime,
+            &[
+                ("a.rs".into(), false),
+                ("b.rs".into(), true),
+                ("d.rs".into(), false),
+            ],
+        )
+        .unwrap();
+        let trace = CHUNK_PROGRESS_TRACE.with(|t| t.borrow().clone());
+        let final_len = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+
+        assert_eq!(
+            trace.first(),
+            Some(&(kept, None)),
+            "pass 1 = scanning, done = kept"
+        );
+        let first_total = trace.iter().find_map(|(_, t)| *t).unwrap();
+        assert_eq!(
+            first_total, final_len,
+            "total exact before embedding starts"
+        );
+        assert_eq!(final_len, kept + count("a.rs") + count("d.rs"));
+        assert_eq!(count("b.rs"), 0);
+        let mut seen_total = false;
+        let mut prev = 0u64;
+        for &(done, total) in &trace {
+            if seen_total {
+                assert!(total.is_some(), "no return to scanning: {trace:?}");
+            }
+            if let Some(t) = total {
+                seen_total = true;
+                assert_eq!(t, first_total, "total stable: {trace:?}");
+                assert!(done <= t, "done <= total: {trace:?}");
+            }
+            assert!(done >= prev, "monotonic: {trace:?}");
+            prev = done;
+        }
+        assert_eq!(
+            trace.last(),
+            Some(&(final_len, Some(final_len))),
+            "ends equal"
+        );
+        assert!(trace.len() >= 4, "reports per file: {trace:?}");
+        clear_index_job(root);
+    }
+
+    // WP-131: from enqueue to the end, `done` never drops — idle view reports
+    // queue.kept_chunks, the job starts there, pass 1 reports the same kept,
+    // embedding rises, final pins done == total.
+    #[test]
+    fn done_monotonic_from_enqueue_to_end() {
+        use crate::engines::code_search::index_status::{
+            CHUNK_PROGRESS_TRACE, CodeEngineFacts, code_corpus_progress,
+        };
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), lines("a", 300)).unwrap();
+        std::fs::write(root.join("b.rs"), lines("b", 150)).unwrap();
+        std::fs::write(root.join("c.rs"), lines("c", 100)).unwrap();
+        let runtime = runtime_with_hash(root);
+        meta::write_meta(
+            root,
+            &runtime.with_index(|i| Ok(i.meta_snapshot())).unwrap(),
+        )
+        .unwrap();
+        clear_index_job(root); // warmup_index clears the build job; mirror it
+        let facts = CodeEngineFacts {
+            desired: true,
+            state: Some(EngineState::Warm),
+            model_ready: true,
+        };
+        let idle_before = code_corpus_progress(root, facts).chunks_done;
+
+        std::fs::write(root.join("a.rs"), lines("a2", 70)).unwrap();
+        std::fs::remove_file(root.join("b.rs")).unwrap();
+        std::fs::write(root.join("d.rs"), lines("d", 130)).unwrap();
+        // Enqueue exactly as the watcher does (fs_notify::queue_fs_changes).
+        {
+            let mut q = runtime.pending_updates.lock().unwrap();
+            q.insert(("a.rs".into(), false));
+            q.insert(("d.rs".into(), false));
+            q.insert(("b.rs".into(), true));
+            runtime.persist_queue(&q);
+        }
+        let q = read_code_queue(root);
+        assert_eq!(q.queued, 3);
+        let idle_queued = code_corpus_progress(root, facts);
+        assert_eq!(idle_queued.chunks_done, q.kept_chunks);
+        assert!(
+            idle_queued.chunks_done < idle_before,
+            "enqueue fixes done = kept"
+        );
+
+        CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().clear());
+        refresh_index_incremental(&runtime).unwrap();
+        let trace = CHUNK_PROGRESS_TRACE.with(|t| t.borrow().clone());
+        let final_len = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+
+        let mut prev = idle_queued.chunks_done;
+        for &(done, total) in &trace {
+            assert!(done >= prev, "done dropped {prev} -> {done}: {trace:?}");
+            if let Some(t) = total {
+                assert!(done <= t, "{trace:?}");
+            }
+            prev = done;
+        }
+        assert_eq!(
+            trace.first(),
+            Some(&(q.kept_chunks, None)),
+            "job starts at kept"
+        );
+        assert_eq!(trace.last(), Some(&(final_len, Some(final_len))));
+        let after = code_corpus_progress(root, facts);
+        assert_eq!(after.chunks_done, final_len);
+        assert_eq!(after.files_pending, 0);
     }
 
     #[test]

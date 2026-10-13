@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-057",
+  "grade": "4",
+  "layer": null,
+  "domain": "ide-base",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "terminal::shell shell_label_uses_the_program_stem 在基线 37d5fbf 即失败（Linux 云端）",
+  "history": [
+    {
+      "ts": "2026-10-13T17:11:27.888Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-135）"
+    }
+  ]
+}

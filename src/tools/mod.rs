@@ -38,40 +38,206 @@ pub(crate) fn description_text(embedded: &str) -> String {
     embedded.trim_end().to_string()
 }
 
-/// First line of `code_search` / `session_search` results (WP-057 sync% contract).
-pub(crate) fn format_sync_pct_line(sync: &crate::engines::code_search::SyncPct) -> String {
-    match sync.sync_label {
-        Some(label) => format!("sync_pct: {}% ({})", sync.sync_pct, label),
-        None => format!("sync_pct: {}%", sync.sync_pct),
-    }
+/// snake_case wire name of a progress enum (same as the engines detail JSON).
+fn wire_name<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
-/// Resolve sync% from IDE index view; Tools only consume, never invent a second progress scale.
-pub(crate) fn sync_pct_for_workspace(
-    engines: &crate::engines::WorkspaceEngines,
-    workspace_root: Option<&std::path::Path>,
-) -> crate::engines::code_search::SyncPct {
-    use crate::engines::code_search::{read_pending_hint, resolve_index_view, sync_pct_from_view};
-    let root = workspace_root
-        .map(|p| p.to_path_buf())
-        .or_else(|| engines.code_search().workspace_root());
-    match root {
-        Some(root) => {
-            let view = resolve_index_view(&root, engines.state("code_search"));
-            sync_pct_from_view(&view, read_pending_hint(&root))
+/// First line of `code_search` / `session_search` results — the only formatter
+/// (WP-057 sync% contract v2, `.litecode/ops/artifacts/WP-057-sync-pct-contract.md`):
+///
+/// `sync_pct: <value>[ (<label>)][ chunks <done>/<total>]`, value ∈ `<n>%` | `scanning` |
+/// `failed` | `unknown`. `n` comes only from [`CorpusProgress::percent`]; the chunks
+/// segment is emitted only with `<n>%`.
+pub(crate) fn format_sync_pct_line(
+    sync: Option<&crate::engines::progress::CorpusProgress>,
+) -> String {
+    use crate::engines::progress::{CorpusPhase, CorpusState};
+    let Some(p) = sync else {
+        return "sync_pct: unknown".into();
+    };
+    let label = || match p.phase {
+        Some(phase) => format!("{}, {}", wire_name(&p.state), wire_name(&phase)),
+        None => wire_name(&p.state),
+    };
+    match p.state {
+        CorpusState::Failed => match &p.error {
+            Some(err) => format!("sync_pct: failed ({})", wire_name(&err.reason)),
+            None => "sync_pct: failed".into(),
+        },
+        CorpusState::NeedsRebuild => "sync_pct: unknown (needs_rebuild)".into(),
+        _ if p.phase == Some(CorpusPhase::Scanning) || p.chunks_total.is_none() => {
+            format!("sync_pct: scanning ({})", label())
         }
-        None => crate::engines::code_search::SyncPct {
-            sync_pct: 0,
-            sync_label: None,
+        _ => match (p.percent(), p.chunks_total) {
+            (Some(pct), Some(total)) => format!(
+                "sync_pct: {}% ({}) chunks {}/{total}",
+                pct.min(100),
+                label(),
+                // Defensive: never show done > total even on malformed input.
+                p.chunks_done.min(total)
+            ),
+            _ => format!("sync_pct: unknown ({})", label()),
         },
     }
 }
 
-pub(crate) fn prepend_sync_pct(sync: &crate::engines::code_search::SyncPct, body: &str) -> String {
-    format!(
-        "{}
-{}",
-        format_sync_pct_line(sync),
-        body
-    )
+/// Merged retrieval progress (`.total`) from IDE; Tools never estimate a second scale.
+pub(crate) fn sync_pct_for_workspace(
+    engines: &crate::engines::WorkspaceEngines,
+    workspace_root: Option<&std::path::Path>,
+) -> Option<crate::engines::progress::CorpusProgress> {
+    let root = workspace_root
+        .map(|p| p.to_path_buf())
+        .or_else(|| engines.code_search().workspace_root())?;
+    Some(crate::engines::retrieval_progress_for_workspace(engines, &root).total)
+}
+
+pub(crate) fn prepend_sync_pct(
+    sync: Option<&crate::engines::progress::CorpusProgress>,
+    body: &str,
+) -> String {
+    format!("{}\n{}", format_sync_pct_line(sync), body)
+}
+
+#[cfg(test)]
+mod sync_line_tests {
+    use super::{format_sync_pct_line, prepend_sync_pct};
+    use crate::engines::progress::{CorpusError, CorpusProgress, FailReason, ProgressEngine};
+
+    /// Exact grammar of the frontend parser (WP-138, contract v2).
+    const GRAMMAR: &str = r"^sync_pct: (?:(\d{1,3})%|(scanning|failed|unknown))(?: \(([^()\n]+)\))?(?: chunks (\d+)\/(\d+))?$";
+
+    fn assert_grammar(line: &str) {
+        let re = regex::Regex::new(GRAMMAR).unwrap();
+        let caps = re
+            .captures(line)
+            .unwrap_or_else(|| panic!("grammar: {line:?}"));
+        match caps.get(1) {
+            Some(pct) => {
+                let n: u32 = pct.as_str().parse().unwrap();
+                assert!(n <= 100, "percent over 100: {line}");
+                if let (Some(d), Some(t)) = (caps.get(4), caps.get(5)) {
+                    let (d, t): (u64, u64) =
+                        (d.as_str().parse().unwrap(), t.as_str().parse().unwrap());
+                    assert!(d <= t, "done > total: {line}");
+                }
+            }
+            None => assert!(
+                caps.get(4).is_none(),
+                "no-percent line carries chunks: {line}"
+            ),
+        }
+    }
+
+    fn raw(
+        state: crate::engines::progress::CorpusState,
+        phase: Option<crate::engines::progress::CorpusPhase>,
+        done: u64,
+        total: Option<u64>,
+        pending: u64,
+    ) -> CorpusProgress {
+        CorpusProgress {
+            state,
+            phase,
+            chunks_done: done,
+            chunks_total: total,
+            chunks_pending: pending,
+            files_pending: 0,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn malformed_done_over_total_never_exceeds_100_or_total() {
+        use crate::engines::progress::{CorpusPhase as P, CorpusState as S};
+        for p in [
+            raw(S::Refreshing, Some(P::Embedding), 150, Some(100), 0),
+            raw(S::Ready, None, 150, Some(100), 0),
+            raw(S::Ready, None, 150, Some(100), 7),
+            raw(S::Refreshing, None, 9, Some(3), 0),
+        ] {
+            let line = format_sync_pct_line(Some(&p));
+            assert!(!line.contains("150%"), "{line}");
+            assert_grammar(&line);
+        }
+    }
+
+    #[test]
+    fn malformed_scanning_or_odd_state_never_carries_chunks() {
+        use crate::engines::progress::{CorpusPhase as P, CorpusState as S};
+        for p in [
+            raw(S::Refreshing, Some(P::Scanning), 3, Some(9), 0),
+            raw(S::Ready, Some(P::Scanning), 3, Some(9), 0),
+            raw(S::Ready, None, 3, None, 0),
+            raw(S::Failed, Some(P::Embedding), 3, Some(9), 0),
+            raw(S::NeedsRebuild, Some(P::Scanning), 3, None, 0),
+        ] {
+            let line = format_sync_pct_line(Some(&p));
+            assert!(!line.contains("scanning chunks"), "{line}");
+            if !line.contains('%') {
+                assert!(!line.contains(" chunks "), "{line}");
+            }
+            assert_grammar(&line);
+        }
+    }
+
+    #[test]
+    fn sync_line_percent_from_chunks() {
+        let p = CorpusProgress::embedding(9800, 10000, 200);
+        let line = format_sync_pct_line(Some(&p));
+        let pct = p.percent().unwrap();
+        assert!(pct <= 99, "in flight never 100");
+        assert_eq!(
+            line,
+            format!("sync_pct: {pct}% (refreshing, embedding) chunks 9800/10000")
+        );
+        assert_grammar(&line);
+        let ready = format_sync_pct_line(Some(&CorpusProgress::ready(5, 0)));
+        assert_eq!(ready, "sync_pct: 100% (ready) chunks 5/5");
+        assert_grammar(&ready);
+    }
+
+    #[test]
+    fn sync_line_scanning_has_no_fake_percent() {
+        let line = format_sync_pct_line(Some(&CorpusProgress::scanning(5, 3)));
+        assert_eq!(line, "sync_pct: scanning (refreshing, scanning)");
+        assert_grammar(&line);
+    }
+
+    #[test]
+    fn sync_line_failed_has_no_number() {
+        let failed = CorpusProgress::failed(
+            CorpusError {
+                engine: ProgressEngine::Model,
+                reason: FailReason::ModelMissing,
+                message: "missing".into(),
+            },
+            7,
+        );
+        let line = format_sync_pct_line(Some(&failed));
+        assert_eq!(line, "sync_pct: failed (model_missing)");
+        assert_grammar(&line);
+    }
+
+    #[test]
+    fn sync_line_unknown_for_missing_progress_and_needs_rebuild() {
+        let none = format_sync_pct_line(None);
+        assert_eq!(none, "sync_pct: unknown");
+        assert_grammar(&none);
+        let rebuild = format_sync_pct_line(Some(&CorpusProgress::needs_rebuild(3, 10)));
+        assert_eq!(rebuild, "sync_pct: unknown (needs_rebuild)");
+        assert_grammar(&rebuild);
+    }
+
+    #[test]
+    fn result_leads_with_sync_line() {
+        let p = CorpusProgress::scanning(1, 0);
+        let body = prepend_sync_pct(Some(&p), "hits");
+        assert!(body.lines().next().unwrap().starts_with("sync_pct: "));
+        assert_eq!(body.lines().nth(1), Some("hits"));
+    }
 }

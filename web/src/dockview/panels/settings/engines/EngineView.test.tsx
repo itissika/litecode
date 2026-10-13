@@ -33,13 +33,14 @@ function detailFixture(patch?: Partial<EnginesDetail["lsp"]>): EnginesDetail {
         tokenizer_found: false,
         ready: false,
       },
+      total: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
+      code: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
+      session: { state: "ready", phase: null, chunks_done: 0, chunks_total: 0, chunks_pending: 0, files_pending: 0, error: null },
       index: {
-        status: "absent",
         exists: false,
         needs_rebuild: false,
         vectors_ready: false,
         indexed_files: 0,
-        indexed_chunks: 0,
       },
       policy: {
         product_internal_dirs: [],

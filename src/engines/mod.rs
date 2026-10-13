@@ -7,9 +7,10 @@
 pub mod code_search;
 pub mod code_search_ipc;
 pub mod path_index;
+pub mod progress;
 pub mod session_search;
 mod status_view;
-pub use status_view::EngineUsability;
+pub use status_view::{EngineUsability, retrieval_progress_for_workspace};
 
 mod code_search_engine;
 pub use code_search_engine::CodeSearchEngine;
@@ -924,9 +925,12 @@ impl WorkspaceEngines {
         Ok(ConsumePreflight::Ready(root))
     }
 
-    /// One silent incremental pass for the code corpus (WP-079). Sync and
-    /// non-blocking: decides and, when due, spawns the refresh and returns.
+    /// One silent incremental pass for the code corpus (WP-079). Sync: runs the
+    /// WP-141 stat-only disk scan (blocks for that scan), then decides and,
+    /// when Warm + due, spawns the refresh and returns.
     /// Never rebuilds and never enters Warming; safe every tick, during turns.
+    /// NotWarm / no worker: still scans and writes `queue.json`, but never
+    /// digests (choice a).
     pub fn code_index_tick(&self) -> CodeIndexTick {
         use CodeIndexTickSkip as Skip;
         let Some(root) = self.code_search.workspace_root() else {
@@ -934,6 +938,14 @@ impl WorkspaceEngines {
         };
         if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
             return CodeIndexTick::Skipped(Skip::NotDesired);
+        }
+        // WP-141: the periodic stat-only scan rides this tick (no timer of its
+        // own). Worker up → IPC reconcile (works with a cooled RAM index).
+        // Otherwise the serve process stats `stamps.v1` into queue.json.
+        if self.code_search.worker_alive() {
+            self.code_search.request_reconcile();
+        } else {
+            code_search::queue_reconcile_from_stamps(&root);
         }
         if !matches!(self.state("code_search"), Some(EngineState::Warm)) {
             return CodeIndexTick::Skipped(Skip::NotWarm);
@@ -1163,8 +1175,10 @@ impl WorkspaceEngines {
     fn stop(&self, id: &str) {
         match id {
             "code_search" => {
+                // L3: clear only this side's busy flag. The session consume
+                // runs on its own flag and clears it when its task ends, so a
+                // stop + immediate restart cannot dispatch a second session refresh.
                 self.refresh_busy.store(false, Ordering::SeqCst);
-                self.session_refresh_busy.store(false, Ordering::SeqCst);
                 self.code_search.stop();
             }
             "lsp" => {
@@ -1585,7 +1599,10 @@ mod tests {
         let index_dir = crate::engines::code_search::index_dir(dir.path());
         std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
         std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        crate::engines::code_search::write_pending_hint(dir.path(), 3);
+        crate::engines::code_search::write_code_queue(
+            dir.path(),
+            &(0..3).map(|i| (format!("q{i}.rs"), false)).collect(),
+        );
 
         let engines = WorkspaceEngines::new();
         engines
@@ -1710,6 +1727,57 @@ mod tests {
         assert!(engines.last_error("code_search").is_none());
     }
 
+    // WP-135: the 30s session tick (router SESSION_INDEX_TICK →
+    // `consume_session_index_work`) gates on the session `queue.json`, not the
+    // deleted `pending_hint.json`, and runs on its own busy flag so the code
+    // tick (`code_index_tick`, `refresh_busy`) cannot starve it.
+    #[test]
+    fn session_tick_drains_queue_without_pending_hint() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        seed_ready_code_index(root);
+        let engines = tick_engines(root);
+        // Ready session index with one row, then a later row queued.
+        let db = root.join(".litecode").join("sessions.db");
+        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = crate::session::SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[crate::types::user_text("first")])
+            .unwrap();
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut emb = code_search::HashEmbedder;
+        let mut index = session_search::ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(
+            engines.consume_session_index_work().unwrap().mode,
+            RefreshAcceptedMode::Incremental,
+            "clean queue: the tick is a no-op"
+        );
+        data.insert_items(&id, &[crate::types::user_text("second")])
+            .unwrap();
+        session_search::queue_session_dirty(root, &reader);
+        assert!(
+            !root
+                .join(".litecode/session-index/pending_hint.json")
+                .exists()
+        );
+        assert_eq!(session_search::read_session_queue(root).queued, 1);
+        // Code tick busy must not block the session tick.
+        engines.refresh_busy.store(true, Ordering::SeqCst);
+        assert_eq!(
+            engines.consume_session_index_work().unwrap().mode,
+            RefreshAcceptedMode::Starting,
+            "queued session work passes the gate (stops only at the test worker)"
+        );
+        engines.refresh_busy.store(false, Ordering::SeqCst);
+        // What the worker runs for that tick: the queue drains to empty.
+        session_search::consume_session_index(root, &reader, &mut emb, &mut index).unwrap();
+        assert_eq!(session_search::read_session_queue(root).queued, 0);
+        assert_eq!(
+            engines.consume_session_index_work().unwrap().mode,
+            RefreshAcceptedMode::Incremental
+        );
+    }
+
     #[test]
     fn merge_index_work_prefers_rebuild() {
         use code_search::{IndexRebuildReason, IndexWork};
@@ -1793,7 +1861,10 @@ mod tests {
             engines.code_index_tick(),
             CodeIndexTick::Skipped(CodeIndexTickSkip::Clean)
         );
-        code_search::write_pending_hint(dir.path(), 2);
+        code_search::write_code_queue(
+            dir.path(),
+            &(0..2).map(|i| (format!("q{i}.rs"), false)).collect(),
+        );
         engines.set_state_for_test("code_search", EngineState::Warming);
         assert_eq!(
             engines.code_index_tick(),
@@ -1812,12 +1883,132 @@ mod tests {
         );
     }
 
+    // WP-131: tick work gate uses queue.json, not pending_hint.json.
+    #[test]
+    fn code_index_tick_sees_queue_without_pending_hint() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        let engines = tick_engines(dir.path());
+        let mut q = std::collections::HashSet::new();
+        q.insert(("a.rs".to_string(), false));
+        code_search::write_code_queue(dir.path(), &q);
+        assert!(
+            !dir.path()
+                .join(".litecode/index/pending_hint.json")
+                .exists()
+        );
+        // Past the Clean gate; stops only because no worker runs in unit tests.
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::WorkerDown)
+        );
+    }
+
+    // WP-141 (a): NotWarm still scans stamps.v1 → queue.json; no digest/spawn.
+    #[test]
+    fn code_index_tick_not_warm_queues_without_digest() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        let mut emb = code_search::HashEmbedder;
+        let index = code_search::build_full_index(root, &mut emb).unwrap();
+        index.save(root).unwrap();
+        // Persist stamps.v1 (fresh-build path), then drop the in-process runtime.
+        drop(code_search::CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(code_search::HashEmbedder)),
+            None,
+        ));
+        assert!(
+            code_search::index_dir(root).join("stamps.v1").exists(),
+            "stamps.v1 required for serve-side scan"
+        );
+
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        assert!(!engines.code_search().worker_alive());
+
+        std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::NotWarm)
+        );
+        let q = code_search::read_code_queue(root);
+        assert!(q.queued >= 1, "disk change must land in queue.json: {q:?}");
+        let p = code_search::code_corpus_progress(
+            root,
+            code_search::CodeEngineFacts {
+                desired: true,
+                state: Some(EngineState::Warming),
+                model_ready: true,
+            },
+        );
+        assert!(
+            p.files_pending > 0,
+            "files_pending signals pending work: {p:?}"
+        );
+        assert_eq!(
+            engines.state("code_search"),
+            Some(EngineState::Warming),
+            "tick must not warm or spawn a digest"
+        );
+        assert!(!engines.code_search().worker_alive());
+        assert!(!engines.is_refresh_busy());
+    }
+
+    // Stale-Running cleanup is worker-load only: the serve tick must never
+    // clear a job.json that a worker process is running (no busy flag here).
+    #[test]
+    fn serve_tick_never_clears_worker_running_job() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        let engines = tick_engines(dir.path());
+        code_search::begin_refreshing(dir.path()); // written by the worker
+        let mut q = std::collections::HashSet::new();
+        q.insert(("a.rs".to_string(), false));
+        code_search::write_code_queue(dir.path(), &q);
+        assert!(!engines.is_refresh_busy());
+        for _ in 0..3 {
+            let _ = engines.code_index_tick();
+        }
+        let view = code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
+        assert_eq!(
+            view.status,
+            code_search::IndexStatus::Refreshing,
+            "job kept"
+        );
+        assert!(code_search::index_dir(dir.path()).join("job.json").exists());
+    }
+
+    // L3: stopping code_search must not clear the session side's busy flag.
+    #[test]
+    fn stop_clears_only_its_own_busy_flag() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        let engines = tick_engines(dir.path());
+        engines.refresh_busy.store(true, Ordering::SeqCst);
+        engines.session_refresh_busy.store(true, Ordering::SeqCst);
+        engines.stop("code_search");
+        assert!(!engines.is_refresh_busy(), "code side cleared");
+        assert!(
+            engines.session_refresh_busy.load(Ordering::SeqCst),
+            "session task still owns its flag"
+        );
+        assert_eq!(engines.state("code_search"), Some(EngineState::Stopped));
+    }
+
     // WP-079 acceptance 2: session rebuild must not drag code into Warming.
     #[test]
     fn manual_refresh_split_keeps_code_out_of_warming() {
         let dir = TempDir::new().unwrap();
         seed_ready_code_index(dir.path());
-        code_search::write_pending_hint(dir.path(), 2); // code: Update
+        code_search::write_code_queue(
+            dir.path(),
+            &(0..2).map(|i| (format!("q{i}.rs"), false)).collect(),
+        ); // code: Update
         seed_session_first_desired(dir.path()); // session: Rebuild
         let engines = tick_engines(dir.path());
         assert!(matches!(

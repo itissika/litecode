@@ -63,4 +63,37 @@ describe("CodeSearchToolView", () => {
       "No matching code for query 'zzz'.",
     );
   });
+
+  it("WP-138: renders v2 words and chunks, keeps unrecognised line in body", () => {
+    const { unmount } = render(
+      <CodeSearchToolView
+        name="code_search"
+        status="ok"
+        input={{ query: "q" }}
+        output={output("sync_pct: failed (model_missing)\nNo matching code.")}
+      />,
+    );
+    expect(screen.getByTestId("tool-sync-pct-value").textContent).toBe("failed");
+    unmount();
+    const r2 = render(
+      <CodeSearchToolView
+        name="code_search"
+        status="ok"
+        input={{ query: "q" }}
+        output={output("sync_pct: 98% (refreshing, embedding) chunks 9800/10000\npath.ts:1: hit")}
+      />,
+    );
+    expect(screen.getByTestId("tool-sync-pct-chunks").textContent).toBe("9800/10000 chunks");
+    r2.unmount();
+    render(
+      <CodeSearchToolView
+        name="code_search"
+        status="ok"
+        input={{ query: "q" }}
+        output={output("sync_pct: 87\npath.ts:1: hit")}
+      />,
+    );
+    expect(screen.queryByTestId("tool-sync-pct")).toBeNull();
+    expect(screen.getByText(/sync_pct: 87/)).toBeTruthy();
+  });
 });

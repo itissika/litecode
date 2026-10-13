@@ -4,6 +4,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
+use super::progress::{CorpusProgress, RetrievalProgress};
 use super::{EngineState, EngineStatus, WorkspaceEngines};
 use crate::lsp::deps::{LspServerProbe, probe_workspace_servers};
 
@@ -100,8 +101,6 @@ impl WorkspaceEngines {
             .is_some_and(|m| crate::engines::code_search::needs_rebuild(m) || !vectors_ready);
         let index_view =
             crate::engines::code_search::resolve_index_view(workspace_root, retrieval_status.state);
-        let pending_updates = crate::engines::code_search::read_pending_hint(workspace_root);
-        let sync = crate::engines::code_search::sync_pct_from_view(&index_view, pending_updates);
         let session_status = crate::engines::session_search::session_index_status(workspace_root);
         let status = merge_retrieval_status(index_view.status, session_status);
         let code_work = crate::engines::code_search::index_work_from_disk(workspace_root);
@@ -121,9 +120,8 @@ impl WorkspaceEngines {
             || serde_json::json!({ "ready": false }),
             |model| serde_json::to_value(model).expect("model status serializes"),
         );
+        let retrieval_progress = retrieval_progress_at(workspace_root, retrieval_status);
         let index_json = serde_json::json!({
-            "status": status,
-            "progress": index_view.progress,
             "exists": index_exists,
             "needs_rebuild": needs_rebuild
                 || matches!(
@@ -133,22 +131,14 @@ impl WorkspaceEngines {
                 ),
             "vectors_ready": vectors_ready,
             "indexed_files": meta.as_ref().map_or(0, |m| m.indexed_files),
-            "indexed_chunks": meta.as_ref().map_or(0, |m| m.indexed_chunks),
             "created_at": meta.as_ref().map(|m| m.created_at.clone()),
             "model_id": meta.as_ref().map(|m| m.model_id.clone()),
             "embedder_id": meta.as_ref().map(|m| m.embedder_id.clone()),
             "pipeline_version": meta.as_ref().map(|m| m.pipeline_version),
-            "pending_updates": pending_updates,
-            "sync_pct": sync.sync_pct,
-            "sync_label": sync.sync_label,
             "work": work,
             "code": { "work": code_work },
             "session": {
-                "status": session_status,
                 "work": session_work,
-                "pending_updates": crate::engines::session_search::read_session_pending_hint(
-                    workspace_root
-                ),
             },
         });
         let policy_json = serde_json::json!({
@@ -166,6 +156,11 @@ impl WorkspaceEngines {
             "usable": retrieval_usable,
             "model": model_json,
             "index": index_json,
+            // WP-131 frozen interface (the legacy index.status / progress /
+            // sync_pct / indexed_chunks / pending_updates fields are removed).
+            "total": retrieval_progress.total,
+            "code": retrieval_progress.code,
+            "session": retrieval_progress.session,
             "policy": policy_json,
             "embed_device": self.code_search().embed_device(),
         })
@@ -192,6 +187,53 @@ impl WorkspaceEngines {
     }
 }
 
+/// Chunk-exact retrieval progress `{total, code, session}` for a workspace
+/// (WP-131). Consumers render percentages with `CorpusProgress::percent()`.
+pub fn retrieval_progress_for_workspace(
+    engines: &WorkspaceEngines,
+    root: &Path,
+) -> RetrievalProgress {
+    let status = engines
+        .workspace_engine_statuses(root)
+        .get("code_search")
+        .cloned()
+        .unwrap_or(EngineStatus {
+            desired: false,
+            state: None,
+            error: None,
+        });
+    retrieval_progress_at(root, &status)
+}
+
+fn retrieval_progress_at(workspace_root: &Path, status: &EngineStatus) -> RetrievalProgress {
+    let model_ready = crate::engines::code_search::probe_embedding_model()
+        .ok()
+        .is_some_and(|m| m.ready);
+    let code = crate::engines::code_search::code_corpus_progress(
+        workspace_root,
+        crate::engines::code_search::CodeEngineFacts {
+            desired: status.desired,
+            state: status.state,
+            model_ready,
+        },
+    );
+    RetrievalProgress::merge(code, session_corpus_progress(workspace_root, status))
+}
+
+/// Session corpus progress, reported by `session_search` itself (WP-135; the
+/// temporary ready/needs_rebuild adapter is removed). Same engine facts as the
+/// code leg: a stopped engine is `failed` only when desired.
+fn session_corpus_progress(workspace_root: &Path, status: &EngineStatus) -> CorpusProgress {
+    crate::engines::session_search::session_corpus_progress(
+        workspace_root,
+        crate::engines::session_search::SessionEngineFacts {
+            desired: status.desired,
+            state: status.state,
+        },
+    )
+}
+
+/// Legacy `index.status` merge (deprecated field, unchanged semantics).
 fn status_rank(status: crate::engines::code_search::IndexStatus) -> u8 {
     use crate::engines::code_search::IndexStatus;
     match status {
