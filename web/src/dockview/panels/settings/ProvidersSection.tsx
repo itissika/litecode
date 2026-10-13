@@ -9,6 +9,7 @@ import {
   useSettingsPersist,
   type SerializeResult,
 } from "./persist";
+import { partitionProviders } from "./providerBilling";
 
 /**
  * One provider, one credential field. Nothing to add and nothing to remove: a
@@ -116,29 +117,56 @@ export function ProvidersSection() {
     },
   });
 
+  const { plan, api } = useMemo(
+    () => partitionProviders(providers),
+    [providers],
+  );
+
+  const renderGrid = (group: CatalogProviderDto[], label: string) => {
+    if (group.length === 0) return null;
+    const headingId = `providers-group-${label === "Plan" ? "plan" : "api"}`;
+    return (
+      <section
+        key={label}
+        aria-labelledby={headingId}
+        className="flex flex-col gap-3"
+        data-testid={headingId}
+      >
+        <h3
+          id={headingId}
+          className="text-sm font-medium text-(--_dk-text-secondary)"
+        >
+          {label}
+        </h3>
+        <div className="grid grid-cols-2 gap-4">
+          {group.map((provider) => (
+            <ProviderCard
+              key={provider.id}
+              provider={provider}
+              draftKey={draftKeys[provider.id] ?? ""}
+              saveBlocked={saveBlocked}
+              onKeyChange={(key) =>
+                setDraftKeys((prev) => ({ ...prev, [provider.id]: key }))
+              }
+            />
+          ))}
+        </div>
+      </section>
+    );
+  };
+
   return (
     <SettingsPageShell title="Providers">
-      <div className="settings-content-indent">
+      <div className="settings-content-indent flex flex-col gap-6">
         {providers.length === 0 ? (
           <p className="text-sm text-(--_dk-text-disabled)">
             No providers in the catalog yet.
           </p>
         ) : (
-          // Two cards per row: each card is short (name + key), so the grid
-          // roughly halves the page's scroll length.
-          <div className="grid grid-cols-2 gap-4">
-            {providers.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                provider={provider}
-                draftKey={draftKeys[provider.id] ?? ""}
-                saveBlocked={saveBlocked}
-                onKeyChange={(key) =>
-                  setDraftKeys((prev) => ({ ...prev, [provider.id]: key }))
-                }
-              />
-            ))}
-          </div>
+          <>
+            {renderGrid(plan, "Plan")}
+            {renderGrid(api, "API")}
+          </>
         )}
       </div>
     </SettingsPageShell>

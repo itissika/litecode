@@ -8,6 +8,10 @@ import type {
 } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { ProvidersSection } from "./ProvidersSection";
+import {
+  partitionProviders,
+  providerBillingGroup,
+} from "./providerBilling";
 
 vi.mock("../../../api/settings", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../api/settings")>();
@@ -216,5 +220,168 @@ describe("ProvidersSection", () => {
       true,
     );
     expect(cardFor("OpenCode Go").getAttribute("data-configured")).toBe("true");
+  });
+});
+
+
+function idsInSection(sectionTestId: string): string[] {
+  const section = screen.getByTestId(sectionTestId);
+  return [...section.querySelectorAll(".settings-provider-card")].map((card) => {
+    const input = card.querySelector("input");
+    const label = input?.getAttribute("aria-label") ?? "";
+    return label.replace(/^API key for /, "");
+  });
+}
+
+describe("ProvidersSection — Plan / API groups (WP-114)", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  const planFour = [
+    provider({ id: "ark-coding", name: "Ark Coding", models: [] }),
+    provider({ id: "ark-agent", name: "Ark Agent", models: [] }),
+    provider({ id: "tencent-token", name: "Tencent Token", models: [] }),
+    provider({ id: "aliyun-token", name: "Aliyun Token", models: [] }),
+  ];
+  const apiFour = [
+    provider({ id: "openai", name: "OpenAI", models: [] }),
+    provider({ id: "deepseek", name: "DeepSeek", models: [] }),
+    provider({ id: "mimo", name: "MiMo", models: [] }),
+    provider({ id: "zhipu", name: "Zhipu", models: [] }),
+  ];
+
+  function seed(extra: CatalogProviderDto[] = []) {
+    const providers = [
+      ...planFour,
+      ...apiFour,
+      ...extra,
+      hiddenProvider,
+    ];
+    const doc = llmDoc({ providers });
+    mockedLlm.mockResolvedValue(doc);
+    useSettingsStore.setState({
+      open: true,
+      section: "connection",
+      revision: 3,
+      llm: doc,
+      persistByDoc: {},
+      docClock: {},
+      loadError: null,
+    });
+  }
+
+  it("1 plan four appear under Plan", () => {
+    seed();
+    render(<ProvidersSection />);
+    expect(idsInSection("providers-group-plan")).toEqual([
+      "Ark Coding",
+      "Ark Agent",
+      "Tencent Token",
+      "Aliyun Token",
+    ]);
+  });
+
+  it("2 openai/deepseek/mimo/zhipu appear under API", () => {
+    seed();
+    render(<ProvidersSection />);
+    expect(idsInSection("providers-group-api")).toEqual([
+      "OpenAI",
+      "DeepSeek",
+      "MiMo",
+      "Zhipu",
+    ]);
+  });
+
+  it("3 both groups have visible section headings", () => {
+    seed();
+    render(<ProvidersSection />);
+    expect(screen.getByRole("heading", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "API" })).toBeTruthy();
+    expect(screen.getByTestId("providers-group-plan").getAttribute("aria-labelledby")).toBe(
+      "providers-group-plan",
+    );
+    expect(screen.getByTestId("providers-group-api").getAttribute("aria-labelledby")).toBe(
+      "providers-group-api",
+    );
+  });
+
+  it("4 moonshot-coding + moonshot land in Plan / API", () => {
+    seed([
+      provider({ id: "moonshot-coding", name: "Kimi Code", models: [] }),
+      provider({ id: "moonshot", name: "Moonshot", models: [] }),
+    ]);
+    render(<ProvidersSection />);
+    expect(idsInSection("providers-group-plan")).toContain("Kimi Code");
+    expect(idsInSection("providers-group-api")).toContain("Moonshot");
+  });
+
+  it("5 unknown id → API group", () => {
+    seed([provider({ id: "brand-new-co", name: "Brand New Co", models: [] })]);
+    render(<ProvidersSection />);
+    expect(idsInSection("providers-group-api")).toContain("Brand New Co");
+    expect(idsInSection("providers-group-plan")).not.toContain("Brand New Co");
+  });
+
+  it("6 regression: key draft/autosave, configured grey, visible:false hidden", async () => {
+    const providers = [
+      ...planFour,
+      provider({
+        id: "openai",
+        name: "OpenAI",
+        configured: true,
+        masked_api_key: "sk-***oa",
+        models: [],
+      }),
+      ...apiFour.filter((p) => p.id !== "openai"),
+      hiddenProvider,
+    ];
+    const doc = llmDoc({ providers });
+    mockedLlm.mockResolvedValue(doc);
+    useSettingsStore.setState({
+      open: true,
+      section: "connection",
+      revision: 3,
+      llm: doc,
+      persistByDoc: {},
+      docClock: {},
+      loadError: null,
+    });
+
+    vi.useFakeTimers();
+    render(<ProvidersSection />);
+    expect(screen.queryByLabelText("API key for Hidden One")).toBeNull();
+    expect(cardFor("OpenAI").getAttribute("data-configured")).toBe("true");
+    expect(cardFor("Ark Coding").getAttribute("data-configured")).toBe("false");
+
+    fireEvent.change(screen.getByLabelText("API key for Ark Coding"), {
+      target: { value: "sk-ark" },
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockedPut).toHaveBeenCalledWith("ark-coding", "sk-ark");
+  });
+});
+
+describe("partitionProviders (WP-114)", () => {
+  it("routes plan allowlist to plan and everything else to api", () => {
+    const list = [
+      provider({ id: "ark-coding", name: "A" }),
+      provider({ id: "openai", name: "O" }),
+      provider({ id: "opencode-go", name: "G" }),
+      provider({ id: "opencode", name: "OC" }),
+      provider({ id: "unknown-x", name: "U" }),
+    ];
+    const { plan, api } = partitionProviders(list);
+    expect(plan.map((p) => p.id)).toEqual(["ark-coding", "opencode-go"]);
+    expect(api.map((p) => p.id)).toEqual(["openai", "opencode", "unknown-x"]);
+  });
+
+  it("WP-113: opencode-go → Plan; opencode + commandcode → API", () => {
+    expect(providerBillingGroup("opencode-go")).toBe("plan");
+    expect(providerBillingGroup("opencode")).toBe("api");
+    expect(providerBillingGroup("commandcode")).toBe("api");
   });
 });

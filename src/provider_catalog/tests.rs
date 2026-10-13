@@ -69,7 +69,7 @@ fn request_url_comes_from_endpoint_type() {
     let chat = catalog.model("opencode-go/deepseek-v4.1-flash").unwrap();
     assert_eq!(
         chat.request_url,
-        "https://opencode.ai/zen/go/v1/chat/completions"
+        "https://opencode.ai/inference/go/v1/chat/completions"
     );
 }
 
@@ -294,6 +294,42 @@ fn seed_gateway_hosts_keep_each_models_dialect() {
             .reasoning_off
             .as_deref(),
         Some("none")
+    );
+    let tencent_kimi = catalog.model("tencent-token/kimi-k3").unwrap();
+    assert_eq!(
+        tencent_kimi.request_url,
+        "https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions"
+    );
+    assert!(tencent_kimi.reasoning_off.is_none());
+    assert_eq!(
+        catalog
+            .model("tencent-token/mimo-v2.6-flash")
+            .unwrap()
+            .reasoning_off
+            .as_deref(),
+        Some("none")
+    );
+    assert!(catalog.model("tencent-token/minimax-m3").is_none());
+
+    let moonshot_plan = catalog.model("moonshot-coding/k3").unwrap();
+    assert_eq!(
+        moonshot_plan.request_url,
+        "https://api.kimi.com/coding/v1/chat/completions"
+    );
+    let moonshot_payg = catalog.model("moonshot/kimi-k3").unwrap();
+    assert_eq!(
+        moonshot_payg.request_url,
+        "https://api.moonshot.cn/v1/chat/completions"
+    );
+    let minimax_plan = catalog.model("minimax-token/MiniMax-M3").unwrap();
+    assert_eq!(
+        minimax_plan.request_url,
+        "https://api.minimax.cn/v1/chat/completions"
+    );
+    let minimax_payg = catalog.model("minimax/MiniMax-M2.7").unwrap();
+    assert_eq!(
+        minimax_payg.request_url,
+        "https://api.minimax.cn/v1/chat/completions"
     );
 
     let qwen = catalog.model("aliyun-token/qwen3.8-max").unwrap();

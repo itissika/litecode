@@ -7836,13 +7836,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-110-backend.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T12:21:57.884Z",
+      "progress": "closed done by gm: GM 封：tencent 补模型；moonshot/minimax 双套；OpenCode→inference 未测；测绿未 commit",
+      "status_entered_at": null,
       "parent": "WP-110",
       "goal": "tencent 补模型；Moonshot/MiniMax 双套端点；OpenCode base 探测后对齐",
       "approver": "gm",
@@ -7880,6 +7880,19 @@
           "actor": "backend_mid",
           "action": "start",
           "note": "GM 已批；派发 WP-113 给 Provider"
+        },
+        {
+          "ts": "2026-10-13T12:28:29.409Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-113 done；汇总 WP-110-backend.md；新 id 已对齐前端"
+        },
+        {
+          "ts": "2026-10-13T12:28:45.945Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 封：tencent 补模型；moonshot/minimax 双套；OpenCode→inference 未测；测绿未 commit",
+          "to": "done"
         }
       ]
     },
@@ -7950,7 +7963,7 @@
       "id": "WP-113",
       "domain": "model-config",
       "title": "WP-111 目录落地执行",
-      "result": "catalog 落地见 WP-110-provider.md",
+      "result": "tencent+kimi/mimo; moonshot-coding/moonshot; minimax-token/minimax; opencode→inference",
       "done_when": [
         "tencent 两模型已挂",
         "Moonshot/MiniMax 已加(有plan则双套)",
@@ -7960,13 +7973,13 @@
       ],
       "owner": "provider",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-110-provider.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T12:23:19.654Z",
+      "progress": "closed done by backend_mid: 抽测绿；id 已转前端；OpenCode 无 key 未测可接受",
+      "status_entered_at": null,
       "parent": "WP-111",
       "goal": "tencent 补 kimi-k3/mimo-v2.6-flash；新增 Moonshot/MiniMax（有 plan 则双端点）；OpenCode base 探测后对齐 inference",
       "approver": "backend_mid",
@@ -8004,6 +8017,37 @@
           "actor": "provider",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T12:26:50.827Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-110-provider.md\" -> \".litecode/ops/artifacts/WP-110-provider.md\""
+        },
+        {
+          "ts": "2026-10-13T12:26:51.155Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"catalog+tests done; awaiting acceptance\""
+        },
+        {
+          "ts": "2026-10-13T12:26:51.474Z",
+          "actor": "provider",
+          "action": "set",
+          "note": "result: \"catalog 落地见 WP-110-provider.md\" -> \"tencent+kimi/mimo; moonshot-coding/moonshot; minimax-token/"
+        },
+        {
+          "ts": "2026-10-13T12:26:51.793Z",
+          "actor": "provider",
+          "action": "deliver",
+          "note": "WP-113 implemented; artifact WP-110-provider.md; provider ids moonshot-coding,moonshot,minimax-token,minimax; no commit"
+        },
+        {
+          "ts": "2026-10-13T12:28:29.046Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "抽测绿；id 已转前端；OpenCode 无 key 未测可接受",
+          "to": "done"
         }
       ]
     },
@@ -8021,23 +8065,56 @@
       ],
       "owner": "frontend",
       "reviewer": "frontend_mid",
-      "status": "drafting",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-110-web.md",
-      "progress": "drafting",
-      "status_entered_at": null,
+      "progress": "awaiting acceptance by frontend_mid",
+      "status_entered_at": "2026-10-13T12:32:25.791Z",
       "parent": "WP-112",
       "goal": "按 WP-110-frontend.md：Settings Providers 列表分成 Plan / API 按量两组；卡片与密钥逻辑不变；不改 Models/ModelSwitcher；规则与 WP-111/113 provider id 对齐；只支持一种分组规则；vitest+tsc 绿；不 commit",
       "approver": "frontend_mid",
-      "content": null,
+      "content": {
+        "kind": "direct",
+        "text": "# WP-114 方案（前端-web；只改 web/，不 commit，未批不 start）\n\n口径：WP-110-frontend.md。Settings → Providers 列表按计费形态拆成 **Plan** / **API 按量** 两组。卡片形态、密钥保存、其它 Settings / 选模 UI 不变。只维护一套分区规则，不做新旧双格式兼容。\n\n## Goal\nvisible providers 分成两组渲染；各组保留现有两列网格 + `ProviderCard`。\n\n## 改动点（批后实施）\n1. **`web/src/dockview/panels/settings/ProvidersSection.tsx`**（约 :81–141）\n   - `providers = filter(visible)` 后，调用纯函数 `partitionProviders(providers)` → `{ plan, api }`。\n   - 渲染两段：各一段组标题（建议文案 `Plan` / `API`，或短中文「套餐 Plan」/「按量 API」— 实施时定一种）+ 现有 `grid grid-cols-2` + `ProviderCard`。\n   - 空组：该组不渲染标题与网格（或渲染标题 + 空占位；实施时选「有卡才出标题」以免空标题）。\n   - 密钥草稿 / autosave / configured 灰态 / `key={provider.id}` **逻辑不动**，只改列表布局。\n\n2. **抽出纯函数 + 规则表**（同文件顶部或邻接 `providerBilling.ts`）\n   - 常量 `PLAN_PROVIDER_IDS: ReadonlySet<string>`：\n     - 现网：`ark-coding`、`ark-agent`、`tencent-token`、`aliyun-token`\n     - 占位（WP-113 最终 id 以中层转发 / `WP-110-provider.md` 为准；方案先用）：`moonshot-plan`、`minimax-plan`（若最终 id 不同，规则表改一次）\n   - 常量 `API_PROVIDER_IDS`（显式列出便于测）：`openai`、`deepseek`、`mimo`、`zhipu`；以及占位 `moonshot-payg`、`minimax-payg`\n   - **`opencode` / `opencode-go` / `commandcode`：桶待 backend_mid 确认** — 方案占位，**不自创第二套格式**；确认前不进 PLAN 表（若出现在 catalog，走「未知 → API」默认，或确认后只改规则表一次）\n   - `partitionProviders(list)`：`id ∈ PLAN_PROVIDER_IDS` → plan；其余（含未知与确认前的网关 id）→ api。**单一路径，不读后端 billing_kind 字段**（本波 catalog 无该字段）。\n\n3. **`ProviderLogos.tsx`**\n   - 仅当新 id 缺 logo 时补映射或走现有 fallback；**不挡分组**。无新 id 时可不动。\n\n4. **不改**：`ModelsSection` / `ModelSwitcher` / Agents / 密钥 PUT；后端 catalog/config；desktop 代码。\n\n## 测试（`ProvidersSection.test.tsx`，vitest `/exec-daemon/node` v22）\n1. plan 四家（ark-coding / ark-agent / tencent-token / aliyun-token）在 Plan 组。\n2. openai / deepseek / mimo / zhipu 在 API 组。\n3. 两组各有可见 section 标题（或等价 a11y：`role=\"region\"` / `aria-labelledby` / heading）。\n4. 模拟 `moonshot-plan` + `moonshot-payg`（或 WP-113 最终 id）分别落入 Plan / API。\n5. 未知 id → API 组。\n6. 回归：key 草稿/autosave、configured 灰态、`visible:false` 不展示。\n7. `tsc -b` 0；lint N/A。\n\n另：`partitionProviders` 可单测规则表（含未知默认、占位 moonshot 对）。\n\n## 待中层 / backend 确认（不阻塞本方案提交）\n- `opencode` / `opencode-go` / `commandcode` 归 Plan 还是 API — 确认后只改规则表。\n- Moonshot / MiniMax 最终 provider id — 对齐 `WP-110-provider.md` 后改规则表 + 测 4。\n\n## desktop\n内嵌 web，不改；静态核对 `git status desktop`。\n\n## 验收\n测 1–7 绿；diff 仅 web/（+ ops 产物）；未 commit。\n\n## 不在范围\nModels/ModelSwitcher 再分组；后端；双格式兼容；commit/push。"
+      },
       "history": [
         {
           "ts": "2026-10-13T12:23:06.608Z",
           "actor": "frontend_mid",
           "action": "create",
           "note": "goal: 按 WP-110-frontend.md：Settings Providers 列表分成 Plan / API 按量两组；卡片与密钥逻辑不变；不改 Models/ModelSwitcher；规则与 WP-111/113 provider id 对齐；只支持一种分组规则；vitest+tsc 绿；不 commit"
+        },
+        {
+          "ts": "2026-10-13T12:25:30.034Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-114 方案（前端-web；只改 web/，不 commit，未批不 start）\n\n口径：WP-110-frontend.md。Settings →"
+        },
+        {
+          "ts": "2026-10-13T12:25:30.408Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:26:00.877Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "plan OK vs WP-112: ProvidersSection Plan/API only; single partitionProviders+rule table; allowlists+unknown→API; OpenCode wait backend; Moonshot/MiniMax placeholders; tests 1-7; no dual-format/commit. Start when mid says go."
+        },
+        {
+          "ts": "2026-10-13T12:26:24.288Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:32:25.791Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "Plan/API 分组；WP-113 定稿规则表；14 相关 + 全量 1295，tsc 0"
         }
       ]
     }

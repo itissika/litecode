@@ -46,3 +46,11 @@
 - 官方 plan 端点不存在或文档含糊 → 只建按量，产物写明
 - 无 OpenCode key → 无法实测 zen vs inference，按文档迁
 - 模型 id 与腾讯侧大小写/路径不一致 → 以官方模型表为准并在产物附链接
+
+## 交付汇总（backend_mid，2026-10-13 20:2x HKT）
+- WP-113 done。产物：WP-110-provider.md。
+- tencent-token：已补 kimi-k3、mimo-v2.6-flash；未加 minimax-m3。
+- 新 provider：`moonshot-coding`（plan）、`moonshot`（payg）、`minimax-token`（plan）、`minimax`（payg）。MiniMax 两端点 URL 相同、Key 不可混用故拆两家。
+- OpenCode/Go：endpoint 迁到 inference / inference/go；session 头保留；无 key → 探测未测。
+- 中层复跑：`cargo fmt --check` 干净；`provider_catalog` 35/35；未 commit。
+- 已把最终 id 与分组建议转前端 WP-112。

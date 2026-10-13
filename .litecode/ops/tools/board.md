@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T12:25:00.671Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T12:32:25.961Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -126,10 +126,10 @@
 | WP-108 | 　└ WP-106/B 国内云套餐：ark-coding/ark-agent/tencent-token/aliyun-token | done | provider | backend_mid |
 | WP-109 | 　└ WP-106/C 聚合/网关：opencode/opencode-go/commandcode + Q4 新供应商候选 | done | provider | backend_mid |
 | WP-110 | provider 补模型/新加两家 + 前端分组 | in_progress | gm | andy |
-| WP-111 | └ provider 目录落地 | in_progress | backend_mid | gm |
-| WP-113 | 　└ WP-111 目录落地执行 | in_progress | provider | backend_mid |
+| WP-111 | └ provider 目录落地 | done | backend_mid | gm |
+| WP-113 | 　└ WP-111 目录落地执行 | done | provider | backend_mid |
 | WP-112 | └ provider 列表分组 | in_progress | frontend_mid | gm |
-| WP-114 | 　└ WP-112 web：provider 列表 plan/api 分组 | drafting | frontend | frontend_mid |
+| WP-114 | 　└ WP-112 web：provider 列表 plan/api 分组 | review | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

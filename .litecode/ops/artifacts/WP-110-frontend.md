@@ -14,18 +14,19 @@ Settings → **Providers** 列表按计费形态分成两组：**Plan** 一组�
   - 单卡：`ProviderCard` — logo + `name` + API key 字段；`key={provider.id}`。
 - **DTO**：`web/src/api/settings.ts` `CatalogProviderDto`（约 :58-69）— `id/name/visible/configured/masked_api_key/endpoint/endpoint_type/models`；**无** `billing_kind` / group 字段。
 - **后端投影**：`src/config/settings_writer.rs` `LlmProviderView` 同上，无分组字段。
-- **目录现状**（`src/provider_catalog/default_catalog.toml`）：尚无 Moonshot/MiniMax；现有 plan 名产品为 `ark-coding` / `ark-agent` / `tencent-token` / `aliyun-token`；按量/直连为 `openai` / `deepseek` / `mimo` / `zhipu`；网关 `opencode` / `opencode-go` / `commandcode` 桶待与 backend_mid 对齐。
+- **目录现状**（`src/provider_catalog/default_catalog.toml` + WP-113）：plan 名产品含 `ark-coding` / `ark-agent` / `tencent-token` / `aliyun-token` / `moonshot-coding` / `minimax-token` / `opencode-go`；按量/直连/聚合含 `openai` / `deepseek` / `mimo` / `zhipu` / `moonshot` / `minimax` / `opencode` / `commandcode`。分组规则已由 backend_mid **2026-10-13 HKT 锁定**（见下节）。
 - **不改**：`ModelsSection.tsx`（按已配置 provider 折卡）、`ModelSwitcher.tsx`（按 `provider_id` 聚模型）— 属「其它 UI 不变」。
 
-## 分组规则（与 WP-111/113 对齐）
-1. **本波默认**：前端用**稳定规则**分区（实现自定：allowlist 和/或 id/name/endpoint 启发式），与后端「一家 plan、一家 payg」双 provider 命名对齐（WP-110-backend：命名类比 ark-coding / ark-agent）。
-2. **临时归桶（现 catalog）**
-   - **Plan**：`ark-coding`、`ark-agent`、`tencent-token`、`aliyun-token`
-   - **API 按量**：`openai`、`deepseek`、`mimo`、`zhipu`
-   - **待 backend_mid 确认**：`opencode`、`opencode-go`、`commandcode`（网关/订阅，先占位；定稿后只改规则表，不引入第二套格式）
-3. **Moonshot / MiniMax**：WP-113 落地后若有 plan+按量 → **两个 provider id**；分别落入 Plan / API 组。最终 id 以 backend_mid 私信 / `WP-110-provider.md` 为准；前端规则表跟上一次。
-4. **可选后续**：若后端日后在 catalog / `LlmProviderView` 增加 `billing_kind: "plan"|"api"`，前端可改读该字段；**本包不阻塞**，可先靠前端规则上线。
-5. **单一格式**：只维护一套分区表/规则；不做「有字段用字段、无字段用启发式」双路径长期并存。
+## 分组规则（与 WP-111/113 对齐 · backend_mid 2026-10-13 定稿）
+1. **本波默认**：前端用**稳定规则**分区（实现自定：allowlist），与后端「一家 plan、一家 payg」双 provider 命名对齐（WP-110-backend：命名类比 ark-coding / ark-agent）。
+2. **定稿归桶**（backend_mid 私信 + WP-113，**2026-10-13 HKT 锁定**）
+   - **Plan**：`ark-coding`、`ark-agent`、`tencent-token`、`aliyun-token`、`moonshot-coding`、`minimax-token`、`opencode-go`
+   - **API 按量**：`openai`、`deepseek`、`mimo`、`zhipu`、`moonshot`、`minimax`、`opencode`、`commandcode`
+   - **未知 id → API 按量**（默认，避免 Plan 误收）
+3. **Moonshot / MiniMax**：`moonshot-coding`（Kimi Code）/ `minimax-token`（M Plan）→ Plan；`moonshot` / `minimax`（按量）→ API。占位 id `moonshot-plan` / `moonshot-payg` / `minimax-plan` / `minimax-payg` **作废，勿再用**。
+4. **OpenCode 系**：`opencode-go` → Plan（月订阅套餐）；`opencode`、`commandcode` → API（按量/聚合 PAYG）。已不再「待 backend 确认」。
+5. **可选后续**：若后端日后在 catalog / `LlmProviderView` 增加 `billing_kind: "plan"|"api"`，前端可改读该字段；**本包不阻塞**，可先靠前端规则上线。
+6. **单一格式**：只维护一套分区表/规则；不做「有字段用字段、无字段用启发式」双路径长期并存。
 
 ## 子包
 | 子包 | owner | 域 | 产物 |
@@ -43,7 +44,7 @@ Settings → **Providers** 列表按计费形态分成两组：**Plan** 一组�
 1. 现有 plan 四家出现在 Plan 组。
 2. openai/deepseek/mimo/zhipu 出现在 API 组。
 3. 两组各有可见 section 标题（或等价 a11y 标记）。
-4. 模拟 moonshot-plan + moonshot-payg（或 WP-113 最终 id）分别落入正确组。
+4. 模拟 `moonshot-coding` + `moonshot`（及 `minimax-token` + `minimax`）分别落入 Plan / API；`opencode-go`→Plan，`opencode`/`commandcode`→API。
 5. 未知 id → API 组（默认）。
 6. 回归：key 草稿/autosave、configured 灰态、`visible:false` 仍不展示。
 7. `tsc -b` 0；lint N/A（web 无 lint 工具）。
@@ -59,11 +60,11 @@ Settings 为 web 内嵌；预计 **不改 desktop**。静态核对即可（`git 
 ## 验收标准
 - 子包测 1–7 绿；中层交叉审 diff 仅 web/
 - Providers 页可见 **Plan** 与 **API 按量** 两组；现网 plan/api 归桶正确
-- WP-113 双端点 id 出现后规则表已纳入且测覆盖
-- 与 backend_mid 对过 OpenCode/commandcode 桶与最终 Moonshot/MiniMax id（可在联调笔记写明）
+- WP-113 定稿 id 已纳入规则表且测覆盖（Plan 含 moonshot-coding/minimax-token/opencode-go；API 含 moonshot/minimax/opencode/commandcode）
+- OpenCode / Moonshot / MiniMax 桶已与 backend_mid 锁定（2026-10-13），无需再占位
 - 未 commit
 
-## 待确认
-1. **backend_mid**：`opencode` / `opencode-go` / `commandcode` 归 Plan 还是 API 按量？
-2. **backend_mid / WP-113**：Moonshot、MiniMax 最终 provider id（有 plan 则两套）— 对齐后改规则表一次。
-3. **GM**（可选）：组标题中英偏好；未知 id 默认进 API 是否认可。
+## 已锁定（原「待确认」关闭）
+1. ~~OpenCode 桶~~ → `opencode-go` Plan；`opencode` / `commandcode` API（backend_mid 2026-10-13）。
+2. ~~Moonshot / MiniMax id~~ → Plan: `moonshot-coding` / `minimax-token`；API: `moonshot` / `minimax`。
+3. **GM**（可选，不阻塞）：组标题中英偏好；未知 id 默认进 API 已按合同执行。

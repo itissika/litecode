@@ -77,7 +77,7 @@ quirks = ["thinking_type_switch"]
 [[providers]]
 id = "opencode"
 name = "OpenCode Zen"
-endpoint = "https://opencode.ai/zen/v1"
+endpoint = "https://opencode.ai/inference/v1"
 endpoint_type = "chat_completions"
 auth = "bearer"
 headers = { "x-opencode-session" = "{{session_id}}" }
@@ -85,7 +85,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 [[providers]]
 id = "opencode-go"
 name = "OpenCode Go"
-endpoint = "https://opencode.ai/zen/go/v1"
+endpoint = "https://opencode.ai/inference/go/v1"
 endpoint_type = "chat_completions"
 auth = "bearer"
 headers = { "x-opencode-session" = "{{session_id}}" }
@@ -138,6 +138,40 @@ name = "阿里云百炼 Token Plan"
 endpoint = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
 endpoint_type = "responses"
 auth = "bearer"
+
+
+# Kimi Code subscription (plan). Distinct base and key from open-platform payg.
+[[providers]]
+id = "moonshot-coding"
+name = "Kimi Code"
+endpoint = "https://api.kimi.com/coding/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
+# Moonshot / Kimi open platform pay-as-you-go.
+[[providers]]
+id = "moonshot"
+name = "Moonshot"
+endpoint = "https://api.moonshot.cn/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
+# MiniMax M Plan / Token Plan. Same OpenAI-compatible base as payg; subscription key is not interchangeable.
+[[providers]]
+id = "minimax-token"
+name = "MiniMax Token Plan"
+endpoint = "https://api.minimax.cn/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
+# MiniMax open platform pay-as-you-go.
+[[providers]]
+id = "minimax"
+name = "MiniMax"
+endpoint = "https://api.minimax.cn/v1"
+endpoint_type = "chat_completions"
+auth = "bearer"
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Models
@@ -804,6 +838,29 @@ context_window = 256000
 max_output = 128000
 modalities = ["text"]
 
+
+[[models]]
+id = "kimi-k3"
+provider_id = "tencent-token"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 32768
+modalities = ["text"]
+# Mirrors ark-coding/opencode-go K3 ladder; Tencent Token Plan model id is kimi-k3.
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "mimo-v2.6-flash"
+provider_id = "tencent-token"
+label = "MiMo v2.6 Flash"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+# MiMo ladder none/low/medium/high on chat hosts (see opencode-go).
+reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+
 # ── Alibaba Token Plan ───────────────────────────────────────────────────────
 # Top effort is `max`, so the response echo is normalized. Vision models are
 # the ones the plan lists as understanding images. Responses input wants the
@@ -852,3 +909,81 @@ max_output = 128000
 modalities = ["text"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { replay = "summary", tiers = { low = "low", medium = "high", high = "max" } }
+
+# ── Moonshot / Kimi Code (plan) ──────────────────────────────────────────────
+# Plan model ids differ from open-platform payg (k3 vs kimi-k3).
+
+[[models]]
+id = "k3"
+provider_id = "moonshot-coding"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+# Official effort low/high/max; medium maps to high. none disables thinking.
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "kimi-for-coding"
+provider_id = "moonshot-coding"
+label = "Kimi for Coding"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+
+# ── Moonshot open platform (payg) ────────────────────────────────────────────
+
+[[models]]
+id = "kimi-k3"
+provider_id = "moonshot"
+label = "Kimi K3"
+context_window = 256000
+context_window_max = 1048576
+max_output = 128000
+modalities = ["text"]
+# Payg K3 uses reasoning_effort low/high/max.
+reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
+
+# ── MiniMax Token Plan (M Plan) ──────────────────────────────────────────────
+# Official OpenAI-compatible model ids are case-sensitive (MiniMax-M3).
+
+[[models]]
+id = "MiniMax-M3"
+provider_id = "minimax-token"
+label = "MiniMax M3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "MiniMax-M2.7"
+provider_id = "minimax-token"
+label = "MiniMax M2.7"
+context_window = 192000
+context_window_max = 204800
+max_output = 128000
+modalities = ["text"]
+
+# ── MiniMax pay-as-you-go ────────────────────────────────────────────────────
+
+[[models]]
+id = "MiniMax-M3"
+provider_id = "minimax"
+label = "MiniMax M3"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text"]
+
+[[models]]
+id = "MiniMax-M2.7"
+provider_id = "minimax"
+label = "MiniMax M2.7"
+context_window = 192000
+context_window_max = 204800
+max_output = 128000
+modalities = ["text"]
