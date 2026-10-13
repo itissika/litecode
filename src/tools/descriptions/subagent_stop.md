@@ -1,1 +1,1 @@
-Request cancellation of a child session's current turn. The child session and its context remain.
+Stop a child session's current turn. Returns stopped, or nothing running if no turn was active. Only the current turn is stopped: the child session, its context and any queued messages remain, and queued messages are still delivered.

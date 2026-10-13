@@ -13,6 +13,7 @@ import type {
   BufferLoaded,
   HumanRow,
   Item,
+  SubagentBindingState,
   SubagentBound,
   WireBufferEvent,
 } from "../api/types";
@@ -72,6 +73,8 @@ export interface MessageSlice {
   hydrated: boolean;
   shapeError: string | null;
   subagentBindings: Record<string, string>;
+  /** WP-086 tombstones (call_id → state). Missing entry = not deleted. */
+  subagentBindingStates?: Record<string, SubagentBindingState>;
   blockLogGrowth: boolean;
   turnEndNotice: TurnEndNotice | null;
 }
@@ -96,6 +99,7 @@ export const EMPTY_SLICE: MessageSlice = {
   hydrated: false,
   shapeError: null,
   subagentBindings: {},
+  subagentBindingStates: {},
   blockLogGrowth: false,
   turnEndNotice: null,
 };
@@ -107,6 +111,7 @@ export function emptySlice(): MessageSlice {
     messages: EMPTY_DISPLAY,
     display: EMPTY_DISPLAY,
     subagentBindings: {},
+    subagentBindingStates: {},
   };
 }
 
@@ -287,6 +292,11 @@ interface MessageStore extends MessageState {
     rev: { session_id: string; last_seq: number; next_seq: number },
   ) => void;
   onSubagentBound: (sessionId: string, bound: SubagentBound) => void;
+  /** WP-086: merge snapshot `subagent_binding_states` (absent → no-op). */
+  applySubagentBindingStates: (
+    sessionId: string,
+    states: Record<string, SubagentBindingState> | undefined,
+  ) => void;
   allowLogGrowth: (sessionId: string) => void;
 
   setTurnEndNotice: (sessionId: string, notice: TurnEndNotice | null) => void;
@@ -376,6 +386,12 @@ export const useMessageStore = create<MessageStore>((set, get) => {
         ...slice.subagentBindings,
         ...(loaded.subagent_bindings ?? {}),
       };
+      if (loaded.subagent_binding_states) {
+        next.subagentBindingStates = {
+          ...(slice.subagentBindingStates ?? {}),
+          ...loaded.subagent_binding_states,
+        };
+      }
       debugTrace("buffer", "load", {
         sessionId,
         fromSeq: loaded.from_seq,
@@ -395,6 +411,14 @@ export const useMessageStore = create<MessageStore>((set, get) => {
           ...slice.subagentBindings,
           [bound.call_id]: bound.child_session_id,
         },
+      });
+    },
+
+    applySubagentBindingStates: (sessionId, states) => {
+      if (!states) return;
+      const slice = getSlice(get().bySession, sessionId);
+      patch(sessionId, {
+        subagentBindingStates: { ...(slice.subagentBindingStates ?? {}), ...states },
       });
     },
 

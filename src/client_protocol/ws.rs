@@ -309,14 +309,18 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     // G0: forward session lifecycle events to this connection.
     let lifecycle_tx = response_tx.clone();
     let mut lifecycle_rx = state.sessions.subscribe_lifecycle();
+    let lifecycle_sessions = state.sessions.clone();
     tokio::spawn(async move {
+        // WP-091 R8: raw status on turn events; status_changed comes from
+        // the serve-level TurnStatusHook as SessionStatusChanged.
         loop {
             match lifecycle_rx.recv().await {
                 Ok(msg) => {
-                    if lifecycle_tx
-                        .send(project::lifecycle_event_to_wire(&msg))
-                        .is_err()
-                    {
+                    let frame = crate::client_protocol::status_track::project_lifecycle(
+                        &lifecycle_sessions,
+                        &msg,
+                    );
+                    if lifecycle_tx.send(frame).is_err() {
                         break;
                     }
                 }

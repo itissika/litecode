@@ -5626,6 +5626,837 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-084",
+      "domain": "team-ops",
+      "title": "调研：subagent session 操作缺口",
+      "result": "subagent session 已是一等公民；盘清查消息/发消息/停止 turn/删除 subagent session 的现有能力与缺口（后端协议、工具、前端、CLI），给出补全方案与分档；只读调研不改代码",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy 10-13 14:10 收敛口径（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "subagent session 已是一等公民；盘清查消息/发消息/停止 turn/删除 subagent session 的现有能力与缺口（后端协议、工具、前端、CLI），给出补全方案与分档；只读调研不改代码",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "split: WP-085 后端中层牵头调研（前端中层配合）。Andy 10-13 13:16 开包；只读"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T05:16:56.691Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: subagent session 已是一等公民；盘清查消息/发消息/停止 turn/删除 subagent session 的现有能力与缺口（后端协议、工具、前端、CLI），给出补全方案与分档；只读调研不改代码"
+        },
+        {
+          "ts": "2026-10-13T05:17:03.982Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: split: WP-085 后端中层牵头调研（前端中层配合）。Andy 10-13 13:16 开包；只读"
+        },
+        {
+          "ts": "2026-10-13T05:17:04.553Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T05:17:05.010Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 10-13 聊天开包（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T05:17:05.448Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T05:28:28.777Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "等 Andy 定 D4 10 项"
+        },
+        {
+          "ts": "2026-10-13T06:10:40.663Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 10-13 14:10 收敛口径（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-085",
+      "domain": "team-ops",
+      "title": "后端中层：subagent session 操作缺口调研",
+      "result": "四域合并完成：30 条发现（1档11/2档6/3档2/4档2/5档9），最小补全集 R1-R11，Andy 待定 10 项；子会话直发冲突裁定：在跑入队 seam 注入、空闲报 not a primary agent（静态读码）。产物 WP-084-research.md",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-084-research.md",
+      "progress": "closed done by gm: 调研完整，D4 已呈 Andy",
+      "status_entered_at": null,
+      "parent": "WP-084",
+      "goal": "组织 Session/Runtime/Tools + 前端中层，四类操作逐一盘：入口(agent工具/client_protocol/HTTP/前端/CLI)、权限与父子生命周期、现状缺口、补全方案（参考成熟实现）、分档；产物 WP-084-research.md；只读",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-084-research · subagent session 四类操作调研（WP-085 计划）\n\n- 角色：backend_mid；父 WP-084（gm，Andy 开）；本包 WP-085（direct，approver=gm）。前端部分由前端中层配合。\n- 基线：分支 `ops/team-framework`；**只读**，不改 `src/`、`tests/`、`web/`，不 commit，不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13（HKT）。本文件现为调研计划；交付时覆写为调研报告。\n\n## 1. Goal\n针对 subagent session 的 **查消息 / 发消息 / 停止 turn / 删除** 四类操作：盘清各入口现状与缺口、父子生命周期一致性，参考成熟实现给最小补全集 + 分工 + 可钉死验收，按五档分类并列出需 Andy 定的产品未定项。\n\n## 2. 形式\nkind=direct：不拆子包；各域 bot 按下表领题做只读调查，回报给 backend_mid，中层汇总。理由：纯调研、无代码改动、无文件竞态。\n\n## 3. 初扫定位（rg，待各域核实）\n| 域 | 位置 |\n|---|---|\n| Tools（父 agent 工具） | `src/tools/subagent/{launch,send,stop,status,wait,list,turn,jobs,hub,spawn_contract}.rs`、`src/tools/descriptions/subagent_launch.md`、`src/tool/{agent_bindings,authorize,availability,registry}.rs`、`src/permission/{engine,sinks,presets}.rs` |\n| Session（client_protocol/serve/session/CLI） | `src/client_protocol/protocol.rs`（:24 AGENT_SUBAGENT_BOUND、:192 running_with_subagent、:203 parent 标记）、`connection.rs`（:340 \"cannot retry a subagent session\"、:1320 child_bindings）、`controller/session_lifecycle.rs`（:357 delete_session、:376-377 purge_parent/forget_child）、`controller/mod.rs`、`project.rs:471`；`src/serve/state.rs:130-143`、`src/serve/settings.rs`；`src/session/{live,model,manager}.rs`、`src/session/DATA.md`；`src/cli/` |\n| Runtime | `src/runtime/subagent_auto_turn.rs`、`pending_auto_turn.rs`、`exec.rs`、`observer.rs`、`mod.rs`；`src/agent/`、`src/types/`；`src/reminder/sources/subagent.rs` |\n| 前端中层（web/desktop） | `web/src/components/{SubagentReadOnlyContent,SubagentStatusIcon,SessionItem,SessionList,AgentChatInput,SessionStatusLine,sessionTeardown}.tsx/ts`、`web/src/lib/{subagentUi,sessionPanelNav,centreChat,transcriptProjection}.ts`、`web/src/stores/{sessionStore,messageStore,connectionStore}.ts`、`web/src/api/{types,adapter}.ts`；`desktop/` |\n\n## 4. 问题与归属\n### A. 四类操作 × 入口矩阵（每格：能/不能/部分 + 文件:行 + 缺口）\n| # | 问题 | owner |\n|---|---|---|\n| A1 | 父 agent 工具：subagent_status/wait/list/turn 能否读子消息全文/增量；send 能否在子运行时发（排队/拒绝/打断）；stop 是停 turn 还是终止子；有无删除工具 | Tools |\n| A2 | client_protocol RPC/通知：对子 session 的 load/history、send、cancel/stop、delete 是否可用、是否被显式拒绝（如 :340 retry 拒绝） | Session |\n| A3 | HTTP（serve）路由：同上四类，是否区分子 session | Session |\n| A4 | CLI：能否列/看/发/停/删子 session | Session |\n| A5 | Web/desktop：子 session 只读视图（SubagentReadOnlyContent）、输入框禁用、停止按钮、删除入口（SessionItem/sessionTeardown） | 前端中层 |\n| A6 | Runtime 层：auto-turn 对子的 turn 调度、cancel 令牌是否可从外部触发 | Runtime |\n\n### B. 父子生命周期与一致性\n| # | 问题 | owner |\n|---|---|---|\n| B1 | 停父 turn 是否级联停子（cancel 传播路径、running_with_subagent 状态转换） | Runtime（主）+ Session |\n| B2 | 删父：purge_parent 行为、子落盘数据/索引是否清理、在跑的子是否先停 | Session |\n| B3 | 删子：forget_child 后父 transcript 中 subagent_launch 绑定/重放如何显示 | Session + 前端中层 |\n| B4 | 子在跑时外部发消息：排队/拒绝/打断语义，与父工具 send 是否一致 | Runtime + Tools |\n| B5 | 重连/重放：子 session 状态、subagent_bindings、SubagentBound 重放是否完整；在跑子的事件能否续上 | Session + 前端中层 |\n| B6 | 权限归属：子的 permission_request 归谁审批（父会话/用户/子会话 UI），用户直接对子发消息时权限 profile（allowed_subagents、depth） | Tools |\n| B7 | 子结果回流父：用户直接干预子后，父 wait/status 拿到什么，reminder 通知是否正确 | Runtime + Tools |\n\n### C. 成熟实现参考（只读外部资料）\n| # | 来源 | owner |\n|---|---|---|\n| C1 | Claude Code：Task/subagent、后台 agent 的查看/停止/kill、Agent SDK session 管理 | Tools |\n| C2 | OpenAI Codex CLI（开源仓库）：子任务/会话的 interrupt、resume、delete | Runtime |\n| C3 | 其他（OpenCode/Cline/Roo 子任务、Cursor 后台 agent）的 UI：子会话可否直接对话/停止/删除 | 前端中层 |\n\n### D. 汇总（backend_mid）\nD1 最小补全集与分工；D2 可钉死验收（测试名级）；D3 五档分类（产品未定/产品缺陷/架构/常见 bug/边角 bug）；D4 Andy 待定项清单。\n\n## 5. 回报格式（各域统一）\n每题：结论（能/不能/部分）→ 证据 `文件:行` → 缺口 → 建议修法 → 档位 → 未核实项。另附「需 Andy 定」列表。不改代码、不开包、不 commit。\n\n## 6. 时间线\n1. GM 批计划后 start，四域并行只读调查并回报；\n2. backend_mid 交叉核对 + 与前端中层对齐，合并为本文件报告（矩阵 + 生命周期 + 补全方案 + 分类 + 待定项）；\n3. validate_all ok 后 deliver 给 GM。\n\n## 7. 风险\n- 外部资料可能过时，以官方文档/开源代码为准并注明日期。\n- 前端结论依赖前端中层排期。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T05:17:03.574Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 组织 Session/Runtime/Tools + 前端中层，四类操作逐一盘：入口(agent工具/client_protocol/HTTP/前端/CLI)、权限与父子生命周期、现状缺口、补全方案（参考成熟实现）、分档；产物 WP-084-research.md；只读"
+        },
+        {
+          "ts": "2026-10-13T05:17:49.518Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-084-research · subagent session 四类操作调研（WP-085 计划）\n\n- 角色：backend_mid；父 WP-08"
+        },
+        {
+          "ts": "2026-10-13T05:17:49.861Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-084-research.md\""
+        },
+        {
+          "ts": "2026-10-13T05:17:54.008Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "调研计划：direct，四域领题只读调查→中层汇总，见 WP-084-research.md"
+        },
+        {
+          "ts": "2026-10-13T05:18:25.954Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "计划可行，四域并行只读"
+        },
+        {
+          "ts": "2026-10-13T05:18:37.749Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T05:25:23.856Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "result: \"组织 Session/Runtime/Tools + 前端中层，四类操作逐一盘：入口(agent工具/client_p -> \"四域合并完成：30 条发现（1档11/2档6/3档2/4档2/5档9），最小补全集 R1-R11，Andy 待定 10"
+        },
+        {
+          "ts": "2026-10-13T05:25:24.252Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "调研报告已合并至 .litecode/ops/artifacts/WP-084-research.md，validate_all ok，未 commit"
+        },
+        {
+          "ts": "2026-10-13T05:28:28.470Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "调研完整，D4 已呈 Andy",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-086",
+      "domain": "team-ops",
+      "title": "subagent session 操作补全（按 Andy 收敛口径）",
+      "result": "五样：看/发消息/停/删/状态提醒。用户：看、停、删（不能发）；父：看、发(在跑排队)、停、删；在跑不能删；停/删入父 mailbox 不唤醒，仅父派发完成唤醒；pending 与停止解耦；不做权限透传/revert/整树停/打断。修 bug：cancel 如实、completion origin、删除清理、幽灵行、重连状态、Lagged 丢 completion",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy 授权改完就推（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "五样：看/发消息/停/删/状态提醒。用户：看、停、删（不能发）；父：看、发(在跑排队)、停、删；在跑不能删；停/删入父 mailbox 不唤醒，仅父派发完成唤醒；pending 与停止解耦；不做权限透传/revert/整树停/打断。修 bug：cancel 如实、completion origin、删除清理、幽灵行、重连状态、Lagged 丢 completion",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "split: WP-087 后端中层, WP-088 前端中层；口径见 goal（Andy 10-13 14:10）"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:10:41.238Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 五样：看/发消息/停/删/状态提醒。用户：看、停、删（不能发）；父：看、发(在跑排队)、停、删；在跑不能删；停/删入父 mailbox 不唤醒，仅父派发完成唤醒；pending 与停止解耦；不做权限透传/revert/整树停/打断。修 bug：cancel 如实、completion origin、删除清理、幽灵行、重连状态、Lagged 丢 completion"
+        },
+        {
+          "ts": "2026-10-13T06:10:48.667Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: split: WP-087 后端中层, WP-088 前端中层；口径见 goal（Andy 10-13 14:10）"
+        },
+        {
+          "ts": "2026-10-13T06:10:49.076Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:10:49.450Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 收敛口径后开包（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T06:10:49.837Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:56:26.041Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:56:26.407Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 授权改完就推（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-087",
+      "domain": "team-ops",
+      "title": "后端中层：subagent 操作补全后端",
+      "result": "Runtime/Session/Tools 按口径落地",
+      "done_when": [
+        "WP-090/091/092 done或明确blocked",
+        "§5 测试名全绿，中层抽样复跑",
+        "§6 协议对齐与 WP-088 交叉审一致",
+        "wire 快照变更已注明",
+        "validate_all ok",
+        "未写src/、未commit"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-backend.md",
+      "progress": "closed done by gm: 集成复跑绿；list 路径+行数已含",
+      "status_entered_at": null,
+      "parent": "WP-086",
+      "goal": "Runtime/Session/Tools 按口径落地",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-086-backend · 后端中层方案（WP-087）\n\n- 角色：backend_mid；父 WP-086（gm，Andy 收敛口径）；本包 WP-087（split，approver=gm）；前端兄弟包 WP-088（frontend_mid）。\n- 基线：分支 `ops/team-framework`；中层只拆活/交叉审/汇总；**不写 `src/`、`tests/`**；**不 commit**；不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13（HKT）。依据：`WP-084-research.md`（R1-R11、D2、file:line）+ Andy 收敛口径 + GM 补充（R2 origin 取消）+ 与前端中层已对齐的协议点。\n- 本口径**替代** WP-084 D4 推荐。\n\n## 1. Goal\n子会话只有五样：看、发、停、删、状态变更提醒。用户：看/停/删（**无任何起子 turn 的路径**）；父：看/发/停/删。机制从简。\n\n## 2. 裁定表（锁定口径）\n| # | 项 | 裁定 |\n|---|---|---|\n| K1 | 用户给子发消息 | **不能**。`agent/run`、`session/pending-enqueue`（含在跑入队路径）对子会话显式拒绝，错误码 `subagent_session_readonly`；消除 \"not a primary agent\" 半通态（§4.X、F14、F30 随之消失） |\n| K2 | 父给子发消息 | `subagent_send`：子空闲→起新 turn；子在跑→**入 pending**，下一个机会（step seam / turn 末 pending_auto_turn）投递；**无 interrupt 旋钮、无 mode 参数** |\n| K3 | 停 | 用户 `agent/cancel{child}` 与父 `subagent_stop` 都只停当前 turn；如实回结果（R1）；**pending 不动**，照常有机会就发（不加任何停止相关队列逻辑） |\n| K4 | 删 | 在跑不能删（保持）；删父级联删子，任一后代在跑→拒绝，错误码 `descendant_running`；父新增最小工具 `subagent_delete` |\n| K5 | 提醒 | 子 turn 完成→照今天唤醒父（不变）。停/删通知（无论用户或父发起）→**只写父 mailbox、不唤醒**；用**通知类型**区分（`ChildStopped`/`ChildDeleted`），**不加 origin/initiator 字段** |\n| K6 | 权限 | 不透传。子权限创建时定；运行中未授权直接拒（deny sink），写进 `subagent_launch` 描述；**去掉 `last_permission_sink` 对子会话的隐式依赖** |\n| K7 | 不做 | R2 origin、R3（被 K1 取代）、R4 权限透传、R5 interrupt/mode、R9 整树停、revert 相关、CLI 子会话、R10（前端域） |\n| K8 | 照修 | R1 cancel 如实、R6 删除清理、R7 墓碑（后端）、R8 重连状态（后端）、R11 Lagged 补投 |\n\n## 3. 子包树\n```\nWP-086 (gm)\n  ├── WP-087 (backend_mid, approver=gm, split)  ← 本包\n  │     ├── WP-090 owner=runtime  harness-core      R1 原语 + 停/删通知类型(不唤醒) + R11 + 去 last_permission_sink\n  │     ├── WP-091 owner=session  harness-core      K1 拒子 run/enqueue + R1 回包 + R6 + R7 + R8 + 用户停/删写通知\n  │     └── WP-092 owner=tools    tools-permission  send 入 pending + stop 原子 + subagent_delete + 描述\n  └── WP-088 (frontend_mid)  子会话 停/删 入口与展示（其下 WP-089 web）\n```\n产物：WP-090 → `WP-086-runtime.md`；WP-091 → `WP-086-session.md`；WP-092 → `WP-086-tools.md`。\n\n## 4. 串并行与文件归属\n| 包 | 独占文件 | 顺序 |\n|---|---|---|\n| WP-090 Runtime | `src/runtime/**`（`subagent_auto_turn.rs`、`pending_auto_turn.rs`、`custom_auto_turn.rs`、`exec.rs`）、`src/agent/**`、`src/types/**`、`src/session/manager.rs` 的 `cancel_turn_sync`/StartingTurn 段（:850-888、:1028-1068、:1122-1139）、`src/tools/subagent/hub.rs`（router/Lagged/通知类型） | **先行**：先交接口（`CancelOutcome`、`ParentNotice::{ChildStopped,ChildDeleted}`、`hub::notify_parent_no_wake`、`SessionManager::remove_session` 返回全部被删 id 的签名）写入 `.tmp/wp090_interface.md` 并告知中层，Session/Tools 才开工 |\n| WP-091 Session | `src/client_protocol/**`、`src/serve/**`、`src/session/`（除上述 manager 段；含 `remove_session` 实现与 `read.rs` bindings）、`data/sqlite/session.rs` | 接口落地后与 WP-092 **并行** |\n| WP-092 Tools | `src/tools/subagent/{send,stop,delete(新),list,wait,mod,launch}.rs`、`src/tools/descriptions/subagent_*.md`、`src/permission/**`、`src/tool/registry.rs` | 接口落地后与 WP-091 并行；删除复用 Session 的 controller/manager 删除入口（只调用不改） |\n\n`hub.rs` 只归 Runtime；`manager.rs` 按段分归属，冲突时以 Runtime 为准、Session 请示中层。\n\n## 5. 域口径与验收\n\n### WP-090 · Runtime（R1 原语、K5 通知、R11、K6）\n- R1：StartingTurn 加 `cancel_requested`，start_turn 装 token 时立即生效；`cancel_turn_sync` 返回 `CancelOutcome { Running, Starting, Idle }`（取消即 Running/Starting，Idle 表示无事可停）。\n- K3：取消**不碰** pending 队列；pending_auto_turn 现有\"有机会就发\"保持（不新增停止相关逻辑）。\n- K5：hub 新增通知类型 `ParentNotice::ChildStopped{child_session_id}`、`ChildDeleted{child_session_id}`，经 `notify_parent_no_wake` 写入父 mailbox，**不触发** subagent_auto_turn；TurnFinished 路由与唤醒**不变**；父正在 `subagent_wait` 该子时，stop→wait 返回 `cancelled`，delete→`removed`（现有）。\n- R11：router `Lagged` 时按 data 重扫未投递 completion 并补投（去重）。\n- K6：子会话 auto-turn（subagent/pending/custom）一律 `deny_permission_sink`，不读 `last_permission_sink`。\n- done_when 测试：`manager::cancel_during_starting_turn_cancels_on_start`、`manager::cancel_turn_sync_reports_idle_when_nothing_running`、`manager::cancel_leaves_pending_queue_intact`、`subagent::hub::child_stopped_notice_writes_mailbox_without_wake`、`subagent::hub::child_deleted_notice_writes_mailbox_without_wake`、`subagent::hub::child_turn_finished_still_wakes_parent`、`subagent::hub::lagged_router_rescans_and_redelivers`、`pending_auto_turn::child_uses_deny_sink_regardless_of_last_sink`、`subagent_auto_turn::child_uses_deny_sink_regardless_of_last_sink`；`cargo test --lib runtime:: tools::subagent::hub manager::` 全绿；fmt/clippy 干净；未 commit。\n\n### WP-091 · Session（K1、R1 回包、K4/R6、R7、R8、用户停/删通知）\n- K1：`agent/run`、`session/pending-enqueue`、idle 竞态分支（connection.rs:496-512）对 `parent_session_id` 非空的会话拒绝：`ErrorCode::SubagentSessionReadonly`（wire `subagent_session_readonly`，JSON-RPC -32000，message `\"subagent sessions are read-only: messages can only come from the parent agent\"`）。`agent/retry` 现有拒绝改用同码。\n- R1：`agent/cancel` 回 `{\"cancelled\": bool}`（形状不变，值如实：Idle→false；Running/Starting→true）；对子放行；成功取消子时调 `notify_parent_no_wake(ChildStopped)`。\n- K4/R6：删在跑会话→现有 `agent_already_running`；删父任一后代在跑→新 `ErrorCode::DescendantRunning`（wire `descendant_running`，-32000，message `\"cannot delete: a descendant subagent session is running\"`，data `{ \"running_session_ids\": [..] }`）；`remove_session` 返回全部被删 id，逐个 `purge_parent`+`forget_child`；`cleanup_deleted_files` 错误 `warn!`；删子（非级联根之下）→ `notify_parent_no_wake(ChildDeleted)`。\n- R7：lifecycle `deleted` 事件增加 `parent_session_id: string|null`；snapshot / buffer load 新增 `subagent_binding_states: map<call_id, { child_session_id, deleted: bool }>`，删子后条目保留 `deleted:true`；旧 `subagent_bindings` 条目同样保留不删（兼容）。墓碑由删除时落 `deleted_children` 记录（父 meta/表）提供，重载后可见。\n- R8：lifecycle `turn_started`/`turn_finished` 增加 `status`（`SessionStatus` 原始值，含 `running_with_subagent`、`stopping`）；聚合态变化（子起/停致父态变）给父也推一次 `turn_finished`/`turn_started` 等价的 `status_changed` 事件（`event:\"status_changed\"`, `status`）；`list_sessions` 不再跳过有 parent 的空子会话。\n- done_when 测试：`client_protocol_run::agent_run_on_child_rejected_readonly`、`client_protocol_run::pending_enqueue_on_child_rejected_readonly`、`client_protocol_run::enqueue_on_running_child_rejected_readonly`、`client_protocol_cancel::agent_cancel_reports_false_when_idle`、`client_protocol_cancel::agent_cancel_child_writes_parent_notice_no_wake`、`session_lifecycle::delete_running_child_rejected`、`session_lifecycle::delete_parent_with_running_child_returns_descendant_running`、`session_lifecycle::delete_parent_purges_all_descendant_inboxes`、`session_lifecycle::cleanup_failure_is_logged`、`read::subagent_bindings_include_deleted_tombstone`、`read::tombstone_survives_reload`、`client_protocol_lifecycle::deleted_event_carries_parent_session_id`、`client_protocol_lifecycle::turn_events_carry_raw_status`、`client_protocol_lifecycle::parent_status_changed_on_child_turn`、`session_lifecycle::list_sessions_includes_empty_child`；wire 快照更新并注明新增字段；`cargo test --lib client_protocol:: session::` 全绿；未 commit。\n\n### WP-092 · Tools（K2、K3、K4、K6 描述）\n- K2：`subagent_send` 子在跑→`enqueue_user_input`（入 pending，返回 `queued: true`）；子空闲→起 turn（现有）；删 \"already running\" 拒绝；无 mode 参数。\n- K3：`subagent_stop` 改用 `CancelOutcome`，一次锁内判定（去先查后取消）；结果文案 `stopped`/`nothing running`；成功→`ChildStopped` 通知（不唤醒）。\n- K4：新工具 `subagent_delete{session_id}`：只能删本父的直接子；在跑→拒绝；有在跑后代→拒绝（descendant_running 文案）；级联删其后代；成功→`ChildDeleted` 通知（不唤醒）；depth≥1 不可用（与 launch 一致）。\n- K6：`subagent_launch.md` 写明\"子权限在创建时确定，运行中需审批的操作直接被拒绝\"；send/stop/delete 描述同步。\n- done_when 测试：`subagent::send::enqueues_while_running`、`subagent::send::queued_message_delivered_next_opportunity`、`subagent::send::starts_turn_when_idle`、`subagent::stop::stop_is_atomic_against_starting_turn`、`subagent::stop::reports_nothing_running_when_idle`、`subagent::stop::does_not_clear_pending`、`subagent::delete::deletes_idle_child_and_notifies_without_wake`、`subagent::delete::rejects_running_child`、`subagent::delete::rejects_when_descendant_running`、`subagent::delete::rejects_non_child`、`registry::subagent_delete_hidden_at_depth_ge_1`、`descriptions::subagent_launch_mentions_runtime_permission_denial`；`cargo test --lib tools::subagent permission::` 全绿；未 commit。\n\n## 6. 协议对齐（WP-087 ↔ WP-088，已与前端中层商定）\n| # | 契约点 | 后端 | 前端 |\n|---|---|---|---|\n| P1 | 子会话发消息 | `agent/run`、`session/pending-enqueue` 对子 → error `code:\"subagent_session_readonly\"`（-32000），message 见 §5 | 子不渲染输入框（现状）；收到该码显示只读提示 |\n| P2 | 停子 | `agent/cancel{session_id:child}` 放行；回包仍 `{\"cancelled\": bool}`，**形状不变**，无事可停→`false` | 子底栏 + Workers 行停止；`false` 提示\"没有在运行的回合\" |\n| P3 | 停/删后父 | 只写父 mailbox（`ChildStopped`/`ChildDeleted`），不唤醒；父在 wait 该子→`cancelled`/`removed`；pending 不动 | 无新事件需处理；父态靠 P6 |\n| P4 | 删 | 在跑→`agent_already_running`；删父后代在跑→`descendant_running`，`data.running_session_ids` | 在跑置灰；按码给不同提示 |\n| P5 | deleted 事件 | `session/lifecycle {event:\"deleted\", session_id, parent_session_id}`；级联时每个子各一条 | 关 `subagent-<id>` 面板、记已删集合、名单/计数排除 |\n| P6 | 墓碑 | snapshot/buffer load 新增 `subagent_binding_states: {call_id: {child_session_id, deleted}}`；`subagent_bindings` 条目保留 | 卡片 deleted→\"已删除\"不可点；重载后仍正确 |\n| P7 | 原始状态 | `turn_started`/`turn_finished` 带 `status`（含 `running_with_subagent`）；父聚合态变 → `event:\"status_changed\", status` | 用 `status` 而非一律 idle |\n| P8 | 重连 | `session/list` 含空子会话、带原始 status | `connected` 时统一调 `session/list` |\n| P9 | 不变 | `agent/subagent_bound` 仍为 live 事件，重连靠 P6 补齐；无 origin 字段；无 HTTP 新路由 | 同 |\n新增字段均为加法，旧前端忽略即可；新前端对旧后端需容忍字段缺失。\n\n## 7. 不在本包\n- R2 origin / initiator 字段（GM 补充：用户无起子 turn 路径，取消）；R3（K1 取代）；R4 权限透传；R5 interrupt/mode；R9 停整棵树、连接级 Cancel 范围（F19，保持现状，另记观察）；revert；CLI 子会话；R10 UI（WP-088）；父查看子增量进度（F12）。\n- 档位更新：F7/F16（origin 相关）作废；F13/F14/F30 由 K1 消除；F2/F3/F8/F9 由口径定案；F15/F18 由 K6 定为\"拒绝并写明\"。\n\n## 8. 验收清单（WP-087 deliver 前）\n- [ ] WP-090/090/091 done（或明确 blocked）；§5 测试名全绿，中层抽样复跑\n- [ ] §6 与 WP-088 产物交叉审一致\n- [ ] wire 快照变更已注明；`cargo fmt --check`、clippy 干净\n- [ ] `validate_all.mjs` ok:true；未 commit\n\n## 9. 请 GM\n子包 WP-090/090/091 均 drafting。请 `approve --id WP-087`；批后中层 start，Runtime 先交接口，再批 Session/Tools plan。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:10:47.910Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: Runtime/Session/Tools 按口径落地"
+        },
+        {
+          "ts": "2026-10-13T06:13:41.751Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-086-backend · 后端中层方案（WP-087）\n\n- 角色：backend_mid；父 WP-086（gm，Andy 收敛口径）；本包 WP"
+        },
+        {
+          "ts": "2026-10-13T06:13:42.049Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-086-backend.md\""
+        },
+        {
+          "ts": "2026-10-13T06:13:42.382Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"approver close done\"] -> [\"[\\\"WP-090/091/092 done或明确blocked\\\",\\\"§5 测试名全绿，中层抽样复跑\\\",\\\"§"
+        },
+        {
+          "ts": "2026-10-13T06:13:53.766Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"[\\\"WP-090/091/092 done或明确blocked\\\",\\\"§5 测试名全绿，中层抽样复跑\\\",\\\"§ -> [\"WP-090/091/092 done或明确blocked\",\"§5 测试名全绿，中层抽样复跑\",\"§6 协议对齐与"
+        },
+        {
+          "ts": "2026-10-13T06:13:54.478Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "split：WP-090 Runtime(先行交接口：CancelOutcome/ChildStopped·ChildDeleted 不唤醒/Lagged 补投/子 deny sink) → WP-091 Session ∥ WP-092 Tools；R2 origin 已按 GM 补充取消；协议对齐见 WP-086-backend.md §6"
+        },
+        {
+          "ts": "2026-10-13T06:15:01.080Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批；subagent_delete 新工具确认（Andy 口径父可删）；090 先行，091/092 接口定后并行"
+        },
+        {
+          "ts": "2026-10-13T06:15:10.296Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:54:33.069Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:54:58.109Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "集成复跑绿；list 路径+行数已含",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-088",
+      "domain": "team-ops",
+      "title": "前端中层：子会话 停/删 入口与展示",
+      "result": "子视图只读+停止按钮、删除（在跑置灰）、已删除卡片、名单去幽灵、重连状态",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-frontend.md",
+      "progress": "closed done by gm: 协议一致，测试绿",
+      "status_entered_at": null,
+      "parent": "WP-086",
+      "goal": "子视图只读+停止按钮、删除（在跑置灰）、已删除卡片、名单去幽灵、重连状态",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-088 方案（frontend_mid · split）\n\n- 父包：WP-086（GM，approver andy）。并行包：WP-087（backend_mid）。\n- 审批：gm。产物：本文件 + 子包产物 `WP-086-web.md`。\n- 调研依据：WP-084 前端回报（A5/B3/B5/C3）。\n- 中层只拆活、交叉审、汇总。**GM 未批 plan 不 start；不 commit。**\n\n## Goal\n子会话前端补齐「查看 / 停止 / 删除」三种操作，发消息永不开放。同时修正删除后的过时显示和重连后的状态。\n\n## GM 裁定\n1. 子会话只能查看、停止、删除，**不能发消息**。子会话视图维持现状、不加输入框（`AgentChatInput.tsx:576-616` 是 subagent 分支）。\n2. 停止：子会话视图底栏加一个按钮，Workers 名单每行也加一个按钮。\n3. 删除：Workers 名单每行加入口（子会话视图可同时加）。子会话在跑时置灰，删除前弹确认框。\n4. 删除后的显示：\n   - 父会话 tool card 显示「已删除」，不能点；\n   - Workers 名单和计数排除该子会话；\n   - `subagent-<id>` 面板关闭。\n5. 重连：进入 connected 时，在一个统一位置拉一次 session list；`running_with_subagent` 状态要保留，不能丢。\n\n## 已确认协议（backend_mid）\n- **(1) 停止**：调 `agent/cancel {session_id: child}`，后端返回真实结果。`cancelled:false` 表示当时没有 turn 在跑：前端不能假定成功，显示中性 toast 或不做处理。\n- **(2) 删除**：调 `session/delete {id: child}`。\n  - 子会话或其任意后代在跑时，后端拒绝。\n  - 删父会话会级联删子会话。\n  - lifecycle `deleted` 事件带 `parent_session_id`。\n  - 快照的 `subagent_bindings` 对已删的子会话保留墓碑 `deleted:true`：名单和计数排除它，tool card 显示「已删除」。\n  - **错误码：占位，待 `WP-086-backend.md` 给出。** 前端先映射已知的\"在跑中拒绝\"，未知错误一律走通用提示。\n  - **墓碑在 wire 上的形状占位，待 backend_mid 给出**：现在类型是 `subagent_bindings?: Record<string,string>`（`web/src/api/types.ts:303`），墓碑可能改成对象值或另开 map。前端要兼容新旧两种写法。\n- **(3) 状态**：lifecycle 的 `turn_started` / `turn_finished` 带原始 `status`（含 `running_with_subagent`）。前端直接用它，不再写死 running / idle。\n- **(4) 发消息**：后端用专用错误码拒绝对子会话调 `agent/run` 和 enqueue。前端不提供入口，可选择把该错误码映射成提示文案。\n\n## 后端依赖\n- **WP-087（backend_mid）**：上面 (1)–(4) 落地、错误码表、墓碑形状。\n- 前端可以先按占位开发，用 mock 写测试。**联调验收**等 WP-087 完成后再做。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-089** | `frontend`（前端-web） | client-ux-web | `WP-086-web.md` |\n\n## web 落点（域 bot 实施；行号以调研时为准）\n- **停止**\n  - 子会话视图底栏：`AgentChatInput.tsx:576-616`（subagent 分支）加\"停止\"按钮。只在子会话 running / stopping 时可用，调用复用 `turnStore.ts:638` 的 `agent/cancel`。\n  - Workers 名单每行：`SubagentRosterPanel.tsx:221-275` 行内加\"停止\"，不能改变\"点行即跳转\"的原有行为（`:109-110`）。\n  - 返回 `cancelled:false` 时显示中性 toast，不要假装成功。\n- **删除**\n  - Workers 名单每行加删除入口，可选在子会话视图也加。\n  - 子会话在跑时置灰（判断口径同 `SessionItem.tsx:58-60`）；点删除先弹确认框，再调 `session/delete`（复用 `sessionStore.ts:555-581` 的逻辑，或抽出公共函数）。\n  - 后端拒绝时按错误码提示；错误码未知时提示通用文案。\n- **删除后的显示**\n  - `sessionStore.ts:388-395` 的 deleted 分支里，除了现在关的 `agent-<id>`，**也要关 `subagent-<id>`**（这类面板由 `sessionPanelNav.ts:131-139` 打开）。\n  - 墓碑数据：`messageStore.ts:375-378,391-399,415-430` 合并 `subagent_bindings` 时保留\"已删除\"标记。前端额外记录\"已删除 id\"：收到 deleted 事件且带 `parent_session_id` 时，立即标记到父会话上。\n  - tool card：`lib/subagentUi.ts:37-55` 的 `childStatusWord` 遇到已删除返回「已删除」，不能再退回成 \"accepted\"。`SubagentInlineLine.tsx:37-49` 遇到已删除不渲染成可点按钮。\n  - Workers 名单：`SubagentRosterPanel.tsx:168-185` 的临时兜底分支要排除已删除 id，消除\"幽灵行\"。\n  - 计数：`SessionStatusLine.tsx:169-175` 的 total / running 也排除已删除 id。\n- **重连**\n  - `connectionStore.ts:157-168` 在进入 connected 时**统一**调一次 `listSessions()`。\n  - `SessionList.tsx:37-41` 和 `SubagentRosterPanel.tsx:128-135` 打开时各拉一次的逻辑保留（只是打开时刷新），或去重，由实施者判断。不能出现 connected 时重复请求同一个列表的竞态。\n- **状态**\n  - `sessionStore.ts:380-510` 的 lifecycle `turn_started` / `turn_finished` 分支，有 `status` 字段时用它，没有时回退到原有逻辑。`turn_updated` 的 cancelling → stopping 逻辑保持不变。\n- **类型**\n  - `web/src/api/types.ts`：\n    - `SessionLifecycle` 加 `status?`；\n    - `subagent_bindings` 改成兼容墓碑的类型；\n    - 新增错误码常量，作为占位。\n\n## 测试清单（vitest）\n1. 子会话视图：不渲染输入框和发送按钮（回归）；停止按钮只在 running / stopping 时可用；点击后调 `agent/cancel {session_id: child}`。\n2. 停止返回 `cancelled:false`：显示中性 toast，不改状态。\n3. Workers 名单每行：停止和删除按钮存在；在跑时删除置灰；点删除先弹确认框，取消后不发 RPC，确认后发 `session/delete`。\n4. 删除被拒：已知错误码显示对应提示；未知错误码显示通用提示；列表回滚。\n5. deleted 事件（带 `parent_session_id`）到达后：`subagent-<id>` 和 `agent-<id>` 面板都关闭；tool card 显示「已删除」且不可点；名单和计数排除该子会话。\n6. 快照里 `subagent_bindings` 带墓碑：重新加载后表现同第 5 条，新旧两种形状都兼容。\n7. 重连：进入 connected 时 `listSessions` 只调用一次，不依赖 `SessionList` 是否挂载；`running_with_subagent` 不会被覆盖成 idle。\n8. lifecycle `turn_finished` 带 `status:\"running_with_subagent\"` 时，状态保持；不带 `status` 时回退为 idle。\n9. 回归：主会话的取消和删除行为不变；审批卡（AskCard / PermissionModal）不受影响。\n\n## desktop\ndesktop 内嵌 web，外壳里没有 subagent / delete / cancel 相关代码（`rg desktop/src` 无命中），**预计不用改**。中层只做静态核对（看代码和构建产物）；**真机点击验证由 Andy 做**。\n\n## 不在范围\n- 子会话发消息、输入框（GM 裁定永不开放）。\n- 后端：WP-087 负责 cancel / delete 的放行与拒绝、级联、墓碑、lifecycle status、`agent/run` 拒绝。\n- 归档（archive）、批量删除、父会话级联删除的数量提示 UI：未裁定，不做。\n- 不 commit。\n\n## 验收标准\n- 测试清单 9 条全绿；`tsc -b` 0 错误；lint 不适用（web 未配置 lint 工具）。\n- 和 WP-087 联调通过：子会话停止 / 删除端到端可用，在跑时删除被拒，级联删除后显示正确，重连后状态正确。\n- desktop 静态核对通过；禁区没碰；没 commit。\n\n## 档位（来自 WP-084）\n- B3「幽灵行 / 计数虚高」：4（常见 bug），本包修。\n- B3「`subagent-<id>` 面板残留、tool card 显示 accepted 还能点」：5（边角 bug），本包修。\n- B5「重连依赖侧边栏挂载、`running_with_subagent` 丢失」：5（边角 bug），本包修。\n- A5「停止 / 删除入口」：1（产品行为待定），已由 GM 裁定。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:10:48.288Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 子视图只读+停止按钮、删除（在跑置灰）、已删除卡片、名单去幽灵、重连状态"
+        },
+        {
+          "ts": "2026-10-13T06:12:23.918Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-088 方案（frontend_mid · split）\n\n- 父包：WP-086（GM，approver andy）。并行包：WP-087（back"
+        },
+        {
+          "ts": "2026-10-13T06:12:24.202Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-086-frontend.md\""
+        },
+        {
+          "ts": "2026-10-13T06:12:24.476Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "子会话 停/删 plan：GM 裁定+backend_mid 已确认协议(1)-(4)；web 子包 WP-089；依赖 WP-087；错误码/墓碑形状占位待 WP-086-backend.md"
+        },
+        {
+          "ts": "2026-10-13T06:12:54.447Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批。墓碑字段不做新旧双格式兼容，等 WP-086-backend.md 定稿按唯一形状实现；删除被拒错误码同样等后端定稿"
+        },
+        {
+          "ts": "2026-10-13T06:13:04.391Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:55:56.110Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "WP-089/093 done；前后端静态 e2e 全部一致（binding_states、deleted.parent_session_id、原始 status、status_changed、3 个错误码+running_session_ids、cancel 回包）；cargo 17 passed，web 148 passed，tsc 0，lint N/A；desktop 只做静态核对（同一套 web/dist、无改动），真机由 Andy 验；未 commit；详见 WP-086-frontend.md"
+        },
+        {
+          "ts": "2026-10-13T06:56:25.722Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "协议一致，测试绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-089",
+      "domain": "client-ux-web",
+      "title": "WP-088 web：子会话 停止/删除 入口与删除后展示/重连",
+      "result": "web 落地+测试绿；证据写入 WP-086-web.md",
+      "done_when": [
+        "9项测试绿",
+        "tsc -b 0",
+        "lint N/A",
+        "子会话无输入",
+        "未commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-web.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：16 文件均在 web/，符合 GM 裁定与 P1-P8（停止 底栏+名单，cancelled:false 中性提示；删除 置灰+确认+错误码映射；deleted 关两种面板；墓碑 binding_states；原始 status+status_changed；connected 统一 listSessions+去重）；子会话无输入，审批卡/desktop 未动。复跑 node v22：6 files/166 passed，tsc -b 0；lint N/A。重连接线缺单测：一行接线已人工核对、去重有测试，connectionStore 无现成 ws mock，补测成本不低 → 不阻塞，记为后续。未 commit",
+      "status_entered_at": null,
+      "parent": "WP-088",
+      "goal": "按 WP-086-frontend.md：子会话视图底栏和 Workers 名单每行加停止（agent/cancel，cancelled:false 显示中性提示）；名单每行加删除（在跑时置灰+确认框，session/delete，错误码先占位、未知错误走通用提示）；删除后关闭 subagent-<id> 面板，tool card 显示「已删除」且不可点，名单和计数排除；兼容墓碑；connected 时统一 listSessions；lifecycle 用原始 status；子会话不开放发消息；测试 9 条；不 commit。产物 .litecode/ops/artifacts/WP-086-web.md",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-089 方案（前端-web，只改 web/，不 commit，未批不 start）\n口径：WP-086-frontend.md + GM 从简补充。子会话只看/停/删，子视图不加输入框（AgentChatInput subagent 分支保持现状）。\n\n### A. 现在做\n1. 停止：AgentChatInput.tsx subagent 分支底栏 + SubagentRosterPanel.tsx 每行加停止（不破坏点行跳转）；复用 turnStore.ts agent/cancel {session_id: child}；仅 running/stopping 可用；cancelled:false → 中性 toast，不改状态、不假成功。\n2. 删除入口：SubagentRosterPanel 每行；在跑置灰（口径同 SessionItem.tsx）；先确认框，确认后 session/delete（复用 sessionStore.ts 删除逻辑或抽公共函数）。拒绝时暂只走通用提示。\n3. deleted 后：sessionStore.ts deleted 分支除 agent-<id> 外也关 subagent-<id>（sessionPanelNav.ts 打开的面板）；按 parent_session_id 把 id 记入父会话已删集合，Roster 兜底行、SessionStatusLine 计数排除；subagentUi.ts childStatusWord→「已删除」，SubagentInlineLine.tsx 不可点（数据源先用 deleted 事件，快照墓碑见 B）。\n4. 重连：connectionStore.ts 进入 connected 时统一拉一次 listSessions；SessionList/Roster 挂载刷新保留但去重，避免同列表重复请求竞态。\n5. lifecycle 原始 status：sessionStore.ts turn_started/turn_finished 有 status 直接用（含 running_with_subagent），无则回退原逻辑；cancelling→stopping 不变。types.ts SessionLifecycle 加 status?、parent_session_id?。\n\n### B. 阻塞（留空，等中层转 WP-086-backend.md 定稿）\n- 墓碑：只实现后端定稿那一种格式，不做新旧兼容；types.ts subagent_bindings 与 messageStore.ts 合并逻辑暂不改。\n- 删除被拒错误码：定稿前不写常量与映射，仅通用提示。\n\n### 测试（vitest，/exec-daemon/node v22）+ tsc -b\nT1 子视图无输入框/发送（回归）；停止按钮可用态；点击发 agent/cancel{child}。\nT2 cancelled:false → 中性 toast，状态不变。\nT3 Roster 每行停/删；在跑删除置灰；确认框取消不发 RPC，确认发 session/delete；拒绝走通用提示。\nT4 deleted(带 parent_session_id)：agent-/subagent- 面板都关；tool card「已删除」不可点；名单与计数排除。\nT5 重连 connected 时 listSessions 只调一次，不依赖 SessionList 挂载；running_with_subagent 不被覆盖。\nT6 turn_finished 带 status:running_with_subagent 保持；无 status 回退 idle。\nT7 回归：主会话取消/删除不变，AskCard/PermissionModal 不受影响。\nB 定稿后补：墓碑快照重载表现同 T4；已知拒绝码映射。\n产物：.litecode/ops/artifacts/WP-086-web.md。禁区 desktop/后端/引擎 UI/symlink。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:12:20.247Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-086-frontend.md：子会话视图底栏和 Workers 名单每行加停止（agent/cancel，cancelled:false 显示中性提示）；名单每行加删除（在跑时置灰+确认框，session/delete，错误码先占位、未知错误走通用提示）；删除后关闭 subagent-<id> 面板，tool card 显示「已删除」且不可点，名单和计数排除；兼容墓碑；connected 时统一 listSessions；lifecycle 用原始 status；子会话不开放发消息；测试 9 条；不 commit。产物 .litecode/ops/artifacts/WP-086-web.md"
+        },
+        {
+          "ts": "2026-10-13T06:14:17.536Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: ## WP-089 方案（前端-web，只改 web/，不 commit，未批不 start）\n口径：WP-086-frontend.md + GM 从简补充。"
+        },
+        {
+          "ts": "2026-10-13T06:14:17.844Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:15:09.181Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准。协议已定稿（WP-086-backend.md）：留空两块本包内按定稿补齐——subagent_binding_states 墓碑、agent_already_running/descendant_running 提示、status_changed 事件；对应补测试"
+        },
+        {
+          "ts": "2026-10-13T06:15:55.228Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": "按 WP-086-backend 定稿落地，方案 v2 见 WP-086-web.md"
+        },
+        {
+          "ts": "2026-10-13T06:23:29.435Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "按 WP-086 定稿落地；vitest 1266/1266，tsc 0；证据见 WP-086-web.md"
+        },
+        {
+          "ts": "2026-10-13T06:24:36.608Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：16 文件均在 web/，符合 GM 裁定与 P1-P8（停止 底栏+名单，cancelled:false 中性提示；删除 置灰+确认+错误码映射；deleted 关两种面板；墓碑 binding_states；原始 status+status_changed；connected 统一 listSessions+去重）；子会话无输入，审批卡/desktop 未动。复跑 node v22：6 files/166 passed，tsc -b 0；lint N/A。重连接线缺单测：一行接线已人工核对、去重有测试，connectionStore 无现成 ws mock，补测成本不低 → 不阻塞，记为后续。未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-090",
+      "domain": "harness-core",
+      "title": "WP-087/Runtime：cancel 如实原语 + 停/删通知不唤醒 + Lagged 补投 + 子 deny sink",
+      "result": "见 WP-086-backend.md §5 WP-089；先交接口给 Session/Tools",
+      "done_when": [
+        "先交接口 .tmp/wp090_interface.md 给中层",
+        "manager::cancel_during_starting_turn_cancels_on_start",
+        "manager::cancel_turn_sync_reports_idle_when_nothing_running",
+        "manager::cancel_leaves_pending_queue_intact",
+        "subagent::hub::child_stopped_notice_writes_mailbox_without_wake",
+        "subagent::hub::child_deleted_notice_writes_mailbox_without_wake",
+        "subagent::hub::child_turn_finished_still_wakes_parent",
+        "subagent::hub::lagged_router_rescans_and_redelivers",
+        "pending_auto_turn::child_uses_deny_sink_regardless_of_last_sink",
+        "subagent_auto_turn::child_uses_deny_sink_regardless_of_last_sink",
+        "fmt/clippy 干净",
+        "未 commit"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-runtime.md",
+      "progress": "closed done by backend_mid: Accepted on Runtime 10/10 green + fmt ok + interface==v1; mid resample blocked by Tools WIP (registry.rs SubagentDeleteTool not yet defined), will re-run at WP-087 integration. ISSUE-054 edge filed.",
+      "status_entered_at": null,
+      "parent": "WP-087",
+      "goal": "见 WP-086-backend.md §5 WP-089；先交接口给 Session/Tools",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-090 Runtime 方案（direct）\n接口定稿：`.tmp/wp090_interface.md`（FROZEN v1，Session/Tools 依此开工）。产物：`.litecode/ops/artifacts/WP-086-runtime.md`。\n## 改动\n1. R1：`SessionActivity::StartingTurn` 加 `cancel_requested`；`cancel_turn_sync`/`cancel_turn` 返回 `CancelOutcome{Running,Starting,Idle}`，单锁判定；`start_turn` 装 RunningTurn 时若已请求取消立即 cancel token。不碰 pending（K3）。\n2. K5：hub 新增 `ParentNotice::{ChildStopped,ChildDeleted}{child_session_id}`、独立 NoticeInbox、`notify_parent_no_wake`/`take_notices`/`restore_notices`；exec step seam 与 completions 一并注入、失败回灌；不触发 exit_handler / auto-turn。TurnFinished 唤醒不变。\n3. R11：router 记 delivered(child→turn_id)，Lagged 时重扫空闲子最新 turn 补投（去重）。\n4. K6：统一 `auto_turn_permission_sink`：子会话一律 deny；subagent/pending/custom(/bash) auto-turn 改用之。\n5. remove_session 签名冻结为 `Result<Vec<String>>`（实现归 Session）。\n## 文件\nsrc/session/manager.rs（:68-79、:848-885、:1028-1068、:1122-1139 + 只读 helper）、src/tools/subagent/{hub,jobs,mod}.rs、src/runtime/{exec,subagent_auto_turn,pending_auto_turn,custom_auto_turn,bash_auto_turn}.rs + 新 sink helper。\n## done_when（verbatim）\n- manager::cancel_during_starting_turn_cancels_on_start\n- manager::cancel_turn_sync_reports_idle_when_nothing_running\n- manager::cancel_leaves_pending_queue_intact\n- subagent::hub::child_stopped_notice_writes_mailbox_without_wake\n- subagent::hub::child_deleted_notice_writes_mailbox_without_wake\n- subagent::hub::child_turn_finished_still_wakes_parent\n- subagent::hub::lagged_router_rescans_and_redelivers\n- pending_auto_turn::child_uses_deny_sink_regardless_of_last_sink\n- subagent_auto_turn::child_uses_deny_sink_regardless_of_last_sink\n- `cargo test --lib runtime:: tools::subagent::hub manager::` 全绿；fmt/clippy 干净；未 commit。\n## 兼容\ncancel 签名变更会让 stop.rs:48、connection.rs 调用点编译失败：Runtime 仅做机械适配（`let _ =` / `.cancelled()`），语义改动留给 WP-091/092。\n## 待确认\nQ1 K6 仅子会话（主会话保留 last sink）；Q2 release 放弃无 completion；Q3 remove_session 返回顺序；Q4 授权 manager 只读 helper `idle_child_session_ids`。\n## 禁区\nR2 origin、停止相关 pending 逻辑、client_protocol 语义、引擎产品；不 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:13:21.042Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-086-backend.md §5 WP-089；先交接口给 Session/Tools"
+        },
+        {
+          "ts": "2026-10-13T06:13:41.433Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"先交接口 .tmp/wp089_interface.md\",\"manager::cancel_during_star -> [\"[\\\"先交接口 .tmp/wp090_interface.md\\\",\\\"manager::cancel_during"
+        },
+        {
+          "ts": "2026-10-13T06:13:54.058Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"[\\\"先交接口 .tmp/wp090_interface.md\\\",\\\"manager::cancel_during -> [\"先交接口 .tmp/wp090_interface.md 给中层\",\"manager::cancel_during_"
+        },
+        {
+          "ts": "2026-10-13T06:16:21.536Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-090 Runtime 方案（direct）\n接口定稿：`.tmp/wp090_interface.md`（FROZEN v1，Session/Too"
+        },
+        {
+          "ts": "2026-10-13T06:16:21.826Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "plan+frozen interface .tmp/wp090_interface.md; Q1-Q4 待批"
+        },
+        {
+          "ts": "2026-10-13T06:17:01.579Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:17:16.882Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:31:47.339Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:34:51.485Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Accepted on Runtime 10/10 green + fmt ok + interface==v1; mid resample blocked by Tools WIP (registry.rs SubagentDeleteTool not yet defined), will re-run at WP-087 integration. ISSUE-054 edge filed.",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-091",
+      "domain": "harness-core",
+      "title": "WP-087/Session：拒子 run/enqueue + cancel 回包如实 + 删除清理/descendant_running + 墓碑 + 原始状态",
+      "result": "见 WP-086-backend.md §5 Session 节；依赖 Runtime 接口",
+      "done_when": [
+        "client_protocol_run::agent_run_on_child_rejected_readonly",
+        "client_protocol_run::pending_enqueue_on_child_rejected_readonly",
+        "client_protocol_run::enqueue_on_running_child_rejected_readonly",
+        "client_protocol_cancel::agent_cancel_reports_false_when_idle",
+        "client_protocol_cancel::agent_cancel_child_writes_parent_notice_no_wake",
+        "session_lifecycle::delete_running_child_rejected",
+        "session_lifecycle::delete_parent_with_running_child_returns_descendant_running",
+        "session_lifecycle::delete_parent_purges_all_descendant_inboxes",
+        "session_lifecycle::cleanup_failure_is_logged",
+        "read::subagent_bindings_include_deleted_tombstone",
+        "read::tombstone_survives_reload",
+        "client_protocol_lifecycle::deleted_event_carries_parent_session_id",
+        "client_protocol_lifecycle::turn_events_carry_raw_status",
+        "client_protocol_lifecycle::parent_status_changed_on_child_turn",
+        "session_lifecycle::list_sessions_includes_empty_child",
+        "wire 快照更新并注明",
+        "未 commit"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-session.md",
+      "progress": "closed done by backend_mid: Mid integrated resample green; see WP-086-backend.md delivery summary",
+      "status_entered_at": null,
+      "parent": "WP-087",
+      "goal": "见 WP-086-backend.md §5 Session 节；依赖 Runtime 接口",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-091 方案（Session）：子会话只读 + cancel 如实 + R6 删除清理 + R7 墓碑 + R8 原始状态\n- 依据：WP-086-backend.md §5 WP-091 / §6 P1-P9（字段名、错误码照抄，不改名）；WP-085-session.md。\n- 产物：.litecode/ops/artifacts/WP-086-session.md。只改 Session 域（client_protocol/**、serve/**、session/ 除 Runtime 段、data/sqlite/session.rs）。不 commit。\n- 开工条件：WP-090 接口（.tmp/wp090_interface.md，当前不存在）定稿 + backend_mid 批本方案。\n\n## 1. K1 子会话拒 run/enqueue/retry → subagent_session_readonly\n- protocol.rs:59 `ErrorCode` 加 `SubagentSessionReadonly`（wire subagent_session_readonly，-32000，data StructuredError retryable=false，message 照 §5）。\n- connection.rs:181 AGENT_RUN、:418 SESSION_PENDING_ENQUEUE（含 :496-512 idle 竞态分支，入队前即拒，不入队）、:312/:340 AGENT_RETRY（现字符串 \"cannot retry a subagent session\" 改同码）。判定用 `is_child_session`（manager）。\n- 测试：client_protocol_run::agent_run_on_child_rejected_readonly / pending_enqueue_on_child_rejected_readonly / enqueue_on_running_child_rejected_readonly；retry 同码断言；wire 快照。\n- WP-090 依赖：无。风险：resume/plan_execution 等其他起 turn 的 RPC 需逐个排查（compact 不算起 turn，保持）。\n\n## 2. R1 cancel 如实 + ChildStopped\n- connection.rs:385-404：改调 `cancel_turn_sync` → `CancelOutcome`；回 `{\"cancelled\": Running|Starting}`，Idle→false；子会话放行；子且取消成功→`hub.notify_parent_no_wake(ChildStopped{child_session_id})`。\n- manager.rs:1122-1139 归 Runtime，只调用不改。\n- 测试：client_protocol_cancel::agent_cancel_reports_false_when_idle / agent_cancel_child_writes_parent_notice_no_wake。\n- WP-090 依赖：**强**——CancelOutcome、ParentNotice::ChildStopped、notify_parent_no_wake 签名。\n- 风险：connection.rs:2271 cancel_rejects_pending_ask 现有语义（cancel 拒 pending ask）需保留；Idle 时是否仍拒 pending ask 待定。\n\n## 3. K4/R6 删除清理\n- session_lifecycle.rs:357-380 delete_session：先查后代在跑→`DescendantRunning`（protocol.rs 加枚举，data {running_session_ids}）；自身在跑仍 agent_already_running。\n- manager.rs:1609 try_begin_operation(Delete) 现对任何非 idle 后代回 AgentAlreadyRunning（:1614-1616）→ 改为区分自身/后代并带 id 列表（manager.rs 此段不在 Runtime 列表，归我；如有争议请示中层）。\n- manager.rs:1882 remove_session 返回全部被删 id（签名由 WP-090 定）；delete_session 逐个 purge_parent+forget_child（现只对根 :376-377）。\n- data/sqlite/session.rs:1573 cleanup_deleted_files 的 `let _`（:1576、:1584）改 warn!；writer.rs:503 orphan blob 删除同理。\n- 删子（非级联）→ notify_parent_no_wake(ChildDeleted)。\n- connection.rs:738/:771 删除错误映射目前从 anyhow 映射，需透传结构化码（带 data）。\n- 测试：session_lifecycle::delete_running_child_rejected / delete_parent_with_running_child_returns_descendant_running / delete_parent_purges_all_descendant_inboxes / cleanup_failure_is_logged。\n- WP-090 依赖：remove_session 返回签名、ChildDeleted、notify_parent_no_wake。\n- 风险/发现：hub.rs:109-111 router 已在每条 SessionRemoved 上 purge_parent+forget_child，WP-085 B2② 结论需修正——实际缺口是 router Lagged 丢事件（R11 归 Runtime）与 take_removed_sessions(:1827) 只覆盖 known_children；显式逐个清理作为兜底，重复调用需幂等（验证）。\n\n## 4. R7 deleted 带 parent_session_id + 墓碑\n- live.rs:43 `LifecycleEvent::SessionRemoved` 加 parent_session_id: Option<String>；manager.rs:1911-1928 填入（删除前查好父）；project.rs:737/:874 session_lifecycle_deleted 输出 `parent_session_id`（null 也输出）。\n- 墓碑：删子时在父 meta/表落 deleted_children(call_id, child_session_id)（data/sqlite/session.rs 加表/列 + 迁移）；protocol.rs:334 旁新增 `subagent_binding_states: HashMap<call_id, {child_session_id, deleted}>`；connection.rs:1320-1326 buffer load、snapshot 填充；`subagent_bindings` 已删条目保留（来源改为 live ∪ 墓碑）。\n- 测试：client_protocol_lifecycle::deleted_event_carries_parent_session_id；read::subagent_bindings_include_deleted_tombstone / tombstone_survives_reload。\n- WP-090 依赖：无（live.rs 在 session 下；如 Runtime 视为 types 请告知）。\n- 风险：级联删父时子墓碑写在将被删的父上，无意义——只对\"删子且父存活\"落墓碑；schema 迁移。\n\n## 5. R8 原始 status + status_changed + list 含空子\n- project.rs:749/:761 turn_started/turn_finished 加 `status`（SessionStatus 原始值）；manager.rs:956/:1071 LifecycleEvent::TurnStarted 及 TurnFinished 携带/查询 status。\n- 新 lifecycle `event:\"status_changed\", status`：子起/停导致父聚合态（running_with_subagent）变时给父推。\n- session_lifecycle.rs:414 list_sessions：有 parent 的空会话不跳过。\n- 测试：client_protocol_lifecycle::turn_events_carry_raw_status / parent_status_changed_on_child_turn；session_lifecycle::list_sessions_includes_empty_child。\n- WP-090 依赖：弱（manager.rs:1028-1068 StartingTurn 段归 Runtime；若需在该段发事件需协调）。\n- 风险：status_changed 去重（父态未变不推）；manager.rs:1740-1747 空会话清理已排除子会话，不受影响。\n\n## 6. 口径歧义/与代码冲突（只标注，不改名）\n- Q1 §5 R8 原文\"给父也推一次 turn_finished/turn_started 等价的 status_changed 事件\"：是\"只推 status_changed\"还是\"也推 turn_*\"？按 P7 理解为只推 status_changed。\n- Q2 `session/lifecycle` 是否已有 status 字段的 turn_updated（project.rs:845）——status 是否也加到 turn_updated/turn_step？\n- Q3 R6 \"删子（非级联根之下）→ChildDeleted\"：级联删除时中间层子是否也给其父发？父自身也被删，按不发处理。\n- Q4 K1 只列 agent/run、pending-enqueue、retry；其它可起 turn 的入口（如 resume/plan_execution）是否同拒。\n- Q5 cancel 对 Idle 子返回 false 时是否仍写 ChildStopped：按不写。\n- Q6 WP-086 §5 \"WP-090/090/091\"疑笔误（应 090/091/092）。\n- Q7 墓碑存放\"父 meta/表\"未定，需新表还是父 meta 字段，影响迁移。\n\n## 7. done_when\n§5 测试名全绿；`cargo test --lib client_protocol:: session::` 全绿；wire 快照注明新增字段；fmt/clippy 干净；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:13:32.388Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-086-backend.md §5 Session 节；依赖 Runtime 接口"
+        },
+        {
+          "ts": "2026-10-13T06:16:39.907Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-091 方案（Session）：子会话只读 + cancel 如实 + R6 删除清理 + R7 墓碑 + R8 原始状态\n- 依据：WP-086-b"
+        },
+        {
+          "ts": "2026-10-13T06:16:40.216Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案已填，待 backend_mid 批；开工仍需 WP-090 接口定稿"
+        },
+        {
+          "ts": "2026-10-13T06:17:18.821Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:17:51.491Z",
+          "actor": "session",
+          "action": "start",
+          "note": "按 wp090_interface v1 对齐；Runtime 接口代码未落地处留 TODO"
+        },
+        {
+          "ts": "2026-10-13T06:52:29.300Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-086-session.md\" -> \".litecode/ops/artifacts/WP-086-session.md\""
+        },
+        {
+          "ts": "2026-10-13T06:52:29.684Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "K1 拒子 run(含 plan_execution)/retry/enqueue；cancel 如实+ChildStopped；R6 descendant_running+逐 id 清理+磁盘错误 warn；R7 deleted 带 parent_session_id+墓碑 subagent_binding_states(snapshot/buffer load)；R8 status+status_changed(接 TurnStatusHook)+list 含空子；新增 17 测试全绿，architecture_layers 5/5；已知失败 ISSUE-046/055；产物 WP-086-session.md"
+        },
+        {
+          "ts": "2026-10-13T06:54:32.755Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Mid integrated resample green; see WP-086-backend.md delivery summary",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-092",
+      "domain": "tools-permission",
+      "title": "WP-087/Tools：subagent_send 入 pending + stop 原子 + 新 subagent_delete + 权限描述",
+      "result": "见 WP-086-backend.md §5 Tools 节；依赖 Runtime 接口",
+      "done_when": [
+        "subagent::send::enqueues_while_running",
+        "tests/subagent_send::send_to_idle_child_runs_another_turn",
+        "runtime::pending_auto_turn::idle_flush_reserves_claims_and_persists_one_user_row",
+        "runtime::pending_auto_turn::busy_session_leaves_the_queue_alone",
+        "subagent::stop::stop_is_atomic_against_starting_turn",
+        "subagent::stop::reports_nothing_running_when_idle",
+        "subagent::stop::does_not_clear_pending",
+        "subagent::delete::deletes_idle_child_and_notifies_without_wake",
+        "subagent::delete::rejects_running_child",
+        "subagent::delete::rejects_when_descendant_running",
+        "subagent::delete::rejects_non_child",
+        "subagent::delete::rejects_grandchild_direct",
+        "subagent::list::includes_transcript_path_and_line_count",
+        "registry::subagent_delete_hidden_at_depth_ge_1",
+        "descriptions::subagent_launch_mentions_runtime_permission_denial",
+        "未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-tools.md",
+      "progress": "closed done by backend_mid: Mid resample: tools::subagent 26/26, tool::registry 7/8 (only ISSUE-055 pre-existing), subagent_session_isolation 15/15. Authorized 1-line edits schema.rs + global_db/tools.rs verified. ISSUE-053/055 filed.",
+      "status_entered_at": null,
+      "parent": "WP-087",
+      "goal": "见 WP-086-backend.md §5 Tools 节；依赖 Runtime 接口",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-092 方案（Tools）：subagent_send 入 pending + stop 原子 + subagent_delete + 权限描述\n依据：WP-087 / artifacts/WP-086-backend.md §2 K2-K6、§4、§5 WP-092。产物 .litecode/ops/artifacts/WP-086-tools.md。不 commit；不碰 hub.rs（Runtime）、client_protocol/serve/session（Session）、windows-*.yml。\n\n## T1 subagent_send（K2）\n- src/tools/subagent/send.rs：删 :63-67 与 :98-101 两处 \"already running\" 拒绝。子在跑 → SessionManager::enqueue_user_input(child, UserInput::text(message))（manager.rs:1150，现有）→ 返回 `status: queued\\nqueued: true\\nchild_session_id\\npending_id`，metadata {child_session_id, queued:true, pending_id}。子空闲 → 现有起 turn，返回 queued:false。\n- 竞态：判定在跑与 reserve_turn 之间子刚起 turn → start_turn_like_human 返回 AgentAlreadyRunning 时降级为 enqueue（不报错）。无 mode 参数，schema 不变。投递由现有 pending_auto_turn / step seam 负责（不改）。\n\n## T2 subagent_stop（K3）\n- src/tools/subagent/stop.rs:47-54：去掉 get_cached_progress + cancel_turn_sync 的先查后取消，改为一次 cancel_turn_sync → CancelOutcome（WP-090）。Running/Starting → `status: stopped`（+turn_id，若接口给出）；Idle → `status: nothing running`（附最近 turn 结果，沿用 :56-75）。成功后 notify_parent_no_wake(ChildStopped{child})。pending 不动。\n- status.rs format_stop_requested 改文案为 stopped。\n\n## T3 新工具 subagent_delete{session_id}（K4）\n- 新 src/tools/subagent/delete.rs + descriptions/subagent_delete.md；mod.rs 导出；tool/registry.rs:234-262 绑定分支加 \"subagent_delete\"（depth==0 才构造；:224 depth>=1 已按前缀隐藏）。\n- 校验顺序：① session_id 非空；② 必须是调用方**直接子**（meta.parent_session_id == 调用方 session，非 descendant_session_ids 全量）→否则 rejects_non_child 文案；③ 子在跑 → 拒绝 \"is running; stop it first\"；④ 任一后代在跑 → 拒绝 descendant_running 文案（列出 running ids）；⑤ 调删除入口级联删除子及后代；⑥ notify_parent_no_wake(ChildDeleted{child})；返回 `status: deleted` + deleted_session_ids。\n- ③④ 判定与删除须在同一 operation lease 内（复用 try_begin_operation(Delete)），避免判定后子又起 turn。\n\n## T4 权限描述（K6）\n- descriptions/subagent_launch.md 增：\"A subagent's permissions are fixed when it is created; any operation that would need approval at runtime is always denied (no prompt is shown).\" send/stop/delete 描述同步一句；send 描述改为\"子在跑时消息排队，下个机会投递\"；stop 改\"只停当前 turn，排队消息仍会投递\"。\n\n## 文件\nsrc/tools/subagent/{send,stop,status,delete(新),mod}.rs、src/tools/descriptions/subagent_{launch,send,stop,delete(新)}.md、src/tool/registry.rs、（见 Q3）src/config/schema.rs SUBAGENT_SERIES_TOOL_IDS。\n\n## 测试（§5 done_when 名）\nsubagent::send::{enqueues_while_running, queued_message_delivered_next_opportunity, starts_turn_when_idle}；subagent::stop::{stop_is_atomic_against_starting_turn, reports_nothing_running_when_idle, does_not_clear_pending}；subagent::delete::{deletes_idle_child_and_notifies_without_wake, rejects_running_child, rejects_when_descendant_running, rejects_non_child}；registry::subagent_delete_hidden_at_depth_ge_1；descriptions::subagent_launch_mentions_runtime_permission_denial。另补 delete::rejects_grandchild_direct（只允许直接子）。\n\n## 验证\ncargo test --lib tools::subagent；cargo test --lib permission::；cargo test --lib tool::registry；cargo test --lib --no-run；cargo fmt --check；cargo clippy --lib。\n\n## 依赖 WP-090/091（未定稿即 blocker）\n- B1 CancelOutcome 及 cancel_turn_sync 新签名（WP-090）——未定稿。\n- B2 ParentNotice::{ChildStopped,ChildDeleted} + hub::notify_parent_no_wake 签名（WP-090）——未定稿。\n- B3 删除入口：现删除流程在 client_protocol controller delete_session（session_lifecycle.rs:357，含 lease/projection/文件清理/hub purge），Tools 无 controller 句柄；需 SessionManager 层（或 Session 暴露的）可从工具调用的级联删除 API，返回全部被删 id 并做 descendant_running 判定——WP-090 remove_session 签名 + WP-091 实现，未定稿。\n- `.tmp/wp090_interface.md` 尚不存在，WP-090 仍 drafting。接口落地前不 start。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:13:32.778Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-086-backend.md §5 Tools 节；依赖 Runtime 接口"
+        },
+        {
+          "ts": "2026-10-13T06:16:32.178Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-092 方案（Tools）：subagent_send 入 pending + stop 原子 + subagent_delete + 权限描述\n依据"
+        },
+        {
+          "ts": "2026-10-13T06:16:32.530Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "send入pending/stop CancelOutcome/subagent_delete/权限描述；B1-B3 依赖 WP-090/091 接口未定稿"
+        },
+        {
+          "ts": "2026-10-13T06:17:46.144Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:18:12.700Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "开工 T1/T2/T4；T3 待 wp091_delete_api.md"
+        },
+        {
+          "ts": "2026-10-13T06:28:59.477Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "done_when: [\"subagent::send::enqueues_while_running\",\"subagent::send::q -> [\"subagent::send::enqueues_while_running\",\"subagent::send::q"
+        },
+        {
+          "ts": "2026-10-13T06:37:03.738Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"T1/T2/T4/list/ISSUE-053 落地并绿；T3 代码完成，注册缺 global_db/tools.rs"
+        },
+        {
+          "ts": "2026-10-13T06:40:20.752Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "done_when: [\"subagent::send::enqueues_while_running\",\"subagent::send::q -> [\"subagent::send::enqueues_while_running\",\"tests/subagent_se"
+        },
+        {
+          "ts": "2026-10-13T06:40:30.357Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "done_when: [\"subagent::send::enqueues_while_running\",\"tests/subagent_se -> [\"subagent::send::enqueues_while_running\",\"tests/subagent_se"
+        },
+        {
+          "ts": "2026-10-13T06:41:35.633Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "T1-T4+list 落地；tools::subagent 26/26、集成 27/27、pending_auto_turn 10/10、registry 7/8（ISSUE-055 预存）；授权 schema.rs/global_db/tools.rs 各一行；未 commit"
+        },
+        {
+          "ts": "2026-10-13T06:48:01.188Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "Mid resample: tools::subagent 26/26, tool::registry 7/8 (only ISSUE-055 pre-existing), subagent_session_isolation 15/15. Authorized 1-line edits schema.rs + global_db/tools.rs verified. ISSUE-053/055 filed.",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-093",
+      "domain": "client-ux-web",
+      "title": "WP-088 web 补：listSessions 进行中再请求则结束后补拉一次",
+      "result": "web 落地+测试绿；证据追加 WP-086-web.md",
+      "done_when": [
+        "补拉测试绿",
+        "tsc -b 0",
+        "未commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-086-web.md",
+      "progress": "closed done by frontend_mid: 复跑 listDedupe+reconnect 8/8 绿，tsc 0；只改 sessionStore.ts+新测；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-088",
+      "goal": "listSessions 去重从丢弃改为 in-flight 期间再请求时结束后补拉一次；补测试",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "## WP-093 方案（前端-web；只改 web/，不 commit，未批不 start）\n问题：WP-089 给 sessionStore.listSessions 加的 in-flight 守卫会直接丢掉进行中到达的请求；期间若有 create/delete（如 agent/subagent_bound 触发的重拉），本次返回的列表可能已过时且不会再拉。\n\n### 改动点（web/src/stores/sessionStore.ts）\n- 模块级 listInFlight 旁加 listPending 标志。\n- listSessions()：若 in-flight → 仅置 listPending=true 后返回（多次也只记一次，不堆积）；否则发 session/list。\n- then / catch 统一 finally 逻辑：listInFlight=false；若 listPending → 清标志并再调一次 listSessions()（只补一次；补拉期间再来的请求同样合并为下一次）。\n- 失败后的补拉：仍补一次（期间确有新请求）；不做重试循环。\n- resetListSessionsInFlight 测试钩子同时清 listPending。\n- 不改 connectionStore / SessionList / Roster 调用点。\n\n### 测试（新增到 components/SubagentOps.wp089.test.tsx 的 T5 段或新 stores/sessionStore.listDedupe.test.ts）\nL1 进行中再调 1 次 → 当前请求结束后恰好补发 1 次（共 2 次 session/list）。\nL2 进行中再调 N 次（3 次）→ 仍只补 1 次（共 2 次），不堆积。\nL3 无并发调用 → 只发 1 次，不补拉。\nL4 首次请求失败且期间有新请求 → 仍补拉 1 次，补拉成功后列表更新、sessionListError 清空。\nL5 补拉结果覆盖首个结果（期间 delete 的会话不再出现）。\n\n### 重连接线测试（可行性：可做，成本中等）\n- 新文件 stores/connectionStore.reconnect.test.ts（独立文件，避免 vi.mock 污染现有 connectionStore.test.ts）。\n- vi.mock('../api/agentWs')：假 AgentWsClient 记录构造参数 options，connect/disconnect 为空函数；vi.mock('../api/auth') getAuthToken 返回固定串。\n- attachSiblingStores({ session: 假 store，getState().listSessions=vi.fn() })，调用 init() 后手动触发 options.onConnectionChange('connected')。\n- R1 connected → listSessions 调 1 次；R2 'reconnecting' / 'disconnected' 不调；R3 断开后再 connected 再调 1 次。\n- afterEach 调 destroy() 重置模块内 wsClient。knowledgeStore.onReconnect / telemetry 若有副作用就 spy 掉。\n- 若实施中发现 init 依赖（transport nudge、telemetry 等）mock 链过长导致测试脆弱，则退回：只保留 R1 并在产物写明原因，不硬做。\n\n### 验收\n相关测 + web 全量 vitest（/exec-daemon/node v22）、tsc -b 0 错误；实施记录追加 .litecode/ops/artifacts/WP-086-web.md「WP-093」一节；不 commit。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T06:26:04.539Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: listSessions 去重从丢弃改为 in-flight 期间再请求时结束后补拉一次；补测试"
+        },
+        {
+          "ts": "2026-10-13T06:26:53.566Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: ## WP-093 方案（前端-web；只改 web/，不 commit，未批不 start）\n问题：WP-089 给 sessionStore.listSes"
+        },
+        {
+          "ts": "2026-10-13T06:26:53.911Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:27:23.433Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准，方案与范围符合"
+        },
+        {
+          "ts": "2026-10-13T06:27:42.512Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T06:29:07.677Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "补拉一次 + L1–L5 + R1–R3；vitest 1274/1274，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T06:29:49.811Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "复跑 listDedupe+reconnect 8/8 绿，tsc 0；只改 sessionStore.ts+新测；未 commit",
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

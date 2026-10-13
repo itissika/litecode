@@ -77,6 +77,77 @@ impl CompletionInbox {
     }
 }
 
+/// WP-090 K5: parent-side notice that never wakes the parent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParentNotice {
+    ChildStopped { child_session_id: String },
+    ChildDeleted { child_session_id: String },
+}
+
+impl ParentNotice {
+    pub fn child_session_id(&self) -> &str {
+        match self {
+            Self::ChildStopped { child_session_id } | Self::ChildDeleted { child_session_id } => {
+                child_session_id
+            }
+        }
+    }
+}
+
+/// Separate from [`CompletionInbox`] so notices never count as `has_pending`.
+#[derive(Default)]
+pub struct NoticeInbox {
+    inner: Mutex<HashMap<String, VecDeque<ParentNotice>>>,
+}
+
+impl NoticeInbox {
+    pub fn push(&self, parent_session_id: &str, notice: ParentNotice) {
+        let mut inner = self.inner.lock().expect("notice inbox lock");
+        let queue = inner.entry(parent_session_id.to_string()).or_default();
+        if !queue.contains(&notice) {
+            queue.push_back(notice);
+        }
+    }
+
+    pub fn pending(&self, parent_session_id: &str) -> bool {
+        self.inner
+            .lock()
+            .expect("notice inbox lock")
+            .get(parent_session_id)
+            .is_some_and(|queue| !queue.is_empty())
+    }
+
+    pub fn take_all(&self, parent_session_id: &str) -> Vec<ParentNotice> {
+        self.inner
+            .lock()
+            .expect("notice inbox lock")
+            .remove(parent_session_id)
+            .map(VecDeque::into_iter)
+            .map(Iterator::collect)
+            .unwrap_or_default()
+    }
+
+    pub fn restore_front(&self, parent_session_id: &str, notices: Vec<ParentNotice>) {
+        if notices.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock().expect("notice inbox lock");
+        let queue = inner.entry(parent_session_id.to_string()).or_default();
+        for notice in notices.into_iter().rev() {
+            if !queue.contains(&notice) {
+                queue.push_front(notice);
+            }
+        }
+    }
+
+    pub fn purge_parent(&self, parent_session_id: &str) {
+        self.inner
+            .lock()
+            .expect("notice inbox lock")
+            .remove(parent_session_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

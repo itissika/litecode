@@ -60,10 +60,10 @@ impl SubagentSendTool {
                 "subagent '{child_id}' is not a child session of this session"
             ));
         }
+        // K2: a running child gets the message queued into its pending inbox;
+        // pending_auto_turn / the step seam deliver it at the next opportunity.
         if self.sessions.is_turn_running_blocking(&child_id) {
-            return ToolCallResult::error(format!(
-                "subagent '{child_id}' is already running a turn. Its result will be delivered when that turn settles."
-            ));
+            return self.enqueue(&child_id, message);
         }
         if let Err(error) = self.sessions.ensure_entry(&child_id).await {
             return ToolCallResult::error(format!("subagent '{child_id}' is unavailable: {error}"));
@@ -83,6 +83,7 @@ impl SubagentSendTool {
         // Identity only — model / tier / context mode come from the child's own
         // session row inside `spawn_turn`.
         let opts = TurnOptions::child(agent_id.clone());
+        let retry_message = message.clone();
         let turn_id = match start_turn_like_human(
             &self.runtime,
             &self.sessions,
@@ -95,19 +96,44 @@ impl SubagentSendTool {
         .await
         {
             Ok(turn_id) => turn_id,
+            // Lost the race: the child started a turn between the check and the
+            // reservation. Queue instead of failing.
             Err(LitecodeError::AgentAlreadyRunning) => {
-                return ToolCallResult::error(format!(
-                    "subagent '{child_id}' is already running a turn. Its result will be delivered when that turn settles."
-                ));
+                return self.enqueue(&child_id, retry_message);
             }
             Err(error) => {
                 return ToolCallResult::error(format!("subagent_send failed: {error}"));
             }
         };
-        let mut result = ToolCallResult::ok(status::format_started(&child_id, &turn_id, None));
-        result.metadata =
-            Some(serde_json::json!({ "child_session_id": child_id, "turn_id": turn_id }));
+        let mut text = status::format_started(&child_id, &turn_id, None);
+        text.push_str("queued: false\n");
+        let mut result = ToolCallResult::ok(text);
+        result.metadata = Some(serde_json::json!({
+            "child_session_id": child_id,
+            "turn_id": turn_id,
+            "queued": false,
+        }));
         result
+    }
+
+    fn enqueue(&self, child_id: &str, message: String) -> ToolCallResult {
+        match self
+            .sessions
+            .enqueue_user_input(child_id, crate::types::UserInput::text(message))
+        {
+            Ok(pending) => {
+                let mut result = ToolCallResult::ok(status::format_queued(child_id, &pending.id));
+                result.metadata = Some(serde_json::json!({
+                    "child_session_id": child_id,
+                    "queued": true,
+                    "pending_id": pending.id,
+                }));
+                result
+            }
+            Err(error) => ToolCallResult::error(format!(
+                "subagent '{child_id}' message could not be queued: {error}"
+            )),
+        }
     }
 }
 
@@ -165,5 +191,101 @@ impl Tool for SubagentSendTool {
 
     fn set_active_session(&self, session_id: String) {
         *self.session_id.lock().unwrap() = session_id;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TurnGuard;
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
+    use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+    use crate::engines::WorkspaceEngines;
+    use crate::ide_base::IdeBaseHandle;
+    use crate::optional::EngineManager;
+    use crate::workspace::WorkspaceService;
+    use std::sync::atomic::AtomicU64;
+
+    fn test_runtime(root: &std::path::Path) -> (RuntimeHandle, Arc<SessionManager>) {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                role: AgentRole::Primary,
+                model_ref: "default".into(),
+                ..Default::default()
+            },
+        );
+        let workspace_state = WorkspaceState::new(root);
+        let resolved = resolve_without_catalog(global, workspace_state.clone());
+        let workspace = WorkspaceService::new(root.to_path_buf()).unwrap();
+        let engines = Arc::new(WorkspaceEngines::new());
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let ide = IdeBaseHandle::new(workspace, Arc::clone(&engines), Arc::clone(&hub));
+        let runtime = RuntimeHandle::new(
+            resolved,
+            "default".into(),
+            workspace_state,
+            Arc::new(EngineManager::new()),
+            engines,
+            ide,
+            Arc::new(AtomicU64::new(0)),
+            root.join("global.db"),
+        );
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            root.join("sessions.db").to_string_lossy().to_string(),
+        ));
+        (runtime, sessions)
+    }
+
+    #[tokio::test]
+    async fn enqueues_while_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let parent = sessions
+            .open_session("/proj", "default", None)
+            .await
+            .unwrap();
+        let child = sessions
+            .open_child_session("/proj", "reviewer", None, &parent, "call_1")
+            .unwrap();
+        sessions
+            .reserve_turn(&child, "t1".into(), 10, "reviewer", "/proj")
+            .unwrap();
+
+        let tool = SubagentSendTool::new(runtime, Arc::clone(&sessions), 0);
+        tool.set_active_session(parent.clone());
+        let result = tool
+            .call_send(serde_json::json!({"id": child, "message": "next step"}))
+            .await;
+
+        assert_eq!(
+            result.level,
+            crate::types::ToolSignalLevel::Ok,
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("queued: true"),
+            "{}",
+            result.content
+        );
+        let meta = result.metadata.clone().unwrap();
+        assert_eq!(meta["queued"], serde_json::json!(true));
+        let pending = sessions.pending_messages_snapshot(&child);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].text, "next step");
+        assert_eq!(meta["pending_id"], serde_json::json!(pending[0].id));
+    }
+
+    #[test]
+    fn schema_has_no_mode_parameter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let tool = SubagentSendTool::new(runtime, sessions, 0);
+        let schema = tool.schema();
+        assert!(schema["properties"].get("mode").is_none());
+        assert_eq!(schema["required"], serde_json::json!(["id", "message"]));
     }
 }

@@ -384,6 +384,11 @@ pub enum SessionRead {
     ChildBindings {
         parent_session_id: String,
     },
+    /// WP-091 R7: tombstones `(parent_call_id, child_session_id)` of children
+    /// deleted while this parent survived.
+    DeletedChildBindings {
+        parent_session_id: String,
+    },
     SubagentDepth {
         session_id: String,
     },

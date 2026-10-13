@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::permission::{PermissionSink, deny_permission_sink};
+use crate::permission::PermissionSink;
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
 use crate::tools::custom_hub::CustomToolHub;
@@ -70,9 +70,7 @@ pub fn try_begin_idle_auto_turn(
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
-    let sink = sessions
-        .last_permission_sink(sid)
-        .unwrap_or_else(deny_permission_sink);
+    let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
     IdleAutoTurn::Prepared {
         session_id: sid.to_string(),
         turn_id,

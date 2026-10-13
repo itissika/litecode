@@ -355,26 +355,26 @@ impl SessionController {
     }
 
     pub async fn delete_session(&mut self, id: &str) -> anyhow::Result<()> {
-        // List is SQLite; the exclusive lease needs an in-memory record.
-        // Hydrate this id only — do not subscribe, and do not load the rest.
-        self.sessions
-            .ensure_entry(id)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        // Atomically reserve the idle session; a turn or compact cannot start
-        // between the product gate and the destructive delete.
-        let _lease = self
-            .sessions
-            .try_begin_operation(id, crate::session::manager::SessionOperationKind::Delete)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-        // SessionManager.remove_session handles cancel + SQLite delete + lifecycle.
-        self.sessions
-            .remove_session(id)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        self.runtime.subagent_hub.purge_parent(id);
-        self.runtime.subagent_hub.forget_child(id);
+        // WP-091 K4/R6: shared delete entry (precheck descendant_running,
+        // lease, remove_session, purge/forget every removed id).
+        let deleted = crate::session::delete::delete_session_tree(
+            &self.sessions,
+            &self.runtime.subagent_hub,
+            id,
+        )
+        .await?;
+        // K5: user deleted a child → note the surviving parent, never wake it.
+        if let Some(parent) = deleted.parent_session_id.as_deref() {
+            self.runtime.subagent_hub.notify_parent_no_wake(
+                parent,
+                crate::tools::subagent::ParentNotice::ChildDeleted {
+                    child_session_id: id.to_string(),
+                },
+            );
+        }
+        for removed in &deleted.removed {
+            self.projections.remove(removed);
+        }
         self.projections.remove(id);
 
         // Workspace-level outs: delete must not depend on remaining projections
@@ -411,7 +411,9 @@ impl SessionController {
         let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
         let mut result = Vec::with_capacity(db_sessions.len());
         for row in db_sessions {
-            if sessions_mgr.is_session_empty(&row.id).await {
+            // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
+            // child must be visible after reconnect).
+            if row.parent_session_id.is_none() && sessions_mgr.is_session_empty(&row.id).await {
                 continue;
             }
             let running = sessions_mgr.is_turn_running(&row.id).await;
@@ -687,5 +689,14 @@ impl SessionController {
         self.projection(session_id)
             .ok_or_else(|| anyhow::anyhow!("no session bound"))?
             .materialize_range(from_seq, to_seq)
+    }
+}
+
+/// WP-091 R6: hub cleanup for every id removed by `delete_session_tree`
+/// (here, not in src/session: the session layer must not name the hub).
+impl crate::session::delete::RemovedSessionCleanup for crate::tools::subagent::SubagentHub {
+    fn on_session_removed(&self, session_id: &str) {
+        self.purge_parent(session_id);
+        self.forget_child(session_id);
     }
 }

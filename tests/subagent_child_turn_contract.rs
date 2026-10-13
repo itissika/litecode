@@ -126,7 +126,7 @@ async fn wait_freezes_a_child_turn_and_returns_its_session_result() {
         }
     );
     assert_eq!(stopped.level, ToolSignalLevel::Ok, "{}", stopped.content);
-    assert!(stopped.content.contains("status: stop_requested"));
+    assert!(stopped.content.contains("status: stopped"));
     assert_eq!(waited.level, ToolSignalLevel::Ok, "{}", waited.content);
     assert!(
         waited.content.contains("status: settled"),
@@ -148,7 +148,7 @@ async fn stop_after_completion_returns_the_last_durable_result() {
 
     let stopped = harness.stop("call_stop_done", &child).await;
     assert_eq!(stopped.level, ToolSignalLevel::Ok, "{}", stopped.content);
-    assert!(stopped.content.contains("status: already ended"));
+    assert!(stopped.content.contains("status: nothing running"));
     assert!(stopped.content.contains("reason: completed"));
     assert!(stopped.content.contains("responsibility: test"));
     assert!(stopped.content.contains("output:\ndone"));

@@ -1519,6 +1519,57 @@ impl Session {
     /// Delete a session and its descendants. Returns `(session_id, project)` for
     /// every row removed, children first, so the caller can tombstone each one
     /// and only remove their files once the transaction has committed.
+    /// `(parent_session_id, parent_call_id)` of a child row; None for roots
+    /// or rows without a call id.
+    pub(crate) fn parent_link_on(
+        conn: &Connection,
+        session_id: &str,
+    ) -> Result<Option<(String, String)>> {
+        let row: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT parent_session_id, parent_call_id FROM sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(match row {
+            Some((Some(parent), Some(call))) if !parent.is_empty() && !call.is_empty() => {
+                Some((parent, call))
+            }
+            _ => None,
+        })
+    }
+
+    /// WP-091 R7: add `{call_id: child_id}` to the parent's tombstone map.
+    /// A parent row that is already gone is a no-op.
+    pub(crate) fn record_deleted_child_on(
+        conn: &Connection,
+        parent_session_id: &str,
+        call_id: &str,
+        child_session_id: &str,
+    ) -> Result<()> {
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT deleted_children_json FROM sessions WHERE id = ?1",
+                rusqlite::params![parent_session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(raw) = raw else {
+            return Ok(());
+        };
+        let mut map: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&raw).unwrap_or_default();
+        map.insert(call_id.to_string(), child_session_id.to_string());
+        let encoded = serde_json::to_string(&map)
+            .map_err(|e| crate::types::LitecodeError::SessionStorage(e.to_string()))?;
+        conn.execute(
+            "UPDATE sessions SET deleted_children_json = ?1 WHERE id = ?2",
+            rusqlite::params![encoded, parent_session_id],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn delete_on(
         conn: &Connection,
         session_id: &str,
@@ -1572,8 +1623,15 @@ impl Session {
 
     pub(crate) fn cleanup_deleted_files(data_root: &Path, session_id: &str, project: Option<&str>) {
         let session_dir = data_root.join("sessions").join(session_id);
-        if session_dir.exists() {
-            let _ = std::fs::remove_dir_all(session_dir);
+        if session_dir.exists()
+            && let Err(error) = std::fs::remove_dir_all(&session_dir)
+        {
+            tracing::warn!(
+                session_id,
+                path = %session_dir.display(),
+                %error,
+                "cleanup_deleted_files: failed to remove session dir"
+            );
         }
         if let Some(project) = project {
             let project_path = std::path::Path::new(project);
@@ -1581,7 +1639,13 @@ impl Session {
                 Some(id) => crate::session::snapshot_paths::snapshots_dir_for_id(&id),
                 None => crate::session::snapshot_paths::snapshots_dir_for_workspace(project_path),
             };
-            let _ = snapshot::delete_session_snapshots(&snaps, session_id);
+            if let Err(error) = snapshot::delete_session_snapshots(&snaps, session_id) {
+                tracing::warn!(
+                    session_id,
+                    %error,
+                    "cleanup_deleted_files: failed to remove session snapshots"
+                );
+            }
         }
     }
 

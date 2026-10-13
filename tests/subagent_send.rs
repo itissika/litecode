@@ -72,7 +72,7 @@ async fn send_to_idle_child_runs_another_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_to_busy_child_fails_without_starting_a_turn() {
+async fn send_to_busy_child_queues_without_starting_a_turn() {
     let hang = HangProvider::ignore_cancel();
     let started = Arc::clone(&hang.started);
     let harness = SubagentHarness::new(Arc::new(hang));
@@ -80,16 +80,18 @@ async fn send_to_busy_child_fails_without_starting_a_turn() {
     harness.wait_for(|| started.load(Ordering::SeqCst), "child LLM start");
 
     let sent = harness.send("call_send_busy", &child, "again").await;
-    assert_eq!(sent.level, ToolSignalLevel::Error, "{}", sent.content);
-    assert!(sent.content.contains("already running"), "{}", sent.content);
+    // WP-092 K2 (ISSUE-053): a busy child queues the message instead of failing.
+    assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
+    assert!(sent.content.contains("queued: true"), "{}", sent.content);
     assert_eq!(turn_starts(&harness, &child), 1, "no second turn may start");
+    assert_eq!(harness.sessions.pending_messages_snapshot(&child).len(), 1);
     assert!(
         harness.sessions.is_turn_running_blocking(&child),
-        "a rejected send must not stop the first running turn"
+        "a queued send must not stop the first running turn"
     );
     assert!(
         !harness.runtime.subagent_hub.has_pending(&harness.parent_id),
-        "a rejected send must not settle the first turn's exit"
+        "a queued send must not settle the first turn's exit"
     );
 }
 
@@ -163,12 +165,22 @@ async fn concurrent_sends_only_one_wins() {
         .iter()
         .filter(|result| result.level == ToolSignalLevel::Ok)
         .count();
-    let busy = results
+    // WP-092 K2 (ISSUE-053): both succeed; exactly one starts the turn and
+    // the other is queued for the running child.
+    let started_turn = results
         .iter()
-        .filter(|result| result.content.contains("already running"))
+        .filter(|result| result.content.contains("queued: false"))
         .count();
-    assert_eq!(ok, 1, "exactly one send may win: {results:?}");
-    assert_eq!(busy, 1, "the other must report the busy child: {results:?}");
+    let queued = results
+        .iter()
+        .filter(|result| result.content.contains("queued: true"))
+        .count();
+    assert_eq!(ok, 2, "both sends succeed: {results:?}");
+    assert_eq!(
+        started_turn, 1,
+        "exactly one send may start the turn: {results:?}"
+    );
+    assert_eq!(queued, 1, "the other must be queued: {results:?}");
     // Clean up the winner's hanging turn.
     harness.stop("call_stop_winner", &child).await;
 }

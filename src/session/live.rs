@@ -42,11 +42,17 @@ pub enum TurnStepKind {
 pub enum LifecycleEvent {
     SessionRemoved {
         session_id: String,
+        /// WP-091 R7: parent of the removed session (None for roots).
+        parent_session_id: Option<String>,
     },
     TurnStarted {
         session_id: String,
         progress: TurnProgress,
     },
+    /// WP-091 R8 / P7: a session's aggregate status changed (pushed for
+    /// parents whose `running_with_subagent` flips). `status` is the
+    /// `SessionStatus::as_str` wire value.
+    SessionStatusChanged { session_id: String, status: String },
     TurnProgress {
         session_id: String,
         progress: TurnProgress,

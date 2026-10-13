@@ -528,7 +528,9 @@ async fn child_lifecycle_is_broadcast_to_workspace() {
             | LifecycleEvent::TurnStep { session_id, .. }
             | LifecycleEvent::SessionPreviewUpdated { session_id, .. }
             | LifecycleEvent::SessionAdded { session_id, .. } => session_id.as_str(),
-            LifecycleEvent::SessionRemoved { .. } => continue,
+            LifecycleEvent::SessionRemoved { .. } | LifecycleEvent::SessionStatusChanged { .. } => {
+                continue;
+            }
         };
         if sid == child_id {
             child_turn_events += 1;
@@ -812,7 +814,7 @@ async fn subagent_list_reports_raw_session_statuses() {
         running.content
     );
 
-    assert!(sessions.cancel_turn_sync(&first));
+    assert!(sessions.cancel_turn_sync(&first).cancelled());
     let stopping = tool.call_inner(serde_json::json!({}));
     assert!(
         child_block(&stopping.content, &first).contains("  state: stopping\n"),

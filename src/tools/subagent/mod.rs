@@ -8,6 +8,7 @@
 /// Children cannot nest another subagent series.
 pub const SUBAGENT_MAX_DEPTH: u32 = 1;
 
+mod delete;
 mod hub;
 mod jobs;
 mod launch;
@@ -18,8 +19,9 @@ mod stop;
 mod turn;
 mod wait;
 
+pub use delete::SubagentDeleteTool;
 pub use hub::SubagentHub;
-pub use jobs::{CompletionInbox, CompletionRef};
+pub use jobs::{CompletionInbox, CompletionRef, NoticeInbox, ParentNotice};
 pub use launch::{LaunchSpec, SpawnDeps, SubagentLaunchTool, spawn_child_job};
 pub use list::SubagentListTool;
 pub use send::SubagentSendTool;

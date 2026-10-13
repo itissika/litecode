@@ -301,7 +301,20 @@ export interface BufferLoaded {
   events: WireBufferEvent[];
   /** `subagent_launch` call_id → durable child session id (rebuild path). */
   subagent_bindings?: Record<string, string>;
+  /** WP-086 tombstones: call_id → child binding state. Absent = not deleted. */
+  subagent_binding_states?: Record<string, SubagentBindingState>;
 }
+
+/** WP-086 tombstone entry; `deleted: true` = child session was deleted. */
+export interface SubagentBindingState {
+  child_session_id: string;
+  deleted: boolean;
+}
+
+/** WP-086 wire error codes (`error.data.code`, JSON-RPC -32000). */
+export const RPC_ERR_SUBAGENT_SESSION_READONLY = "subagent_session_readonly";
+export const RPC_ERR_AGENT_ALREADY_RUNNING = "agent_already_running";
+export const RPC_ERR_DESCENDANT_RUNNING = "descendant_running";
 
 export type BufferItemNotification = WireBufferEvent & {
   session_id: string;
@@ -353,6 +366,12 @@ export interface LogLine {
   message: string;
 }
 
+export type SessionStatus =
+  | "idle"
+  | "running"
+  | "stopping"
+  | "running_with_subagent";
+
 export interface SessionInfo {
   id: string;
   project: string;
@@ -361,7 +380,7 @@ export interface SessionInfo {
   /** Latest completed assistant text. Omitted by the server when empty. */
   assistant_preview?: string;
   running: boolean;
-  status?: "idle" | "running" | "stopping" | "running_with_subagent";
+  status?: SessionStatus;
   turn: TurnSnapshot | null;
   agent_id: string;
   model_id?: string | null;
@@ -389,7 +408,9 @@ export type SessionLifecycleEvent =
   | "turn_updated"
   | "turn_finished"
   | "preview_updated"
-  | "turn_step";
+  | "turn_step"
+  /** WP-086: aggregate status change (e.g. parent ↔ running_with_subagent). */
+  | "status_changed";
 
 export type TurnStepKind = "reasoning" | "toolcall" | "text";
 
@@ -411,6 +432,8 @@ export interface SessionLifecycle {
   step_kind?: TurnStepKind;
   /** Durable `turn/end.reason` on `turn_finished`. */
   reason?: string;
+  /** WP-086: raw SessionStatus on turn_started / turn_finished / status_changed. */
+  status?: SessionStatus;
 }
 
 export interface SessionAttached {
@@ -487,6 +510,8 @@ export interface SessionSnapshot {
    * finish that was not a transport failure.
    */
   llm_reconnect?: LlmReconnectNotice | null;
+  /** WP-086 tombstones (same shape as on buffer/load). Absent = none deleted. */
+  subagent_binding_states?: Record<string, SubagentBindingState>;
 }
 
 /** One queued user message (server-assigned id; delete, never edit). */

@@ -14,6 +14,7 @@ import { mentionKeysOf } from "../lib/knowledge/flowProjection";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useKnowledgeStore } from "../stores/knowledgeStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { sessionBusy } from "../lib/subagentUi";
 import {
   noteComposerFocus,
   registerComposer,
@@ -306,6 +307,10 @@ export function AgentChatInput({
     return slice?.activePrimary ?? s.activePrimary;
   });
   const primaryAgents = useSessionStore((s) => s.primaryAgents);
+  const stopSubagent = useSessionStore((s) => s.stopSubagent);
+  const childBusy = useSessionStore((s) =>
+    sessionBusy(s.sessions.find((x) => x.id === sessionId)),
+  );
   const pendingPrimaryId = useSessionStore((s) => {
     const slice = s.byId.get(sessionId);
     return slice?.pendingPrimaryId ?? null;
@@ -611,6 +616,17 @@ export function AgentChatInput({
               />
               <ContextUsageRing sessionId={sessionId} readOnly />
             </span>
+            {/* WP-086: stop only — a child never takes user turns. */}
+            <button
+              type="button"
+              data-testid="subagent-stop"
+              aria-label="停止子会话"
+              disabled={connBlocked || !(childBusy || isRunning)}
+              onClick={() => stopSubagent(sessionId)}
+              className="ml-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
+            >
+              停止
+            </button>
           </div>
         </div>
       </div>

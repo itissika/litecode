@@ -74,6 +74,9 @@ pub fn execute(
         SessionRead::ChildBindings { parent_session_id } => Ok(ReadValue::ChildBindings(
             child_bindings(conn, &parent_session_id)?,
         )),
+        SessionRead::DeletedChildBindings { parent_session_id } => Ok(ReadValue::ChildBindings(
+            deleted_child_bindings(conn, &parent_session_id)?,
+        )),
         SessionRead::SubagentDepth { session_id } => {
             Ok(ReadValue::Depth(subagent_depth(conn, &session_id)?))
         }
@@ -354,6 +357,21 @@ fn child_bindings(conn: &Connection, parent: &str) -> Result<Vec<(String, String
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+fn deleted_child_bindings(conn: &Connection, parent: &str) -> Result<Vec<(String, String)>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT deleted_children_json FROM sessions WHERE id = ?1",
+            rusqlite::params![parent],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let map: std::collections::BTreeMap<String, String> = raw
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    Ok(map.into_iter().collect())
 }
 
 fn subagent_depth(conn: &Connection, session_id: &str) -> Result<u32> {

@@ -18,9 +18,17 @@ pub fn format_started(child_id: &str, turn_id: &str, responsibility: Option<&str
     out
 }
 
-pub fn format_stop_requested(child_id: &str, turn_id: &str) -> String {
+pub fn format_queued(child_id: &str, pending_id: &str) -> String {
     format!(
-        "status: stop_requested\nchild_session_id: {child_id}\nturn_id: {turn_id}\n\
+        "status: queued\nqueued: true\nchild_session_id: {child_id}\npending_id: {pending_id}\n\
+         The child is running; this message is queued and will be delivered at its next opportunity.\n"
+    )
+}
+
+pub fn format_stopped(child_id: &str) -> String {
+    format!(
+        "status: stopped\nchild_session_id: {child_id}\n\
+         Only the current turn was stopped; queued messages are still delivered. \
          The current work may already have consumed resources. Confirm the next assignment before continuing this session.\n"
     )
 }

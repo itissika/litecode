@@ -1220,6 +1220,48 @@ impl SessionController {
         self.sessions.child_bindings_for_parent(parent_session_id)
     }
 
+    /// WP-091 R7 / P6: live bindings plus tombstones of deleted children.
+    /// `subagent_bindings` keeps tombstoned entries too (compat).
+    pub fn subagent_bindings_and_states(
+        &self,
+        parent_session_id: &str,
+    ) -> (
+        std::collections::HashMap<String, String>,
+        std::collections::HashMap<String, crate::client_protocol::protocol::SubagentBindingState>,
+    ) {
+        use crate::client_protocol::protocol::SubagentBindingState;
+        let mut bindings = self.sessions.child_bindings_for_parent(parent_session_id);
+        let mut states: std::collections::HashMap<String, SubagentBindingState> = bindings
+            .iter()
+            .map(|(call, child)| {
+                (
+                    call.clone(),
+                    SubagentBindingState {
+                        child_session_id: child.clone(),
+                        deleted: false,
+                    },
+                )
+            })
+            .collect();
+        for (call, child) in self
+            .sessions
+            .deleted_child_bindings_for_parent(parent_session_id)
+        {
+            if states.contains_key(&call) {
+                continue; // a live row wins (should not happen)
+            }
+            bindings.insert(call.clone(), child.clone());
+            states.insert(
+                call,
+                SubagentBindingState {
+                    child_session_id: child,
+                    deleted: true,
+                },
+            );
+        }
+        (bindings, states)
+    }
+
     // ── runtime helpers ──
 
     pub fn session_binding(&self, session_id: &str) -> SessionBindingProjection {

@@ -73,6 +73,10 @@ pub enum ErrorCode {
     NothingToRevert,
     NothingToCompact,
     Internal,
+    /// WP-091 K1 / P1: user-side turn starts on a subagent child session.
+    SubagentSessionReadonly,
+    /// WP-091 K4 / P4: delete refused because a descendant is running.
+    DescendantRunning,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -332,6 +336,16 @@ pub struct BufferLoadResult {
     pub events: Vec<WireBufferEvent>,
     #[serde(default)]
     pub subagent_bindings: HashMap<String, String>,
+    /// WP-091 R7 / P6: `{call_id: {child_session_id, deleted}}`; additive.
+    #[serde(default)]
+    pub subagent_binding_states: HashMap<String, SubagentBindingState>,
+}
+
+/// WP-091 R7 / P6: one launch-call binding, live or tombstoned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentBindingState {
+    pub child_session_id: String,
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -649,6 +663,7 @@ mod tests {
             to_seq: 5,
             events: Vec::new(),
             subagent_bindings: HashMap::new(),
+            subagent_binding_states: HashMap::new(),
         })
         .unwrap();
         assert!(json.get("user_detail_before").is_none());

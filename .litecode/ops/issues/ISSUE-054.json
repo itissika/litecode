@@ -1,0 +1,61 @@
+{
+  "id": "ISSUE-054",
+  "grade": "bug",
+  "layer": "product",
+  "domain": "harness-core",
+  "core": true,
+  "core_nodes": [],
+  "reporter": "runtime",
+  "owner": "runtime",
+  "status": "open",
+  "blocks": false,
+  "title": "R11 Lagged 重扫：进程重启后父可能再收到子的旧 turn 结果",
+  "basis": [
+    "A5"
+  ],
+  "promise": "WP-090 R11：broadcast Lagged 后的重扫只补投「漏掉」的子 turn 完成；父已消费过的 (child, turn) 不得再次入父 CompletionInbox / 唤醒父。同一进程内靠 Router.delivered 与 CompletionInbox 按 (child,turn) 去重保证；跨进程重启后仍不得把父已消费的旧结果再投一次。",
+  "actual": "Router.delivered（src/tools/subagent/hub.rs）仅为进程内 HashMap。进程重启或 Router 尚无该 child 记录时，一次 Lagged 会经 idle_child_session_ids（src/session/manager.rs:1221）重扫全部空闲子，并把该子 latest_turn 再 deliver 一次；父可能在重启前已消费该结果，于是再收一次旧结果并可能被唤醒。WP-090 本包不修（边角 / Andy 五档）。",
+  "evidence": [
+    {
+      "path": "src/tools/subagent/hub.rs",
+      "symbol": "struct Router::delivered",
+      "lines": "107-114",
+      "commit": "dc3db7b",
+      "note": "WP-090 工作树（尚未 commit）：delivered 仅内存；进程重启即清空"
+    },
+    {
+      "path": "src/tools/subagent/hub.rs",
+      "symbol": "Router::handle Lagged → rescan",
+      "lines": "171-173",
+      "commit": "dc3db7b",
+      "note": "WP-090 工作树：RecvError::Lagged 触发 rescan"
+    },
+    {
+      "path": "src/tools/subagent/hub.rs",
+      "symbol": "Router::rescan",
+      "lines": "183-201",
+      "commit": "dc3db7b",
+      "note": "WP-090 工作树：无 delivered 记录时把空闲子 latest_turn 再 deliver（含 exit_handler 唤醒）"
+    },
+    {
+      "path": "src/session/manager.rs",
+      "symbol": "SessionManager::idle_child_session_ids",
+      "lines": "1221-1234",
+      "commit": "dc3db7b",
+      "note": "WP-090 工作树：重扫枚举内存中非 busy 且有 parent 的子会话"
+    }
+  ],
+  "repro": "缺自动化测。手工/未来测：父已 take 子 turn T；杀进程重启（Router.delivered 空）→ 子仍 idle 在内存或再 load → 向 completion router 注入 RecvError::Lagged → 期望：不向父再 push T、不唤醒；实际：rescan 再 deliver T。同进程内第二次 Lagged 有 delivered 则不重投（见 hub.rs lagged_router_rescans_and_redelivers）。",
+  "history": [
+    {
+      "ts": "2026-10-13T06:34:15.426Z",
+      "by": "runtime",
+      "change": "ops.issue_new 分配（WP-090）"
+    },
+    {
+      "ts": "2026-10-13T14:34:00+08:00",
+      "by": "runtime",
+      "change": "WP-090 验收抽测期间由后端中层点名登记：重启后父可能再收到旧子结果（R11 Lagged 重扫 + delivered 仅内存）。分级=bug/product（Andy 五档·边角），domain=harness-core，owner=runtime。建议去重：(b) 重扫时无记录只 seed 不投、有记录仅当 turn_id 更新才投（最小改动）；需跨重启保证则 (a) 持久化 last delivered/consumed；(c) 父 inbox 按 (child,turn) 去重。本包不修。"
+    }
+  ]
+}

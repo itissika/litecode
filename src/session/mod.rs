@@ -7,6 +7,7 @@
 //! delete `.litecode/sessions.db` to recreate. Empty leftover `messages` may be DROP'd.
 
 pub mod data;
+pub mod delete;
 pub mod estimate;
 pub mod event;
 pub mod live;
@@ -33,7 +34,7 @@ pub use estimate::{
 };
 pub use event::{EventDraft, EventLog, EventType, Seq, SessionEvent};
 pub use live::{LifecycleEvent, LiveTurn, TurnProgress};
-pub use manager::{SessionManager, SessionRecord};
+pub use manager::{CancelOutcome, SessionManager, SessionRecord};
 pub use media_tokens::{
     AUDIO_FALLBACK_TOKENS, FILE_FALLBACK_TOKENS, IMAGE_BASE_TOKENS, IMAGE_FALLBACK_TOKENS,
     IMAGE_TILE_TOKENS, VIDEO_FALLBACK_TOKENS, input_content_media_tokens,

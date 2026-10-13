@@ -500,7 +500,11 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
                 .map_err(|e| LitecodeError::SessionStorage(format!("COMMIT: {e}")))?;
             for id in orphan_ids {
                 let path = state.data_root.join(super::blob::rel_path_for(&id));
-                let _ = std::fs::remove_file(path);
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(path = %path.display(), %error, "orphan blob cleanup failed");
+                }
             }
             for (session_id, project) in std::mem::take(&mut state.deleted_files) {
                 Session::cleanup_deleted_files(&state.data_root, &session_id, project.as_deref());
@@ -946,7 +950,17 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             expected_revision,
             operation_id,
         } => {
+            let parent_link = Session::parent_link_on(state.db.conn(), &session_id)?;
             let deleted = Session::delete_on(state.db.conn(), &session_id)?;
+            // WP-091 R7: the surviving parent keeps a tombstone for this child.
+            if let Some((parent_id, call_id)) = parent_link {
+                Session::record_deleted_child_on(
+                    state.db.conn(),
+                    &parent_id,
+                    &call_id,
+                    &session_id,
+                )?;
+            }
             state.live.remove(&session_id);
             // The files go after the commit, not during it.
             state.deleted_files.extend(deleted);

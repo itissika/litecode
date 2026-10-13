@@ -734,13 +734,15 @@ pub fn session_snapshot(snapshot: SessionSnapshot) -> serde_json::Value {
 }
 
 /// G0: lifecycle event — session deleted (sent before the entry is removed).
-pub fn session_lifecycle_deleted(session_id: &str) -> Value {
+pub fn session_lifecycle_deleted(session_id: &str, parent_session_id: Option<&str>) -> Value {
+    // WP-091 R7 / P5: `parent_session_id` is always present (null for roots).
     notification(
         "session/lifecycle",
         json!({
             "session_id": session_id,
             "event": "deleted",
             "turn": null,
+            "parent_session_id": parent_session_id,
         }),
     )
 }
@@ -871,11 +873,18 @@ pub fn turn_progress_to_snapshot(p: &TurnProgress) -> TurnSnapshot {
 
 pub fn lifecycle_event_to_wire(ev: &LifecycleEvent) -> Value {
     match ev {
-        LifecycleEvent::SessionRemoved { session_id } => session_lifecycle_deleted(session_id),
+        LifecycleEvent::SessionRemoved {
+            session_id,
+            parent_session_id,
+        } => session_lifecycle_deleted(session_id, parent_session_id.as_deref()),
         LifecycleEvent::TurnStarted {
             session_id,
             progress,
         } => session_lifecycle_turn_started(session_id, &turn_progress_to_snapshot(progress)),
+        LifecycleEvent::SessionStatusChanged { session_id, status } => notification(
+            "session/lifecycle",
+            json!({ "session_id": session_id, "event": "status_changed", "status": status }),
+        ),
         LifecycleEvent::TurnProgress {
             session_id,
             progress,

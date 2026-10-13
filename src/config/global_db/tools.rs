@@ -30,6 +30,7 @@ pub fn core_none_tools() -> &'static [&'static str] {
         "subagent_stop",
         "subagent_list",
         "subagent_send",
+        "subagent_delete",
     ]
 }
 

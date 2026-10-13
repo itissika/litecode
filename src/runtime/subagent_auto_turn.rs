@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use crate::permission::{PermissionSink, deny_permission_sink};
+use crate::permission::PermissionSink;
 use crate::runtime::{RuntimeHandle, TurnOptions, spawn_turn};
 use crate::session::{LifecycleEvent, SessionManager};
 use crate::tools::subagent::SubagentHub;
@@ -70,9 +70,7 @@ pub fn try_begin_idle_auto_turn(
         sessions.release_turn_reservation(sid, &turn_id);
         return IdleAutoTurn::SkippedEmptyMailbox;
     }
-    let sink = sessions
-        .last_permission_sink(sid)
-        .unwrap_or_else(deny_permission_sink);
+    let sink = crate::runtime::auto_turn_sink::auto_turn_permission_sink(sessions, sid);
     IdleAutoTurn::Prepared {
         session_id: sid.to_string(),
         turn_id,
@@ -355,5 +353,38 @@ mod tests {
         }
         assert!(hub.has_pending(&sid));
         assert!(!sessions.is_session_busy_blocking(&sid));
+    }
+
+    #[test]
+    fn child_uses_deny_sink_regardless_of_last_sink() {
+        use crate::permission::grants::AskPrompt;
+        use crate::permission::{AskOutcome, RecordingPermissionSink};
+        let dir = tempfile::tempdir().unwrap();
+        let (_runtime, sessions, _hub) = test_runtime(dir.path());
+        let project = dir.path().display().to_string();
+        let parent = sessions
+            .open_session_sync(&project, "default", None)
+            .unwrap();
+        let child = sessions
+            .test_child_session(&project, &parent, "call-1")
+            .unwrap();
+        let allow: Arc<dyn PermissionSink> = Arc::new(RecordingPermissionSink::new(
+            AskOutcome::from_reply(true, false),
+        ));
+        sessions.set_last_permission_sink(&child, Arc::clone(&allow));
+        sessions.set_last_permission_sink(&parent, allow);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let prompt = AskPrompt::permission("bash", "r", "s");
+        let child_sink =
+            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &child);
+        assert_eq!(child_sink.ask(&prompt, &cancel).outcome, AskOutcome::Deny);
+        let parent_sink =
+            crate::runtime::auto_turn_sink::auto_turn_permission_sink(&sessions, &parent);
+        assert_ne!(
+            parent_sink.ask(&prompt, &cancel).outcome,
+            AskOutcome::Deny,
+            "primary keeps last sink (Q1)"
+        );
+        // try_begin_idle_auto_turn goes through the same helper (see sink selection in this module).
     }
 }

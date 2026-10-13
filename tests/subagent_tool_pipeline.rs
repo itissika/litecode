@@ -346,8 +346,8 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     .await
     .expect("stop must cancel the child turn");
     assert!(
-        stop_result.content.contains("stop_requested")
-            || stop_result.content.contains("already ended"),
+        stop_result.content.contains("status: stopped")
+            || stop_result.content.contains("status: nothing running"),
         "stop result: {}",
         stop_result.content
     );

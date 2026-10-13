@@ -70,6 +70,9 @@ enum SessionActivity {
     StartingTurn {
         turn_id: String,
         progress: TurnProgress,
+        /// WP-090 R1: a cancel arrived before `start_turn` installed the
+        /// RunningTurn; `start_turn` cancels the handle token immediately.
+        cancel_requested: bool,
     },
     RunningTurn(LiveTurnState),
     Exclusive {
@@ -77,6 +80,32 @@ enum SessionActivity {
         kind: SessionOperationKind,
     },
 }
+
+/// Result of a single-lock cancel attempt on one session (WP-090 R1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelOutcome {
+    /// A RunningTurn existed; its token was cancelled and `stopping=true`.
+    Running,
+    /// A StartingTurn reservation existed; `cancel_requested=true` was recorded.
+    Starting,
+    /// Idle / Exclusive / unknown session: nothing to stop. No side effects.
+    Idle,
+}
+
+impl CancelOutcome {
+    /// true for Running | Starting (what `agent/cancel {"cancelled"}` reports).
+    pub fn cancelled(self) -> bool {
+        matches!(self, Self::Running | Self::Starting)
+    }
+}
+
+/// WP-090 / WP-091 R8 hook: Runtime calls it after a turn activity transition
+/// it owns has been decided (reservation→RunningTurn, reservation released,
+/// turn finished). Always called **outside** the `records` lock, after the
+/// matching lifecycle event (if any) has been emitted, on the transitioning
+/// thread. Fires for child sessions too; parent aggregate
+/// (`RunningWithSubagent`) is Session's to recompute.
+pub type TurnStatusHook = Arc<dyn Fn(&str, SessionStatus) + Send + Sync>;
 
 /// Public session status. `RunningWithSubagent` is the aggregate view for an
 /// otherwise-idle parent whose subtree still has active turns.
@@ -293,6 +322,8 @@ pub struct SessionManager {
     /// Keeps a test-created lease alive for the manager's writer lifetime.
     _test_lease: Option<crate::session::WorkspaceWriteLease>,
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
+    /// WP-090: optional turn status hook (default none = no-op). Session installs.
+    turn_status_hook: std::sync::RwLock<Option<TurnStatusHook>>,
     /// Test-only: next `start_turn` pretends fanout thread spawn failed.
     #[cfg(test)]
     fail_next_fanout_spawn: std::sync::atomic::AtomicBool,
@@ -329,6 +360,7 @@ impl SessionManager {
             data,
             _test_lease: test_lease,
             lifecycle_tx,
+            turn_status_hook: std::sync::RwLock::new(None),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         }
@@ -343,6 +375,7 @@ impl SessionManager {
             data,
             _test_lease: None,
             lifecycle_tx,
+            turn_status_hook: std::sync::RwLock::new(None),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         };
@@ -880,6 +913,7 @@ impl SessionManager {
         record.activity = SessionActivity::StartingTurn {
             turn_id,
             progress: progress.clone(),
+            cancel_requested: false,
         };
         drop(records);
 
@@ -908,8 +942,22 @@ impl SessionManager {
         };
         if released {
             self.turn_guard.end_turn();
+            self.fire_turn_status(session_id, SessionStatus::Idle);
         }
         released
+    }
+
+    /// Install the turn status hook (Session, WP-091 R8). Replaces any previous.
+    pub fn set_turn_status_hook(&self, hook: TurnStatusHook) {
+        *self.turn_status_hook.write().unwrap() = Some(hook);
+    }
+
+    /// Call the hook outside `records`. Never call while holding the lock.
+    fn fire_turn_status(&self, session_id: &str, status: SessionStatus) {
+        let hook = self.turn_status_hook.read().unwrap().clone();
+        if let Some(hook) = hook {
+            hook(session_id, status);
+        }
     }
 
     /// Begin a turn directly. Used by tests and inline runtimes that cannot
@@ -1007,8 +1055,9 @@ impl SessionManager {
             }
             let mut progress = live.progress;
             progress.awaiting_permission = false;
-            progress
+            (progress, record.activity.status())
         };
+        let (progress, status_after) = progress;
         self.turn_guard.end_turn();
         let reason = self
             .data()
@@ -1022,6 +1071,7 @@ impl SessionManager {
             reason,
         });
         self.activity_changed.notify_all();
+        self.fire_turn_status(session_id, status_after);
         Some(progress)
     }
 
@@ -1035,14 +1085,18 @@ impl SessionManager {
     ) -> Result<()> {
         let turn_id = handle.turn_id.clone();
         let cancel = handle.cancel.clone();
-        let (event_tx, progress) = {
+        let (event_tx, progress, cancel_requested) = {
             let mut records = self.records.lock().unwrap();
             let record = records.get_mut(session_id).ok_or_else(|| {
                 LitecodeError::ToolExecution(format!("session {session_id} not found"))
             })?;
             let activity = std::mem::replace(&mut record.activity, SessionActivity::Idle);
-            let (reserved_turn_id, progress) = match activity {
-                SessionActivity::StartingTurn { turn_id, progress } => (turn_id, progress),
+            let (reserved_turn_id, progress, cancel_requested) = match activity {
+                SessionActivity::StartingTurn {
+                    turn_id,
+                    progress,
+                    cancel_requested,
+                } => (turn_id, progress, cancel_requested),
                 other => {
                     record.activity = other;
                     cancel.cancel();
@@ -1053,6 +1107,7 @@ impl SessionManager {
                 record.activity = SessionActivity::StartingTurn {
                     turn_id: reserved_turn_id,
                     progress,
+                    cancel_requested,
                 };
                 cancel.cancel();
                 return Err(LitecodeError::AgentAlreadyRunning);
@@ -1063,15 +1118,29 @@ impl SessionManager {
                 turn_id: turn_id.clone(),
                 cancel: cancel.clone(),
                 progress: progress.clone(),
-                stopping: false,
+                stopping: cancel_requested,
             });
-            (record.event_tx.clone(), progress)
+            if cancel_requested {
+                // R1: cancel requested during the Starting window takes effect
+                // the moment the token is installed; the turn winds down via
+                // the normal cancel path (TurnFinished reason=Cancelled).
+                cancel.cancel();
+            }
+            (record.event_tx.clone(), progress, cancel_requested)
         };
 
         self.emit_lifecycle(LifecycleEvent::TurnStarted {
             session_id: session_id.to_string(),
             progress,
         });
+        self.fire_turn_status(
+            session_id,
+            if cancel_requested {
+                SessionStatus::Stopping
+            } else {
+                SessionStatus::Running
+            },
+        );
 
         // Fanout must outlive the caller's runtime. Idle bash auto-turn starts
         // the turn on a throwaway current-thread runtime that exits as soon as
@@ -1119,22 +1188,49 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn cancel_turn(&self, session_id: &str) {
-        self.cancel_turn_sync(session_id);
+    pub async fn cancel_turn(&self, session_id: &str) -> CancelOutcome {
+        self.cancel_turn_sync(session_id)
     }
 
-    /// Cancel a live `RunningTurn` without taking the exclusive lease.
-    /// Returns true when a cancel token was signalled.
-    pub fn cancel_turn_sync(&self, session_id: &str) -> bool {
+    /// Cancel a live turn without taking the exclusive lease. Decision and
+    /// action happen under one `records` lock. Never touches pending queues,
+    /// mailboxes or completion inboxes (K3), and emits no parent notice.
+    pub fn cancel_turn_sync(&self, session_id: &str) -> CancelOutcome {
         let mut records = self.records.lock().unwrap();
-        if let Some(record) = records.get_mut(session_id)
-            && let SessionActivity::RunningTurn(live) = &mut record.activity
-        {
-            live.stopping = true;
-            live.cancel.cancel();
-            return true;
+        let Some(record) = records.get_mut(session_id) else {
+            return CancelOutcome::Idle;
+        };
+        match &mut record.activity {
+            SessionActivity::RunningTurn(live) => {
+                live.stopping = true;
+                live.cancel.cancel();
+                CancelOutcome::Running
+            }
+            SessionActivity::StartingTurn {
+                cancel_requested, ..
+            } => {
+                *cancel_requested = true;
+                CancelOutcome::Starting
+            }
+            SessionActivity::Idle | SessionActivity::Exclusive { .. } => CancelOutcome::Idle,
         }
-        false
+    }
+
+    /// WP-090 R11: in-memory child sessions that are not busy, as
+    /// `(child_session_id, parent_session_id)`. Read-only.
+    pub(crate) fn idle_child_session_ids(&self) -> Vec<(String, String)> {
+        let records = self.records.lock().unwrap();
+        records
+            .iter()
+            .filter(|(_, record)| !record.activity.is_busy())
+            .filter_map(|(id, record)| {
+                record
+                    .parent_session_id
+                    .as_ref()
+                    .filter(|parent| !parent.is_empty())
+                    .map(|parent| (id.clone(), parent.clone()))
+            })
+            .collect()
     }
 
     // ── queued user messages (memory-only) ──
@@ -1329,6 +1425,7 @@ impl SessionManager {
             record.activity = SessionActivity::StartingTurn {
                 turn_id,
                 progress: progress.clone(),
+                cancel_requested: false,
             };
             let claimed = std::mem::take(&mut record.pending_messages);
             emit_pending_messages_locked(record);
@@ -1720,7 +1817,7 @@ impl SessionManager {
     pub async fn shutdown_cleanup(&self) {
         let ids: Vec<String> = self.records.lock().unwrap().keys().cloned().collect();
         for id in &ids {
-            self.cancel_turn(id).await;
+            let _ = self.cancel_turn(id).await;
         }
         self.data.shutdown();
     }
@@ -1879,7 +1976,11 @@ impl SessionManager {
         removed_children
     }
 
-    pub fn remove_session(&self, session_id: &str) -> Result<()> {
+    /// Returns every removed session id: descendants (sorted) first, root last
+    /// (WP-090 interface v1 §2; implementation owned by Session / WP-091).
+    /// The idempotent SessionNotFound path returns the ids it could still
+    /// collect, root included. Each `SessionRemoved` carries its parent id.
+    pub fn remove_session(&self, session_id: &str) -> Result<Vec<String>> {
         // Cancel live turns across the durable subtree before deleting rows.
         let known_children = self.collect_child_ids_blocking(session_id);
         {
@@ -1897,6 +1998,16 @@ impl SessionManager {
                 }
             }
         }
+        // WP-091 R7: parents must be read before the rows go.
+        let mut parents: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        parents.insert(
+            session_id.to_string(),
+            self.parent_session_id_of(session_id),
+        );
+        for child_id in &known_children {
+            parents.insert(child_id.clone(), self.parent_session_id_of(child_id));
+        }
 
         // Durable cascade (children first) via SessionData delete.
         let expected = self.expected_revision(session_id);
@@ -1905,30 +2016,22 @@ impl SessionManager {
             expected_revision: expected,
             operation_id: MutationId::new(),
         }) {
-            Ok(_) => {
+            // Second arm is idempotent: already gone from the durable store.
+            Ok(_) | Err(LitecodeError::SessionNotFound(_)) => {
                 let removed_children = self.take_removed_sessions(session_id, &known_children);
                 for child_id in &removed_children {
                     self.emit_lifecycle(LifecycleEvent::SessionRemoved {
                         session_id: child_id.clone(),
+                        parent_session_id: parents.get(child_id).cloned().flatten(),
                     });
                 }
                 self.emit_lifecycle(LifecycleEvent::SessionRemoved {
                     session_id: session_id.to_string(),
+                    parent_session_id: parents.get(session_id).cloned().flatten(),
                 });
-                Ok(())
-            }
-            Err(LitecodeError::SessionNotFound(_)) => {
-                // Idempotent: already gone from durable store.
-                let removed_children = self.take_removed_sessions(session_id, &known_children);
-                for child_id in &removed_children {
-                    self.emit_lifecycle(LifecycleEvent::SessionRemoved {
-                        session_id: child_id.clone(),
-                    });
-                }
-                self.emit_lifecycle(LifecycleEvent::SessionRemoved {
-                    session_id: session_id.to_string(),
-                });
-                Ok(())
+                let mut removed = removed_children;
+                removed.push(session_id.to_string());
+                Ok(removed)
             }
             Err(e) => {
                 tracing::error!(
@@ -1940,6 +2043,70 @@ impl SessionManager {
             }
         }
     }
+
+    /// Parent of a session from memory, else durable meta.
+    pub fn parent_session_id_of(&self, session_id: &str) -> Option<String> {
+        if let Some(record) = self.records.lock().unwrap().get(session_id) {
+            return record.parent_session_id.clone();
+        }
+        self.data
+            .meta_blocking(session_id)
+            .ok()
+            .and_then(|m| m.parent_session_id)
+    }
+
+    /// WP-091 R6: busy descendants (root excluded), sorted.
+    pub fn running_descendant_ids(&self, session_id: &str) -> Vec<String> {
+        let children = self.collect_child_ids_blocking(session_id);
+        let records = self.records.lock().unwrap();
+        let mut out: Vec<String> = children
+            .into_iter()
+            .filter(|id| {
+                records
+                    .get(id)
+                    .is_some_and(|record| record.activity.is_busy())
+            })
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// Test-only helper for creating child sessions in unit tests (protocol /
+    /// delete / status tests). Production code must not call it; children are
+    /// created only by the subagent launch path (architecture_layers).
+    #[cfg(test)]
+    pub(crate) fn test_child_session(
+        &self,
+        project: &str,
+        parent_session_id: &str,
+        call_id: &str,
+    ) -> Result<String> {
+        self.open_child_session(project, "default", None, parent_session_id, call_id)
+    }
+
+    /// WP-091 R8: broadcast an aggregate status change (Session's R8 hook).
+    pub fn emit_status_changed(&self, session_id: &str, status: SessionStatus) {
+        self.emit_lifecycle(LifecycleEvent::SessionStatusChanged {
+            session_id: session_id.to_string(),
+            status: status.as_str().to_string(),
+        });
+    }
+
+    /// WP-091 R7: tombstones `{call_id: child_session_id}` for children
+    /// deleted while this parent survived.
+    pub fn deleted_child_bindings_for_parent(
+        &self,
+        parent_session_id: &str,
+    ) -> std::collections::HashMap<String, String> {
+        match self.data.read_blocking(SessionRead::DeletedChildBindings {
+            parent_session_id: parent_session_id.to_string(),
+        }) {
+            Ok(ReadValue::ChildBindings(pairs)) => pairs.into_iter().collect(),
+            _ => std::collections::HashMap::new(),
+        }
+    }
+
     /// Subscribe to a session's internal envelope broadcast (works while idle).
     pub fn subscribe(&self, session_id: &str) -> Option<broadcast::Receiver<InternalEnvelope>> {
         let records = self.records.lock().unwrap();
@@ -2973,6 +3140,116 @@ mod child_session_tests {
     use crate::runtime::observer::InternalEvent;
     use std::sync::Arc;
 
+    fn wp090_mgr(dir: &tempfile::TempDir) -> (Arc<TurnGuard>, Arc<SessionManager>) {
+        let guard = Arc::new(TurnGuard::new());
+        let mgr = Arc::new(SessionManager::new_for_test(
+            Arc::clone(&guard),
+            dir.path().join("sessions.db").to_str().unwrap().to_string(),
+        ));
+        (guard, mgr)
+    }
+
+    #[tokio::test]
+    async fn cancel_during_starting_turn_cancels_on_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.reserve_turn(&sid, "t-start".into(), 5, "default", "/proj")
+            .unwrap();
+        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Starting);
+        assert_eq!(mgr.cancel_turn(&sid).await, CancelOutcome::Starting);
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let token = CancellationToken::new();
+        let handle = crate::runtime::TurnHandle {
+            handle: None,
+            rx,
+            cancel: token.clone(),
+            turn_id: "t-start".into(),
+            step_max: 5,
+        };
+        mgr.start_turn(&sid, handle, "default", "/proj", Arc::clone(&mgr))
+            .await
+            .unwrap();
+        assert!(
+            token.is_cancelled(),
+            "token cancelled the moment it installs"
+        );
+        assert_eq!(mgr.session_status(&sid), Some(SessionStatus::Stopping));
+        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Running);
+        assert!(mgr.finish_turn(&sid, "t-start").is_some());
+        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Idle);
+    }
+
+    #[tokio::test]
+    async fn cancel_turn_sync_reports_idle_when_nothing_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Idle);
+        assert!(!CancelOutcome::Idle.cancelled());
+        assert_eq!(mgr.cancel_turn_sync("missing"), CancelOutcome::Idle);
+        assert_eq!(mgr.session_status(&sid), Some(SessionStatus::Idle));
+        assert!(CancelOutcome::Running.cancelled() && CancelOutcome::Starting.cancelled());
+    }
+
+    #[tokio::test]
+    async fn cancel_leaves_pending_queue_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.begin_turn(
+            &sid,
+            "t-run".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+        mgr.enqueue_pending_message(&sid, "queued").unwrap();
+        assert_eq!(mgr.cancel_turn_sync(&sid), CancelOutcome::Running);
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+        assert!(mgr.finish_turn(&sid, "t-run").is_some());
+        assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn turn_status_hook_fires_on_start_and_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let seen: Arc<std::sync::Mutex<Vec<(String, SessionStatus)>>> = Arc::default();
+        let sink = Arc::clone(&seen);
+        mgr.set_turn_status_hook(Arc::new(move |sid, status| {
+            sink.lock().unwrap().push((sid.to_string(), status));
+        }));
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.reserve_turn(&sid, "t-rel".into(), 5, "default", "/proj")
+            .unwrap();
+        assert!(mgr.release_turn_reservation(&sid, "t-rel"));
+        mgr.reserve_turn(&sid, "t-go".into(), 5, "default", "/proj")
+            .unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = crate::runtime::TurnHandle {
+            handle: None,
+            rx,
+            cancel: CancellationToken::new(),
+            turn_id: "t-go".into(),
+            step_max: 5,
+        };
+        mgr.start_turn(&sid, handle, "default", "/proj", Arc::clone(&mgr))
+            .await
+            .unwrap();
+        assert!(mgr.finish_turn(&sid, "t-go").is_some());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![
+                (sid.clone(), SessionStatus::Idle),
+                (sid.clone(), SessionStatus::Running),
+                (sid.clone(), SessionStatus::Idle),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn reserve_turn_keeps_a_failed_reconnect_retryable() {
         let dir = tempfile::tempdir().unwrap();
@@ -3874,7 +4151,7 @@ mod child_session_tests {
             Some(SessionStatus::RunningWithSubagent)
         );
 
-        assert!(mgr.cancel_turn_sync(&child));
+        assert!(mgr.cancel_turn_sync(&child).cancelled());
         assert_eq!(mgr.session_status(&child), Some(SessionStatus::Stopping));
         assert_eq!(
             mgr.session_status(&parent),
@@ -4235,7 +4512,7 @@ mod pending_message_tests {
         assert_eq!(restored, vec!["a", "b", "c"]);
 
         // Cancel marks the turn stopping: it may no longer claim the queue.
-        assert!(mgr.cancel_turn_sync(&sid));
+        assert!(mgr.cancel_turn_sync(&sid).cancelled());
         assert!(mgr.claim_pending_messages_for_turn(&sid, "t1").is_none());
         assert_eq!(mgr.pending_messages_snapshot(&sid).len(), 3);
     }

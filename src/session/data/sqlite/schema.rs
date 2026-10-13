@@ -167,7 +167,8 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             parent_call_id    TEXT,
             responsibility    TEXT NOT NULL DEFAULT '',
             revision          INTEGER NOT NULL DEFAULT 0,
-            next_seq          INTEGER NOT NULL DEFAULT 0
+            next_seq          INTEGER NOT NULL DEFAULT 0,
+            deleted_children_json TEXT NOT NULL DEFAULT '{}'
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_project
             ON sessions(project);
@@ -335,6 +336,14 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
         if !cols.iter().any(|c| c == "responsibility") {
             conn.execute(
                 "ALTER TABLE sessions ADD COLUMN responsibility TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+        // WP-091 R7: tombstones of directly deleted child sessions,
+        // `{parent_call_id: child_session_id}`. Additive.
+        if !cols.iter().any(|c| c == "deleted_children_json") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN deleted_children_json TEXT NOT NULL DEFAULT '{}'",
                 [],
             )?;
         }

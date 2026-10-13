@@ -22,6 +22,16 @@ import { useToastStore } from "./toastStore";
 import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
+import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
+
+let listInFlight = false;
+/** A request arrived while one was in flight → re-pull once after it settles. */
+let listPending = false;
+/** Test hook: reset the session/list in-flight guard. */
+export function resetListSessionsInFlight(): void {
+  listInFlight = false;
+  listPending = false;
+}
 
 /** Ordering granularity: one minute — the resolution of the sidebar's own
  *  relative label ("1m", "2m", …). `updated_at` moves on every streamed flush
@@ -117,6 +127,8 @@ interface SessionState {
   statusMessage: string | null;
   showSessionList: boolean;
   availableModels: ModelInfo[];
+  /** WP-086: ids seen in a `deleted` lifecycle event (tool cards / roster / counts). */
+  deletedSessionIds: Record<string, true>;
 }
 
 interface SessionStore extends SessionState {
@@ -132,6 +144,8 @@ interface SessionStore extends SessionState {
   // RPC methods
   newSession: () => void;
   deleteSession: (id: string) => void;
+  /** WP-086: stop a subagent child via `agent/cancel`; `cancelled:false` → neutral toast. */
+  stopSubagent: (childId: string) => void;
   listSessions: () => void;
   setPrimary: (sessionId: string, agentId: string) => void;
   setModel: (sessionId: string, modelId: string) => void;
@@ -184,6 +198,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     if (snap.bash) {
       useBashStore.getState().applySnapshot(sessionId, snap.bash);
     }
+    useMessageStore
+      .getState()
+      .applySubagentBindingStates(sessionId, snap.subagent_binding_states);
     if (snap.buffer.next_seq === 0) {
       useMessageStore.getState().onBufferLoaded(sessionId, {
         session_id: sessionId,
@@ -338,6 +355,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     statusMessage: null,
     showSessionList: false,
     availableModels: [],
+    deletedSessionIds: {},
 
     onHello: (hello: WireServerHello) => {
       // server/hello carries only ACTIVE models (provider holds a credential);
@@ -382,19 +400,36 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         parent_call_id,
         responsibility,
         reason,
+        status,
       } = params;
       set((state) => {
         const exists = state.sessions.some((s) => s.id === session_id);
         if (event === "deleted") {
           useConnectionStore.getState().unsubscribeSession(session_id);
           closePanel(`agent-${session_id}`);
+          closePanel(`subagent-${session_id}`);
+          const deletedSessionIds = {
+            ...state.deletedSessionIds,
+            [session_id]: true as const,
+          };
           return exists
             ? {
+                deletedSessionIds,
                 sessions: sortSessions(
                   state.sessions.filter((s) => s.id !== session_id),
                 ),
               }
-            : {};
+            : { deletedSessionIds };
+        }
+        if (event === "status_changed") {
+          // WP-086: aggregate status only; turn / step state untouched.
+          if (!status || !exists) return {};
+          const sessions = state.sessions.map((s) =>
+            s.id === session_id
+              ? { ...s, status, running: status !== "idle" }
+              : s,
+          );
+          return { sessions: sortSessions(sessions) };
         }
         // turn_started / turn_updated / turn_finished may arrive for a session
         // that is not yet in the local list (e.g. a push arrived before the
@@ -411,7 +446,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             updated_at: updated_at ?? Date.now(),
             preview: preview ?? "",
             assistant_preview: assistant_preview ?? undefined,
-            running: event !== "turn_finished",
+            running: status ? status !== "idle" : event !== "turn_finished",
+            ...(status ? { status } : {}),
             turn: turn ?? null,
             agent_id: agent_id ?? "",
             model_id: null,
@@ -463,7 +499,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
                 ? {
                     ...s,
                     running: true,
-                    status: "running" as const,
+                    status: status ?? ("running" as const),
                     turn: turn ?? s.turn,
                     step_kinds: [],
                     last_turn_reason: undefined,
@@ -498,8 +534,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
               s.id === session_id
                 ? {
                     ...s,
-                    running: false,
-                    status: "idle" as const,
+                    // WP-086: raw status (e.g. running_with_subagent) wins.
+                    running: status ? status !== "idle" : false,
+                    status: status ?? ("idle" as const),
                     turn: null,
                     last_turn_reason: reason ?? s.last_turn_reason,
                   }
@@ -573,15 +610,53 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       useConnectionStore
         .getState()
         .sendRpc("session/delete", { id })
-        .catch(() => {
+        .catch((err: unknown) => {
+          const code = rpcErrorCode(err);
           useToastStore
             .getState()
-            .showToast("Failed to delete session", "error");
+            .showToast(
+              code ? deleteRejectedMessage(err) : "Failed to delete session",
+              "error",
+            );
           get().listSessions();
         });
     },
 
+    stopSubagent: (childId: string) => {
+      useConnectionStore
+        .getState()
+        .sendRpc<{ cancelled?: boolean }>("agent/cancel", {
+          session_id: childId,
+        })
+        .then((res) => {
+          if (res?.cancelled === false) {
+            useToastStore
+              .getState()
+              .showToast("没有在运行的回合", "info");
+          }
+        })
+        .catch(() => {
+          useToastStore.getState().showToast("停止失败，请稍后重试", "error");
+        });
+    },
+
     listSessions: () => {
+      // One request at a time: the connected transition, SessionList and the
+      // Workers panel may all ask on the same tick (WP-086 reconnect dedupe).
+      // A call during flight is coalesced into ONE follow-up pull, so a
+      // create/delete that landed mid-request is never missed (WP-093).
+      if (listInFlight) {
+        listPending = true;
+        return;
+      }
+      listInFlight = true;
+      const settle = () => {
+        listInFlight = false;
+        if (listPending) {
+          listPending = false;
+          get().listSessions();
+        }
+      };
       set({ sessionsLoading: true, sessionListError: null });
       useConnectionStore
         .getState()
@@ -599,7 +674,8 @@ export const useSessionStore = create<SessionStore>((set, get) => {
             sessionListError:
               err instanceof Error ? err.message : "Failed to load sessions",
           });
-        });
+        })
+        .finally(settle);
     },
 
     setPrimary: (sessionId, agentId) => {

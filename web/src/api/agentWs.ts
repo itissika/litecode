@@ -398,7 +398,7 @@ export class AgentWsClient {
           id?: string | number;
           method?: string;
           result?: unknown;
-          error?: { code: number; message: string };
+          error?: { code: number; message: string; data?: unknown };
           params?: Record<string, unknown>;
         };
         const id = rpc.id;
@@ -411,7 +411,12 @@ export class AgentWsClient {
             if ("result" in rpc) {
               resolve(rpc.result);
             } else if (rpc.error) {
-              reject(new Error(rpc.error.message));
+              reject(
+                Object.assign(new Error(rpc.error.message), {
+                  rpcCode: rpc.error.code,
+                  data: rpc.error.data,
+                }),
+              );
             } else {
               reject(new Error("Invalid JSON-RPC response"));
             }

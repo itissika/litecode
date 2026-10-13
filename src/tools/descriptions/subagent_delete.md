@@ -1,0 +1,1 @@
+Delete one of this session's direct child sessions together with all of its descendants. Requires session_id. Fails if the child or any of its descendants is running (stop it and let the turn settle first) or if the id is not a direct child. Deletion is permanent; the parent is not woken by it.

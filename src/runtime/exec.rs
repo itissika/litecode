@@ -285,6 +285,12 @@ impl AgentRuntime {
             .runtime_handle
             .subagent_hub
             .take_completions(&self.session_id);
+        // WP-090 K5: non-waking ChildStopped/ChildDeleted notices ride the
+        // same subagent_settled reminder and restore on the same terms.
+        let parent_notices = self
+            .runtime_handle
+            .subagent_hub
+            .take_notices(&self.session_id);
         let custom_notices = self
             .runtime_handle
             .custom_tool_hub
@@ -351,10 +357,32 @@ impl AgentRuntime {
                 }
             })
             .collect::<Vec<_>>();
+        let mut settled = settled;
+        for notice in &parent_notices {
+            let (agent, _) = crate::tools::subagent::status::session_labels(
+                &self.sessions,
+                notice.child_session_id(),
+            );
+            settled.push(SettledChild {
+                child_session_id: notice.child_session_id().to_string(),
+                turn_id: String::new(),
+                agent: agent.unwrap_or_default(),
+                reason: parent_notice_reason(notice).to_string(),
+            });
+        }
         let settled_detail = if completions.is_empty() {
             String::new()
         } else {
-            crate::tools::subagent::status::format_batch_results(&self.sessions, &completions)
+            let mut detail =
+                crate::tools::subagent::status::format_batch_results(&self.sessions, &completions);
+            for notice in &parent_notices {
+                detail.push_str(&format!(
+                    "\nchild_session_id: {} · {}\n",
+                    notice.child_session_id(),
+                    parent_notice_reason(notice)
+                ));
+            }
+            detail
         };
         let custom_tool_settled = custom_notices
             .iter()
@@ -385,6 +413,7 @@ impl AgentRuntime {
             Ok(view) => view,
             Err(error) => {
                 self.restore_seam_sources(&bash_notices, completions, &custom_notices);
+                self.restore_parent_notices(&parent_notices);
                 // ISSUE-032: take_changed_files already advanced snaps; undo so
                 // the next seam can still report these paths.
                 if !changed.is_empty() {
@@ -469,6 +498,7 @@ impl AgentRuntime {
                         self.runtime_handle
                             .subagent_hub
                             .restore_completions(&self.session_id, completions.clone());
+                        self.restore_parent_notices(&parent_notices);
                         return Err(crate::types::LitecodeError::Anyhow(error));
                     }
                     tracing::warn!(
@@ -487,6 +517,9 @@ impl AgentRuntime {
             self.runtime_handle
                 .subagent_hub
                 .restore_completions(&self.session_id, completions);
+        }
+        if !subagent_written {
+            self.restore_parent_notices(&parent_notices);
         }
         if !custom_written {
             self.restore_custom_mailbox(&custom_notices);
@@ -514,6 +547,15 @@ impl AgentRuntime {
                 .restore_completions(&self.session_id, completions);
         }
         self.restore_custom_mailbox(custom_notices);
+    }
+
+    fn restore_parent_notices(&self, notices: &[crate::tools::subagent::ParentNotice]) {
+        if notices.is_empty() {
+            return;
+        }
+        self.runtime_handle
+            .subagent_hub
+            .restore_notices(&self.session_id, notices.to_vec());
     }
 
     fn restore_custom_mailbox(&self, notices: &[crate::tools::custom_hub::CustomToolExitNotice]) {
@@ -1018,5 +1060,13 @@ mod estimate_body_bytes_tests {
         let mut with_sys = request(vec![]);
         with_sys.instructions = "system prompt ".repeat(10_000);
         assert!(estimate_request_body_bytes(&with_sys) > base);
+    }
+}
+
+/// WP-090 K5: reason text for a non-waking parent notice in subagent_settled.
+fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> &'static str {
+    match notice {
+        crate::tools::subagent::ParentNotice::ChildStopped { .. } => "stopped",
+        crate::tools::subagent::ParentNotice::ChildDeleted { .. } => "deleted",
     }
 }

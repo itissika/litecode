@@ -61,6 +61,17 @@ impl SubagentListTool {
                 out.push_str(&format!("  last_send: {last_send}\n"));
             }
             out.push_str(&format!("  state: {}\n", status.as_str()));
+            // Live from session data (same reader status.rs/turn_result uses), not
+            // from the search index: the parent can `read` by these line numbers.
+            match self.sessions.reader().transcript_file_blocking(&id) {
+                Ok(file) => {
+                    out.push_str(&format!("  transcript: {}\n", file.virtual_path));
+                    out.push_str(&format!("  transcript_lines: {}\n", file.lines.len()));
+                }
+                Err(error) => {
+                    out.push_str(&format!("  transcript: unavailable ({error})\n"));
+                }
+            }
             if let Some(progress) = self.sessions.get_cached_progress(&id) {
                 out.push_str(&format!(
                     "  turn_age: {}\n  step: {}/{}\n",
@@ -137,6 +148,41 @@ impl Tool for SubagentListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn includes_transcript_path_and_line_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(crate::config::TurnGuard::new()),
+            dir.path().join("sessions.db").to_string_lossy().to_string(),
+        ));
+        let parent = sessions
+            .open_session("/proj", "default", None)
+            .await
+            .unwrap();
+        let child = sessions
+            .open_child_session("/proj", "reviewer", None, &parent, "call_1")
+            .unwrap();
+        let expected = sessions.reader().transcript_file_blocking(&child).unwrap();
+
+        let tool = SubagentListTool::new(Arc::clone(&sessions));
+        tool.set_active_session(parent);
+        let result = tool.call(serde_json::json!({}));
+        let c = &result.content;
+        assert!(
+            c.contains(&format!("  transcript: {}\n", expected.virtual_path)),
+            "{c}"
+        );
+        assert!(
+            expected.virtual_path.ends_with(&format!("{child}.md")),
+            "{}",
+            expected.virtual_path
+        );
+        assert!(
+            c.contains(&format!("  transcript_lines: {}\n", expected.lines.len())),
+            "{c}"
+        );
+    }
     use crate::config::TurnGuard;
 
     #[test]

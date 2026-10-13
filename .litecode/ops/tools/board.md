@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T04:52:26.754Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T06:56:26.575Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -99,6 +99,16 @@
 | WP-078 | └ 前端中层：AskUserCard 末项自由输入 | done | frontend_mid | gm |
 | WP-082 | 　└ WP-078 web：AskUserCard 末项固定自由输入（方案B） | done | frontend | frontend_mid |
 | WP-083 | 　└ WP-078 web 补：末项常驻文案+单选选中态 | done | frontend | frontend_mid |
+| WP-084 | 调研：subagent session 操作缺口 | done | gm | andy |
+| WP-085 | └ 后端中层：subagent session 操作缺口调研 | done | backend_mid | gm |
+| WP-086 | subagent session 操作补全（按 Andy 收敛口径） | done | gm | andy |
+| WP-087 | └ 后端中层：subagent 操作补全后端 | done | backend_mid | gm |
+| WP-090 | 　└ WP-087/Runtime：cancel 如实原语 + 停/删通知不唤醒 + Lagged 补投 + 子 deny sink | done | runtime | backend_mid |
+| WP-091 | 　└ WP-087/Session：拒子 run/enqueue + cancel 回包如实 + 删除清理/descendant_running + 墓碑 + 原始状态 | done | session | backend_mid |
+| WP-092 | 　└ WP-087/Tools：subagent_send 入 pending + stop 原子 + 新 subagent_delete + 权限描述 | done | tools | backend_mid |
+| WP-088 | └ 前端中层：子会话 停/删 入口与展示 | done | frontend_mid | gm |
+| WP-089 | 　└ WP-088 web：子会话 停止/删除 入口与删除后展示/重连 | done | frontend | frontend_mid |
+| WP-093 | 　└ WP-088 web 补：listSessions 进行中再请求则结束后补拉一次 | done | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

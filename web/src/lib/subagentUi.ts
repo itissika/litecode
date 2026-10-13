@@ -1,4 +1,4 @@
-import type { SessionInfo } from "../api/types";
+import type { SessionInfo, SubagentBindingState } from "../api/types";
 import type { ToolStatus } from "../components/ToolIcon";
 
 export function inputString(input: unknown, key: string): string | undefined {
@@ -33,11 +33,43 @@ export function waitTargetCount(input: unknown): number | undefined {
   return countWaitIds(input);
 }
 
+export const DELETED_WORD = "已删除";
+
+/**
+ * WP-086: child ids that are tombstoned — `subagent_binding_states` entries
+ * with `deleted: true`, plus ids seen in a `deleted` lifecycle event.
+ * Missing state = not deleted.
+ */
+export function deletedChildIds(
+  states: Record<string, SubagentBindingState> | undefined,
+  deletedSessionIds: Record<string, true> | undefined,
+): Set<string> {
+  const out = new Set<string>(Object.keys(deletedSessionIds ?? {}));
+  for (const st of Object.values(states ?? {})) {
+    if (st?.deleted === true && st.child_session_id) {
+      out.add(st.child_session_id);
+    }
+  }
+  return out;
+}
+
+/** Session is busy (delete must be disabled; stop is meaningful). */
+export function sessionBusy(s: SessionInfo | undefined): boolean {
+  return (
+    s?.running === true ||
+    s?.status === "running" ||
+    s?.status === "running_with_subagent" ||
+    s?.status === "stopping"
+  );
+}
+
 /** Human-facing child status for launch/send rows. Prefers live Session over the sealed tool call. */
 export function childStatusWord(
   child: SessionInfo | undefined,
   toolStatus: ToolStatus,
+  deleted = false,
 ): string {
+  if (deleted) return DELETED_WORD;
   if (toolStatus === "failed") return "failed";
   if (child?.status === "stopping" || child?.turn?.phase === "cancelling") {
     return "stopping";

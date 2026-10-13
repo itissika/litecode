@@ -28,8 +28,8 @@ use crate::tools::{
     read::ReadTool,
     session_search::SessionSearchTool,
     subagent::{
-        SUBAGENT_MAX_DEPTH, SubagentLaunchTool, SubagentListTool, SubagentSendTool,
-        SubagentStopTool, SubagentWaitTool,
+        SUBAGENT_MAX_DEPTH, SubagentDeleteTool, SubagentLaunchTool, SubagentListTool,
+        SubagentSendTool, SubagentStopTool, SubagentWaitTool,
     },
     todo::TodoWriteTool,
     wait_shell::WaitShellTool,
@@ -247,13 +247,22 @@ pub async fn build_tool_list(
                     tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&sessions))));
                 }
                 "subagent_stop" => {
-                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&sessions))));
+                    tools.push(Arc::new(
+                        SubagentStopTool::new(Arc::clone(&sessions))
+                            .with_hub(Arc::clone(&runtime.subagent_hub)),
+                    ));
                 }
                 "subagent_send" => {
                     tools.push(Arc::new(SubagentSendTool::new(
                         runtime.clone(),
                         Arc::clone(&sessions),
                         depth,
+                    )));
+                }
+                "subagent_delete" => {
+                    tools.push(Arc::new(SubagentDeleteTool::new(
+                        Arc::clone(&sessions),
+                        Arc::clone(&runtime.subagent_hub),
                     )));
                 }
                 "subagent_list" => {
@@ -476,6 +485,24 @@ mod tests {
             assert!(schema.is_object(), "tool {} schema is not an object", name);
             assert!(!desc.is_empty(), "tool {} has empty description", name);
         }
+    }
+
+    #[test]
+    fn subagent_delete_hidden_at_depth_ge_1() {
+        let resolved = test_resolved(default_bindings());
+        let primary: Vec<String> = list_tools(&resolved, 0)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(
+            primary.iter().any(|n| n == "subagent_delete"),
+            "{primary:?}"
+        );
+        let child: Vec<String> = list_tools(&resolved, 1)
+            .iter()
+            .map(|t| t.name().to_string())
+            .collect();
+        assert!(!child.iter().any(|n| n == "subagent_delete"), "{child:?}");
     }
 
     #[test]

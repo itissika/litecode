@@ -13,6 +13,8 @@ import { openSubagentPanel } from "../lib/sessionPanelNav";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
 import { useSessionStore } from "../stores/sessionStore";
+import { sessionBusy } from "../lib/subagentUi";
+import { useDeletedChildIds } from "../lib/useDeletedChildIds";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import type { ToolStatus } from "./ToolIcon";
 
@@ -33,6 +35,8 @@ interface RosterEntry {
   finished: FinishedStatus;
   /** Latest-message preview of the child session, when the list has it. */
   preview?: string;
+  /** WP-086: child (or its subtree) busy → delete disabled, stop enabled. */
+  busy?: boolean;
 }
 
 /**
@@ -119,6 +123,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
   const sessions = useSessionStore((s) => s.sessions);
   const listSessions = useSessionStore((s) => s.listSessions);
   const connState = useConnectionStore((s) => s.state);
+  const deletedIds = useDeletedChildIds(sessionId);
   // `sessionStore.sessions` is globally sorted by updated_at, so live children
   // can trade places on every lifecycle refresh. Preserve first-seen order while
   // this panel is mounted; otherwise a row moves under a stationary pointer
@@ -144,6 +149,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
     // survives a reload instead of dying with the ephemeral bindings map.
     for (const s of sessions) {
       if (s.parent_session_id !== sessionId) continue;
+      if (deletedIds.has(s.id)) continue;
       const callId = s.parent_call_id ?? undefined;
       const info = callId ? meta.get(callId) : undefined;
       byChild.set(s.id, {
@@ -162,13 +168,14 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: s.assistant_preview || s.preview || undefined,
+        busy: sessionBusy(s),
       });
     }
 
     // TRANSIENT — a child whose binding/job landed before its session row has
     // arrived in a (re)pulled list (the async gap right after subagent_bound).
     for (const [callId, childId] of Object.entries(bindings ?? {})) {
-      if (!childId || byChild.has(childId)) continue;
+      if (!childId || byChild.has(childId) || deletedIds.has(childId)) continue;
       const info = meta.get(callId);
       const session = sessions.find((s) => s.id === childId);
       byChild.set(childId, {
@@ -187,6 +194,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         launchFailed: info?.finished === "failed",
         finished: info ? info.finished : "finished",
         preview: session?.assistant_preview || session?.preview || undefined,
+        busy: sessionBusy(session),
       });
     }
     const next = [...byChild.values()];
@@ -200,7 +208,7 @@ export function SubagentRosterPanel({ sessionId }: { sessionId: string }) {
         rosterOrderRef.current.get(a.childId)! -
         rosterOrderRef.current.get(b.childId)!,
     );
-  }, [bindings, rows, sessions, sessionId]);
+  }, [bindings, rows, sessions, sessionId, deletedIds]);
 
   if (roster.length === 0) {
     return (
@@ -235,13 +243,16 @@ function SubagentRosterItem({
   onOpen: () => void;
 }) {
   const label = entry.agent ?? "subagent";
+  const stopSubagent = useSessionStore((s) => s.stopSubagent);
+  const deleteSession = useSessionStore((s) => s.deleteSession);
+  const busy = entry.busy === true;
   return (
-    <li>
+    <li className="flex min-w-0 items-center gap-0.5">
       <button
         type="button"
         aria-label={`Subagent ${label}`}
         onClick={onOpen}
-        className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
+        className="flex min-w-0 w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)"
       >
         <SubagentStatusIcon
           agent={entry.agent}
@@ -272,6 +283,30 @@ function SubagentRosterItem({
           </span>
         ) : null}
         <SubagentStatus entry={entry} />
+      </button>
+      <button
+        type="button"
+        aria-label={`停止 ${label}`}
+        data-testid="subagent-roster-stop"
+        disabled={!busy}
+        onClick={() => stopSubagent(entry.childId)}
+        className="shrink-0 rounded px-1 text-xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
+      >
+        停止
+      </button>
+      <button
+        type="button"
+        aria-label={`删除 ${label}`}
+        data-testid="subagent-roster-delete"
+        disabled={busy}
+        title={busy ? "子会话运行中，先停止再删除" : undefined}
+        onClick={() => {
+          if (!window.confirm(`删除子会话「${label}」？此操作不可撤销。`)) return;
+          deleteSession(entry.childId);
+        }}
+        className="shrink-0 rounded px-1 text-xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
+      >
+        删除
       </button>
     </li>
   );

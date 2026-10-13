@@ -1,1 +1,2 @@
 Create a child session and start its first background turn. agent is the subagent profile, responsibility is the stable role, prompt is the first assignment. Returns immediately; the turn result is delivered when it settles.
+A subagent's permissions are fixed when it is created: any operation that would need approval at runtime is always denied (no prompt is shown to anyone). Give it work its configured permissions already allow.

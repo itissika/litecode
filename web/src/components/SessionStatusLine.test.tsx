@@ -1377,7 +1377,7 @@ describe("SessionStatusLine — subagent roster panel (dock)", () => {
     bind("call_dup", CHILD_A);
 
     const roster = openRoster();
-    expect(within(roster).getAllByRole("button")).toHaveLength(2);
+    expect(within(roster).getAllByRole("button", { name: /^Subagent / })).toHaveLength(2);
   });
 
   it("labels a running subagent from its child session", () => {

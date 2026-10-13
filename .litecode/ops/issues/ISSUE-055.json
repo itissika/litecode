@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-055",
+  "grade": "4",
+  "layer": null,
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "tools",
+  "owner": "tools",
+  "status": "open",
+  "blocks": false,
+  "title": "tool::registry::core_bindings_produce_full_builtin_list 在 HEAD 即失败：WP-057/061 检索面门控（availability.rs retrieval_tools_visible，a72ad6a）使 session_search 在非 Warm/desired=false 时不进 LLM 列表，但测试（2e75ac2 起）仍无条件断言 session_search 存在；预存，非 WP-092 引入",
+  "history": [
+    {
+      "ts": "2026-10-13T06:40:20.609Z",
+      "by": "tools",
+      "change": "ops.issue_new 分配"
+    }
+  ]
+}

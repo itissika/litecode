@@ -159,6 +159,9 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               set({ state: connection });
               // Pushes may have been missed while the socket was down (§10.2).
               useKnowledgeStore.getState().onReconnect();
+              // WP-086: one unified session/list on every (re)connect, so
+              // child sessions + raw status don't depend on SessionList mount.
+              siblingStores.session?.getState().listSessions();
             } else {
               // Any non-connected state means the server has dropped our
               // per-socket subscriptions (a fresh socket starts empty).

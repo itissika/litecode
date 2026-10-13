@@ -1,6 +1,7 @@
 import { childStatusWord, inputString } from "../../lib/subagentUi";
 import { useMessageStore } from "../../stores/messageStore";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useDeletedChildIds } from "../../lib/useDeletedChildIds";
 import type { ToolViewProps } from "./registry";
 import { SubagentInlineLine } from "./SubagentInlineLine";
 
@@ -24,14 +25,16 @@ export function SubagentLaunchToolView({
   const child = useSessionStore((s) =>
     childId ? s.sessions.find((session) => session.id === childId) : undefined,
   );
-  const text = childStatusWord(child, status);
+  const deletedIds = useDeletedChildIds(sessionId);
+  const deleted = !!childId && deletedIds.has(childId);
+  const text = childStatusWord(child, status, deleted);
   return (
     <SubagentInlineLine
       label={agent}
       secondary={responsibility}
       statusText={text}
-      failed={status === "failed" || text === "error"}
-      childId={childId}
+      failed={!deleted && (status === "failed" || text === "error")}
+      childId={deleted ? undefined : childId}
       testId="subagent-launch-line"
     />
   );

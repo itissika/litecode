@@ -126,7 +126,7 @@ impl SubagentWaitTool {
                                 });
                             }
                         }
-                        Ok(LifecycleEvent::SessionRemoved { session_id }) if selected.contains_key(&session_id) => {
+                        Ok(LifecycleEvent::SessionRemoved { session_id, .. }) if selected.contains_key(&session_id) => {
                             return ToolCallResult::error(format!(
                                 "subagent '{session_id}' was removed while waiting"
                             ));

@@ -395,6 +395,13 @@ impl Tool for SubagentLaunchTool {
 #[cfg(test)]
 mod tests {
     use super::format_available_subagents;
+
+    #[test]
+    fn subagent_launch_mentions_runtime_permission_denial() {
+        let text = include_str!("../descriptions/subagent_launch.md");
+        assert!(text.contains("fixed when it is created"), "{text}");
+        assert!(text.contains("always denied"), "{text}");
+    }
     use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
 

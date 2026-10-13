@@ -51,6 +51,62 @@ pub fn err_response(id: serde_json::Value, code: i64, message: String) -> JsonRp
     }
 }
 
+/// WP-091 K1 / P1 message (frozen with frontend, WP-086 §5).
+pub(crate) const SUBAGENT_READONLY_MESSAGE: &str =
+    "subagent sessions are read-only: messages can only come from the parent agent";
+/// WP-091 K4 / P4 message (frozen with frontend, WP-086 §5).
+pub(crate) const DESCENDANT_RUNNING_MESSAGE: &str =
+    "cannot delete: a descendant subagent session is running";
+
+/// `-32000` + `data: StructuredError` (+ optional extra data keys).
+pub(crate) fn structured_error_response(
+    id: serde_json::Value,
+    code: ErrorCode,
+    message: &str,
+    retryable: bool,
+    extra: Option<serde_json::Value>,
+) -> JsonRpcResponse {
+    let mut resp = err_response(id, -32000, message.to_string());
+    if let Some(body) = resp.error.as_mut() {
+        let mut data = serde_json::to_value(crate::client_protocol::protocol::StructuredError {
+            code,
+            message: message.to_string(),
+            retryable,
+        })
+        .unwrap_or(serde_json::Value::Null);
+        if let (Some(obj), Some(serde_json::Value::Object(more))) = (data.as_object_mut(), extra) {
+            obj.extend(more);
+        }
+        body.data = Some(data);
+    }
+    resp
+}
+
+/// WP-091 K1: reject every client-initiated turn start on a child session.
+/// Returns true (and emits the error) when `sid` is a subagent child.
+fn reject_child_turn_start(
+    session: &SessionController,
+    sink: &UnboundedSender<serde_json::Value>,
+    id: &serde_json::Value,
+    sid: &str,
+) -> bool {
+    if !session.sessions.is_child_session(sid) {
+        return false;
+    }
+    emit(
+        sink,
+        serde_json::to_value(structured_error_response(
+            id.clone(),
+            ErrorCode::SubagentSessionReadonly,
+            SUBAGENT_READONLY_MESSAGE,
+            false,
+            None,
+        ))
+        .unwrap(),
+    );
+    true
+}
+
 /// `session/compact` sync failure (S2/WP-024). Numeric code stays -32000;
 /// `error.data` carries a `StructuredError` so clients branch on
 /// `code`/`retryable`: turn running → `agent_already_running` (retryable),
@@ -240,6 +296,10 @@ pub async fn handle_jsonrpc(
             }
             let user_input = crate::types::UserInput { text, images };
             let sid = resolve_sid(session, &params.session_id);
+            // WP-091 K1: covers plain run and plan_execution.
+            if reject_child_turn_start(session, sink, &id, &sid) {
+                return false;
+            }
             if session.sessions.is_turn_running(&sid).await {
                 emit(
                     sink,
@@ -331,16 +391,7 @@ pub async fn handle_jsonrpc(
                 }
             };
             let sid = resolve_sid(session, &params.session_id);
-            if session.sessions.is_child_session(&sid) {
-                emit(
-                    sink,
-                    serde_json::to_value(err_response(
-                        id,
-                        -32000,
-                        "cannot retry a subagent session".into(),
-                    ))
-                    .unwrap(),
-                );
+            if reject_child_turn_start(session, sink, &id, &sid) {
                 return false;
             }
             if session.sessions.is_turn_running(&sid).await
@@ -392,14 +443,26 @@ pub async fn handle_jsonrpc(
                 session_id: String::new(),
             });
             let sid = resolve_sid(session, &params.session_id);
+            // WP-091 R1 / P2: report truthfully; children are allowed.
+            let outcome = session.sessions.cancel_turn(&sid).await;
+            // K5 / Q5: only a real stop of a child notes its parent (no wake).
+            if outcome.cancelled()
+                && let Some(parent) = session.sessions.parent_session_id_of(&sid)
             {
-                let sessions = session.sessions.clone();
-                sessions.cancel_turn(&sid).await;
+                session.runtime.subagent_hub.notify_parent_no_wake(
+                    &parent,
+                    crate::tools::subagent::ParentNotice::ChildStopped {
+                        child_session_id: sid.clone(),
+                    },
+                );
             }
             emit(
                 sink,
-                serde_json::to_value(ok_response(id, serde_json::json!({"cancelled": true})))
-                    .unwrap(),
+                serde_json::to_value(ok_response(
+                    id,
+                    serde_json::json!({"cancelled": outcome.cancelled()}),
+                ))
+                .unwrap(),
             );
         }
 
@@ -491,6 +554,11 @@ pub async fn handle_jsonrpc(
                     sink,
                     serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
                 );
+                return false;
+            }
+            // WP-091 K1: refuse before queueing (idle and running child alike),
+            // so nothing lands in the child's pending queue from the client.
+            if reject_child_turn_start(session, sink, &id, &sid) {
                 return false;
             }
             match session
@@ -767,15 +835,30 @@ pub async fn handle_jsonrpc(
                 }
                 Err(e) => {
                     let msg = e.to_string();
-                    let code = if msg.contains("session is running") {
-                        ErrorCode::AgentAlreadyRunning
-                    } else if matches!(
-                        e.downcast_ref::<crate::types::LitecodeError>(),
-                        Some(crate::types::LitecodeError::SessionNotFound(_))
-                    ) {
-                        ErrorCode::SessionNotFound
-                    } else {
-                        ErrorCode::Internal
+                    // WP-091 K4 / P4: structured delete errors.
+                    let delete_err = e.downcast_ref::<crate::session::delete::DeleteSessionError>();
+                    let (code, retryable, extra) = match delete_err {
+                        Some(crate::session::delete::DeleteSessionError::AlreadyRunning) => {
+                            (ErrorCode::AgentAlreadyRunning, true, None)
+                        }
+                        Some(crate::session::delete::DeleteSessionError::DescendantRunning {
+                            running_session_ids,
+                        }) => (
+                            ErrorCode::DescendantRunning,
+                            true,
+                            Some(serde_json::json!({ "running_session_ids": running_session_ids })),
+                        ),
+                        Some(crate::session::delete::DeleteSessionError::Other(
+                            crate::types::LitecodeError::SessionNotFound(_),
+                        )) => (ErrorCode::SessionNotFound, false, None),
+                        _ if matches!(
+                            e.downcast_ref::<crate::types::LitecodeError>(),
+                            Some(crate::types::LitecodeError::SessionNotFound(_))
+                        ) =>
+                        {
+                            (ErrorCode::SessionNotFound, false, None)
+                        }
+                        _ => (ErrorCode::Internal, false, None),
                     };
                     emit(
                         sink,
@@ -788,10 +871,15 @@ pub async fn handle_jsonrpc(
                             code,
                         ),
                     );
-                    emit(
-                        sink,
-                        serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
-                    );
+                    let resp = if matches!(
+                        code,
+                        ErrorCode::AgentAlreadyRunning | ErrorCode::DescendantRunning
+                    ) {
+                        structured_error_response(id, code, &msg, retryable, extra)
+                    } else {
+                        err_response(id, -32000, msg)
+                    };
+                    emit(sink, serde_json::to_value(resp).unwrap());
                 }
             }
         }
@@ -855,10 +943,18 @@ pub async fn handle_jsonrpc(
             for msg in session.take_all_outgoing() {
                 emit(sink, msg);
             }
+            let mut snapshot_json = serde_json::to_value(&snapshot).unwrap();
+            // WP-091 R7 / P6: additive tombstone-aware binding map.
+            let (_, binding_states) = session.subagent_bindings_and_states(&sid);
+            if let Some(obj) = snapshot_json.as_object_mut() {
+                obj.insert(
+                    "subagent_binding_states".into(),
+                    serde_json::to_value(binding_states).unwrap_or_default(),
+                );
+            }
             emit(
                 sink,
-                serde_json::to_value(ok_response(id, serde_json::to_value(&snapshot).unwrap()))
-                    .unwrap(),
+                serde_json::to_value(ok_response(id, snapshot_json)).unwrap(),
             );
         }
 
@@ -1317,13 +1413,15 @@ pub async fn handle_jsonrpc(
                     for msg in session.take_outgoing_for(&sid) {
                         emit(sink, msg);
                     }
-                    let subagent_bindings = session.child_bindings_for_parent(&sid);
+                    let (subagent_bindings, subagent_binding_states) =
+                        session.subagent_bindings_and_states(&sid);
                     let result = crate::client_protocol::protocol::BufferLoadResult {
                         session_id: sid.clone(),
                         from_seq: params.from_seq,
                         to_seq: params.to_seq,
                         events: range.events,
                         subagent_bindings,
+                        subagent_binding_states,
                     };
                     emit(
                         sink,
@@ -1643,7 +1741,7 @@ pub async fn run_session_loop(
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            session.sessions.cancel_turn(sid).await;
+                            let _ = session.sessions.cancel_turn(sid).await;
                         }
                         break;
                     }
@@ -1656,7 +1754,7 @@ pub async fn run_session_loop(
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
-                            session.sessions.cancel_turn(sid).await;
+                            let _ = session.sessions.cancel_turn(sid).await;
                         }
                         for msg in session.take_all_outgoing() {
                             emit(&response_tx, msg);
@@ -1787,7 +1885,7 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
-                        session.sessions.cancel_turn(&sid).await;
+                        let _ = session.sessions.cancel_turn(&sid).await;
                         return;
                     }
                     SessionRequest::Cancel => {
@@ -1801,7 +1899,7 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
-                        session.sessions.cancel_turn(&sid).await;
+                        let _ = session.sessions.cancel_turn(&sid).await;
                         if let Some(proj) = session.projection_mut(&sid) {
                             for msg in proj.take_outgoing() {
                                 emit(&response_tx, msg);
@@ -2388,5 +2486,300 @@ mod ask_loop_tests {
 
         let _ = request_tx.send(SessionRequest::Quit);
         let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    // ── WP-091 ──
+    use super::{DESCENDANT_RUNNING_MESSAGE, SUBAGENT_READONLY_MESSAGE, handle_jsonrpc};
+
+    async fn wp091_rpc(
+        controller: &mut SessionController,
+        method: &str,
+        params: serde_json::Value,
+    ) -> serde_json::Value {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (perm_tx, _perm_rx) = mpsc::unbounded_channel();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let rpc = JsonRpcRequestEnvelope {
+            jsonrpc: "2.0".into(),
+            id: serde_json::json!(91),
+            method: method.into(),
+            params,
+        };
+        handle_jsonrpc(controller, &tx, &perm_tx, &rpc, &hub).await;
+        drop(tx);
+        let mut reply = serde_json::Value::Null;
+        while let Some(msg) = rx.recv().await {
+            if msg.get("id") == Some(&serde_json::json!(91)) {
+                reply = msg;
+            }
+        }
+        reply
+    }
+
+    fn wp091_assert_readonly(reply: &serde_json::Value) {
+        assert_eq!(reply["error"]["code"], -32000, "{reply}");
+        assert_eq!(
+            reply["error"]["data"]["code"], "subagent_session_readonly",
+            "{reply}"
+        );
+        assert_eq!(reply["error"]["message"], SUBAGENT_READONLY_MESSAGE);
+        assert_eq!(reply["error"]["data"]["retryable"], false);
+    }
+
+    async fn wp091_parent_child(
+        dir: &std::path::Path,
+    ) -> (SessionController, Arc<SessionManager>, String, String) {
+        let (runtime, sessions) = test_runtime(dir);
+        let controller =
+            SessionController::with_turn_guard(runtime, None, Arc::clone(&sessions)).unwrap();
+        let project = dir.to_string_lossy().to_string();
+        let parent = sessions
+            .open_session(&project, "default", None)
+            .await
+            .unwrap();
+        let child = sessions
+            .test_child_session(&project, &parent, "call_wp091")
+            .unwrap();
+        (controller, sessions, parent, child)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_agent_run_on_child_rejected_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, _p, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/run",
+            serde_json::json!({"session_id": child, "input": "hi"}),
+        )
+        .await;
+        wp091_assert_readonly(&reply);
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/run",
+            serde_json::json!({"session_id": child, "input": "hi", "plan_execution": true}),
+        )
+        .await;
+        wp091_assert_readonly(&reply);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_retry_on_child_rejected_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, _p, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/retry",
+            serde_json::json!({"session_id": child}),
+        )
+        .await;
+        wp091_assert_readonly(&reply);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_pending_enqueue_on_child_rejected_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, _p, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(
+            &mut c,
+            "session/pending-enqueue",
+            serde_json::json!({"session_id": child, "text": "queued"}),
+        )
+        .await;
+        wp091_assert_readonly(&reply);
+        assert!(
+            s.pending_messages_snapshot(&child).is_empty(),
+            "nothing queued"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_enqueue_on_running_child_rejected_readonly() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, _p, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        s.begin_turn(
+            &child,
+            "t-run".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            &project,
+        )
+        .expect("begin child turn");
+        let reply = wp091_rpc(
+            &mut c,
+            "session/pending-enqueue",
+            serde_json::json!({"session_id": child, "text": "queued"}),
+        )
+        .await;
+        wp091_assert_readonly(&reply);
+        assert!(s.pending_messages_snapshot(&child).is_empty());
+        assert!(s.finish_turn(&child, "t-run").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_agent_cancel_reports_false_when_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, parent, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/cancel",
+            serde_json::json!({"session_id": child}),
+        )
+        .await;
+        assert_eq!(reply["result"]["cancelled"], false, "{reply}");
+        assert!(
+            !c.runtime.subagent_hub.has_notices(&parent),
+            "Q5: no ChildStopped when nothing ran"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_agent_cancel_child_writes_parent_notice_no_wake() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, parent, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        s.begin_turn(
+            &child,
+            "t-run".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            &project,
+        )
+        .expect("begin child turn");
+        let reply = wp091_rpc(
+            &mut c,
+            "agent/cancel",
+            serde_json::json!({"session_id": child}),
+        )
+        .await;
+        assert_eq!(reply["result"]["cancelled"], true, "{reply}");
+        let hub = &c.runtime.subagent_hub;
+        assert!(hub.has_notices(&parent));
+        assert!(!hub.has_pending(&parent), "notice must not wake the parent");
+        assert_eq!(
+            hub.take_notices(&parent),
+            vec![crate::tools::subagent::ParentNotice::ChildStopped {
+                child_session_id: child.clone()
+            }]
+        );
+        assert!(s.finish_turn(&child, "t-run").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_delete_parent_with_running_child_returns_descendant_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, parent, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        s.begin_turn(
+            &child,
+            "t-run".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            &project,
+        )
+        .expect("begin child turn");
+        let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": parent})).await;
+        assert_eq!(reply["error"]["code"], -32000, "{reply}");
+        assert_eq!(reply["error"]["data"]["code"], "descendant_running");
+        assert_eq!(reply["error"]["message"], DESCENDANT_RUNNING_MESSAGE);
+        assert_eq!(
+            reply["error"]["data"]["running_session_ids"],
+            serde_json::json!([child])
+        );
+        assert!(s.finish_turn(&child, "t-run").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_delete_running_child_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, s, _parent, child) = wp091_parent_child(dir.path()).await;
+        let project = dir.path().to_string_lossy().to_string();
+        s.begin_turn(
+            &child,
+            "t-run".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            &project,
+        )
+        .expect("begin child turn");
+        let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": child})).await;
+        assert_eq!(
+            reply["error"]["data"]["code"], "agent_already_running",
+            "{reply}"
+        );
+        assert!(s.finish_turn(&child, "t-run").is_some());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_delete_child_tombstone_and_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, parent, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": child})).await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        let (bindings, states) = c.subagent_bindings_and_states(&parent);
+        assert_eq!(
+            bindings.get("call_wp091"),
+            Some(&child),
+            "compat entry kept"
+        );
+        let st = states.get("call_wp091").expect("tombstone");
+        assert_eq!(st.child_session_id, child);
+        assert!(st.deleted);
+        let hub = &c.runtime.subagent_hub;
+        assert!(!hub.has_pending(&parent));
+        assert_eq!(
+            hub.take_notices(&parent),
+            vec![crate::tools::subagent::ParentNotice::ChildDeleted {
+                child_session_id: child.clone()
+            }]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_list_sessions_includes_empty_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, _parent, child) = wp091_parent_child(dir.path()).await;
+        let list = c.list_sessions().await.unwrap();
+        assert!(
+            list.iter().any(|row| row.id == child),
+            "empty child must be listed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wp091_buffer_load_returns_subagent_binding_states() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, parent, child) = wp091_parent_child(dir.path()).await;
+        let reply = wp091_rpc(&mut c, "session/delete", serde_json::json!({"id": child})).await;
+        assert!(reply.get("error").is_none(), "{reply}");
+        // buffer/load needs a bound projection.
+        let sub = wp091_rpc(
+            &mut c,
+            "session/subscribe",
+            serde_json::json!({"session_id": parent}),
+        )
+        .await;
+        assert!(sub.get("error").is_none(), "{sub}");
+        let reply = wp091_rpc(
+            &mut c,
+            "buffer/load",
+            serde_json::json!({"session_id": parent, "from_seq": 0, "to_seq": 0}),
+        )
+        .await;
+        let result = &reply["result"];
+        assert_eq!(
+            result["subagent_binding_states"]["call_wp091"],
+            serde_json::json!({"child_session_id": child, "deleted": true}),
+            "{reply}"
+        );
+        assert_eq!(
+            result["subagent_bindings"]["call_wp091"],
+            serde_json::json!(child)
+        );
     }
 }

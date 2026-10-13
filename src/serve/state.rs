@@ -131,6 +131,8 @@ impl ServeState {
         let runtime = Arc::new(RwLock::new(runtime));
         settings_writer.set_runtime(Arc::clone(&runtime));
         let sessions = Arc::new(SessionManager::from_data(turn_guard.clone(), session_data));
+        // WP-091 R8: parent status_changed via Runtime's TurnStatusHook.
+        crate::client_protocol::status_track::install_parent_status_hook(&sessions);
         workspace_engines.set_session_reader(sessions.reader());
         subagent_hub.attach_sessions(Arc::clone(&sessions));
         crate::runtime::bash_auto_turn::install_idle_auto_turn(

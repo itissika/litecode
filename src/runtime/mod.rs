@@ -1,3 +1,4 @@
+pub(crate) mod auto_turn_sink;
 pub mod bash_auto_turn;
 pub mod context;
 pub mod custom_auto_turn;

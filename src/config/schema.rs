@@ -88,6 +88,7 @@ pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
     "subagent_stop",
     "subagent_list",
     "subagent_send",
+    "subagent_delete",
 ];
 
 /// Bash closed loop: enable/disable together on Agents (one card).

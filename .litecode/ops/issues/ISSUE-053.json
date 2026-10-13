@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-053",
+  "grade": "4",
+  "layer": null,
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "tools",
+  "owner": "tools",
+  "status": "open",
+  "blocks": false,
+  "title": "subagent 集成测试仍断言旧文案（stop_requested/already ended/already running），与 WP-092 新语义 queued/stopped/nothing running 不符：subagent_child_turn_contract、subagent_send、subagent_tool_pipeline",
+  "history": [
+    {
+      "ts": "2026-10-13T06:33:02.854Z",
+      "by": "tools",
+      "change": "ops.issue_new 分配（WP-092）"
+    }
+  ]
+}

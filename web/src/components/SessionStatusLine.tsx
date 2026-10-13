@@ -1,3 +1,4 @@
+import { useDeletedChildIds } from "../lib/useDeletedChildIds";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
@@ -162,14 +163,23 @@ export function SessionStatusLine({
     (s) => s.bySession.get(sessionId)?.subagentBindings,
   );
   const sessions = useSessionStore((s) => s.sessions);
+  const deletedChildIds = useDeletedChildIds(sessionId);
   const childSessions = useMemo(
-    () => sessions.filter((sess) => sess.parent_session_id === sessionId),
-    [sessions, sessionId],
+    () =>
+      sessions.filter(
+        (sess) =>
+          sess.parent_session_id === sessionId && !deletedChildIds.has(sess.id),
+      ),
+    [sessions, sessionId, deletedChildIds],
   );
   const subagentTotal = Math.max(
     childSessions.length,
     subagentBindings
-      ? new Set(Object.values(subagentBindings).filter(Boolean)).size
+      ? new Set(
+          Object.values(subagentBindings).filter(
+            (id) => id && !deletedChildIds.has(id),
+          ),
+        ).size
       : 0,
   );
   const subagentRunning = Math.max(

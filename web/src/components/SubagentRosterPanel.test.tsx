@@ -221,7 +221,7 @@ describe("SubagentRosterPanel — card header", () => {
     });
 
     const roster = renderPanel();
-    const headers = () => within(roster).getAllByRole("button");
+    const headers = () => within(roster).getAllByRole("button", { name: /^Subagent / });
 
     useSessionStore.setState({
       sessions: [session("child-b", "beta", 3), session(CHILD, "alpha", 2)],
