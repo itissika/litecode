@@ -85,7 +85,7 @@ pub fn check_workspace_dependencies(root: &Path) -> Result<()> {
     let mut missing = Vec::new();
     for cmd in needed {
         let program = program_from_command(&cmd);
-        if let Err(e) = deps::command_runnable_command(&cmd) {
+        if let Err(e) = deps::command_runnable_command_in(&cmd, Some(root)) {
             missing.push(format!("{program}: {e}"));
         }
     }

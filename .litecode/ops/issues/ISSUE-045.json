@@ -1,0 +1,47 @@
+{
+  "id": "ISSUE-045",
+  "grade": "defect",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "title": "LSP server 启动使用 canonicalize 后路径；rust-analyzer 链到 rustup 时启动失败",
+  "tier": "产品缺陷",
+  "promise": "LSP server 应以原始（未 canonicalize）路径启动；canonical 路径仅用于 shim 识别。",
+  "actual": "deps.rs:208-211 candidate_in_dir 返回 canon_abs_lossy（src/config/path.rs:70-75）→ resolve_server_binary :304-319 → hub.rs:318/338/391 spawn_ls，argv[0]=rustup，rust-analyzer 经 rustup 符号链接时启动失败；可用性检查却经 is_rustup_shim（:407-410,:503-505）rustup which 回退而通过。mise/volta shim 按机制推断同样受影响，未实测。",
+  "evidence": [
+    {
+      "path": "src/lsp/deps.rs",
+      "lines": "208-211,304-319,407-410,503-505"
+    },
+    {
+      "path": "src/config/path.rs",
+      "lines": "70-75",
+      "note": "canon_abs_lossy"
+    },
+    {
+      "path": "src/lsp/hub.rs",
+      "lines": "318,338,391",
+      "note": "spawn_ls"
+    }
+  ],
+  "repro": "链接路径 --version → rust-analyzer 1.99.0；canonical 路径 --version → rustup 1.29.1",
+  "fix": "以原始路径启动，canonical 仅用于 shim 检测；补 2 个测试。",
+  "queued": "WP-073 done 后作为 IDE 第二子包串行开",
+  "history": [
+    {
+      "ts": "2026-10-13T02:45:31.013Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    },
+    {
+      "ts": "2026-10-13T12:01:37+08:00",
+      "by": "backend_mid",
+      "change": "WP-074: resolved — 原路径启动（absolute_unresolved），删 rustup 专用分支，统一 run_version_probe(cwd=项目根)；T1-T3 + 真 RA views/smoke 单跑绿；closed"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "id": "ISSUE-048",
+  "grade": "arch",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "title": "src/lsp 残留单语言特例（pyright/项目标记/rustup 安装/project_root）",
+  "tier": "架构",
+  "promise": "src/lsp 应语言通用，不按 program 名硬编码单语言特例。",
+  "actual": "残留特例：pyright 跳过 --version（deps.rs:525-532）；按 program 名硬编码项目标记（deps.rs:536-556）；安装硬编码 rustup（deps.rs:631）；project_root.rs:52-53 rust_analyzer_root、:180-201 按 program 的 root markers。另：toolchain override（rust-toolchain）支持与否属产品未定。本包（WP-070）不修。",
+  "evidence": [
+    {
+      "path": "src/lsp/deps.rs",
+      "lines": "525-532,536-556,631"
+    },
+    {
+      "path": "src/lsp/project_root.rs",
+      "lines": "52-53,180-201"
+    }
+  ],
+  "history": [
+    {
+      "ts": "2026-10-13T03:26:06.817Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    }
+  ]
+}

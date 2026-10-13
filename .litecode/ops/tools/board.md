@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-12T16:23:12.111Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T04:02:34.781Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -85,6 +85,12 @@
 | WP-069 | 　└ WP-064/Session：turn_error 类型化消费 + death_list 假红（ISSUE-036/041） | done | session | backend_mid |
 | WP-065 | └ 前端：组织 desktop(015 remap-path-prefix / 构建路径卫生) | done | frontend_mid | gm |
 | WP-066 | 　└ WP-065 desktop：release remap-path-prefix / 构建路径卫生 | done | frontend_desktop | frontend_mid |
+| WP-070 | LSP/Tools 收尾小活 | done | gm | andy |
+| WP-071 | └ 后端中层：LSP/Tools 收尾协调 | done | backend_mid | gm |
+| WP-072 | 　└ WP-071/Tools：ISSUE-042 sessions.db 走 session 层 + optional_lsp:1409 文案裁定 | done | tools | backend_mid |
+| WP-073 | 　└ WP-071/IDE：deps 探测 stdin null（ISSUE-043）+ hub -32801 有限重试（ISSUE-044） | done | ide | backend_mid |
+| WP-074 | 　└ WP-071/IDE-2：LSP server 以原始路径启动（ISSUE-045） | done | ide | backend_mid |
+| WP-075 | 　└ WP-071/Tools-2：ISSUE-047 A — lsp 工具透出 ContentModified 提示 | done | tools | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

@@ -30,6 +30,7 @@ fn effective_restart_count(prior_restarts: u32, lifetime: Duration, watchdog_kil
         prior_restarts
     }
 }
+use crate::lsp::conn::LspReply;
 use crate::lsp::server_map::{program_from_command, server_command_for_ext};
 use crate::lsp::status::{LspInstanceStatus, LspLifecycle};
 use crate::lsp::uri::{canonical_project_root, file_to_uri, uri_to_path};
@@ -52,6 +53,25 @@ pub(crate) fn short_feedback_reason(err: &str) -> String {
         trimmed.to_string()
     } else {
         format!("{}…", &trimmed[..MAX])
+    }
+}
+
+/// Tool action result plus the ContentModified signal (ISSUE-047).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LspToolOutput {
+    /// Formatted result (the empty-result text when `content_modified`).
+    pub text: String,
+    /// The server answered `-32801 ContentModified` for at least one request:
+    /// it is updating and the result may be incomplete. Retry later.
+    pub content_modified: bool,
+}
+
+impl LspToolOutput {
+    pub fn new(text: String, content_modified: bool) -> Self {
+        Self {
+            text,
+            content_modified,
+        }
     }
 }
 
@@ -180,9 +200,11 @@ impl LspHub {
 
     /// Verify configured LS binaries and mark hub active (no spawn).
     pub fn activate(&self, commands: &[String]) -> Result<()> {
+        // Probe from the workspace root when known (proxies pick its toolchain).
+        let probe_cwd = self.workspace_root();
         for cmd in commands {
             let program = program_from_command(cmd);
-            deps::command_runnable_command(cmd).map_err(|e| {
+            deps::command_runnable_command_in(cmd, probe_cwd.as_deref()).map_err(|e| {
                 LitecodeError::Config(format!("language server '{program}' not runnable: {e}"))
             })?;
         }
@@ -674,6 +696,22 @@ impl LspHub {
     ) -> Result<String> {
         self.tool_action_async(action, file_path, line, character, query)
             .await
+            .map(|out| out.text)
+    }
+
+    /// Like [`Self::tool_action_with_query`] but also reports whether the
+    /// server answered `-32801 ContentModified` (result is the empty default;
+    /// "server is updating, result may be incomplete"). ISSUE-047.
+    pub async fn tool_action_outcome(
+        self: &Arc<Self>,
+        action: &str,
+        file_path: &Path,
+        line: Option<u64>,
+        character: Option<u64>,
+        query: Option<&str>,
+    ) -> Result<LspToolOutput> {
+        self.tool_action_async(action, file_path, line, character, query)
+            .await
     }
 
     /// Post-write/edit feedback: **only** file-local Error diagnostics, and only when
@@ -736,8 +774,10 @@ impl LspHub {
         line: Option<u64>,
         character: Option<u64>,
         query: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<LspToolOutput> {
         let action = normalize_lsp_action(action);
+        // Set when any request got -32801 ContentModified (ISSUE-047).
+        let mut modified = false;
         let file_path = crate::config::path::strip_verbatim(file_path);
         let uri = file_to_uri(&file_path);
         let lsp_line = line.map(|l| l.saturating_sub(1)).unwrap_or(0);
@@ -765,19 +805,30 @@ impl LspHub {
                     .request_nav_with_retry("textDocument/definition", params.clone())
                     .await
                 {
-                    Ok(result) if !crate::lsp::format::extract_locations(&result).is_empty() => {
+                    Ok(LspReply::ContentModified) => {
+                        // Server is updating: return the empty result, no fallback resend.
+                        modified = true;
+                        Value::Null
+                    }
+                    Ok(LspReply::Value(result))
+                        if !crate::lsp::format::extract_locations(&result).is_empty() =>
+                    {
                         result
                     }
-                    Ok(empty) => {
+                    Ok(LspReply::Value(empty)) => {
                         // Settled empty definition — try typeDefinition before confirming miss.
                         match server
                             .request_nav_with_retry("textDocument/typeDefinition", params)
                             .await
                         {
-                            Ok(typed)
+                            Ok(LspReply::Value(typed))
                                 if !crate::lsp::format::extract_locations(&typed).is_empty() =>
                             {
                                 typed
+                            }
+                            Ok(LspReply::ContentModified) => {
+                                modified = true;
+                                empty
                             }
                             Ok(_) => empty,
                             Err(_) => empty,
@@ -789,7 +840,7 @@ impl LspHub {
                             .request_nav_with_retry("textDocument/typeDefinition", params)
                             .await
                         {
-                            Ok(typed)
+                            Ok(LspReply::Value(typed))
                                 if !crate::lsp::format::extract_locations(&typed).is_empty() =>
                             {
                                 typed
@@ -799,7 +850,7 @@ impl LspHub {
                     }
                 }
             }
-            "findReferences" => {
+            "findReferences" => take_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/references",
@@ -809,9 +860,10 @@ impl LspHub {
                             "context": { "includeDeclaration": true }
                         }),
                     )
-                    .await?
-            }
-            "hover" => {
+                    .await?,
+                &mut modified,
+            ),
+            "hover" => take_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/hover",
@@ -820,9 +872,10 @@ impl LspHub {
                             "position": position
                         }),
                     )
-                    .await?
-            }
-            "goToImplementation" => {
+                    .await?,
+                &mut modified,
+            ),
+            "goToImplementation" => take_reply(
                 server
                     .request_nav_with_retry(
                         "textDocument/implementation",
@@ -831,57 +884,72 @@ impl LspHub {
                             "position": position
                         }),
                     )
-                    .await?
-            }
-            "documentSymbol" => {
+                    .await?,
+                &mut modified,
+            ),
+            "documentSymbol" => take_reply(
                 server
-                    .send_request(
+                    .send_request_outcome(
                         "textDocument/documentSymbol",
                         serde_json::json!({ "textDocument": { "uri": uri } }),
                     )
-                    .await?
-            }
+                    .await?,
+                &mut modified,
+            ),
             "workspaceSymbol" => {
                 // file_path selects/starts the LS; query filters workspace symbols.
-                server
-                    .send_request(
-                        "workspace/symbol",
-                        serde_json::json!({ "query": query.unwrap_or("") }),
-                    )
-                    .await?
+                take_reply(
+                    server
+                        .send_request_outcome(
+                            "workspace/symbol",
+                            serde_json::json!({ "query": query.unwrap_or("") }),
+                        )
+                        .await?,
+                    &mut modified,
+                )
             }
-            "prepareCallHierarchy" => {
+            "prepareCallHierarchy" => take_reply(
                 server
-                    .send_request(
+                    .send_request_outcome(
                         "textDocument/prepareCallHierarchy",
                         serde_json::json!({
                             "textDocument": { "uri": uri },
                             "position": position
                         }),
                     )
-                    .await?
-            }
+                    .await?,
+                &mut modified,
+            ),
             "incomingCalls" | "outgoingCalls" => {
-                let items = server
-                    .send_request(
-                        "textDocument/prepareCallHierarchy",
-                        serde_json::json!({
-                            "textDocument": { "uri": uri },
-                            "position": position
-                        }),
-                    )
-                    .await?;
+                let items = take_reply(
+                    server
+                        .send_request_outcome(
+                            "textDocument/prepareCallHierarchy",
+                            serde_json::json!({
+                                "textDocument": { "uri": uri },
+                                "position": position
+                            }),
+                        )
+                        .await?,
+                    &mut modified,
+                );
                 let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
-                    return Ok("No call hierarchy item at position".into());
+                    return Ok(LspToolOutput::new(
+                        "No call hierarchy item at position".into(),
+                        modified,
+                    ));
                 };
                 let method = if action == "incomingCalls" {
                     "callHierarchy/incomingCalls"
                 } else {
                     "callHierarchy/outgoingCalls"
                 };
-                server
-                    .send_request(method, serde_json::json!({ "item": item }))
-                    .await?
+                take_reply(
+                    server
+                        .send_request_outcome(method, serde_json::json!({ "item": item }))
+                        .await?,
+                    &mut modified,
+                )
             }
             "diagnostics" => {
                 server
@@ -895,8 +963,19 @@ impl LspHub {
             }
         };
 
-        Ok(format_action_result(action, &result))
+        Ok(LspToolOutput::new(
+            format_action_result(action, &result),
+            modified,
+        ))
     }
+}
+
+/// Map a [`LspReply`] to its value, recording ContentModified in `modified`.
+fn take_reply(reply: LspReply, modified: &mut bool) -> Value {
+    if reply == LspReply::ContentModified {
+        *modified = true;
+    }
+    reply.into_value()
 }
 
 pub(crate) fn normalize_lsp_action(action: &str) -> &str {

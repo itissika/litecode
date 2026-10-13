@@ -646,22 +646,26 @@ impl LspTool {
         // diagnostics (and any non-position action): single query, no fan-out.
         let Some((line, resolved)) = position else {
             return match hub
-                .tool_action_with_query(&action, &file_path, None, None, None)
+                .tool_action_outcome(&action, &file_path, None, None, None)
                 .await
             {
-                Ok(text) => ToolCallResult::ok(text),
+                Ok(out) => with_content_modified(ToolCallResult::ok(out.text), out.content_modified),
                 Err(e) => map_lsp_query_error(e),
             };
         };
 
         let multi = resolved.hits.len() >= 2;
         let mut blocks: Vec<String> = Vec::with_capacity(resolved.hits.len());
+        let mut content_modified = false;
         for hit in &resolved.hits {
             let raw = match hub
-                .tool_action_with_query(&action, &file_path, Some(line), Some(hit.column), None)
+                .tool_action_outcome(&action, &file_path, Some(line), Some(hit.column), None)
                 .await
             {
-                Ok(text) => text,
+                Ok(out) => {
+                    content_modified |= out.content_modified;
+                    out.text
+                }
                 Err(e) if !multi => return map_lsp_query_error(e),
                 Err(e) => e.to_string(),
             };
@@ -669,7 +673,10 @@ impl LspTool {
         }
 
         if !multi {
-            return ToolCallResult::ok(blocks.pop().unwrap_or_default());
+            return with_content_modified(
+                ToolCallResult::ok(blocks.pop().unwrap_or_default()),
+                content_modified,
+            );
         }
 
         let body = format_multi_hit_view(
@@ -680,13 +687,42 @@ impl LspTool {
             &blocks,
             definition_merges_identical_landings(&action),
         );
-        ToolCallResult::ok(body).with_warning("narrow text and retry if you need a single hit")
+        let warning = if content_modified {
+            format!("{CONTENT_MODIFIED_WARNING}; narrow text and retry if you need a single hit")
+        } else {
+            "narrow text and retry if you need a single hit".to_string()
+        };
+        ToolCallResult::ok(body).with_warning(warning)
+    }
+}
+
+/// ISSUE-047: LSP `-32801 ContentModified` is not retried (same as VS Code);
+/// the (empty) result is returned but the agent is told the server is updating.
+const CONTENT_MODIFIED_WARNING: &str = "language server is updating (ContentModified); result may be incomplete — retry in a few seconds, do not treat as 'not found'";
+
+fn with_content_modified(result: ToolCallResult, content_modified: bool) -> ToolCallResult {
+    if content_modified {
+        result.with_warning(CONTENT_MODIFIED_WARNING)
+    } else {
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_modified_surfaces_updating_warning() {
+        let plain = with_content_modified(ToolCallResult::ok("No results"), false);
+        assert_eq!(plain.level, crate::types::result::ToolSignalLevel::Ok);
+        let flagged =
+            with_content_modified(ToolCallResult::ok("No results"), true).finalize_signals();
+        assert_eq!(flagged.level, crate::types::result::ToolSignalLevel::Warning);
+        assert!(flagged.content.contains("ContentModified"), "{}", flagged.content);
+        assert!(flagged.content.contains("do not treat as 'not found'"), "{}", flagged.content);
+        assert!(flagged.content.contains("No results"), "{}", flagged.content);
+    }
 
     #[test]
     fn relative_path_resolves_under_root() {

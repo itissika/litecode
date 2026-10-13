@@ -293,7 +293,8 @@ impl LspServer {
         &self,
         method: &str,
         params: Value,
-    ) -> Result<Value> {
+    ) -> Result<crate::lsp::conn::LspReply> {
+        use crate::lsp::conn::LspReply;
         fn nav_empty(method: &str, result: &Value) -> bool {
             if method == "textDocument/hover" {
                 return result.is_null()
@@ -314,27 +315,34 @@ impl LspServer {
             extract_locations(result).is_empty()
         }
 
-        let mut result = self.send_request(method, params.clone()).await?;
+        // ContentModified ends the call at once (no resend; ISSUE-047).
+        let mut result = match self.send_request_outcome(method, params.clone()).await? {
+            LspReply::Value(v) => v,
+            LspReply::ContentModified => return Ok(LspReply::ContentModified),
+        };
         if !nav_empty(method, &result) {
             self.io.index_settled.store(true, Ordering::SeqCst);
-            return Ok(result);
+            return Ok(LspReply::Value(result));
         }
 
         if self.index_ready_for_empty_miss() {
             self.io.index_settled.store(true, Ordering::SeqCst);
-            return Ok(result);
+            return Ok(LspReply::Value(result));
         }
 
         for delay_ms in [500_u64, 1000, 2000, 3000] {
             tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-            result = self.send_request(method, params.clone()).await?;
+            result = match self.send_request_outcome(method, params.clone()).await? {
+                LspReply::Value(v) => v,
+                LspReply::ContentModified => return Ok(LspReply::ContentModified),
+            };
             if !nav_empty(method, &result) {
                 self.io.index_settled.store(true, Ordering::SeqCst);
-                return Ok(result);
+                return Ok(LspReply::Value(result));
             }
             if self.index_ready_for_empty_miss() {
                 self.io.index_settled.store(true, Ordering::SeqCst);
-                return Ok(result);
+                return Ok(LspReply::Value(result));
             }
         }
 
@@ -354,7 +362,23 @@ impl LspServer {
         params: Value,
         rpc_id: Option<u64>,
     ) -> Result<Value> {
-        self.io.request(method, params, rpc_id).await
+        // ContentModified → default (empty) result, never retried (ISSUE-047;
+        // see `LspIo::request_outcome` for the vscode-languageclient source).
+        Ok(self
+            .io
+            .request_outcome(method, params, rpc_id)
+            .await?
+            .into_value())
+    }
+
+    /// Like [`send_request`](Self::send_request) but keeps the ContentModified
+    /// signal so callers can say "server is updating, result may be incomplete".
+    pub(crate) async fn send_request_outcome(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<crate::lsp::conn::LspReply> {
+        self.io.request_outcome(method, params, None).await
     }
 
     /// Wait until in-flight didOpen/didChange for `uri` has been enqueued, then
@@ -444,6 +468,18 @@ impl LspServer {
             "rootUri": root_uri,
             "rootPath": root_path.to_string_lossy(),
             "capabilities": {
+                // LSP 3.17 general.staleRequestSupport, modeled on
+                // vscode-languageserver-node@d91883de client/src/common/client.ts
+                // L2140-2144. VS Code lists semantic tokens in
+                // retryOnContentModified because its editor re-requests them; this
+                // client retries nothing on ContentModified, so the list is empty.
+                // cancel: true — we send $/cancelRequest (conn.rs `cancel`).
+                "general": {
+                    "staleRequestSupport": {
+                        "cancel": true,
+                        "retryOnContentModified": []
+                    }
+                },
                 "workspace": {
                     "workspaceFolders": true,
                     "configuration": true

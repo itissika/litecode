@@ -20,6 +20,60 @@ pub(crate) static NEXT_RPC_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_LSP_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// LSP `ContentModified` error code.
+pub(crate) const LSP_CONTENT_MODIFIED: i64 = -32801;
+
+/// Copied from vscode-languageserver-node@d91883defb99bdbbc2419450f6eba334b981dfb0 client/src/common/client.ts L2291-2295
+/// (`RequestsToCancelOnContentModified`): on ContentModified these are
+/// treated as cancelled.
+pub(crate) const REQUESTS_TO_CANCEL_ON_CONTENT_MODIFIED: &[&str] = &[
+    "textDocument/semanticTokens/full",
+    "textDocument/semanticTokens/range",
+    "textDocument/semanticTokens/full/delta",
+];
+
+/// Copied from vscode-languageserver-node@d91883defb99bdbbc2419450f6eba334b981dfb0 client/src/common/client.ts L2296-2303
+/// (`CancellableResolveCalls`): on ContentModified these are treated as cancelled.
+pub(crate) const CANCELLABLE_RESOLVE_CALLS: &[&str] = &[
+    "completionItem/resolve",
+    "codeLens/resolve",
+    "codeAction/resolve",
+    "inlayHint/resolve",
+    "documentLink/resolve",
+    "workspaceSymbol/resolve",
+];
+
+/// Reply of a request after ContentModified handling (ISSUE-047).
+#[derive(Debug, Clone, PartialEq)]
+pub enum LspReply {
+    /// Normal server result.
+    Value(Value),
+    /// Server answered `-32801 ContentModified`: like VS Code we return the
+    /// request's default (empty) result and do not retry. Callers surface this
+    /// as "server is updating, result may be incomplete".
+    ContentModified,
+}
+
+impl LspReply {
+    /// Value with ContentModified mapped to the default empty result (`null`).
+    pub fn into_value(self) -> Value {
+        match self {
+            LspReply::Value(v) => v,
+            LspReply::ContentModified => Value::Null,
+        }
+    }
+}
+
+/// True when `e` is the error `complete_response` builds for `-32801`.
+pub(crate) fn is_content_modified(e: &LitecodeError) -> bool {
+    match e {
+        LitecodeError::ToolExecution(msg) => {
+            msg.starts_with(&format!("LSP error (code {LSP_CONTENT_MODIFIED})"))
+        }
+        _ => false,
+    }
+}
+
 pub(crate) fn request_timeout() -> Duration {
     let secs = std::env::var("LITECODE_LSP_REQUEST_TIMEOUT_SECS")
         .ok()
@@ -447,6 +501,37 @@ impl LspIo {
         }
     }
 
+    /// Send once and apply VS Code's ContentModified handling, copied from
+    /// vscode-languageserver-node@d91883defb99bdbbc2419450f6eba334b981dfb0 client/src/common/client.ts L2323-2329 (`handleFailedRequest`):
+    /// semantic-tokens and resolve calls → cancellation error; every other
+    /// request → default (empty) result, here [`LspReply::ContentModified`].
+    /// Never retried. Editor passthrough (`rpc_id`) gets the raw server error so
+    /// the editor's own client applies its policy.
+    pub(crate) async fn request_outcome(
+        &self,
+        method: &str,
+        params: Value,
+        rpc_id: Option<u64>,
+    ) -> Result<LspReply> {
+        let result = self.request(method, params, rpc_id).await;
+        match result {
+            Ok(v) => Ok(LspReply::Value(v)),
+            Err(e) if rpc_id.is_none() && is_content_modified(&e) => {
+                if REQUESTS_TO_CANCEL_ON_CONTENT_MODIFIED.contains(&method)
+                    || CANCELLABLE_RESOLVE_CALLS.contains(&method)
+                {
+                    Err(LitecodeError::ToolExecution(format!(
+                        "LSP request cancelled: content modified (method={method})"
+                    )))
+                } else {
+                    tracing::debug!(method, "LSP ContentModified; returning empty result");
+                    Ok(LspReply::ContentModified)
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) fn cancel(&self, id: u64) {
         if let Ok(mut g) = self.pending.lock()
             && let Some(tx) = g.remove(&id)
@@ -604,6 +689,133 @@ mod tests {
             reader_abort: Mutex::new(None),
             diag_tx,
         })
+    }
+
+    fn test_io_with_rx() -> (Arc<LspIo>, mpsc::UnboundedReceiver<Value>) {
+        let (outbound, rx) = mpsc::unbounded_channel();
+        let io = Arc::new(LspIo {
+            outbound,
+            pending: Mutex::new(HashMap::new()),
+            diagnostics: Mutex::new(HashMap::new()),
+            synced_version: Mutex::new(HashMap::new()),
+            diag_waiters: Mutex::new(Vec::new()),
+            index_settled: AtomicBool::new(false),
+            io_failed: AtomicBool::new(false),
+            watchdog_kill: AtomicBool::new(false),
+            lifecycle: Mutex::new(LspLifecycle::Running),
+            last_error: Mutex::new(None),
+            pid: AtomicU32::new(0),
+            writer_abort: Mutex::new(None),
+            reader_abort: Mutex::new(None),
+            diag_tx: None,
+        });
+        (io, rx)
+    }
+
+    /// Mock LSP server: answers the first `fail_first` requests with -32801,
+    /// then succeeds. Returns a counter of requests seen.
+    fn spawn_mock_modified(
+        io: &Arc<LspIo>,
+        mut rx: mpsc::UnboundedReceiver<Value>,
+        fail_first: usize,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen_task = Arc::clone(&seen);
+        let io = Arc::clone(io);
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let Some(id) = msg.get("id").cloned() else {
+                    continue;
+                };
+                let n = seen_task.fetch_add(1, Ordering::SeqCst);
+                let reply = if n < fail_first {
+                    serde_json::json!({"jsonrpc":"2.0","id":id,
+                        "error":{"code":-32801,"message":"content modified"}})
+                } else {
+                    serde_json::json!({"jsonrpc":"2.0","id":id,"result":"ok"})
+                };
+                let _ = dispatch_message(&io, &reply);
+            }
+        });
+        seen
+    }
+
+    #[tokio::test]
+    async fn content_modified_plain_request_returns_empty_once() {
+        let (io, rx) = test_io_with_rx();
+        let seen = spawn_mock_modified(&io, rx, usize::MAX);
+        let out = io
+            .request_outcome("textDocument/hover", serde_json::json!({}), None)
+            .await
+            .expect("hover maps to empty result");
+        assert_eq!(out, LspReply::ContentModified);
+        assert_eq!(out.into_value(), Value::Null);
+        assert_eq!(seen.load(Ordering::SeqCst), 1, "never retried");
+    }
+
+    #[tokio::test]
+    async fn content_modified_semantic_tokens_is_cancelled_once() {
+        let (io, rx) = test_io_with_rx();
+        let seen = spawn_mock_modified(&io, rx, usize::MAX);
+        let err = io
+            .request_outcome(
+                "textDocument/semanticTokens/full",
+                serde_json::json!({}),
+                None,
+            )
+            .await
+            .expect_err("semantic tokens cancelled");
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn content_modified_resolve_is_cancelled_once() {
+        let (io, rx) = test_io_with_rx();
+        let seen = spawn_mock_modified(&io, rx, usize::MAX);
+        let err = io
+            .request_outcome("completionItem/resolve", serde_json::json!({}), None)
+            .await
+            .expect_err("resolve cancelled");
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn content_modified_passthrough_rpc_id_keeps_raw_error() {
+        let (io, rx) = test_io_with_rx();
+        let seen = spawn_mock_modified(&io, rx, usize::MAX);
+        let err = io
+            .request_outcome("textDocument/hover", serde_json::json!({}), Some(987_654))
+            .await
+            .expect_err("passthrough keeps server error");
+        assert!(is_content_modified(&err));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn success_is_value() {
+        let (io, rx) = test_io_with_rx();
+        let seen = spawn_mock_modified(&io, rx, 0);
+        let out = io
+            .request_outcome("textDocument/hover", serde_json::json!({}), None)
+            .await
+            .unwrap();
+        assert_eq!(out, LspReply::Value(Value::String("ok".into())));
+        assert_eq!(seen.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn is_content_modified_matches_only_32801() {
+        assert!(is_content_modified(&LitecodeError::ToolExecution(
+            "LSP error (code -32801): content modified".into()
+        )));
+        assert!(!is_content_modified(&LitecodeError::ToolExecution(
+            "LSP error (code -32800): cancelled".into()
+        )));
+        assert!(!is_content_modified(&LitecodeError::ToolExecution(
+            "LSP error (code -328011): x".into()
+        )));
     }
 
     fn publish(uri: &str, version: Option<i32>, diags: Value) -> Value {

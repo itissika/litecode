@@ -1,0 +1,40 @@
+{
+  "id": "ISSUE-044",
+  "grade": "common",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "title": "LSP hub 对 -32801 ContentModified 无有限重试（rust_analyzer_smoke:1488）",
+  "promise": "LSP hub 对可重试的 -32801 ContentModified 应做有限重试，不直接透传给调用方。",
+  "actual": "rust_analyzer_smoke 稳定失败于 tests/optional_lsp.rs:1488：rust-analyzer 索引中 hover 返回 -32801 content modified，src/lsp hub 直接透传。",
+  "evidence": [
+    {
+      "path": "tests/optional_lsp.rs",
+      "lines": "1488",
+      "test": "rust_analyzer_smoke",
+      "note": "-32801"
+    },
+    {
+      "path": "/tmp/lsp_full.log",
+      "note": "全量日志"
+    }
+  ],
+  "repro": "cd /workspace/litecode && cargo test --test optional_lsp rust_analyzer_smoke -- --include-ignored --nocapture </dev/null",
+  "history": [
+    {
+      "ts": "2026-10-13T02:38:20.094Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    },
+    {
+      "ts": "2026-10-13T11:17:39+08:00",
+      "by": "backend_mid",
+      "change": "WP-073: resolved — conn.rs request_retry_modified 对只读方法 -32801 有限重试（200/500/1000ms，受 request_timeout 预算约束，rpc_id 透传不重试）；rust_analyzer_smoke 1/1 绿；closed"
+    }
+  ]
+}

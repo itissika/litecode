@@ -1,0 +1,39 @@
+{
+  "id": "ISSUE-049",
+  "grade": "edge",
+  "layer": "test",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "title": "optional_lsp 测试改进程级 env，并行时 rust_analyzer_smoke 串用 mock 配置失败",
+  "tier": "边角 bug",
+  "promise": "optional_lsp 各测试应彼此隔离，并行运行结果与单独运行一致。",
+  "actual": "optional_lsp 测试经 clear_mock_ls_env / mock LS 环境变量改动进程级 env；整组并行跑时 rust_analyzer_smoke 读到其他测试的 mock 配置而失败（not configured 等），单独跑通过。WP-073 定责（/tmp/lsp_full.log）与 WP-075 运行中均出现。本包不修。",
+  "evidence": [
+    {
+      "path": "tests/optional_lsp.rs",
+      "note": "clear_mock_ls_env / mock LS env vars 改进程级 env"
+    },
+    {
+      "path": "/tmp/lsp_full.log",
+      "note": "WP-073 定责全量日志"
+    }
+  ],
+  "repro": "cargo test --test optional_lsp -- --include-ignored </dev/null（并行）vs cargo test --test optional_lsp rust_analyzer_smoke -- --ignored </dev/null（单独）",
+  "history": [
+    {
+      "ts": "2026-10-13T03:51:02.974Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    },
+    {
+      "ts": "2026-10-13T12:01:37+08:00",
+      "by": "backend_mid",
+      "change": "追加：edit_fix_must_not_echo_previous_lsp_error（optional_lsp.rs:836）在 WP-075 并行跑偶发失败；中层复跑当前 4 次 + HEAD 基线 3 次均未复现（0/7），mock 不发 -32801，与本波无关，归为并行/时序 flake；不修"
+    }
+  ]
+}

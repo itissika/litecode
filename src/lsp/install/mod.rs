@@ -242,6 +242,7 @@ pub async fn install_server_to_lsp_dir(
 async fn install_gopls(server_id: &str, dest_dir: &Path) -> Result<()> {
     let go_ok = tokio::process::Command::new("go")
         .arg("version")
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -261,6 +262,7 @@ async fn install_gopls(server_id: &str, dest_dir: &Path) -> Result<()> {
     let output = match tokio::process::Command::new("go")
         .args(["install", "golang.org/x/tools/gopls@latest"])
         .env("GOBIN", &gobin)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -302,6 +304,7 @@ async fn install_csharp_ls(server_id: &str, dest_dir: &Path) -> Result<()> {
     let tool_path = staging.to_string_lossy().to_string();
     let output = match tokio::process::Command::new("dotnet")
         .args(["tool", "install", "csharp-ls", "--tool-path", &tool_path])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .output()

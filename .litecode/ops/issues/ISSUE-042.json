@@ -7,7 +7,7 @@
   "core_nodes": [],
   "reporter": "backend_mid",
   "owner": "tools",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "title": "tools/litecode_workspace 生产路径自行 SessionDataReader::open(sessions.db)",
   "basis": [
@@ -38,6 +38,11 @@
       "ts": "2026-10-12T21:56:00+08:00",
       "by": "backend_mid",
       "change": "WP-069/041 复跑发现真违规；挂 ISSUE；owner=tools；本波不修"
+    },
+    {
+      "ts": "2026-10-13T10:48:27+08:00",
+      "by": "backend_mid",
+      "change": "WP-072: resolved — call_inner 改用 Some(self.sessions.reader())，不再自开 sessions.db；session_data_sql_death_list 2/2 绿；closed"
     }
   ]
 }

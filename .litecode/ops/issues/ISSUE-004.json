@@ -24,7 +24,7 @@
   "repro": "缺：可复现的 rust-analyzer/optional_lsp 环境与失败日志。cargo test --test optional_lsp agent_lsp_tool_line_text_scenarios",
   "reporter": "ide",
   "owner": "ide",
-  "status": "open",
+  "status": "closed",
   "blocks": false,
   "history": [
     {
@@ -36,6 +36,11 @@
       "ts": "2026-10-12T00:40:00+08:00",
       "by": "ide",
       "change": "Batch3: keep suspect; note tools may own shaping; ide owns hub lifecycle only"
+    },
+    {
+      "ts": "2026-10-13T02:34:52Z",
+      "by": "gm",
+      "change": "2026-10-13 管家备环境后复现：agent_lsp_tool_line_text_scenarios 1 passed，findReferences 每个位置带编号上下文，满足 promise；IDE 判定+中层复核：已不复现（后续改动修复）。closed。"
     }
   ]
 }

@@ -1,0 +1,49 @@
+{
+  "id": "ISSUE-047",
+  "grade": "undecided",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "title": "-32801 ContentModified 处理策略未定（重试 vs 照 VS Code 返回空）",
+  "tier": "产品未定",
+  "promise": "-32801 ContentModified 处理策略需 Andy/GM 定口径。",
+  "actual": "WP-073 现行有限重试为自行设计（conn.rs request_retry_modified）。对照：vscode-languageclient 返回空/取消（client.ts:2291-2331），并在 initialize 声明 staleRequestSupport.retryOnContentModified；Zed 视为 rejected。",
+  "options": {
+    "A": "照搬 VS Code：不重试，返回空结果 + 'server 更新中' 提示",
+    "B": "保留重试，并在 initialize 声明 retryOnContentModified"
+  },
+  "recommendation": "IDE 推荐 B",
+  "evidence": [
+    {
+      "path": "src/lsp/conn.rs",
+      "note": "request_retry_modified（WP-073）"
+    },
+    {
+      "path": ".litecode/ops/artifacts/WP-070-ide-045.md",
+      "note": "VS Code/Zed 对照"
+    }
+  ],
+  "history": [
+    {
+      "ts": "2026-10-13T03:26:06.685Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    },
+    {
+      "ts": "2026-10-13T11:36:00+08:00",
+      "by": "backend_mid",
+      "change": "Andy 10-13 决定选 A（照 VS Code：不重试，semantic tokens/resolve→取消，其余→空结果+「服务器正在更新，结果可能不完整」提示）；并入 WP-074 实施，WP-074 验收时 close"
+    },
+    {
+      "ts": "2026-10-13T12:01:37+08:00",
+      "by": "backend_mid",
+      "change": "WP-074+WP-075: 方案 A 落地——删自设重试；conn.rs request_outcome 照 vscode-languageclient handleFailedRequest（semantic tokens/resolve→取消，其余→空结果）；initialize 声明 retryOnContentModified:[]；lsp 工具加 'language server is updating (ContentModified)…' 警告；rpc_id 透传保留原始 -32801；closed"
+    }
+  ],
+  "decision": "A"
+}

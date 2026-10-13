@@ -130,6 +130,7 @@ fn npm_config_prefix() -> Option<PathBuf> {
     let (program, args) = npm_program_and_args(&["config".into(), "get".into(), "prefix".into()])?;
     let output = Command::new(program)
         .args(args)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -204,10 +205,23 @@ fn dotnet_tools_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+fn absolute_unresolved(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
 fn candidate_in_dir(dir: &Path, program: &str) -> Option<PathBuf> {
     let candidate = dir.join(program);
     if candidate.is_file() {
-        return Some(crate::config::path::canon_abs_lossy(&candidate));
+        // Keep the unresolved (but absolute) path: proxies such as rustup,
+        // mise and volta dispatch on argv[0], so following the symlink would
+        // launch the proxy itself. Availability uses the same path via the
+        // generic `--version` probe.
+        return Some(absolute_unresolved(&candidate));
     }
     #[cfg(windows)]
     if candidate.with_extension("exe").is_file() {
@@ -256,7 +270,7 @@ pub(crate) fn verify_managed_server_at(program: &str, server_dir: &Path) -> Resu
         .ok_or_else(|| format!("no executable found under managed directory for '{program}'"))?;
     let adapter = adapter_for_program(program)
         .ok_or_else(|| format!("unknown language server '{program}'"))?;
-    run_version_probe(&adapter.verify_binary_info(server_dir))
+    run_version_probe(&adapter.verify_binary_info(server_dir), None)
 }
 
 pub(crate) fn managed_binary_path_at(
@@ -354,6 +368,7 @@ fn run_npm(args: &[&str]) -> std::io::Result<std::process::Output> {
     })?;
     Command::new(program)
         .args(argv)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -402,37 +417,10 @@ fn npm_install_package(package: &str) -> std::result::Result<(), LitecodeError> 
     )))
 }
 
-fn is_rustup_shim(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|name| name == "rustup" || name == "rustup.exe")
-}
-
-fn rust_analyzer_runnable() -> Result<(), String> {
-    let output = Command::new("rustup")
-        .args(["which", "rust-analyzer"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| format!("rustup not available: {e}"))?;
-    if !output.status.success() {
-        return Err(
-            "rust-analyzer component not installed (run: rustup component add rust-analyzer)"
-                .into(),
-        );
-    }
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        return Err("rustup which rust-analyzer returned empty path".into());
-    }
-    run_version_probe(&LanguageServerBinary {
-        path: PathBuf::from(path),
-        arguments: vec![],
-        env: None,
-    })
-}
-
-fn run_version_probe(binary: &LanguageServerBinary) -> Result<(), String> {
+/// Generic availability probe for every server: run `<server> [args] --version`
+/// from the unresolved path. `cwd` is the project root when known so proxies
+/// (rustup, mise, volta, ...) pick the project's toolchain; `None` inherits.
+fn run_version_probe(binary: &LanguageServerBinary, cwd: Option<&Path>) -> Result<(), String> {
     let extra: Vec<String> = binary
         .arguments
         .iter()
@@ -445,7 +433,11 @@ fn run_version_probe(binary: &LanguageServerBinary) -> Result<(), String> {
     let display = binary.path.display().to_string();
     let mut command = Command::new(&program);
     command.args(&launch_args);
+    if let Some(dir) = cwd.filter(|d| d.is_dir()) {
+        command.current_dir(dir);
+    }
     let mut child = command
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -491,16 +483,14 @@ pub fn command_runnable(program: &str) -> Result<(), String> {
 /// Resolve and verify a complete configured command. Probe, warmup, and
 /// spawn use this same resolution contract.
 pub fn command_runnable_command(command: &str) -> Result<(), String> {
+    command_runnable_command_in(command, None)
+}
+
+/// Same as [`command_runnable_command`], probing with `cwd` = project root.
+pub fn command_runnable_command_in(command: &str, cwd: Option<&Path>) -> Result<(), String> {
     let program = program_from_command(command);
     if managed_binary_path(&program).is_some() {
         return verify_managed_server(&program);
-    }
-    if program == "rust-analyzer" {
-        let binary = resolve_server_binary(command)?;
-        if is_rustup_shim(&binary.path) {
-            return rust_analyzer_runnable();
-        }
-        return run_version_probe(&binary);
     }
     let binary = resolve_server_binary(command)?;
     if program == "pyright-langserver" {
@@ -511,7 +501,7 @@ pub fn command_runnable_command(command: &str) -> Result<(), String> {
             Err(format!("'{}' not found", binary.path.display()))
         };
     }
-    run_version_probe(&binary)
+    run_version_probe(&binary, cwd)
 }
 
 fn sources_for_server(root: &Path, program: &str) -> Vec<String> {
@@ -573,7 +563,7 @@ pub fn probe_workspace_servers(root: &Path) -> Vec<LspServerProbe> {
         let id = meta
             .map(|m| m.id.to_string())
             .unwrap_or_else(|| program.clone());
-        let result = command_runnable_command(&cmd);
+        let result = command_runnable_command_in(&cmd, Some(root));
         let status = match &result {
             Ok(()) => LspDepStatus::Available,
             Err(msg) if msg.contains("not found") => LspDepStatus::Missing,
@@ -642,6 +632,7 @@ fn has_dotnet_10_sdk(sdks_output: &str) -> bool {
 pub(crate) fn ensure_dotnet_sdk() -> Result<(), LitecodeError> {
     let output = match Command::new("dotnet")
         .args(["--list-sdks"])
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -715,6 +706,7 @@ pub fn install_server(id: &str) -> std::result::Result<(), LitecodeError> {
 
     let output = Command::new(installer)
         .args(&args)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -798,6 +790,85 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"t\"\n").unwrap();
         let probes = probe_workspace_servers(dir.path());
         assert!(probes.iter().any(|p| p.id == "rust-analyzer"));
+    }
+
+    /// Writing an executable while other test threads fork can make exec fail
+    /// with ETXTBSY (inherited write fd until their exec). Test-only retry.
+    #[cfg(unix)]
+    fn retry_txt_busy<T>(mut f: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+        for _ in 0..20 {
+            match f() {
+                Err(e) if e.contains("Text file busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(50))
+                }
+                other => return other,
+            }
+        }
+        f()
+    }
+
+    #[cfg(unix)]
+    fn fake_rustup_with_link(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let rustup = dir.join("rustup");
+        std::fs::write(
+            &rustup,
+            "#!/bin/sh\ncase \"$(basename \"$0\")\" in\n  rust-analyzer) echo \"rust-analyzer ok\" ;;\n  *) echo \"rustup usage\"; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&rustup, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.join("rust-analyzer");
+        std::os::unix::fs::symlink(&rustup, &link).unwrap();
+        link
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rustup_symlink_passes_generic_version_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = fake_rustup_with_link(dir.path());
+        let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
+        assert_eq!(found, link);
+        assert_eq!(found.file_name().unwrap(), "rust-analyzer");
+        let binary = LanguageServerBinary { path: found, arguments: vec![], env: None };
+        retry_txt_busy(|| run_version_probe(&binary, Some(dir.path())))
+            .expect("generic --version probe via link");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rustup_link_without_component_is_unavailable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let rustup = dir.path().join("rustup");
+        std::fs::write(
+            &rustup,
+            "#!/bin/sh\ncase \"$(basename \"$0\")\" in\n  rust-analyzer) echo \"error: 'rust-analyzer' is not installed for the toolchain\" >&2; exit 1 ;;\n  *) echo \"rustup usage\"; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&rustup, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&rustup, dir.path().join("rust-analyzer")).unwrap();
+        let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
+        let binary = LanguageServerBinary { path: found, arguments: vec![], env: None };
+        let err = retry_txt_busy(|| run_version_probe(&binary, Some(dir.path()))).unwrap_err();
+        assert!(err.contains("--version exited"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rust_analyzer_symlink_to_rustup_spawns_as_rust_analyzer() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_rustup_with_link(dir.path());
+        let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
+        let out = retry_txt_busy(|| {
+            std::process::Command::new(&found)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "rust-analyzer ok");
     }
 
     #[cfg(windows)]

@@ -818,9 +818,8 @@ impl Tool for LitecodeWorkspaceTool {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: self.max_result_size(),
                 session_id: String::new(),
-                session: Some(SessionDataReader::open(
-                    &self.runtime.workspace.paths.sessions_db,
-                )),
+                // ISSUE-042: reuse the session layer's reader; never open sessions.db here.
+                session: Some(self.sessions.reader()),
             },
         )
     }

@@ -1,0 +1,31 @@
+{
+  "id": "ISSUE-046",
+  "grade": "edge",
+  "layer": "test",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "title": "src/lsp/mod.rs 3 个 Windows 专用路径测试未 cfg-gate，Linux 失败",
+  "tier": "边角 bug",
+  "promise": "仅 Windows 语义的路径测试应 cfg(windows) 门控，Linux 上不应失败。",
+  "actual": "src/lsp/mod.rs 内 normalize_makes_verbatim_path_prefix_compatible、publish_diagnostics_uri_matches_drive_case、uri_to_path_recovers_mangled_verbatim_file_uri 在 Linux 失败；HEAD 99a01f9 干净 worktree 复现，非 WP-073 回归。",
+  "evidence": [
+    {
+      "path": "src/lsp/mod.rs",
+      "note": "3 个 Windows 路径测试未 cfg-gate"
+    }
+  ],
+  "repro": "cargo test --lib lsp::tests::",
+  "fix": "加 #[cfg(windows)] 或改为平台无关断言；本波不修",
+  "history": [
+    {
+      "ts": "2026-10-13T03:17:40.270Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    }
+  ]
+}

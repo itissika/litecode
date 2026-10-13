@@ -90,7 +90,10 @@ fn linux_libc() -> &'static str {
 #[cfg(target_os = "linux")]
 fn ldd_reports_musl() -> bool {
     use std::process::Command;
-    let output = Command::new("ldd").arg("--version").output();
+    let output = Command::new("ldd")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .output();
     let Ok(output) = output else {
         return false;
     };

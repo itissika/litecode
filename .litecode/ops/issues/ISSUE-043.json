@@ -1,0 +1,40 @@
+{
+  "id": "ISSUE-043",
+  "grade": "edge",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "closed",
+  "blocks": false,
+  "title": "lsp/deps 版本探测与 rustup which 继承调用方 stdin",
+  "promise": "LSP 依赖探测（<server> --version、rustup which）不得继承调用方 stdin；应 .stdin(Stdio::null())。",
+  "actual": "src/lsp/deps.rs:446-452 run_version_probe 与 :412 rustup which 未设 stdin，继承调用方；stdin 不关时 mock 等输入至 5s 超时（deps.rs:454），叠加超出 optional_lsp.rs:88 的 10s warmup 等待；未加 </dev/null 时 25 测挂 19。真实宿主基本碰不到（真 server --version 不读 stdin，最坏吞 5s 输入）。",
+  "evidence": [
+    {
+      "path": "src/lsp/deps.rs",
+      "lines": "412,446-454",
+      "note": "未设 stdin"
+    },
+    {
+      "path": "tests/optional_lsp.rs",
+      "lines": "88",
+      "note": "warmup timeout"
+    }
+  ],
+  "repro": "cd /workspace/litecode && cargo test --test optional_lsp agent_lsp_tool_line_text_scenarios -- --nocapture （不带 </dev/null）",
+  "history": [
+    {
+      "ts": "2026-10-13T02:38:19.970Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-071）"
+    },
+    {
+      "ts": "2026-10-13T11:17:39+08:00",
+      "by": "backend_mid",
+      "change": "WP-073: resolved — src/lsp 探测/安装 Command 全加 Stdio::null；不带 </dev/null（sleep 管道）跑 optional_lsp 24/24 绿无 warmup timeout；closed"
+    }
+  ]
+}

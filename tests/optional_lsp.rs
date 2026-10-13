@@ -1377,12 +1377,33 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         def.content
     );
 
-    let hover = run(serde_json::json!({
-        "action": "hover",
-        "file_path": "src/lib.rs",
-        "line": 1,
-        "text": "target"
-    }));
+    // ISSUE-047: the tool does not retry -32801 ContentModified; it returns a
+    // Warning telling the agent the server is updating. Poll (bounded) like an
+    // agent would, and check that every such Warning carries the hint.
+    let hover_deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let hover = loop {
+        let out = run(serde_json::json!({
+            "action": "hover",
+            "file_path": "src/lib.rs",
+            "line": 1,
+            "text": "target"
+        }));
+        eprintln!("[ra] hover single attempt:\n{}\n", out.content);
+        if out.level != ToolSignalLevel::Warning {
+            break out;
+        }
+        assert!(
+            out.content.contains("language server is updating"),
+            "hover Warning must carry the ContentModified hint: {}",
+            out.content
+        );
+        assert!(
+            std::time::Instant::now() < hover_deadline,
+            "hover still ContentModified after 20s: {}",
+            out.content
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    };
     eprintln!("[ra] hover single:\n{}\n", hover.content);
     assert_eq!(hover.level, ToolSignalLevel::Ok, "{}", hover.content);
     assert!(
@@ -1391,10 +1412,8 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         hover.content
     );
     assert!(
-        hover.content.to_lowercase().contains("fn")
-            || hover.content.contains("target")
-            || hover.content.len() > 5,
-        "hover should carry type/docs text: {}",
+        hover.content.contains("target"),
+        "hover should carry the target symbol: {}",
         hover.content
     );
 
@@ -1409,7 +1428,7 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     assert!(
         multi
             .content
-            .contains("matched 2 times on L4 →1 unique definition"),
+            .contains("matched 2 times on L4 → 1 unique definition"),
         "{}",
         multi.content
     );
@@ -1482,11 +1501,16 @@ async fn rust_analyzer_smoke() {
     hub.activate(&commands).expect("activate");
 
     let main_rs = root.join("src/main.rs");
+    // ISSUE-047: a -32801 ContentModified must surface as an empty result plus
+    // the `content_modified` signal, never as a raw error.
     let out = hub
-        .tool_action("hover", &main_rs, Some(1), Some(8))
+        .tool_action_outcome("hover", &main_rs, Some(1), Some(8), None)
         .await
-        .expect("hover");
-    assert!(!out.is_empty());
+        .expect("hover must not error (ContentModified maps to empty + signal)");
+    assert!(
+        out.content_modified || !out.text.is_empty(),
+        "hover: got neither a result nor the updating signal: {out:?}"
+    );
     hub.stop().await;
 }
 

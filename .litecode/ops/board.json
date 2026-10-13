@@ -4532,6 +4532,476 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-070",
+      "domain": "backend",
+      "title": "LSP/Tools 收尾小活",
+      "result": "Tools: ISSUE-042 + :1409 格式裁定; IDE: 版本探测 stdin null + -32801 有限重试；验绿后提交推送",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy 10-13 授权改完就推（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "Tools: ISSUE-042 + :1409 格式裁定; IDE: 版本探测 stdin null + -32801 有限重试；验绿后提交推送",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "split：WP-071 后端中层协调 Tools(042+1409) 与 IDE(stdin null+-32801 重试)；Andy 10-13 聊天批准范围；真机验证 Andy 自做"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T02:37:39.455Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: Tools: ISSUE-042 + :1409 格式裁定; IDE: 版本探测 stdin null + -32801 有限重试；验绿后提交推送"
+        },
+        {
+          "ts": "2026-10-13T02:37:45.756Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: split：WP-071 后端中层协调 Tools(042+1409) 与 IDE(stdin null+-32801 重试)；Andy 10-13 聊天批准范"
+        },
+        {
+          "ts": "2026-10-13T02:37:46.028Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T02:37:46.306Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 10-13 10:36 聊天批准（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T02:37:46.573Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:02:34.338Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:02:34.624Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 10-13 授权改完就推（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-071",
+      "domain": "backend",
+      "title": "后端中层：LSP/Tools 收尾协调",
+      "result": "拆 Tools/IDE 子包、交叉审、汇总",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-070-backend.md",
+      "progress": "closed done by gm: 子包全 done，验证绿",
+      "status_entered_at": null,
+      "parent": "WP-070",
+      "goal": "拆 Tools/IDE 子包、交叉审、汇总",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-071 / WP-070-backend：LSP/Tools 收尾小活（后端中层拆包）\n\n- 父包：WP-070（GM，Andy 批，范围锁定）；中层包：WP-071（owner backend_mid，approver gm）\n- 分支：`ops/team-framework`；**不 commit/push**（GM 统一合包提交）\n- 本阶段：拆子包 + 方案提交 GM 审；**未 start**\n\n## 1. 子包（可并行，无共享文件）\n\n| WP | Owner | 范围 | Issue | 档位 | 产物 |\n|---|---|---|---|---|---|\n| WP-072 | tools | `src/tools/litecode_workspace.rs:821` 不再自开 sessions.db，经 session 层；裁定 `tests/optional_lsp.rs:1409` `agent_lsp_tool_views_with_rust_analyzer` 文案（`→ 1 unique` vs `→1 unique`）+ 等级断言：改测 or 改 formatter，并落地 | ISSUE-042；1409（非产品/测试过时，无 issue） | 架构越界（drift）/ 测试过时 | WP-070-tools.md |\n| WP-073 | ide | `src/lsp/deps.rs:412`（rustup which）、`:446-452`（version probe）加 `.stdin(Stdio::null())`；`src/lsp` hub 对 -32801 ContentModified 有限重试（`rust_analyzer_smoke` :1488） | ISSUE-043（边角 bug）、ISSUE-044（常见 bug） | 边角 / 常见 | WP-070-ide.md |\n\n文件面：WP-072 = src/tools/*、src/session*（只读/接口使用）、tests/optional_lsp.rs:1409 附近或 Tools formatter；WP-073 = src/lsp/*、tests/optional_lsp.rs:1488 附近（如需）。若两者都要动 tests/optional_lsp.rs，各改自己测函数，合并前中层核对不冲突。\n\n## 2. 共同规则\n- optional_lsp 测试**必须带 `</dev/null`**：`cargo test --test optional_lsp <name> -- --nocapture </dev/null`（真 RA 测加 `--include-ignored`）\n- 以 cargo test 验证；ISSUE-042 复验 `cargo test --test session_data_sql_death_list`\n- 不 commit；真机验证不在范围\n- **`.github/workflows/windows-*.yml` 工作区改动不纳入本次统一提交**（Andy：保持原样，不碰）\n\n## 3. 流程\n1. GM 批 WP-071 → backend_mid start\n2. 子包 fill+submit 方案 → backend_mid 审批 → 并行执行\n3. 子包 deliver → 中层复跑验收 → close → WP-071 deliver 给 GM\n\n## 4. 本阶段已办\n- 新建 ISSUE-043、ISSUE-044（owner ide，wp WP-071）\n- 建 WP-072、WP-073（drafting）\n- validate_all 见提交记录\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T02:37:45.482Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 拆 Tools/IDE 子包、交叉审、汇总"
+        },
+        {
+          "ts": "2026-10-13T02:38:44.019Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-071 / WP-070-backend：LSP/Tools 收尾小活（后端中层拆包）\n\n- 父包：WP-070（GM，Andy 批，范围锁定）；中层"
+        },
+        {
+          "ts": "2026-10-13T02:38:44.341Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-070-backend.md\""
+        },
+        {
+          "ts": "2026-10-13T02:38:44.640Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "拆 WP-072(Tools:042+1409) / WP-073(IDE:043/044)，并行；未 start；windows-*.yml 不入合包"
+        },
+        {
+          "ts": "2026-10-13T02:39:06.859Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "范围与 Andy 批准一致，两域并行"
+        },
+        {
+          "ts": "2026-10-13T02:39:21.228Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:01:51.426Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-072..075 全 done；关 ISSUE-042/043/044/045/047；开 046/048/049 不在本包；validate_all ok（symbol_drift 1 条预期）；windows-*.yml 不入合包；未 commit。总结见 WP-070-backend.md §13-14。"
+        },
+        {
+          "ts": "2026-10-13T04:02:34.039Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "子包全 done，验证绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-072",
+      "domain": "tools-permission",
+      "title": "WP-071/Tools：ISSUE-042 sessions.db 走 session 层 + optional_lsp:1409 文案裁定",
+      "result": "ISSUE-042 closed；1409 裁定落地并绿；产物 md；未 commit",
+      "done_when": [
+        "session_data_sql_death_list 绿",
+        "ISSUE-042 可关",
+        "1409 裁定+理由入产物且该测绿(真 RA 环境可用时)",
+        "未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-070-tools.md",
+      "progress": "closed done by backend_mid: 验收通过：diff 仅 litecode_workspace.rs:821（Some(self.sessions.reader())）+ optional_lsp.rs:1409 期望 '→ 1'；复跑 session_data_sql_death_list 2/2、lib litecode_workspace 15/15、subagent_session_isolation 15/15、agent_lsp_tool_views_with_rust_analyzer（--include-ignored </dev/null）1/1 绿（含等级断言真跑）；ISSUE-042 closed；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-071",
+      "goal": "ISSUE-042：src/tools/litecode_workspace.rs:821 call_inner 不再自行 SessionDataReader::open(sessions.db)，改经 session 层/SessionData 注入；session_data_sql_death_list 绿。裁定 tests/optional_lsp.rs:1409 agent_lsp_tool_views_with_rust_analyzer 文案（'→ 1 unique' vs 期望 '→1 unique'）+ 等级断言：改测或改 formatter，写明理由并落地。optional_lsp 测试必须带 </dev/null；cargo test 验证；不 commit；真机验证不在范围。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-070-tools（WP-072 · Tools）方案\n\n状态：方案（drafting→awaiting_approval），批前不动代码。不 commit，不碰 windows-*.yml。\n\n## ① ISSUE-042：litecode_workspace 生产路径自开 sessions.db\n现状：`src/tools/litecode_workspace.rs:821` `call_inner` 构造 ToolExecutionContext 时 `session: Some(SessionDataReader::open(&runtime.workspace.paths.sessions_db))`。\n`call_inner` 由 `src/tool/trait_.rs:40` 的默认调用路径触发，所以算生产路径。正式路径 `execute()` 已经使用注入的 `execution.session`（`execution.session_reader()`，在 :487）。\n方案：\n- R1：`call_inner` 不再自己 open。改为 `self.run(&input, &ToolExecutionContext{ session: None, .. })`。这样 session 段会走现有的 `section(.., Err)` 分支，显示 \"unavailable\"，不会 panic。生产调用一律走 `execute`，使用注入的 reader。\n- 备选 R1'：如果要求 call_inner 也能给出完整会话段，就让工具在构造时持有注入的 `SessionDataReader`（由 registry 从 `SessionManager::reader()` 传入，见 `src/session/manager.rs:367`）。这一步只调用现成的 Session API，Session 层不用新增接口。\n- 结论：**Session 层不需要新增接口**。现有的 `ToolExecutionContext.session` 注入加上 `SessionManager::reader()` 已经够用。\n- 验证：`cargo test --test session_data_sql_death_list` 转绿；`cargo test --test subagent_session_isolation`（:791-824 用到这个工具的 call_inner）保持绿，必要时在测试 fixture 里注入 reader，不改断言语义；litecode_workspace 单测也要绿。\n\n## ② optional_lsp.rs:1409 agent_lsp_tool_views_with_rust_analyzer\n现状：formatter `src/tools/lsp.rs:455` 输出 `matched {n} times on {loc} → {unique} unique definition`，箭头后带空格。同一文件的单测 `lsp.rs:841` 断言的也是 `→ 1 unique`。只有 RA 集成测 :1409 写的是 `→1 unique`。git 历史显示格式来自 b4f04e7（line formatting 重构），104fd43 没改这一句。\n裁定：**改测试，不改 formatter**。理由：formatter、单测、mock 集成测三处口径一致，RA 测试是唯一的漂移点，且仅差空格；改 formatter 会把已经对齐的单测打红。\n等级断言：多命中路径是 `ToolCallResult::ok(body).with_warning(..)`（:683），`with_warning` 会把 level 设成 Warning，和 :1408 的期望一致。所以等级不符很可能来自前面的单命中 hover（:1387 期望 Ok），或者 RA 没就绪时走了错误/提示分支。落地时按真实 RA 输出逐条核对：formatter 行为符合 mock 测（:1110-1192）口径的，就改 RA 测试断言；如果发现 formatter 真有回退，再单独报中层。\n- 观测限制：box 上没有 rust-analyzer（rustup proxy 未安装组件）。只读复跑（`</dev/null`）停在 :1366 \"goToDefinition should succeed after RA index\"，没走到 :1409。**工具需求**：请工具集管家在 box 上安装 rust-analyzer（`rustup component add rust-analyzer`），否则这条只能做静态修正，无法实跑验绿。\n\n## 回归 / 验收\n- `cargo test --test session_data_sql_death_list`\n- `cargo test --test subagent_session_isolation`\n- `cargo test --lib tools::lsp tools::litecode_workspace`\n- `cargo test --test optional_lsp -- --include-ignored </dev/null`（需 RA）\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T02:38:28.946Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: ISSUE-042：src/tools/litecode_workspace.rs:821 call_inner 不再自行 SessionDataReader::open(sessions.db)，改经 session 层/SessionData 注入；session_data_sql_death_list 绿。裁定 tests/optional_lsp.rs:1409 agent_lsp_tool_views_with_rust_analyzer 文案（'→ 1 unique' vs 期望 '→1 unique'）+ 等级断言：改测或改 formatter，写明理由并落地。optional_lsp 测试必须带 </dev/null；cargo test 验证；不 commit；真机验证不在范围。"
+        },
+        {
+          "ts": "2026-10-13T02:40:57.527Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-070-tools（WP-072 · Tools）方案\n\n状态：方案（drafting→awaiting_approval），批前不动代码。不 com"
+        },
+        {
+          "ts": "2026-10-13T02:40:57.808Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-070-tools.md\" -> \".litecode/ops/artifacts/WP-070-tools.md\""
+        },
+        {
+          "ts": "2026-10-13T02:40:58.101Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "plan: 042 call_inner 不自开(无需新Session接口); lsp 改测试→ 1; 需 rust-analyzer"
+        },
+        {
+          "ts": "2026-10-13T02:41:53.587Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准。R1（call_inner 传 session:None→unavailable 分支）仅当 call_inner 在生产路径不可达时采用；否则用 R1'（注入 SessionManager::reader()）。optional_lsp:1409 改测侧批准（formatter lsp.rs:455 与单测 lsp.rs:841 一致为 '→ 1'）；等级断言须在装好 rust-analyzer 后真跑验证（</dev/null）。不 commit。"
+        },
+        {
+          "ts": "2026-10-13T02:42:09.541Z",
+          "actor": "tools",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T02:47:18.556Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "①R1' self.sessions.reader() death_list绿/isolation 15绿/lib编过；②:1409原文复现2/2红，改测试→ 1后2/2绿，level=Warning实跑通过"
+        },
+        {
+          "ts": "2026-10-13T02:48:28.068Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：diff 仅 litecode_workspace.rs:821（Some(self.sessions.reader())）+ optional_lsp.rs:1409 期望 '→ 1'；复跑 session_data_sql_death_list 2/2、lib litecode_workspace 15/15、subagent_session_isolation 15/15、agent_lsp_tool_views_with_rust_analyzer（--include-ignored </dev/null）1/1 绿（含等级断言真跑）；ISSUE-042 closed；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-073",
+      "domain": "ide-substrate",
+      "title": "WP-071/IDE：deps 探测 stdin null（ISSUE-043）+ hub -32801 有限重试（ISSUE-044）",
+      "result": "ISSUE-043/044 closed；相关测绿；产物 md；未 commit",
+      "done_when": [
+        "deps 两处 stdin null",
+        "-32801 有限重试+单测",
+        "optional_lsp 目标测绿(</dev/null)",
+        "未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-070-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：diff 仅 src/lsp（conn.rs 重试层+单测、server.rs 调用切换、deps/install/rust_analyzer Stdio::null）；optional_lsp </dev/null 24/24、无 </dev/null 24/24、rust_analyzer_smoke 1/1、lib lsp::conn 15/15 绿；lib lsp::tests 3 败在 HEAD 基线同样失败（既有，另立 ISSUE-046）；ISSUE-043/044 closed；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-071",
+      "goal": "ISSUE-043：src/lsp/deps.rs:412 rustup which 与 :446-452 run_version_probe 加 .stdin(Stdio::null())。ISSUE-044：src/lsp hub 对 hover 等请求遇 LSP -32801 ContentModified 做有限重试（次数/退避有上限，耗尽后透传原错误），rust_analyzer_smoke(:1488) 绿。optional_lsp 测试必须带 </dev/null；cargo test 验证；不 commit；真机验证不在范围。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-073 方案（IDE）：ISSUE-043 stdin 继承 + ISSUE-044 ContentModified 有限重试\n父包 WP-071；产物 .litecode/ops/artifacts/WP-070-ide.md；分支 ops/team-framework，不 commit；不碰 windows-*.yml；真机验证不在本包。\n\n## ① ISSUE-043（边角 bug）：探测类子进程不继承调用方 stdin\n核实位置（HEAD 工作区）：\n- src/lsp/deps.rs:411-417 `rust_analyzer_runnable`：`Command::new(\"rustup\").args([\"which\",\"rust-analyzer\"])...output()` 未设 stdin（`.output()` 默认继承）→ 加 `.stdin(Stdio::null())`\n- src/lsp/deps.rs:438-452 `run_version_probe`：`Command::new(&program)...spawn()` 未设 stdin → 加 `.stdin(Stdio::null())`（这是 warmup timeout 主因：mock 读 stdin 挂到 5s/warmup 超时）\nrg src/lsp 其它未设 stdin 的 Command（纳入，同属\"探测/安装类非交互子进程\"，一行改动无行为风险）：\n- deps.rs:131 `npm_config_prefix`（npm config get prefix）\n- deps.rs:355 `run_npm`\n- deps.rs:643 `ensure_dotnet_sdk`（dotnet --list-sdks）\n- deps.rs:716 installer `.output()`\n- install/adapters/rust_analyzer.rs:93 `ldd --version`\n- install/mod.rs:243/261（go）、:303（dotnet）tokio Command\n- install/npm.rs:107、:325\n仅列出不改：src/lsp/server.rs:144 LSP 主进程（已需 piped stdin 走协议，执行时核实已是 Stdio::piped()，若是则不动）。\n若中层希望最小化，可只改 412/446 两处，其余记入产物待后续——默认全部纳入。\n\n验证：\n- `timeout 1800 cargo test --test optional_lsp -- --nocapture </dev/null` 全绿\n- 不带 </dev/null、stdin 保持打开：`sleep 2000 | timeout 1800 cargo test --test optional_lsp -- --nocapture` 不再出现 warmup timeout（修前 25 挂 19，作为对照记录）\n- `cargo test --lib lsp::` 绿\n\n## ② ISSUE-044（常见 bug）：-32801 ContentModified 有限重试\n核实结构：\n- 错误生成：src/lsp/conn.rs:375-391 `complete_response` 把 error 格式化成 `ToolExecution(\"LSP error (code {code}): ...\")`，code 丢失为字符串\n- 请求出口：src/lsp/server.rs:351 `send_request_id` → `io.request`（conn.rs:408，超时 `request_timeout()` conn.rs:23，默认 30s，env LITECODE_LSP_REQUEST_TIMEOUT_SECS）\n- 调用方：server.rs:292 `request_nav_with_retry`（只重试\"空结果\"，遇 Err 直接 `?` 返回——-32801 即在此原样冒出，hub.rs:814 hover / :765 definition 等）；server.rs:375 `send_request_at_rev`；hub.rs:520 `request_synced_document`（hub.rs:628 编辑器 textDocument/* 透传）\n实现：\n1. conn.rs 加常量 `LSP_CONTENT_MODIFIED: i64 = -32801` 与 `fn is_content_modified(&LitecodeError) -> bool`（匹配 complete_response 产生的 `(code -32801)` 前缀；不改错误类型，避免波及调用方）\n2. server.rs 新增 `send_request_retry_modified(method, params, rpc_id)`，在 `send_request_id` 外层：\n   - 仅对只读白名单 + rpc_id 为 None（内部自发请求）重试；编辑器带 rpc_id 的透传不重试（id 不可复用，且编辑器按规范自行处理 ContentModified）\n   - 最多 3 次重试（共 4 次尝试），退避 200ms / 500ms / 1000ms\n   - 总时长上限 = 原请求超时 `request_timeout()`（起点计时，剩余预算不足下一次退避+尝试则停止）\n   - 重试耗尽 / 超预算 → 原样返回最后一次 -32801 错误\n   - 每次重试 tracing::debug!(method, attempt)\n3. `request_nav_with_retry` 与 `send_request_at_rev` 内部调用改走该包装（want_rev 校验保持在重试之后，文档已前进仍返回 Null）\n只读白名单（重试）：textDocument/hover、definition、typeDefinition、declaration、implementation、references、documentSymbol、workspace/symbol、documentHighlight、signatureHelp、foldingRange、selectionRange、semanticTokens/full|range、inlayHint、prepareCallHierarchy、callHierarchy/incomingCalls|outgoingCalls、prepareTypeHierarchy、typeHierarchy/supertypes|subtypes、completion、codeLens（仅取，不 resolve 执行）\n不重试：textDocument/rename、prepareRename、codeAction（及 resolve/apply）、workspace/executeCommand、formatting/rangeFormatting/onTypeFormatting、willSaveWaitUntil、workspace/applyEdit 及一切未列方法（默认不重试）\n-32800 RequestCancelled：不加，保持最小。\n\n测试：\n- 单测（src/lsp 内 #[cfg(test)] 或 tests/ 扩展 mock）：mock server 前 N=2 次对 hover 回 -32801、第 3 次成功 → 返回成功且共 3 次请求；耗尽场景：始终 -32801 → 4 次后返回含 `-32801` 的原错误；写类（rename）遇 -32801 只发 1 次；判定函数 is_content_modified 单测。若现有 mock（tests/optional_lsp.rs 内）不支持脚本化错误，则在测试里扩展最小 mock 行为，不改产品 mock 接口。\n- 目标：`timeout 1800 cargo test --test optional_lsp rust_analyzer_smoke -- --ignored --nocapture </dev/null`（tests/optional_lsp.rs:~1488 hover expect）转绿，复跑 ≥3 次记录\n- 回归：optional_lsp 全量 </dev/null 绿；`cargo test --lib lsp::` 绿\n\n## 规则\ncargo 一律 `timeout` 包裹、HOME=/workspace/litecode/.tmp/home、`</dev/null`；共享 target 排队，不删锁；不 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T02:38:29.234Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: ISSUE-043：src/lsp/deps.rs:412 rustup which 与 :446-452 run_version_probe 加 .stdin(Stdio::null())。ISSUE-044：src/lsp hub 对 hover 等请求遇 LSP -32801 ContentModified 做有限重试（次数/退避有上限，耗尽后透传原错误），rust_analyzer_smoke(:1488) 绿。optional_lsp 测试必须带 </dev/null；cargo test 验证；不 commit；真机验证不在范围。"
+        },
+        {
+          "ts": "2026-10-13T02:40:56.101Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-073 方案（IDE）：ISSUE-043 stdin 继承 + ISSUE-044 ContentModified 有限重试\n父包 WP-071；产"
+        },
+        {
+          "ts": "2026-10-13T02:40:56.393Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "043 stdin null(412/446+其余探测类) / 044 只读白名单 -32801 重试3次 200/500/1000ms 总时长≤request_timeout"
+        },
+        {
+          "ts": "2026-10-13T02:42:31.169Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准。ISSUE-043 全范围：src/lsp 全部 12 处探测/安装 Command 加 Stdio::null，前提是无一依赖交互式提示（若有则保留并在产物说明）。ISSUE-044 重试设计按方案批准。optional_lsp 测试带 </dev/null；不 commit。"
+        },
+        {
+          "ts": "2026-10-13T02:42:39.654Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T03:00:12.041Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "043:12处stdin null(无交互单列项)；044:-32801重试3次200/500/1000ms，5单测绿；smoke 3/3绿；opt_lsp 管道stdin 24/0"
+        },
+        {
+          "ts": "2026-10-13T03:17:39.971Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：diff 仅 src/lsp（conn.rs 重试层+单测、server.rs 调用切换、deps/install/rust_analyzer Stdio::null）；optional_lsp </dev/null 24/24、无 </dev/null 24/24、rust_analyzer_smoke 1/1、lib lsp::conn 15/15 绿；lib lsp::tests 3 败在 HEAD 基线同样失败（既有，另立 ISSUE-046）；ISSUE-043/044 closed；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-074",
+      "domain": "ide-substrate",
+      "title": "WP-071/IDE-2：LSP server 以原始路径启动（ISSUE-045）",
+      "result": "ISSUE-045 closed；2 新测+optional_lsp 绿；产物 md；未 commit",
+      "done_when": [
+        "原路径启动",
+        "canonical 仅 shim 检测",
+        "2 新测绿",
+        "optional_lsp 全绿(</dev/null)",
+        "未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-070-ide-045.md",
+      "progress": "closed done by backend_mid: 联合验收通过（含第3轮 ISSUE-047 A）：无产品重试残留；rpc_id 透传原始 -32801；lib lsp:: 116/3（仅 ISSUE-046）；optional_lsp </dev/null 3×24/24；--include-ignored 24/1（rust_analyzer_smoke 串 mock env=ISSUE-049，单跑绿）；真 RA views/smoke 单跑绿；ISSUE-045/047 closed；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-071",
+      "goal": "ISSUE-045：deps.rs candidate_in_dir/resolve_server_binary 不再把 canonicalize 路径交给 hub spawn_ls；以原始（链接）路径启动，canonical 仅用于 is_rustup_shim 等 shim 识别；补 2 测（symlink→rustup 启动用原路径；shim 识别仍生效）。optional_lsp 测试带 </dev/null；cargo test 验证；不 commit；真机验证不在范围；mise/volta 仅机制推断。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-074 方案（ISSUE-045：rust-analyzer 符号链接到 rustup 时启动失败）\n\n## 改动（行号已按 WP-073 之后的 HEAD 核实）\n1. src/lsp/deps.rs:208-211 candidate_in_dir：非 Windows 分支返回 make-absolute 后的原始 candidate（不跟随符号链接），去掉 canon_abs_lossy。Windows .exe 分支（os_probe_abs）不动。\n2. src/lsp/deps.rs:407-410 is_rustup_shim：内部先 canon_abs_lossy(path) 再看文件名，经过链接仍识别为 rustup 代理。调用点 :504 不变。\n3. 检查与启动同一程序：command_runnable_command(:497-) 和 hub.rs:318/338/391 → server.rs:143(ls_program_and_args)/:199 都用 resolve_server_binary 返回的同一个 binary.path（现为原始链接路径）。rustup 代理情况：检查走 rustup which，启动以 argv[0]=rust-analyzer 进入 rustup，rustup 分派到同一 rust-analyzer 组件。\n4. 无其它依赖规范路径：rg 核对 binary.path 使用点——server.rs:143/163/199（启动/报错/显示）、install/adapters/*（managed 路径，不经 candidate_in_dir）；resolve_path_candidate:225-227 配置绝对路径本来就不 canonicalize；npm_bin_search_dirs:194-195 dedup 的是目录。\n\n## 测试（deps.rs mod tests，#[cfg(unix)]）\n- T1 rustup_symlink_shim_still_detected：tempdir 内放一个名为 rustup 的可执行文件，std::os::unix::fs::symlink 建 rust-analyzer -> rustup；断言 candidate_in_dir 返回链接路径（文件名 rust-analyzer），且 is_rustup_shim(该路径) 为 true。\n- T2 rust_analyzer_symlink_to_rustup_spawns_as_rust_analyzer：tempdir 内假 rustup 为 sh 脚本，按 basename \"$0\" 输出（rust-analyzer → 打印 \"rust-analyzer ok\"，否则打印 usage 退出 1）；建 rust-analyzer 链接，经 candidate_in_dir 拿到路径后 Command 运行（stdin null）断言输出 \"rust-analyzer ok\"。不依赖真 rustup、不改 PATH 全局。\n\n## 验证\n- HOME=/workspace/litecode/.tmp/home timeout 1200 cargo test --lib lsp:: </dev/null 绿（ISSUE-046 的 3 个 Windows 路径失败除外，单列）。\n- timeout cargo test --test optional_lsp </dev/null 绿。\n- timeout cargo test --test optional_lsp rust_analyzer_smoke -- --ignored </dev/null 绿。\n- 共享 target 排队锁，不删 target，不 commit。产物 .litecode/ops/artifacts/WP-070-ide-045.md。\n\n## 风险\n相对路径 PATH 项：保留 make_absolute 以免 cwd 变化。Homebrew 链接改为按链接路径启动，内核解析，行为等价。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T03:17:40.395Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: ISSUE-045：deps.rs candidate_in_dir/resolve_server_binary 不再把 canonicalize 路径交给 hub spawn_ls；以原始（链接）路径启动，canonical 仅用于 is_rustup_shim 等 shim 识别；补 2 测（symlink→rustup 启动用原路径；shim 识别仍生效）。optional_lsp 测试带 </dev/null；cargo test 验证；不 commit；真机验证不在范围；mise/volta 仅机制推断。"
+        },
+        {
+          "ts": "2026-10-13T03:18:47.979Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-074 方案（ISSUE-045：rust-analyzer 符号链接到 rustup 时启动失败）\n\n## 改动（行号已按 WP-073 之后的 H"
+        },
+        {
+          "ts": "2026-10-13T03:18:48.283Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "ISSUE-045 方案：启动用原始路径，canon 仅识别 shim"
+        },
+        {
+          "ts": "2026-10-13T03:19:21.725Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案按原文批准：启动用原始绝对路径；is_rustup_shim 内部自行 canonicalize；2 个 cfg(unix) 测 T1/T2。条件：若任何候选去重/比较依赖 canonical 路径，该比较保持 canonical。optional_lsp 测带 </dev/null；不 commit。"
+        },
+        {
+          "ts": "2026-10-13T03:19:45.886Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T03:21:55.020Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T03:25:52.669Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "退回修改（Andy 10-13 语言通用规则 + WP-070-ide-045.md VS Code/Zed 对照）：删除 deps.rs rustup 专用分支（is_rustup_shim、rust_analyzer_runnable、program==\"rust-analyzer\" 分支，约 :420-445、:517-522）；统一走 run_version_probe，cwd=项目根；更新 T1；新增测：组件缺失→非零退出→报告 unavailable。保留原始路径启动。不 commit。"
+        },
+        {
+          "ts": "2026-10-13T03:29:58.542Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T03:36:00.290Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "退回（第3轮，非质量问题，Andy 10-13 定 ISSUE-047=A 并入本包）：删除 WP-073 自设 -32801 重试层（conn.rs ~:508 request_retry_modified 及相关常量/单测）；照 vscode-languageclient client.ts:2291-2331：semantic tokens / resolve 类请求→取消，其余→返回空结果；工具输出须明示「服务器正在更新，结果可能不完整」，避免 agent 误当无结果；代码注释注明出处；更新 rust_analyzer_smoke 与重试相关测试。保留原路径启动 + 通用 --version 探测。ISSUE-048 不碰。optional_lsp 带 </dev/null；不 commit。"
+        },
+        {
+          "ts": "2026-10-13T03:41:48.970Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:01:37.595Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "联合验收通过（含第3轮 ISSUE-047 A）：无产品重试残留；rpc_id 透传原始 -32801；lib lsp:: 116/3（仅 ISSUE-046）；optional_lsp </dev/null 3×24/24；--include-ignored 24/1（rust_analyzer_smoke 串 mock env=ISSUE-049，单跑绿）；真 RA views/smoke 单跑绿；ISSUE-045/047 closed；未 commit。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-075",
+      "domain": "tools-permission",
+      "title": "WP-071/Tools-2：ISSUE-047 A — lsp 工具透出 ContentModified 提示",
+      "result": "lsp 工具在 ContentModified 时带明确警告；新测绿；产物追加；未 commit",
+      "done_when": [
+        "649/661 改用 tool_action_outcome",
+        "content_modified→with_warning",
+        "新测绿",
+        "optional_lsp 绿(</dev/null)",
+        "未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-070-tools.md",
+      "progress": "closed done by backend_mid: 联合验收通过：lsp.rs 改 tool_action_outcome + ContentModified 警告；lib tools::lsp 27/27；测试侧有限轮询 + 收紧 hover 断言；views 真 RA 绿；edit_fix flake 0/7 非本波，并入 ISSUE-049；未 commit。",
+      "status_entered_at": null,
+      "parent": "WP-071",
+      "goal": "src/tools/lsp.rs :649 与 :661 由 hub.tool_action_with_query 改为 hub.tool_action_outcome（取 .text 同前）；content_modified 为 true 时加 with_warning（:683），:661 循环中任一为 true 即加；文案表达「服务器正在更新，结果可能不完整」，如 \"language server is updating (ContentModified); result may be incomplete — retry in a few seconds, do not treat as 'not found'\"。补 1 个测试。依赖 WP-074 第3轮 hub API（已在工作区）。optional_lsp 带 </dev/null；cargo test 验证；不 commit。产物追加到 WP-070-tools.md。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-075 方案（ISSUE-047 A）\n- 遇到 LSP -32801 ContentModified 时不重试，按 VS Code 的做法返回空或已取消的结果，但工具输出里要明确说明 server 正在更新。\n- src/tools/lsp.rs 中 ~:649 单次调用和 ~:661 循环调用：把 `hub.tool_action_with_query` 换成 hub `tool_action_outcome`（返回 LspToolOutput{text, content_modified}），继续使用 `.text`。\n- content_modified=true 时加 `with_warning(\"language server is updating (ContentModified); result may be incomplete — retry in a few seconds, do not treat as 'not found'\")`。循环里只要有任何一次调用为 true 就加。\n- 处理逻辑对所有语言通用，不做 Rust 专用的特殊处理。\n- 加 1 个单测。验证：`cargo test --lib tools::lsp`、`cargo test --lib --no-run`（optional_lsp 测试需带 </dev/null）。证据追加到 WP-070-tools.md。不 commit，不碰 windows-*.yml。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T03:42:52.641Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: src/tools/lsp.rs :649 与 :661 由 hub.tool_action_with_query 改为 hub.tool_action_outcome（取 .text 同前）；content_modified 为 true 时加 with_warning（:683），:661 循环中任一为 true 即加；文案表达「服务器正在更新，结果可能不完整」，如 \"language server is updating (ContentModified); result may be incomplete — retry in a few seconds, do not treat as 'not found'\"。补 1 个测试。依赖 WP-074 第3轮 hub API（已在工作区）。optional_lsp 带 </dev/null；cargo test 验证；不 commit。产物追加到 WP-070-tools.md。"
+        },
+        {
+          "ts": "2026-10-13T03:43:27.706Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-075 方案（ISSUE-047 A）\n- 遇到 LSP -32801 ContentModified 时不重试，按 VS Code 的做法返回空或已"
+        },
+        {
+          "ts": "2026-10-13T03:43:28.041Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "ISSUE-047 A plan"
+        },
+        {
+          "ts": "2026-10-13T03:45:19.971Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案按规定范围批准（lsp.rs :649/:661 改 tool_action_outcome；content_modified→with_warning；补测；optional_lsp 带 </dev/null；不 commit）。"
+        },
+        {
+          "ts": "2026-10-13T03:45:30.688Z",
+          "actor": "tools",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T03:53:27.325Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "ISSUE-047 A: lsp.rs tool_action_outcome+ContentModified warning; :1387 有界轮询+收紧断言; RA 单跑 2/2 绿; 全组 24/25（smoke/edit_fix 并行 flake，单跑绿）"
+        },
+        {
+          "ts": "2026-10-13T04:01:37.876Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "联合验收通过：lsp.rs 改 tool_action_outcome + ContentModified 警告；lib tools::lsp 27/27；测试侧有限轮询 + 收紧 hover 断言；views 真 RA 绿；edit_fix flake 0/7 非本波，并入 ISSUE-049；未 commit。",
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

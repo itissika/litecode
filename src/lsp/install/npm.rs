@@ -105,7 +105,7 @@ fn extra_nodejs_dirs() -> Vec<PathBuf> {
 fn npm_command_tokio(npm_args: &[String]) -> Option<Command> {
     let (program, args) = npm_program_and_args(npm_args)?;
     let mut cmd = Command::new(program);
-    cmd.args(args);
+    cmd.args(args).stdin(std::process::Stdio::null());
     Some(cmd)
 }
 
@@ -324,6 +324,7 @@ mod tests {
         };
         let status = std::process::Command::new(program)
             .args(args)
+            .stdin(std::process::Stdio::null())
             .status()
             .expect("spawn npm --version");
         assert!(status.success(), "npm --version failed: {status}");
