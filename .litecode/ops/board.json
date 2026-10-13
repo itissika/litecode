@@ -7097,13 +7097,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T11:45:38.979Z",
+      "progress": "closed done by andy: Andy：可封；下包继续测非落地",
+      "status_entered_at": null,
       "parent": null,
       "goal": "向量检索引擎开销调研（只调研不改码）。现状：引擎拉起 2GB+；session 语料涨得最快，嵌入量大且慢，堆积后需小时级；关掉 litecode 后整批进度全丢。现用模型是同量级里质量最好的。要回答：1) 性能：先清洗/去重/裁剪语料降量级再嵌入？换更小模型（质量代价多少）？上云嵌入？其它（量化、批处理、只嵌部分内容）？各给代价与收益，有数据就给数据。2) 体验：假设引擎常开持续刷新，刷新量大时如何不丢进度（断点续嵌/增量落盘/优先级），关掉重开后能接着干。参考成熟开源实现并注明出处。产出：结论+推荐组合+明确不做的项。",
       "approver": "andy",
@@ -7141,6 +7141,19 @@
           "actor": "gm",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T12:55:11.000Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "调研完成，待 Andy 封；GM 裁定见验收说明"
+        },
+        {
+          "ts": "2026-10-13T13:05:00.416Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：可封；下包继续测非落地",
+          "to": "done"
         }
       ]
     },
@@ -7154,13 +7167,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-101-research.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T11:48:04.858Z",
+      "progress": "closed done by gm: GM 验收：A1–A4+B 证据齐，推荐组合与不做清单可用",
+      "status_entered_at": null,
       "parent": "WP-101",
       "goal": "按 WP-101 goal 调研，由后端中层组织 IDE 基座（engines 域）等执行",
       "approver": "gm",
@@ -7198,6 +7211,19 @@
           "actor": "backend_mid",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T12:54:50.320Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-103/104 均 done；§6 已合并；推荐：A4续嵌>默认LEAN>护栏>清洗次要；不做换模型/云。产物 WP-101-research.md。请 GM 审 WP-102→封 WP-101。"
+        },
+        {
+          "ts": "2026-10-13T12:55:10.719Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：A1–A4+B 证据齐，推荐组合与不做清单可用",
+          "to": "done"
         }
       ]
     },
@@ -7216,13 +7242,13 @@
       ],
       "owner": "ide",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-101-research-ide.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T11:50:52.611Z",
+      "progress": "closed done by backend_mid: 审过：A1/A2 数字与 a1_mem/a2_wall 对得上；granite 比 0.985 有 json；A4≥3 对照+最小设计够用。caveat：小阶梯仅 lim_lean_b32 有完整采样（b16/b4 未跑），不影响结论。已合并进 WP-101-research.md §6。",
+      "status_entered_at": null,
       "parent": "WP-102",
       "goal": "见 WP-101-research.md §4 A（只读；脚本仅 .tmp）",
       "approver": "backend_mid",
@@ -7266,6 +7292,19 @@
           "actor": "backend_mid",
           "action": "set",
           "note": "domain: \"ide-base\" -> \"ide-substrate\""
+        },
+        {
+          "ts": "2026-10-13T12:53:23.431Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T12:54:50.014Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "审过：A1/A2 数字与 a1_mem/a2_wall 对得上；granite 比 0.985 有 json；A4≥3 对照+最小设计够用。caveat：小阶梯仅 lim_lean_b32 有完整采样（b16/b4 未跑），不影响结论。已合并进 WP-101-research.md §6。",
+          "to": "done"
         }
       ]
     },
@@ -7779,13 +7818,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "in_progress",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T12:20:57.438Z",
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-13T12:46:15.741Z",
       "parent": null,
       "goal": "落地 WP-105 裁定（改完就推）：1) tencent-token 补 kimi-k3、mimo-v2.6-flash；2) 新增 Moonshot、MiniMax 两家 provider，若有 plan 则双套端点（plan + 按量）；3) 前端 provider 列表分组：plan 一组、api 按量一组，其它 UI 不变。OpenCode base 探测/迁移可同包或子包。不做：MiMo 改协议、Anthropic codec、硅基流动、Gemini 直连。",
       "approver": "andy",
@@ -7823,6 +7862,12 @@
           "actor": "gm",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T12:46:15.741Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "子包全 done，待 Andy 封"
         }
       ]
     },
@@ -7906,13 +7951,13 @@
       ],
       "owner": "frontend_mid",
       "reviewer": "gm",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-110-frontend.md",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-13T12:24:08.630Z",
+      "progress": "closed done by gm: GM 验收：14/14、web 1295/1295、tsc 0",
+      "status_entered_at": null,
       "parent": "WP-110",
       "goal": "前端 provider 列表：plan 一组、api 按量一组，其它不变",
       "approver": "gm",
@@ -7956,6 +8001,19 @@
           "actor": "frontend_mid",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T12:45:35.042Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "Providers 列表拆 Plan / API按量 两组（两列网格+ProviderCard，密钥草稿/autosave/configured 不变）。规则表 providerBilling.ts 单表：Plan=ark-coding,ark-agent,tencent-token,aliyun-token,moonshot-coding,minimax-token,opencode-go；API=openai,deepseek,mimo,zhipu,moonshot,minimax,opencode,commandcode；未知→API。测试：相关 14/14，web 全量 1295/1295（174 文件），tsc -b 0，lint N/A。desktop 仅静态：Settings 为内嵌 web，无 desktop 代码改动，Andy 真机验。未 commit。"
+        },
+        {
+          "ts": "2026-10-13T12:46:09.276Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：14/14、web 1295/1295、tsc 0",
+          "to": "done"
         }
       ]
     },
@@ -8065,13 +8123,13 @@
       ],
       "owner": "frontend",
       "reviewer": "frontend_mid",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-110-web.md",
-      "progress": "awaiting acceptance by frontend_mid",
-      "status_entered_at": "2026-10-13T12:32:25.791Z",
+      "progress": "closed done by frontend_mid: 中层交叉审通过：规则表与 catalog 一致，无占位；ProvidersSection 14/14，全量 1295/1295，tsc -b 0",
+      "status_entered_at": null,
       "parent": "WP-112",
       "goal": "按 WP-110-frontend.md：Settings Providers 列表分成 Plan / API 按量两组；卡片与密钥逻辑不变；不改 Models/ModelSwitcher；规则与 WP-111/113 provider id 对齐；只支持一种分组规则；vitest+tsc 绿；不 commit",
       "approver": "frontend_mid",
@@ -8115,6 +8173,1178 @@
           "actor": "frontend",
           "action": "deliver",
           "note": "Plan/API 分组；WP-113 定稿规则表；14 相关 + 全量 1295，tsc 0"
+        },
+        {
+          "ts": "2026-10-13T12:45:34.926Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "中层交叉审通过：规则表与 catalog 一致，无占位；ProvidersSection 14/14，全量 1295/1295，tsc -b 0",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-115",
+      "domain": "ide-substrate",
+      "title": "语义检索：语料本质与稠密/稀疏对齐续测",
+      "result": "续测报告：语料口径验证、稠密vs稀疏体积/构成差、可删开销清单、性能与质量对照、推荐与不做；不改 src",
+      "done_when": [
+        "口径实测有数",
+        "稠密稀疏差有因",
+        "可删开销清单",
+        "性能质量建议",
+        "不做清单"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "cancelled",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-115-research.md",
+      "progress": "closed cancelled by gm: 形状改为 gm→andy 父包 + mid 子包",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "继续只读调研，不开落地实现。锁定语料口径：user / 助手消息 / 助手思考保留，其余全删。查清稠密为何比稀疏多（稀疏只多工具调用，稠密不该更大）。从产品本质砍本不该有的开销与逻辑；再看性能优化与检索质量，为日后全面落地包防走弯路。",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-13T13:05:10.839Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 继续只读调研，不开落地实现。锁定语料口径：user / 助手消息 / 助手思考保留，其余全删。查清稠密为何比稀疏多（稀疏只多工具调用，稠密不该更大）。从产品本质砍本不该有的开销与逻辑；再看性能优化与检索质量，为日后全面落地包防走弯路。"
+        },
+        {
+          "ts": "2026-10-13T13:05:21.135Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "形状改为 gm→andy 父包 + mid 子包",
+          "to": "cancelled"
+        }
+      ]
+    },
+    {
+      "id": "WP-116",
+      "domain": "ide-substrate",
+      "title": "语义检索续测：语料本质与稠密/稀疏对齐",
+      "result": "续测报告与推荐/不做；不改 src",
+      "done_when": [
+        "口径验证",
+        "稠密稀疏差因",
+        "可删开销",
+        "性能与质量建议",
+        "不做清单"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-116-research.md",
+      "progress": "closed done by andy: Andy：可封；下包仍非落地，白名单+切块+算法",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "继续只读调研，不开落地实现。锁定语料口径：user、助手消息、助手思考保留，其余全删。查清稠密为何比稀疏还多（稀疏只多工具调用）。从产品本质删掉本不该有的开销与逻辑；再看性能优化与检索质量，为全面落地包防走弯路。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-116 计划（只读续测，不落地）\n\n## Andy 口径\n1. 本包是**继续测**，不是实现包。最终落地包要全面，防走弯路。\n2. **语料清洗口径（稠密侧）**：只保留 user 消息、助手消息、助手思考过程；**其他全删**（含 tool_call / tool_result 等）。\n3. 稀疏腿只比对话多工具调用；**稠密没有理由比稀疏语料还多**——要查清现状为何偏大，砍本不该有的开销与逻辑。\n4. 关注顺序：①产品本质（删不该有的）→ ②性能优化 → ③检索质量（本质需求能否更优）。\n\n## 子包方向（中层拆）\n- IDE：稠密索引语料构成 vs 稀疏；按口径过滤后体积/chunk/嵌入耗时对照；现有 slots/trimmer/dense 路径上「不该进稠密」的逻辑清单；现有 LEAN/批等仅作测量旋钮，不改默认。\n- Session（若需要）：按新口径重切 sessions.db 只读统计，给 IDE 对照样本。\n- 检索质量：在「只留三态」假设下，对照现有召回/排序口径（不改代码，用手测用例或现成 query 集），标出质量风险与收益假说。\n\n## 产出\n`.litecode/ops/artifacts/WP-116-research.md`：发现、可删开销清单、性能与质量建议、推荐组合、不做清单。不改 src/tests。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:05:21.474Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 继续只读调研，不开落地实现。锁定语料口径：user、助手消息、助手思考保留，其余全删。查清稠密为何比稀疏还多（稀疏只多工具调用）。从产品本质删掉本不该有的开销与逻辑；再看性能优化与检索质量，为全面落地包防走弯路。"
+        },
+        {
+          "ts": "2026-10-13T13:05:30.265Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-116 计划（只读续测，不落地）\n\n## Andy 口径\n1. 本包是**继续测**，不是实现包。最终落地包要全面，防走弯路。\n2. **语料清洗口径"
+        },
+        {
+          "ts": "2026-10-13T13:05:36.007Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "Andy 已定续测口径，代提计划"
+        },
+        {
+          "ts": "2026-10-13T13:05:41.578Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy：封 WP-101；新包继续测非落地；稠密只留 user/助手/思考"
+        },
+        {
+          "ts": "2026-10-13T13:05:42.065Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:12:33.692Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "待 Andy 封"
+        },
+        {
+          "ts": "2026-10-13T13:22:29.204Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：可封；下包仍非落地，白名单+切块+算法",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-117",
+      "domain": "ide-substrate",
+      "title": "WP-116 续测执行",
+      "result": "合并报告 WP-116-research.md",
+      "done_when": [
+        "父包验收项齐"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-116-research.md",
+      "progress": "closed done by gm: 续测证据齐，口径成立",
+      "status_entered_at": null,
+      "parent": "WP-116",
+      "goal": "按父包口径只读续测并出报告",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "只读续测执行：拆 IDE±Session，合并 WP-116-research.md"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:05:30.561Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按父包口径只读续测并出报告"
+        },
+        {
+          "ts": "2026-10-13T13:05:35.663Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-117 执行计划\n父包 WP-116。只读；不改 src。拆 IDE（主力）± Session（样本重切）。完成合并进 WP-116-research"
+        },
+        {
+          "ts": "2026-10-13T13:05:46.767Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: 只读续测执行：拆 IDE±Session，合并 WP-116-research.md"
+        },
+        {
+          "ts": "2026-10-13T13:05:47.140Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:05:47.539Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:05:47.864Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:12:05.140Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-118/119 done；§5 已合并。推荐：稠密只三态；稀疏留 tool_call 去 tool_result。产物 WP-116-research.md。请 GM 审→封 WP-116。"
+        },
+        {
+          "ts": "2026-10-13T13:12:33.401Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "续测证据齐，口径成立",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-118",
+      "domain": "ide-substrate",
+      "title": "WP-117/IDE：稠密vs稀疏对齐与可删开销",
+      "result": "WP-116-research-ide.md",
+      "done_when": [
+        "稠密稀疏差因",
+        "可删开销清单",
+        "口径过滤对照",
+        "质量风险假说"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-116-research-ide.md",
+      "progress": "closed done by backend_mid: 审过：A1 锚点与 corpus/derive 一致；A2 与 WP-119 同量级；砍后稠密<稀疏该有。已合并 §5。",
+      "status_entered_at": null,
+      "parent": "WP-117",
+      "goal": "只读：对照稠密/稀疏语料路径；按 Andy 三态口径过滤后测体积/chunk/耗时；列出本不该进稠密的逻辑；检索质量假说。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-118 方案（IDE）：稠密/稀疏语料差因与三态口径只读续测\n\n依据：`.litecode/ops/artifacts/WP-116-research.md` §1/§3A（含 2026-10-13 GM 收口）；board WP-118（产物 `.litecode/ops/artifacts/WP-116-research-ide.md`）。  \n只读调研：不改 `src/`、`tests/`；脚本仅 `.tmp/wp116/`；不 commit；不碰 `windows-*.yml`。  \n每条结论标【实测/公开/推断】。关注序：①产品本质砍冗余 → ②性能 → ③质量。\n\n## 0. Andy / GM 锁定口径（必须遵守）\n- **稠密只留三态**：`user`、助手消息、助手思考（reasoning）；**不含任何 tool**（`tool_call` / `tool_result` 均删），且 control / reminder / echo 等全删。\n- **稀疏相对对话「该多」= 仅 `tool_call`（动作）**；**`tool_result` 标「不该有」**。\n- A1 差因表每条必须标 **该有 / 不该有**：稀疏该有 = 对话三态 + tool_call；不该有 = tool_result 及更杂项进稀疏，或任何 tool 进稠密。\n- **不落地**：只设计与测量；真模型若跑必须护栏。\n\n## 1. A1 — 引擎侧核对稠密/稀疏构成与差因（产品本质）\n\n### 1.1 只读路径（代码锚点先行，再对照测量）\n| 面 | 文件（预期锚点，实测时补精确行号） | 看什么 |\n|---|---|---|\n| 策略 | `src/engines/session_search/slots.rs`（`Policy::Final`、`classify`、slot 投影） | Final 下哪些 kind→slot；tool_call→Did、tool_result→Outcome 是否进文档 |\n| 切块/摘要 | 同文件 `summarize_tool_call` / tool_result 处理；`trimmer.rs` | 工具产出是否被压缩后仍进索引 |\n| 派生 | `src/engines/session_search/derive.rs`（`derive_row`、echo 排除） | admitted 条件；echo 是否仅稀疏/稠密一侧 |\n| 稠密 | `src/engines/session_search/semantic_index.rs`（`Policy::Final`、chunk 配置） | 实际写入 dense 的 kind/slot 集合 |\n| 稀疏 | `src/engines/session_search/sparse.rs` + `mod.rs` 建索入口 | Final 稀疏纳入集合；与稠密差异 |\n| 回显 | `src/engines/session_search/echo.rs`、parity 测 | echo tool_result 是否仍可能漏进 |\n\n### 1.2 差因表输出格式（验收）\n对「现状稠密 vs 现状稀疏」及「相对 Andy 该有口径」逐项：\n\n| 项 | 出现在稠密？ | 出现在稀疏？ | **该有/不该有** | 代码锚点（文件:行） | 删后预期 |\n|---|---|---|---|---|---|\n| user / 助手消息 / 助手思考 | ? | ? | 该有（双侧对话） | … | — |\n| tool_call | ? | ? | 稠密：**不该有**；稀疏：**该有** | … | 稠密体积↓ |\n| tool_result | ? | ? | **双侧不该有** | … | 双侧↓；分工清晰 |\n| control / reminder / echo / 其他 | ? | ? | **不该有** | … | ↓ |\n\n若【实测】稠密条数/token/chunk ≥ 稀疏：在表中标出导致「稠密反超」的不该有项（尤其任何 tool 进稠密、或稠密未做与稀疏同等的压缩/剔除）。\n\n可删开销清单：每条「现状 → 该有/不该有 → 删后预期」。\n\n## 2. A2 — 三态过滤对照（测量，不改 src）\n\n### 2.1 语料\n- 优先复用 `.tmp/wp102/corpus/sessions.db`（或 partial 副本）；注明路径、会话数、跨度。\n- Session 包 WP-119 若先交出三态重切数字，经中层转发后填表；未到则 IDE 用 sqlite 只读 + kind/item_type 映射自算，标【推断/IDE 口径】。\n\n### 2.2 表（与 §3A 对齐）\n| 口径 | 条数 | token（tokenizer 名） | chunk 数 | 相对现状稠密 Δ |\n|---|---:|---:|---:|---:|\n| 现状稠密（Final） | | granite 与/或 cl100k | | 0 |\n| Andy 三态（user+助手消息+思考） | | | | |\n| 稀疏 Final（现状） | | | | |\n| 稀疏「对话三态+仅 tool_call」（该有） | | | | |\n| 稀疏含 tool_result 的现状超额（不该有） | | | | |\n\n方法：`.tmp/wp116/corpus_compare.py`（拟）只读 sqlite / 或调用现有只读导出逻辑的副本脚本（**不改 src**）；chunk 数用与引擎一致的 `DENSE_CHUNK_TOKENS=448` 规则近似，或护栏下小样本真建索计数。\n\n### 2.3 嵌入耗时\n- 优先：用 WP-102/103 已测吞吐（LEAN≈7–10 chunk/s 量级）× A2 chunk 数外推【推断×实测】。\n- 若需真模型点测：拷贝/复用 `.tmp/wp102/run_limited.sh` → `.tmp/wp116/run_limited.sh`（AS=4GiB、taskset 4 核、ORT_INTRA_THREADS=4、RSS>3.5GiB 看门狗、cargo/MemAvailable 拒测）；默认 `LITECODE_ORT_LEAN=1`；**不测 batch=8**；小阶梯、不撞他人 cargo。\n\n## 3. A3 — 性能（次于本质）\n在「稠密已三态、稀疏已无 tool_result」假设下：\n- 剩余嵌入量 vs 现状（接 A2 Δ）。\n- WP-101 建议：续嵌 / LEAN — 新口径下仍成立或降级（体积大减则 LEAN 优先级可能下降，续嵌仍成立）。\n- 不做实现。\n\n## 4. A4 — 质量假说（再次之）\n不改代码、不做评测实现。基于语料抽问 / 既有手测思路列出：\n- 收益：稠密专注对话语义；稀疏承担 tool_call 动作检索。\n- 风险：删 tool_result 后「工具失败排查 / 大段输出回看」类查询变弱 → 是否依赖稀疏以外通道或会话打开原文。\n- 需落地包验证的用例清单。\n\n## 5. 对其他包的依赖\n| 依赖 | 来自 | 用途 | 备选 |\n|---|---|---|---|\n| 会话样本 db | WP-104/102 语料或 WP-119 | A2 计数 | 自备 `.tmp/wp102/corpus/sessions.db` 只读 |\n| 三态重切官方数字 | WP-119 → 中层转 | 与引擎侧对照 | IDE 自算并标非 Session 口径 |\n| 吞吐基线 | WP-103 产物 | A3 外推 | 护栏小样本 |\n\n无 Session 交付时不阻塞 A1 代码锚点清单；A2 表可先填 IDE 自算行。\n\n## 6. 资源与护栏\n- 脚本/CSV：仅 `.tmp/wp116/`；可从 `.tmp/wp102/` 拷贝 `run_limited.sh`、`mem_sample.py` 并改路径。\n- cargo：`timeout`、`HOME=.tmp/home`、`</dev/null`；共享锁；独立 target 若需则测完删。\n- 不改产品代码；不 commit；测完杀自起进程；保留脚本与 CSV。\n\n## 7. 需要中层批的事项\n1. 只读使用既有 `sessions.db` 样本（路径如上）与 WP-119 数字（若有）。\n2. 真模型点测时使用 limited 护栏与独立小 target（若外推不足才跑）。\n3. Web/公开页：本包原则上不需要；若引用 WP-101 链接仅复述。\n4. **不申请**：改 src、换模型下载、接云 API、落地过滤逻辑。\n\n## 8. 产物结构\n`WP-116-research-ide.md`：§A1 差因表（该有/不该有+锚点）+ 可删清单；§A2 对照表+方法；§A3 性能含义；§A4 质量假说；原始 CSV 路径。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:06:13.796Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：对照稠密/稀疏语料路径；按 Andy 三态口径过滤后测体积/chunk/耗时；列出本不该进稠密的逻辑；检索质量假说。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:08:00.112Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-118 方案（IDE）：稠密/稀疏语料差因与三态口径只读续测\n\n依据：`.litecode/ops/artifacts/WP-116-research"
+        },
+        {
+          "ts": "2026-10-13T13:08:00.401Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "方案按 GM 收口：稀疏该多=仅 tool_call；tool_result 不该有；稠密三态无 tool；A1 差因表标该有/不该有。只读不落地。"
+        },
+        {
+          "ts": "2026-10-13T13:08:26.932Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过。A1 差因表严格执行该有/不该有（稀疏该有=三态+tool_call；tool_result 双侧不该有；稠密无任何 tool）。可与 WP-119 并行；Session 数字经我转发。"
+        },
+        {
+          "ts": "2026-10-13T13:09:04.219Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开干：A1 代码锚点+差因表；A2 语料对照（sessions.db）；A3/A4 外推与假说"
+        },
+        {
+          "ts": "2026-10-13T13:11:23.111Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "A1 差因表含该有/不该有+锚点；A2 granite 复核；A3/A4 建议；不改 src"
+        },
+        {
+          "ts": "2026-10-13T13:12:04.829Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "审过：A1 锚点与 corpus/derive 一致；A2 与 WP-119 同量级；砍后稠密<稀疏该有。已合并 §5。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-119",
+      "domain": "harness-core",
+      "title": "WP-117/Session：三态口径语料重切统计",
+      "result": "WP-116-research-session.md",
+      "done_when": [
+        "三态重切表",
+        "与现 final 差",
+        "给 IDE 对照样本说明"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-116-research-session.md",
+      "progress": "closed done by backend_mid: 验收通过：三态映射与裁定一致；数字与 three_state.json 对齐；final−三态≈全部 tool（result 60.6% / call 5.5%）。已转 IDE。",
+      "status_entered_at": null,
+      "parent": "WP-117",
+      "goal": "只读：按 Andy 口径（仅 user/助手消息/助手思考）重切 sessions.db；对照现有 final/稀疏构成；输出条数/token/可删占比。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-119 方案（Session）：按 Andy 三态口径只读重切 sessions.db\n- 依据：WP-116-research.md §1 口径 2、§3B（已更新）；GM/中层澄清：**三态 = user + 助手消息 + 助手思考，不含任何 tool**。\n- 产物：`.litecode/ops/artifacts/WP-116-research-session.md`。脚本仅 `.tmp/wp116/`。不改 src/tests；不 commit。开工需 backend_mid 批。\n\n## 1. 样本\n- 优先：`/workspace/litecode/.tmp/wp102/corpus/sessions.db`（WP-104 实测同一清洗副本；约 29 会话 / 4336 行 / 跨度 2026-10-08～10-13）。若缺失则注明并停在方法层。\n- 只读：`file:<path>?mode=ro&immutable=1`；若存在 `-wal` 则先复制 db/-wal/-shm 到临时目录再 `mode=ro`（同 WP-104）。\n\n## 2. 三态映射（kind / item_type → 保留）\n锚点：`src/engines/session_search/slots.rs:89-91`（`classify`）、`corpus.rs:183-210`（`Policy::Final` 准入，**对照用，不是本包保留集**）。\n\n| Andy 三态 | transcript 条件 | Slot（对照） |\n|---|---|---|\n| user 消息 | `kind == \"item/user\"`（任意 item_type） | Who |\n| 助手消息 | `kind == \"item/assistant\"` 且 `item_type != \"reasoning\"` | Said |\n| 助手思考 | `kind == \"item/assistant\"` 且 `item_type == \"reasoning\"` | Thought |\n\n**明确丢弃（进「可删 / 不该进稠密」）：**\n- `item/tool_call`、`item/tool_result`（任何 tool；稠密三态不含 tool）\n- `compacted`、`reminder/*`、`turn/start`|`turn/end`、`plan/execute`、其余 control/other\n\n每次跑先 `SELECT DISTINCT kind, item_type` 核对映射；若出现未知组合，记入产物「未映射」行，不擅自归入三态。\n\n## 3. 对照层（B3）\n| 层 | 定义 |\n|---|---|\n| all | 全部 `transcript_items` |\n| final（现可嵌） | 复刻 `Policy::Final`：kind ∈ {user, assistant, tool_call, tool_result} 且 slot ∈ {Who,Said,Thought,Did,Outcome}（`corpus.rs:188-210`）——**含 tool** |\n| three_state（Andy） | 仅上表三态；**不含 tool_call / tool_result** |\n| （附加，给 IDE）excluded_from_final_by_tool | final 中的 tool_call vs tool_result 条数+token 拆分；以及「final − three_state」整体可删份额 |\n\n指标：条数、字符、cl100k token；主/子会话可选分列（与 WP-104 一致，便于对照）。\n可删占比：\n- 相对 all：`1 − three_state/all`\n- 相对 final：`1 − three_state/final`（**给 IDE 的可平移百分比**）\n- final 内 tool 拆分：`tool_call` / `tool_result` 各占 final token 比（稀疏「不该有 tool_result / 稠密不该有任何 tool」的根因输入）\n\n## 4. 脚本复用 vs 新建\n- **复用逻辑（不改 WP-104 已封脚本）：** 只读打开、leaf_text、cl100k（tiktoken）、主/子判定、时间跨度元数据——从 `.tmp/wp102/session/corpus_stats.py` **复制**核心函数到 `.tmp/wp116/three_state_stats.py`（新文件，避免动封存包路径）。\n- **新建过滤：** 用上表三态谓词替换 Final 层；输出 `out/three_state.json`（仅聚合）。\n- **不做：** MinHash/近重复、B3 日志/diff 裁剪（本包只要构成对照）；不调引擎、不跑嵌入。\n\n## 5. Token 方法\n- 与 WP-104 / `src/session/estimate.rs:56` 相同：tiktoken `cl100k_base`。\n- 对照列 `token_estimate` 求和，报偏差。嵌入模型 tokenizer ≠ cl100k → 注明归 IDE。\n\n## 6. 隐私与证据\n- 产物与 JSON **只含聚合**；不写正文、路径、会话 id 列表。\n- 每个数字附：脚本路径、命令、库路径、打开模式、样本规模与日期跨度、环境（box CPU/内存/OS）。\n- 标注：「清洗副本实测；跨度短，外推不代表长期」（若仍用 wp102 库）。\n\n## 7. 开放问题\n- Q1：`item/assistant` 且 item_type 既非 message 也非 reasoning 的罕见值——默认归「助手消息」（Said）还是「未映射」？建议：非 reasoning 一律助手消息，并在 DISTINCT 表列出。\n- Q2：三态是否含子会话 transcript？口径未排除子会话 → **默认主+子都计**，并分列；若 Andy 只要主会话请裁。\n- Q3：body 为空、仅 body_ref 的行——与 WP-104 相同：不读 blob 内容，token=0、blob_bytes 另计；是否从三态「有效 token」中剔除空行？建议剔除零 token 行后再报占比（两行：含空 / 不含空）。\n\n## 8. done_when\nB1–B4 表+方法；给 IDE 一句「三态相对 final 可删 X% token（及 tool_call/tool_result 占 final 的 Y%/Z%）」；脚本在 `.tmp/wp116/`；未改 src/tests；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:06:24.146Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：按 Andy 口径（仅 user/助手消息/助手思考）重切 sessions.db；对照现有 final/稀疏构成；输出条数/token/可删占比。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:07:51.040Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-119 方案（Session）：按 Andy 三态口径只读重切 sessions.db\n- 依据：WP-116-research.md §1 口径 2"
+        },
+        {
+          "ts": "2026-10-13T13:07:51.395Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "三态=user+助手消息+思考（不含任何 tool）；对照 all/final/三态 + final 内 tool_call/tool_result 拆分；待批"
+        },
+        {
+          "ts": "2026-10-13T13:08:26.638Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "Q1: item/assistant 非 reasoning 一律助手消息（Said），DISTINCT 列出；未知 kind 仍进未映射。Q2: 主+子都计并分列。Q3: 含空/不含空两行都报。其余按方案执行。"
+        },
+        {
+          "ts": "2026-10-13T13:08:43.313Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:09:22.380Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-116-research-session.md\" -> \".litecode/ops/artifacts/WP-116-research-session.md\""
+        },
+        {
+          "ts": "2026-10-13T13:09:22.708Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "三态=user+助手消息+思考（不含 tool）；vs final 可删 66.16% token；final 内 tool_result 60.61% / tool_call 5.54%；主+子分列；含空/不含空；产物 WP-116-research-session.md"
+        },
+        {
+          "ts": "2026-10-13T13:09:58.867Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：三态映射与裁定一致；数字与 three_state.json 对齐；final−三态≈全部 tool（result 60.6% / call 5.5%）。已转 IDE。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-120",
+      "domain": "ide-substrate",
+      "title": "语义检索：数据源白名单·切块·算法定口径",
+      "result": "口径草案：白名单数据源、切块、算法实测结论、推荐与不做；不改 src",
+      "done_when": [
+        "白名单钉死",
+        "切块有对照",
+        "算法有实测",
+        "方案可审",
+        "不做清单"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-120-research.md",
+      "progress": "closed done by andy: Andy：封；开真引擎算法/切块续测",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "只读调研不定落地。检索质量=数据源+切块+算法。数据源改为白名单：稠密只要三态（user/助手消息/思考），稀疏只要三态+tool_call；其余一律不要。切块策略与算法（RRF/排序等）必须实测，不能当产品开干。产出整批方案与口径草案及不做清单。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-120 计划（只读，不定落地）\n\n## Andy 口径（2026-10-13）\n1. **仍非落地包**。整批方案与口径未定全前不开实现。\n2. **检索质量三因素**：①数据源 ②切块策略 ③算法（RRF / 排序等）。三者都要有结论；算法**未测不能当产品开干**。\n3. **数据源改白名单（只要什么）**，不是黑名单剔除：\n   - 稠密：**只要三态**——user、助手消息、助手思考；其他根本不要。\n   - 稀疏：**三态 + tool_call**（工具调用代表意图）；不要 tool_result 及其他。\n   - 系统/session 以后再加什么信息，search 只取自己白名单；加再多也不脏。\n4. 继承 WP-116：compact 对齐、kept_from 大刀等可作附录议题，**不抢白名单/切块/算法主线**。\n\n## 子包方向（中层拆）\n- 数据源：对照现状准入 vs 白名单；证明「只要」后体积与脏度；代码锚点。\n- 切块：现状策略 vs 备选（长度/边界/角色）；同白名单语料对照召回敏感点（只测不改 src）。\n- 算法：现状 RRF/排序/融合只读摸底 + **可复现小样本实测**（禁用无护栏大压测）；没有数字不下产品结论。\n\n## 产出\n`WP-120-research.md`：口径草案、实测表、推荐组合、不做清单、待裁定。不改 src。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:22:29.961Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 只读调研不定落地。检索质量=数据源+切块+算法。数据源改为白名单：稠密只要三态（user/助手消息/思考），稀疏只要三态+tool_call；其余一律不要。切块策略与算法（RRF/排序等）必须实测，不能当产品开干。产出整批方案与口径草案及不做清单。"
+        },
+        {
+          "ts": "2026-10-13T13:22:36.235Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-120 计划（只读，不定落地）\n\n## Andy 口径（2026-10-13）\n1. **仍非落地包**。整批方案与口径未定全前不开实现。\n2. **"
+        },
+        {
+          "ts": "2026-10-13T13:22:41.461Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "Andy 已定白名单+三因素"
+        },
+        {
+          "ts": "2026-10-13T13:22:42.106Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "继续测不定落地；白名单三态/稀疏+call；算法须实测"
+        },
+        {
+          "ts": "2026-10-13T13:22:42.418Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:29:37.234Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "待 Andy：白名单可定，算法未过关"
+        },
+        {
+          "ts": "2026-10-13T13:49:06.315Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：封；开真引擎算法/切块续测",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-121",
+      "domain": "ide-substrate",
+      "title": "WP-120 定口径执行",
+      "result": "WP-120-research.md",
+      "done_when": [
+        "父包验收"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-120-research.md",
+      "progress": "closed done by gm: 白名单+切块有数；算法遵守硬门槛不下产品结论",
+      "status_entered_at": null,
+      "parent": "WP-120",
+      "goal": "白名单+切块+算法只读实测并出口径草案",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "拆 IDE 等域：白名单对照、切块对照、算法小样本实测；合并报告"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:22:36.661Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 白名单+切块+算法只读实测并出口径草案"
+        },
+        {
+          "ts": "2026-10-13T13:22:36.987Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: 拆 IDE 等域：白名单对照、切块对照、算法小样本实测；合并报告"
+        },
+        {
+          "ts": "2026-10-13T13:22:42.753Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:22:43.065Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:22:43.384Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:29:21.459Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-122/123 done；§5 已合并。硬门槛：算法不足以下推荐；口径=白名单。请审 WP-120-research.md。"
+        },
+        {
+          "ts": "2026-10-13T13:29:36.942Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "白名单+切块有数；算法遵守硬门槛不下产品结论",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-122",
+      "domain": "ide-substrate",
+      "title": "WP-121/IDE：白名单·切块·算法小样本实测",
+      "result": "WP-120-research-ide.md",
+      "done_when": [
+        "白名单对照",
+        "切块小样本表",
+        "算法小样本表",
+        "口径草案素材"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-120-research-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：白名单+切块表+算法表齐全；硬门槛遵守（不写算法产品推荐）；未覆 wp120/out。",
+      "status_entered_at": null,
+      "parent": "WP-121",
+      "goal": "只读：白名单 vs 现状准入；切块策略对照；RRF/排序算法可复现小样本数字。出口径草案素材。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-122 方案（IDE）：白名单 · 切块 · 算法小样本（只读）\n\n依据：`.litecode/ops/artifacts/WP-120-research.md` §1/§3（GM 已通过方向）；board WP-122（产物 `WP-120-research-ide.md`）。  \n只读：不改 `src/`/`tests/`；脚本 `.tmp/wp122/`（共享切片/query 读 `.tmp/wp120/out/`）；不 commit。  \n硬门槛：**算法无小样本数字 → 不得写产品推荐**；口径草案只用 **白名单只要什么**。\n\n## 0. 白名单（产品口径 · 只要这些）\n\n| 腿 | 只要 |\n|---|---|\n| **稠密** | `item/user`；`item/assistant`（非 reasoning＝消息）；`item/assistant`+`reasoning`（思考） |\n| **稀疏** | 上列三态 + `item/tool_call` |\n\n话术草案：「search 只取上表白名单；session 新增 kind 默认不可搜，除非改白名单。」  \n对照可写现状多了什么（Final 含 Did/Outcome 等），但 §口径草案不以排除清单为主结论。\n\n## 1. A · 白名单 vs 现状准入\n\n### 1.1 代码锚点（只读核对，补精确行号）\n- 现状稠密 Final：`corpus.rs` `Policy::Final` 准入 Who|Said|Thought|**Did|Outcome**；`slots.rs` `row_text_final` / `classify`。\n- 现状稀疏：`derive.rs` `derive_row`（有文、非 compacted、非 echo）——宽于白名单。\n- 缺口：稠密去掉 Did/Outcome；稀疏去掉 tool_result 及 reminder/control 等非白名单。\n\n### 1.2 体积对照【实测】\n复用 `.tmp/wp102/corpus/sessions.db` + WP-116/119 数字；granite tokenizer 复核（脚本 `.tmp/wp122/whitelist_vol.py`，结果 `.tmp/wp122/out/` 或写入 `.tmp/wp120/out/`）。  \n表：现状稠密 / 稠密白名单 / 现状稀疏近似 / 稀疏白名单 — 条数、cl100k、granite、chunk≈（448）。\n\n依赖：WP-123 的 `.tmp/wp120/out/whitelist_slices.json`（若未到，IDE 自算并标）。\n\n## 2. B · 切块小样本怎么测\n\n### 2.1 语料\n同一 **白名单** 文本集（三态[+稀疏测时加 tool_call]），来自切片或自抽 final 行。\n\n### 2.2 档位（≥2，脚本复制 chunk 规则，不改 src）\n| 档 | 设定 |\n|---|---|\n| 现状 | `DENSE_CHUNK_TOKENS=448` + 现有 head+tail anchor 行为（对照 `chunk.rs` / semantic_index） |\n| 备选 A | 256 或 512（EMBED_MAX 内）硬切 |\n| 可选 B | 按角色/段边界近似（仅易实现时） |\n\n脚本：`.tmp/wp122/chunk_compare.py` → `.tmp/wp122/out/chunk_matrix.csv`。\n\n### 2.3 每档指标\n- chunk 数、估嵌入墙钟（WP-103 吞吐外推；外推不够才 `run_limited` LEAN 小样本，不测 batch=8）。\n- 相对召回/覆盖：用 WP-123 `queries.json`，对每档报 top-k 含金标签比例（或命中率）；无 query 则只报 chunk/墙钟并写「召回列待 WP-123」。\n\n## 3. C · 算法小样本硬门槛（RRF 等）\n\n### 3.1 摸底（只读）\n`ranking.rs`：`RRF_K=60`、`rrf_score`；稀疏多层；dense ANN；融合与 band。记录默认权重/层。\n\n### 3.2 Query 集\nWP-123 `.tmp/wp120/out/queries.json`：≥8 条；含纯对话 / 工具意图 / 失败排查（白名单后预期变弱）/ 短 user；gold=seq 或 kind 桶，**不落正文**。  \n未到：IDE 用脱敏合成 ≥8 条标【IDE 暂代】，中层转正后重跑表。\n\n### 3.3 测量方法（必须出表）\n对每条 query，在白名单语料索引上（只读脚本或现有 serve+过滤模拟）：\n| 模式 | 做法 |\n|---|---|\n| 稀疏-only | 仅稀疏分层检索 |\n| 稠密-only | 仅 dense |\n| 融合现状 | RRF_K=60 按代码权重融合 |\n| 对照 ≥1 | 关 dense，或改 RRF 权重 / 单层（脚本侧模拟） |\n\n每条报：top-k（建议 k=5 与 k=10）是否含金行；汇总 hit@k、按 intent 分桶。  \n输出：`.tmp/wp122/out/algo_matrix.csv` + 方法命令写入产物。\n\n### 3.4 门槛定义（写入产物）\n- **有表且 n_query≥8、每 intent≥1** → 可写「小样本下模式 X 在 Y 类更好」类**限定结论**。  \n- **无表 / 不足** → 只写「不足以下结论，待加测」；**禁止**「推荐上线某算法/权重」。\n\n## 4. 口径草案素材（产物结构）\n`WP-120-research-ide.md`：  \n§白名单（只要什么）+ 话术；§现状缺口锚点+体积表；§切块表；§算法表（或「不足」声明）；§推荐组合（仅有数字支撑的部分）/ 不做 / 待裁定。\n\n## 5. 依赖与护栏\n| 依赖 | 来源 | 备选 |\n|---|---|---|\n| whitelist_slices / queries | WP-123 → `.tmp/wp120/out/` | IDE 自算/合成并标注 |\n| 吞吐外推 | WP-103 | limited 小样本 |\n| sessions.db | `.tmp/wp102/corpus/` | 同 WP-116 |\n\n护栏：`.tmp/wp122/run_limited.sh`（及 `.tmp/wp120/` 副本）；LEAN；拒测 cargo/低内存；不改 src；不 commit。\n\n## 6. 需中层批\n1. 使用既有 sessions 样本与 WP-123 切片/query（未到可暂代）。  \n2. 必要时护栏真模型点测切块墙钟。  \n3. **不申请**：改准入/切块/RRF 落地、换模、接云。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:23:01.498Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：白名单 vs 现状准入；切块策略对照；RRF/排序算法可复现小样本数字。出口径草案素材。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:24:11.956Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-122 方案（IDE）：白名单 · 切块 · 算法小样本（只读）\n\n依据：`.litecode/ops/artifacts/WP-120-resear"
+        },
+        {
+          "ts": "2026-10-13T13:24:12.286Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "硬门槛：算法无小样本数字不写产品推荐；口径=白名单只要（稠密三态；稀疏三态+tool_call）。只读不落地。"
+        },
+        {
+          "ts": "2026-10-13T13:24:41.605Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案合 WP-120。允许用 WP-123 切片/query；未到可暂代并标注。护栏真模型点测切块墙钟可。硬门槛保留。开干。"
+        },
+        {
+          "ts": "2026-10-13T13:24:55.077Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开干：白名单对照+切块+算法小样本；硬门槛遵守"
+        },
+        {
+          "ts": "2026-10-13T13:28:37.326Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "正式 query RO 重跑；algo_matrix 齐但 exact-seq=0 → 不写产品算法推荐；白名单/切块有数；未写 wp120/out"
+        },
+        {
+          "ts": "2026-10-13T13:29:21.043Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：白名单+切块表+算法表齐全；硬门槛遵守（不写算法产品推荐）；未覆 wp120/out。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-123",
+      "domain": "harness-core",
+      "title": "WP-121/Session：白名单语料切片与小样本 query 集",
+      "result": "WP-120-research-session.md",
+      "done_when": [
+        "白名单切片",
+        "小样本query集",
+        "方法可复现"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-120-research-session.md",
+      "progress": "closed done by backend_mid: 验收通过：白名单表+10 query+隐私OK；缺口已标。",
+      "status_entered_at": null,
+      "parent": "WP-121",
+      "goal": "只读：按白名单导出聚合切片+可复现小样本 query（无正文泄露）；供 IDE 切块/算法实测。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-123 方案（Session）：白名单聚合切片 + 小样本 query/gold（只读）\n- 依据：WP-120-research.md §1 口径 3、§3A/§3D；白名单不是黑名单。\n- 产物：`.litecode/ops/artifacts/WP-120-research-session.md`；数据 `.tmp/wp120/out/whitelist_slices.json`、`.tmp/wp120/out/queries.json`。\n- 规则：只读；不改 src/tests；脚本仅 `.tmp/wp120/`；不 commit。开工需 backend_mid 批（GM 已认同口径，仍等正式 approve）。\n\n## 1. 白名单映射（复用 WP-119 裁定）\n锚点：`slots.rs:89-91`、WP-116-research-session.md DISTINCT 表。\n\n| 腿 | 保留条件 |\n|---|---|\n| **稠密** | `item/user`（任意 item_type）；`item/assistant` + `item_type != reasoning`（助手消息 / Said）；`item/assistant` + `item_type == reasoning`（思考 / Thought） |\n| **稀疏** | 稠密三态 + `item/tool_call`（任意 item_type，本样本为 function_call） |\n| **明确不进任一侧** | `item/tool_result`；reminder/*；turn/*；request/header；compacted；其它 →「未映射」 |\n\nQ1 延续：assistant 非 reasoning 一律助手消息；本样本仅 `message`。主+子都计并分列（同 WP-119 Q2）。含空/不含空两行（Q3）。\n\n## 2. 样本与只读\n- DB：`.tmp/wp102/corpus/sessions.db`（§3D 允许复用；与 WP-104/119 同一清洗副本）。\n- 打开：`mode=ro&immutable=1`；有 WAL 则快照复制后再 ro。\n\n## 3. 脚本\n- **复用：** 从 `.tmp/wp116/three_state_stats.py` 复制 leaf_text / open_ro / cl100k / 主子判定到 `.tmp/wp120/whitelist_slices.py`（新文件，不改已封 wp116）。\n- **扩展：** 增加 `sparse_whitelist` 层（三态 ∪ tool_call）；输出 all / final(现状) / dense_whitelist / sparse_whitelist 四层条数+token（主/子分列）；tool_result 单独一行「不进白名单」。\n- **新建：** `.tmp/wp120/make_queries.py` → `queries.json`（≥8 条）。\n- Token：cl100k_base（同 estimate.rs:56）。不做嵌入、不调引擎。\n\n## 4. Query/gold 抽样（≥8，无长正文）\n意图桶（每类至少 1，合计 ≥8）：\n1. 纯对话（gold 偏 user / assistant_message）\n2. 助手思考相关（gold 偏 reasoning）\n3. 工具意图（gold 偏 tool_call；稀疏该命中、稠密可弱）\n4. 失败排查类（历史上常靠 tool_result；白名单后预期变弱——gold 仍可标原 tool_result seq，并标 `expect_degraded: true`）\n5. 短 user\n\n每条字段（§3D）：\n- `id`：稳定短 id（如 `q01`…）\n- `query`：短查询文本（≤80 字；可对语料 **合成/改写脱敏**，禁止粘贴长正文或路径）\n- `gold`：`[{ \"session_key\": \"<sha256(session_id)[:12]>\", \"seq\": N, \"kind_bucket\": \"user|assistant_message|assistant_thinking|tool_call|tool_result\" }]` —— **session_id 只出哈希前缀**，不落明文 id\n- `intent`：上列桶标签\n- `notes`（可选）：一句预期（如「白名单后应变弱」）\n\n抽样方法：按 kind_bucket 分层随机（固定种子 120）；每条 gold 1～3 个 seq；人工改写 query 为短问句，**不把 body 写入任何文件**（脚本只读 length/kind/seq 选点，query 由模板+关键词哈希占位或预写短句表生成）。\n\n## 5. 产物形状\n- `whitelist_slices.json`：meta、DISTINCT、四层对照、相对 final/all 的 Δ%、sparse 相对 dense 增量（= tool_call 份额）、tool_result 占 final 份额（对照用）。\n- `queries.json`：数组 ≥8。\n- `WP-120-research-session.md`：表+方法+给 IDE「白名单体积一句 + query 集路径」。\n\n## 6. 隐私\n- 切片与 query 文件 **无长正文、无明文 session_id、无绝对路径**。\n- 产物禁止「排除清单」当主结论；主表述为白名单（§3A）；对照表可写现状多了什么。\n\n## 7. 开放问题\n- Q1：失败排查类 gold 是否允许指向 `tool_result` seq（用于测「变弱」）？建议 **允许**，并强制 `expect_degraded: true`；不把 tool_result 算进白名单体积。\n- Q2：query 短文本可否含中文产品词（如「子会话」「权限」）？建议可，禁止文件路径与代码片段 >40 字。\n- Q3：稀疏白名单是否含主会话 only？建议主+子（与稠密一致），分列。\n\n## 8. done_when\n切片 json + ≥8 queries；产物 md；脚本在 `.tmp/wp120/`；未改 src/tests；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:23:01.849Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：按白名单导出聚合切片+可复现小样本 query（无正文泄露）；供 IDE 切块/算法实测。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:24:04.873Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-123 方案（Session）：白名单聚合切片 + 小样本 query/gold（只读）\n- 依据：WP-120-research.md §1 口径 "
+        },
+        {
+          "ts": "2026-10-13T13:24:05.251Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "白名单切片 dense=三态 sparse=三态+tool_call；≥8 query/gold（哈希 id、无长正文）；待批"
+        },
+        {
+          "ts": "2026-10-13T13:24:33.756Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "Q1允许 tool_result gold+expect_degraded; Q2可中文产品词禁长路径/长代码; Q3稀疏主+子分列。开干。"
+        },
+        {
+          "ts": "2026-10-13T13:24:51.447Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:25:36.278Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-120-research-session.md\" -> \".litecode/ops/artifacts/WP-120-research-session.md\""
+        },
+        {
+          "ts": "2026-10-13T13:25:36.611Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "白名单 dense=535k/932 sparse=623k/2160（+tool_call 88k）；vs final 保留 33.8%/39.4%；queries.json n=10 覆盖五类 intent（含 expect_degraded）；产物 WP-120-research-session.md"
+        },
+        {
+          "ts": "2026-10-13T13:26:05.310Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：白名单表+10 query+隐私OK；缺口已标。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-124",
+      "domain": "ide-substrate",
+      "title": "语义检索：真引擎算法与切块定口径",
+      "result": "真引擎算法/切块实测表与口径草案；不做清单；不改 src",
+      "done_when": [
+        "真引擎小样本有数",
+        "切块有对照",
+        "算法可裁定或明确不足",
+        "不做清单"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-124-research.md",
+      "progress": "closed done by andy: Andy：封；开落地",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "只读续测，不落地。白名单已钉（稠密三态；稀疏三态+tool_call）。本包用生产路径（真 ANN/RRF/排序）+ 可对齐的相关性金标，实测算法与切块；无数字不下产品结论。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-124 计划（只读，不落地）\n\n## 已钉（WP-120）\n- 数据源白名单：稠密=user/助手消息/思考；稀疏=三态+tool_call。\n- 切块倾向 448（非硬裁定）；算法 offline 未过关。\n\n## 本包目标\n用**生产检索路径**（真 dense ANN + 现有稀疏/RRF/排序）在白名单语料上测：\n1. **金标**：query 与 gold 必须可对齐（弃用与词面无交的 length-seed seq）；含对话 / 工具意图 / expect_degraded 失败排查 / 短 user；≥10 条可复现。\n2. **算法**：sparse-only / dense-only / 融合（现状 RRF）hit@k 或等价；至少一档对照（权重或关一腿）。无数字 → 不得写产品推荐。\n3. **切块**：同白名单、真索引下 ≥2 档（含 448）对照质量+成本。\n4. 护栏：run_limited；LEAN；不测 b8。脚本仅 `.tmp/wp124/`。\n\n## 产出\n`WP-124-research.md`：实测表、口径草案（算法/切块是否可定）、不做、待裁定。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:49:07.000Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 只读续测，不落地。白名单已钉（稠密三态；稀疏三态+tool_call）。本包用生产路径（真 ANN/RRF/排序）+ 可对齐的相关性金标，实测算法与切块；无数字不下产品结论。"
+        },
+        {
+          "ts": "2026-10-13T13:49:17.234Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-124 计划（只读，不落地）\n\n## 已钉（WP-120）\n- 数据源白名单：稠密=user/助手消息/思考；稀疏=三态+tool_call。\n- 切"
+        },
+        {
+          "ts": "2026-10-13T13:49:18.142Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "Andy 已定开真引擎续测"
+        },
+        {
+          "ts": "2026-10-13T13:49:18.420Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "封 WP-120；开真引擎算法/切块测包"
+        },
+        {
+          "ts": "2026-10-13T13:49:18.703Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T14:27:12.614Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "待 Andy 封"
+        },
+        {
+          "ts": "2026-10-13T14:57:13.429Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy：封；开落地",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-125",
+      "domain": "ide-substrate",
+      "title": "WP-124 真引擎续测执行",
+      "result": "WP-124-research.md",
+      "done_when": [
+        "WP-126/127 done",
+        "§5有真引擎算法表+切块表",
+        "硬门槛遵守",
+        "未改src"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-124-research.md",
+      "progress": "closed done by gm: 真引擎有表；算法硬门槛未下产品结论",
+      "status_entered_at": null,
+      "parent": "WP-124",
+      "goal": "真引擎+可对齐金标测算法与切块",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "拆 IDE±Session：可对齐金标+真引擎算法/切块小样本；合并报告"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:49:17.563Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 真引擎+可对齐金标测算法与切块"
+        },
+        {
+          "ts": "2026-10-13T13:49:17.847Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: 拆 IDE±Session：可对齐金标+真引擎算法/切块小样本；合并报告"
+        },
+        {
+          "ts": "2026-10-13T13:49:18.985Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:49:19.291Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:49:19.563Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:50:10.755Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"父包验收\"] -> [\"WP-126/127 done\",\"§5有真引擎算法表+切块表\",\"硬门槛遵守\",\"未改src\"]"
+        },
+        {
+          "ts": "2026-10-13T14:26:50.166Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-126/127 done；§5已合并。真引擎 RRF hit@10=4/10（sparse/dense各2）；硬门槛：不写算法产品推荐。请审 WP-124-research.md。"
+        },
+        {
+          "ts": "2026-10-13T14:27:12.291Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "真引擎有表；算法硬门槛未下产品结论",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-126",
+      "domain": "harness-core",
+      "title": "WP-125/Session：可对齐金标 query 集（白名单语料）",
+      "result": ".litecode/ops/artifacts/WP-124-research-session.md",
+      "done_when": [
+        "可对齐query/gold集",
+        "方法可复现",
+        "无长正文"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-124-research-session.md",
+      "progress": "closed done by backend_mid: 验收通过：10条可对齐金标、禁length-seed、隐私OK。",
+      "status_entered_at": null,
+      "parent": "WP-125",
+      "goal": "只读：在白名单语料上造≥8条与 gold seq 词面可对齐的短 query（丢弃 length-seed 不对齐法）；含对话/思考/工具意图/失败排查(expect_degraded)/短user；无长正文；供 IDE 真引擎评测。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-126 方案（Session）：可对齐金标 query 集（只读）\n- 依据：WP-124-research.md §1.3、§3A；白名单同 WP-120/123。\n- 数据：`.tmp/wp124/out/queries.json`（正式集；IDE 不得覆盖）；可选复用/软链切片。\n- 产物：`.litecode/ops/artifacts/WP-124-research-session.md`。脚本仅 `.tmp/wp124/`。不改 src/tests；不 commit。\n\n## 1. 样本与白名单\n- DB：`.tmp/wp102/corpus/sessions.db`（ro，`mode=ro&immutable=1` / WAL 快照）。\n- 稠密白名单：user / assistant_message（assistant∧≠reasoning）/ assistant_thinking（reasoning）。\n- 稀疏白名单：稠密 + tool_call。\n- tool_result **不计入**白名单体积；仅 failure_triage gold 可指向，且 `expect_degraded: true`。\n- 映射复用 WP-119/123（slots.rs:89-91）；脚本从 `.tmp/wp120/` **复制** open_ro/leaf_text/bucket 到 `.tmp/wp124/make_aligned_queries.py`（不改封存包）。\n\n## 2. 对齐规则（硬 · 禁止 WP-123 length-seed）\n1. 在目标 `kind_bucket` 的白名单行（failure_triage 允许 tool_result 行）中，对每行取 leaf_text，做简易分词（中英：连续汉字串 / `[A-Za-z0-9_]{2,}`），过滤停用词与纯数字。\n2. **选行：** 在桶内选「可抽短问」的行——正文含 ≥2 个实义词，且长度适中（如 40～4000 字符）；**按内容哈希分层**，非按 body length 随机。\n3. **造 query：** 从该行实义词中取 2～5 个组成 ≤80 字短问（可加中文产品连接词）；禁止绝对路径、禁止 >40 字代码片段。\n4. **核验：** `overlap_tokens = query_tokens ∩ gold_line_tokens`；要求 `|overlap| ≥ 2`（短 user 允许 ≥1 且为实义专名）。不满足则换行或改写，直至通过；脚本写入每条 `overlap_tokens`（仅词面，非正文）。\n5. gold：`session_key=sha256(session_id)[:12]`、`seq`、`kind_bucket`；可 1～2 条 gold，主 gold 必须通过对齐核验。\n\n## 3. 覆盖（≥8，建议 10）\n| intent | 最少 | gold 桶 | expect_degraded |\n|---|---:|---|---|\n| short_user | 1 | user | false |\n| pure_dialogue | 1 | assistant_message（±user） | false |\n| assistant_thinking | 1 | assistant_thinking | false |\n| tool_intent | 1 | tool_call（±assistant_*） | false |\n| failure_triage | 1 | tool_result（可 +tool_call） | **true** |\n\n合计建议 10（每类可加 1）。\n\n## 4. 产物与抽查\n- `queries.json`：meta（seed、对齐阈值、n、intents）+ queries[]。\n- 产物 md：复现命令；**≥3 条对齐抽查**（query ↔ overlap 关键词列表，**不落整段 body**）；白名单一句；与 WP-123 差异：「已废除 length-seed」。\n- 可选：不重算体积则注明「体积见 WP-120/123」；若重算则写 `whitelist_slices.json` 但不覆盖 wp120。\n\n## 5. 隐私\n无长正文、无明文 session_id、无绝对路径；overlap 只存短 token 列表。\n\n## 6. 开放问题\n- Q1：对齐阈值 `|overlap|≥2` 对极短 user 是否过严？建议 short_user 放宽为 ≥1 个长度≥2 的实义词（计划已写）。请批默认。\n- Q2：多 gold 时是否每条都要对齐？建议 **主 gold（第一条）必须对齐**；辅 gold 同会话近邻 seq 可选、不强制 overlap。\n\n## 7. done_when\n≥8（目标 10）全通过对齐核验；五类 intent 齐全；failure_triage 均 expect_degraded；产物+复现命令；未改 src；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:49:57.244Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：在白名单语料上造≥8条与 gold seq 词面可对齐的短 query（丢弃 length-seed 不对齐法）；含对话/思考/工具意图/失败排查(expect_degraded)/短user；无长正文；供 IDE 真引擎评测。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:50:54.353Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-126 方案（Session）：可对齐金标 query 集（只读）\n- 依据：WP-124-research.md §1.3、§3A；白名单同 WP-"
+        },
+        {
+          "ts": "2026-10-13T13:50:54.631Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "可对齐金标：词面 overlap 核验，禁 length-seed；≥8/目标10；待批后即开"
+        },
+        {
+          "ts": "2026-10-13T13:51:08.997Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "Q1 short_user overlap≥1 实义 OK；Q2 主gold必须对齐、辅金可选。禁 length-seed。开干。"
+        },
+        {
+          "ts": "2026-10-13T13:51:26.555Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T13:52:25.120Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-124-research-session.md\" -> \".litecode/ops/artifacts/WP-124-research-session.md\""
+        },
+        {
+          "ts": "2026-10-13T13:52:25.417Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "可对齐金标 queries.json n=10；五类 intent 齐全；主 gold 全过 overlap；禁 length-seed；failure_triage×2 expect_degraded；产物含≥3 关键词抽查"
+        },
+        {
+          "ts": "2026-10-13T13:52:51.038Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：10条可对齐金标、禁length-seed、隐私OK。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-127",
+      "domain": "ide-substrate",
+      "title": "WP-125/IDE：真引擎 ANN+RRF 与切块小样本",
+      "result": ".litecode/ops/artifacts/WP-124-research-ide.md",
+      "done_when": [
+        "真引擎算法小样本表",
+        "切块对照表",
+        "口径/不足声明",
+        "不做清单"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-124-research-ide.md",
+      "progress": "closed done by backend_mid: 验收通过：真引擎表+切块表齐全；硬门槛遵守；未覆 out/。",
+      "status_entered_at": null,
+      "parent": "WP-125",
+      "goal": "只读：白名单语料上走生产路径真 ANN+RRF/排序；测 sparse/dense/融合；切块≥2档含448；用 Session 可对齐金标出表。硬门槛无数字不写算法产品推荐。护栏 limited/LEAN/不测b8。不改 src。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-127 方案（IDE）：白名单 + 生产路径真 ANN/RRF + 切块（只读）\n\n依据：`.litecode/ops/artifacts/WP-124-research.md` §1/§3B；board WP-127（产物 `WP-124-research-ide.md`）。  \n只读：不改 `src/`/`tests/`；不 commit。\n\n## 硬性边界（必须遵守）\n1. **禁止写入** `.tmp/wp124/out/`（Session/WP-126 正式集）；IDE **只写** `.tmp/wp124/ide/`。\n2. **白名单只要**：稠密=三态（user / 助手消息 / 助手思考）；稀疏=三态+`tool_call`。\n3. 检索必须走 **生产路径**（真 ANN + 生产稀疏 + 生产 RRF/排序），**禁止**仅用 BM25/hash offline 模拟当主表。\n4. 真模型：`run_limited`（AS≤4GiB、taskset、ORT_INTRA_THREADS、RSS 看门狗、cargo/MemAvailable 拒测）；**LEAN**；**不测 batch=8**。\n5. **硬门槛**：算法无小样本数字 → 不得写算法产品推荐；可写「不足以下结论，待加测」。\n\n## 0. 金标与语料\n- 正式 query：`.tmp/wp124/out/queries.json`（WP-126；**只读**）。未到时可摸底生产路径；**正式 algo/切块召回表必须以该文件为准**。\n- 语料：`.tmp/wp102/corpus/sessions.db`（ro）按白名单过滤后建临时索引于 `.tmp/wp124/ide/ws_*`（测完可删大文件，留 CSV）。\n\n## 1. B1 — 生产路径摸底【实测】\n只读锚点（执行时补精确行号）：\n- Dense ANN：`session_search/semantic_index.rs`（usearch/ANN 检索）。\n- Sparse 多层：`session_search/sparse.rs`。\n- RRF：`ranking.rs` `RRF_K=60` / `rrf_score`；融合：`session_search/mod.rs` `fuse_session_layers`（`SPARSE_WEIGHT`/`SEMANTIC_WEIGHT`）。\n- 驱动方式（择一，不改 src）：`litecode serve` + 既有 session search HTTP/IPC；或现有 CLI/测试 harness 只读调用公开 API。记录命令于产物。\n\n## 2. B2 — 算法小样本（硬门槛）\n白名单语料 + 生产索引上，对正式 query：\n\n| 模式 | 要求 |\n|---|---|\n| sparse-only | 生产稀疏路径 |\n| dense-only | 真 ANN/稠密 |\n| 融合现状 | 生产 RRF 默认权重 |\n| 对照 ≥1 | 关 dense，或脚本侧改权重/单层（若只能观测融合结果则注明局限） |\n\n每条：hit@5 / hit@10（**exact-seq**；可附 kind-bucket 次指标）；按 intent 汇总；`failure_triage`+`expect_degraded` 单独看。  \n输出：**仅** `.tmp/wp124/ide/algo_matrix.csv` + 方法说明。  \n无表/不足 → 产物只写「不足以下结论」；**禁止**推荐上线某算法/权重。\n\n## 3. B3 — 切块 ≥2 档（含 448）\n同白名单语料：\n| 档 | 设定 |\n|---|---|\n| 现状 | 448 + 现有 anchor |\n| 备选 | 256 或 512 |\n\n报：chunk 数、估/测墙钟（优先 WP-103 外推；不够则 limited+LEAN 真嵌入）。召回列绑同一正式金标（重建索引成本写明）。  \n输出：`.tmp/wp124/ide/chunk_matrix.csv`。\n\n## 4. B4 — 口径素材\n白名单表述继承 WP-120；补「算法/切块：可裁定 **或** 明确不足」。\n\n## 5. 护栏与清理\n- 脚本：`.tmp/wp124/run_limited.sh`；工作区/独立 target 仅 `.tmp/wp124/ide/`。\n- 测完杀自起进程；删独立 target/大索引；**保留** ide 下脚本与 CSV。\n- validate_all；deliver 产物 `WP-124-research-ide.md`。\n\n## 6. 需中层批\n1. 只读正式 `out/queries.json` + sessions.db。  \n2. 护栏下 serve/真嵌入建白名单索引。  \n3. **不申请**：改 src、写 out/、换模、接云、无数字的算法推荐。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T13:49:57.606Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 只读：白名单语料上走生产路径真 ANN+RRF/排序；测 sparse/dense/融合；切块≥2档含448；用 Session 可对齐金标出表。硬门槛无数字不写算法产品推荐。护栏 limited/LEAN/不测b8。不改 src。"
+        },
+        {
+          "ts": "2026-10-13T13:50:46.602Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-127 方案（IDE）：白名单 + 生产路径真 ANN/RRF + 切块（只读）\n\n依据：`.litecode/ops/artifacts/WP-12"
+        },
+        {
+          "ts": "2026-10-13T13:50:46.895Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "硬边界：禁写 wp124/out；白名单三态/三态+tool_call；真 ANN+RRF；limited+LEAN不测b8；无数字不写算法推荐。"
+        },
+        {
+          "ts": "2026-10-13T13:51:09.341Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "合 WP-124。只写 ide/；正式金标只读 out/queries.json；真生产路径；硬门槛+护栏保留。开干。"
+        },
+        {
+          "ts": "2026-10-13T13:51:23.994Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开干：真生产 ANN+RRF；只写 ide/；正式 query 只读 out/"
+        },
+        {
+          "ts": "2026-10-13T14:26:10.254Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "真引擎 granite+usearch ANN/RRF；algo_matrix exact-seq RRF 4/10>单腿2/10；chunk 448 实测1044/187s；只写ide/；产物 WP-124-research-ide.md"
+        },
+        {
+          "ts": "2026-10-13T14:26:49.862Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收通过：真引擎表+切块表齐全；硬门槛遵守；未覆 out/。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-128",
+      "domain": "ide-substrate",
+      "title": "语义检索落地：白名单准入",
+      "result": "白名单准入落地；测试绿；真机可验",
+      "done_when": [
+        "准入白名单",
+        "测试绿",
+        "文档/产物齐",
+        "Andy真机"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-128.md",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-13T14:57:24.882Z",
+      "parent": null,
+      "goal": "落地实现。稠密只取三态（user/助手消息/思考）；稀疏=三态+tool_call；其余不要。切块默认维持 448；算法维持现状 RRF 不调参。带失败排查等验收用例。机制从简，不新 Warming/状态机。",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "# WP-128 落地：白名单准入\n\n## 已定口径（调研 WP-101/116/120/124）\n1. **稠密只要**：user、助手消息、助手思考。\n2. **稀疏只要**：上列三态 + tool_call（意图）。\n3. **其余不要**（含 tool_result、reminder/control 等）；session 新增 kind 默认不可搜，除非改白名单。\n4. **切块**：默认维持 448，本包不改常量 unless 为实现白名单所必需。\n5. **算法**：维持现状 RRF/排序，**本包不调参**。\n6. 机制从简：不新 Warming/状态机；LEAN/批提交续嵌不在本包（可另开）。\n\n## 验收方向\n- 单元/集成：白名单外 kind 不进对应腿；稀疏仍可见 tool_call。\n- 用例：纯对话、工具意图、失败排查（tool_result 不进索引后行为符合预期）、短 user。\n- 云端绿；Andy 真机。\n\n## 产出\n`.litecode/ops/artifacts/WP-128.md` 与子包产物。GM 给方向与验收，实现细节中层/域自定。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T14:57:14.024Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 落地实现。稠密只取三态（user/助手消息/思考）；稀疏=三态+tool_call；其余不要。切块默认维持 448；算法维持现状 RRF 不调参。带失败排查等验收用例。机制从简，不新 Warming/状态机。"
+        },
+        {
+          "ts": "2026-10-13T14:57:23.032Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: # WP-128 落地：白名单准入\n\n## 已定口径（调研 WP-101/116/120/124）\n1. **稠密只要**：user、助手消息、助手思考。\n2."
+        },
+        {
+          "ts": "2026-10-13T14:57:24.028Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": "Andy：开落地"
+        },
+        {
+          "ts": "2026-10-13T14:57:24.447Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "封 WP-124；白名单落地；切块448/RRF维持"
+        },
+        {
+          "ts": "2026-10-13T14:57:24.882Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-129",
+      "domain": "ide-substrate",
+      "title": "WP-128 白名单准入执行",
+      "result": "实现+测试绿+产物",
+      "done_when": [
+        "父包验收"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-128-backend.md",
+      "progress": "closed done by gm: 白名单落地抽查通过；切块/RRF未动",
+      "status_entered_at": null,
+      "parent": "WP-128",
+      "goal": "按父包口径改检索准入并验绿",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "拆 IDE 等：白名单准入落地；切块/RRF 不改；验绿后 deliver"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T14:57:23.423Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按父包口径改检索准入并验绿"
+        },
+        {
+          "ts": "2026-10-13T14:57:23.712Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: 拆 IDE 等：白名单准入落地；切块/RRF 不改；验绿后 deliver"
+        },
+        {
+          "ts": "2026-10-13T14:57:25.187Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T14:57:25.475Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T14:57:25.763Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T14:59:11.229Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"拆 WP-130 IDE；方案见 WP-128-backend.md；待 IDE fill/submit\""
+        },
+        {
+          "ts": "2026-10-13T15:01:56.788Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"拆 WP-130 IDE；方案见 WP-128-backend.md；待 IDE fill/submit\" -> \"WP-130 approved (ready); awaiting IDE start→code. Anchors v"
+        },
+        {
+          "ts": "2026-10-13T15:31:51.578Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"WP-130 approved (ready); awaiting IDE start→code. Anchors v -> \"WP-130 closed(done). Mid PASS: whitelist dense三态/sparse+too"
+        },
+        {
+          "ts": "2026-10-13T15:31:51.909Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "白名单落地验收 PASS。WP-130 done。dense=Who/Said/Thought；sparse=+tool_call；tool_result两腿拒；DOC_SCHEMA=3 INDEX_SCHEMA=15；DENSE/CHUNK=448 RRF_K=60 weights=1.0 未动；无Warming/LEAN；IDE cargo session_search 161ok；未commit。汇总 .litecode/ops/artifacts/WP-128-backend.md§9。Andy真机归WP-128。"
+        },
+        {
+          "ts": "2026-10-13T15:32:21.382Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "白名单落地抽查通过；切块/RRF未动",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-130",
+      "domain": "ide-substrate",
+      "title": "WP-129/IDE：白名单准入落地（稠密三态 / 稀疏+tool_call）",
+      "result": ".litecode/ops/artifacts/WP-128-ide.md",
+      "done_when": [
+        "白名单准入落地",
+        "非白名单不进对应腿",
+        "切块448未改",
+        "RRF未调参",
+        "验收用例绿",
+        "云端绿",
+        "产物齐",
+        "未commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-128-ide.md",
+      "progress": "closed done by backend_mid: PASS抽查：admits_dense/sparse+入口；DOC_SCHEMA=3 INDEX_SCHEMA=15；448/RRF/权重未动；无Warming；IDE 161ok；未commit。证据 WP-128-backend.md§9",
+      "status_entered_at": null,
+      "parent": "WP-129",
+      "goal": "落地 session_search 白名单准入：稠密只要 user/助手消息/思考；稀疏=三态+tool_call；其余不进对应腿。切块默认 448 不改；RRF/排序不调参；不新 Warming/状态机；LEAN/续嵌不在本包。验收：白名单外不进腿；覆盖对话/工具意图/失败排查/短 user；云端绿后 deliver（Andy 真机归父包）。不 commit。",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-130 方案（IDE）：白名单准入落地\n\n- owner：ide；approver：backend_mid；父：WP-129 / WP-128。\n- 本步：**只 fill→submit**；等 approve 后再 start。可改 `src/engines/session_search/**` + 相关测；**不 commit**；不碰 `windows-*.yml`。\n- 种子：`.litecode/ops/artifacts/WP-128-ide.md`；中层：`WP-128-backend.md`；口径：`WP-128.md` / WP-124 §5。\n- 产物路径（board）：`.litecode/ops/artifacts/WP-128-ide.md`（落地后覆写含 file:line + 测命令证据）。\n\n---\n\n## 1. Goal\n\n落地 session_search **按腿白名单准入**：\n\n| 腿 | 只要 | 不要（示例） |\n|---|---|---|\n| **稠密** | Who=`item/user`；Said=`item/assistant`（非 reasoning）；Thought=`item/assistant`+`reasoning` | Did=`tool_call`；Outcome=`tool_result`；Summary/When/Other；reminder/control/compacted/未知 |\n| **稀疏** | 上列三态 + Did=`item/tool_call` | Outcome=`tool_result`；Summary/When/Other；reminder/control/compacted/未知 |\n\n产品话术：「search 只取 {稠密三态；稀疏=三态+tool_call}；session 新增 kind **默认不可搜**，除非改白名单。」\n\n---\n\n## 2. 硬边界（本包不做）\n\n1. **切块 448 不改**：`semantic_index.rs` `DENSE_CHUNK_TOKENS`（L35）；`sparse.rs` `CHUNK_TOKENS`（~1633）；`chunk.rs` 默认。\n2. **RRF/排序不调参**：`ranking.rs` `RRF_K=60`（L372）；`mod.rs` `SPARSE_WEIGHT`/`SEMANTIC_WEIGHT=1.0`（L280–284）。\n3. **不新 Warming/状态机**；LEAN/批提交续嵌不做。\n4. 不依 WP-124 n=10 表改算法权重或发明产品推荐。\n5. 不改 `SEARCHABLE_KINDS`（`transcript_file.rs` L47–51）作为「行供给」——两腿仍可读到 tool_result 以便 echo 闭包等；**准入在腿内过滤**。不扩到 session 其它 crate，除非测试不得不动。\n\n---\n\n## 3. 现状分流（核实）【公开】\n\n两腿 **并非** 共用同一 `derive_row` 实现，但注释要求 decode 对齐：\n\n| 腿 | 入口 | 现状准入 |\n|---|---|---|\n| **稠密** | `semantic_index.rs` ~L542–548 → `corpus::derive_doc_row(..., Policy::Final, ...)` | `corpus.rs` `derive_docs` L188–193：`Who\\|Said\\|Thought\\|**Did\\|Outcome**` |\n| **稀疏** | `sparse.rs` `derive_rows` ~L1783–1793 → `derive::derive_row` | `derive.rs` L96：有文且非 `compacted`、非 echo → **过宽**（可含 tool_result 等） |\n\n因此必须 **拆策略**（中层风险 §8）：稠密收紧 Final；稀疏在 `derive_row`（或共用 helper）显式白名单，**不能**只改 corpus 而期望稀疏自动正确，也 **不能** 在共用路径上把 Did 一并删掉导致稀疏丢 tool_call。\n\n辅助：`slots.rs` `kind_included`（L159–167）仍含 tool_result/reminder——与产品白名单不一致，本包对齐或改为按腿查询；`row_text_final`（L176–187）仍为 Did/Outcome 产文——稠密不再 admit 后 Outcome/Did 对稠密失效，稀疏不走该函数。\n\n---\n\n## 4. 拟改文件:行（落地时以当时行为准，diff 可证）\n\n### 4.1 共用：按腿准入 API（推荐）\n\n**`src/engines/session_search/slots.rs`**\n\n| 位置 | 改动 |\n|---|---|\n| 在 `classify`（L87–98）/`Policy`（L103–111）附近 | 新增明确 API，例如：`admits_dense(slot) -> bool` = Who\\|Said\\|Thought；`admits_sparse(slot) -> bool` = Who\\|Said\\|Thought\\|Did；或 `Lane::{Dense,Sparse}` + `admits(lane, slot/kind)`。**新增 kind 默认 false**。 |\n| `SlotCfg::kind_included`（L159–167） | 收窄为产品并集（user/assistant/tool_call），或标注 deprecated 并改为调用 `admits_sparse` 并集；去掉默认 `tool_result` / `reminder/*` / `plan/execute` 真值（若仍有调用方依赖，改为显式腿 API）。 |\n| `row_text_final`（L176–187） | Outcome → `None`（与「Outcome 不进任何腿」一致）；Did 仍可产文（供若有调用），但 **稠密不再调用**。更新模块/Policy::Final 文档串（L108–109 仍写「工具产出」→ 改为三态+说明稀疏另含 Did）。 |\n| 单测 L255+ | 更新：`kind_included(\"reminder/…\")` 期望；`row_text_final(Outcome)` → None；补 `admits_dense/sparse` 表驱动。 |\n\n### 4.2 稠密腿\n\n**`src/engines/session_search/corpus.rs`**\n\n| 位置 | 改动 |\n|---|---|\n| `derive_docs` `Policy::Final` 分支（L188–193） | 准入改为仅 `Who \\| Said \\| Thought`（去掉 Did/Outcome）。`kind_ok`（L181–184）可同步去掉 `tool_call`/`tool_result`/`compacted` 对 Final 的意义，或保留 kind 列表但靠 slot 拒绝。 |\n| echo 分支（L89–94） | 保留：Outcome 本就不入库后，echo 剔除变为冗余但仍安全；不新造 Warming。 |\n| 注释 L187「人话+工具调用+工具产出」 | 改为三态口径。 |\n\n**`src/engines/session_search/semantic_index.rs`**\n\n| 位置 | 改动 |\n|---|---|\n| 调用处 ~L530–548（`Policy::Final` + 注释「工具调用+工具产出」） | 注释改三态；**逻辑靠 corpus**，此处可不改签名。 |\n| `DOC_SCHEMA`（L32，现=2） | **+1（→3）**，触发既有 `needs_rebuild`（L141–146），避免旧 Did/Outcome 向量残留。不新 Warming。 |\n| **勿改** `DENSE_CHUNK_TOKENS=448`（L35） | 硬边界。 |\n\n### 4.3 稀疏腿\n\n**`src/engines/session_search/derive.rs`**\n\n| 位置 | 改动 |\n|---|---|\n| `derive_row` 准入（L96） | 在现有 `text/compacted/echo` 之上，加 **稀疏白名单**：`admits_sparse(classify(kind,item_type))`（或等价 kind 集：user/assistant/tool_call）。使 tool_result / reminder / 未知 → `in_chunks=false`、chunks 空；**tool_call 仍进**。 |\n| 模块头注释 L10–19 | 写明稀疏白名单；与 corpus 稠密分工。 |\n| 单测 ~L182+ | 补：tool_call admitted；tool_result/compacted/echo 仍拒。 |\n\n**`src/engines/session_search/sparse.rs`**\n\n| 位置 | 改动 |\n|---|---|\n| `derive_rows` / `insert_row_chunks`（~L1783–1793、L1997+） | 确认只插入 `in_chunks` 行；若有旁路 SQL/kind 权重提及 tool_result（如 L153 排序 CASE），改为「历史兼容/死分支」注释或删除死路径，**不调 RRF**。 |\n| schema / `needs_rebuild`（~L1648） | 若稀疏文件无独立 schema 版本：依赖「缺行即不命中」+ 全量 rebuild 路径；必要时 bump 稀疏元数据（沿用现有 rebuild，不新状态机）。 |\n| **勿改** `CHUNK_TOKENS=448` | 硬边界。 |\n\n### 4.4 只读不改\n\n- `mod.rs` `fuse_session_layers` / 权重；`ranking.rs` `RRF_K`（ContentRole 枚举可留 Outcome 以读旧库，但新索引不再写入 Outcome 行）。\n- `chunk.rs` 默认预算；Warming/LEAN/续嵌相关。\n\n---\n\n## 5. 测试计划\n\n### 5.1 单测（必加/必改）\n\n| 用例 | 意图覆盖 | 断言 |\n|---|---|---|\n| `admits_dense` / `admits_sparse` 表 | — | 仅白名单 slot/kind 为 true；未知 kind false |\n| corpus Final：user / assistant message / reasoning → 有 docs | 纯对话、短 user | docs 非空；slot 正确 |\n| corpus Final：tool_call / tool_result → **无** docs | 工具意图、失败排查 | dense 不进 |\n| derive_row：tool_call → `in_chunks` | 工具意图 | sparse 进 |\n| derive_row：tool_result / reminder / compacted → 不进 chunks | 失败排查等 | sparse 不进 |\n| dense 索引（HashEmbedder / dense_parity 或最小 fixture） | 对话+短 user | chunks/meta 无 Did/Outcome 源 |\n| sparse 索引最小 fixture | 工具意图 | FTS/rows 含 tool_call，不含 tool_result |\n| 回归既有：`slots` / `derive` / `dense_parity` / `golden` / `parity` 中依赖「Final 含 Outcome/Did」的期望 | — | 按新口径改断言，不放宽白名单 |\n\n### 5.2 集成 / 命令（approve 后执行）\n\n```text\n# 窄测（示例，落地时按模块路径微调）\ncargo test -p litecode --lib engines::session_search::slots -- --nocapture\ncargo test -p litecode --lib engines::session_search::derive -- --nocapture\ncargo test -p litecode --lib engines::session_search::corpus -- --nocapture\ncargo test -p litecode --lib engines::session_search::dense_parity -- --nocapture\n# 若内存紧：HOME=.tmp/home CARGO_TARGET_DIR=.tmp/wp130/target -j1 + timeout\n```\n\n四类意图验收映射：\n\n1. **纯对话**：assistant Said/Thought 进两腿；  \n2. **工具意图**：tool_call 仅稀疏；稠密无；  \n3. **失败排查**：tool_result 两腿皆无（degraded 符合预期）；  \n4. **短 user**：user 进两腿。\n\n### 5.3 不变式检查（deliver 前）\n\n```text\nrg -n \"DENSE_CHUNK_TOKENS|CHUNK_TOKENS\" src/engines/session_search\n# 仍为 448\nrg -n \"RRF_K|SPARSE_WEIGHT|SEMANTIC_WEIGHT\" src/engines/session_search\n# 数值未改\ngit diff --stat   # 无 commit；无 windows-*.yml\n```\n\n### 5.4 云端\n\n相关 cargo 测绿后 IDE `deliver`；Andy 真机归 **WP-128**（不挡本包云端验收）。\n\n---\n\n## 6. 验收（对齐 done_when）\n\n- [ ] 白名单外 kind/slot **不进**对应腿（单测证据）\n- [ ] 稀疏仍索引 `tool_call`；稠密不索引 `tool_call`/`tool_result`\n- [ ] 失败排查：tool_result 不进索引后行为符合预期（可 degraded）\n- [ ] 448 / RRF 未改（diff 可证）\n- [ ] 无新 Warming/状态机；未做 LEAN/续嵌\n- [ ] 相关 cargo 测绿；云端绿\n- [ ] 产物 `WP-128-ide.md` 含最终 file:line + 命令；**未 commit**\n\n---\n\n## 7. 流程\n\n1. 本包：`fill`（本方案）→ `submit --as ide`（当前步）。\n2. 中层 `approve` → IDE `start`。\n3. 按 §4 改码 + §5 测 → 更新 `WP-128-ide.md` → `deliver`。\n4. 中层 close；统一 commit 等 GM。\n\n---\n\n## 8. 风险与注意\n\n1. **拆策略**：稠密改 `corpus` Final；稀疏改 `derive_row`；共用只放 `admits_*` helper，避免「删 Did 伤稀疏」。\n2. **旧索引**：bump `DOC_SCHEMA`；稀疏依赖既有 rebuild；不新 Warming。\n3. **parity/golden**：现含 tool_result 期望，需改口径而非保留违规入库。\n4. **FTS/SQL**：核对 sparse 内 kind CASE / 权重是否假设 Outcome 行存在——只删写入、不调 RRF 常量。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T14:58:43.923Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 落地 session_search 白名单准入：稠密只要 user/助手消息/思考；稀疏=三态+tool_call；其余不进对应腿。切块默认 448 不改；RRF/排序不调参；不新 Warming/状态机；LEAN/续嵌不在本包。验收：白名单外不进腿；覆盖对话/工具意图/失败排查/短 user；云端绿后 deliver（Andy 真机归父包）。不 commit。"
+        },
+        {
+          "ts": "2026-10-13T15:00:52.286Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-130 方案（IDE）：白名单准入落地\n\n- owner：ide；approver：backend_mid；父：WP-129 / WP-128。\n- "
+        },
+        {
+          "ts": "2026-10-13T15:00:52.628Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "白名单准入计划：稠密三态/稀疏+tool_call；拆 corpus vs derive；448/RRF 不动；等 approve"
+        },
+        {
+          "ts": "2026-10-13T15:01:47.422Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "OK: dense=Who|Said|Thought; sparse=+Did; tool_result out both; 448/RRF/Warming untouched; split corpus vs derive; DOC_SCHEMA→3. Residual: annotate sparse SQL tool_result CASE as dead; update parity/golden Final+Outcome asserts carefully."
+        },
+        {
+          "ts": "2026-10-13T15:02:35.041Z",
+          "actor": "ide",
+          "action": "start",
+          "note": "开干：白名单准入 corpus/derive 拆策略；448/RRF 不动"
+        },
+        {
+          "ts": "2026-10-13T15:20:09.089Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "白名单落地：dense 三态 / sparse+tool_call；DOC_SCHEMA=3 INDEX_SCHEMA=15；session_search 161 ok；448/RRF 未动；未 commit"
+        },
+        {
+          "ts": "2026-10-13T15:31:47.501Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "PASS抽查：admits_dense/sparse+入口；DOC_SCHEMA=3 INDEX_SCHEMA=15；448/RRF/权重未动；无Warming；IDE 161ok；未commit。证据 WP-128-backend.md§9",
+          "to": "done"
         }
       ]
     }

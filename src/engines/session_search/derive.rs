@@ -10,7 +10,7 @@
 //! ```text
 //! SearchableRow
 //!   → decode      JSON/blob → projected text + call linkage
-//!   → admit       compacted and session-echo results drop out
+//!   → admit       compacted / echo out; sparse whitelist (三态+tool_call)
 //!   → hard cut    448-token grid, no overlap, no semantic guessing
 //!   → DerivedRow  + normalize, which happens at insert time
 //! ```
@@ -27,6 +27,7 @@ use crate::session::transcript_file::{SearchableRow, row_plain_text_strict};
 
 use super::chunk::{self, Chunk, ChunkCfg};
 use super::echo;
+use super::slots::{self, admits_sparse};
 
 /// Everything the derivation needs that is not the row itself.
 pub struct DeriveCfg<'a> {
@@ -93,7 +94,11 @@ pub fn derive_row(
     echo_excluded: bool,
 ) -> Result<DerivedRow> {
     let decoded = decode_row(row, data_root)?;
-    let admitted = decoded.text.is_some() && row.kind != "compacted" && !echo_excluded;
+    let slot = slots::classify(&row.kind, &row.item_type);
+    let admitted = decoded.text.is_some()
+        && row.kind != "compacted"
+        && !echo_excluded
+        && admits_sparse(slot);
     let chunks = match (admitted, decoded.text.as_deref()) {
         (true, Some(text)) => chunk::chunk_text(cfg.tk, text, cfg.chunk),
         _ => Vec::new(),
@@ -238,5 +243,16 @@ mod tests {
         let derived = derive_row(&plain, &dir, &cfg, false).unwrap();
         assert!(derived.in_chunks);
         assert!(!derived.chunks.is_empty());
+
+        let call = call_row(7, "c3", "bash", r#"{"cmd":"echo hi"}"#);
+        let derived = derive_row(&call, &dir, &cfg, false).unwrap();
+        assert!(derived.in_chunks, "sparse keeps tool_call");
+        assert!(!derived.chunks.is_empty());
+
+        let result = result_row(8, "c3");
+        let derived = derive_row(&result, &dir, &cfg, false).unwrap();
+        assert!(!derived.in_chunks, "sparse rejects tool_result even when not an echo");
+        assert!(derived.chunks.is_empty());
+        assert_eq!(derived.call_id.as_deref(), Some("c3"));
     }
 }

@@ -184,14 +184,8 @@ fn derive_docs(
     );
     let admitted = match policy {
         Policy::V0Prod => kind_ok && slot != Slot::When,
-        // 人话 + 工具调用 + 工具产出；压缩总结/时间/未知一律不要。
-        Policy::Final => {
-            kind_ok
-                && matches!(
-                    slot,
-                    Slot::Who | Slot::Said | Slot::Thought | Slot::Did | Slot::Outcome
-                )
-        }
+        // Dense whitelist: Who / Said / Thought only (Did/Outcome out).
+        Policy::Final => slots::admits_dense(slot),
     };
     let Some(raw) = row_plain_text(row, data_root)? else {
         return Ok(Vec::new());

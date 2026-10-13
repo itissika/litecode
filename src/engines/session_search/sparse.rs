@@ -136,7 +136,9 @@ use super::trimmer;
 /// sentence's 3-char windows appear somewhere in the row", which a natural
 /// sentence rarely proves; a word the row really contains always does. Old files
 /// are rebuilt rather than migrated.
-const INDEX_SCHEMA: i64 = 14;
+/// v15: sparse whitelist drops `tool_result` (and other non-三态+tool_call)
+/// chunks; full rebuild clears stale Outcome rows. No new Warming path.
+const INDEX_SCHEMA: i64 = 15;
 
 /// Join the reconciliation ledger so Exact ordering can tell human speech from
 /// assistant speech. `rows.role` stores them as one value.
@@ -145,6 +147,10 @@ const SPEAKER_JOIN_SQL: &str =
 
 /// Same order as [`ranking::speaker_tier`]. The role fallback covers indexes
 /// built in tests without a ledger row.
+///
+/// `item/tool_result` / `outcome` arms are **dead for new indexes** (WP-130
+/// whitelist): kept only so a partially-migrated file still orders stably.
+/// Do not treat these as an admission path; RRF/weights unchanged.
 const SPEAKER_ORDER_SQL: &str = "CASE
     WHEN s.kind = 'item/user' THEN 0
     WHEN s.kind = 'item/assistant' AND s.item_type = 'reasoning' THEN 2

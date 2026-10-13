@@ -147,7 +147,7 @@ mod tests {
     /// from `char_start`, so a span that disagreed with its text would point the
     /// reader at the wrong line — and the line is the navigation.
     #[test]
-    fn the_index_keeps_a_results_head_and_a_messages_whole_body() {
+    fn the_index_drops_tool_results_and_keeps_a_messages_whole_body() {
         let dir = tempfile::TempDir::new().unwrap();
         let body: String = "segment: the quick brown fox jumps over the lazy dog.\n"
             .repeat(200)
@@ -159,22 +159,13 @@ mod tests {
         sparse::build_index(&rows, dir.path()).expect("build index");
 
         let cut = chunks(dir.path(), 0);
-        assert!(cut.len() >= 2, "a long result is more than one chunk");
-        for (start, end, text) in cut {
-            assert_eq!(text.chars().count(), OUTCOME_CHARS, "the tail is gone");
-            assert_eq!(end - start, OUTCOME_CHARS as i64, "the span ends with it");
-            let source: String = body
-                .chars()
-                .skip(start as usize)
-                .take(OUTCOME_CHARS)
-                .collect();
-            assert_eq!(text, source, "a result chunk is still its own head");
-        }
+        assert!(
+            cut.is_empty(),
+            "tool_result is out of the sparse whitelist: {cut:?}"
+        );
 
         let whole = chunks(dir.path(), 1);
         let kept: String = whole.iter().map(|(_, _, text)| text.as_str()).collect();
-        // Compared with trailing whitespace aside: the chunker already drops the
-        // newline at the very end of a row, and that is not this change.
         assert_eq!(kept.trim_end(), body.trim_end(), "a message is not trimmed");
         assert!(
             kept.chars().count() > OUTCOME_CHARS * 2,

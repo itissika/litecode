@@ -36,10 +36,38 @@
 - 区分"实测/公开/推断"。
 
 ## 6. 发现（各节由子包回填，中层合并）
-### 6.1 2GB 去向（A1）
-### 6.2 慢在哪（A2）
+> 合并时间 2026-10-13 ~20:55 HKT。来源：WP-104 done（session）、WP-103 review 通过（ide）。Andy/GM 方向：护栏强制；默认 lean；不测 batch=8；清洗~14% 次要；换模型/云暂不做。
+
+### 6.1 2GB 去向（A1）【实测】
+权重 mmap 仅 **≈63–65 MiB**（granite q8/q4）；**主体是 code_search worker 的 anon_heap / ORT arena**（默认峰值 **≈2.5 GiB**）。hash 基线 worker 仅 **≈68–90 MiB** → ORT 相关 ≈2.5 GiB。serve 主进程各配置均 ≈230–295 MiB。
+
+| 配置 | worker 峰值 RSS / HWM | 备注 |
+|---|---:|---|
+| hash 基线 | ~68 / 88 MiB | 无 ORT |
+| ORT 默认 release | ~2549 / 2549 MiB | `rel_default` |
+| `CPU_ARENA=0` | 采样峰值 1.6 / HWM ~2.0 GiB | `rel_arena0` |
+| `ORT_LEAN=1` | ~1375 / 1835 MiB | `rel_lean` |
+| 护栏 LEAN+b32 | 中段 ~1.3 GiB；采样峰值可达 ~1.7 GiB | `lim_lean_b32`，AS=4G 内 |
+
+方法/CSV：`.tmp/wp102/{mem_sample.py,a1_mem.csv}`；详表见 `WP-101-research-ide.md` A1。
+
+### 6.2 慢在哪（A2）【实测】
+同语料 3850 chunk、release：
+
+| 标签 | 墙钟 | chunks/s |
+|---|---:|---:|
+| rel_default | 380 s | **10.13** |
+| rel_arena0 | 416 s | 9.25 |
+| rel_lean | 495 s | 7.78 |
+| rel_b8 (batch=8) | — | **负结论：撑爆 15G 无 swap 整机重启** |
+| lim_lean_b32（护栏） | 中段 ≈5.7 chunk/s | 可跑、未触看门狗 |
+
+主导墙钟 = ORT 推理（hash 整库秒级 vs ORT 数分钟）。会话积压外推：WP-104 final ≈1.58M cl100k → granite 复核 **1.545M（比 0.985）** → ≈3450 chunk → 按 10 chunk/s ≈ **6 min 全量**；日增 ~1.3 min（5 天样本不可外推）。Andy「数小时」更可能来自重复全量重建/争用/更大语料（见 §6.5）。
+
+护栏强制：`.tmp/wp102/run_limited.sh`（AS=4GiB、taskset 0–3、ORT_T=4、RSS>3.5GiB 杀、cargo 或 MemAvailable<6GiB 拒测）。**禁止再测无护栏 batch=8**。产品默认 batch 保持 32；小 batch 仅允许在护栏下。
+
 ### 6.3 语料构成与可省量（B1-B4）
-来源：Session 语料回填（WP-104 done 后补数，不 reopen）。样本 `.tmp/wp102/corpus/sessions.db`（25.6 MiB，Andy 时间裁剪）；产物 `WP-101-research-session.md` + `.tmp/wp102/session/out/corpus.json`。标注：**清洗副本实测；跨度仅 5 天（2026-10-08～10-13），外推不代表长期**。方法见 session 产物；token=cl100k_base。
+来源：Session 语料回填（WP-104 done）。样本 `.tmp/wp102/corpus/sessions.db`（25.6 MiB）；产物 `WP-101-research-session.md` + `.tmp/wp102/session/out/corpus.json`。标注：**清洗副本实测；跨度仅 5 天（2026-10-08～10-13），外推不代表长期**。token=cl100k_base；引擎 granite 复核比 **0.985**（`session/out/granite_vs_cl100k.json`）→ B 百分比可近似平移。
 
 | 指标 | 数字 |
 |---|---:|
@@ -47,31 +75,52 @@
 | final（可嵌）条 / token | 3388 / 1,582,667（占 all 91.9%） |
 | 工具输出 token 占比（all） | 959,315（55.7%） |
 | 助手推理 token 占比（all） | 462,313（26.8%） |
-| 主 / 子 token（all） | ~1.23M / ~0.49M |
-| 库内 token_estimate vs cl100k | 1,624,851（约 −5.7%） |
-| 精确重复 all 条 / token | 20.9% / 3.4%（多为短 control） |
 | 精确重复 final token | 1.9% |
-| 近重复 final@0.8 token | 1.7%；人工抽查 20/20 TP，精度 1.00 |
-| 近重复 all@0.8 token | 5.2% |
+| 近重复 final@0.8 token | 1.7%；抽查精度 1.00 |
 | 工具输出截到 2k 超额 | ~182k（~10.6% of all） |
 | B3 并集整行上界 | ~433k（25.1% of all） |
-| 大 diff / 日志 / base64·blob | 14 条·33k / ~0 / 0 |
+| 清洗粗算上界（未扣交集） | **~14%** |
 | 日均（5 天） | ~867 条 / ~344k token |
-| 每会话 P50 / P90 | ~114k / ~175k；`reliable_extrapolation=false` |
-
-给 A3 粗算上界（未扣 B2∩B3 交集，偏乐观）：final 去重约 1.9%+1.7% + 截断超额 ~10.6% ≈ **~14%**。嵌入 tokenizer ≠ cl100k → 归 WP-103 实测。
+| 每会话 P50 / P90 | ~114k / ~175k |
 
 ### 6.4 杠杆成本收益表（A3）
 | 杠杆 | 省多少 | 质量代价 | 复杂度 | 证据 |
 |---|---|---|---|---|
-| 清洗/去重/裁剪（用 B） | 粗算上界 ~14% token（见 §6.3）；并集整行剔除上界 25% | 待 IDE：误裁对召回的影响 | 中（规则+哈希） | B 实测；交集未扣 |
-| （其余行等 WP-103） | | | | |
+| 清洗/去重/裁剪 | ~14% token 上界（次要） | 误裁召回未评测 | 中 | B 实测 + granite 0.985 |
+| ORT LEAN / arena off | 峰值 2.55→1.4–2.0 GiB | 吞吐 −9%～−23% | 低 | A1/A2 实测 |
+| 批/线程 | 默认 b32 稳；无护栏 b8 危险 | 过小 batch 易炸 | 低 | 事故 + limited |
+| 增量续嵌（A4） | 避免全量重做「数小时」 | 需实现批 save | 中 | A4 设计 |
+| 更小模型 | 公开对比即可 | 可能掉点 | 高 | **本阶段不做** |
+| 云嵌入 | ~$0.2–0.5/月/人量级 | 隐私/离线 | 高 | **本阶段不做** |
+| 再量化权重 | 对 2GB 峰值几乎无帮助 | — | 低 | 权重已非瓶颈 |
 
-### 6.5 不丢进度与续嵌（A4，含开源对照）
+### 6.5 不丢进度与续嵌（A4）
+**现状**：`build_full_index` 整库嵌完才 `save()`；中断则已嵌全部丢失（会话 dense 同）。  
+**开源对照**：Continue 分批 `markComplete`+内容哈希；Tabby `is_indexed`+批末 `commit`；Qdrant WAL `op_num` 重放；LanceDB 版本化追加。  
+**最小设计（不实现）**：chunk 内容哈希为键；每 N 批调用现有 `save()`（tmp+rename）；重启后「扫描 − 已存哈希」走现有 silent 增量刷新；不新增 Warming/状态机。关进程只丢未提交的最后不到一批。
+
 ### 6.6 结论
+1. 2GB 是 ORT worker arena，不是模型权重。  
+2. 默认 ~10 chunk/s；LEAN 换内存、略慢。batch=8 无护栏可拖垮 15G 盒。  
+3. 语料清洗约一成多 token，次要。  
+4. 「数小时积压」与关进程丢进度，主因更可能是**无续嵌的全量重做**，应用 A4 批提交解决。
+
 ### 6.7 推荐组合
+1. **落地 A4 批提交续嵌**（最高优先）。  
+2. **默认 `LITECODE_ORT_LEAN=1`**（或文档推荐 arena=0）；batch 保持 32。  
+3. 真模型压测/CI **强制** `run_limited.sh` 级护栏。  
+4. 清洗规则作次要优化（~14%）。
+
 ### 6.8 不做清单
+- 为省 RAM 换更小模型或上云嵌入。  
+- 进一步激进量化权重。  
+- 无内存上限的小 batch 压测；复测无护栏 batch=8。  
+- 新增引擎状态机 / 新 Warming 语义。
+
 ### 6.9 待 Andy/GM 裁定
+- 是否立即开实现包做 A4 续嵌 + 默认 LEAN（本包仅调研）。  
+- 清洗规则是否进后续实现包（阈值与误裁评测范围）。  
+- 空闲卸载（COOL_SECS）是否值得单开对照实测（本包未满测）。
 
 ## 7. 合并计划
 子包 deliver → 中层审证据（无方法的数字退回）→ 将 A/B 合并进 §6，写 §6.6-6.9 → WP-102 deliver 给 GM。
@@ -80,6 +129,6 @@
 任何代码改动/实现；换模型落地；云接入；UI。
 
 ## 9. 验收
-- [ ] WP-103/104 done 或明确 blocked；§6 每节有带方法的数字或带链接的公开数据
-- [ ] 推荐组合符合 §2 规则；有不做清单
-- [ ] 未改 src/tests、脚本仅 .tmp；validate_all ok:true；未 commit
+- [x] WP-103/104 done 或明确 blocked；§6 每节有带方法的数字或带链接的公开数据
+- [x] 推荐组合符合 §2 规则；有不做清单
+- [x] 未改 src/tests、脚本仅 .tmp；validate_all ok:true；未 commit

@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T12:32:25.961Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T15:32:21.548Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -116,20 +116,36 @@
 | WP-100 | 　└ WP-095/Tools：send mode 参数 + stop/delete 不给自己发通知 + wait 最新 + 描述/知识库 | done | tools | backend_mid |
 | WP-096 | └ WP-094 前端中层：侧栏用户停止标记 | done | frontend_mid | gm |
 | WP-097 | 　└ WP-096 web：Workers 名单 用户停止标记 | done | frontend | frontend_mid |
-| WP-101 | 向量检索引擎开销与体验调研 | in_progress | gm | andy |
-| WP-102 | └ 引擎开销与体验调研执行 | in_progress | backend_mid | gm |
-| WP-103 | 　└ WP-102/IDE：引擎内存与嵌入耗时实测 + 性能杠杆 + 断点续嵌调研 | in_progress | ide | backend_mid |
+| WP-101 | 向量检索引擎开销与体验调研 | done | gm | andy |
+| WP-102 | └ 引擎开销与体验调研执行 | done | backend_mid | gm |
+| WP-103 | 　└ WP-102/IDE：引擎内存与嵌入耗时实测 + 性能杠杆 + 断点续嵌调研 | done | ide | backend_mid |
 | WP-104 | 　└ WP-102/Session：会话语料构成只读统计 | done | session | backend_mid |
 | WP-105 | provider 供应商与模型更新调研 | done | gm | andy |
 | WP-106 | └ provider 调研执行 | done | backend_mid | gm |
 | WP-107 | 　└ WP-106/A 一方直连：openai/deepseek/mimo/zhipu + 两种 codec 对照 | done | provider | backend_mid |
 | WP-108 | 　└ WP-106/B 国内云套餐：ark-coding/ark-agent/tencent-token/aliyun-token | done | provider | backend_mid |
 | WP-109 | 　└ WP-106/C 聚合/网关：opencode/opencode-go/commandcode + Q4 新供应商候选 | done | provider | backend_mid |
-| WP-110 | provider 补模型/新加两家 + 前端分组 | in_progress | gm | andy |
+| WP-110 | provider 补模型/新加两家 + 前端分组 | review | gm | andy |
 | WP-111 | └ provider 目录落地 | done | backend_mid | gm |
 | WP-113 | 　└ WP-111 目录落地执行 | done | provider | backend_mid |
-| WP-112 | └ provider 列表分组 | in_progress | frontend_mid | gm |
-| WP-114 | 　└ WP-112 web：provider 列表 plan/api 分组 | review | frontend | frontend_mid |
+| WP-112 | └ provider 列表分组 | done | frontend_mid | gm |
+| WP-114 | 　└ WP-112 web：provider 列表 plan/api 分组 | done | frontend | frontend_mid |
+| WP-115 | 语义检索：语料本质与稠密/稀疏对齐续测 | cancelled | backend_mid | gm |
+| WP-116 | 语义检索续测：语料本质与稠密/稀疏对齐 | done | gm | andy |
+| WP-117 | └ WP-116 续测执行 | done | backend_mid | gm |
+| WP-118 | 　└ WP-117/IDE：稠密vs稀疏对齐与可删开销 | done | ide | backend_mid |
+| WP-119 | 　└ WP-117/Session：三态口径语料重切统计 | done | session | backend_mid |
+| WP-120 | 语义检索：数据源白名单·切块·算法定口径 | done | gm | andy |
+| WP-121 | └ WP-120 定口径执行 | done | backend_mid | gm |
+| WP-122 | 　└ WP-121/IDE：白名单·切块·算法小样本实测 | done | ide | backend_mid |
+| WP-123 | 　└ WP-121/Session：白名单语料切片与小样本 query 集 | done | session | backend_mid |
+| WP-124 | 语义检索：真引擎算法与切块定口径 | done | gm | andy |
+| WP-125 | └ WP-124 真引擎续测执行 | done | backend_mid | gm |
+| WP-126 | 　└ WP-125/Session：可对齐金标 query 集（白名单语料） | done | session | backend_mid |
+| WP-127 | 　└ WP-125/IDE：真引擎 ANN+RRF 与切块小样本 | done | ide | backend_mid |
+| WP-128 | 语义检索落地：白名单准入 | in_progress | gm | andy |
+| WP-129 | └ WP-128 白名单准入执行 | done | backend_mid | gm |
+| WP-130 | 　└ WP-129/IDE：白名单准入落地（稠密三态 / 稀疏+tool_call） | done | ide | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

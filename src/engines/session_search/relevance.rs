@@ -116,8 +116,8 @@ fn corpus() -> Vec<SearchableRow> {
             &assistant_text("we decided the auth refactor token here, once, finally"),
         ),
         row("S2", 1, "item/user", &user_text("the the the the the the")),
-        // S3 — a tool call and its output sharing one literal: which of the two a
-        // question about it should prefer is a product decision, and the corpus
+        // S3 — tool call + output sharing a literal; only the call is indexed
+        // (sparse whitelist). Corpus comment continued:
         // holds both so the decision is testable.
         call("S3", 0, "c3", "bash", r#"{"command":"grep NEEDLE_X src"}"#),
         result("S3", 1, "c3", "NEEDLE_X: 12 matches in 4 files"),
@@ -242,13 +242,12 @@ const JUDGMENTS: &[Judgment] = &[
         min_ndcg: 1.0,
     },
     Judgment {
-        // A literal shared by a call and its output: both answer, and the call
-        // (an intent record) comes first.
+        // Literal on the tool call (intent). tool_result is out of the whitelist.
         query: "NEEDLE_X",
-        relevant: &["S3:0", "S3:1"],
+        relevant: &["S3:0"],
         secondary: &[],
-        traps: &[],
-        min_ndcg: 0.9,
+        traps: &["S3:1"],
+        min_ndcg: 1.0,
     },
     Judgment {
         // Two words, no glue: both must be there, and a row with only one of
@@ -597,10 +596,9 @@ fn the_evidence_behind_each_judged_hit_names_its_layer() {
         best.evidence
     );
 
-    // A tool call outranks its own output at equal evidence: intent over outcome.
+    // Tool call is searchable; its result is not (WP-130 sparse whitelist).
     let hits = index.search(Lane::Final, "NEEDLE_X", DEPTH).unwrap();
     let keys: Vec<&str> = hits.iter().map(|h| h.row_key.as_str()).collect();
-    assert_eq!(keys, ["S3:0", "S3:1"], "{hits:#?}");
+    assert_eq!(keys, ["S3:0"], "{hits:#?}");
     assert_eq!(hits[0].role, super::ranking::ContentRole::Action);
-    assert_eq!(hits[1].role, super::ranking::ContentRole::Outcome);
 }

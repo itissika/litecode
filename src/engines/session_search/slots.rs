@@ -6,21 +6,17 @@
 //! The corpus is cut by data type first (classify → trim → tag); dedup comes
 //! later, as a consequence.
 //!
-//! # The final corpus policy (locked 2026-09-21)
+//! # The final corpus policy (WP-128 / WP-130 whitelist)
 //!
-//! Four row classes, one treatment each — no per-tool logic, ever:
+//! Lane admission (new kinds default **out** unless listed):
 //!
-//! 1. **人话（who / said / thought）** — kept whole, trimmed by budget only;
-//!    never noise-stripped.
-//! 2. **工具调用（did）** — kept: the call is the intent (which file / which
-//!    command / which query). Trimmed by budget only; **never** collapsed to an
-//!    envelope and never dropped as noise.
-//! 3. **工具产出（outcome）** — kept, plain text, budget trim only. The semantic
-//!    lane is wide recall; literal evidence questions are the sparse lane's job.
-//!    No envelope rewriting, no per-tool classification.
-//! 4. **压缩总结（summary）** — **excluded**. It is not first-party speech: the
-//!    model wrote it after the fact, its span crosses turns, so a hit there
-//!    resolves to a coordinate that does not correspond to where things happened.
+//! | Lane | Admits |
+//! |---|---|
+//! | **Dense** | Who / Said / Thought only (user, assistant message, thinking) |
+//! | **Sparse** | Dense three + Did (`item/tool_call`) |
+//!
+//! Outcome (`tool_result`), Summary, When, Other, reminder/control, unknown —
+//! **not** searchable on either lane. Per-tool envelopes stay archived.
 //!
 //! Why the earlier per-tool machinery (`slot-trim` / `clean` / `clean-prose` and
 //! their noise collapse) was archived: it cost coverage (the self-referential
@@ -97,6 +93,16 @@ pub fn classify(kind: &str, item_type: &str) -> Slot {
     }
 }
 
+/// Dense lane whitelist: user / assistant message / thinking only.
+pub fn admits_dense(slot: Slot) -> bool {
+    matches!(slot, Slot::Who | Slot::Said | Slot::Thought)
+}
+
+/// Sparse lane whitelist: dense three + tool_call intent (`Did`).
+pub fn admits_sparse(slot: Slot) -> bool {
+    matches!(slot, Slot::Who | Slot::Said | Slot::Thought | Slot::Did)
+}
+
 /// Corpus policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -105,8 +111,8 @@ pub enum Policy {
     /// chunk, no trimming, no filter. Must stay byte-identical to what
     /// production embeds today; kept for comparison, never selected.
     V0Prod,
-    /// The locked final corpus (see the module doc). 人话全留、工具调用留、
-    /// 工具产出原样（只按预算截断）、压缩总结剔掉。
+    /// Locked product corpus (see module doc). Dense: three-state prose;
+    /// sparse admits Did separately via [`admits_sparse`]. Outcome excluded.
     Final,
 }
 
@@ -154,36 +160,30 @@ impl SlotCfg {
         (self.budget_tokens * 3).max(120)
     }
 
-    /// Rows admitted at all. The union of the two production kind lists (the FTS
-    /// lane indexes 8 kinds, the dense lane only 5 — a known inconsistency).
+    /// Coarse kind gate for callers that do not yet pick a lane.
+    /// Prefer [`admits_dense`] / [`admits_sparse`] on the classified [`Slot`].
+    /// New kinds default **out** (unknown → false).
     pub fn kind_included(&self, kind: &str) -> bool {
         match kind {
-            "item/user" | "item/assistant" | "item/tool_call" | "item/tool_result"
-            | "compacted" => true,
-            "plan/execute" => true,
-            _ if kind.starts_with("reminder/") => true,
+            "item/user" | "item/assistant" | "item/tool_call" => true,
             "turn/start" | "turn/end" => self.index_when,
+            // tool_result / compacted / reminder / plan / unknown: not searchable
             _ => false,
         }
     }
 }
 
-/// One row's document text under [`Policy::Final`], or `None` when the row is not
-/// admitted at all.
+/// Projection text under the product whitelist, or `None` when the slot is out.
 ///
-/// 人话全留（只按预算头尾截断）；工具调用留（只按预算截断，绝不折叠成信封）；
-/// 工具产出原样（只按预算截断，不做分类、不做信封）；压缩总结剔除。
+/// Dense callers only keep Who/Said/Thought via [`admits_dense`]. Did text is
+/// still produced here for sparse-adjacent helpers; Outcome is always `None`.
 pub fn row_text_final(slot: Slot, text: &str, cfg: &SlotCfg) -> Option<String> {
     let budget = cfg.chars_budget();
     match slot {
-        Slot::Summary | Slot::When | Slot::Other => None,
+        Slot::Summary | Slot::When | Slot::Other | Slot::Outcome => None,
         Slot::Who | Slot::Said | Slot::Thought => Some(trim_head_tail(text.trim(), budget)),
-        // The call is the intent: file paths, commands, query words. Keep the
-        // signature and the arguments; the bulk is what the budget trim handles.
+        // Intent call: keep signature + args; budget trim only (never envelope).
         Slot::Did => Some(trim_head_tail(text.trim(), budget * 3 / 2)),
-        // The outcome is kept as-is for coverage; it is not rewritten and not
-        // classified. Literal evidence questions are the sparse lane's job.
-        Slot::Outcome => Some(trim_head_tail(text.trim(), budget)),
     }
 }
 
@@ -266,27 +266,47 @@ mod tests {
         assert_eq!(classify("turn/start", "turn/end"), Slot::When);
         assert_eq!(classify("plan/execute", "message"), Slot::Other);
         assert_eq!(classify("reminder/bash_exit", "message"), Slot::Other);
-        assert!(SlotCfg::default().kind_included("reminder/env"));
-        assert!(SlotCfg::default().kind_included("reminder/bash_exit"));
+        assert!(!SlotCfg::default().kind_included("reminder/env"));
+        assert!(!SlotCfg::default().kind_included("reminder/bash_exit"));
+        assert!(!SlotCfg::default().kind_included("item/tool_result"));
+        assert!(SlotCfg::default().kind_included("item/tool_call"));
+        assert!(!SlotCfg::default().kind_included("future/unknown_kind"));
     }
 
     #[test]
-    fn final_policy_keeps_calls_and_drops_summaries() {
+    fn lane_whitelist_admits_expected_slots_only() {
+        assert!(admits_dense(Slot::Who));
+        assert!(admits_dense(Slot::Said));
+        assert!(admits_dense(Slot::Thought));
+        assert!(!admits_dense(Slot::Did));
+        assert!(!admits_dense(Slot::Outcome));
+        assert!(!admits_dense(Slot::Summary));
+        assert!(!admits_dense(Slot::Other));
+
+        assert!(admits_sparse(Slot::Who));
+        assert!(admits_sparse(Slot::Said));
+        assert!(admits_sparse(Slot::Thought));
+        assert!(admits_sparse(Slot::Did));
+        assert!(!admits_sparse(Slot::Outcome));
+        assert!(!admits_sparse(Slot::Summary));
+        assert!(!admits_sparse(Slot::Other));
+    }
+
+    #[test]
+    fn final_policy_keeps_prose_and_call_text_drops_outcome() {
         let cfg = SlotCfg::default();
-        // 人话：全留（短文本原样）。
         assert_eq!(
             row_text_final(Slot::Who, "  帮我查一下这个报错  ", &cfg).as_deref(),
             Some("帮我查一下这个报错")
         );
-        // 工具调用：留，且不被折叠成信封（路径/命令头仍在）。
         let call = r#"edit({"file_path":"src/a.rs","new_string":"x"})"#;
-        let out = row_text_final(Slot::Did, call, &cfg).expect("kept");
+        let out = row_text_final(Slot::Did, call, &cfg).expect("kept for sparse helpers");
         assert!(out.contains("src/a.rs"), "{out}");
-        // 工具产出：原样保留，不做信封。
         let dump = "src/a.rs:1:x\nsrc/a.rs:2:y\n";
-        let out = row_text_final(Slot::Outcome, dump, &cfg).expect("kept");
-        assert!(out.contains("src/a.rs:2:y"), "{out}");
-        // 压缩总结：剔除。
+        assert!(
+            row_text_final(Slot::Outcome, dump, &cfg).is_none(),
+            "Outcome is out of every lane"
+        );
         assert!(row_text_final(Slot::Summary, "conversation summary", &cfg).is_none());
     }
 

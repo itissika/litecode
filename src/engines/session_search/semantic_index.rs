@@ -29,7 +29,7 @@ const EMBED_BATCH: usize = 32;
 const SNIPPET_CHARS: usize = 200;
 /// Bump when the dense document shape changes: 2 = chunked final corpus with
 /// char ranges (was 0/1 = one document per raw row, no offsets).
-const DOC_SCHEMA: u32 = 2;
+const DOC_SCHEMA: u32 = 3;
 /// Chunk budget of the dense corpus: the same hard cut the sparse lane uses,
 /// kept under `EMBED_MAX_LENGTH` so no chunk is ever truncated by the embedder.
 const DENSE_CHUNK_TOKENS: usize = 448;
@@ -527,10 +527,9 @@ impl SessionSemanticIndex {
                 .collect();
             let echo_keys = echo::result_keys_with(&rows, reader.data_root(), &known)?;
 
-            // The dense corpus is the locked final policy: slot projection (人话 +
-            // 工具调用 + 工具产出，压缩总结剔除), echo removal, budget trim, then
-            // 448-token hard-cut chunks with a head+tail anchor for split rows —
-            // the same grid the sparse lane uses, so both agree on coordinates.
+            // Dense whitelist (WP-130): Who/Said/Thought only — no Did/Outcome.
+            // Echo removal, budget trim, then 448-token hard-cut (+ head+tail
+            // anchor on splits). Chunk grid stays aligned with the sparse lane.
             let mut last_session = String::new();
             let mut last_tool: Option<String> = None;
             for row in &rows {

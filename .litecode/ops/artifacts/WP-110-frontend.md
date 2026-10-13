@@ -68,3 +68,11 @@ Settings 为 web 内嵌；预计 **不改 desktop**。静态核对即可（`git 
 1. ~~OpenCode 桶~~ → `opencode-go` Plan；`opencode` / `commandcode` API（backend_mid 2026-10-13）。
 2. ~~Moonshot / MiniMax id~~ → Plan: `moonshot-coding` / `minimax-token`；API: `moonshot` / `minimax`。
 3. **GM**（可选，不阻塞）：组标题中英偏好；未知 id 默认进 API 已按合同执行。
+
+---
+## 中层交叉审（WP-114；2026-10-13 HKT · frontend_mid，仓库恢复至 e408fe4 后重验）
+- 规则表单一（providerBilling.ts）：Plan = ark-coding/ark-agent/tencent-token/aliyun-token/moonshot-coding/minimax-token/opencode-go；API = openai/deepseek/mimo/zhipu/moonshot/minimax/opencode/commandcode；未知→API。与 default_catalog.toml id 一致；占位 id 无残留（仅注释提及）。
+- ProvidersSection：Plan / API 两组 + 两列网格 + ProviderCard；Models/ModelSwitcher/密钥 PUT/后端/desktop 未改。
+- 证据（node v22.14.0；恢复后 npm ci 重装 node_modules）：ProvidersSection.test.tsx 14/14；web 全量 174 文件 / 1295/1295；tsc -b 0；lint N/A。
+- desktop：Settings 为内嵌 web，无 desktop 代码改动，仅静态；Andy 真机验。未 commit。
+- 结论：通过，WP-114 封 done。

@@ -165,18 +165,33 @@ fn a_reverted_dense_index_equals_a_clean_rebuild() {
 #[test]
 fn a_late_echo_result_is_excluded_by_the_settled_seed() {
     let f = open();
+    // Dense whitelist: tool_call (Did) produces no docs, but settled still
+    // records session_read_call linkage so a later echo result is excluded.
     f.insert(&[user_text("hello"), session_search_call("call_1")]);
     f.reconcile();
 
     f.insert(&[call_result("call_1", "a copy of another transcript")]);
     let incremental = f.reconcile();
-    assert_eq!(incremental.len(), 2, "the call is content, the copy is not");
+    assert_eq!(
+        incremental.len(),
+        1,
+        "dense keeps only the user row; Did/Outcome stay out"
+    );
 
     let (chunks, settled) = f.artifacts();
-    assert_eq!(chunks.len(), 2, "the late result produced no document");
+    assert_eq!(chunks.len(), 1, "only Who prose is embedded");
     assert!(
         !chunks.iter().any(|line| line.contains("a copy of another")),
         "an echo copy must never be searchable: {chunks:?}"
+    );
+    assert!(
+        !chunks.iter().any(|line| line.contains("session_search") || line.contains("query")),
+        "tool_call must not enter the dense index: {chunks:?}"
+    );
+    // Settled still tracks the call for echo closure.
+    assert!(
+        settled.iter().any(|line| line.contains("call_1")),
+        "call linkage must remain in settled state: {settled:?}"
     );
     assert_eq!(f.rebuild(), (chunks, settled));
 }

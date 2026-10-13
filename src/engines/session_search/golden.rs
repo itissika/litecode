@@ -4,8 +4,8 @@
 //! This is the regression gate the lifecycle remediation (stages B–G) must keep
 //! green. It freezes, in one place:
 //!
-//! * which source rows enter the index — `compacted` rows and session-echo
-//!   tool results are dropped, everything else searchable is indexed;
+//! * which source rows enter the index — sparse whitelist = 三态 + `tool_call`;
+//!   `compacted`, session-echo results, and ordinary `tool_result` stay out;
 //! * the chunk grid — `sid:seq` for a row that fits one chunk, `sid:seq#k`
 //!   otherwise, tiling the row losslessly;
 //! * the normalized text stored next to the original chunk text;
@@ -101,7 +101,7 @@ fn corpus() -> Vec<SearchableRow> {
             r#"{"file_path":".litecode/sessions/OTHER.md"}"#,
         ),
         function_result("S1", 3, "c1", "echoed page UNIQUE_ECHO"),
-        // An ordinary tool pair: both rows stay searchable.
+        // Ordinary tool pair: call stays (sparse whitelist); result is out.
         function_call("S1", 4, "c2", "bash", r#"{"cmd":"grep NEEDLE_TOOL"}"#),
         function_result("S1", 5, "c2", "normal output NEEDLE_TOOL"),
         // CJK prose, then a compacted summary (dropped), then a long row.
@@ -182,7 +182,7 @@ fn golden_indexes_exactly_the_admitted_rows() {
         ("S1", 1),
         ("S1", 2),
         ("S1", 4),
-        ("S1", 5),
+        // S1:5 tool_result excluded (sparse whitelist)
         ("S2", 0),
         ("S2", 2),
         ("S2", 3),
@@ -208,6 +208,10 @@ fn golden_indexes_exactly_the_admitted_rows() {
     assert!(
         !indexed.contains(&("S2".into(), 1)),
         "compacted row indexed"
+    );
+    assert!(
+        !indexed.contains(&("S1".into(), 5)),
+        "ordinary tool_result must stay out of sparse"
     );
 }
 
@@ -330,14 +334,13 @@ fn golden_query_ladder_and_exclusions() {
         .collect();
     assert_eq!(span, "AuthRefactorToken");
 
-    // The literal appears in both the call and the result row.
+    // The literal appears on the call; the result row is out of the whitelist.
     let hits = index.search(Lane::Like, "NEEDLE_TOOL", 50).unwrap();
     let keys: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
-    assert_eq!(
-        keys,
-        ["S1:4".to_string(), "S1:5".to_string()]
-            .into_iter()
-            .collect()
+    assert_eq!(keys, ["S1:4".to_string()].into_iter().collect());
+    assert!(
+        !keys.contains("S1:5"),
+        "tool_result must not be searchable"
     );
 
     // CJK substring is answerable by both the LIKE path and the trigram table.

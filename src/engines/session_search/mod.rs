@@ -2046,11 +2046,15 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(hits.len(), 2, "the call and its result both match");
+        assert_eq!(hits.len(), 1, "sparse whitelist: call matches, result does not");
+        assert_eq!(hits[0].item_type, "function_call");
 
         let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
         assert!(view.contains("tool call · bash"), "{view}");
-        assert!(view.contains("tool result · bash"), "{view}");
+        assert!(
+            !view.contains("tool result · bash"),
+            "tool_result must not appear in the view: {view}"
+        );
     }
 
     #[test]
