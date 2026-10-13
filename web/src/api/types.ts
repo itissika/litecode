@@ -646,7 +646,8 @@ export interface AskQuestion {
   prompt: string;
   options: AskOption[];
   multi_select?: boolean;
-  /** When true, show optional free-text for this question. */
+  /** Deprecated: backend hard-codes true; the web client ignores it — every
+   *  ask_user question always ends in a fixed free-text last item. */
   free_text?: boolean;
 }
 
@@ -670,7 +671,7 @@ export interface PermissionRequest {
    * ask_user = questions[] batch (+ answers map on reply).
    */
   kind?: AskKind;
-  /** Approval / legacy ask_user top-level free-text flag. */
+  /** Approval card free-text flag only; ask_user ignores it. */
   free_text?: boolean;
   /** Legacy flat options (compat → single question id q0 when questions empty). */
   options?: AskOption[];

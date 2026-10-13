@@ -146,7 +146,8 @@ fn pipeline_version_change_triggers_rebuild() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn catalog_on_warmup_enables_tool_in_list() {
+async fn catalog_hides_tool_while_warming_shows_after_warm() {
+    // 10-12 locked rule (WP-057/060; ISSUE-052): Warming = tool hidden, Warm = listed.
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     init_workspace(root).unwrap();
@@ -156,16 +157,21 @@ async fn catalog_on_warmup_enables_tool_in_list() {
     let resolved = workspace_with_code_search(root);
     let global_engines = EngineManager::new();
     let engines = WorkspaceEngines::new();
-    // Bind ∈engines.json desired: on the list even while first Warming.
-    assert!(should_include_in_llm_list(
-        &resolved,
-        "default",
-        "code_search",
-        &global_engines,
-        &engines
-    ));
 
+    // start() sets Warming synchronously; warmup runs on a background thread.
     engines.reconcile(&resolved);
+    if engines.state("code_search") == Some(EngineState::Warming) {
+        assert!(
+            !should_include_in_llm_list(
+                &resolved,
+                "default",
+                "code_search",
+                &global_engines,
+                &engines
+            ),
+            "code_search must be hidden while Warming"
+        );
+    }
     assert!(
         engines
             .wait_until_warmed("code_search", Duration::from_secs(30))
@@ -526,4 +532,58 @@ async fn code_search_lifecycle_rebuild_stale_consume_stop() {
     engines.reconcile(&resolved);
     assert_eq!(engines.state("code_search"), Some(EngineState::Stopped));
     assert!(!engines.code_search().worker_alive());
+}
+
+/// WP-079 acceptance 1: after warm, a written file is indexed by the silent
+/// code tick alone — no refresh call. Interval is shortened by driving
+/// `code_index_tick()` every 100 ms instead of the 30 s serve loop.
+#[tokio::test]
+async fn code_index_tick_syncs_without_refresh() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    std::fs::write(root.join("a.rs"), "pub fn alpha() {}\n").unwrap();
+    let resolved = workspace_with_code_search(root);
+    let engines = WorkspaceEngines::new();
+    engines.reconcile(&resolved);
+    assert!(
+        engines
+            .wait_until_warmed("code_search", Duration::from_secs(30))
+            .await
+    );
+
+    std::fs::write(
+        root.join("b.rs"),
+        "pub fn zebra_tick_unique_token() -> u32 { 42 }\n",
+    )
+    .unwrap();
+    // Same call the serve watcher makes (router.rs); no refresh/consume call.
+    engines
+        .code_search()
+        .notify_fs_changes(&["b.rs".to_string()], false);
+    assert!(read_pending_hint(root) > 0, "change must be pending first");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut started = false;
+    loop {
+        if engines.code_index_tick() == litecode::engines::CodeIndexTick::Started {
+            started = true;
+        }
+        let hit = engines
+            .code_search()
+            .search("zebra_tick_unique_token", None, 5)
+            .map(|h| h.iter().any(|h| h.path.contains("b.rs")))
+            .unwrap_or(false);
+        if read_pending_hint(root) == 0 && hit && !engines.is_refresh_busy() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "tick did not sync: pending={} started={started}",
+            read_pending_hint(root)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(started, "the tick itself must have started the refresh");
+    assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+    engines.stop_all();
 }

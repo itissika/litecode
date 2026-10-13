@@ -30,6 +30,9 @@ use crate::workspace::{restart_watcher, workspace_router};
 /// one cheap watermark read per half-minute and bounds staleness to roughly the
 /// tail of the previous turn.
 const SESSION_INDEX_TICK: std::time::Duration = std::time::Duration::from_secs(30);
+/// Silent incremental code-index pass (WP-079 `code_index_tick`). Sync and
+/// non-blocking: the engine decides and spawns any refresh itself.
+const CODE_INDEX_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn router(state: ServeState, web_dist: PathBuf) -> Router {
     let cors = if state.auth_token.is_some() {
@@ -205,6 +208,18 @@ pub async fn listen(
                 // No-op unless the engine is desired, warm, and the store moved.
                 // Real failures are logged inside; nothing to surface here.
                 let _ = engines.consume_session_index_work();
+            }
+        });
+    }
+    // Periodic incremental code-index pass; never rebuilds, safe during turns.
+    {
+        let engines = state.workspace_engines.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(CODE_INDEX_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let _ = engines.code_index_tick();
             }
         });
     }

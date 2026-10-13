@@ -378,4 +378,3 @@ async fn ws_bridge_approval_round_trip_with_free_text() {
     assert_eq!(reply.outcome, permission::AskOutcome::Deny);
     assert_eq!(reply.free_text.as_deref(), Some("too broad"));
 }
-

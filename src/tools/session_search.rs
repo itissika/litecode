@@ -644,21 +644,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
-        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false)
-            .unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
         seed_session(root, "whatever");
         let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let r = call(
-            &tool,
-            root,
-            serde_json::json!({ "query": "whatever" }),
-            "",
-        );
+        let r = call(&tool, root, serde_json::json!({ "query": "whatever" }), "");
         assert_eq!(r.level, ToolSignalLevel::Error);
-        assert!(
-            r.content.contains("Settings → Engines"),
-            "{}",
-            r.content
-        );
+        assert!(r.content.contains("Settings → Engines"), "{}", r.content);
     }
 }

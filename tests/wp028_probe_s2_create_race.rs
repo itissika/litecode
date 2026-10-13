@@ -25,7 +25,11 @@ where
                 })
             })
             .collect();
-        let ok = hs.into_iter().map(|h| h.join().unwrap()).filter(|x| *x).count();
+        let ok = hs
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|x| *x)
+            .count();
         if ok > 1 {
             double += 1;
         }
@@ -39,7 +43,9 @@ where
 
 #[test]
 fn probe_s2_create_file_race() {
-    race("create_file", |s, p, t| s.create_file(p, &format!("writer {t}")).is_ok());
+    race("create_file", |s, p, t| {
+        s.create_file(p, &format!("writer {t}")).is_ok()
+    });
 }
 
 #[test]

@@ -386,7 +386,7 @@ fn turn_completed_projects_to_turn_finished() {
             reason: TurnEndReason::Completed,
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
-        error_kind: None,
+            error_kind: None,
         },
         &snap,
     )
@@ -559,7 +559,7 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
             reason: TurnEndReason::Error,
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
-        error_kind: None,
+            error_kind: None,
         },
         &snap,
     )
@@ -584,7 +584,7 @@ fn turn_finished_marks_a_failed_reconnect_retryable() {
             reason: TurnEndReason::Error,
             turn_token_stats: TurnTokenStats::default(),
             committed_next_seq: 0,
-        error_kind: None,
+            error_kind: None,
         },
         &snap,
     )

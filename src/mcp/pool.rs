@@ -528,7 +528,6 @@ async fn spawn_and_list(
     Ok((client, schemas))
 }
 
-
 async fn call_initialized(
     guard: &mut McpClient,
     tool_name: &str,

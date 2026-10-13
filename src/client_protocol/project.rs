@@ -1235,13 +1235,8 @@ mod wp025_turn_error_tests {
         // Text that happens to match CompactionFailed Display must NOT map
         // when error_kind is absent (ISSUE-036: no string equality).
         let coincidental = crate::types::LitecodeError::CompactionFailed.to_string();
-        let not_compaction = turn_error(
-            &TurnEndReason::Error,
-            &Some(coincidental),
-            None,
-            None,
-        )
-        .unwrap();
+        let not_compaction =
+            turn_error(&TurnEndReason::Error, &Some(coincidental), None, None).unwrap();
         assert!(
             matches!(not_compaction.code, ErrorCode::Internal),
             "string-only match must not yield CompactionFailed, got {:?}",

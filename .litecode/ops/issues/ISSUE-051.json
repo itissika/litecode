@@ -1,0 +1,34 @@
+{
+  "id": "ISSUE-051",
+  "grade": "bug",
+  "layer": "tool",
+  "domain": "tools-permission",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "ide",
+  "owner": "tools",
+  "status": "open",
+  "blocks": false,
+  "title": "[常见 bug] code_search 工具 maybe_consume_index 在待办为重建时也会触发重建",
+  "tier": "常见 bug",
+  "promise": "重建只在首建或索引不兼容（warmup 路径）或用户手动刷新时发生；agent 调用 code_search 只应触发增量更新，不得把引擎拖入重建/Warming。",
+  "actual": "src/tools/code_search.rs:34-48 maybe_consume_index 只判 IndexWork::None，对 IndexWork::Rebuild 也调用 consume_code_index_work，后者经 spawn_scoped_refresh 走 begin_building 并置 Warming。WP-079 的后台 tick 已限定仅 Update；本条只记录，不改。",
+  "evidence": [
+    {
+      "path": "src/tools/code_search.rs",
+      "note": ":45-47 `IndexWork::None => false, _ => consume_code_index_work()`"
+    },
+    {
+      "path": "src/engines/mod.rs",
+      "note": "spawn_scoped_refresh：Rebuild → begin_building + Warming"
+    }
+  ],
+  "repro": "代码索引需重建（如 pipeline_version 变化）且引擎 Warm 时 agent 调 code_search → 状态进 Warming、工具隐藏。",
+  "history": [
+    {
+      "ts": "2026-10-13T04:39:41.430Z",
+      "by": "ide",
+      "change": "ops.issue_new 分配（WP-079）"
+    }
+  ]
+}

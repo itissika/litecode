@@ -100,8 +100,7 @@ impl WorkspaceEngines {
             .is_some_and(|m| crate::engines::code_search::needs_rebuild(m) || !vectors_ready);
         let index_view =
             crate::engines::code_search::resolve_index_view(workspace_root, retrieval_status.state);
-        let pending_updates =
-            crate::engines::code_search::read_pending_hint(workspace_root);
+        let pending_updates = crate::engines::code_search::read_pending_hint(workspace_root);
         let sync = crate::engines::code_search::sync_pct_from_view(&index_view, pending_updates);
         let session_status = crate::engines::session_search::session_index_status(workspace_root);
         let status = merge_retrieval_status(index_view.status, session_status);

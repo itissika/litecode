@@ -159,6 +159,30 @@ pub struct RefreshAccepted {
     pub mode: RefreshAcceptedMode,
 }
 
+/// Result of one [`WorkspaceEngines::code_index_tick`] pass (WP-079).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeIndexTick {
+    /// Incremental refresh spawned.
+    Started,
+    /// Nothing done; reason attached.
+    Skipped(CodeIndexTickSkip),
+}
+
+/// Why a code index tick did nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeIndexTickSkip {
+    NoWorkspace,
+    NotDesired,
+    NotWarm,
+    /// A refresh is already running.
+    Busy,
+    WorkerDown,
+    /// No pending code work.
+    Clean,
+    /// Only first build / incompatible warmup / manual refresh may rebuild.
+    RebuildPending,
+}
+
 /// Gate for Agent/human semantic calls that would occupy the code_search worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeSearchCallGate {
@@ -792,25 +816,25 @@ impl WorkspaceEngines {
 
     /// Run pending index update/rebuild for **both** corpora. Human Refresh.
     ///
-    /// No-op when the union plan is `None`. Does not start the engine; caller
-    /// must already be Warm (or use [`Self::request_refresh`] which reconciles first).
+    /// WP-079: the two corpora are planned and executed **separately**. A
+    /// session-side rebuild never drags the code index into building/Warming
+    /// (and vice versa); only the code corpus' own rebuild may cool it.
+    /// [`engine_index_work`] (merged view) is for status display only.
+    ///
+    /// Does not start the engine; caller must already be Warm (or use
+    /// [`Self::request_refresh`] which reconciles first).
     pub fn consume_index_work(&self) -> Result<RefreshAccepted> {
-        match self.consume_preflight(&self.refresh_busy)? {
-            ConsumePreflight::ShortCircuit(accepted) => Ok(accepted),
-            ConsumePreflight::Ready(root) => match engine_index_work(&root) {
-                code_search::IndexWork::None => Ok(RefreshAccepted {
-                    desired: true,
-                    mode: RefreshAcceptedMode::Incremental,
-                }),
-                work => self.spawn_scoped_refresh(
-                    &root,
-                    work,
-                    RefreshScope::All,
-                    &self.refresh_busy,
-                    true,
-                ),
-            },
-        }
+        let code = self.consume_code_index_work()?;
+        let session = self.consume_session_index_work()?;
+        let code_idle = matches!(code.mode, RefreshAcceptedMode::Incremental)
+            && matches!(
+                self.code_search
+                    .workspace_root()
+                    .map(|root| code_search::index_work_from_disk(&root)),
+                Some(code_search::IndexWork::None) | None
+            )
+            && !self.refresh_busy.load(Ordering::SeqCst);
+        Ok(if code_idle { session } else { code })
     }
 
     /// Code corpus only. Used by agent `code_search`. Does not consume session.
@@ -898,6 +922,47 @@ impl WorkspaceEngines {
             }));
         }
         Ok(ConsumePreflight::Ready(root))
+    }
+
+    /// One silent incremental pass for the code corpus (WP-079). Sync and
+    /// non-blocking: decides and, when due, spawns the refresh and returns.
+    /// Never rebuilds and never enters Warming; safe every tick, during turns.
+    pub fn code_index_tick(&self) -> CodeIndexTick {
+        use CodeIndexTickSkip as Skip;
+        let Some(root) = self.code_search.workspace_root() else {
+            return CodeIndexTick::Skipped(Skip::NoWorkspace);
+        };
+        if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
+            return CodeIndexTick::Skipped(Skip::NotDesired);
+        }
+        if !matches!(self.state("code_search"), Some(EngineState::Warm)) {
+            return CodeIndexTick::Skipped(Skip::NotWarm);
+        }
+        if self.refresh_busy.load(Ordering::SeqCst) {
+            return CodeIndexTick::Skipped(Skip::Busy);
+        }
+        let work = code_search::index_work_from_disk(&root);
+        match work {
+            code_search::IndexWork::None => return CodeIndexTick::Skipped(Skip::Clean),
+            code_search::IndexWork::Rebuild { .. } => {
+                return CodeIndexTick::Skipped(Skip::RebuildPending);
+            }
+            code_search::IndexWork::Update { .. } => {}
+        }
+        if !self.code_search.worker_alive() {
+            return CodeIndexTick::Skipped(Skip::WorkerDown);
+        }
+        match self.spawn_scoped_refresh(&root, work, RefreshScope::Code, &self.refresh_busy, true) {
+            Ok(RefreshAccepted {
+                mode: RefreshAcceptedMode::Incremental,
+                ..
+            }) => CodeIndexTick::Started,
+            Ok(_) => CodeIndexTick::Skipped(Skip::Busy),
+            Err(e) => {
+                tracing::debug!(error = %e, "code index tick refresh not started");
+                CodeIndexTick::Skipped(Skip::Busy)
+            }
+        }
     }
 
     /// Reconcile dirty paths on a Warm worker. Does not embed or enable retrieval.
@@ -1675,6 +1740,134 @@ mod tests {
             IndexWork::Rebuild {
                 reason: IndexRebuildReason::FirstDesired
             }
+        );
+    }
+
+    fn tick_engines(root: &Path) -> WorkspaceEngines {
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines
+    }
+
+    // WP-079 acceptance 3: rebuild work never auto-triggers.
+    #[test]
+    fn code_index_tick_skips_rebuild_work() {
+        let dir = TempDir::new().unwrap();
+        code_search::init_workspace_index(dir.path()).unwrap(); // shell: Absent/rebuild
+        let engines = tick_engines(dir.path());
+        assert!(matches!(
+            code_search::index_work_from_disk(dir.path()),
+            code_search::IndexWork::Rebuild { .. }
+        ));
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::RebuildPending)
+        );
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+        assert!(!engines.is_refresh_busy());
+        let view = code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
+        assert_ne!(view.status, code_search::IndexStatus::Building);
+    }
+
+    #[test]
+    fn code_index_tick_skip_conditions() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        let engines = WorkspaceEngines::new();
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::NoWorkspace)
+        );
+        engines
+            .code_search()
+            .set_workspace(dir.path().to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::NotDesired)
+        );
+        let engines = tick_engines(dir.path());
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::Clean)
+        );
+        code_search::write_pending_hint(dir.path(), 2);
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::NotWarm)
+        );
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::Busy)
+        );
+        engines.set_refresh_busy_for_test(false);
+        assert_eq!(
+            engines.code_index_tick(),
+            CodeIndexTick::Skipped(CodeIndexTickSkip::WorkerDown)
+        );
+    }
+
+    // WP-079 acceptance 2: session rebuild must not drag code into Warming.
+    #[test]
+    fn manual_refresh_split_keeps_code_out_of_warming() {
+        let dir = TempDir::new().unwrap();
+        seed_ready_code_index(dir.path());
+        code_search::write_pending_hint(dir.path(), 2); // code: Update
+        seed_session_first_desired(dir.path()); // session: Rebuild
+        let engines = tick_engines(dir.path());
+        assert!(matches!(
+            code_search::index_work_from_disk(dir.path()),
+            code_search::IndexWork::Update { .. }
+        ));
+        assert!(matches!(
+            engine_index_work(dir.path()),
+            code_search::IndexWork::Rebuild { .. }
+        ));
+        let accepted = engines.consume_index_work().unwrap();
+        // Deterministic proof: Rebuild mode <=> begin_building + Warming (rebuild_cooling).
+        assert_eq!(accepted.mode, RefreshAcceptedMode::Incremental);
+        // No worker in unit tests: the spawned refresh hits the worker-failed
+        // handler, which sets Idle asynchronously. Wait for it to settle instead
+        // of racing it, then check the code engine was never cooled.
+        wait_refresh_settled(&engines);
+        let state = engines.state("code_search");
+        assert!(
+            matches!(state, Some(EngineState::Warm) | Some(EngineState::Idle)),
+            "code_search must not be Warming/Failed after a session-only rebuild, got {state:?}"
+        );
+        let view = code_search::resolve_index_view(dir.path(), Some(EngineState::Warm));
+        assert_ne!(view.status, code_search::IndexStatus::Building);
+    }
+
+    /// Wait (≤5 s) for a spawned refresh thread to finish (`refresh_busy` cleared).
+    fn wait_refresh_settled(engines: &WorkspaceEngines) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while engines.is_refresh_busy() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!engines.is_refresh_busy(), "spawned refresh did not settle");
+    }
+
+    // Reverse: code rebuild cools code only; session path never builds code.
+    #[test]
+    fn manual_refresh_code_rebuild_does_not_mark_session_building() {
+        let dir = TempDir::new().unwrap();
+        code_search::init_workspace_index(dir.path()).unwrap(); // code: Rebuild
+        let engines = tick_engines(dir.path());
+        let accepted = engines.consume_index_work().unwrap();
+        assert_eq!(accepted.mode, RefreshAcceptedMode::Rebuild);
+        wait_refresh_settled(&engines);
+        // session consume alone (worker down) must not touch code state.
+        let s = engines.consume_session_index_work().unwrap();
+        assert_ne!(s.mode, RefreshAcceptedMode::Rebuild);
+        assert!(
+            !engines.is_refresh_busy(),
+            "session consume must not set code busy"
         );
     }
 

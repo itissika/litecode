@@ -238,7 +238,10 @@ fn warmup_existing_index_reconciles_without_digest() {
 }
 
 #[test]
-fn refresh_rebuilds_when_dirty_too_large() {
+fn refresh_stays_incremental_when_all_files_dirty() {
+    // 10-12 locked rule (WP-057/060; ISSUE-052): DirtyTooLarge is gone — however
+    // many files are dirty, refresh is incremental; rebuild only on first run or
+    // an incompatible index.
     force_hash_embedder();
     let dir = TempDir::new().unwrap();
     let root = dir.path();
@@ -249,15 +252,18 @@ fn refresh_rebuilds_when_dirty_too_large() {
     let mut client = spawn_warmed(root);
     std::fs::write(root.join("a.rs"), "pub fn a_symbol_v2() {}\n").unwrap();
     std::fs::write(root.join("b.rs"), "pub fn b_symbol_v2() {}\n").unwrap();
-    let rebuilt = client.refresh().expect("dirty-too-large refresh");
-    assert_eq!(rebuilt.mode, RefreshMode::Rebuild);
-    assert!(
-        client
-            .search("a_symbol_v2", None, 5)
-            .unwrap()
-            .iter()
-            .any(|h| h.path.contains("a.rs"))
-    );
+    let refreshed = client.refresh().expect("all-dirty refresh");
+    assert_eq!(refreshed.mode, RefreshMode::Incremental);
+    for (sym, file) in [("a_symbol_v2", "a.rs"), ("b_symbol_v2", "b.rs")] {
+        assert!(
+            client
+                .search(sym, None, 5)
+                .unwrap()
+                .iter()
+                .any(|h| h.path.contains(file)),
+            "incremental refresh must index {file}"
+        );
+    }
     shutdown(client);
 }
 

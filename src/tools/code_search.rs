@@ -1,6 +1,3 @@
-use serde_json::Value;
-use std::collections::HashMap;
-use std::path::Path;
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{
     DEFAULT_TOP_K, IndexStatus, MAX_TOP_K, ResolvedIndexView, enclosing_scopes, format_breadcrumb,
@@ -12,6 +9,9 @@ use crate::engines::{
 };
 use crate::tool::Tool;
 use crate::types::ToolCallResult;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::path::Path;
 
 /// Same budget as grep `content`: one response must leave room to reason.
 const CODE_SEARCH_TOKEN_BUDGET: usize = 6_000;
@@ -146,11 +146,7 @@ impl Tool for CodeSearchTool {
                 let root = self.engines.code_search().workspace_root();
                 ToolCallResult::ok(crate::tools::prepend_sync_pct(
                     &sync,
-                    &format_code_search_hits(
-                        root.as_deref(),
-                        &hits,
-                        CODE_SEARCH_TOKEN_BUDGET,
-                    ),
+                    &format_code_search_hits(root.as_deref(), &hits, CODE_SEARCH_TOKEN_BUDGET),
                 ))
             }
             Err(e) => ToolCallResult::error(e.to_string()),
@@ -555,8 +551,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
-        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false)
-            .unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Idle);

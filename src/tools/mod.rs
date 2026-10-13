@@ -67,11 +67,11 @@ pub(crate) fn sync_pct_for_workspace(
     }
 }
 
-pub(crate) fn prepend_sync_pct(
-    sync: &crate::engines::code_search::SyncPct,
-    body: &str,
-) -> String {
-    format!("{}
-{}", format_sync_pct_line(sync), body)
+pub(crate) fn prepend_sync_pct(sync: &crate::engines::code_search::SyncPct, body: &str) -> String {
+    format!(
+        "{}
+{}",
+        format_sync_pct_line(sync),
+        body
+    )
 }
-

@@ -1025,7 +1025,6 @@ describe("grantPermission receipt (FE-04)", () => {
         prompt: "Pick",
         options: [{ id: "x", label: "X" }],
         multi_select: undefined,
-        free_text: true,
       },
     ]);
   });

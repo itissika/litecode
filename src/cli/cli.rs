@@ -196,65 +196,207 @@ fn ask_cli_approval(tool: &str, summary: &str) -> (bool, Option<String>) {
     (approved, free_text)
 }
 
+/// Label of the system-appended free-text item (always the last item).
+const CLI_OTHER_LABEL: &str = "其他（自己填写）";
+
+/// Parsed CLI pick: option indices (0-based) and whether the trailing
+/// 「其他」 item was chosen. `None` = skip / empty / no valid pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CliSelection {
+    pub options: Vec<usize>,
+    pub other: bool,
+}
+
+/// Pure parser for `ask_cli_one_question`. Item numbers are 1-based; item
+/// `n_options + 1` is 「其他（自己填写）」. Single-select: first valid pick wins
+/// (options and 「其他」 are mutually exclusive). Multi-select: they may coexist.
+pub(crate) fn parse_cli_selection(
+    input: &str,
+    n_options: usize,
+    multi_select: bool,
+) -> Option<CliSelection> {
+    let trimmed = input.trim().to_lowercase();
+    if trimmed.is_empty() || trimmed == "s" || trimmed == "skip" {
+        return None;
+    }
+    let mut sel = CliSelection {
+        options: Vec::new(),
+        other: false,
+    };
+    for part in trimmed.split(|c: char| c == ',' || c.is_whitespace()) {
+        let Ok(n) = part.parse::<usize>() else {
+            continue;
+        };
+        if n == 0 || n > n_options + 1 {
+            continue;
+        }
+        if n == n_options + 1 {
+            sel.other = true;
+        } else if !sel.options.contains(&(n - 1)) {
+            sel.options.push(n - 1);
+        }
+        if !multi_select {
+            break;
+        }
+    }
+    if sel.options.is_empty() && !sel.other {
+        return None;
+    }
+    Some(sel)
+}
+
+/// Build the answer from a parsed selection + free text. 「其他」 never goes
+/// into `selected`; choosing it with empty text means not answered.
+pub(crate) fn build_cli_answer(
+    q: &crate::permission::AskQuestion,
+    sel: &CliSelection,
+    text: Option<&str>,
+) -> Option<crate::permission::AskAnswer> {
+    let free_text = text
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    if sel.other && free_text.is_none() {
+        return None;
+    }
+    let selected: Vec<String> = sel
+        .options
+        .iter()
+        .filter_map(|i| q.options.get(*i).map(|o| o.id.clone()))
+        .collect();
+    if selected.is_empty() && free_text.is_none() {
+        return None;
+    }
+    Some(crate::permission::AskAnswer {
+        selected,
+        free_text,
+    })
+}
+
 fn ask_cli_one_question(
     q: &crate::permission::AskQuestion,
 ) -> Option<crate::permission::AskAnswer> {
+    // WP-081: 「其他（自己填写）」 is always the last item, regardless of q.free_text.
     eprintln!("\n⚠ [{}] {}", q.id, q.prompt);
     for (i, opt) in q.options.iter().enumerate() {
         eprintln!("  [{}] {} ({})", i + 1, opt.label, opt.id);
     }
+    eprintln!("  [{}] {}", q.options.len() + 1, CLI_OTHER_LABEL);
     if q.multi_select {
-        eprint!("  Pick option numbers comma-separated, or [s]kip: ");
+        eprint!("  Pick item numbers comma-separated, or [s]kip: ");
     } else {
-        eprint!("  Pick option number, or [s]kip: ");
+        eprint!("  Pick item number, or [s]kip: ");
     }
     std::io::stderr().flush().ok();
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {
         return None;
     }
-    let trimmed = input.trim().to_lowercase();
-    if trimmed.is_empty() || trimmed == "s" || trimmed == "skip" {
-        return None;
-    }
-    let mut selected = Vec::new();
-    for part in trimmed.split(|c: char| c == ',' || c.is_whitespace()) {
-        if part.is_empty() {
-            continue;
-        }
-        if let Ok(n) = part.parse::<usize>() {
-            if let Some(opt) = q.options.get(n.saturating_sub(1)) {
-                selected.push(opt.id.clone());
-                if !q.multi_select {
-                    break;
-                }
-            }
-        }
-    }
-    if selected.is_empty() {
-        return None;
-    }
-    let free_text = if q.free_text {
-        eprint!("  Optional free text (Enter to skip): ");
+    let sel = parse_cli_selection(&input, q.options.len(), q.multi_select)?;
+    let text = if sel.other {
+        eprint!("  {}: ", CLI_OTHER_LABEL);
         std::io::stderr().flush().ok();
-        let mut opinion = String::new();
-        if std::io::stdin().read_line(&mut opinion).is_ok() {
-            let t = opinion.trim();
-            if t.is_empty() {
-                None
-            } else {
-                Some(t.to_string())
-            }
-        } else {
-            None
+        let mut t = String::new();
+        if std::io::stdin().read_line(&mut t).is_err() {
+            return None;
         }
+        Some(t)
     } else {
         None
     };
-    Some(crate::permission::AskAnswer {
-        selected,
-        free_text,
-    })
+    build_cli_answer(q, &sel, text.as_deref())
+}
+
+#[cfg(test)]
+mod wp081_cli_tests {
+    use super::*;
+    use crate::permission::{AskOption, AskQuestion};
+
+    fn q(multi: bool) -> AskQuestion {
+        AskQuestion {
+            id: "q1".into(),
+            prompt: "p".into(),
+            options: vec![
+                AskOption {
+                    id: "a".into(),
+                    label: "A".into(),
+                },
+                AskOption {
+                    id: "b".into(),
+                    label: "B".into(),
+                },
+            ],
+            multi_select: multi,
+            free_text: false,
+        }
+    }
+
+    #[test]
+    fn single_picks_last_item_is_other_exclusive() {
+        let s = parse_cli_selection("3", 2, false).unwrap();
+        assert_eq!(
+            s,
+            CliSelection {
+                options: vec![],
+                other: true
+            }
+        );
+        // single-select: first valid pick wins, the rest ignored
+        let s = parse_cli_selection("1,3", 2, false).unwrap();
+        assert_eq!(
+            s,
+            CliSelection {
+                options: vec![0],
+                other: false
+            }
+        );
+        let a = build_cli_answer(
+            &q(false),
+            &parse_cli_selection("3", 2, false).unwrap(),
+            Some(" hi "),
+        )
+        .unwrap();
+        assert!(a.selected.is_empty());
+        assert_eq!(a.free_text.as_deref(), Some("hi"));
+    }
+
+    #[test]
+    fn multi_options_and_other_coexist() {
+        let s = parse_cli_selection("2, 1 3", 2, true).unwrap();
+        assert_eq!(
+            s,
+            CliSelection {
+                options: vec![1, 0],
+                other: true
+            }
+        );
+        let a = build_cli_answer(&q(true), &s, Some("note")).unwrap();
+        assert_eq!(a.selected, vec!["b".to_string(), "a".to_string()]);
+        assert_eq!(a.free_text.as_deref(), Some("note"));
+    }
+
+    #[test]
+    fn text_only_counts_as_answered_other_with_empty_text_does_not() {
+        let s = parse_cli_selection("3", 2, true).unwrap();
+        assert!(build_cli_answer(&q(true), &s, Some("only text")).is_some());
+        assert!(build_cli_answer(&q(true), &s, Some("   ")).is_none());
+        assert!(build_cli_answer(&q(true), &s, None).is_none());
+        // multi with option + other but empty text = not answered
+        let s = parse_cli_selection("1,3", 2, true).unwrap();
+        assert!(build_cli_answer(&q(true), &s, Some("")).is_none());
+    }
+
+    #[test]
+    fn out_of_range_and_empty_input() {
+        assert_eq!(parse_cli_selection("", 2, false), None);
+        assert_eq!(parse_cli_selection("  s ", 2, true), None);
+        assert_eq!(parse_cli_selection("skip", 2, true), None);
+        assert_eq!(parse_cli_selection("0", 2, false), None);
+        assert_eq!(parse_cli_selection("4", 2, true), None);
+        assert_eq!(parse_cli_selection("x,9", 2, true), None);
+        let s = parse_cli_selection("9,2", 2, false).unwrap();
+        assert_eq!(s.options, vec![1]);
+    }
 }
 
 fn ask_cli_ask_user(

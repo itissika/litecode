@@ -980,11 +980,7 @@ mod tests {
             started.elapsed() < Duration::from_secs(3),
             "should return as soon as the shell exits, not wait for sleep"
         );
-        assert!(
-            result.content.contains("fin-marker"),
-            "{}",
-            result.content
-        );
+        assert!(result.content.contains("fin-marker"), "{}", result.content);
         std::thread::sleep(Duration::from_secs(3));
         assert!(
             !marker.exists(),

@@ -42,7 +42,11 @@ fn t1_spine_failure_restores_changed_files_for_next_seam() {
     fs::write(&path, "external").expect("mutate");
 
     let changed = mgr.take_changed_files(&sid);
-    assert_eq!(changed, vec![path.clone()], "precondition: take sees change");
+    assert_eq!(
+        changed,
+        vec![path.clone()],
+        "precondition: take sees change"
+    );
 
     // Simulate spine Err → exec calls restore_changed_files(&changed).
     mgr.restore_changed_files(&sid, &changed);

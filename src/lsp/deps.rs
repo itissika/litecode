@@ -830,7 +830,11 @@ mod tests {
         let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
         assert_eq!(found, link);
         assert_eq!(found.file_name().unwrap(), "rust-analyzer");
-        let binary = LanguageServerBinary { path: found, arguments: vec![], env: None };
+        let binary = LanguageServerBinary {
+            path: found,
+            arguments: vec![],
+            env: None,
+        };
         retry_txt_busy(|| run_version_probe(&binary, Some(dir.path())))
             .expect("generic --version probe via link");
     }
@@ -849,7 +853,11 @@ mod tests {
         std::fs::set_permissions(&rustup, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink(&rustup, dir.path().join("rust-analyzer")).unwrap();
         let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
-        let binary = LanguageServerBinary { path: found, arguments: vec![], env: None };
+        let binary = LanguageServerBinary {
+            path: found,
+            arguments: vec![],
+            env: None,
+        };
         let err = retry_txt_busy(|| run_version_probe(&binary, Some(dir.path()))).unwrap_err();
         assert!(err.contains("--version exited"), "{err}");
     }
@@ -868,7 +876,10 @@ mod tests {
         })
         .unwrap();
         assert!(out.status.success(), "{out:?}");
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "rust-analyzer ok");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "rust-analyzer ok"
+        );
     }
 
     #[cfg(windows)]

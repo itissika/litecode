@@ -649,7 +649,9 @@ impl LspTool {
                 .tool_action_outcome(&action, &file_path, None, None, None)
                 .await
             {
-                Ok(out) => with_content_modified(ToolCallResult::ok(out.text), out.content_modified),
+                Ok(out) => {
+                    with_content_modified(ToolCallResult::ok(out.text), out.content_modified)
+                }
                 Err(e) => map_lsp_query_error(e),
             };
         };
@@ -718,10 +720,25 @@ mod tests {
         assert_eq!(plain.level, crate::types::result::ToolSignalLevel::Ok);
         let flagged =
             with_content_modified(ToolCallResult::ok("No results"), true).finalize_signals();
-        assert_eq!(flagged.level, crate::types::result::ToolSignalLevel::Warning);
-        assert!(flagged.content.contains("ContentModified"), "{}", flagged.content);
-        assert!(flagged.content.contains("do not treat as 'not found'"), "{}", flagged.content);
-        assert!(flagged.content.contains("No results"), "{}", flagged.content);
+        assert_eq!(
+            flagged.level,
+            crate::types::result::ToolSignalLevel::Warning
+        );
+        assert!(
+            flagged.content.contains("ContentModified"),
+            "{}",
+            flagged.content
+        );
+        assert!(
+            flagged.content.contains("do not treat as 'not found'"),
+            "{}",
+            flagged.content
+        );
+        assert!(
+            flagged.content.contains("No results"),
+            "{}",
+            flagged.content
+        );
     }
 
     #[test]

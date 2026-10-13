@@ -351,7 +351,9 @@ fn sync_pct_from_pending(pending: usize) -> u8 {
         return 99;
     }
     // Conservative: each pending file knocks ~2pp off a full sync, floor 1.
-    100u8.saturating_sub((pending.saturating_mul(2)).min(99) as u8).max(1)
+    100u8
+        .saturating_sub((pending.saturating_mul(2)).min(99) as u8)
+        .max(1)
 }
 
 /// Resolve UI index status from disk job file + meta + pending hint + engine state.

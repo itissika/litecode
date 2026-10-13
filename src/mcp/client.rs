@@ -373,8 +373,8 @@ mod tests {
     use std::time::Duration;
 
     fn mock_cmd() -> (String, Vec<String>, HashMap<String, String>) {
-        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/mock_mcp_server.py");
+        let script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_mcp_server.py");
         (
             "python3".into(),
             vec![script.display().to_string()],
@@ -393,13 +393,9 @@ mod tests {
     async fn kill_reaps_grandchild_process() {
         let marker = std::env::temp_dir().join(format!("lc-mcp-gc-{}", ulid::Ulid::new()));
         let script = format!("(sleep 3; touch {}) & wait", marker.display());
-        let mut client = McpStdioClient::new(
-            "sh",
-            &[String::from("-c"), script],
-            &HashMap::new(),
-            None,
-        )
-        .expect("spawn");
+        let mut client =
+            McpStdioClient::new("sh", &[String::from("-c"), script], &HashMap::new(), None)
+                .expect("spawn");
         // Let the grandchild start before we kill the tree.
         tokio::time::sleep(Duration::from_millis(100)).await;
         client.kill().await;
@@ -416,21 +412,14 @@ mod tests {
         let marker = std::env::temp_dir().join(format!("lc-mcp-drop-{}", ulid::Ulid::new()));
         let script = format!("(sleep 3; touch {}) & wait", marker.display());
         {
-            let _client = McpStdioClient::new(
-                "sh",
-                &[String::from("-c"), script],
-                &HashMap::new(),
-                None,
-            )
-            .expect("spawn");
+            let _client =
+                McpStdioClient::new("sh", &[String::from("-c"), script], &HashMap::new(), None)
+                    .expect("spawn");
             tokio::time::sleep(Duration::from_millis(100)).await;
             // Drop triggers start_kill + group kill.
         }
         tokio::time::sleep(Duration::from_secs(4)).await;
-        assert!(
-            !marker.exists(),
-            "MCP Drop must reach grandchildren"
-        );
+        assert!(!marker.exists(), "MCP Drop must reach grandchildren");
     }
 
     /// R1: notification before the real response must not be treated as the result.
@@ -489,10 +478,7 @@ mod tests {
         let reuse = client
             .call_tool("echo", serde_json::json!({"greeting": "nope"}))
             .await;
-        assert!(
-            reuse.is_err(),
-            "dirty client must refuse further requests"
-        );
+        assert!(reuse.is_err(), "dirty client must refuse further requests");
     }
 
     /// R3: cancel mid-request → dirty; rebuilt client serves the next request correctly.

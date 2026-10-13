@@ -507,7 +507,6 @@ fn summary_text_from_compact_output(items: &[Item]) -> String {
         .join("")
 }
 
-
 /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
 #[cfg(test)]
 thread_local! {

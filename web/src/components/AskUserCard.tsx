@@ -16,15 +16,22 @@ import { glyphFor } from "./ToolIcon";
  *  inertia: one gesture, however many events it fires, is one step. */
 const STEP_LOCK_MS = 260;
 
+/** Label of the fixed last item every question ends in. */
+export const OTHER_LABEL = "其他（自己填写）";
+
 /* ── 3/3 · ask_user: one question at a time → Submit / Cancel ──────────
    The pane renders the question in view and nothing else — one item container
    per question, as tall as that question, so there is no window to measure and
    nothing to clip. Three ways to move on, one step each: the wheel, the arrows in
    the title row (which also carry `current / total`), and — for a single choice -
    the pick itself, because there the click *is* the answer. The pane slides a
-   hair in the direction of travel. The actions sit below the pane: the free text
-   belongs to the question in view (the wire keeps free text per question), the
-   buttons to the whole ask. Submit waits for an answer to every question; Cancel
+   hair in the direction of travel. Every question ends in a fixed inline input,
+   「其他（自己填写）」 — not a protocol option (no option id, never in `selected`),
+   always shown whatever `free_text` says. Single choice: the input and the options
+   exclude each other (typing clears the pick; a pick drops the text from the
+   answer). Multi-select: they coexist. Text alone answers a question; text is
+   trimmed, and blank means unanswered. The buttons below the pane belong to the
+   whole ask. Submit waits for an answer to every question; Cancel
    answers nothing. Its own module, because it is the one ask that carries a state
    machine — answers per question plus the legacy single-question compat — where
    the other two carry a receipt. */
@@ -33,7 +40,6 @@ export function AskUserCard({
   summary,
   options,
   multiSelect,
-  freeText,
   questions: questionsProp,
   onGrant,
 }: {
@@ -41,7 +47,9 @@ export function AskUserCard({
   summary: string;
   options: AskOption[];
   multiSelect: boolean;
-  freeText: boolean;
+  /** Ignored (deprecated): the last-item input is always shown. Kept optional so
+   *  callers that still pass it compile unchanged. */
+  freeText?: boolean;
   questions?: AskQuestion[];
   onGrant: Grant;
 }) {
@@ -53,9 +61,8 @@ export function AskUserCard({
         questionsProp,
         options,
         multiSelect,
-        freeText,
       ),
-    [summary, questionsProp, options, multiSelect, freeText],
+    [summary, questionsProp, options, multiSelect],
   );
 
   const [pickedByQ, setPickedByQ] = useState<Record<string, string[]>>({});
@@ -130,18 +137,37 @@ export function AskUserCard({
     return () => pane.removeEventListener("wheel", onWheel);
   }, [goTo, multi, questions, index]);
 
+  /** Typing into a single choice's last item selects it: the options' pick clears. */
+  const typeFree = (qid: string, value: string, multi: boolean) => {
+    setTextByQ((prev) => ({ ...prev, [qid]: value }));
+    if (!multi && value.trim()) {
+      setPickedByQ((prev) => ({ ...prev, [qid]: [] }));
+    }
+  };
+
+  /** The trimmed text that counts for a question: none when blank, and none for a
+   *  single choice whose options hold the pick (the two exclude each other). */
+  const freeFor = (q: AskQuestion): string => {
+    const ft = (textByQ[q.id] ?? "").trim();
+    if (!ft) return "";
+    if (!q.multi_select && (pickedByQ[q.id] ?? []).length > 0) return "";
+    return ft;
+  };
+
   const allAnswered =
     questions.length > 0 &&
-    questions.every((q) => (pickedByQ[q.id] ?? []).length > 0);
+    questions.every(
+      (q) => (pickedByQ[q.id] ?? []).length > 0 || freeFor(q) !== "",
+    );
 
   const buildAnswers = (): Record<string, AskAnswer> => {
     const answers: Record<string, AskAnswer> = {};
     for (const q of questions) {
-      const selected = pickedByQ[q.id] ?? [];
-      const ft = (textByQ[q.id] ?? "").trim();
+      const ft = freeFor(q);
+      const selected = !q.multi_select && ft ? [] : (pickedByQ[q.id] ?? []);
       answers[q.id] = {
         selected,
-        ...(q.free_text && ft ? { free_text: ft } : {}),
+        ...(ft ? { free_text: ft } : {}),
       };
     }
     return answers;
@@ -218,19 +244,6 @@ export function AskUserCard({
           >
             Cancel
           </button>
-          {active?.free_text && (
-            <input
-              type="text"
-              data-testid={`ask-user-free-text-${active.id}`}
-              aria-label={`Free text for ${active.prompt || active.id} (optional)`}
-              placeholder="Free text (optional)"
-              className={`${ASK_FIELD} min-w-[8rem] flex-1`}
-              value={textByQ[active.id] ?? ""}
-              onChange={(e) =>
-                setTextByQ((prev) => ({ ...prev, [active.id]: e.target.value }))
-              }
-            />
-          )}
         </>
       }
     >
@@ -286,6 +299,44 @@ export function AskUserCard({
                   </button>
                 );
               })}
+              {(() => {
+                /* The last item wears the options' own selected look. A textbox
+                   cannot sit in a button nor carry aria-pressed, so the state is
+                   data-selected plus a described-by "已选中". */
+                const otherOn = freeFor(active) !== "";
+                const selId = `ask-user-other-sel-${active.id}`;
+                return (
+                  <label
+                    data-testid={`ask-user-other-${active.id}`}
+                    data-selected={otherOn ? "true" : "false"}
+                    className={`permission-card__option ${otherOn ? "btn-primary" : "btn-ghost"} btn-sm flex w-full items-center gap-2`}
+                  >
+                    <span
+                      id={`ask-user-other-label-${active.id}`}
+                      className="shrink-0 whitespace-nowrap"
+                    >
+                      {OTHER_LABEL}
+                    </span>
+                    <input
+                      type="text"
+                      data-testid={`ask-user-free-text-${active.id}`}
+                      aria-labelledby={`ask-user-other-label-${active.id}`}
+                      aria-describedby={otherOn ? selId : undefined}
+                      placeholder={OTHER_LABEL}
+                      className={`${ASK_FIELD} min-w-0 flex-1`}
+                      value={textByQ[active.id] ?? ""}
+                      onChange={(e) =>
+                        typeFree(active.id, e.target.value, qMulti)
+                      }
+                    />
+                    {otherOn && (
+                      <span id={selId} className="sr-only">
+                        已选中
+                      </span>
+                    )}
+                  </label>
+                );
+              })()}
             </div>
           </div>
         </div>

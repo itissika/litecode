@@ -78,10 +78,6 @@ impl Tool for AskUserTool {
                             "multi_select": {
                                 "type": "boolean",
                                 "description": "When true, the user may pick multiple options. Default false."
-                            },
-                            "allow_free_text": {
-                                "type": "boolean",
-                                "description": "When true, offer an optional free-text field for this question. Default true."
                             }
                         },
                         "required": ["id", "prompt", "options"]
@@ -108,10 +104,6 @@ impl Tool for AskUserTool {
                 "multi_select": {
                     "type": "boolean",
                     "description": "Legacy: multi_select for the single top-level question."
-                },
-                "allow_free_text": {
-                    "type": "boolean",
-                    "description": "Legacy: free-text for the single top-level question. Default true."
                 }
             }
         })
@@ -220,11 +212,10 @@ fn parse_questions(input: &Value) -> Result<Vec<AskQuestion>, String> {
                 .get("multi_select")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let free_text = q
-                .get("allow_free_text")
-                .or_else(|| q.get("free_text"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            // WP-080: free text is system-owned; `allow_free_text` / `free_text` from
+            // older agents are silently ignored. Every question gets the final entry
+            // 「其他（自己填写）」.
+            let free_text = true;
             out.push(AskQuestion {
                 id: id.to_string(),
                 prompt: prompt.to_string(),
@@ -250,10 +241,7 @@ fn parse_questions(input: &Value) -> Result<Vec<AskQuestion>, String> {
                 .get("multi_select")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let free_text = input
-                .get("allow_free_text")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+            let free_text = true; // WP-080: legacy flag ignored.
             Ok(vec![AskQuestion {
                 id: "q0".into(),
                 prompt: prompt.to_string(),
@@ -318,7 +306,15 @@ fn format_answers(questions: &[AskQuestion], answers: &HashMap<String, AskAnswer
             continue;
         };
         if ans.selected.is_empty() {
-            lines.push(format!("[{}] selected: (none)", q.id));
+            // Text-only answer: user picked the system entry 「其他（自己填写）」.
+            if ans.free_text.is_some() {
+                lines.push(format!(
+                    "[{}] selected: (none) — answered via 「其他（自己填写）」",
+                    q.id
+                ));
+            } else {
+                lines.push(format!("[{}] selected: (none)", q.id));
+            }
         } else {
             let labels: Vec<String> = ans
                 .selected
@@ -392,9 +388,9 @@ mod tests {
             .unwrap_or_else(|| panic!("missing [{qid}] selected_ids in:\n{content}"));
         for id in ids {
             assert!(
-                line.split(':').nth(1).is_some_and(|rest| {
-                    rest.split(',').map(str::trim).any(|tok| tok == *id)
-                }),
+                line.split(':')
+                    .nth(1)
+                    .is_some_and(|rest| { rest.split(',').map(str::trim).any(|tok| tok == *id) }),
                 "expected id {id:?} in {line}"
             );
         }
@@ -474,6 +470,74 @@ mod tests {
         assert_selected_ids(&result.content, "color", &["blue"]);
         assert_selected_ids(&result.content, "size", &["m", "l"]);
         assert_free_text(&result.content, "size", "prefer M");
+    }
+
+    #[test]
+    fn schema_has_no_allow_free_text() {
+        let schema = AskUserTool::new().schema();
+        assert!(schema["properties"].get("allow_free_text").is_none());
+        let item = &schema["properties"]["questions"]["items"]["properties"];
+        assert!(item.get("allow_free_text").is_none());
+        assert!(item.get("free_text").is_none());
+        assert!(!schema.to_string().contains("allow_free_text"));
+    }
+
+    #[test]
+    fn legacy_free_text_flags_ignored_free_text_always_true() {
+        let opts = serde_json::json!([{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]);
+        let batch = parse_questions(&serde_json::json!({
+            "questions": [
+                {"id": "q1", "prompt": "P1?", "options": opts, "allow_free_text": false},
+                {"id": "q2", "prompt": "P2?", "options": opts, "free_text": false},
+                {"id": "q3", "prompt": "P3?", "options": opts}
+            ]
+        }))
+        .expect("batch parses");
+        assert_eq!(batch.len(), 3);
+        assert!(batch.iter().all(|q| q.free_text), "{batch:?}");
+        let legacy = parse_questions(&serde_json::json!({
+            "question": "Ship?", "options": opts, "allow_free_text": false
+        }))
+        .expect("legacy parses");
+        assert!(legacy[0].free_text);
+        let tool = AskUserTool::new();
+        assert!(tool
+            .validate_input(&serde_json::json!({
+                "questions": [{"id": "q1", "prompt": "P?", "options": opts, "allow_free_text": false}]
+            }))
+            .is_ok());
+    }
+
+    #[test]
+    fn text_only_answer_is_formatted() {
+        let tool = AskUserTool::new();
+        let mut answers = HashMap::new();
+        answers.insert(
+            "q1".into(),
+            AskAnswer {
+                selected: vec![],
+                free_text: Some("use postgres".into()),
+            },
+        );
+        tool.set_permission_sink(Arc::new(
+            RecordingPermissionSink::from_reply(true, false).with_answers(answers),
+        ));
+        let result = tool.call(serde_json::json!({
+            "questions": [{
+                "id": "q1",
+                "prompt": "DB?",
+                "options": [{"id": "sqlite", "label": "SQLite"}, {"id": "mysql", "label": "MySQL"}]
+            }]
+        }));
+        assert_eq!(result.level, ToolSignalLevel::Ok);
+        let c = &result.content;
+        assert!(
+            line_for(c, "q1", "selected").is_some_and(|l| l.contains("(none)")),
+            "{c}"
+        );
+        assert!(line_for(c, "q1", "selected_ids").is_none(), "{c}");
+        assert_free_text(c, "q1", "use postgres");
+        assert!(!c.contains("(no answer)"), "{c}");
     }
 
     #[test]

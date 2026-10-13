@@ -583,8 +583,14 @@ mod tests {
         engine.set_worker_os_pid(Some(pid));
         engine.stop();
         // Reap before liveness probe: on Unix kill(0) still succeeds for zombies
-        // held by this test's Child (ISSUE-009). SIGKILL already delivered above.
-        let _ = child.try_wait();
+        // held by this test's Child (ISSUE-009). SIGKILL is delivered above but
+        // the exit is asynchronous: a single try_wait() can run before the child
+        // has exited, leave it unreaped, and the zombie then reads as alive
+        // (flake, ISSUE-049 notes). Poll the reap within the same 2 s budget.
+        let reap_deadline = Instant::now() + Duration::from_secs(2);
+        while !matches!(child.try_wait(), Ok(Some(_))) && Instant::now() < reap_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         assert!(
             wait_until_dead(pid, Duration::from_secs(2)),

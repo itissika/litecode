@@ -396,13 +396,12 @@ mod tests {
             error_kind: Some(TurnErrorKind::CompactionFailed),
         };
         let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(
-            v["TurnCompleted"]["error_kind"],
-            "compaction_failed"
-        );
+        assert_eq!(v["TurnCompleted"]["error_kind"], "compaction_failed");
         let back: InternalEvent = serde_json::from_value(v).unwrap();
         match back {
-            InternalEvent::TurnCompleted { error_kind, reason, .. } => {
+            InternalEvent::TurnCompleted {
+                error_kind, reason, ..
+            } => {
                 assert_eq!(reason, TurnEndReason::Error);
                 assert_eq!(error_kind, Some(TurnErrorKind::CompactionFailed));
             }

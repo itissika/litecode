@@ -5002,6 +5002,630 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-076",
+      "domain": "team-ops",
+      "title": "语义检索后台静默刷新 + ask_user 自由输入固定末项",
+      "result": "A 检索：代码语料 30s 周期静默增量刷新（仅 Warm/增量/非刷新中，重建不自动），代码/会话计划分开执行，手动按钮保留；B ask_user：删 agent 侧 allow_free_text，系统固定每题末项为行内自由输入（方案B）",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by andy: Andy 授权改完就推（GM 代录）",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "A 检索：代码语料 30s 周期静默增量刷新（仅 Warm/增量/非刷新中，重建不自动），代码/会话计划分开执行，手动按钮保留；B ask_user：删 agent 侧 allow_free_text，系统固定每题末项为行内自由输入（方案B）",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "split: WP-077 后端中层, WP-078 前端中层（与后端协议对齐后并行）。Andy 10-13 12:20 授权无歧义直接开。GM 裁定待定项见消息"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:27:10.397Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: A 检索：代码语料 30s 周期静默增量刷新（仅 Warm/增量/非刷新中，重建不自动），代码/会话计划分开执行，手动按钮保留；B ask_user：删 agent 侧 allow_free_text，系统固定每题末项为行内自由输入（方案B）"
+        },
+        {
+          "ts": "2026-10-13T04:27:22.209Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: split: WP-077 后端中层, WP-078 前端中层（与后端协议对齐后并行）。Andy 10-13 12:20 授权无歧义直接开。GM 裁定待定项见消"
+        },
+        {
+          "ts": "2026-10-13T04:27:22.477Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:27:22.753Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 10-13 聊天授权直接开包（GM 代录）"
+        },
+        {
+          "ts": "2026-10-13T04:27:23.040Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:52:26.336Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:52:26.612Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 授权改完就推（GM 代录）",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-077",
+      "domain": "team-ops",
+      "title": "后端中层：检索静默刷新 + ask_user 后端/CLI",
+      "result": "IDE: 周期刷新+计划拆分；Tools/Session: ask_user schema 与 CLI",
+      "done_when": [
+        "WP-079/080/081 done或明确blocked",
+        "四条检索验收+ask_user 测绿",
+        "WP-078 协议对齐交叉审一致",
+        "ISSUE-050 已立",
+        "中层汇总交GM",
+        "未写src/、未commit"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-backend.md",
+      "progress": "closed done by gm: 子包全 done，复验绿",
+      "status_entered_at": null,
+      "parent": "WP-076",
+      "goal": "IDE: 周期刷新+计划拆分；Tools/Session: ask_user schema 与 CLI",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-076-backend · 后端中层方案（WP-077）\n\n- 角色：backend_mid；父 WP-076（gm，Andy 授权，in_progress）；本包 WP-077（split，approver=gm）；前端兄弟包 WP-078（frontend_mid）。\n- 基线：分支 `ops/team-framework`；中层只拆活 / 交叉审 / 汇总；**不写 `src/`、`tests/`**；**不 commit**；不碰 `.github/workflows/windows-*.yml`。\n- 时间：2026-10-13（HKT）。产物：本文件（deliver 时覆写为汇总）。\n- 依据：IDE / Tools / Session / 前端中层只读调查（10-13 12:20 后回报）+ GM 裁定。\n\n## 1. Goal\n\n1. **检索**：代码语料文件改动后后台静默增量刷新（30s），重建只在首建或不兼容；代码/会话索引计划拆分。手动 Refresh index 保留为强制刷新。\n2. **ask_user 方案 B**：free text 不再由 agent 控制；每题系统固定末项「其他（自己填写）」；单选互斥、多选并存、只填文字算答完；wire/答案/重放契约不变。\n\n## 2. GM 裁定（锁定口径）\n\n| 项 | 裁定 |\n|---|---|\n| 检索 (a) | 30s 周期，与会话定时器 `router.rs:32 SESSION_INDEX_TICK` / `:178-209` 同构；**不另造去抖** |\n| 检索 (b) | 不避开回合（刷新期间读索引不等 worker，`code_search_engine.rs:176`） |\n| 检索 (c) | 首建提示不在本包 |\n| 检索 (d) | CLI 不在本包 → **ISSUE-050**（ide-substrate，产品未定） |\n| 检索 ①② | 周期刷新 + 代码/会话计划拆分都做 |\n| ask (a) | 末项为行内输入框 |\n| ask (b) | 单选：自由输入与选项互斥（打字即选中末项）；多选：可并存 |\n| ask (c) | 只填文字算答完 |\n| ask (d) | 文案「其他（自己填写）」，前端 / CLI 一致 |\n| ask (e) | agent 自加 Other 只靠描述劝阻，不拒绝 |\n\n## 3. 子包树\n\n```\nWP-076 (gm, in_progress)\n  ├── WP-077 (backend_mid, approver=gm)  ← 本包\n  │     ├── WP-079 owner=ide      ide-substrate     检索周期刷新 + 计划拆分\n  │     ├── WP-080 owner=tools    tools-permission  ask_user schema/描述/format_answers\n  │     └── WP-081 owner=session  harness-core      AskQuestion 恒 true + CLI 末项 + 核查\n  └── WP-078 (frontend_mid, approver=gm)  AskUserCard 末项行内输入\n```\n\n| 子包 | artifact |\n|---|---|\n| WP-079 | `.litecode/ops/artifacts/WP-076-ide.md` |\n| WP-080 | `.litecode/ops/artifacts/WP-076-tools.md` |\n| WP-081 | `.litecode/ops/artifacts/WP-076-session.md` |\n\n## 4. 串并行与文件竞态\n\n| 包 | 主文件 | 并行 | 依赖 |\n|---|---|---|---|\n| WP-079 IDE | `src/serve/router.rs`、`src/engines/mod.rs`（engine_index_work :204、spawn_scoped_refresh ~:937）、`src/engines/code_search/**`；集成测 | 与 080/081 全并行 | 无 |\n| WP-080 Tools | `src/tools/ask_user.rs`、`descriptions/ask_user.md` | 与 079/081 并行 | 无 |\n| WP-081 Session | `src/.../grants.rs`（AskQuestion）、`src/cli.rs:206-237`、核查 `plan.rs`、`protocol.rs` | 与 079/080 并行 | 与 080 共享「恒 free_text=true」口径；`grants.rs` 只归 Session，`ask_user.rs` 只归 Tools，互不越界 |\n\n注意：`cli.rs` 有 Session（:206-237 ask 交互）与 ISSUE-050（:661）两处，本包只有 Session 动 :206-237；IDE 不动 cli.rs。\n\n## 5. 域口径\n\n### WP-079 · IDE\n- router 会话定时器旁加代码语料周期 tick（30s，同构，不加去抖）。触发条件全满足：engine desired、状态 Warm、不在刷新中、待办**仅增量**；满足才 `consume_code_index_work`。待办为重建 → 不触发（只能首建 / 不兼容 / 手动）。\n- 拆分 `engine_index_work`：代码与会话各自计划、各自执行；会话侧需重建时，手动 refresh 不得把 code_search 带入 rebuild / Warming（修调查 ⑤ 疑点，预估常见 bug）。\n- 不改前端、client_protocol、cli.rs。\n- 验收（GM 锁定四条）：\n  1. 集成测：hash 嵌入、引擎 Warm，写文件**不调 refresh**，限时内断言 pending→0 且新内容可搜。\n  2. 单测：代码仅增量 + 会话需重建时，手动 refresh 不置 code_search Warming。\n  3. 单测：待办为重建时自动刷新不触发。\n  4. death_list：后台路径不得调 `begin_building`，非首建/不兼容不得置 Warming。\n\n### WP-080 · Tools\n- `ask_user.rs`：删 schema `allow_free_text`（:82-85、:112-115）与解析别名 `free_text`（:223-227）；旧 agent 传入**静默忽略**；构造 AskQuestion 时恒 `free_text=true`。\n- `descriptions/ask_user.md:3-4`：写明系统会为每题自动加末项「其他（自己填写）」，agent 不要自己加 Other / 其他（劝阻，不拒绝）。\n- `format_answers`（:313-350）：`selected` 为空 + free_text 非空 → 正确输出（selected: (none) + free_text）；补测。\n- 不引入保留 option id（方案 A 已否）；不改 wire。\n\n### WP-081 · Session\n- `grants.rs:65 AskQuestion.free_text` 保留、恒 true（兼容旧客户端）；wire 字段（protocol.rs:493-513）、`AskAnswer{selected,free_text?}`、`agent/permission` 回包、重放契约**零变化**（快照不变即证据）。\n- CLI `cli.rs:206-237`：每题末项「其他（自己填写）」；单选与选项互斥；多选可与选项并存；只填文字算答完；补测。\n- 核查并写进产物：`plan.rs` 对 free_text 的用法；`permission_request` 是否落盘 / 重连重建（若重建，确认恒 true 生效于重建路径）。\n\n## 6. 跨域协议对齐（WP-077 ↔ WP-078）\n\n由后端中层与前端中层共同对齐，写进双方产物：\n\n| 契约点 | 后端（WP-080/081） | 前端（WP-078） |\n|---|---|---|\n| `AskQuestion.free_text` | 恒 true，字段保留 | 忽略该字段，每题固定渲染末项 |\n| 末项文案 | CLI「其他（自己填写）」 | 同文案，行内输入框为最后一项 |\n| 单选 | CLI 选末项=互斥 | 打字即选中末项，取消其它选项 |\n| 多选 | 可并存 | 可并存 |\n| 完成判定 | 选了或 free_text 非空 | `allAnswered` 放宽为同条件；`buildAnswers` 去 `q.free_text` 条件 |\n| 回包 | `answers: map<qid, AskAnswer{selected, free_text?}>` 不变；末项**不**进 `selected` | 同：不往 selected 塞假选项 |\n| 空白 | 去首尾空白，空串当 None（grants.rs 现有） | 发前可 trim，后端兜底 |\n| 不动 | 顶层 free_text（审批卡）、AskCard/PermissionModal | 同 |\n\n改动顺序无强依赖：后端恒 true 后旧前端仍显示输入框；新前端忽略字段亦兼容旧后端。\n\n## 7. 禁区\n\n- 中层不写 `src/` / `tests/`；域包不越域。\n- 不改 wire 协议；不加保留 option id。\n- 检索：后台路径不重建；不做首建提示；不改 CLI 检索（ISSUE-050）。\n- 不 commit / push；不碰 `.github/workflows/windows-*.yml`。\n- optional_lsp 若需跑一律 `</dev/null`。\n- LSP 通用规则（Andy 10-13）本包不涉及 LSP。\n\n## 8. 验收清单（WP-077 deliver 前）\n\n- [ ] WP-079/080/081 done（或明确 blocked）\n- [ ] §5 各域验收测绿，中层抽样复跑\n- [ ] §6 对齐表与 WP-078 产物一致（交叉审）\n- [ ] ISSUE-050 已立（open，产品未定）\n- [ ] `validate_all.mjs` ok:true；未 commit\n\n## 9. 请 GM\n\n方案已填实，子包 WP-079/080/081 均 drafting。请 `approve --id WP-077`；批后中层再 start，并批域包 plan 后开工。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:27:21.633Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: IDE: 周期刷新+计划拆分；Tools/Session: ask_user schema 与 CLI"
+        },
+        {
+          "ts": "2026-10-13T04:29:45.865Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-076-backend · 后端中层方案（WP-077）\n\n- 角色：backend_mid；父 WP-076（gm，Andy 授权，in_progr"
+        },
+        {
+          "ts": "2026-10-13T04:29:46.155Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-076-backend.md\""
+        },
+        {
+          "ts": "2026-10-13T04:29:46.488Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "done_when: [\"approver close done\"] -> [\"WP-079/080/081 done或明确blocked\",\"四条检索验收+ask_user 测绿\",\"WP-07"
+        },
+        {
+          "ts": "2026-10-13T04:29:53.420Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "方案已填实：子包 WP-079(IDE 30s静默增量刷新+计划拆分) WP-080(Tools schema/描述/format_answers) WP-081(Session 恒free_text+CLI末项+核查)，三域并行；WP-078 协议对齐表见 §6；CLI 检索立 ISSUE-050(产品未定)。请 GM approve 后再 start；域包仍 drafting。"
+        },
+        {
+          "ts": "2026-10-13T04:30:26.833Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "符合 GM 裁定；079/080/081 并行"
+        },
+        {
+          "ts": "2026-10-13T04:30:50.710Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:51:35.260Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "三子包 done；汇总见 WP-076-backend.md §7"
+        },
+        {
+          "ts": "2026-10-13T04:51:59.984Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "子包全 done，复验绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-078",
+      "domain": "team-ops",
+      "title": "前端中层：AskUserCard 末项自由输入",
+      "result": "AskUserCard/askUser.ts/turnStore 按 GM 裁定改",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-frontend.md",
+      "progress": "closed done by gm: 子包 done，前后端协议核对一致",
+      "status_entered_at": null,
+      "parent": "WP-076",
+      "goal": "AskUserCard/askUser.ts/turnStore 按 GM 裁定改",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-078 方案（frontend_mid · split）\n\n父包：WP-076（GM，approver andy）· 并行：WP-077（backend_mid）\n审批：gm · 产物：本文件 + 子包产物 `WP-076-web.md`\n中层只拆活 / 交叉审 / 汇总；**未经 GM 批 plan 不 start；不 commit**。\n\n## Goal\nask_user 方案 B：agent 只定题数 / 单多选 / 选项；系统固定每题**末项**为行内自由输入，label「其他（自己填写）」。\n\n## GM 裁定（落地口径）\n1. 末项 = 行内输入框（选项列表最后一行），**每题都有**，不可关闭。\n2. 单选：与选项**互斥**——输入（trim 后非空）即选中末项，并**清空**已选选项；点选某选项则末项失去选中（文本可保留但不提交）。\n3. 多选：末项可与选项**共存**。\n4. 仅有文本（trim 后非空）也算已答（单选、多选都算）。\n5. agent 自加 \"Other\" 选项仅靠 description 劝阻，前端不做去重。\n\n## 已确认协议（backend_mid 已确认 5 点 + 补充）\n- agent schema 删除 `allow_free_text` / `free_text`（questions[] 内及旧式顶层）；旧调用带了**容忍并忽略**。\n- `AskQuestion.free_text`（grants.rs）保留，**写死 true**；前端**忽略**此字段。\n- 顶层 `PermissionRequest.free_text`（审批卡用）**不动**。\n- `AskAnswer { selected, free_text? }` 结构与回放格式**不变**。\n- `selected` 可为空、只带 `free_text` = 已答：单选**和多选**都成立；backend format_answers（ask_user.rs:323-342）负责接受。\n- 单选打字时：末项选中，`selected` 置空，提交时 `selected: []` + `free_text`。\n- 末项**不是**协议 option，**没有** option id，不进 `options[]`、不进 `selected`。\n- `free_text` 按 trim 后判空：前端判断\"已答\"和提交时都 trim；trim 后为空 = 未填，不发送该字段。\n- 更新 `src/tools/descriptions/ask_user.md`（含劝阻自加 Other）。\n\n## 后端依赖（占位）\n- WP-077（backend_mid）下的子包，**编号待 backend_mid 给出**：\n  - Tools：`src/tools/ask_user.rs` schema 删字段 + 忽略旧字段 + 答案接受 `selected` 为空；`ask_user.md`。\n  - Session：`src/permission/grants.rs` `free_text` 写死 true；CLI 交互同口径。\n- 前端子包可与后端并行开发（前端忽略 `free_text`，不依赖后端先落）；**联调验收**需后端子包完成。\n\n## 子包\n| 子包 | owner | 域 | 产物 |\n|------|-------|----|------|\n| **WP-082** | `frontend`（前端-web） | client-ux-web | `WP-076-web.md` |\n\n## web 落点（域 bot 实施）\n- `web/src/components/AskUserCard.tsx`\n  - 删 `freeText` prop（:36,44,56,58）；去掉 `active?.free_text` 门控（:221）与 `q.free_text` 门控（:144）。\n  - 输入框从 actions 区挪到每题选项列表**末行**，label「其他（自己填写）」，带 testid `ask-user-free-text-${qid}`。\n  - 单选互斥：输入非空 → 清空 `pickedByQ[qid]`；点选项 → 末项不再算选中（提交不带 free_text）。单选\"点选即跳题\"不受打字影响（打字不跳题）。\n  - 多选共存。\n  - `allAnswered`：`selected.length > 0 || trim(text) !== \"\"`。\n  - `buildAnswers`：trim；单选时末项选中则 `selected: []`。\n- `web/src/lib/askUser.ts`：`normalizeAskQuestions` 删 `freeText` 参数，不再写 `free_text`。\n- `web/src/stores/turnStore.ts`：:712 不再传 `pr.free_text` 给 normalize；`PendingPermission.free_text`（:45,:721）保留给审批卡。\n- `web/src/api/types.ts`：`AskQuestion.free_text` 注释改为\"后端写死 true，前端忽略（deprecated）\"；顶层注释改为仅审批卡用。\n- 测试（新增/更新；`turnStore.test.ts`、`ComposerDock.test.tsx`、新增或扩充 AskUserCard 测试）：\n  1. 每题都有末项输入（含 `free_text:false` / 缺字段的 payload）；\n  2. label「其他（自己填写）」；\n  3. 单选互斥：先选项后打字 → selected 清空；先打字后选项 → 不带 free_text；\n  4. 多选共存：selected + free_text 同时提交；\n  5. 只有文本 = 已答（单选、多选），Submit 可用；\n  6. 纯空白 = 未答，不发 free_text。\n\n## desktop\ndesktop 内嵌 web，预计**无改动**；web 子包验收时在 desktop dev 壳里手点一次 ask_user 卡核对（中层验证，不另开子包）。\n\n## 不在范围\n- 审批卡 freeText：`web/src/components/AskCard.tsx`、`PermissionModal.tsx`、顶层 `free_text`——**不动**。\n- 后端代码（WP-077）；语义检索（WP-076 A 部分，归后端）；不 commit。\n\n## 验收标准\n- 上面 6 项测试通过；`web` 的 typecheck / lint / 单测全绿。\n- 渲染与提交忽略 `AskQuestion.free_text`；审批卡行为与测试不变。\n- 与后端联调：单选只填文本 → agent 收到 `[qid] free_text: …` 且无 selected 报错；多选共存正常。\n- desktop 手点核对通过；禁区未碰；未 commit。\n\n## 分级\n- 1（产品待定，已由 GM 裁定）：末项形态 / 互斥 / 仅文本算答 → 已定。\n- 5（边缘）：现状输入框跟着当前题走、放在操作区，切题时易误会——本包随改动一并消除。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:27:21.935Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: AskUserCard/askUser.ts/turnStore 按 GM 裁定改"
+        },
+        {
+          "ts": "2026-10-13T04:28:37.741Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-078 方案（frontend_mid · split）\n\n父包：WP-076（GM，approver andy）· 并行：WP-077（backen"
+        },
+        {
+          "ts": "2026-10-13T04:28:38.026Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-076-frontend.md\""
+        },
+        {
+          "ts": "2026-10-13T04:28:38.364Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "方案B plan：协议已与 backend_mid 确认；web 子包 WP-082；后端子包编号待 backend_mid"
+        },
+        {
+          "ts": "2026-10-13T04:29:03.131Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "方案符合 GM 裁定；后端依赖为 WP-080（Tools）与 WP-081（Session），协议以两者为准"
+        },
+        {
+          "ts": "2026-10-13T04:29:14.957Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:33:53.219Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "WP-082 done（交叉审+复跑 3 files/71 passed，tsc -b 0，lint N/A 无工具）；审批卡未动；desktop 内嵌 web 壳无需改；desktop 手点与 WP-080/081 e2e 待后端落地后做；未 commit；小结见 WP-076-frontend.md"
+        },
+        {
+          "ts": "2026-10-13T04:34:16.950Z",
+          "actor": "gm",
+          "action": "return",
+          "note": "选中态不可见属本包交互范围，本包内补：末项常驻可见文案（非仅 placeholder）+ 单选选中末项有与其它选项一致的选中态；desktop 手点与 080/081 e2e 待后端落地后做完再 deliver"
+        },
+        {
+          "ts": "2026-10-13T04:52:12.903Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "WP-082/083 done；与 WP-080/081 前后端协议核对全绿（cargo ask_user 9、grants 4；vitest 76；tsc 0）；desktop 静态核对（同一 web/dist，壳无 AskUser 渲染），真机由 Andy 验证；未 commit。详见 WP-076-frontend.md"
+        },
+        {
+          "ts": "2026-10-13T04:52:26.003Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "子包 done，前后端协议核对一致",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-079",
+      "domain": "ide-substrate",
+      "title": "WP-077/IDE：代码语料 30s 静默增量刷新 + 代码/会话计划拆分",
+      "result": "周期刷新+计划拆分落地；4 条验收测绿；产物 md；未 commit",
+      "done_when": [
+        "集成测：写文件不调 refresh，限时内 pending=0 且新内容可搜",
+        "单测：会话需重建时手动 refresh 不置 code_search Warming",
+        "单测：待办为重建时自动刷新不触发",
+        "death_list：后台路径不调 begin_building、非首建/不兼容不置 Warming",
+        "未 commit"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-ide.md",
+      "progress": "closed done by backend_mid: 复验：lib engines:: 5/5 次 276 全过；optional_code_search 19/19、code_search_ipc 11/11、死名单 2/2；fmt 干净",
+      "status_entered_at": null,
+      "parent": "WP-077",
+      "goal": "router.rs 会话定时器同构加代码语料 30s 周期：desired+Warm+非刷新中+待办仅增量才 consume_code_index_work，重建永不自动；engine_index_work(engines/mod.rs:204)/spawn_scoped_refresh(~:937) 代码与会话计划分开执行，会话重建不得把代码拖入重建/Warming；手动按钮保留；只动 src/serve、src/engines；不改前端/client_protocol；CLI 不在本包；不 commit",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-079 方案（IDE）：代码语料 30s 静默增量刷新 + 代码/会话计划拆分\n\n依据：.litecode/ops/artifacts/WP-076-backend.md §2/§5（GM 锁定四条验收）；board WP-079 goal；产物 .litecode/ops/artifacts/WP-076-ide.md（本包新建）。\n基线（只读核实，行号为当前工作区）：\n- 会话定时器：src/serve/router.rs:32 `SESSION_INDEX_TICK`=30s，循环 :178-209（每 tick 先 sparse，再非回合时 `consume_session_index_work`）。\n- 计划合并：src/engines/mod.rs:170 `merge_index_work`（Rebuild 优先），:204 `engine_index_work`（code ∪ session）。\n- 手动刷新：mod.rs:766 `request_refresh` → :797 `consume_index_work`（用合并计划，scope=All，touch_code_job=true）。\n- 分语料：:817 `consume_code_index_work`、:840 `consume_session_index_work`。\n- 执行：:918 `spawn_scoped_refresh`；:929 `begin_building`；:958 置 Warming（rebuild_cooling = touch_code_job && Rebuild）。\n- 调查⑤根因：会话侧 Rebuild{FirstDesired} + 代码侧 Update → 合并为 Rebuild → :929/:958 把代码带进 building/Warming。\n\n## 1. 30s 静默增量刷新\n1.1 src/engines/mod.rs 新增 `pub fn code_index_tick(&self) -> CodeTickOutcome`（一次判定+执行，可单测）：\n  - 依次判：workspace 已设 且 `workspace_engine_desired(root,\"code_search\")`；`state(\"code_search\")==Warm`；`!refresh_busy`；`code_search.worker_alive()`；`code_search::index_work_from_disk(root)` 为 `Update{..}`。\n  - 全满足 → `consume_code_index_work()`（走 Update 分支：`begin_refreshing`，不 begin_building、不置 Warming → 静默；读索引不等 worker，code_search_engine.rs:176）。\n  - `None` → Skip(Clean)；`Rebuild{..}` → Skip(RebuildPending)，**永不自动重建**（只能首建/不兼容的 warmup 路径或手动按钮）。\n  - 返回枚举 `CodeTickOutcome { Started, Skip(reason) }` 供测试断言；无 tracing 噪音（debug 级）。\n  - 不另加去抖、不看 turn_guard（GM 裁定 (a)(b)）。\n1.2 定时循环位置（见 §3 域边界）：推荐在 router.rs 会话 tick 循环里同构加一行，或并列一个 30s interval 循环调用 `engines.code_index_tick()`；间隔常量 `CODE_INDEX_TICK = 30s`。\n1.3 手动按钮（routes.rs:374 → request_refresh）保留不变，仍可强制（含重建）。\n\n## 2. 代码/会话计划拆开执行\n2.1 `consume_index_work`（mod.rs:797）不再用 `engine_index_work` 合并计划：\n  - 代码：`index_work_from_disk(root)` → 非 None 时 `spawn_scoped_refresh(root, code_work, RefreshScope::Code, &refresh_busy, touch_code_job=true)`；Warming/begin_building 只在**代码自身** Rebuild 时发生。\n  - 会话：复用 `consume_session_index_work`（:840，scope=Session，session_refresh_busy，touch_code_job=false → 从不 begin_building/置 Warming）。\n  - 两者各自 busy 标志，互不阻塞；返回的 `RefreshAccepted.mode` 取代码侧结果（代码 None 时取会话侧），保持前端协议（web/src/api/workspace.ts:325-337 的 mode 枚举）不变。\n2.2 `engine_index_work`/`merge_index_work` 保留给只读展示（status/detail 的 work 字段），注释写明不得用于决定执行；如无其它调用方则仅留展示用途。\n2.3 反向：代码侧 Rebuild 时会话侧照常增量（session 路径本就 touch_code_job=false）。\n2.4 不改：tools/code_search.rs:34-48 `maybe_consume_index`（Tools 域，按代码计划触发，已是分语料）；记为观察：它对代码 Rebuild 也会触发，若需收紧另报 Tools。\n\n## 3. 域边界（推荐 A，需中层确认跨域）\n- A（推荐）：engines 提供 `code_index_tick()`（全部逻辑在 src/engines），router.rs 只加约 6 行：常量 `CODE_INDEX_TICK` + 一个与会话 tick 同构的 `tokio::spawn` interval 循环调用它（或在 :178-209 循环里同一 tick 调一次）。\n  理由：① GM 裁定要求与会话定时器同构，放同处最直观；② serve 已管理后台任务生命周期，engines 侧不用另造 abort/epoch；③ CLI（cli.rs:661 也走 reconcile/start）不会被隐式带上，守住 ISSUE-050 不在本包；④ 跨域改动仅几行且无逻辑，Session 易审。\n- B（备选）：engines 在 `start(\"code_search\")` 时自 spawn 循环、`stop` 时按 epoch 退出。缺点：CLI 也会自动获得周期刷新（越过 ISSUE-050）、需新增生命周期管理代码，风险更高。\n- 若中层不批 A 的跨域，则改 B，并在 start 里加「仅 serve」开关（再请示）。\n\n## 4. 测试 ↔ GM 四条验收\n| 验收 | 测试 | 位置 |\n|---|---|---|\n| 1 集成：写文件不调 refresh，限时内 pending→0 且可搜 | `code_index_tick_syncs_without_refresh`：hash 嵌入（cfg(test) 下 `use_hash_embedder` 已为真，embed.rs:328-331；外部集成测用 `LITECODE_CODE_SEARCH_USE_HASH=1`），WorkspaceEngines reconcile → wait_until_warmed；写 src/b.rs（唯一 token），`code_search().notify_fs_changes`（等价 watcher）；以 100ms 间隔循环调 `code_index_tick()`（即缩短间隔，不依赖 30s 常量），≤20s 内断言 `read_pending_hint==0` 且检索命中 token；全程不调 request_refresh/consume_index_work | tests/optional_code_search.rs（或 engines 内 #[tokio::test]） |\n| 1 端到端（可选，若批 A） | router 读 `LITECODE_CODE_INDEX_TICK_MS`（仅覆盖间隔，默认 30000）；起 serve 设 500ms，复现我 12:22 的实测（写文件→无 POST→pending 0、chunks 含 token） | tests/（serve 级），router 改动含 env 读取 |\n| 2 会话需重建 + 代码仅增量，手动 refresh 不置 Warming | `manual_refresh_split_keeps_code_out_of_warming`：seed 就绪代码索引 + pending Update，造会话 Rebuild{FirstDesired}（同 mod.rs:1553-1558 手法），调 `consume_index_work`；断言 state 仍 Warm、job 非 building、mode=Incremental；反向用例：代码 Rebuild 时会话不被置 building | src/engines/mod.rs tests |\n| 3 待办为重建时自动刷新不触发 | `code_index_tick_skips_rebuild_work`：代码 Absent/NeedsRebuild → `Skip(RebuildPending)`，无 begin_building、state 不变；另 `skips_when_not_desired / not_warm / busy` | src/engines/mod.rs tests |\n| 4 death_list | 新 tests/code_index_tick_death_list.rs：源码扫描 `code_index_tick` 函数体（及 router 中 CODE_INDEX_TICK 循环体）不得出现 `begin_building`、`EngineState::Warming`、`consume_index_work`、`request_refresh`、`Rebuild`→执行；`consume_index_work` 体内不得再出现 `engine_index_work(`（防合并计划回流）。按标识符边界匹配（沿用 WP-051 C1/C2 做法） | tests/ |\n另：全量 `cargo test --lib engines::`、`--test optional_code_search`、`--test code_search_ipc` 绿；HOME=.tmp/home、timeout、</dev/null、共享 target 排队；不 commit；不动 windows-*.yml、前端、client_protocol、cli.rs。\n\n## 5. 风险\n- 30s tick 与 agent 的 maybe_consume 同时触发：均经 refresh_busy CAS（mod.rs spawn_scoped_refresh），后到者 InProgress，无重复执行。\n- 代码 refresh 持 client 锁期间会话 tick 的 consume 会等锁：与现状同（会话 dense lane 本就持锁）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:28:24.742Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: router.rs 会话定时器同构加代码语料 30s 周期：desired+Warm+非刷新中+待办仅增量才 consume_code_index_work，重建永不自动；engine_index_work(engines/mod.rs:204)/spawn_scoped_refresh(~:937) 代码与会话计划分开执行，会话重建不得把代码拖入重建/Warming；手动按钮保留；只动 src/serve、src/engines；不改前端/client_protocol；CLI 不在本包；不 commit"
+        },
+        {
+          "ts": "2026-10-13T04:32:08.330Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-079 方案（IDE）：代码语料 30s 静默增量刷新 + 代码/会话计划拆分\n\n依据：.litecode/ops/artifacts/WP-076-"
+        },
+        {
+          "ts": "2026-10-13T04:32:08.654Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "30s 静默增量 tick + 计划拆分；推荐 router 加几行(需确认跨域)"
+        },
+        {
+          "ts": "2026-10-13T04:35:38.282Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过；跨域选 A：router.rs 的 30s 循环由 Session 加（约 6 行），逻辑全在 engines；B 会越过 ISSUE-050"
+        },
+        {
+          "ts": "2026-10-13T04:36:51.666Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:40:32.830Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:46:28.009Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "验收不过：新增验收测试 engines::tests::manual_refresh_split_keeps_code_out_of_warming 不稳定，lib engines:: 连跑 6 次失败 3 次（单跑通过，并行下失败），需修到稳定（连跑 10 次全绿）；另 cargo fmt 剩 src/engines/mod.rs:1780 和 tests/code_index_tick_death_list.rs:50 两处。其余（死名单、ISSUE-052 两条旧测试、router 接线）已核"
+        },
+        {
+          "ts": "2026-10-13T04:50:10.795Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:51:34.891Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "复验：lib engines:: 5/5 次 276 全过；optional_code_search 19/19、code_search_ipc 11/11、死名单 2/2；fmt 干净",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-080",
+      "domain": "tools-permission",
+      "title": "WP-077/Tools：ask_user schema 去 allow_free_text + 描述「其他（自己填写）」",
+      "result": "schema/描述/format_answers 落地+测绿；产物 md；未 commit",
+      "done_when": [
+        "schema 无 allow_free_text/别名且旧输入被忽略",
+        "free_text 恒 true",
+        "描述含「其他（自己填写）」与劝阻",
+        "format_answers 仅文字答案测绿",
+        "未 commit"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-tools.md",
+      "progress": "closed done by backend_mid: 抽测 ask_user 9/9；cargo fmt 干净（edition 2024，rustfmt 2021 的排序差异是误报）；与 WP-081 交叉核一致",
+      "status_entered_at": null,
+      "parent": "WP-077",
+      "goal": "ask_user.rs 删 schema allow_free_text(:82-85,:112-115) 与 free_text 别名(:223-227)，旧 agent 传入静默忽略，恒 free_text=true；descriptions/ask_user.md 写明系统为每题自动加末项「其他（自己填写）」，agent 勿自加 Other（仅劝阻不拒绝）；format_answers 支持仅文字答案；补测；不改 wire；不 commit",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-080 Tools 方案：ask_user 去 allow_free_text（GM 方案 B）\n依据：WP-077 / artifacts/WP-076-backend.md §WP-080。不合成 __free_text__ 选项；末项不进 selected。\n\n## 改动（仅 Tools 域）\nR1 src/tools/ask_user.rs schema：删 questions[].allow_free_text（:82-85）与顶层 legacy allow_free_text（:112-115）。\nR2 parse_questions（:223-227、:253-256）：不再读 allow_free_text / free_text 别名；旧 agent 传入静默忽略（不报错）；构造 AskQuestion 恒 free_text=true（含 legacy q0 路径）。\nR3 src/tools/descriptions/ask_user.md:3-4：删 allow_free_text 说明；写明系统为每题自动追加末项「其他（自己填写）」/ \"Other (write your own)\"，用户可只填文字；劝阻（不拒绝）agent 自加 Other/其他 选项。\nR4 format_answers（:313-350）：selected 为空且 free_text 非空 → 输出 `[q] selected: (none)` + `[q] free_text: …`，不判为无答案；选项+文字并存照旧。\nR5 测试（ask_user.rs tests）：schema 不含 allow_free_text（questions items 与顶层）；传 allow_free_text:false / free_text:false 被忽略且 AskQuestion.free_text==true（batch + legacy）；只填文字答案格式正确；更新现有用例（legacy_question_normalizes_to_q0、batch_returns_answers_map 等）。\n\n## 改动文件\n- src/tools/ask_user.rs\n- src/tools/descriptions/ask_user.md\n- 产物 .litecode/ops/artifacts/WP-076-tools.md\n\n## 不在范围\n前端（web/）、CLI（src/cli/cli.rs）、协议（client_protocol/*）、grants.rs（AskQuestion 字段归 Session WP-081，本包不改）、plan.rs、审批卡顶层 free_text。不 commit。\n\n## 验证\n- cargo test --lib tools::ask_user\n- cargo test --lib permission::grants   （只跑不改，确认未回归）\n- cargo test --lib --no-run\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:28:25.124Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: ask_user.rs 删 schema allow_free_text(:82-85,:112-115) 与 free_text 别名(:223-227)，旧 agent 传入静默忽略，恒 free_text=true；descriptions/ask_user.md 写明系统为每题自动加末项「其他（自己填写）」，agent 勿自加 Other（仅劝阻不拒绝）；format_answers 支持仅文字答案；补测；不改 wire；不 commit"
+        },
+        {
+          "ts": "2026-10-13T04:31:43.666Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-080 Tools 方案：ask_user 去 allow_free_text（GM 方案 B）\n依据：WP-077 / artifacts/WP-0"
+        },
+        {
+          "ts": "2026-10-13T04:31:44.077Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "方案B：去allow_free_text、恒free_text=true、描述末项其他（自己填写）、format_answers只填文字；仅ask_user.rs+描述"
+        },
+        {
+          "ts": "2026-10-13T04:32:25.258Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过；文案按 GM 定的「其他（自己填写）」，描述可用英文但原样引用该文案"
+        },
+        {
+          "ts": "2026-10-13T04:32:47.021Z",
+          "actor": "tools",
+          "action": "start",
+          "note": "开工 R1-R5"
+        },
+        {
+          "ts": "2026-10-13T04:35:11.864Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "R1-R5 落地；ask_user 9/9、grants 4/4、--no-run 绿；与 WP-081 口径一致；未 commit"
+        },
+        {
+          "ts": "2026-10-13T04:36:48.459Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "抽测 ask_user 9/9；cargo fmt 干净（edition 2024，rustfmt 2021 的排序差异是误报）；与 WP-081 交叉核一致",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-081",
+      "domain": "harness-core",
+      "title": "WP-077/Session：ask_user 协议恒 free_text + CLI 末项「其他（自己填写）」",
+      "result": "协议恒 true+CLI 末项落地+测绿；核查结论入产物；未 commit",
+      "done_when": [
+        "AskQuestion.free_text 恒 true 且 wire 快照不变",
+        "CLI 单选互斥/多选并存/仅文字答完测绿",
+        "plan.rs 与 permission_request 重建核查结论入产物",
+        "未 commit"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-session.md",
+      "progress": "closed done by backend_mid: 抽测 cli 相关 50/50（偶发失败为 engines stop_kills_os_process 的 flake，与本包无关）；router 30s 循环作为补充另行交 Session",
+      "status_entered_at": null,
+      "parent": "WP-077",
+      "goal": "grants.rs:65 AskQuestion.free_text 保留恒 true；wire/答案/重放契约不变；cli.rs:206-237 每题末项「其他（自己填写）」：单选与选项互斥、多选可并存、只填文字算答完；核查 plan.rs 对 free_text 用法与 permission_request 是否落盘/重连重建并写进产物；不 commit",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-081 方案（Session）：ask_user 协议恒 free_text + CLI 末项「其他（自己填写）」\n产物：.litecode/ops/artifacts/WP-076-session.md；approver=backend_mid；批后再 start；不 commit；ask_user.rs 归 Tools(WP-080)，本包不碰。\n\n## 1 后端（grants.rs，Session 域）\n- grants.rs:57-66 `AskQuestion.free_text` 字段保留（serde default 不变，兼容旧客户端）；语义注释改为「ask_user 恒 true」。\n- grants.rs:147-157 `effective_questions` 旧单题 q0 提升路径：`free_text: self.free_text` → 恒 `true`（AskKind::AskUser 分支）。\n- grants.rs:126-142 `AskPrompt::ask_user` 顶层 free_text 保持 false（顶层仅审批卡用），不动。\n- 解析侧「忽略 agent 的 allow_free_text、构造时恒 true、删 schema/描述」由 Tools WP-080 在 ask_user.rs:82-85/:112-115/:223-227/:253-262 与 descriptions/ask_user.md:3-4 落地；Session 对齐口径并交叉核。\n- wire（project.rs:441-460 agent/permission_request；protocol.rs:493-513）、AskAnswer{selected,free_text?}（grants.rs:70-75）、回包、重放契约零变化。\n\n## 2 CLI（src/cli/cli.rs:198-258 ask_cli_one_question）\n- 每题选项列表末尾追加 `[N+1] 其他（自己填写）`，不依赖 q.free_text。\n- 单选：选末项 → 提示输入文字，selected=[]、free_text=Some；选普通项 → 不再追问文字（互斥）。\n- 多选：可同时含普通项与末项；含末项则追问文字；末项编号不进 selected。\n- 判定：selected 非空 或 free_text 非空 即答完；选了末项但文字为空 → 视为该题未答（若也无其他选中）。s/skip 行为不变。\n- 输出仍为 AskAnswer{selected, free_text}；抽纯函数 `parse_cli_selection(input, q) -> (Vec<String>, bool wants_text)` 以便单测（不需 stdin）。\n\n## 3 测试\n- grants.rs：effective_questions 旧 q0 路径 free_text==true；AskQuestion 反序列化缺字段/false 后经 ask_user 构造仍恒 true（与 WP-080 测试互补）。\n- cli.rs：parse_cli_selection 单选末项→selected 空+要文字；单选普通项→不要文字；多选 \"1,3(末项)\" 共存；越界/空输入；仅文字答完。\n- 协议快照（permission_request_serializes_request_id 等）不变即证据。\n- format_answers selected 空+free_text（ask_user.rs:313-350）由 WP-080 补；Session 交叉核。\n- 跑：PATH=/home/box/.cargo/bin:$PATH cargo test 仅 permission / cli / client_protocol 相关。\n\n## 4 核查结论（只读）\n- plan.rs：只用 `AskPrompt::approval`（plan.rs:205，grants.rs:113-123 顶层 free_text=true，questions 空）与 `reply.free_text` 作为「User opinion」（plan.rs:214、:253）；不经 AskQuestion，本改动不影响。\n- 落盘/重连：permission_request 不落盘。pending 仅在连接任务局部内存 `pending_asks: HashMap`（connection.rs:1535，插入 :1623-1632）；PendingAsk 只存 session_id/agent_name/tool/rule_id/reply_tx，不含 questions，无法重建卡片；断连/取消/退出走 reject_all_pending_asks（connection.rs:1445-1458）回 Deny。stray_grants（:1485-1498、:1728-1733）只缓冲早到/错配的 grant，不是 ask 重放。前端仅实时消费 agent/permission_request（web/src/stores/connectionStore.ts:401-403 → turnStore.ts:702），无 rehydrate。⇒ 不存在「重建路径」，恒 true 只需在 ask_user 构造 + effective_questions 生效。\n- 风险：①旧前端仍按 q.free_text 渲染，恒 true 后即显示文字框，兼容；②旧前端「必须先选一项」限制需前端放宽，否则仅文字答不完；③未来若做 ask 持久化重建，需带 questions 且保证恒 true。\n\n## 5 前端接口（非本域，前端中层）\n- 忽略 q.free_text，每题固定末项「其他（自己填写）」；allAnswered = selected 非空 或 free_text 非空；buildAnswers 去 q.free_text 条件，末项不进 selected。顶层 free_text（审批卡）不动。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:28:25.414Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: grants.rs:65 AskQuestion.free_text 保留恒 true；wire/答案/重放契约不变；cli.rs:206-237 每题末项「其他（自己填写）」：单选与选项互斥、多选可并存、只填文字算答完；核查 plan.rs 对 free_text 用法与 permission_request 是否落盘/重连重建并写进产物；不 commit"
+        },
+        {
+          "ts": "2026-10-13T04:31:46.111Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-081 方案（Session）：ask_user 协议恒 free_text + CLI 末项「其他（自己填写）」\n产物：.litecode/ops/"
+        },
+        {
+          "ts": "2026-10-13T04:31:46.497Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案已填，待 backend_mid 批"
+        },
+        {
+          "ts": "2026-10-13T04:32:07.766Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "方案通过：grants 恒 true + CLI 末项；重连不可重建属既有行为，本包不做"
+        },
+        {
+          "ts": "2026-10-13T04:32:29.400Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:35:05.528Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "grants q0 恒 free_text；CLI 末项「其他（自己填写）」+parse_cli_selection；测试全绿；协议快照不变；WP-080 交叉审有条件接受（产物见 WP-076-session.md）"
+        },
+        {
+          "ts": "2026-10-13T04:36:10.619Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "抽测 cli 相关 50/50（偶发失败为 engines stop_kills_os_process 的 flake，与本包无关）；router 30s 循环作为补充另行交 Session",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-082",
+      "domain": "client-ux-web",
+      "title": "WP-078 web：AskUserCard 末项固定自由输入（方案B）",
+      "result": "web 落地+测试绿；证据写入 WP-076-web.md",
+      "done_when": [
+        "6项测试绿",
+        "typecheck/lint绿",
+        "审批卡未动",
+        "未commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-web.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：diff 仅 AskUserCard.tsx/askUser.ts/turnStore.ts/types.ts注释+测试；AskCard/PermissionModal.tsx 未动(git diff 空)；口径逐条核对符合（末项「其他（自己填写）」每题都有、无 option id、单选互斥 selected []、多选共存、仅文本即答、trim 空不发）；中层复跑 node v22.14.0：3 files/71 passed，tsc -b 0；lint N/A（web 未配置 lint 工具，不阻塞）；未 commit。后端联调与 desktop 手点为后续",
+      "status_entered_at": null,
+      "parent": "WP-078",
+      "goal": "按 WP-076-frontend.md：AskUserCard/askUser.ts/turnStore.ts/types.ts 注释；每题末项行内输入「其他（自己填写）」，单选互斥（打字清空选项、selected 空）、多选共存、trim 后仅文本即已答；忽略 AskQuestion.free_text；测试6项；不碰 AskCard/PermissionModal 审批卡；不 commit。产物 .litecode/ops/artifacts/WP-076-web.md",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "方案（WP-082，口径=WP-076-frontend.md GM 裁定）：\n口径：每题末项固定为行内输入框，label「其他（自己填写）」，不看 AskQuestion.free_text；末项非协议 option，无 option id，不进 options[]/selected。单选：与选项互斥，打字(trim 非空)即选中末项并清空已选，提交 selected:[]+free_text；点选项则末项不再算选中、不提交 free_text；打字不触发跳题。多选：与选项共存。仅文本也算已答（单/多选）。判已答与提交前均 trim，trim 后空=未答且不发 free_text。\n改动（仅 web/）：1) AskUserCard.tsx 删 freeText prop(:36,44,56,58)及 q.free_text/active.free_text 门控(:144,:221)；输入框挪到每题选项末行，testid ask-user-free-text-${qid}；allAnswered=selected>0||trim(text)!==''；buildAnswers trim+单选末项时 selected:[]。2) askUser.ts normalizeAskQuestions 删 freeText 参数不再写 free_text。3) turnStore.ts :712 不再传 pr.free_text；PendingPermission.free_text(:45,:721) 保留给审批卡。4) types.ts AskQuestion.free_text 注释改 deprecated/前端忽略；顶层仅审批卡用。不动 AskCard/PermissionModal/顶层 free_text。\n测试6项（新增 web/src/components/AskUserCard.test.tsx，必要时更新 turnStore.test.ts）：每题有末项(含 free_text:false/缺字段)；label 正确；单选互斥(两种顺序)；多选共存；仅文本=已答；纯空白=未答不发 free_text。跑相关 vitest+typecheck，审批卡测试不变。\n依赖：后端 WP-080/081，前端先按协议落地，联调待后端。不 commit。产物 WP-076-web.md。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:28:34.829Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-076-frontend.md：AskUserCard/askUser.ts/turnStore.ts/types.ts 注释；每题末项行内输入「其他（自己填写）」，单选互斥（打字清空选项、selected 空）、多选共存、trim 后仅文本即已答；忽略 AskQuestion.free_text；测试6项；不碰 AskCard/PermissionModal 审批卡；不 commit。产物 .litecode/ops/artifacts/WP-076-web.md"
+        },
+        {
+          "ts": "2026-10-13T04:29:50.407Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: 方案（WP-082，口径=WP-076-frontend.md GM 裁定）：\n口径：每题末项固定为行内输入框，label「其他（自己填写）」，不看 AskQu"
+        },
+        {
+          "ts": "2026-10-13T04:29:50.672Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:30:12.821Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "plan 符合 WP-078 口径，批准"
+        },
+        {
+          "ts": "2026-10-13T04:30:37.651Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:32:27.852Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:33:52.957Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：diff 仅 AskUserCard.tsx/askUser.ts/turnStore.ts/types.ts注释+测试；AskCard/PermissionModal.tsx 未动(git diff 空)；口径逐条核对符合（末项「其他（自己填写）」每题都有、无 option id、单选互斥 selected []、多选共存、仅文本即答、trim 空不发）；中层复跑 node v22.14.0：3 files/71 passed，tsc -b 0；lint N/A（web 未配置 lint 工具，不阻塞）；未 commit。后端联调与 desktop 手点为后续",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-083",
+      "domain": "client-ux-web",
+      "title": "WP-078 web 补：末项常驻文案+单选选中态",
+      "result": "web 落地+测试绿；证据追加 WP-076-web.md",
+      "done_when": [
+        "常驻文案与选中态测试绿",
+        "tsc绿",
+        "审批卡未动",
+        "未commit"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-076-web.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：仅 AskUserCard.tsx+测试；末项常驻可见 label「其他（自己填写）」(aria-labelledby)；选中态与选项同用 btn-primary/btn-ghost，测试有 classList 断言；node v22 复跑 3 files/76 passed，tsc -b 0；lint N/A；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-078",
+      "goal": "AskUserCard 末项常驻可见「其他（自己填写）」文案（非仅 placeholder）；单选选中末项与其它选项一致的选中态；补测试",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "方案（WP-083，补 WP-082；范围仅 web/src/components/AskUserCard.tsx 及 AskUserCard.test.tsx，审批卡 AskCard/PermissionModal 不动；不 commit）。\n现状：选项是 <button aria-pressed={pickedOn}>，选中态靠 class 切换 permission-card__option + btn-primary（选中）/btn-ghost（未选）+ btn-sm w-full；容器 role=radiogroup（单选）/group（多选）。末项现在只有 placeholder，没有可见 label，也没有选中态。\n1) 文案常驻：末项改为 <label data-testid=ask-user-other-${qid}>，内含可见 <span>「其他（自己填写）」</span> + 输入框；输入框通过 label 获得可访问名，placeholder 只作补充，打字后文案仍可见。\n2) 选中态复用同一套：on = freeFor(q) 非空（单选：trim 非空且没有已选选项；多选：trim 非空）。label 外框复用 permission-card__option + (on?btn-primary:btn-ghost) + btn-sm w-full，视觉指示器和选项一致。语义上，输入框不能放进 button、textbox 也不能带 aria-pressed，所以等价表达为：label 上加 data-selected=true/false；选中时输入框 aria-describedby 指向一个视觉隐藏的「已选中」span，和选项的 aria-pressed 对齐。单选取消逻辑不变：点选项后末项 on=false。多选有文字时同样 on。\n测试（只断言可见文字/role/aria，不断言 class）：a 打字前后都能 getByText('其他（自己填写）')，且 getByRole('textbox',{name:'其他（自己填写）'}) 可用；b 单选打字后末项 data-selected=true、输入框可访问描述含「已选中」，同时选项 aria-pressed=false；c 单选随后点选项 → 末项 data-selected=false、无描述，选项 aria-pressed=true；d 单选纯空白 → 末项未选中；e 多选选项 aria-pressed=true 与末项选中态共存。跑相关 vitest 和 tsc。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T04:34:31.518Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: AskUserCard 末项常驻可见「其他（自己填写）」文案（非仅 placeholder）；单选选中末项与其它选项一致的选中态；补测试"
+        },
+        {
+          "ts": "2026-10-13T04:35:09.263Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: 方案（WP-083，补 WP-082；范围仅 web/src/components/AskUserCard.tsx 及 AskUserCard.test.tsx"
+        },
+        {
+          "ts": "2026-10-13T04:35:09.369Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:35:37.064Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准；选中态测试需同时断言末项 label 与选项同一 class 切换（btn-primary/btn-ghost），不只 aria"
+        },
+        {
+          "ts": "2026-10-13T04:36:05.888Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:37:33.207Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T04:39:17.808Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：仅 AskUserCard.tsx+测试；末项常驻可见 label「其他（自己填写）」(aria-labelledby)；选中态与选项同用 btn-primary/btn-ghost，测试有 classList 断言；node v22 复跑 3 files/76 passed，tsc -b 0；lint N/A；未 commit",
+          "to": "done"
+        }
+      ]
     }
   ],
   "pipelines": [

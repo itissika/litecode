@@ -159,10 +159,8 @@ fn retrieval_tools_visible(
     resolved: &ResolvedConfig,
     workspace_engines: &WorkspaceEngines,
 ) -> bool {
-    if !crate::config::workspace::workspace_engine_desired(
-        resolved.workspace_root(),
-        "code_search",
-    ) {
+    if !crate::config::workspace::workspace_engine_desired(resolved.workspace_root(), "code_search")
+    {
         return false;
     }
     // IDE signal: Warm + call_gate Ready (silent refresh still searchable).
@@ -183,9 +181,7 @@ pub fn should_include_in_llm_list(
     if !agent_tool_enabled(resolved, agent_id, tool_id) {
         return false;
     }
-    if is_retrieval_surface_tool(tool_id)
-        && !retrieval_tools_visible(resolved, workspace_engines)
-    {
+    if is_retrieval_surface_tool(tool_id) && !retrieval_tools_visible(resolved, workspace_engines) {
         return false;
     }
     if crate::config::schema::SUBAGENT_SERIES_TOOL_IDS
@@ -359,7 +355,8 @@ mod tests {
         assert!(ask.series_id.is_none());
     }
 
-    fn retrieval_bindings() -> std::collections::HashMap<String, crate::config::schema::AgentToolBinding> {
+    fn retrieval_bindings()
+    -> std::collections::HashMap<String, crate::config::schema::AgentToolBinding> {
         use crate::config::schema::{AgentToolBinding, ToolPreset};
         let mut tools = std::collections::HashMap::new();
         for id in ["code_search", "session_search", "read"] {
@@ -404,17 +401,24 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
-        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false)
-            .unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
         let resolved = resolved_with_root(root, retrieval_bindings());
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
         let em = crate::optional::EngineManager::new();
         assert!(!should_include_in_llm_list(
-            &resolved, "default", "code_search", &em, &engines
+            &resolved,
+            "default",
+            "code_search",
+            &em,
+            &engines
         ));
         assert!(!should_include_in_llm_list(
-            &resolved, "default", "session_search", &em, &engines
+            &resolved,
+            "default",
+            "session_search",
+            &em,
+            &engines
         ));
         assert!(should_include_in_llm_list(
             &resolved, "default", "read", &em, &engines
@@ -433,10 +437,18 @@ mod tests {
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warming);
         let em = crate::optional::EngineManager::new();
         assert!(!should_include_in_llm_list(
-            &resolved, "default", "code_search", &em, &engines
+            &resolved,
+            "default",
+            "code_search",
+            &em,
+            &engines
         ));
         assert!(!should_include_in_llm_list(
-            &resolved, "default", "session_search", &em, &engines
+            &resolved,
+            "default",
+            "session_search",
+            &em,
+            &engines
         ));
     }
 
@@ -451,10 +463,18 @@ mod tests {
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
         let em = crate::optional::EngineManager::new();
         assert!(should_include_in_llm_list(
-            &resolved, "default", "code_search", &em, &engines
+            &resolved,
+            "default",
+            "code_search",
+            &em,
+            &engines
         ));
         assert!(should_include_in_llm_list(
-            &resolved, "default", "session_search", &em, &engines
+            &resolved,
+            "default",
+            "session_search",
+            &em,
+            &engines
         ));
     }
 }

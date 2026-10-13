@@ -356,7 +356,10 @@ mod tests {
             let path = fallback.expect("debug builds keep the checkout fallback");
             assert!(path.starts_with(env!("CARGO_MANIFEST_DIR")));
         } else {
-            assert!(fallback.is_none(), "release must not probe the build machine's repo");
+            assert!(
+                fallback.is_none(),
+                "release must not probe the build machine's repo"
+            );
         }
     }
 

@@ -420,7 +420,6 @@ mod tests {
         assert!(parse_validate("http://[::ffff:8.8.8.8]/").is_ok());
     }
 
-
     #[test]
     fn resolve_returns_literal_public_ips() {
         let ips =

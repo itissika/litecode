@@ -195,10 +195,10 @@ describe("PermissionCard — ask_user", () => {
     );
     await user.click(submit);
     expect(onGrant).toHaveBeenCalledWith(true, false, {
+      // WP-082: single choice — typing the last item clears the pick.
       answers: {
-        q0: { selected: ["a"], free_text: "more detail" },
+        q0: { selected: [], free_text: "more detail" },
       },
-      selected: ["a"],
     });
   });
 
@@ -277,13 +277,10 @@ describe("PermissionCard — ask_user", () => {
       expect(cls).toContain("hover:bg-(--_dk-ix-bg-hover)");
     }
 
-    // Both questions allow free text; the footer owns the one in view and stays
-    // outside the pane, in the buttons' own row.
+    // WP-082: the free text is the question's fixed last item, inside the pane.
     const free = screen.getByTestId("ask-user-free-text-one");
-    expect(pane.contains(free)).toBe(false);
-    expect(free.parentElement).toBe(
-      screen.getByRole("button", { name: "Submit" }).parentElement,
-    );
+    expect(pane.contains(free)).toBe(true);
+    expect(free.parentElement?.lastElementChild).toBe(free);
   });
 
   it("steps one question per wheel notch — down and up — footer in tow", async () => {

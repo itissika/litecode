@@ -188,14 +188,18 @@ mod tests {
             ..SpineReminderView::default()
         };
         let first = sync(&ctx(1), &view, &facts);
-        assert!(first
-            .iter()
-            .any(|reminder| reminder.kind() == ReminderKind::Tasks));
+        assert!(
+            first
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::Tasks)
+        );
         view.kinds_after_compacted.insert(ReminderKind::Tasks);
         let second = sync(&ctx(2), &view, &facts);
-        assert!(!second
-            .iter()
-            .any(|reminder| reminder.kind() == ReminderKind::Tasks));
+        assert!(
+            !second
+                .iter()
+                .any(|reminder| reminder.kind() == ReminderKind::Tasks)
+        );
     }
 
     #[test]

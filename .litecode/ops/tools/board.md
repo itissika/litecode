@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T04:02:34.781Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-13T04:52:26.754Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -91,6 +91,14 @@
 | WP-073 | 　└ WP-071/IDE：deps 探测 stdin null（ISSUE-043）+ hub -32801 有限重试（ISSUE-044） | done | ide | backend_mid |
 | WP-074 | 　└ WP-071/IDE-2：LSP server 以原始路径启动（ISSUE-045） | done | ide | backend_mid |
 | WP-075 | 　└ WP-071/Tools-2：ISSUE-047 A — lsp 工具透出 ContentModified 提示 | done | tools | backend_mid |
+| WP-076 | 语义检索后台静默刷新 + ask_user 自由输入固定末项 | done | gm | andy |
+| WP-077 | └ 后端中层：检索静默刷新 + ask_user 后端/CLI | done | backend_mid | gm |
+| WP-079 | 　└ WP-077/IDE：代码语料 30s 静默增量刷新 + 代码/会话计划拆分 | done | ide | backend_mid |
+| WP-080 | 　└ WP-077/Tools：ask_user schema 去 allow_free_text + 描述「其他（自己填写）」 | done | tools | backend_mid |
+| WP-081 | 　└ WP-077/Session：ask_user 协议恒 free_text + CLI 末项「其他（自己填写）」 | done | session | backend_mid |
+| WP-078 | └ 前端中层：AskUserCard 末项自由输入 | done | frontend_mid | gm |
+| WP-082 | 　└ WP-078 web：AskUserCard 末项固定自由输入（方案B） | done | frontend | frontend_mid |
+| WP-083 | 　└ WP-078 web 补：末项常驻文案+单选选中态 | done | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

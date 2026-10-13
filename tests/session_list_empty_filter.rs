@@ -178,11 +178,23 @@ async fn malformed_transcript_rows_still_listed_after_reopen() {
 
     let cases: &[(&str, &[&str], Poke)] = &[
         ("seq hole", &["u0", "u1"], Poke::SeqHole),
-        ("unknown kind", &["keep me", "broken kind"], Poke::UnknownKind),
-        ("surface_op=append (not json)", &["visible preview"], Poke::SurfaceOpNotJson),
+        (
+            "unknown kind",
+            &["keep me", "broken kind"],
+            Poke::UnknownKind,
+        ),
+        (
+            "surface_op=append (not json)",
+            &["visible preview"],
+            Poke::SurfaceOpNotJson,
+        ),
         ("seq starts at 1", &["shifted seq"], Poke::SeqStartsAtOne),
         ("empty surface_op", &["no surface_op"], Poke::EmptySurfaceOp),
-        ("legacy detail kind", &["legacy kind conversation"], Poke::LegacyDetailKind),
+        (
+            "legacy detail kind",
+            &["legacy kind conversation"],
+            Poke::LegacyDetailKind,
+        ),
     ];
 
     for (case, texts, poke) in cases {

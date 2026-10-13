@@ -1,0 +1,34 @@
+{
+  "id": "ISSUE-052",
+  "grade": "drift",
+  "layer": "test",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "ide",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "title": "[常见 bug] 测试未跟口径更新：catalog_on_warmup_enables_tool_in_list / refresh_rebuilds_when_dirty_too_large",
+  "tier": "常见 bug",
+  "promise": "测试断言与 10-12 锁定口径一致：Warming 时工具隐藏、Warm 后出现；DirtyTooLarge 已删除，脏文件再多也只做增量刷新、不重建。",
+  "actual": "tests/optional_code_search.rs:160 catalog_on_warmup_enables_tool_in_list 断言 Warming 时工具仍在列表；tests/code_search_ipc.rs:253 refresh_rebuilds_when_dirty_too_large 期望脏文件过多时 Rebuild。二者均为 WP-060 后未更新的旧测试，WP-079 全量跑出失败。",
+  "evidence": [
+    {
+      "path": "tests/optional_code_search.rs",
+      "note": ":160 Warming 时 should_include_in_llm_list 期望 true"
+    },
+    {
+      "path": "tests/code_search_ipc.rs",
+      "note": ":253 assert_eq!(mode, RefreshMode::Rebuild)"
+    }
+  ],
+  "repro": "cargo test --test optional_code_search catalog_on_warmup_enables_tool_in_list </dev/null；cargo test --test code_search_ipc refresh_rebuilds_when_dirty_too_large </dev/null",
+  "history": [
+    {
+      "ts": "2026-10-13T04:41:55.812Z",
+      "by": "ide",
+      "change": "ops.issue_new 分配（WP-079）"
+    }
+  ]
+}

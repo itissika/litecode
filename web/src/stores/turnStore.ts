@@ -709,7 +709,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         pr.questions,
         pr.options,
         pr.multi_select,
-        pr.free_text,
       );
       const item: PendingPermission = {
         turn_id: pr.turn_id,

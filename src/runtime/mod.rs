@@ -38,8 +38,8 @@ use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::permission::{CancellingPermissionSink, PermissionEngine, PermissionSink};
 use crate::runtime::observer::{
-    ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason, TurnErrorKind,
-    TurnPhase, TurnTokenStats,
+    ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason,
+    TurnErrorKind, TurnPhase, TurnTokenStats,
 };
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
@@ -1260,7 +1260,6 @@ fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
         _ => None,
     }
 }
-
 
 #[cfg(test)]
 mod pending_snapshot_tests {

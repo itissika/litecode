@@ -154,7 +154,8 @@ impl<'a> AskPrompt<'a> {
                 prompt: self.summary.to_string(),
                 options: self.options.to_vec(),
                 multi_select: self.multi_select,
-                free_text: self.free_text,
+                // WP-081: ask_user always offers free text as the last item.
+                free_text: true,
             }];
         }
         Vec::new()
@@ -335,6 +336,23 @@ pub fn clear_runtime_grants_for(agent: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn wp081_legacy_q0_free_text_always_true() {
+        let opts = vec![AskOption {
+            id: "a".into(),
+            label: "A".into(),
+        }];
+        for ft in [false, true] {
+            let mut p = AskPrompt::ask_user("ask_user", "r", "pick", &[]);
+            p.options = &opts;
+            p.free_text = ft;
+            let qs = p.effective_questions();
+            assert_eq!(qs.len(), 1);
+            assert_eq!(qs[0].id, "q0");
+            assert!(qs[0].free_text);
+        }
+    }
+
     use super::*;
 
     #[test]

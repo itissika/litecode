@@ -508,7 +508,10 @@ fn path_is_symlink(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
-fn resolve_link_target_path(link: &std::path::Path, target: &std::path::Path) -> std::path::PathBuf {
+fn resolve_link_target_path(
+    link: &std::path::Path,
+    target: &std::path::Path,
+) -> std::path::PathBuf {
     if target.is_absolute() {
         target.to_path_buf()
     } else {

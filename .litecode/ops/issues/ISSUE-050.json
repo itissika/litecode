@@ -1,0 +1,39 @@
+{
+  "id": "ISSUE-050",
+  "grade": "undecided",
+  "layer": "product",
+  "domain": "ide-substrate",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "ide",
+  "status": "open",
+  "blocks": false,
+  "title": "CLI 无代码语料后台刷新：cli.rs:661 无 router 后台任务，文件改动后索引停在 stale",
+  "history": [
+    {
+      "ts": "2026-10-13T04:28:29.544Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-077）"
+    },
+    {
+      "ts": "2026-10-13T04:29:12.665Z",
+      "by": "backend_mid",
+      "change": "补字段：tier 产品未定（GM WP-076 裁定 CLI 不在本包）"
+    }
+  ],
+  "tier": "产品未定",
+  "promise": "（待产品定）CLI 模式下代码语料是否也应像 serve 一样每 30s 静默增量刷新。",
+  "actual": "WP-076 只在 serve router 加代码语料 30s 周期刷新；CLI（cli.rs:661）不起 router 后台任务，文件改动后代码索引停在 stale，仅 agent 调 code_search 时被动 maybe_consume_index（tools/code_search.rs:34-48）。GM 裁定 CLI 不在 WP-076 本包。",
+  "evidence": [
+    {
+      "path": "src/cli.rs",
+      "note": ":661 无 router 后台任务"
+    },
+    {
+      "path": "src/serve/router.rs",
+      "note": ":32/:178-209 SESSION_INDEX_TICK 仅 serve"
+    }
+  ],
+  "repro": "CLI 模式改文件后查 retrieval 状态：stale 不自动消化"
+}
