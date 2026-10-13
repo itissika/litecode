@@ -4,6 +4,8 @@ status : pending
 summary : 人机协作卡统一走 PermissionCard：permission / approval / ask_user 分 kind，回执仍经 agent/permission。
 x : 4500
 y : 666
+w : 470
+h : 506
 domain : client-ux
 ```
 
