@@ -80,3 +80,6 @@ dev/
 # Orchestrator scratch board (session-local, never commit)
 FRONTEND_REWORK_BOARD.md
 nul
+
+# local rustup mirror
+.litecode/ops/.toolchain/
