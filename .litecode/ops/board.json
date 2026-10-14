@@ -9999,13 +9999,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-139.md",
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-14T01:52:08.022Z",
+      "progress": "closed done by andy: Andy 真机验收通过；bind 问题另开新包",
+      "status_entered_at": null,
       "parent": null,
       "goal": "扫盘为事实来源、watcher 仅加速、印章持久化，运行期不再永久漏文件",
       "approver": "andy",
@@ -10067,6 +10067,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": "WP-140 v2 已关。请 Andy 真机验：首建中途杀进程续跑、扫盘印章、进度条 refreshing 百分比。"
+        },
+        {
+          "ts": "2026-10-14T02:24:32.743Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 真机验收通过；bind 问题另开新包",
+          "to": "done"
         }
       ]
     },
@@ -10504,6 +10511,470 @@
           "actor": "backend_mid",
           "action": "close",
           "note": "4 轮 IDE 交叉审通过（r4 R4-1 已修，IDE 预授通过）；209 passed/0 failed；fmt 干净；未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-145",
+      "domain": "team-ops",
+      "title": "工具可见性只看 bind：引擎状态只体现在调用结果",
+      "result": "bind 是唯一可见性门禁（desire）；引擎未开/预热中/未刷完只体现在调用结果；去掉 code_search/session_search 对引擎 ready 的可见性依赖",
+      "done_when": [
+        "仅限 code_search，session_search 不改",
+        "绑定的 code_search 在引擎未开、Warming、ready 下始终可见可点",
+        "引擎未开调用返回空+明确提示「代码引擎未开启」",
+        "Warming 调用返回空+「引擎预热中」及同步进度",
+        "ready 时结果首行照旧 sync %",
+        "运行态永不改写 bind/引擎开关",
+        "设置页 bind 显示只反映库中 desire，不混入就绪状态",
+        "主 agent 默认绑定 code_search",
+        "无新增机制层",
+        "云端测试绿"
+      ],
+      "owner": "gm",
+      "reviewer": "andy",
+      "status": "review",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "awaiting acceptance by andy",
+      "status_entered_at": "2026-10-14T02:57:27.993Z",
+      "parent": null,
+      "goal": "bind 是唯一可见性门禁（desire）；引擎未开/预热中/未刷完只体现在调用结果；去掉 code_search/session_search 对引擎 ready 的可见性依赖",
+      "approver": "andy",
+      "content": {
+        "kind": "split",
+        "text": "方向：bind 是 code_search 唯一可见性门禁；引擎状态只体现在调用结果。依据 artifacts/bind-warming-research-backend.md 与 .tmp/gm_bind_warming.md。后端中层负责后端（可见性、调用返回、默认绑定），前端中层负责设置页 bind 显示；实现由中层定，先后端契约后前端，勿打乱在途任务。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:24:41.156Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: bind 是唯一可见性门禁（desire）；引擎未开/预热中/未刷完只体现在调用结果；去掉 code_search/session_search 对引擎 ready 的可见性依赖"
+        },
+        {
+          "ts": "2026-10-14T02:26:38.024Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "done_when: [\"绑定的 code_search/session_search 在引擎未开、Warming、ready 下始终可见可点 -> [\"仅限 code_search，session_search 不改\",\"绑定的 code_search 在引擎未开、W"
+        },
+        {
+          "ts": "2026-10-14T02:26:45.904Z",
+          "actor": "gm",
+          "action": "fill",
+          "note": "split: 方向：bind 是 code_search 唯一可见性门禁；引擎状态只体现在调用结果。依据 artifacts/bind-warming-research-ba"
+        },
+        {
+          "ts": "2026-10-14T02:26:46.736Z",
+          "actor": "gm",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:26:47.025Z",
+          "actor": "andy",
+          "action": "approve",
+          "note": "Andy 批了"
+        },
+        {
+          "ts": "2026-10-14T02:26:47.291Z",
+          "actor": "gm",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:57:27.993Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "后端+前端完成，请真机验收：绑上的 code_search 在引擎没开/预热时仍可见；调用返回契约文案；主 agent 默认绑；设置页只显示 desire"
+        }
+      ]
+    },
+    {
+      "id": "WP-146",
+      "domain": "team-ops",
+      "title": "后端：code_search 可见性只看 bind，引擎状态进调用结果",
+      "result": "见 WP-145 done_when 后端部分；session_search 不动",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-145-backend.md",
+      "progress": "closed done by gm: 验收通过：A/B/C/场景2/测试绿",
+      "status_entered_at": null,
+      "parent": "WP-145",
+      "goal": "见 WP-145 done_when 后端部分；session_search 不动",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-146（WP-145 后端）：code_search 可见性只看 bind；运行状态只进调用结果\n\n依据：artifacts/bind-warming-research-backend.md、.tmp/gm_bind_warming.md；Andy 已批方向（GM 10-14）。\n\n## 契约 v1（先定，前端 WP-147 与 Tools 照此）\n### A. 可见性\n- code_search 列入 LLM 工具表 ⇔ 该 agent 的 bind（agent_tools.enabled）为 true。与 engines.json desired、引擎 state、call_gate、索引进度全部无关。\n- session_search 不改（保持现有门禁）。\n- 运行状态（Warming/Warm/Failed/Idle、重建、job.json）永不写 agent_tools 或 engines.json desired；desired 仍只由人改。\n- 不新增状态、事件、刷新机制；回合开始时算工具表的现状保留（bind 只在设置写入时变，已有 reload 路径）。\n\n### B. 默认绑定\n- 主 agent（primary 角色，含 default）默认 code_search enabled=true：新库 seed 与已有库迁移各一次（迁移只补“缺行”，已有行无论 true/false 一律不动——人关掉的保持关）。\n- 子代理角色不默认绑定。\n\n### C. 调用结果（ToolCallResult::ok，非 error；首行恒为 sync_pct v2 行，正则不变）\n| 情形 | 判定 | 首行 | 正文 |\n|---|---|---|---|\n| 引擎未开 | desired=false | `sync_pct: unknown (engine off)` | `代码引擎未开启，无结果。可在设置中开启代码检索引擎。` |\n| 预热中 | desired=true 且 不可搜（state≠Warm 或 call_gate=Wait） | 有精确总数：`sync_pct: N% (warming) chunks d/t`；否则 `sync_pct: scanning (warming)` | `引擎预热中，暂无结果，请稍后重试。` |\n| 失败 | state=Failed 或 call_gate=Failed | `sync_pct: failed (<简短原因>)` | 原因一句 |\n| 就绪 | is_searchable | 照旧 | 照旧（refreshing 期间照旧可搜，首行带真实 %） |\n- 非就绪三种情形一律不返回任何命中（空结果），不调用检索。\n- 括号内标签取值固定：`engine off`、`warming`；百分比 0–100，无总数时不带 chunks。\n\n### D. 前端（WP-147）\n- 不新增字段/接口。bind 开关读写现有 `GET/PUT /api/settings/agents/{id}` 的 `tools.code_search.enabled`；只显示库里存的值，不按引擎状态置灰/改写。\n- 迁移后主 agent 的 code_search 行存在且为 true，前端不再走“缺行=Off”分支（缺行仍按 Off 显示，作兜底）。\n\n## 子包（排在 WP-140 推送后，不打乱在途）\n- Tools：src/tool/availability.rs（code_search 去掉 desired/is_searchable 门禁与 readiness 依赖）、src/tools/code_search.rs（C 表四种返回）。测试：bind=true 时 Warming/未开/失败均可见；四种首行过 v2 正则；非就绪零检索调用；session_search 现有测试不变。\n- Runtime（src/config）：global_db seed + 迁移补主 agent code_search 默认绑定（只补缺行）。测试：新库有行=true；已有 false 行迁移后仍 false；子代理无行。\n- 硬门：rg 证明 engines/、tools/、serve/ 无写 agent_tools/desired 的运行态路径（保持现状）。\n- 护栏：MemAvailable≥6GiB、-j2、共用主 target、不 commit。\n\n## 验收\n1. 上述测试全绿；tools/engines/config 现有测试全绿；fmt 0。\n2. 场景测试：Warming 期间开始的回合，code_search 可见，调用返回预热首行+空结果；Warm 后同一会话下一次调用返回正常结果（无需点 bind）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:26:46.188Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 见 WP-145 done_when 后端部分；session_search 不动"
+        },
+        {
+          "ts": "2026-10-14T02:27:42.845Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-146（WP-145 后端）：code_search 可见性只看 bind；运行状态只进调用结果\n\n依据：artifacts/bind-warming"
+        },
+        {
+          "ts": "2026-10-14T02:27:43.698Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "契约 v1 见 WP-145-backend.md；子包 Tools/Runtime"
+        },
+        {
+          "ts": "2026-10-14T02:28:09.669Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "契约 v1 通过"
+        },
+        {
+          "ts": "2026-10-14T02:28:40.654Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:57:09.030Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "WP-148+WP-149 done; contract A/B/C landed; artifact WP-145-backend.md updated"
+        },
+        {
+          "ts": "2026-10-14T02:57:27.705Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：A/B/C/场景2/测试绿",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-147",
+      "domain": "team-ops",
+      "title": "前端：设置页 bind 只显示 desire",
+      "result": "设置页 code_search bind 开关只反映库中 desire，不混入引擎就绪；按后端契约",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-145-frontend.md",
+      "progress": "closed done by gm: 验收通过：仅测试锁定契约 D",
+      "status_entered_at": null,
+      "parent": "WP-145",
+      "goal": "设置页 code_search bind 开关只反映库中 desire，不混入引擎就绪；按后端契约",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-147（WP-145 前端）：设置页 code_search bind 只显示库里的期望\n\n依据：`.litecode/ops/artifacts/WP-145-backend.md` D 节（契约 v1，等 GM 批）+ 后端中层口述补充（PUT 整份覆盖、缺行兜底 Off）。Andy 已批 WP-145；本包 approver=gm。不 commit；未批不 start。\n\n## Goal（只做一项）\nSettings → Agents：`code_search` bind 开关只反映 `GET/PUT /api/settings/agents/{id}` 里存的 `tools.code_search.enabled`，不按引擎 Warming / stopped / usable 置灰、改写或隐藏。`session_search` 不动。\n\n## 契约引用（D + 补充）\n- 不新增字段/接口。开关读写现有 agents GET/PUT 的 `tools.code_search.enabled`。\n- 只显示库里存的值；不按引擎状态置灰/改写。\n- 迁移后主 agent 有行且多为 true；缺行仍按 Off 显示（兜底）。\n- PUT 是整份覆盖：提交时把 `tools` 完整带上，不要按可用性过滤，否则会被持久化成解绑。\n- 引擎 off / Warming 只出现在调用结果首行（WP-146 C），不进设置页开关。\n\n## 现状核实（web/src，只读）\n\n### 无直接引擎耦合（保持）\n- `AgentsSection.tsx` / `settingsStore.ts` / `api/settings.ts` **不**引用 `engineStore`、`usable`、`warming`。\n- 开关 `disabled` 只跟 `saveBlocked`（约 :451），不跟引擎态。\n- Engines 页 play/stop 只写 `engines.json` desired（`EngineView.tsx`），不写 agent bind。\n\n### 间接耦合：目录决定是否出卡\n| 位置 | 现状 | 要改什么 |\n|------|------|----------|\n| `AgentsSection.tsx:631-644` `bindableToolsPrimary` | 网格只渲染 `availableTools` 里的项；`kind===\"engine\"` 仅排序 | 依赖 WP-146 后 `GET /available-tools` **始终**含 `code_search`（去掉 readiness/desired 门禁）。前端不得再按引擎态过滤。若落地后仍缺项，需在本包补「profile 已有 `tools.code_search` 时也出卡」——优先以后端目录为准，改前先跟后端中层对齐。 |\n| `AgentsSection.tsx:646-651` `bindableToolsSubagent` | `filter(isSubagentBindableTool)`；`code_search` 本身可绑子代理 | **不改** session_search / 子代理规则；确认不因本包误伤。 |\n| `AgentsSection.tsx:59-64` `bindingFor` | 缺行 → `{ enabled: false, … }`（Off 兜底） | **保持**；测缺行 Off。 |\n| `AgentsSection.tsx:424-456` 卡片 On/Off | `enabled = binding.enabled`；点击只改 draft | **保持**只读库值；禁止接入 `engineStatuses` / usable。 |\n| `AgentsSection.tsx:547-585` `agentPersistPayload` | 注释：目录外绑定保留；`tools: { ...draft.tools }` | **保持**全量 tools；加测：引擎 stopped/warming 时 PUT 仍带 `code_search` 原值。 |\n| `AgentsSection.tsx:672-678` persist serialize | 走 `agentPersistPayload` → `saveAgent` | 同上，禁止按 available 删键。 |\n| `api/settings.ts:397-410` `putAgent` | `JSON.stringify(withSyncedToolSeries(...))` 整份 PUT | **保持**；series 同步不得删掉 `code_search`。 |\n| `api/settings.ts:736-753` `syncToolEnableSeries` | 只同步 series 成员开关，不删无关键 | **保持**；确认 `code_search` 无 series 误伤。 |\n| `stores/settingsStore.ts:623+` `saveAgent` | 再跑一遍 `withSyncedToolSeries` 后 `putAgent` | **保持**全量；禁止按 `availableTools` 过滤 payload。 |\n| `AgentsSection.test.tsx` | 有 lsp 目录闪烁 / 跨工作区保留用例；**无** code_search×引擎态用例 | **新增**见下。 |\n| 结果视图 `CodeSearchToolView*` / `SyncPctHeader` | 只解析调用结果首行 | **本包不改**（WP-138 已接 v2）。 |\n| `session_search` | core，始终在 available-tools；Agents 绑定逻辑与引擎无关 | **明确不动**（契约 A/D）。 |\n\n### session_search 耦合检查\n- Agents 页：无单独门禁；随 core 目录展示；`bindingFor` 同缺行 Off。\n- 工具结果：`SessionSearchToolView` 独立，本包零改动。\n- 后端 WP-146：session_search LLM 门禁规则「不改」——前端不跟。\n\n## 改动清单（预计很小）\n1. **主路径**：WP-146 Tools 让 `available-tools` 常驻 `code_search` 后，设置页已「只显示库值」——本包以 **补测试 + 防回归** 为主；若仍有按引擎隐藏/置灰代码则删掉（当前 rg 未发现）。\n2. **护栏**：PUT / auto-save 路径断言 `tools.code_search` 不因 available 闪烁或引擎态丢失（比照现有 lsp 闪烁测试）。\n3. **产物**：本文件；子包产物可另写 `WP-145-web-bind.md`（实现证据）。\n4. **不改**：Engines 页 desired；`session_search`；LLM 工具表/调用结果（后端）；不 commit。\n\n## 测试（web vitest + tsc -b）\n1. 库里 `code_search.enabled=true`，模拟引擎 stopped / warming（只动 engineStore 或根本不挂引擎数据）→ 卡片仍 On，可点 Off；不出现置灰/unavailable。\n2. profile 无 `code_search` 行 → 卡片 Off（兜底）。\n3. 保存/PUT：`saveAgent`/`putAgent` payload 含完整 `tools`，且 `code_search` 与 draft 一致，不因 availableTools 省略或引擎态而消失。\n4. `session_search`：既有绑定行为用例仍过；本包不改其断言语义。\n5. 全量相关 AgentsSection / settings API 测试绿；`tsc -b` 0。\n\n## 计划\n- **一个** web 子包挂在 WP-147 下（前端-web），批后、且 WP-146 契约/目录行为定稿后再 start。\n- frontend_mid：填 plan → submit → gm 批 → 派子包 → 验收 → deliver WP-147。\n- 与 WP-146（Tools/Runtime）同批落地意识：前端测可 mock available-tools 已含 code_search；真机联调等后端迁移后主 agent 有行。\n\n## 不在范围\n- 后端 availability / seed 迁移（WP-146/148/149）\n- Engines 页 usable 标签与 progress 条\n- sync_pct 调用结果文案（C 表）\n- 新建 agent：前端模板不得显式写 code_search=false（缺键时后端对 primary agent 自动补 enabled=true）；测试覆盖新建 payload 不含 code_search=false。（后端中层 D 节补充，2026-10-14）\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:26:46.459Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 设置页 code_search bind 开关只反映库中 desire，不混入引擎就绪；按后端契约"
+        },
+        {
+          "ts": "2026-10-14T02:32:19.292Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "direct: # WP-147（WP-145 前端）：设置页 code_search bind 只显示库里的期望\n\n依据：`.litecode/ops/artifacts/W"
+        },
+        {
+          "ts": "2026-10-14T02:32:19.422Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "计划见 WP-145-frontend.md；依赖 WP-146 契约 D"
+        },
+        {
+          "ts": "2026-10-14T02:32:42.195Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "计划通过"
+        },
+        {
+          "ts": "2026-10-14T02:32:54.861Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:41:06.755Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "WP-150 done：code_search bind 开关测试锁定（存值不受引擎态影响、缺行 Off、PUT 全量 tools、新建不写 false、session_search 不变）；web 产品代码无改动；产物 WP-145-frontend.md / WP-145-web.md"
+        },
+        {
+          "ts": "2026-10-14T02:41:23.576Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：仅测试锁定契约 D",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-148",
+      "domain": "team-ops",
+      "title": "Tools：code_search 可见性只看 bind + 非就绪返回契约",
+      "result": "按 WP-145-backend.md 契约 A/C",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "tools",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-148-tools.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-146",
+      "goal": "按 WP-145-backend.md 契约 A/C",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-148 phase-0 方案（Tools）— 契约 v1（WP-145-backend.md A+C）\nkind: direct。审批前不写代码；不 commit；只改 src/tool/availability.rs、src/tools/code_search.rs、src/tools/mod.rs（只扩 format_sync_pct_line，仍是唯一构造点）。engines/ 不动。\n\n## 1) availability.rs 门禁（行号按当前树）\ncode_search 现在有三处门禁不看 bind：\n- L18-21 `is_available`：workspace optional 走 `workspace_tool_readiness()==Ready`；code_search 的 readiness 就是 engines.json retrieval.desired（config/workspace.rs:321）。→ code_search 改为恒可用（在 L18 前加 `if tool_id == \"code_search\" { return true; }`）；lsp 仍走 readiness。\n- L83 `available_tools`：bind 卡片只在 readiness=Ready 时列出 code_search。→ code_search 恒列出（契约 D：bind 开关始终可见，只显示库里值）；lsp 不变。\n- L152-168 + L184 `is_retrieval_surface_tool` / `retrieval_tools_visible`（desired + `is_searchable`）。→ 改名 `session_search_visible`，只对 `tool_id == \"session_search\"` 生效：L155 改为只匹配 session_search，L184 条件不变。函数体（L162-167：code_search desired + is_searchable）一个字符不改。\nsession_search 不受影响的保证：其判定函数体逐字保留，仅调用面从「两个 id」收窄到「session_search」；加回归测试锁住 session_search 三态（desired=false 隐藏 / Warming 隐藏 / Warm 可见）与现状一致。结果：code_search 的 LLM 表 = is_available(恒真) ∧ agent_tool_enabled(bind)。\n\n## 2) code_search.rs 四种返回（全部 ToolCallResult::ok；判定先于 maybe_consume_index 与检索）\n判定顺序（互斥，先中先返回）：\n1. 未开：无 workspace_root 或 `workspace_engine_desired(root,\"code_search\")==false`\n2. 失败：`state==Failed` 或 `code_search_call_gate()==Failed(detail)`\n3. 预热：`!engines.is_searchable(\"code_search\")`（state≠Warm 或 gate=Wait）\n4. 就绪：其余 → 现有检索路径不变（含 refreshing 期间照搜，首行真实 %）\n（失败排在预热前：契约里预热条件 state≠Warm 包含 Failed，必须先判失败。）\n\n| 情形 | 首行 | 正文 |\n|---|---|---|\n| 未开 | `sync_pct: unknown (engine off)` | `代码引擎未开启，无结果。可在设置中开启代码检索引擎。` |\n| 预热 | 有精确总数：`sync_pct: N% (warming) chunks d/t`；否则 `sync_pct: scanning (warming)` | `引擎预热中，暂无结果，请稍后重试。` |\n| 失败 | `sync_pct: failed (<简短原因>)`，原因= wire_name(err.reason)，无则 last_error 截断/去括号与换行；兜底 `sync_pct: failed (engine failed)` | 一句原因（last_error 或 gate detail） |\n| 就绪 | 照旧 `format_sync_pct_line(sync)` | 照旧 |\n实现：mod.rs 新增 `format_sync_pct_line_labeled(sync, label)`（`format_sync_pct_line` 内部调用它，label=None 行为不变），百分比 clamp 0–100、无总数不带 chunks、标签内去掉 `()` 与换行以保证过正则。删除 defensive_not_ready_message / enable_retrieval_message / 英文 Warming 文案及 warning/error 级别返回。\n\n## 3) 测试清单\navailability.rs：\n- 改写 `retrieval_hidden_when_desired_false` → `code_search_visible_when_bound_engine_off`：code_search 可见、session_search 仍隐藏、read 可见。\n- 改写 `retrieval_hidden_while_warming_even_if_desired` → `code_search_visible_when_bound_while_warming`：code_search 可见、session_search 仍隐藏。\n- 保留 `retrieval_visible_when_desired_and_warm`（两者都可见）。\n- 新增 `code_search_visible_when_bound_engine_failed`；`code_search_hidden_when_unbound`（Warm+desired 但 bind=false → 不可见）；`code_search_bind_card_listed_when_desired_false`（available_tools 含 code_search）。\ncode_search.rs：\n- 新增 `four_returns_first_line_matches_v2_regex`：四态各构造一次，首行过 v2 正则（regex crate 已在依赖），标签分别为 engine off / warming / failed(..)。\n- 新增 `not_ready_issues_no_search`：未开/预热/失败三态调用后 cfg(test) thread_local 计数器 `SEARCH_CALLS`（只在 code_search.rs 内、紧贴 `self.engines.search(` 前自增）== 0，正文无命中；对照组就绪态计数 ==1。证明零检索调用，不动 engines。\n- 场景 `warming_turn_sees_code_search_and_gets_warming_line`：desired=true、state=Warming、bind=true → build_tool_list(registry) 含 code_search；调用返回 ok、首行 `sync_pct: scanning (warming)` 或 `N% (warming) chunks d/t`、正文为预热文案、零检索；随后同一 engines 置 Warm → 下一次调用走就绪路径（计数 1，无需改 bind）。\n- 改写 `warming_returns_immediately_without_sleeping`：断言 ok 级别 + 预热首行（仍断言不阻塞）。\n- 改写 `desired_false_defensive_points_at_settings` → `engine_off_returns_off_line_and_empty`。\n- 改写 `failed_engine_returns_last_error` → ok 级别 + `sync_pct: failed (...)` + 原因句。\n- 改写 `warm_failed_index_job_returns_error_not_hits` → ok 级别失败首行、无命中。\n- 改写 `indexing_wait_message_reads_job_json` / `indexing_wait_message_uses_chunk_progress_not_pending_hint` → 断言预热首行 `N% (warming) chunks 4/8`（经 call_inner，不再测已删的 indexing_wait_message）。\n- 不变：code_search_result_leads_with_sync、warm_refreshing_does_not_block_on_wait、warm_refresh_busy_does_not_block_on_wait、warm_stale_is_searchable_without_warm_wait、warm_wait_constants_removed、agent_view_* 全部。\n- session_search 现有测试不改；tests/optional_p0.rs 不涉及 code_search 可见性，不改。\n删除的测试：无（全部按新口径改写；src/ 与 tests/ rg 过 hidden/Warming/desired，旧「Warming 时隐藏」只有 availability.rs 两条，均改写）。\n\n## 验证\n`cargo test --lib tools:: -j2 </dev/null` 与 `cargo test --lib tool::availability -j2 </dev/null`、`cargo test --test optional_p0 -j2 </dev/null`、`cargo fmt --check`；MemAvailable≥6GiB、共用主 target。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:27:43.115Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-145-backend.md 契约 A/C"
+        },
+        {
+          "ts": "2026-10-14T02:30:05.098Z",
+          "actor": "tools",
+          "action": "fill",
+          "note": "direct: # WP-148 phase-0 方案（Tools）— 契约 v1（WP-145-backend.md A+C）\nkind: direct。审批前不写代码；不 "
+        },
+        {
+          "ts": "2026-10-14T02:30:05.377Z",
+          "actor": "tools",
+          "action": "submit",
+          "note": "phase-0 按 WP-145 A/C；待后端中层审批"
+        },
+        {
+          "ts": "2026-10-14T02:31:18.562Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准：判定顺序 未开→失败→预热→就绪；session_search 一字不改+回归钉住；无删测"
+        },
+        {
+          "ts": "2026-10-14T02:31:42.372Z",
+          "actor": "tools",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:37:53.003Z",
+          "actor": "tools",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-145-tools.md\" -> \".litecode/ops/artifacts/WP-148-tools.md\""
+        },
+        {
+          "ts": "2026-10-14T02:37:53.299Z",
+          "actor": "tools",
+          "action": "deliver",
+          "note": "tools:: 440/0, tool::availability 11/0, fmt 0; ISSUE-055 既有失败"
+        },
+        {
+          "ts": "2026-10-14T02:56:59.607Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-149",
+      "domain": "team-ops",
+      "title": "Runtime：主 agent 默认绑定 code_search（seed+只补缺行迁移）",
+      "result": "按 WP-145-backend.md 契约 B",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "runtime",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-149-runtime.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-146",
+      "goal": "按 WP-145-backend.md 契约 B",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-149 phase-0 plan — primary agents bind code_search by default (contract WP-145-backend.md §B, v1)\n\n## Scope\n- Primary-role agents (including `default`) get `agent_tools(agent_id, 'code_search', enabled=1)` by default.\n- New DBs get it in seed. Existing DBs get one one-time migration that only inserts missing rows. Existing rows, true or false, are never touched.\n- Subagent and hidden roles are never bound by default.\n- Out of scope: the code_search tool itself, the UI, and agent-creation paths (see Q2).\n\n## 1) How the primary role is determined\n- Source of truth: the `agents.role` column (TEXT). It is written by `store::upsert_agent` from `config::schema::AgentRole`, an enum of `Primary | Subagent | Hidden` serialized as `\"primary\"`, `\"subagent\"` and `\"hidden\"`.\n- Selection: `SELECT id FROM agents WHERE role = 'primary' AND id <> 'compaction'`. The `compaction` guard mirrors `reconcile_role_rules` (seed.rs:302).\n- `default` and `orchestrator` are seeded as `AgentRole::Primary` (seed.rs:41-62), so both qualify.\n- `explore` and `general` are `Subagent`, and `compaction` is `Hidden`, so all three are excluded by the role filter.\n- Custom agents: any user-created agent whose role is `primary` when the migration runs is included. Custom subagent or hidden agents are excluded.\n- Seed path: add `code_search` inside `seed_primary_agent_bindings` (seed.rs:107-113), which is reached only for primary agents, using insert-if-missing. The tool id comes from `tools::optional_builtin_ids()` (tools.rs:53-55). I will add a small helper `default_bound_optional_builtins() -> &[\"code_search\"]` in tools.rs, so `lsp` stays unbound.\n- Binding shape: `binding_seeded(\"code_search\", ToolPreset::All)`. Fixed tool: enabled=true, allow_all, no preset. If it has a permission preset, ALL is used, same as the other primary tools.\n\n## 2) Migration: runs once and only fills missing rows\n- Marker: a `meta` row `key='default_bind_code_search_v1'`. `PRAGMA user_version` is not bumped. That keeps `can_migrate_in_place` and the archive/rebuild logic in migrate.rs unchanged, and follows the existing `seed_revision` / catalog meta-marker pattern (`global_db::meta_get`).\n- Where it runs:\n  - `seed::ensure_core_bindings` (existing-DB path, seed.rs:354) calls a new `ensure_code_search_default_v1(conn)`.\n  - `seed::seed` (new-DB path, seed.rs:16) binds through `seed_primary_agent_bindings` and also writes the marker. A freshly seeded DB therefore never runs the migration again.\n- Body, in one `conn.unchecked_transaction()`, committed only on success:\n  1. If the marker exists, return immediately.\n  2. Run:\n     `INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json) SELECT a.id, 'code_search', 1, ?policy, ?path_mode, ?preset, NULL FROM agents a WHERE a.role='primary' AND a.id<>'compaction' AND NOT EXISTS (SELECT 1 FROM agent_tools t WHERE t.agent_id=a.id AND t.tool_id='code_search')`\n     The values come from `binding_seeded`. `ON CONFLICT DO NOTHING` on the PK is a second guard.\n  3. Run `INSERT INTO meta(key,value) VALUES('default_bind_code_search_v1', <unix ts>) ON CONFLICT(key) DO NOTHING`.\n  4. Commit.\n- Never overwriting false: there is no UPDATE or upsert path. Existing rows are excluded by NOT EXISTS plus DO NOTHING, so a user-disabled row (enabled=0) stays 0.\n- Seed side: `upsert_agent_tool` overwrites, so code_search uses a new insert-if-missing helper instead of it.\n- Ordering: the migration runs after `reconcile_role_rules` inside `ensure_core_bindings`, so roles have been repaired first.\n- Agents created later: once the marker is set, the migration never runs again, so later agents get nothing from it. Default per Q2: no change to agent-creation paths in this WP. A primary agent created later starts without code_search until the user enables it.\n- Failure: the transaction rolls back and the marker is not written, so the next startup retries. The error propagates the same way other `ensure_*` errors do.\n\n## 3) Tests\nNew `#[cfg(test)]` cases in seed.rs, all in-memory `Connection` + `migrate::migrate`, following the existing seed.rs test style:\n- `seed_binds_code_search_true_on_primary_agents`: on a new DB, `default` and `orchestrator` have a code_search row with enabled=1, and the marker is present.\n- `seed_does_not_bind_code_search_on_subagents`: `explore`, `general` and `compaction` have no code_search row.\n- `migration_fills_missing_primary_code_search_only`: a pre-WP DB with the marker absent, code_search rows deleted and a custom primary agent added. After `ensure_core_bindings`, every primary has enabled=1 and no subagent has a row.\n- `migration_keeps_existing_false_row`: `default` code_search is pre-set to enabled=0 with the marker absent. After migration it is still 0, with an unchanged policy_json.\n- `migration_runs_once_on_repeated_startup`: call `load_global_from_path` (or `ensure_core_bindings`) three times. The marker value is unchanged after the first run, and the code_search row count and values are stable. If a primary row is deleted after the first run, it stays deleted, which proves the migration does not re-run.\n- `migration_rolls_back_without_marker_on_failure` (optional): force an error, for example by dropping agent_tools inside the test, then assert the marker is absent.\n\n## Files to touch\n- src/config/global_db/tools.rs (helper near :53-55)\n- src/config/global_db/seed.rs (:16-38 marker, :107-113 primary seed, :354 ensure hook, new fn + tests)\n- Possibly src/config/global_db/store.rs, for an insert-if-missing helper, if one does not fit in seed.rs.\n- No schema.sql or migrate.rs change. No `docs/knowledge-references.md` or `src/knowledge/*` changes.\n\n## Risks\n- `ensure_core_bindings` runs on every load, so the marker check must come first. It is cheap: one indexed meta lookup.\n- `normalize_fixed_builtin_bindings` or `reconcile_role_rules` could rewrite code_search rows. I'll verify that neither touches enabled for optional builtins. Both currently target core and primary-only sets.\n- `store::replace_all` (save_global) may rewrite agent_tools from GlobalSettings. Settings loaded after migration include the row, so this is fine, but a test should load, save and reload to confirm the value is stable.\n- A role changed after migration (subagent to primary) gets no binding. Accepted under Q2.\n- If code_search is not registered at runtime, the binding is harmless. That is the WP-146 sibling's concern.\n\n## Open questions (with defaults)\n- Q1 Marker type: meta key `default_bind_code_search_v1`, with no user_version bump. Default: meta key.\n- Q2 Agents created later or role-changed to primary: not auto-bound. Default: out of scope, and the UI/create path decides.\n- Q3 Custom primary agents existing at migration time: included. Default: yes, since the contract says \"primary role\".\n- Q4 Should a missing binding on an existing DB with marker set be re-added if a user deleted the row (not set it to false)? Default: no. Deletion is respected and the migration is one-time.\n- Q5 SEED_REVISION bump: not needed, because the marker is separate. Default: leave at \"15\".\n\n## Guardrails\n- No commit or push. Branch ops/team-framework only.\n- Run tests only when MemAvailable >= 6 GiB.\n- Use `cargo test -j2 --lib config::global_db` with plain `cargo test`, scoped, and the shared main target dir.\n- rustfmt only on my own files, then `cargo fmt --check`.\n- Code only after 后端中层 approval, then `start`.\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:27:43.402Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-145-backend.md 契约 B"
+        },
+        {
+          "ts": "2026-10-14T02:29:56.291Z",
+          "actor": "runtime",
+          "action": "fill",
+          "note": "direct: # WP-149 phase-0 plan — primary agents bind code_search by default (contract WP-"
+        },
+        {
+          "ts": "2026-10-14T02:29:56.577Z",
+          "actor": "runtime",
+          "action": "submit",
+          "note": "phase-0 plan: .tmp/wp149_plan.md"
+        },
+        {
+          "ts": "2026-10-14T02:30:54.137Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批准；Q1/Q3/Q4/Q5 按默认；Q2 改：新建 primary agent（id 不存在时）且 tools 缺 code_search 键→补 true；改角色不自动绑"
+        },
+        {
+          "ts": "2026-10-14T02:31:15.337Z",
+          "actor": "runtime",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:40:03.532Z",
+          "actor": "runtime",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-145-runtime.md\" -> \".litecode/ops/artifacts/WP-149-runtime.md\""
+        },
+        {
+          "ts": "2026-10-14T02:40:03.837Z",
+          "actor": "runtime",
+          "action": "deliver",
+          "note": "artifact .litecode/ops/artifacts/WP-149-runtime.md; global_db 29/29, settings_writer 26/26; settings_api 1 stale assertion vs WP-148 (not touched)"
+        },
+        {
+          "ts": "2026-10-14T02:41:03.639Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-150",
+      "domain": "client-ux",
+      "title": "WP-147 web：code_search bind 开关只显示库存期望",
+      "result": "AgentsSection/settings api 按 WP-145-frontend.md 落地",
+      "done_when": [
+        "引擎 stopped/warming 时存值 On 仍显示 On 且可切换",
+        "缺行显示 Off",
+        "catalog 缺 code_search 时仍可见",
+        "PUT payload 保留完整 tools 含 code_search",
+        "新建 agent 模板不写 code_search=false",
+        "session_search 不变",
+        "vitest 全量+tsc -b 0"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-145-web.md",
+      "progress": "closed done by frontend_mid: 交叉审通过：仅新增测试 13 条，全量 1359 绿，tsc 0",
+      "status_entered_at": null,
+      "parent": "WP-147",
+      "goal": "设置页 code_search 开关只反映 tools.code_search.enabled 存值，不受引擎状态影响；保存/新建不丢或误写 code_search",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-150 方案（前端-web；父包 WP-147 / WP-145；只改 web/，不 commit，未批不 start）\n\n口径（Andy 锁定）：bind 是 code_search 对 agent 可见的唯一开关。设置页开关只显示 `tools.code_search.enabled` 存值，不按引擎状态置灰、不改写存值。不新增字段/接口。`session_search` 不动。\n依据：`WP-145-frontend.md` 全文；`WP-145-backend.md` D 节（第 26 行，与依据一致）、B 节（只有主 agent 默认绑定，子代理不默认绑定）；后端 `src/tool/availability.rs:86` 的 `available_tools` 无条件列出 code_search（kind=Engine, origin=Workspace）。\n\n## 现状核实（只读，2026-10-14）\n- web 产品代码无 `code_search` 字面引用；AgentsSection / settingsStore / api/settings 不引用 engineStore。开关 `disabled` 只跟 `saveBlocked`。\n- 网格（:631-651）由目录驱动；后端目录总含 code_search → 主/子代理网格都会出卡。**前端不兜底、不加占位**，展示按后端卡片。目录未加载（null）不出卡（维持现状）。\n- `bindingFor`（:59-64）缺行 → Off。\n- PUT 不过滤：`agentPersistPayload` `tools: {...draft.tools}` 全量；`putAgent` / `saveAgent` 只套 `withSyncedToolSeries`；`syncToolEnableSeries` 不删键，code_search 不在 fallback series。\n- 新建模板 `startCreate` `tools: {}`，不写 code_search。\n\n## 结论：本包为纯测试锁定，产品代码不改\n\n## 测试（AgentsSection.test.tsx + api/settings 测试；目录 fixture 的 code_search 用 `kind:\"engine\"`、`origin:\"workspace\"`）\n1. 目录中的 code_search 卡在引擎 **stopped / warming**（engineStore 置态）时仍显示、未置灰；存值 On 显示 On，可点 Off。\n2. 缺行 → Off（主 agent 网格 + 子代理网格各一条；子代理网格由目录驱动显示 code_search）。\n3. PUT 全量：`putAgent` body 含完整 tools（code_search 原值 + 目录外 MCP 键）；autosave/saveAgent 在引擎 stopped/warming 下 payload 保留 `tools.code_search`；`syncToolEnableSeries` 不删 code_search。\n4. 新建 agent：`createAgent` payload 的 tools 不含 `code_search` 键（不显式写 false）。\n5. session_search：现有用例全过，不改断言。\n6. web 全量 vitest（/exec-daemon/node v22）+ `tsc -b` 0；lint N/A。\n\n## 不在范围\n后端、Engines 页、session_search、desktop、commit。\n\n## 批复记录（中层）\nQ1 不存在（无占位，展示按后端卡片）；Q2 目录未加载不出卡；Q3 不额外防御；Q4 子代理网格同样显示 code_search，缺行 Off（已加测）；Q5 engineStore 设状态再断言算数。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T02:32:54.977Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 设置页 code_search 开关只反映 tools.code_search.enabled 存值，不受引擎状态影响；保存/新建不丢或误写 code_search"
+        },
+        {
+          "ts": "2026-10-14T02:34:05.269Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-150 方案（前端-web；父包 WP-147 / WP-145；只改 web/，不 commit，未批不 start）\n\n口径（Andy 锁定）：b"
+        },
+        {
+          "ts": "2026-10-14T02:34:05.538Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:35:41.954Z",
+          "actor": "frontend_mid",
+          "action": "reject",
+          "note": "去掉占位条目：后端 available_tools 无条件列出 code_search（availability.rs:86），前端不做兜底；本包改为纯测试锁定 2–5 + 目录卡在 stopped/warming 仍显示。改后重 submit 即批。"
+        },
+        {
+          "ts": "2026-10-14T02:35:42.050Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-150 方案（前端-web；父包 WP-147 / WP-145；只改 web/，不 commit，未批不 start）\n\n口径（Andy 锁定）：b"
+        },
+        {
+          "ts": "2026-10-14T02:35:42.397Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:36:01.626Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:36:23.270Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:37:50.047Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T02:41:06.641Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "交叉审通过：仅新增测试 13 条，全量 1359 绿，tsc 0",
           "to": "done"
         }
       ]

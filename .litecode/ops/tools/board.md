@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-14T01:52:08.171Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-14T02:57:28.165Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -155,11 +155,17 @@
 | WP-136 | 　└ WP-133 web：引擎进度条 code+session 合并 | done | frontend | frontend_mid |
 | WP-138 | 　└ WP-133 web：sync_pct 首行新契约解析 | done | frontend | frontend_mid |
 | WP-142 | 　└ WP-133 web：retrieval 待处理改看 files_pending | done | frontend | frontend_mid |
-| WP-139 | code 索引刷新：定期扫盘+持久化元数据 | review | gm | andy |
+| WP-139 | code 索引刷新：定期扫盘+持久化元数据 | done | gm | andy |
 | WP-140 | └ 后端：扫盘对账+印章持久化落地 | done | backend_mid | gm |
 | WP-141 | 　└ IDE：code 定期扫盘对账+印章持久化 | done | ide | backend_mid |
 | WP-143 | 　└ IDE：code 首建/重建并入增量 + 按批存盘 + 原子写 | done | ide | backend_mid |
 | WP-144 | 　└ Session：session 首建/重建按批检查点续跑 | done | session | backend_mid |
+| WP-145 | 工具可见性只看 bind：引擎状态只体现在调用结果 | review | gm | andy |
+| WP-146 | └ 后端：code_search 可见性只看 bind，引擎状态进调用结果 | done | backend_mid | gm |
+| WP-148 | 　└ Tools：code_search 可见性只看 bind + 非就绪返回契约 | done | tools | backend_mid |
+| WP-149 | 　└ Runtime：主 agent 默认绑定 code_search（seed+只补缺行迁移） | done | runtime | backend_mid |
+| WP-147 | └ 前端：设置页 bind 只显示 desire | done | frontend_mid | gm |
+| WP-150 | 　└ WP-147 web：code_search bind 开关只显示库存期望 | done | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

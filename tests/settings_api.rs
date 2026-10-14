@@ -2092,12 +2092,28 @@ async fn settings_retrieval_engine_init_and_stop_use_engine_api() {
         .json()
         .await
         .expect("available json");
+    // WP-148: bind is the sole visibility gate; engine stop keeps the card.
     assert!(
-        !available_after_stop["tools"]
+        available_after_stop["tools"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t["id"] == "code_search")
+            .any(|t| t["id"] == "code_search"),
+        "code_search must stay listed after engine stop: {available_after_stop}"
+    );
+    // The off state surfaces only in the call result.
+    use litecode::tool::Tool as _;
+    let workspace_engines = litecode::engines::WorkspaceEngines::new();
+    workspace_engines
+        .code_search()
+        .set_workspace(ws.path().to_path_buf());
+    let tool = litecode::tools::code_search::CodeSearchTool::new(workspace_engines);
+    let result = tool.call(serde_json::json!({ "query": "auth" }));
+    assert_eq!(
+        result.content.lines().next(),
+        Some("sync_pct: unknown (engine off)"),
+        "{}",
+        result.content
     );
 }
 

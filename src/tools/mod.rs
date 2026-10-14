@@ -52,10 +52,80 @@ fn wire_name<T: serde::Serialize>(value: &T) -> String {
 /// `sync_pct: <value>[ (<label>)][ chunks <done>/<total>]`, value ∈ `<n>%` | `scanning` |
 /// `failed` | `unknown`. `n` comes only from [`CorpusProgress::percent`]; the chunks
 /// segment is emitted only with `<n>%`.
+/// Fixed-label first lines for code_search non-ready returns (WP-148, contract v1 §C).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SyncLineLabel<'a> {
+    /// `sync_pct: unknown (engine off)`
+    EngineOff,
+    /// `sync_pct: N% (warming) chunks d/t` or `sync_pct: scanning (warming)`
+    Warming,
+    /// `sync_pct: failed (<sanitized reason>)`
+    Failed(&'a str),
+}
+
+const FAILED_REASON_MAX_CHARS: usize = 60;
+
+/// Strip `()` and line breaks, collapse whitespace, cap length: keeps the label regex-safe.
+pub(crate) fn sanitize_sync_label(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| match c {
+            '(' | ')' => ' ',
+            c if c.is_control() => ' ',
+            c => c,
+        })
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let truncated: String = collapsed.chars().take(FAILED_REASON_MAX_CHARS).collect();
+    let out = truncated.trim().to_string();
+    if out.is_empty() {
+        "engine failed".into()
+    } else {
+        out
+    }
+}
+
 pub(crate) fn format_sync_pct_line(
     sync: Option<&crate::engines::progress::CorpusProgress>,
 ) -> String {
+    format_sync_pct_line_labeled(sync, None)
+}
+
+/// The single sync_pct first-line builder (contract v2 grammar).
+pub(crate) fn format_sync_pct_line_labeled(
+    sync: Option<&crate::engines::progress::CorpusProgress>,
+    label: Option<SyncLineLabel<'_>>,
+) -> String {
     use crate::engines::progress::{CorpusPhase, CorpusState};
+    match label {
+        None => {}
+        Some(SyncLineLabel::EngineOff) => return "sync_pct: unknown (engine off)".into(),
+        Some(SyncLineLabel::Failed(reason)) => {
+            // Engine detail first (sanitized); fall back to the progress reason code.
+            let reason = if reason.trim().is_empty() {
+                sync.and_then(|p| p.error.as_ref())
+                    .map(|err| wire_name(&err.reason))
+                    .unwrap_or_default()
+            } else {
+                reason.to_string()
+            };
+            return format!("sync_pct: failed ({})", sanitize_sync_label(&reason));
+        }
+        Some(SyncLineLabel::Warming) => {
+            if let Some(p) = sync {
+                if p.phase != Some(CorpusPhase::Scanning) {
+                    if let (Some(pct), Some(total)) = (p.percent(), p.chunks_total) {
+                        return format!(
+                            "sync_pct: {}% (warming) chunks {}/{total}",
+                            pct.min(100),
+                            p.chunks_done.min(total)
+                        );
+                    }
+                }
+            }
+            return "sync_pct: scanning (warming)".into();
+        }
+    }
     let Some(p) = sync else {
         return "sync_pct: unknown".into();
     };

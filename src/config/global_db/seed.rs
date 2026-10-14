@@ -9,7 +9,9 @@ use super::builtin_prompts::{
     DEFAULT_DESCRIPTION, EXPLORE_DESCRIPTION, GENERAL_DESCRIPTION, ORCHESTRATOR_DESCRIPTION,
 };
 use super::store;
-use super::tools::{core_configurable_tools, core_none_tools, network_core_tools};
+use super::tools::{
+    core_configurable_tools, core_none_tools, default_bound_optional_builtins, network_core_tools,
+};
 
 pub const SEED_REVISION: &str = "15";
 
@@ -27,6 +29,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
     // Seeded bindings must satisfy the role rules on their own (a subagent never
     // binds primary-only tools); this also repairs drift in older DBs.
     reconcile_role_rules(conn)?;
+    mark_code_search_default_done(conn)?;
 
     conn.execute(
         "INSERT INTO meta (key, value) VALUES ('seed_revision', ?1)
@@ -109,6 +112,63 @@ fn seed_primary_agent_bindings(conn: &Connection, agent_id: &str) -> Result<()> 
     for tool in core_none_tools() {
         bind_none(conn, agent_id, tool)?;
     }
+    for tool in default_bound_optional_builtins() {
+        if !agent_has_tool(conn, agent_id, tool)? {
+            store::upsert_agent_tool(conn, agent_id, tool, &default_optional_binding(tool))?;
+        }
+    }
+    Ok(())
+}
+
+/// Binding written when an optional builtin is bound by default (enabled, ALL preset).
+pub(crate) fn default_optional_binding(tool: &str) -> crate::config::schema::AgentToolBinding {
+    binding_seeded(tool, ToolPreset::All)
+}
+
+/// Meta marker for the one-time "primary agents bind code_search" backfill (WP-149).
+pub const CODE_SEARCH_DEFAULT_MARKER: &str = "default_bind_code_search_v1";
+
+fn mark_code_search_default_done(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, strftime('%s','now'))
+         ON CONFLICT(key) DO NOTHING",
+        [CODE_SEARCH_DEFAULT_MARKER],
+    )?;
+    Ok(())
+}
+
+/// One-time backfill for existing DBs: every primary agent without a
+/// `code_search` row gets one (enabled). Existing rows, true or false, are never
+/// touched. Runs in a transaction; the marker is written only on success.
+fn ensure_code_search_default_v1(conn: &Connection) -> Result<()> {
+    let done = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE key = ?1",
+            [CODE_SEARCH_DEFAULT_MARKER],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if done {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for tool in default_bound_optional_builtins() {
+        let binding = default_optional_binding(tool);
+        let policy_json = serde_json::to_string(&binding.policy)?;
+        let path_mode = store::path_mode_to_str(binding.path_mode);
+        let preset = binding.last_applied_preset.map(store::preset_to_str);
+        tx.execute(
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json)
+             SELECT a.id, ?1, 1, ?2, ?3, ?4, NULL FROM agents a
+             WHERE a.role = 'primary' AND a.id <> 'compaction'
+               AND NOT EXISTS (SELECT 1 FROM agent_tools t WHERE t.agent_id = a.id AND t.tool_id = ?1)
+             ON CONFLICT(agent_id, tool_id) DO NOTHING",
+            params![tool, policy_json, path_mode, preset],
+        )?;
+    }
+    mark_code_search_default_done(&tx)?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -364,6 +424,7 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     restore_default_if_mistakenly_replaced(conn)?;
     reconcile_role_rules(conn)?;
     normalize_fixed_builtin_bindings(conn)?;
+    ensure_code_search_default_v1(conn)?;
     Ok(())
 }
 
@@ -1040,5 +1101,160 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bash_after.as_deref(), Some("SAFE"));
+    }
+
+    // ---- WP-149: primary agents bind code_search by default ----
+
+    fn cs_enabled(conn: &Connection, agent: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'code_search'",
+            [agent],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn cs_marker(conn: &Connection) -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            [CODE_SEARCH_DEFAULT_MARKER],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn cs_rows(conn: &Connection) -> Vec<(String, i64, String)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT agent_id, enabled, policy_json FROM agent_tools
+                 WHERE tool_id = 'code_search' ORDER BY agent_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn fresh_seeded() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+        conn
+    }
+
+    /// Simulate a DB created before WP-149: no marker, no code_search rows.
+    fn pre_wp149_db() -> Connection {
+        let conn = fresh_seeded();
+        conn.execute("DELETE FROM agent_tools WHERE tool_id = 'code_search'", [])
+            .unwrap();
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [CODE_SEARCH_DEFAULT_MARKER],
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn seed_binds_code_search_true_on_primary_agents() {
+        let conn = fresh_seeded();
+        assert_eq!(cs_enabled(&conn, "default"), Some(1));
+        assert_eq!(cs_enabled(&conn, "orchestrator"), Some(1));
+        assert!(cs_marker(&conn).is_some());
+    }
+
+    #[test]
+    fn seed_does_not_bind_code_search_on_subagents() {
+        let conn = fresh_seeded();
+        ensure_core_bindings(&conn).unwrap();
+        for agent in ["explore", "general", "compaction"] {
+            assert_eq!(cs_enabled(&conn, agent), None, "{agent}");
+        }
+    }
+
+    #[test]
+    fn migration_fills_missing_primary_code_search_only() {
+        let conn = pre_wp149_db();
+        store::upsert_agent(
+            &conn,
+            "my_primary",
+            AgentRole::Primary,
+            "",
+            "",
+            0.7,
+            50,
+            "",
+            &[],
+        )
+        .unwrap();
+        store::upsert_agent(
+            &conn,
+            "my_sub",
+            AgentRole::Subagent,
+            "",
+            "",
+            0.7,
+            50,
+            "",
+            &[],
+        )
+        .unwrap();
+        ensure_core_bindings(&conn).unwrap();
+        for agent in ["default", "orchestrator", "my_primary"] {
+            assert_eq!(cs_enabled(&conn, agent), Some(1), "{agent}");
+        }
+        for agent in ["explore", "general", "compaction", "my_sub"] {
+            assert_eq!(cs_enabled(&conn, agent), None, "{agent}");
+        }
+        assert!(cs_marker(&conn).is_some());
+    }
+
+    #[test]
+    fn migration_keeps_existing_false_row() {
+        let conn = pre_wp149_db();
+        let mut off = default_optional_binding("code_search");
+        off.enabled = false;
+        store::upsert_agent_tool(&conn, "default", "code_search", &off).unwrap();
+        let before = cs_rows(&conn);
+        ensure_core_bindings(&conn).unwrap();
+        assert_eq!(cs_enabled(&conn, "default"), Some(0));
+        let after = cs_rows(&conn);
+        let def = |rows: &[(String, i64, String)]| {
+            rows.iter().find(|r| r.0 == "default").cloned().unwrap()
+        };
+        assert_eq!(def(&before), def(&after));
+        assert_eq!(cs_enabled(&conn, "orchestrator"), Some(1));
+    }
+
+    #[test]
+    fn migration_runs_once_on_repeated_startup() {
+        let conn = pre_wp149_db();
+        ensure_core_bindings(&conn).unwrap();
+        let marker = cs_marker(&conn).expect("marker set");
+        let rows = cs_rows(&conn);
+        // Deleting a row after the one-time run must not bring it back.
+        conn.execute(
+            "DELETE FROM agent_tools WHERE agent_id = 'orchestrator' AND tool_id = 'code_search'",
+            [],
+        )
+        .unwrap();
+        let rows_after_delete = cs_rows(&conn);
+        assert_eq!(rows_after_delete.len(), rows.len() - 1);
+        for _ in 0..3 {
+            ensure_core_bindings(&conn).unwrap();
+            assert_eq!(cs_marker(&conn).as_deref(), Some(marker.as_str()));
+            assert_eq!(cs_rows(&conn), rows_after_delete);
+        }
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM meta WHERE key = ?1",
+                [CODE_SEARCH_DEFAULT_MARKER],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

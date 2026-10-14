@@ -152,8 +152,8 @@ fn pipeline_version_change_triggers_rebuild() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn catalog_hides_tool_while_warming_shows_after_warm() {
-    // 10-12 locked rule (WP-057/060; ISSUE-052): Warming = tool hidden, Warm = listed.
+async fn catalog_lists_tool_while_warming_and_after_warm() {
+    // WP-148 (2026-10-14 rule): bind is the sole visibility gate; Warming stays listed.
     let dir = TempDir::new().unwrap();
     let root = dir.path();
     init_workspace(root).unwrap();
@@ -168,14 +168,14 @@ async fn catalog_hides_tool_while_warming_shows_after_warm() {
     engines.reconcile(&resolved);
     if engines.state("code_search") == Some(EngineState::Warming) {
         assert!(
-            !should_include_in_llm_list(
+            should_include_in_llm_list(
                 &resolved,
                 "default",
                 "code_search",
                 &global_engines,
                 &engines
             ),
-            "code_search must be hidden while Warming"
+            "code_search must stay listed while Warming"
         );
     }
     assert!(

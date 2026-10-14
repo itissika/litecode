@@ -92,35 +92,17 @@ impl Tool for CodeSearchTool {
             .unwrap_or(DEFAULT_TOP_K)
             .clamp(1, MAX_TOP_K);
 
-        // Defensive path only: LLM table already hides Warming / desired=false (no sleep).
-        match self.engines.state("code_search") {
-            Some(EngineState::Failed) => {
-                let detail = self
-                    .engines
-                    .last_error("code_search")
-                    .unwrap_or_else(|| "code_search engine failed".into());
-                return ToolCallResult::error(detail);
-            }
-            Some(EngineState::Warm) => {}
-            _ => {
-                return ToolCallResult::warning(defensive_not_ready_message(&self.engines));
-            }
+        // WP-148: visibility is bind-only; runtime state lands here as an ok result.
+        if let Some(result) = self.not_ready_result() {
+            return result;
         }
 
         // Kick index work if due, but never block the turn waiting for it.
         let _ = self.maybe_consume_index();
 
-        match self.engines.code_search_call_gate() {
-            CodeSearchCallGate::Failed(detail) => {
-                return ToolCallResult::error(detail);
-            }
-            CodeSearchCallGate::Wait => {
-                return ToolCallResult::warning(indexing_wait_message(&self.engines));
-            }
-            CodeSearchCallGate::Ready => {}
-        }
-
         let sync = crate::tools::sync_pct_for_workspace(&self.engines, None);
+        #[cfg(test)]
+        SEARCH_CALLS.with(|c| c.set(c.get() + 1));
         match self.engines.search(RetrievalQuery {
             query: query.to_string(),
             corpus: RetrievalCorpus::Code,
@@ -411,52 +393,52 @@ fn snippet_for_hit(
     }
 }
 
-fn enable_retrieval_message() -> String {
-    "code_search is not enabled. Enable retrieval in Settings → Engines.".into()
+const ENGINE_OFF_BODY: &str = "代码引擎未开启，无结果。可在设置中开启代码检索引擎。";
+const WARMING_BODY: &str = "引擎预热中，暂无结果，请稍后重试。";
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: counts real retrieval calls issued by `call_inner`.
+    static SEARCH_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Defensive surface when the tool was invoked while hidden from the LLM table.
-fn defensive_not_ready_message(engines: &WorkspaceEngines) -> String {
-    if let Some(root) = engines.code_search().workspace_root() {
-        if !crate::config::workspace::workspace_engine_desired(&root, "code_search") {
-            return enable_retrieval_message();
+impl CodeSearchTool {
+    /// Contract v1 §C, decision order: engine off → failed → warming → (None = ready).
+    fn not_ready_result(&self) -> Option<ToolCallResult> {
+        use crate::tools::{SyncLineLabel, format_sync_pct_line_labeled};
+        let root = self.engines.code_search().workspace_root();
+        let desired = root
+            .as_deref()
+            .is_some_and(|r| crate::config::workspace::workspace_engine_desired(r, "code_search"));
+        if !desired {
+            let line = format_sync_pct_line_labeled(None, Some(SyncLineLabel::EngineOff));
+            return Some(ToolCallResult::ok(format!("{line}\n{ENGINE_OFF_BODY}")));
         }
-    } else {
-        // No workspace root → cannot be Warm/desired; point at Settings.
-        return enable_retrieval_message();
-    }
-    indexing_wait_message(engines)
-}
-
-fn indexing_wait_message(engines: &WorkspaceEngines) -> String {
-    let root = engines.code_search().workspace_root();
-    let state = engines.state("code_search");
-    if let Some(root) = root.as_ref() {
-        let view = resolve_index_view(root, state);
-        if matches!(view.status, IndexStatus::Building | IndexStatus::Refreshing) {
-            let kind = if matches!(view.status, IndexStatus::Building) {
-                "building"
-            } else {
-                "refreshing"
-            };
-            // WP-137: progress comes only from IDE's merged chunk total.
-            let sync = crate::tools::sync_pct_for_workspace(engines, Some(root));
-            return format!(
-                "code_search index is {kind}. {}. Try again shortly.",
-                crate::tools::format_sync_pct_line(sync.as_ref())
-            );
+        let sync = crate::tools::sync_pct_for_workspace(&self.engines, root.as_deref());
+        let gate = self.engines.code_search_call_gate();
+        let failed_detail = match (&gate, self.engines.state("code_search")) {
+            (_, Some(EngineState::Failed)) => Some(
+                self.engines
+                    .last_error("code_search")
+                    .unwrap_or_else(|| "code_search engine failed".into()),
+            ),
+            (CodeSearchCallGate::Failed(detail), _) => Some(detail.clone()),
+            _ => None,
+        };
+        if let Some(detail) = failed_detail {
+            let line =
+                format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Failed(&detail)));
+            let body = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+            return Some(ToolCallResult::ok(format!("{line}\n代码引擎失败：{body}")));
         }
-        if matches!(
-            view.status,
-            IndexStatus::Stale | IndexStatus::NeedsRebuild | IndexStatus::Absent
-        ) {
-            return "code_search index is not ready yet.".into();
+        let searchable = matches!(self.engines.state("code_search"), Some(EngineState::Warm))
+            && matches!(gate, CodeSearchCallGate::Ready);
+        if !searchable {
+            let line = format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Warming));
+            return Some(ToolCallResult::ok(format!("{line}\n{WARMING_BODY}")));
         }
+        None
     }
-    if engines.is_refresh_busy() {
-        return "code_search index is refreshing.".into();
-    }
-    "code_search engine is not ready (Warming). It is hidden from the tool list until Warm.".into()
 }
 
 #[cfg(test)]
@@ -498,16 +480,13 @@ mod tests {
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
-            "defensive Warming path must not block"
+            "Warming path must not block"
         );
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
-        assert!(
-            result.content.contains("Warming")
-                || result.content.contains("not ready")
-                || result.content.contains("building"),
-            "{}",
-            result.content
-        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let first = result.content.lines().next().unwrap();
+        assert_v2(first);
+        assert!(first.contains("(warming)"), "{first}");
+        assert!(result.content.contains(WARMING_BODY), "{}", result.content);
     }
 
     #[test]
@@ -528,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn desired_false_defensive_points_at_settings() {
+    fn engine_off_returns_off_line_and_empty() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
@@ -538,11 +517,10 @@ mod tests {
         engines.set_state_for_test("code_search", EngineState::Idle);
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
-        assert!(
-            result.content.contains("Settings → Engines"),
-            "{}",
-            result.content
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        assert_eq!(
+            result.content,
+            format!("sync_pct: unknown (engine off)\n{ENGINE_OFF_BODY}")
         );
     }
 
@@ -550,7 +528,7 @@ mod tests {
     fn indexing_wait_message_reads_job_json() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         // WP-143: first build / rebuild run as a refresh job (no Building job).
         crate::engines::code_search::begin_refreshing(root);
         crate::engines::code_search::update_chunk_progress(root, 4, Some(8));
@@ -559,14 +537,15 @@ mod tests {
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warming);
 
-        let msg = indexing_wait_message(&engines);
-        assert!(msg.contains("refreshing"), "{msg}");
-        assert!(msg.contains("sync_pct: "), "{msg}");
-        // sync_pct contract v2: the exact chunk counts ride the sync line.
-        assert!(msg.contains("chunks 4/8"), "{msg}");
+        let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
+        let first = result.content.lines().next().unwrap().to_string();
+        assert_v2(&first);
+        // sync_pct contract v2: the exact chunk counts ride the warming line.
+        assert!(first.ends_with("% (warming) chunks 4/8"), "{first}");
         assert!(
-            !msg.contains("No matching code"),
-            "must not fake empty hits while indexing: {msg}"
+            !result.content.contains("No matching code"),
+            "must not fake hits while warming: {}",
+            result.content
         );
     }
 
@@ -574,31 +553,40 @@ mod tests {
     fn indexing_wait_message_uses_chunk_progress_not_pending_hint() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         crate::engines::code_search::begin_refreshing(root);
         write_queue(root, 53);
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
-        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_state_for_test("code_search", EngineState::Warming);
 
-        let msg = indexing_wait_message(&engines);
-        assert!(msg.contains("refreshing"), "{msg}");
-        assert!(msg.contains("sync_pct: "), "{msg}");
+        let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
+        let first = result.content.lines().next().unwrap().to_string();
+        assert_v2(&first);
+        assert!(first.contains("(warming)"), "{first}");
         assert!(
-            !msg.contains("files pending"),
-            "no pending-hint estimate: {msg}"
+            !result.content.contains("files pending") && !first.contains("/53"),
+            "no pending-hint estimate: {}",
+            result.content
         );
     }
 
     #[test]
     fn failed_engine_returns_last_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Failed);
         engines.set_last_error_for_test("code_search", "embedder missing");
         let tool = CodeSearchTool::new(engines);
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let first = result.content.lines().next().unwrap();
+        assert_v2(first);
+        assert!(first.starts_with("sync_pct: failed ("), "{first}");
         assert!(
             result.content.contains("embedder missing"),
             "{}",
@@ -607,10 +595,37 @@ mod tests {
     }
 
     #[test]
+    fn failed_reason_with_parens_and_newlines_is_sanitized() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Failed);
+        let nasty = format!(
+            "worker crashed (exit 137)\nstderr: (oom) killed\r\n{}",
+            "x".repeat(200)
+        );
+        engines.set_last_error_for_test("code_search", &nasty);
+        let result = CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "q" }));
+        let first = result.content.lines().next().unwrap();
+        assert_v2(first);
+        let label = first
+            .strip_prefix("sync_pct: failed (")
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("{first}"));
+        assert!(!label.contains('(') && !label.contains(')'), "{label}");
+        assert!(label.chars().count() <= 60, "{label}");
+        assert!(label.starts_with("worker crashed exit 137"), "{label}");
+        // Body is exactly one more line (newlines flattened).
+        assert_eq!(result.content.lines().count(), 2, "{}", result.content);
+    }
+
+    #[test]
     fn warm_refreshing_does_not_block_on_wait() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         crate::engines::code_search::begin_refreshing(root);
 
         let engines = WorkspaceEngines::new();
@@ -643,7 +658,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         // Ready-ish index so Absent doesn't Wait; then flip refresh_busy.
-        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         let index_dir = crate::engines::code_search::index_dir(root);
         std::fs::create_dir_all(&index_dir).unwrap();
         std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
@@ -680,7 +695,7 @@ mod tests {
     fn warm_failed_index_job_returns_error_not_hits() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
-        crate::engines::code_search::init_workspace_index(root).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
         crate::engines::code_search::mark_index_job_failed(root, "embed exploded");
 
         let engines = WorkspaceEngines::new();
@@ -688,13 +703,189 @@ mod tests {
         engines.set_state_for_test("code_search", EngineState::Warm);
 
         let tool = CodeSearchTool::new(engines);
+        let before = search_calls();
         let result = tool.call_inner(serde_json::json!({ "query": "auth" }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
+        assert_eq!(search_calls(), before, "failed must not search");
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let first = result.content.lines().next().unwrap();
+        assert_v2(first);
+        assert!(first.starts_with("sync_pct: failed ("), "{first}");
         assert!(
             result.content.contains("embed exploded"),
             "{}",
             result.content
         );
+    }
+
+    const V2: &str = r"^sync_pct: (?:(\d{1,3})%|(scanning|failed|unknown))(?: \(([^()\n]+)\))?(?: chunks (\d+)\/(\d+))?$";
+
+    fn assert_v2(line: &str) {
+        assert!(
+            regex::Regex::new(V2).unwrap().is_match(line),
+            "v2: {line:?}"
+        );
+    }
+
+    fn search_calls() -> usize {
+        SEARCH_CALLS.with(|c| c.get())
+    }
+
+    /// Ready-ish index (gate Ready when Warm) with desired=true.
+    fn ready_root(root: &Path) {
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(root);
+        std::fs::create_dir_all(&index_dir).unwrap();
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+        write_queue(root, 1);
+    }
+
+    #[test]
+    fn four_returns_first_line_matches_v2_regex() {
+        // engine off
+        let off = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(off.path().join(".litecode")).unwrap();
+        let e = WorkspaceEngines::new();
+        e.code_search().set_workspace(off.path().to_path_buf());
+        let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+        assert_eq!(
+            r.content.lines().next().unwrap(),
+            "sync_pct: unknown (engine off)"
+        );
+
+        // warming
+        let warm = tempfile::TempDir::new().unwrap();
+        crate::config::workspace::enable_code_search_engine(warm.path()).unwrap();
+        let e = WorkspaceEngines::new();
+        e.code_search().set_workspace(warm.path().to_path_buf());
+        e.set_state_for_test("code_search", EngineState::Warming);
+        let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+        let l = r.content.lines().next().unwrap().to_string();
+        assert_v2(&l);
+        assert!(l.contains("(warming)"), "{l}");
+
+        // failed
+        let e = WorkspaceEngines::new();
+        e.code_search().set_workspace(warm.path().to_path_buf());
+        e.set_state_for_test("code_search", EngineState::Failed);
+        let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+        let l = r.content.lines().next().unwrap().to_string();
+        assert_v2(&l);
+        assert!(l.starts_with("sync_pct: failed ("), "{l}");
+
+        // ready (search errors without a worker; first line only when ok)
+        let ready = tempfile::TempDir::new().unwrap();
+        ready_root(ready.path());
+        let e = WorkspaceEngines::new();
+        e.code_search().set_workspace(ready.path().to_path_buf());
+        e.set_state_for_test("code_search", EngineState::Warm);
+        let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+        if r.level == crate::types::ToolSignalLevel::Ok {
+            assert_v2(r.content.lines().next().unwrap());
+        }
+    }
+
+    #[test]
+    fn not_ready_issues_no_search() {
+        let off = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(off.path().join(".litecode")).unwrap();
+        let on = tempfile::TempDir::new().unwrap();
+        crate::config::workspace::enable_code_search_engine(on.path()).unwrap();
+        for (root, state) in [
+            (off.path(), EngineState::Warm),
+            (on.path(), EngineState::Warming),
+            (on.path(), EngineState::Failed),
+        ] {
+            let e = WorkspaceEngines::new();
+            e.code_search().set_workspace(root.to_path_buf());
+            e.set_state_for_test("code_search", state);
+            let before = search_calls();
+            let r = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+            assert_eq!(search_calls(), before, "{state:?} must not search");
+            assert_eq!(r.level, crate::types::ToolSignalLevel::Ok);
+            assert_eq!(r.content.lines().count(), 2, "empty result: {}", r.content);
+        }
+        // Control: ready path does issue exactly one search.
+        let ready = tempfile::TempDir::new().unwrap();
+        ready_root(ready.path());
+        let e = WorkspaceEngines::new();
+        e.code_search().set_workspace(ready.path().to_path_buf());
+        e.set_state_for_test("code_search", EngineState::Warm);
+        let before = search_calls();
+        let _ = CodeSearchTool::new(e).call_inner(serde_json::json!({ "query": "q" }));
+        assert_eq!(search_calls(), before + 1);
+    }
+
+    #[test]
+    fn warming_turn_sees_code_search_and_gets_warming_line() {
+        use crate::config::ConfigManager;
+        use crate::config::resolved::WorkspaceState;
+        use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings, ToolPreset};
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        ready_root(root);
+        let (policy, path_mode) =
+            crate::permission::presets::binding_for_tool("code_search", ToolPreset::All);
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: HashMap::from([(
+                    "code_search".to_string(),
+                    AgentToolBinding {
+                        enabled: true,
+                        policy,
+                        path_mode,
+                        last_applied_preset: Some(ToolPreset::All),
+                        allowed_tools: None,
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new(root));
+        let bind_before = resolved.agents()["default"].tools["code_search"].enabled;
+        let desired_before =
+            crate::config::workspace::workspace_engine_desired(root, "code_search");
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        // Turn starts during Warming: the gate build_tool_list uses keeps code_search.
+        assert!(crate::tool::availability::should_include_in_llm_list(
+            &resolved,
+            "default",
+            "code_search",
+            &crate::optional::EngineManager::new(),
+            &engines
+        ));
+        let tool = CodeSearchTool::new(engines.clone());
+        let before = search_calls();
+        let r = tool.call_inner(serde_json::json!({ "query": "q" }));
+        assert_eq!(search_calls(), before);
+        let first = r.content.lines().next().unwrap();
+        assert_v2(first);
+        assert!(first.contains("(warming)"), "{first}");
+        assert!(r.content.ends_with(WARMING_BODY), "{}", r.content);
+        // Warm later: same session's next call searches, no bind change needed.
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        let before = search_calls();
+        let _ = tool.call_inner(serde_json::json!({ "query": "q" }));
+        assert_eq!(search_calls(), before + 1);
+        // Contract acceptance 2: bind (and desired) never touched across Warming → Warm.
+        assert!(bind_before);
+        assert_eq!(
+            resolved.agents()["default"].tools["code_search"].enabled,
+            bind_before
+        );
+        assert_eq!(
+            crate::config::workspace::workspace_engine_desired(root, "code_search"),
+            desired_before
+        );
+        assert!(crate::tool::availability::agent_tool_enabled(
+            &resolved,
+            "default",
+            "code_search"
+        ));
     }
 
     fn code_hit(path: &str, start: u32, end: u32, summary: &str) -> RetrievalHit {

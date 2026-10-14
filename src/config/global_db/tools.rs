@@ -53,6 +53,11 @@ pub fn optional_builtin_ids() -> &'static [&'static str] {
     &["code_search", "lsp"]
 }
 
+/// Optional builtins that primary-role agents bind by default (WP-146 §B).
+pub fn default_bound_optional_builtins() -> &'static [&'static str] {
+    &["code_search"]
+}
+
 pub fn is_optional_builtin(id: &str) -> bool {
     optional_builtin_ids().contains(&id)
 }

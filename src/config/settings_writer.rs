@@ -645,6 +645,21 @@ impl SettingsWriter {
         normalize_agent_profile(id, &mut profile);
         let id = id.to_string();
         self.commit_partial(&[DocId::Agents], |settings| {
+            // WP-149: a newly created primary agent binds code_search by default
+            // unless the caller sent the key (true or false). Existing agents
+            // switched to primary are not auto-bound.
+            if !settings.agents.contains_key(&id)
+                && profile.role == crate::config::schema::AgentRole::Primary
+            {
+                for tool in super::global_db::tools::default_bound_optional_builtins() {
+                    if !profile.tools.contains_key(*tool) {
+                        profile.tools.insert(
+                            (*tool).to_string(),
+                            super::global_db::default_optional_binding(tool),
+                        );
+                    }
+                }
+            }
             settings.agents.insert(id.clone(), profile);
             Ok(false)
         })
@@ -1831,5 +1846,62 @@ max_output = 1024
                 .servers
                 .contains_key("demo_mcp")
         );
+    }
+
+    // ---- WP-149: new primary agents bind code_search by default ----
+
+    fn cs_binding(writer: &SettingsWriter, id: &str) -> Option<bool> {
+        writer
+            .load_settings()
+            .unwrap()
+            .agents
+            .get(id)
+            .and_then(|p| p.tools.get("code_search"))
+            .map(|b| b.enabled)
+    }
+
+    #[test]
+    fn write_agent_new_primary_missing_code_search_binds_true() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-a");
+        let profile = AgentProfile {
+            role: crate::config::schema::AgentRole::Primary,
+            ..Default::default()
+        };
+        writer.write_agent("wp149_new", profile, &ws).unwrap();
+        assert_eq!(cs_binding(&writer, "wp149_new"), Some(true));
+    }
+
+    #[test]
+    fn write_agent_new_primary_explicit_false_stays_false() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-b");
+        let mut off = crate::config::global_db::default_optional_binding("code_search");
+        off.enabled = false;
+        let mut profile = AgentProfile {
+            role: crate::config::schema::AgentRole::Primary,
+            ..Default::default()
+        };
+        profile.tools.insert("code_search".into(), off);
+        writer.write_agent("wp149_off", profile, &ws).unwrap();
+        assert_eq!(cs_binding(&writer, "wp149_off"), Some(false));
+    }
+
+    #[test]
+    fn write_agent_existing_agent_switched_to_primary_not_auto_bound() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-c");
+        let sub = AgentProfile {
+            role: crate::config::schema::AgentRole::Subagent,
+            ..Default::default()
+        };
+        writer.write_agent("wp149_sw", sub, &ws).unwrap();
+        assert_eq!(cs_binding(&writer, "wp149_sw"), None);
+        let prim = AgentProfile {
+            role: crate::config::schema::AgentRole::Primary,
+            ..Default::default()
+        };
+        writer.write_agent("wp149_sw", prim, &ws).unwrap();
+        assert_eq!(cs_binding(&writer, "wp149_sw"), None);
     }
 }

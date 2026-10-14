@@ -243,3 +243,17 @@
 {"event_id":"E-1791936362696-82170-WP143-acceptance_requested","ts":"2026-10-14T00:06:02.696Z","type":"team_ops.acceptance_requested","wp":"WP-143","target":"backend_mid"}
 {"event_id":"E-1791942610394-94530-WP140-acceptance_requested","ts":"2026-10-14T01:50:10.394Z","type":"team_ops.acceptance_requested","wp":"WP-140","target":"gm"}
 {"event_id":"E-1791942728023-48360-WP139-acceptance_requested","ts":"2026-10-14T01:52:08.023Z","type":"team_ops.acceptance_requested","wp":"WP-139","target":"gm"}
+{"event_id":"E-1791942912720-66570-watcher-restarted","ts":"2026-10-14T01:55:12.720Z","type":"team_ops.watcher_restarted","wp":null,"target":"gm"}
+{"event_id":"E-1791944806737-51310-WP145-approval_requested","ts":"2026-10-14T02:26:46.737Z","type":"team_ops.approval_requested","wp":"WP-145","target":"gm"}
+{"event_id":"E-1791944863699-59200-WP146-approval_requested","ts":"2026-10-14T02:27:43.699Z","type":"team_ops.approval_requested","wp":"WP-146","target":"gm"}
+{"event_id":"E-1791944996577-91480-WP149-approval_requested","ts":"2026-10-14T02:29:56.577Z","type":"team_ops.approval_requested","wp":"WP-149","target":"backend_mid"}
+{"event_id":"E-1791945005378-97460-WP148-approval_requested","ts":"2026-10-14T02:30:05.378Z","type":"team_ops.approval_requested","wp":"WP-148","target":"backend_mid"}
+{"event_id":"E-1791945139423-50620-WP147-approval_requested","ts":"2026-10-14T02:32:19.423Z","type":"team_ops.approval_requested","wp":"WP-147","target":"gm"}
+{"event_id":"E-1791945245539-85630-WP150-approval_requested","ts":"2026-10-14T02:34:05.539Z","type":"team_ops.approval_requested","wp":"WP-150","target":"frontend_mid"}
+{"event_id":"E-1791945342398-33520-WP150-approval_requested","ts":"2026-10-14T02:35:42.398Z","type":"team_ops.approval_requested","wp":"WP-150","target":"frontend_mid"}
+{"event_id":"E-1791945470048-15970-WP150-acceptance_requested","ts":"2026-10-14T02:37:50.048Z","type":"team_ops.acceptance_requested","wp":"WP-150","target":"frontend_mid"}
+{"event_id":"E-1791945473300-17570-WP148-acceptance_requested","ts":"2026-10-14T02:37:53.300Z","type":"team_ops.acceptance_requested","wp":"WP-148","target":"backend_mid"}
+{"event_id":"E-1791945603838-93120-WP149-acceptance_requested","ts":"2026-10-14T02:40:03.838Z","type":"team_ops.acceptance_requested","wp":"WP-149","target":"backend_mid"}
+{"event_id":"E-1791945666756-24730-WP147-acceptance_requested","ts":"2026-10-14T02:41:06.756Z","type":"team_ops.acceptance_requested","wp":"WP-147","target":"gm"}
+{"event_id":"E-1791946629031-78780-WP146-acceptance_requested","ts":"2026-10-14T02:57:09.031Z","type":"team_ops.acceptance_requested","wp":"WP-146","target":"gm"}
+{"event_id":"E-1791946647994-83890-WP145-acceptance_requested","ts":"2026-10-14T02:57:27.994Z","type":"team_ops.acceptance_requested","wp":"WP-145","target":"gm"}

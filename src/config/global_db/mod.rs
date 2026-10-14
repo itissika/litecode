@@ -20,6 +20,7 @@ pub const fn current_user_version() -> i32 {
 }
 mod builtin_prompts;
 mod seed;
+pub(crate) use seed::default_optional_binding;
 pub mod tools;
 
 pub use builtin_prompts::{
@@ -771,7 +772,7 @@ pub mod store {
         }
     }
 
-    fn path_mode_to_str(mode: crate::permission::BindingPathMode) -> &'static str {
+    pub(crate) fn path_mode_to_str(mode: crate::permission::BindingPathMode) -> &'static str {
         match mode {
             crate::permission::BindingPathMode::WorkspaceOnly => "workspace_only",
             crate::permission::BindingPathMode::Unrestricted => "unrestricted",
@@ -786,7 +787,7 @@ pub mod store {
         }
     }
 
-    fn preset_to_str(preset: ToolPreset) -> &'static str {
+    pub(crate) fn preset_to_str(preset: ToolPreset) -> &'static str {
         match preset {
             ToolPreset::All => "ALL",
             ToolPreset::Safe => "SAFE",

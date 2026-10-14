@@ -15,6 +15,10 @@ pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
     if core_tool_ids().iter().any(|id| id == tool_id) {
         return true;
     }
+    // WP-148: code_search visibility is bind-only (engine state never gates it).
+    if tool_id == "code_search" {
+        return true;
+    }
     if is_workspace_optional(tool_id) {
         return resolved.workspace_tool_readiness().get(tool_id).copied()
             == Some(ToolReadiness::Ready);
@@ -80,7 +84,9 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
         ));
     }
     for id in optional_builtin_ids() {
-        if resolved.workspace_tool_readiness().get(*id).copied() == Some(ToolReadiness::Ready) {
+        if *id == "code_search"
+            || resolved.workspace_tool_readiness().get(*id).copied() == Some(ToolReadiness::Ready)
+        {
             out.push(tool_card(
                 (*id).to_string(),
                 AvailableKind::Engine,
@@ -149,16 +155,13 @@ pub fn agent_tool_enabled(resolved: &ResolvedConfig, agent_id: &str, tool_id: &s
         .is_some_and(|binding| binding.enabled)
 }
 
-/// Retrieval-surface tools share one visibility bucket (WP-057):
-/// `desired=false` or not Warm ⇒ hidden from the LLM tool table.
-fn is_retrieval_surface_tool(tool_id: &str) -> bool {
-    tool_id == "code_search" || tool_id == "session_search"
+/// session_search keeps its WP-057 gate: `desired=false` or not Warm ⇒ hidden.
+/// WP-148: code_search left this bucket (bind is its sole visibility gate).
+fn is_session_search_gated(tool_id: &str) -> bool {
+    tool_id == "session_search"
 }
 
-fn retrieval_tools_visible(
-    resolved: &ResolvedConfig,
-    workspace_engines: &WorkspaceEngines,
-) -> bool {
+fn session_search_visible(resolved: &ResolvedConfig, workspace_engines: &WorkspaceEngines) -> bool {
     if !crate::config::workspace::workspace_engine_desired(resolved.workspace_root(), "code_search")
     {
         return false;
@@ -181,7 +184,7 @@ pub fn should_include_in_llm_list(
     if !agent_tool_enabled(resolved, agent_id, tool_id) {
         return false;
     }
-    if is_retrieval_surface_tool(tool_id) && !retrieval_tools_visible(resolved, workspace_engines) {
+    if is_session_search_gated(tool_id) && !session_search_visible(resolved, workspace_engines) {
         return false;
     }
     if crate::config::schema::SUBAGENT_SERIES_TOOL_IDS
@@ -396,8 +399,13 @@ mod tests {
         ConfigManager::resolve_without_catalog(global, workspace)
     }
 
+    fn visible(resolved: &ResolvedConfig, engines: &WorkspaceEngines, id: &str) -> bool {
+        let em = crate::optional::EngineManager::new();
+        should_include_in_llm_list(resolved, "default", id, &em, engines)
+    }
+
     #[test]
-    fn retrieval_hidden_when_desired_false() {
+    fn code_search_visible_when_bound_engine_off() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
@@ -405,28 +413,14 @@ mod tests {
         let resolved = resolved_with_root(root, retrieval_bindings());
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
-        let em = crate::optional::EngineManager::new();
-        assert!(!should_include_in_llm_list(
-            &resolved,
-            "default",
-            "code_search",
-            &em,
-            &engines
-        ));
-        assert!(!should_include_in_llm_list(
-            &resolved,
-            "default",
-            "session_search",
-            &em,
-            &engines
-        ));
-        assert!(should_include_in_llm_list(
-            &resolved, "default", "read", &em, &engines
-        ));
+        assert!(visible(&resolved, &engines, "code_search"));
+        // session_search gate unchanged: still hidden when desired=false.
+        assert!(!visible(&resolved, &engines, "session_search"));
+        assert!(visible(&resolved, &engines, "read"));
     }
 
     #[test]
-    fn retrieval_hidden_while_warming_even_if_desired() {
+    fn code_search_visible_when_bound_while_warming() {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
@@ -435,21 +429,52 @@ mod tests {
         assert!(is_available(&resolved, "code_search"));
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warming);
-        let em = crate::optional::EngineManager::new();
-        assert!(!should_include_in_llm_list(
-            &resolved,
-            "default",
-            "code_search",
-            &em,
-            &engines
-        ));
-        assert!(!should_include_in_llm_list(
-            &resolved,
-            "default",
-            "session_search",
-            &em,
-            &engines
-        ));
+        assert!(visible(&resolved, &engines, "code_search"));
+        // session_search gate unchanged: still hidden while Warming.
+        assert!(!visible(&resolved, &engines, "session_search"));
+    }
+
+    #[test]
+    fn code_search_visible_when_bound_engine_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Failed);
+        assert!(visible(&resolved, &engines, "code_search"));
+        assert!(!visible(&resolved, &engines, "session_search"));
+    }
+
+    #[test]
+    fn code_search_hidden_when_unbound() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let mut tools = retrieval_bindings();
+        tools.get_mut("code_search").unwrap().enabled = false;
+        let resolved = resolved_with_root(root, tools);
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        assert!(!visible(&resolved, &engines, "code_search"));
+    }
+
+    #[test]
+    fn code_search_bind_card_listed_when_desired_false() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        assert!(
+            available_tools(&resolved)
+                .iter()
+                .any(|t| t.id == "code_search")
+        );
+        // lsp still follows readiness (desired=false ⇒ no card).
+        assert!(!available_tools(&resolved).iter().any(|t| t.id == "lsp"));
     }
 
     #[test]
