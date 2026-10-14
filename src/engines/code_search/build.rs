@@ -6,8 +6,8 @@ use std::path::Path;
 
 use crate::types::Result;
 use crate::workspace::filter::{
-    FilterPreset, MAX_INDEX_FILE_BYTES, RelPathCtx, WalkOptions, is_indexable_rel_path,
-    is_scannable_rel_path, walk_builder, walk_builder_with,
+    FilterPreset, MAX_INDEX_FILE_BYTES, RelPathCtx, WalkOptions, code_index_extension_allowed,
+    is_indexable_rel_path, is_scannable_rel_path, walk_builder, walk_builder_with,
 };
 
 /// WP-141 periodic scan: the same walk and path filter as
@@ -23,7 +23,7 @@ pub(crate) fn scan_stat_candidates(
     // No binary sniff in the walk either: that opens every file.
     let walker = walk_builder_with(
         workspace_root,
-        FilterPreset::Search,
+        FilterPreset::CodeIndex,
         WalkOptions {
             skip_binary: Some(false),
             ..WalkOptions::default()
@@ -37,7 +37,7 @@ pub(crate) fn scan_stat_candidates(
         let Some(rel_str) = rel_ctx.rel(entry.path()) else {
             continue;
         };
-        if !is_scannable_rel_path(&rel_str) {
+        if !is_scannable_rel_path(&rel_str) || !code_index_extension_allowed(&rel_str) {
             continue;
         }
         let meta = std::fs::metadata(entry.path()).ok();
@@ -58,7 +58,7 @@ pub fn scannable_files(workspace_root: &Path) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let rel_ctx =
         RelPathCtx::new(workspace_root).unwrap_or_else(|_| RelPathCtx::new_lossy(workspace_root));
-    let walker = walk_builder(workspace_root, FilterPreset::Search);
+    let walker = walk_builder(workspace_root, FilterPreset::CodeIndex);
     for result in walker.build() {
         let entry = match result {
             Ok(e) => e,
@@ -105,18 +105,75 @@ mod tests {
         std::fs::write(root.join("a.rs"), "x\n").unwrap();
         std::fs::write(root.join("LICENSE"), "MIT\n").unwrap();
         std::fs::write(root.join("serve.ps1"), "Write-Host hi\n").unwrap();
-        let files = scannable_files(root).unwrap();
-        assert!(files.iter().any(|f| f == "a.rs"));
-        assert!(files.iter().any(|f| f == "LICENSE"));
-        assert!(files.iter().any(|f| f == "serve.ps1"));
-        assert!(is_scannable_rel_path("a.rs"));
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let files = scannable_files(root).unwrap();
+            assert!(files.iter().any(|f| f == "a.rs"), "{files:?}");
+            assert!(files.iter().any(|f| f == "serve.ps1"), "{files:?}");
+            assert!(!files.iter().any(|f| f == "LICENSE"), "{files:?}");
+            assert!(is_scannable_rel_path("a.rs"));
+            assert!(is_scannable_rel_path("LICENSE"));
+        });
+    }
+
+    #[test]
+    fn code_index_corpus_follows_extensions_not_search_exclude() {
+        use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("app.js"), "export const n = 1;\n").unwrap();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join("notes.md"), "# n\n").unwrap();
+        std::fs::write(root.join("Cargo.lock"), "lock\n").unwrap();
+        std::fs::write(root.join("data.json"), "{}\n").unwrap();
+        std::fs::write(root.join("LICENSE"), "MIT\n").unwrap();
+
+        let mut hidden_rs = WorkspaceExcludesFile::builtin_defaults();
+        hidden_rs.search_exclude.push("**/*.rs".into());
+        hidden_rs.git_ignore = false;
+        with_excludes_cache_for_test(hidden_rs, || {
+            let files = scannable_files(root).unwrap();
+            assert!(files.iter().any(|f| f == "a.rs"), "{files:?}");
+            assert!(files.iter().any(|f| f == "app.js"), "{files:?}");
+            assert!(!files.iter().any(|f| f.ends_with("notes.md")), "{files:?}");
+            assert!(!files.iter().any(|f| f.contains("Cargo.lock")), "{files:?}");
+            assert!(!files.iter().any(|f| f.ends_with("data.json")), "{files:?}");
+            assert!(!files.iter().any(|f| f == "LICENSE"), "{files:?}");
+            assert!(
+                !files.iter().any(|f| f.contains("node_modules")),
+                "{files:?}"
+            );
+        });
+
+        let mut only_rs = WorkspaceExcludesFile::builtin_defaults();
+        only_rs.code_index_extensions = vec!["rs".into()];
+        only_rs.git_ignore = false;
+        with_excludes_cache_for_test(only_rs, || {
+            let files = scannable_files(root).unwrap();
+            assert_eq!(files, vec!["a.rs".to_string()]);
+        });
+
+        let mut none = WorkspaceExcludesFile::builtin_defaults();
+        none.code_index_extensions.clear();
+        none.git_ignore = false;
+        with_excludes_cache_for_test(none, || {
+            let files = scannable_files(root).unwrap();
+            assert!(files.is_empty(), "{files:?}");
+        });
     }
 
     #[test]
     fn embedding_corpus_honors_index_gitignore_switch() {
-        // The real embedding input path: walk(Index) + content gates. Toggling
-        // the search-side gitignore switch must add/drop gitignored files from
-        // the corpus, without a full reindex fingerprint.
+        // The real embedding input path: walk(CodeIndex) + suffix + content
+        // gates. Toggling git_ignore must add/drop gitignored files from the
+        // corpus, without a full reindex fingerprint.
         use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
 
         let dir = TempDir::new().unwrap();

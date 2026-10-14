@@ -438,6 +438,13 @@ export function AgentToolsGrid({
             if (saveBlocked) return;
             onBindingChange(entry.id, { enabled: !enabled });
           };
+          const memberLine =
+            card.members.length > 1
+              ? `${entry.kind} · ${card.members.map((m) => m.id).join(", ")}`
+              : entry.kind;
+          const seriesDetail = entry.overridden
+            ? `${memberLine} · workspace override`
+            : memberLine;
 
           return (
             <div
@@ -460,11 +467,11 @@ export function AgentToolsGrid({
                     <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
                       {card.title}
                     </p>
-                    <p className="mt-0.5 text-dk-xs text-(--_dk-text-disabled)">
-                      {card.members.length > 1
-                        ? `${entry.kind} · ${card.members.map((m) => m.id).join(", ")}`
-                        : entry.kind}
-                      {entry.overridden ? " · workspace override" : ""}
+                    <p
+                      className="mt-0.5 truncate text-dk-xs text-(--_dk-text-disabled)"
+                      title={seriesDetail}
+                    >
+                      {seriesDetail}
                     </p>
                   </div>
                   <span

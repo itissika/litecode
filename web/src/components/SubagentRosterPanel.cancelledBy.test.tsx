@@ -153,8 +153,8 @@ describe("WP-097 Workers 名单 cancelled · by you", () => {
     expect(screen.getByTestId("subagent-launch-line").textContent).not.toContain("by you");
     cleanup();
     render(<SubagentRosterPanel sessionId={PARENT} />);
-    expect((screen.getByTestId("subagent-roster-stop") as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByTestId("subagent-roster-delete") as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByTestId("subagent-roster-stop")).toBeNull();
+    expect(screen.getByTestId("subagent-roster-delete")).toBeTruthy();
     cleanup();
     render(<SessionStatusLine sessionId={PARENT} />);
     expect(document.body.textContent ?? "").toMatch(/0\/1 running/);

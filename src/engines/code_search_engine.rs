@@ -8,6 +8,18 @@ use crate::engines::code_search_ipc::CodeSearchWorkerClient;
 use crate::engines::code_search_ipc::protocol::{RefreshResult, RefreshScope};
 use crate::types::{LitecodeError, Result};
 
+/// A code or session read found the worker client lock already held.
+///
+/// Refresh/embed keeps that lock for the whole pass. Callers must return
+/// immediately; blocking here stalls the agent turn until embedding finishes.
+pub const SEARCH_WORKER_BUSY: &str = "code_search worker is busy; semantic search was skipped";
+
+const WORKER_NOT_RUNNING: &str = "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace";
+
+pub fn is_search_worker_busy(err: &LitecodeError) -> bool {
+    matches!(err, LitecodeError::ToolExecution(msg) if msg == SEARCH_WORKER_BUSY)
+}
+
 pub struct CodeSearchEngine {
     client: Mutex<Option<CodeSearchWorkerClient>>,
     workspace_root: Arc<RwLock<Option<PathBuf>>>,
@@ -137,33 +149,44 @@ impl CodeSearchEngine {
         }
     }
 
+    /// Code-corpus semantic search.
+    ///
+    /// Never waits on the worker. A refresh holds the client lock for its whole
+    /// embed pass; blocking behind it is the stall [`SEARCH_WORKER_BUSY`] exists
+    /// to avoid. A dead or missing worker is still reported as not running.
     pub fn search(
         &self,
         query: &str,
         glob_filter: Option<&str>,
         top_k: usize,
     ) -> Result<Vec<SearchHit>> {
-        if !self.worker_alive() {
+        let mut guard = match self.client.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into()));
+            }
+            Err(std::sync::TryLockError::Poisoned(err)) => {
+                return Err(LitecodeError::Config(format!(
+                    "code_search client lock: {err}"
+                )));
+            }
+        };
+        let Some(client) = guard.as_mut() else {
+            drop(guard);
             self.notify_worker_failed();
-            return Err(LitecodeError::ToolExecution(
-                "code_search worker is not running; enable the retrieval engine or restart litecode with this workspace"
-                    .into(),
-            ));
+            return Err(LitecodeError::ToolExecution(WORKER_NOT_RUNNING.into()));
+        };
+        if !matches!(client.try_wait(), Ok(None)) {
+            drop(guard);
+            self.notify_worker_failed();
+            return Err(LitecodeError::ToolExecution(WORKER_NOT_RUNNING.into()));
         }
-
-        let mut guard = self
-            .client
-            .lock()
-            .map_err(|e| LitecodeError::Config(format!("code_search client lock: {e}")))?;
-        let client = guard
-            .as_mut()
-            .ok_or_else(|| LitecodeError::Config("code_search engine not warmed".into()))?;
         match client.search(query, glob_filter, top_k) {
             Ok(hits) => Ok(hits),
             Err(e) => {
                 tracing::warn!(tool = "code_search", error = %e, "worker search failed");
                 drop(guard);
-                if !self.worker_alive() {
+                if self.worker_gone_try() {
                     self.notify_worker_failed();
                 }
                 Err(e)
@@ -184,9 +207,7 @@ impl CodeSearchEngine {
         session_id: Option<&str>,
     ) -> Result<Vec<crate::engines::session_search::SessionTextHit>> {
         let Ok(mut guard) = self.client.try_lock() else {
-            return Err(LitecodeError::ToolExecution(
-                "code_search worker is busy; the session semantic lane was skipped".into(),
-            ));
+            return Err(LitecodeError::ToolExecution(SEARCH_WORKER_BUSY.into()));
         };
         let Some(client) = guard.as_mut() else {
             return Err(LitecodeError::Config(
@@ -230,6 +251,14 @@ impl CodeSearchEngine {
             Ok(None) => true,
             _ => false,
         }
+    }
+
+    /// Test-only: hold the worker client lock so a search must return busy.
+    #[cfg(test)]
+    pub fn hold_client_for_test(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Option<CodeSearchWorkerClient>> {
+        self.client.lock().expect("code_search client lock")
     }
 
     /// PID of the code-search worker child, if running.
@@ -689,6 +718,21 @@ mod tests {
                 .search("main", None, 5)
                 .expect("code search still Ok after session lane error");
         }
+    }
+
+    #[test]
+    fn search_returns_busy_without_waiting_when_client_lock_held() {
+        let engine = CodeSearchEngine::new();
+        let _hold = engine.hold_client_for_test();
+        let started = Instant::now();
+        let err = engine
+            .search("auth", None, 5)
+            .expect_err("held client lock");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "search must not wait on an in-flight embed"
+        );
+        assert!(is_search_worker_busy(&err), "{err}");
     }
 
     #[test]

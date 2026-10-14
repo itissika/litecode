@@ -1,3 +1,4 @@
+import { Trash } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -20,6 +21,10 @@ import type { ToolStatus } from "./ToolIcon";
 
 const EMPTY_ROWS: HumanRow[] = [];
 
+/** Compact icon control; the subagent composer stop button uses the same size. */
+const sessionIconButtonClass =
+  "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary)";
+
 type FinishedStatus = "completed" | "failed" | "unknown" | "finished";
 interface RosterEntry {
   childId: string;
@@ -37,7 +42,7 @@ interface RosterEntry {
   preview?: string;
   /** WP-097: who cancelled the last turn (only `user` is shown). */
   stoppedBy?: "user" | "parent" | null;
-  /** WP-086: child (or its subtree) busy → delete disabled, stop enabled. */
+  /** WP-086: child (or its subtree) busy → stop icon, otherwise delete icon. */
   busy?: boolean;
 }
 
@@ -288,31 +293,48 @@ function SubagentRosterItem({
         ) : null}
         <SubagentStatus entry={entry} />
       </button>
-      <button
-        type="button"
-        aria-label={`停止 ${label}`}
-        data-testid="subagent-roster-stop"
-        disabled={!busy}
-        onClick={() => stopSubagent(entry.childId)}
-        className="shrink-0 rounded px-1 text-xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
-      >
-        停止
-      </button>
-      <button
-        type="button"
-        aria-label={`删除 ${label}`}
-        data-testid="subagent-roster-delete"
-        disabled={busy}
-        title={busy ? "子会话运行中，先停止再删除" : undefined}
-        onClick={() => {
-          if (!window.confirm(`删除子会话「${label}」？此操作不可撤销。`)) return;
-          deleteSession(entry.childId);
-        }}
-        className="shrink-0 rounded px-1 text-xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
-      >
-        删除
-      </button>
+      {busy ? (
+        <button
+          type="button"
+          aria-label={`停止 ${label}`}
+          title="停止"
+          data-testid="subagent-roster-stop"
+          onClick={() => stopSubagent(entry.childId)}
+          className={sessionIconButtonClass}
+        >
+          <StopSquare />
+        </button>
+      ) : (
+        <button
+          type="button"
+          aria-label={`删除 ${label}`}
+          title="删除"
+          data-testid="subagent-roster-delete"
+          onClick={() => {
+            if (!window.confirm(`删除子会话「${label}」？此操作不可撤销。`)) return;
+            deleteSession(entry.childId);
+          }}
+          className={sessionIconButtonClass}
+        >
+          <Trash size={14} />
+        </button>
+      )}
     </li>
+  );
+}
+
+/** Filled stop square — the same glyph as the primary composer's cancel skin. */
+function StopSquare() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <rect x="1" y="1" width="10" height="10" rx="1.5" />
+    </svg>
   );
 }
 

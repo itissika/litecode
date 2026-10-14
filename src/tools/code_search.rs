@@ -30,9 +30,11 @@ impl CodeSearchTool {
     }
 
     /// Start update/rebuild when the disk plan says work is due. Returns true
-    /// when this call kicked off consume (caller may wait up to the budget).
+    /// when this call kicked off consume. Never waits on the worker: an embed
+    /// holds the client lock, and `worker_alive` takes that lock.
     fn maybe_consume_index(&self) -> bool {
-        if self.engines.is_refresh_busy() || !self.engines.code_search().worker_alive() {
+        // `worker_pid` is an atomic. `worker_alive` blocks on the client lock.
+        if self.engines.is_refresh_busy() || self.engines.code_search().worker_pid().is_none() {
             return false;
         }
         let Some(root) = self.engines.code_search().workspace_root() else {
@@ -131,6 +133,7 @@ impl Tool for CodeSearchTool {
                     &format_code_search_hits(root.as_deref(), &hits, CODE_SEARCH_TOKEN_BUDGET),
                 ))
             }
+            Err(e) if crate::engines::is_search_worker_busy(&e) => warming_result(sync.as_ref()),
             Err(e) => ToolCallResult::error(e.to_string()),
         }
     }
@@ -434,11 +437,16 @@ impl CodeSearchTool {
         let searchable = matches!(self.engines.state("code_search"), Some(EngineState::Warm))
             && matches!(gate, CodeSearchCallGate::Ready);
         if !searchable {
-            let line = format_sync_pct_line_labeled(sync.as_ref(), Some(SyncLineLabel::Warming));
-            return Some(ToolCallResult::ok(format!("{line}\n{WARMING_BODY}")));
+            return Some(warming_result(sync.as_ref()));
         }
         None
     }
+}
+
+fn warming_result(sync: Option<&crate::engines::progress::CorpusProgress>) -> ToolCallResult {
+    use crate::tools::{SyncLineLabel, format_sync_pct_line_labeled};
+    let line = format_sync_pct_line_labeled(sync, Some(SyncLineLabel::Warming));
+    ToolCallResult::ok(format!("{line}\n{WARMING_BODY}"))
 }
 
 #[cfg(test)]
@@ -687,6 +695,46 @@ mod tests {
             result.level != crate::types::ToolSignalLevel::Warning
                 || !result.content.contains("Try again shortly"),
             "must not Wait on refresh_busy: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn warm_busy_worker_returns_warming_without_blocking() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        crate::engines::code_search::init_workspace_index(root).unwrap();
+        let index_dir = crate::engines::code_search::index_dir(root);
+        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
+        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
+
+        let engines = WorkspaceEngines::new();
+        engines.code_search().set_workspace(root.to_path_buf());
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        assert_eq!(
+            engines.code_search_call_gate(),
+            CodeSearchCallGate::Ready,
+            "a warm compatible index stays searchable"
+        );
+
+        let engine = engines.code_search();
+        let _hold = engine.hold_client_for_test();
+        let started = std::time::Instant::now();
+        let result =
+            CodeSearchTool::new(engines).call_inner(serde_json::json!({ "query": "auth" }));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "a busy worker must not stall the turn"
+        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Ok);
+        let first = result.content.lines().next().unwrap().to_string();
+        assert_v2(&first);
+        assert!(first.contains("(warming)"), "{first}");
+        assert!(result.content.contains(WARMING_BODY), "{}", result.content);
+        assert!(
+            !result.content.contains("worker is busy"),
+            "busy must be a warming result, not a tool error: {}",
             result.content
         );
     }

@@ -939,10 +939,11 @@ fn off_for_you_line(names: &[String]) -> String {
 
 fn excludes_counts(file: &WorkspaceExcludesFile) -> String {
     format!(
-        "files {} · search {} · watcher {} · git_ignore {} · explorer_git_ignore {}",
+        "files {} · search {} · watcher {} · code_index_extensions {} · git_ignore {} · explorer_git_ignore {}",
         file.files_exclude.len(),
         file.search_exclude.len(),
         file.watcher_exclude.len(),
+        file.code_index_extensions.len(),
         file.git_ignore,
         file.explorer_git_ignore
     )
@@ -1757,6 +1758,7 @@ mod tests {
 
     #[test]
     fn refresh_excludes_reports_what_is_in_effect() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join(".litecode")).unwrap();
@@ -1771,6 +1773,14 @@ mod tests {
         let result = run(&tool, &execution(root, &sessions, ""), "refresh excludes");
         assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
         assert!(result.content.contains("- active:"), "{}", result.content);
+        assert!(
+            result.content.contains(&format!(
+                "code_index_extensions {}",
+                crate::workspace::filter::CODE_INDEX_EXTENSIONS.len()
+            )),
+            "{}",
+            result.content
+        );
         assert!(
             !result.content.contains("- on disk:") && !result.content.contains("- drift:"),
             "a file the watcher has not caught up with is not a drift report:\n{}",

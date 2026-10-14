@@ -184,6 +184,14 @@ mod tests {
             "optional rules are not documented"
         );
         assert!(CUSTOM_TOOLS.contains("path_outside_workspace"));
+        assert!(EXCLUDES.contains("code_index_extensions"));
+        assert!(EXCLUDES.contains("白名单"));
+        assert!(EXCLUDES.contains("空数组"));
+        assert!(
+            EXCLUDES.contains("改 `search_exclude` 不会改变代码语义索引"),
+            "guide must not tell the agent that search_exclude owns the semantic index"
+        );
+        assert!(!EXCLUDES.contains("语义索引默认不扫"));
     }
 
     #[test]

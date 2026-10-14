@@ -616,17 +616,28 @@ export function AgentChatInput({
               />
               <ContextUsageRing sessionId={sessionId} readOnly />
             </span>
-            {/* WP-086: stop only — a child never takes user turns. */}
-            <button
-              type="button"
-              data-testid="subagent-stop"
-              aria-label="停止子会话"
-              disabled={connBlocked || !(childBusy || isRunning)}
-              onClick={() => stopSubagent(sessionId)}
-              className="ml-0.5 shrink-0 rounded px-1.5 py-0.5 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) disabled:opacity-40"
-            >
-              停止
-            </button>
+            {/* WP-086: stop only — a child never takes user turns. Hidden while idle. */}
+            {(childBusy || isRunning) && (
+              <button
+                type="button"
+                data-testid="subagent-stop"
+                aria-label="停止子会话"
+                title="停止"
+                disabled={connBlocked}
+                onClick={() => stopSubagent(sessionId)}
+                className="ml-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 12 12"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <rect x="1" y="1" width="10" height="10" rx="1.5" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>

@@ -460,7 +460,7 @@ mod tests {
             );
             assert!(explorer.iter().any(|f| f == "visible.rs"));
 
-            let index = collect(FilterPreset::Search);
+            let index = collect(FilterPreset::CodeIndex);
             assert!(
                 !index.iter().any(|f| f == "ignored.rs"),
                 "index walk must honor gitignore: {index:?}"
@@ -481,7 +481,7 @@ mod tests {
                     !explorer2.iter().any(|f| f == "ignored.rs"),
                     "explorer must honor gitignore when explorer_git_ignore=true: {explorer2:?}"
                 );
-                let index2 = collect(FilterPreset::Search);
+                let index2 = collect(FilterPreset::CodeIndex);
                 assert!(
                     index2.iter().any(|f| f == "ignored.rs"),
                     "index walk must include gitignored file when git_ignore=false: {index2:?}"

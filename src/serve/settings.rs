@@ -861,6 +861,7 @@ async fn put_excludes(
         files_exclude: body.files_exclude,
         search_exclude: body.search_exclude,
         watcher_exclude: body.watcher_exclude,
+        code_index_extensions: body.code_index_extensions,
         git_ignore: body.git_ignore,
         explorer_git_ignore: body.explorer_git_ignore,
     };

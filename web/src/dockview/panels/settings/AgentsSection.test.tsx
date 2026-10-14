@@ -203,6 +203,93 @@ const mcpDemoTool: AvailableTool = {
   permission_surface: "fixed",
 };
 
+describe("AgentsSection series bind cards", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      llm: llmDoc,
+      availableTools: [
+        readTool,
+        {
+          id: "bash",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          series_id: "bash",
+          series_label: "Bash",
+        },
+        {
+          id: "wait_shell",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          series_id: "bash",
+          series_label: "Bash",
+        },
+        {
+          id: "kill_shell",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          series_id: "bash",
+          series_label: "Bash",
+        },
+        {
+          id: "subagent_launch",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          series_id: "subagent",
+          series_label: "Subagent",
+        },
+        {
+          id: "subagent_wait",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          series_id: "subagent",
+          series_label: "Subagent",
+        },
+        {
+          id: "subagent_stop",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          series_id: "subagent",
+          series_label: "Subagent",
+        },
+      ],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: { default: profile() },
+      persistByDoc: {},
+      saveAgent: vi.fn(async () => undefined),
+      createAgent: vi.fn(async () => undefined),
+      removeAgent: vi.fn(async () => undefined),
+      refreshAgents: vi.fn(async () => undefined),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("keeps a series tool set on one line", () => {
+    render(<AgentsSection />);
+    const bash = screen.getByText("core · bash, kill_shell, wait_shell");
+    const subagent = screen.getByText(
+      "core · subagent_launch, subagent_stop, subagent_wait",
+    );
+    expect(bash.className).toContain("truncate");
+    expect(subagent.className).toContain("truncate");
+    expect(screen.getAllByRole("button", { name: /bash tool binding/i })).toHaveLength(1);
+    expect(
+      screen.queryByRole("button", { name: /wait_shell tool binding/i }),
+    ).toBeNull();
+  });
+});
+
 describe("AgentsSection subagent tool cards", () => {
   const saveAgent = vi.fn(
     async (_id: string, _next: AgentProfile) => undefined,

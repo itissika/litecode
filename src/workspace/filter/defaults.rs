@@ -77,3 +77,22 @@ pub const SNAPSHOT_ONLY_DIRS: &[&str] = &[
     ".codeartsdoer",
     ".gradle",
 ];
+
+/// Suffixes the code semantic index includes when `excludes.json` omits
+/// `code_index_extensions`. A missing field falls back to this table. An
+/// empty list in the file means the index takes no source files.
+///
+/// Match is the last filename segment (`Button.tsx` → `tsx`, `types.d.ts` →
+/// `ts`). Documents and lockfiles (`json`, `md`, `txt`, `lock`, `csv`) and
+/// extensionless names are not in this table.
+pub const CODE_INDEX_EXTENSIONS: &[&str] = &[
+    "bash", "c", "cc", "cjs", "clj", "cljc", "cljs", "cpp", "cs", "css", "cts", "cxx", "dart",
+    "elm", "ex", "exs", "fs", "fsi", "fsx", "go", "gql", "graphql", "h", "hh", "hpp", "hs", "htm",
+    "html", "hxx", "java", "js", "jsx", "kt", "kts", "less", "lua", "m", "ml", "mli", "mm", "mjs",
+    "mts", "nim", "php", "pl", "pm", "proto", "ps1", "psm1", "py", "pyi", "pyw", "r", "rb", "rs",
+    "scala", "scss", "sh", "sql", "svelte", "swift", "ts", "tsx", "v", "vue", "zig", "zsh",
+];
+
+/// Dependency directories the code index never walks, even when their
+/// suffixes are allowlisted. This is not a user exclude pattern.
+pub const CODE_INDEX_SKIP_DIRS: &[&str] = &["node_modules", "bower_components"];

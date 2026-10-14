@@ -21,6 +21,7 @@ import {
 type FilesDraft = {
   filesText: string;
   searchText: string;
+  extensionsText: string;
   watcherText: string;
   gitIgnore: boolean;
   explorerGitIgnore: boolean;
@@ -32,6 +33,7 @@ function snapshotFilesDraft(): FilesDraft {
     return {
       filesText: "",
       searchText: "",
+      extensionsText: "",
       watcherText: "",
       gitIgnore: true,
       explorerGitIgnore: false,
@@ -40,6 +42,7 @@ function snapshotFilesDraft(): FilesDraft {
   return {
     filesText: textFromGlobs(excludes.files_exclude),
     searchText: textFromGlobs(excludes.search_exclude),
+    extensionsText: textFromGlobs(excludes.code_index_extensions),
     watcherText: textFromGlobs(excludes.watcher_exclude),
     gitIgnore: excludes.git_ignore,
     explorerGitIgnore: excludes.explorer_git_ignore,
@@ -58,6 +61,7 @@ export function FilesSection() {
     setDraft({
       filesText: textFromGlobs(excludes.files_exclude),
       searchText: textFromGlobs(excludes.search_exclude),
+      extensionsText: textFromGlobs(excludes.code_index_extensions),
       watcherText: textFromGlobs(excludes.watcher_exclude),
       gitIgnore: excludes.git_ignore,
       explorerGitIgnore: excludes.explorer_git_ignore,
@@ -72,6 +76,7 @@ export function FilesSection() {
         files_exclude: globsFromText(d.filesText),
         search_exclude: globsFromText(d.searchText),
         watcher_exclude: globsFromText(d.watcherText),
+        code_index_extensions: globsFromText(d.extensionsText),
         git_ignore: d.gitIgnore,
         explorer_git_ignore: d.explorerGitIgnore,
       },
@@ -86,6 +91,7 @@ export function FilesSection() {
       setDraft({
         filesText: textFromGlobs(snap.files_exclude),
         searchText: textFromGlobs(snap.search_exclude),
+        extensionsText: textFromGlobs(snap.code_index_extensions),
         watcherText: textFromGlobs(snap.watcher_exclude),
         gitIgnore: snap.git_ignore,
         explorerGitIgnore: snap.explorer_git_ignore,
@@ -99,6 +105,7 @@ export function FilesSection() {
     setDraft({
       filesText: textFromGlobs(d.files_exclude),
       searchText: textFromGlobs(d.search_exclude),
+      extensionsText: textFromGlobs(d.code_index_extensions),
       watcherText: textFromGlobs(d.watcher_exclude),
       gitIgnore: d.git_ignore,
       explorerGitIgnore: d.explorer_git_ignore,
@@ -123,8 +130,9 @@ export function FilesSection() {
         <p className="text-dk-sm text-(--_dk-text-secondary)">
           These lists live in this workspace (
           <code>.litecode/excludes.json</code>). New workspaces start with the
-          built-in VS Code defaults; Settings edits and direct changes to that
-          file apply to the tree and search immediately.
+          built-in defaults. Settings edits and direct changes to that file
+          apply to the tree and to search immediately. Code semantic search
+          uses the suffix list below, not Search exclude.
         </p>
 
         <div className="settings-card space-y-3 p-4">
@@ -177,8 +185,8 @@ export function FilesSection() {
           className="settings-foldcard"
         >
           <FieldLabel>
-            Additional hides for search, glob, and index (on top of files
-            exclude)
+            Additional hides for search and glob (on top of files exclude).
+            Does not change the code semantic index.
           </FieldLabel>
           <TextArea
             rows={6}
@@ -187,6 +195,28 @@ export function FilesSection() {
               setDraft((d) => ({ ...d, searchText: e.target.value }))
             }
             placeholder={"**/node_modules\n**/bower_components"}
+            disabled={saveBlocked}
+            spellCheck={false}
+          />
+        </FoldCard>
+
+        <FoldCard
+          label={
+            <span className="settings-section-title">Code index extensions</span>
+          }
+          className="settings-foldcard"
+        >
+          <FieldLabel>
+            Suffixes the code semantic index includes. One per line. A missing
+            suffix is left out; an empty list indexes no source files.
+          </FieldLabel>
+          <TextArea
+            rows={6}
+            value={draft.extensionsText}
+            onChange={(e) =>
+              setDraft((d) => ({ ...d, extensionsText: e.target.value }))
+            }
+            placeholder={"rs\nts\ntsx"}
             disabled={saveBlocked}
             spellCheck={false}
           />

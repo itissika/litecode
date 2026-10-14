@@ -16,6 +16,7 @@ const emptyLists = {
   files_exclude: [] as string[],
   search_exclude: [] as string[],
   watcher_exclude: [] as string[],
+  code_index_extensions: [] as string[],
   git_ignore: true,
   explorer_git_ignore: false,
 };

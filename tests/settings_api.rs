@@ -182,6 +182,11 @@ async fn settings_excludes_seed_and_put() {
         "{search:?}"
     );
     assert_eq!(get["git_ignore"].as_bool(), Some(true));
+    let seeded = get["code_index_extensions"]
+        .as_array()
+        .expect("seeded extensions");
+    assert!(seeded.iter().any(|v| v.as_str() == Some("rs")));
+    assert!(!seeded.iter().any(|v| v.as_str() == Some("md")));
 
     let put = client
         .put(&base)
@@ -204,11 +209,40 @@ async fn settings_excludes_seed_and_put() {
             .any(|v| v.as_str().is_some_and(|s| s.contains("node_modules")))
     );
     assert!(search2.iter().any(|v| v.as_str() == Some("**/vendor")));
+    let kept = body["code_index_extensions"]
+        .as_array()
+        .expect("extensions survive a put that omits the field");
+    assert_eq!(
+        kept.len(),
+        litecode::workspace::filter::CODE_INDEX_EXTENSIONS.len()
+    );
+
+    let put_ext = client
+        .put(&base)
+        .json(&serde_json::json!({
+            "files_exclude": ["**/.git"],
+            "search_exclude": ["**/vendor"],
+            "watcher_exclude": ["*.litecode-tmp*"],
+            "git_ignore": false,
+            "code_index_extensions": [".RS", "*.tsx"]
+        }))
+        .send()
+        .await
+        .expect("put extensions");
+    assert!(put_ext.status().is_success());
+    let narrowed: Value = put_ext.json().await.expect("json");
+    assert_eq!(
+        narrowed["code_index_extensions"],
+        serde_json::json!(["rs", "tsx"])
+    );
 
     let disk = std::fs::read_to_string(ws.path().join(".litecode").join("excludes.json"))
         .expect("excludes.json");
     assert!(disk.contains("**/vendor"));
     assert!(!disk.contains("node_modules"));
+    assert!(disk.contains("code_index_extensions"));
+    assert!(disk.contains("\"rs\""));
+    assert!(disk.contains("\"tsx\""));
 }
 
 struct RestoreBuiltinExcludes;

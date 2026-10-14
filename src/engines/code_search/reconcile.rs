@@ -252,6 +252,58 @@ mod tests {
         );
     }
 
+    #[test]
+    fn allowlist_change_reconciles_without_rebuild() {
+        use crate::workspace::filter::{
+            WorkspaceExcludesFile, activate_workspace_excludes, with_excludes_cache_for_test,
+        };
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(root.join("notes.md"), "# n\n").unwrap();
+        std::fs::write(root.join("extra.foo"), "hello\n").unwrap();
+
+        let mut wide = WorkspaceExcludesFile::builtin_defaults();
+        wide.code_index_extensions.push("md".into());
+        with_excludes_cache_for_test(wide, || {
+            let index = index_workspace_blocking(root, Box::new(HashEmbedder)).unwrap();
+            let runtime = CodeSearchRuntime::new(
+                root.to_path_buf(),
+                index,
+                Some(Box::new(HashEmbedder)),
+                None,
+            );
+            let paths = runtime.with_index(|idx| Ok(idx.indexed_paths())).unwrap();
+            assert!(paths.contains("a.rs"), "{paths:?}");
+            assert!(paths.contains("notes.md"), "{paths:?}");
+            assert!(!paths.contains("extra.foo"), "{paths:?}");
+
+            activate_workspace_excludes(WorkspaceExcludesFile::builtin_defaults());
+            queue_reconcile_dirty(&runtime);
+            let dropped = pending(&runtime);
+            assert!(dropped.contains(&("notes.md".into(), true)), "{dropped:?}");
+            assert!(
+                !dropped.iter().any(|(path, _)| path == "a.rs"),
+                "{dropped:?}"
+            );
+            assert!(
+                !dropped.iter().any(|(path, _)| path == "extra.foo"),
+                "{dropped:?}"
+            );
+
+            let mut with_foo = WorkspaceExcludesFile::builtin_defaults();
+            with_foo.code_index_extensions.push("foo".into());
+            activate_workspace_excludes(with_foo);
+            runtime.pending_updates.lock().unwrap().clear();
+            queue_reconcile_dirty(&runtime);
+            let added = pending(&runtime);
+            assert!(added.contains(&("extra.foo".into(), false)), "{added:?}");
+            assert!(added.contains(&("notes.md".into(), true)), "{added:?}");
+            assert!(!added.iter().any(|(path, _)| path == "a.rs"), "{added:?}");
+        });
+    }
+
     fn saved_runtime(
         root: &std::path::Path,
         emb: Box<dyn crate::engines::code_search::Embedder>,
@@ -389,7 +441,8 @@ mod tests {
 
     // Acceptance: changes made while stopped are caught after restart, and an
     // unchanged tree is not read at all (the scan only stats: nothing queued
-    // ⇒ update_files never runs).
+    // ⇒ update_files never runs). Mode `0o000` is a Unix unreadable file.
+    #[cfg(unix)]
     #[test]
     fn restart_uses_persisted_stamps_and_catches_offline_changes() {
         let dir = TempDir::new().unwrap();

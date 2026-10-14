@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{LitecodeError, Result};
 
-use super::defaults::{FILES_EXCLUDE, SEARCH_EXCLUDE, WATCHER_EXCLUDE};
+use super::defaults::{CODE_INDEX_EXTENSIONS, FILES_EXCLUDE, SEARCH_EXCLUDE, WATCHER_EXCLUDE};
 
 const WORKSPACE_EXCLUDES_VERSION: u32 = 1;
 
@@ -23,6 +23,10 @@ pub struct WorkspaceExcludesFile {
     pub search_exclude: Vec<String>,
     #[serde(default = "default_watcher_exclude")]
     pub watcher_exclude: Vec<String>,
+    /// Suffix allowlist for the code semantic index. Missing field → built-in
+    /// source suffixes. Present `[]` → index no source files.
+    #[serde(default = "default_code_index_extensions")]
+    pub code_index_extensions: Vec<String>,
     #[serde(default = "default_git_ignore")]
     pub git_ignore: bool,
     /// Browse-only: honor `.gitignore` in the explorer tree, independent of
@@ -51,6 +55,10 @@ fn default_watcher_exclude() -> Vec<String> {
     static_globs(WATCHER_EXCLUDE)
 }
 
+fn default_code_index_extensions() -> Vec<String> {
+    static_globs(CODE_INDEX_EXTENSIONS)
+}
+
 fn static_globs(globs: &[&str]) -> Vec<String> {
     globs.iter().map(|s| (*s).to_string()).collect()
 }
@@ -62,6 +70,7 @@ impl WorkspaceExcludesFile {
             files_exclude: default_files_exclude(),
             search_exclude: default_search_exclude(),
             watcher_exclude: default_watcher_exclude(),
+            code_index_extensions: default_code_index_extensions(),
             git_ignore: true,
             explorer_git_ignore: false,
         }
@@ -72,6 +81,7 @@ impl WorkspaceExcludesFile {
             files_exclude: self.files_exclude.clone(),
             search_exclude: self.search_exclude.clone(),
             watcher_exclude: self.watcher_exclude.clone(),
+            code_index_extensions: self.code_index_extensions.clone(),
             git_ignore: self.git_ignore,
             explorer_git_ignore: self.explorer_git_ignore,
         }
@@ -82,6 +92,7 @@ impl WorkspaceExcludesFile {
         self.files_exclude = normalize_globs(self.files_exclude);
         self.search_exclude = normalize_globs(self.search_exclude);
         self.watcher_exclude = normalize_globs(self.watcher_exclude);
+        self.code_index_extensions = normalize_extensions(self.code_index_extensions);
         self
     }
 }
@@ -91,6 +102,9 @@ pub struct WorkspaceExcludesLists {
     pub files_exclude: Vec<String>,
     pub search_exclude: Vec<String>,
     pub watcher_exclude: Vec<String>,
+    /// Absent on an old settings client → built-in suffixes. `[]` is kept.
+    #[serde(default = "default_code_index_extensions")]
+    pub code_index_extensions: Vec<String>,
     pub git_ignore: bool,
     /// Browse-only gitignore switch; `#[serde(default)]` keeps PUT bodies from
     /// older clients valid.
@@ -103,6 +117,7 @@ pub struct WorkspaceExcludesView {
     pub files_exclude: Vec<String>,
     pub search_exclude: Vec<String>,
     pub watcher_exclude: Vec<String>,
+    pub code_index_extensions: Vec<String>,
     pub git_ignore: bool,
     pub explorer_git_ignore: bool,
     pub defaults: WorkspaceExcludesLists,
@@ -115,11 +130,42 @@ impl WorkspaceExcludesView {
             files_exclude: lists.files_exclude,
             search_exclude: lists.search_exclude,
             watcher_exclude: lists.watcher_exclude,
+            code_index_extensions: lists.code_index_extensions,
             git_ignore: lists.git_ignore,
             explorer_git_ignore: lists.explorer_git_ignore,
             defaults: WorkspaceExcludesFile::builtin_defaults().lists_view(),
         }
     }
+}
+
+/// Suffix tokens, not globs. `*.tsx`, `.RS`, and `types.d.ts` all become the
+/// last segment (`tsx`, `rs`, `ts`). A trailing-slash directory form is not
+/// folded into a directory glob — this list never matches directories.
+fn normalize_extensions(exts: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for raw in exts {
+        let Some(token) = normalize_extension_token(&raw) else {
+            continue;
+        };
+        if seen.insert(token.clone()) {
+            out.push(token);
+        }
+    }
+    out
+}
+
+fn normalize_extension_token(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.is_empty() || t.starts_with('#') {
+        return None;
+    }
+    let token = t.rsplit('.').next().unwrap_or(t);
+    let token = token.trim_matches(|c: char| matches!(c, '*' | '/' | '\\' | ' '));
+    if token.is_empty() || !token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(token.to_ascii_lowercase())
 }
 
 fn normalize_globs(globs: Vec<String>) -> Vec<String> {
@@ -264,6 +310,10 @@ mod tests {
         assert!(!d.explorer_git_ignore);
         assert!(d.search_exclude.iter().any(|g| g.contains("node_modules")));
         assert!(d.watcher_exclude.iter().any(|g| g.contains(".litecode")));
+        assert_eq!(d.code_index_extensions, default_code_index_extensions());
+        assert!(d.code_index_extensions.iter().any(|e| e == "rs"));
+        assert!(!d.code_index_extensions.iter().any(|e| e == "md"));
+        assert!(!d.code_index_extensions.iter().any(|e| e == "json"));
     }
 
     #[test]
@@ -295,11 +345,23 @@ mod tests {
             ],
             search_exclude: vec![],
             watcher_exclude: vec![],
+            code_index_extensions: vec![
+                ".RS".into(),
+                "rs".into(),
+                "*.tsx".into(),
+                "types.d.ts".into(),
+                "".into(),
+                "# skip".into(),
+            ],
             git_ignore: false,
             explorer_git_ignore: true,
         }
         .normalize();
         assert_eq!(file.files_exclude, vec!["**/.git".to_string()]);
+        assert_eq!(
+            file.code_index_extensions,
+            vec!["rs".to_string(), "tsx".to_string(), "ts".to_string()]
+        );
         assert_eq!(file.version, WORKSPACE_EXCLUDES_VERSION);
         assert!(!file.git_ignore);
         assert!(file.explorer_git_ignore);
@@ -312,6 +374,7 @@ mod tests {
             files_exclude: vec!["ArtSource/".into(), "**/vendor/".into(), "/".into()],
             search_exclude: vec!["discard/".into()],
             watcher_exclude: vec![],
+            code_index_extensions: vec![],
             git_ignore: true,
             explorer_git_ignore: false,
         }
@@ -433,6 +496,45 @@ mod tests {
         let file = read_workspace_excludes(dir.path()).unwrap();
         assert!(file.git_ignore);
         assert!(!file.explorer_git_ignore);
+        assert_eq!(file.code_index_extensions, default_code_index_extensions());
+    }
+
+    #[test]
+    fn empty_code_index_extensions_stay_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = workspace_excludes_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+                "version": 1,
+                "files_exclude": [],
+                "search_exclude": [],
+                "watcher_exclude": [],
+                "code_index_extensions": [],
+                "git_ignore": true
+            }"#,
+        )
+        .unwrap();
+        let file = read_workspace_excludes(dir.path()).unwrap();
+        assert!(file.code_index_extensions.is_empty());
+    }
+
+    #[test]
+    fn reload_from_disk_reads_code_index_extensions() {
+        // Same reader the code-search worker uses (`reload_worker_excludes`).
+        let _lock = lock_excludes_cache_for_test();
+        let _guard = CacheRestore(active_workspace_excludes());
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = WorkspaceExcludesFile::builtin_defaults();
+        file.code_index_extensions = vec!["rs".into()];
+        persist_workspace_excludes(dir.path(), &file).unwrap();
+        activate_workspace_excludes(WorkspaceExcludesFile::builtin_defaults());
+        assert!(reload_workspace_excludes_from_disk(dir.path()));
+        assert_eq!(
+            active_workspace_excludes().code_index_extensions,
+            vec!["rs".to_string()]
+        );
     }
 
     #[test]

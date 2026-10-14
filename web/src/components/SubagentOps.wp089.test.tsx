@@ -95,8 +95,7 @@ describe("WP-089 T1 子会话视图", () => {
     const { rerender } = render(<AgentChatInput sessionId={CHILD} variant="subagent" />);
     expect(document.querySelector("textarea")).toBeNull();
     expect(screen.queryByTitle("Send")).toBeNull();
-    const stop = screen.getByTestId("subagent-stop") as HTMLButtonElement;
-    expect(stop.disabled).toBe(true);
+    expect(screen.queryByTestId("subagent-stop")).toBeNull();
 
     for (const status of ["running", "running_with_subagent", "stopping"] as const) {
       act(() => setChild({ status, running: true }));
@@ -127,11 +126,11 @@ describe("WP-089 T2 cancelled:false", () => {
 });
 
 describe("WP-089 T3 Workers 名单行操作", () => {
-  it("在跑：停止可用、删除置灰（含 running_with_subagent）", () => {
+  it("在跑：只显示停止（含 running_with_subagent）", () => {
     setChild({ status: "running_with_subagent", running: true });
     render(<SubagentRosterPanel sessionId={PARENT} />);
-    expect((screen.getByTestId("subagent-roster-stop") as HTMLButtonElement).disabled).toBe(false);
-    expect((screen.getByTestId("subagent-roster-delete") as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByTestId("subagent-roster-stop")).toBeTruthy();
+    expect(screen.queryByTestId("subagent-roster-delete")).toBeNull();
   });
   it("确认框取消不发 RPC，确认才发 session/delete；点行仍可跳转", () => {
     render(<SubagentRosterPanel sessionId={PARENT} />);

@@ -13,7 +13,7 @@ mod status_view;
 pub use status_view::{EngineUsability, retrieval_progress_for_workspace};
 
 mod code_search_engine;
-pub use code_search_engine::CodeSearchEngine;
+pub use code_search_engine::{CodeSearchEngine, is_search_worker_busy};
 
 mod lsp_engine;
 pub use lsp_engine::LspEngine;

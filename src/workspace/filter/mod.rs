@@ -2,7 +2,9 @@
 //!
 //! Exclude globs are workspace-owned (`.litecode/excludes.json`), seeded from
 //! VS Code (`files.exclude` / `search.exclude` / `files.watcherExclude`).
-//! Three faces: Explorer (tree), Search (human/agent/index), Watcher (hard cut).
+//! Three faces: Explorer (tree), Search (human/agent text), Watcher (hard cut).
+//! The code semantic index uses [`FilterPreset::CodeIndex`] plus
+//! `code_index_extensions`, not `search_exclude`.
 //! Walks compose ripgrep gitignore / binary. Index content gates (binary /
 //! size only) stay in [`index_policy`]. Product-internal dirs compose via
 //! [`dirs`].
@@ -24,7 +26,8 @@ mod workspace_excludes;
 
 pub use binary::looks_binary;
 pub use defaults::{
-    FILES_EXCLUDE, PRODUCT_INTERNAL_DIRS, SEARCH_EXCLUDE, SNAPSHOT_ONLY_DIRS, WATCHER_EXCLUDE,
+    CODE_INDEX_EXTENSIONS, CODE_INDEX_SKIP_DIRS, FILES_EXCLUDE, PRODUCT_INTERNAL_DIRS,
+    SEARCH_EXCLUDE, SNAPSHOT_ONLY_DIRS, WATCHER_EXCLUDE,
 };
 pub use dirs::{
     discovery_exclude_dir_basenames, is_agent_knowledge_rel, is_discovery_or_product_dir_name,
@@ -33,8 +36,8 @@ pub use dirs::{
 pub use exclude::{ExcludeMatcher, path_excluded};
 pub use gitignore::path_gitignored;
 pub use index_policy::{
-    MAX_INDEX_FILE_BYTES, SKIP_DIRS, is_indexable_rel_path, is_scannable_rel_path,
-    path_has_skipped_dir, should_queue_index_update,
+    MAX_INDEX_FILE_BYTES, SKIP_DIRS, code_index_extension_allowed, is_indexable_rel_path,
+    is_scannable_rel_path, path_has_skipped_dir, should_queue_index_update,
 };
 pub use layers::FilterLayers;
 pub use path::{RelPathCtx, cheap_rel_under, rel_path_under};

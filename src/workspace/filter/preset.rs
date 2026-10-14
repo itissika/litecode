@@ -20,10 +20,15 @@ pub enum FilterPreset {
     /// Agent grep/glob `-u`: off gitignore / files.exclude / search.exclude,
     /// still skip binary and prune nested `.litecode`.
     NoIgnore,
-    /// Search line (human text, Agent grep/glob, text + vector index):
+    /// Search line (human text, Agent grep/glob, text index):
     /// `files.exclude ∪ search.exclude` + `git_ignore`. Hidden files are not
     /// skipped here (VS Code ripgrep `--hidden`); gitignore decides.
+    /// The code semantic index uses [`FilterPreset::CodeIndex`].
     Search,
+    /// Code semantic index: `files.exclude` + `git_ignore`, not
+    /// `search.exclude`. `node_modules` and `bower_components` are always
+    /// skipped. Suffixes are a separate allowlist applied by the scan.
+    CodeIndex,
     /// OS watcher event gate: `files.watcherExclude` only. Hard cut; consumers
     /// do not get events this preset drops.
     Watcher,
@@ -54,6 +59,15 @@ impl FilterPreset {
             Self::Search => FilterLayers {
                 files_exclude: true,
                 search_exclude: true,
+                watcher_exclude: false,
+                git_ignore: true,
+                git_global: true,
+                git_exclude: true,
+                skip_binary: true,
+            },
+            Self::CodeIndex => FilterLayers {
+                files_exclude: true,
+                search_exclude: false,
                 watcher_exclude: false,
                 git_ignore: true,
                 git_global: true,
@@ -118,6 +132,11 @@ pub fn exclude_globs(preset: FilterPreset) -> Vec<String> {
     } else if layers.files_exclude {
         out.extend(cfg.files_exclude);
     }
+    if preset == FilterPreset::CodeIndex {
+        for dir in super::defaults::CODE_INDEX_SKIP_DIRS {
+            out.push(format!("**/{dir}"));
+        }
+    }
     out
 }
 
@@ -146,6 +165,10 @@ mod tests {
             || {
                 assert_eq!(git_layers(FilterPreset::Explorer), (false, false, false));
                 assert_eq!(git_layers(FilterPreset::Search), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::CodeIndex), (true, true, true));
+                let code = FilterPreset::CodeIndex.layers();
+                assert!(code.files_exclude);
+                assert!(!code.search_exclude);
             },
         );
     }
@@ -161,6 +184,7 @@ mod tests {
             || {
                 assert_eq!(git_layers(FilterPreset::Explorer), (true, true, true));
                 assert_eq!(git_layers(FilterPreset::Search), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::CodeIndex), (false, false, false));
             },
         );
     }
@@ -187,7 +211,31 @@ mod tests {
         assert!(!FilterPreset::Unfiltered.prune_product_internal_dirs());
         assert!(FilterPreset::NoIgnore.prune_product_internal_dirs());
         assert!(FilterPreset::Search.prune_product_internal_dirs());
+        assert!(FilterPreset::CodeIndex.prune_product_internal_dirs());
         assert!(FilterPreset::Watcher.prune_product_internal_dirs());
+    }
+
+    #[test]
+    fn code_index_hard_skips_dependency_dirs_without_search_exclude() {
+        use crate::workspace::filter::path_excluded;
+
+        let mut cfg = WorkspaceExcludesFile::builtin_defaults();
+        cfg.search_exclude.clear();
+        with_config(cfg, || {
+            assert!(path_excluded(
+                "node_modules/pkg/index.js",
+                FilterPreset::CodeIndex
+            ));
+            assert!(path_excluded(
+                "vendor/bower_components/lib.js",
+                FilterPreset::CodeIndex
+            ));
+            assert!(!path_excluded("src/app.js", FilterPreset::CodeIndex));
+            assert!(!path_excluded(
+                "node_modules/pkg/index.js",
+                FilterPreset::Search
+            ));
+        });
     }
 
     #[test]
