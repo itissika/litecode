@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-14T02:57:27.996Z",
+  "updated_at": "2026-10-14T02:58:42.737Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -6251,7 +6251,9 @@
       "source": "ops.wp",
       "summary": "WP-146 awaiting acceptance by gm (owner backend_mid)",
       "wp": "WP-146",
-      "acked": [],
+      "acked": [
+        "gm"
+      ],
       "meta": {
         "stage": "acceptance",
         "approver": "gm",
@@ -6270,7 +6272,9 @@
       "source": "ops.wp",
       "summary": "WP-145 awaiting acceptance by andy (owner gm)",
       "wp": "WP-145",
-      "acked": [],
+      "acked": [
+        "gm"
+      ],
       "meta": {
         "stage": "acceptance",
         "approver": "andy",

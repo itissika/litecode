@@ -10534,13 +10534,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-14T02:57:27.993Z",
+      "progress": "closed done by andy: Andy 真机验收通过",
+      "status_entered_at": null,
       "parent": null,
       "goal": "bind 是唯一可见性门禁（desire）；引擎未开/预热中/未刷完只体现在调用结果；去掉 code_search/session_search 对引擎 ready 的可见性依赖",
       "approver": "andy",
@@ -10590,6 +10590,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": "后端+前端完成，请真机验收：绑上的 code_search 在引擎没开/预热时仍可见；调用返回契约文案；主 agent 默认绑；设置页只显示 desire"
+        },
+        {
+          "ts": "2026-10-14T03:07:35.915Z",
+          "actor": "andy",
+          "action": "close",
+          "note": "Andy 真机验收通过",
+          "to": "done"
         }
       ]
     },
