@@ -325,6 +325,14 @@ pub fn open_production_embedder() -> Result<Box<dyn Embedder>> {
     OrtGraniteEmbedder::try_open(&dir).map(|e| Box::new(e) as Box<dyn Embedder>)
 }
 
+/// WP-143 bench: the real ORT embedder even under cfg(test).
+#[cfg(test)]
+pub(crate) fn open_ort_embedder_for_bench() -> Result<Box<dyn Embedder>> {
+    let dir = model_dir()?;
+    ensure_official_cls_pooling(&dir)?;
+    OrtGraniteEmbedder::try_open(&dir).map(|e| Box::new(e) as Box<dyn Embedder>)
+}
+
 fn use_hash_embedder() -> bool {
     cfg!(test)
         || std::env::var("LITECODE_CODE_SEARCH_USE_HASH")

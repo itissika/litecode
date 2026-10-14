@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-13T17:59:41.399Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-14T01:52:08.171Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -125,7 +125,7 @@
 | WP-107 | 　└ WP-106/A 一方直连：openai/deepseek/mimo/zhipu + 两种 codec 对照 | done | provider | backend_mid |
 | WP-108 | 　└ WP-106/B 国内云套餐：ark-coding/ark-agent/tencent-token/aliyun-token | done | provider | backend_mid |
 | WP-109 | 　└ WP-106/C 聚合/网关：opencode/opencode-go/commandcode + Q4 新供应商候选 | done | provider | backend_mid |
-| WP-110 | provider 补模型/新加两家 + 前端分组 | review | gm | andy |
+| WP-110 | provider 补模型/新加两家 + 前端分组 | done | gm | andy |
 | WP-111 | └ provider 目录落地 | done | backend_mid | gm |
 | WP-113 | 　└ WP-111 目录落地执行 | done | provider | backend_mid |
 | WP-112 | └ provider 列表分组 | done | frontend_mid | gm |
@@ -143,10 +143,10 @@
 | WP-125 | └ WP-124 真引擎续测执行 | done | backend_mid | gm |
 | WP-126 | 　└ WP-125/Session：可对齐金标 query 集（白名单语料） | done | session | backend_mid |
 | WP-127 | 　└ WP-125/IDE：真引擎 ANN+RRF 与切块小样本 | done | ide | backend_mid |
-| WP-128 | 语义检索落地：白名单准入 | review | gm | andy |
+| WP-128 | 语义检索落地：白名单准入 | done | gm | andy |
 | WP-129 | └ WP-128 白名单准入执行 | done | backend_mid | gm |
 | WP-130 | 　└ WP-129/IDE：白名单准入落地（稠密三态 / 稀疏+tool_call） | done | ide | backend_mid |
-| WP-131 | 引擎进度条：code+session 合并状态 | review | gm | andy |
+| WP-131 | 引擎进度条：code+session 合并状态 | done | gm | andy |
 | WP-132 | └ 后端：code+session 统一 chunk 进度上报 | done | backend_mid | gm |
 | WP-134 | 　└ 引擎进度：code 侧 + 两库合并 | done | ide | backend_mid |
 | WP-135 | 　└ 引擎进度：session 侧上报 | done | session | backend_mid |
@@ -158,6 +158,8 @@
 | WP-139 | code 索引刷新：定期扫盘+持久化元数据 | review | gm | andy |
 | WP-140 | └ 后端：扫盘对账+印章持久化落地 | done | backend_mid | gm |
 | WP-141 | 　└ IDE：code 定期扫盘对账+印章持久化 | done | ide | backend_mid |
+| WP-143 | 　└ IDE：code 首建/重建并入增量 + 按批存盘 + 原子写 | done | ide | backend_mid |
+| WP-144 | 　└ Session：session 首建/重建按批检查点续跑 | done | session | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

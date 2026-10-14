@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-059",
+  "grade": "4",
+  "layer": null,
+  "domain": "ide-base",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "BM25 打开失败后每次调用全量重建（794k chunks 约 2 分钟/次），reconcile/update 错误被吞",
+  "history": [
+    {
+      "ts": "2026-10-14T00:07:21.909Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-143）"
+    }
+  ]
+}

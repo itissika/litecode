@@ -57,3 +57,6 @@ kind=direct（执行由 IDE 子包 WP-139-ide 承担，approver=backend_mid）�
 
 ## WP-140 交付摘要（2026-10-14）
 子包 WP-141 done。code 定期扫盘（复用 30s tick）+ stamps.v1 持久化；只 stat；冷卸载/NotWarm 仍扫盘入队不消化；内容未变只刷新印章；watcher 错误/Rescan/溢出 → 与 Lagged 同入口全量对账。router 接线 Session 交叉审通过。Linux 浅克隆冷扫中位 ~3.6s / 热扫 ~3.0s（debug）。index.session.status 漏删已顺手去掉。
+
+## WP-140 v2 交付摘要（2026-10-14）
+子包 WP-143（IDE）/ WP-144（Session）done。首建/不兼容重建删掉独立全量路径，改为空正式库 + 全量入队走增量；按批 append 存盘、检查点原子替换，崩溃截回已提交长度；session 同口径；半截索引可搜（refreshing + 真实百分比），不新增状态。扫盘/印章保留。详见 WP-140v2-ide.md、WP-144-session.md。跟进 ISSUE-058（session 日志压缩）、ISSUE-059（BM25 打开失败后全量重建）。

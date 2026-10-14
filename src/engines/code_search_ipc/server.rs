@@ -97,7 +97,6 @@ impl WorkerState {
         if crate::engines::code_search::reclaim_stale_index_job(&root) {
             tracing::info!("code_search worker: reclaimed stale index job on load");
         }
-        let rebuilt = should_full_rebuild(&root);
         let mut embedder = open_production_embedder()?;
         let index = warmup_index(&root, &mut *embedder)?;
         let runtime = CodeSearchRuntime::new(
@@ -107,11 +106,9 @@ impl WorkerState {
             self.session_reader.clone(),
         );
         reload_worker_excludes(&root);
-        if rebuilt {
-            write_code_queue(&root, &Default::default());
-        } else {
-            queue_reconcile_dirty(&runtime);
-        }
+        // WP-143: a fresh (or partial) index is filled by the incremental
+        // path; reconcile queues every file the index does not hold yet.
+        queue_reconcile_dirty(&runtime);
         if self.session_reader.is_some() {
             if let Err(e) = runtime.ensure_session_index() {
                 tracing::warn!(error = %e, "session semantic index warmup load skipped");

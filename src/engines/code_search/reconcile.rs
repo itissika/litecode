@@ -185,8 +185,8 @@ pub(crate) fn stamp_from_meta(meta: &fs::Metadata) -> Option<FileStamp> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::code_search::build::build_full_index;
     use crate::engines::code_search::embed::HashEmbedder;
+    use crate::engines::code_search::index_workspace_blocking;
     use crate::engines::code_search::{CodeSearchRuntime, flush_pending_updates};
     use tempfile::TempDir;
 
@@ -197,8 +197,8 @@ mod tests {
         std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(root.join("b.rs"), "fn b() {}\n").unwrap();
 
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         let runtime = CodeSearchRuntime::new(
             root.to_path_buf(),
             index,
@@ -240,8 +240,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         let runtime = CodeSearchRuntime::new(root.to_path_buf(), index, None, None);
         sync_index_with_disk(&runtime);
 
@@ -256,8 +256,8 @@ mod tests {
         root: &std::path::Path,
         emb: Box<dyn crate::engines::code_search::Embedder>,
     ) -> CodeSearchRuntime {
-        let mut e = HashEmbedder;
-        let index = build_full_index(root, &mut e).unwrap();
+        let e = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(e)).unwrap();
         index.save(root).unwrap();
         CodeSearchRuntime::new(root.to_path_buf(), index, Some(emb), None)
     }

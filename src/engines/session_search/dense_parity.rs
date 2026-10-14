@@ -10,7 +10,6 @@
 //! that row was already settled, never because the diff forgot it existed.
 //! Append, revert, and a late echo result all land here for that reason.
 
-use std::path::Path;
 use std::sync::Arc;
 
 use tempfile::TempDir;
@@ -69,27 +68,23 @@ impl Fixture {
     }
 
     fn artifacts(&self) -> (Vec<String>, Vec<String>) {
-        (
-            read_lines(&self.index_dir().join("chunks.jsonl"), true),
-            read_lines(&self.index_dir().join("source_state.jsonl"), false),
-        )
+        // WP-144: the logs are append-only, so compare what the index holds
+        // (live chunks + settled rows), not the raw files.
+        let (chunks, settled) = SessionSemanticIndex::live_artifact_lines(self.root.path());
+        (normalize(chunks, true), normalize(settled, false))
     }
 }
 
-/// One artifact file as sorted lines. `strip_id` removes the vector id, which
-/// differs between two equally correct builds (it counts allocations, not rows).
-fn read_lines(path: &Path, strip_id: bool) -> Vec<String> {
-    let Ok(body) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let mut lines: Vec<String> = body
-        .lines()
-        .filter(|line| !line.trim().is_empty())
+/// Sorted lines; `strip_id` removes the vector id, which differs between two
+/// equally correct builds (it counts allocations, not rows).
+fn normalize(lines: Vec<String>, strip_id: bool) -> Vec<String> {
+    let mut lines: Vec<String> = lines
+        .into_iter()
         .map(|line| {
             if !strip_id {
-                return line.to_string();
+                return line;
             }
-            let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+            let mut value: serde_json::Value = serde_json::from_str(&line).unwrap();
             value.as_object_mut().unwrap().remove("id");
             serde_json::to_string(&value).unwrap()
         })
@@ -224,8 +219,10 @@ fn a_legacy_index_migrates_in_one_pass_without_re_embedding() {
     f.insert(&[user_text("alpha row"), user_text("beta row")]);
     f.reconcile();
 
-    // Drop the state, leaving exactly what the previous version wrote.
-    std::fs::remove_file(f.index_dir().join("source_state.jsonl")).unwrap();
+    // Leave exactly what the pre-settled version wrote: whole-file vectors
+    // (pre-WP-144 layout) and no settled state. Loading migrates the layout
+    // without re-embedding, then the legacy pass reuses every vector.
+    SessionSemanticIndex::write_legacy_layout_for_test(f.root.path(), true);
     f.insert(&[user_text("gamma row")]);
 
     let mut emb = Counting::default();

@@ -551,25 +551,19 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let root = dir.path();
         crate::engines::code_search::init_workspace_index(root).unwrap();
-        crate::engines::code_search::begin_building(root);
-        crate::engines::code_search::update_build_progress(
-            root,
-            crate::engines::code_search::IndexingProgress {
-                phase: crate::engines::code_search::IndexPhase::Embedding,
-                files_done: 2,
-                files_total: 8,
-                chunks_done: 4,
-            },
-        );
+        // WP-143: first build / rebuild run as a refresh job (no Building job).
+        crate::engines::code_search::begin_refreshing(root);
+        crate::engines::code_search::update_chunk_progress(root, 4, Some(8));
 
         let engines = WorkspaceEngines::new();
         engines.code_search().set_workspace(root.to_path_buf());
         engines.set_state_for_test("code_search", EngineState::Warming);
 
         let msg = indexing_wait_message(&engines);
-        assert!(msg.contains("building"), "{msg}");
+        assert!(msg.contains("refreshing"), "{msg}");
         assert!(msg.contains("sync_pct: "), "{msg}");
-        assert!(!msg.contains("2/8"), "no files-ratio estimate: {msg}");
+        // sync_pct contract v2: the exact chunk counts ride the sync line.
+        assert!(msg.contains("chunks 4/8"), "{msg}");
         assert!(
             !msg.contains("No matching code"),
             "must not fake empty hits while indexing: {msg}"

@@ -65,8 +65,8 @@ impl SemanticEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::code_search::build::build_full_index;
     use crate::engines::code_search::embed::HashEmbedder;
+    use crate::engines::code_search::index_workspace_blocking;
     use crate::engines::code_search::{CodeSearchRuntime, LexicalQuery};
     use tempfile::TempDir;
 
@@ -76,8 +76,8 @@ mod tests {
         let root = dir.path();
         std::fs::write(root.join("main.rs"), "fn auth_login() {}\n").unwrap();
 
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         index.save(root).unwrap();
         let runtime = CodeSearchRuntime::new(
             root.to_path_buf(),

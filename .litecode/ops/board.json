@@ -7818,13 +7818,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-13T12:46:15.741Z",
+      "progress": "closed done by andy",
+      "status_entered_at": null,
       "parent": null,
       "goal": "落地 WP-105 裁定（改完就推）：1) tencent-token 补 kimi-k3、mimo-v2.6-flash；2) 新增 Moonshot、MiniMax 两家 provider，若有 plan 则双套端点（plan + 按量）；3) 前端 provider 列表分组：plan 一组、api 按量一组，其它 UI 不变。OpenCode base 探测/迁移可同包或子包。不做：MiMo 改协议、Anthropic codec、硅基流动、Gemini 直连。",
       "approver": "andy",
@@ -7868,6 +7868,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": "子包全 done，待 Andy 封"
+        },
+        {
+          "ts": "2026-10-13T18:21:09.314Z",
+          "actor": "andy",
+          "action": "close",
+          "note": null,
+          "to": "done"
         }
       ]
     },
@@ -9136,13 +9143,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-128.md",
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-13T15:37:21.755Z",
+      "progress": "closed done by andy",
+      "status_entered_at": null,
       "parent": null,
       "goal": "落地实现。稠密只取三态（user/助手消息/思考）；稀疏=三态+tool_call；其余不要。切块默认维持 448；算法维持现状 RRF 不调参。带失败排查等验收用例。机制从简，不新 Warming/状态机。",
       "approver": "andy",
@@ -9186,6 +9193,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": "云端 session_search 161 passed；已 push bd57f34；待 Andy 真机"
+        },
+        {
+          "ts": "2026-10-13T18:21:09.929Z",
+          "actor": "andy",
+          "action": "close",
+          "note": null,
+          "to": "done"
         }
       ]
     },
@@ -9368,13 +9382,13 @@
       ],
       "owner": "gm",
       "reviewer": "andy",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/ENGINE-STATUS-research.md",
-      "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-13T17:59:41.251Z",
+      "progress": "closed done by andy",
+      "status_entered_at": null,
       "parent": null,
       "goal": "检索引擎进度条的 fill、颜色、hover 由 code+session 统一 chunk 进度模型推出，准确且实时",
       "approver": "andy",
@@ -9418,6 +9432,13 @@
           "actor": "gm",
           "action": "deliver",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T18:21:10.479Z",
+          "actor": "andy",
+          "action": "close",
+          "note": null,
+          "to": "done"
         }
       ]
     },
@@ -9984,7 +10005,7 @@
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-139.md",
       "progress": "awaiting acceptance by andy",
-      "status_entered_at": "2026-10-13T17:55:47.824Z",
+      "status_entered_at": "2026-10-14T01:52:08.022Z",
       "parent": null,
       "goal": "扫盘为事实来源、watcher 仅加速、印章持久化，运行期不再永久漏文件",
       "approver": "andy",
@@ -10034,6 +10055,18 @@
           "actor": "gm",
           "action": "deliver",
           "note": null
+        },
+        {
+          "ts": "2026-10-13T18:26:03.055Z",
+          "actor": "andy",
+          "action": "return",
+          "note": "Andy 真机：首建/重建中断从头来。并入本包彻底改底层：首建=增量路径+按批存盘+原子写，session 首建/重建同思路检查点；半截索引可搜、进度条橙闪+%，不新增状态"
+        },
+        {
+          "ts": "2026-10-14T01:52:08.022Z",
+          "actor": "gm",
+          "action": "deliver",
+          "note": "WP-140 v2 已关。请 Andy 真机验：首建中途杀进程续跑、扫盘印章、进度条 refreshing 百分比。"
         }
       ]
     },
@@ -10052,14 +10085,14 @@
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-139-backend.md",
-      "progress": "closed done by gm",
+      "progress": "closed done by gm: GM 验收 PASS：首建并入增量+按批存盘+原子检查点；lib 350 + ipc 11 + optional 19 全绿。交 WP-139 真机验。",
       "status_entered_at": null,
       "parent": "WP-139",
       "goal": "按 WP-139 方向与验收落地",
       "approver": "gm",
       "content": {
-        "kind": "direct",
-        "text": "# WP-140 后端中层方案：code 索引定期扫盘对账 + 印章持久化（隶属 WP-139）\n\nkind=direct（执行由 IDE 子包 WP-139-ide 承担，approver=backend_mid）。依据 /workspace/wp-drafts/scan.md（WP-139）与后端中层只读核实（2026-10-14）。\n\n## 1. 范围\n- 定期扫盘为事实来源：固定周期 walk，只 stat，比 mtime+size；有变化才读内容/切块。watcher 仅加速发现。\n- watcher 事件、notify 报错（watcher.rs:36-38 现丢弃）、Rescan/溢出（:98-103 现过滤）一律触发同一次全量扫盘。\n- mtime+size 印章持久化到磁盘（现仅内存，reconcile.rs:18-19/:69/:73），重启首扫只 stat。\n- 冷卸载（reconcile.rs:23 现跳过）：变化不得永久漏掉——卸载期间仍做 stat 扫盘并入队，或重载时强制全量对账（二选一由 IDE 方案定，须测）。\n- 刻意不做：内容 hash、事件去重合并、Watchman/变更日志游标；session 引擎不改；不做语言特判。\n\n## 2. 文件边界与并行冲突（git status 2026-10-14 实测）\n| 文件 | WP-140 要做 | 当前在改 | 结论 |\n|---|---|---|---|\n| code_search/reconcile.rs | 扫盘只 stat、读写持久印章、冷卸载 | WP-134 已改（write_code_queue） | 冲突，等 134 |\n| code_search/fs_notify.rs | 入队路径 | WP-134 已改 | 冲突，等 134 |\n| code_search/mod.rs | mod 声明/runtime 字段/扫盘入口 | WP-134 已改 | 冲突，等 134 |\n| code_search/index_status.rs | 30s tick 读新 pending 信号 | WP-134 重写中 | 冲突，等 134 |\n| engines/mod.rs (:931/:981) | 定期扫盘调度 | WP-134 + WP-135 已改 | 冲突，等 134/135 |\n| engines/progress.rs | 扫盘计入 scanning / chunks_pending（只用不改） | WP-134 新建 | 只读依赖 |\n| code_search/meta.rs, store.rs | 印章存储/schema | 未改 | 可独立，但需 mod.rs 接线 |\n| code_search_ipc/server.rs (:108/:201) | 启动/Lagged 全量对账入口 | 未改 | 无冲突 |\n| workspace/watcher.rs | 报错/Rescan 上报而非丢弃 | 未改 | 无冲突 |\n| serve/router.rs (:156-164/:215-224) | tick/Lagged 路由 | 未改 | 无冲突 |\n| tools/*, session_search/* | 不碰 | WP-135/137 | 禁止触碰 |\n\n## 3. 顺序（中层定）\n- Phase 0（现在）：IDE 只做方案/设计，不改代码；方案须给出对 progress.rs 与新 pending 信号的接线点。\n- Phase 1：WP-134 deliver 且我验收（progress 记录 + 替代 pending_hint 的精确信号稳定、Session 交叉审完）后才 start 编码。理由：扫盘结果必须进同一 pending 队列/信号并在 progress 报 scanning，核心文件 reconcile/fs_notify/mod/index_status 正被 134 改。\n- 无冲突文件（watcher.rs/router.rs/server.rs/meta.rs/store.rs）也不提前：它们单独改无法独立验收，且印章模块需 mod.rs 接线；提前收益小于合并风险。\n- WP-137/135 不受影响；WP-140 不改 tools/ 与 session 分支。\n\n## 4. 硬门\n1. 语言通用，不做语言/扩展名特判（沿用既有 scan_policy/filter）。\n2. 不新增 Warming 或状态机状态；只用 WP-134 的 CorpusState/CorpusPhase，扫盘期间 phase=Scanning、chunks_total=null。\n3. 扫盘发现的待处理计入 chunks_pending（精确，不估算、不写死）。不复活 pending_hint。\n4. watcher 报错/Rescan/溢出/Lagged → 全量扫盘对账，不丢弃。\n5. 冷卸载后变化不永久漏。\n6. 持久印章失效：DOC/INDEX schema bump、印章格式版本变、workspace root 变、索引重建/损坏 → 丢弃印章并全量读；印章写入与索引提交一致（先索引后印章，崩溃时宁可多读不漏读）。\n7. 不改 DENSE_CHUNK_TOKENS/CHUNK_TOKENS=448、RRF 常量。\n\n## 5. 验收（来自 WP-139）\n- 停机期间增/改/删，重启后补上。\n- 关掉/打断 watcher 后运行中改文件，一个扫盘周期内补上。\n- watcher 报错或溢出触发对账（测试注入）。\n- 未改文件重启不读任何内容（测试证明只 stat）。\n- 只 touch 不改内容不重复 embed。\n- 冷卸载后变化不永久漏。\n- 扫盘待处理计入 chunks_pending，进度条可见；扫盘阶段 total=null。\n- 单测与集成测试全绿；deliver 前 rg 证 448/RRF 未动、无 pending_hint 新引用。\n\n## 6. 待定（tier-1，需 GM/Andy 拍板）\n- 扫盘周期取值（建议默认 60s，可配置？是否复用 30s tick）。\n- 印章存储位置/格式（建议与 code 索引同目录独立文件 stamps.v1，随索引失效）。\n- 冷卸载策略：卸载期间继续 stat 扫盘 vs 重载时全量对账。\n- 大仓库单次 stat 扫盘耗时上限/是否需要节流。\n"
+        "kind": "split",
+        "text": "# WP-140 v2：索引首建/重建统一走增量 + 按批存盘 + 原子写（Andy 2026-10-14 定向，彻底改）\n\n## 背景\n只读核实（2026-10-14）：code 全量构建是独立路径，整轮在内存里嵌入，最后一次覆盖写盘（build.rs:32-183，mod.rs:706-731，store.rs:97-117 非原子）；增量 update_files 每文件整库 save（mod.rs:905-940）。session reconcile 整轮末尾才落盘（semantic_index.rs:607-647），重建先删 meta（:1216-1227）。\n\n## 口径（GM/Andy 已定）\n- 去掉独立全量构建路径；首建、不兼容重建 = 清旧库 → 写兼容 meta → 建空正式库 → 全部文件作为待处理交增量路径。\n- 中途打断靠印章（stamps.v1）+ 内容比对续上，已嵌入块不重复 embed。\n- 首建中半截索引可搜；状态 refreshing，橙色闪烁 + 真实百分比；不新增状态、不估算；448/RRF 不动；语言通用。\n- 不在旧全量路径上打补丁；删除前 rg 证明无其他调用方。\n\n## 子包\n### WP-A（IDE，code 侧）\n1. 删 build.rs 全量路径（先 rg 列出全部调用方并迁移：warmup、手动重建、needs_rebuild、测试）。\n2. 首建/不兼容重建：清旧库文件 → 写新 meta（pipeline/model/embedder 一致）→ 空 store → 全量入队 → update_files。\n3. update_files 按批存盘：每批（沿用 EMBED_BATCH 边界，不新增配置）提交一次，提交后写该批印章；不再每文件整库 save。\n4. store.save 原子化：vectors/chunks/meta 写入同目录临时文件 → 依次 rename，meta 最后；加载时校验三者一致（条数/版本），不一致按“无该批”处理并让对应文件印章失效重读，不触发整库重建。\n5. 精确 total 两遍流程保留（先切块再嵌入）；kept_chunks/进度单调口径不变。\n6. 卡在 Building 的旧任务语义取消：加载时一律走“扫盘入队续跑”。\n### WP-B（Session，session 侧）\n1. 首建/重建不再删 meta 后换空索引一次性重算：建空正式库 + 水位线从头，按批（沿用现有嵌入批）提交向量/块/settled，并推进批内水位线检查点。\n2. 打断后从最后检查点续，已提交文档不重复 embed。\n3. 原子写口径同 WP-A（复用 IDE 的原子写工具函数，不各写一套；IDE 交叉审）。\n### 文件边界\n- IDE：src/engines/code_search/**、engines/mod.rs code 分支、src/serve 接线。\n- Session：src/engines/session_search/**、engines/mod.rs session 分支；共享原子写函数放 IDE 侧，Session 只调用。\n- 顺序：WP-A 先出原子写函数签名，Session 按签名编码；两包可并行。\n\n## 硬门 / 护栏\n- 测试与实测前检查内存（MemAvailable ≥6GiB，否则不跑）；cargo -j2；实测用 prlimit/RSS 看门狗；共用主 target；.tmp 产物包封即清。\n- 不碰 windows workflows；不 commit。\n\n## 验收（done_when）\n1. code、session 首建与重建各中途 kill 一次 → 重启续跑，embed 调用计数 = 剩余块数（已嵌入不重复），测试锁定。\n2. 崩溃注入（写到一半退出）后加载不错位：vectors/chunks/meta 一致，搜索结果路径与块对应，测试锁定。\n3. 存盘开销不随 文件数×库大小 增长：测试计 save 次数 = 批数；大仓库（Linux 浅克隆，跑完删）首建实测耗时/峰值 RSS，并报告中途 kill 续跑耗时。\n4. 首建进行中可搜（非 Warming），retrieval 状态 refreshing、百分比真实单调。\n5. 扫盘、印章、进度上报、sync_pct 已有测试全绿；engines/tools/集成测试全绿；fmt 0；rg 证明旧全量路径符号无残留。\n"
       },
       "history": [
         {
@@ -10103,6 +10136,43 @@
           "actor": "gm",
           "action": "close",
           "note": null,
+          "to": "done"
+        },
+        {
+          "ts": "2026-10-13T18:26:03.055Z",
+          "actor": "andy",
+          "action": "reopen",
+          "note": "via WP-139: Andy 真机：首建/重建中断从头来。并入本包彻底改底层：首建=增量路径+按批存盘+原子写，session 首建/重建同思路检查点；半截索引可搜、进度条橙闪+%，不新增状态"
+        },
+        {
+          "ts": "2026-10-13T18:27:15.503Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-140 v2：索引首建/重建统一走增量 + 按批存盘 + 原子写（Andy 2026-10-14 定向，彻底改）\n\n## 背景\n只读核实（2026-1"
+        },
+        {
+          "ts": "2026-10-13T18:27:21.167Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "v2 方案：全量路径删除并入增量、按批存盘、原子写、session 检查点；子包 WP-143(IDE)/WP-144(Session)"
+        },
+        {
+          "ts": "2026-10-13T18:33:51.524Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T01:50:10.393Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "子包 WP-143/144 均 done。后端五条验收齐：kill 续跑 embed=剩余、崩溃截回不错位、按批字节≈批大小、首建 refreshing 可搜有真百分比、旧测试全绿。前端橙色闪烁仅确认中不挡交付，接口字段未变(WP-131)。未 commit，改动面大（engines+src/tools），请推。"
+        },
+        {
+          "ts": "2026-10-14T01:52:07.729Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收 PASS：首建并入增量+按批存盘+原子检查点；lib 350 + ipc 11 + optional 19 全绿。交 WP-139 真机验。",
           "to": "done"
         }
       ]
@@ -10252,6 +10322,188 @@
           "actor": "frontend_mid",
           "action": "close",
           "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-143",
+      "domain": "ide-substrate",
+      "title": "IDE：code 首建/重建并入增量 + 按批存盘 + 原子写",
+      "result": "按 WP-140 v2 WP-A",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-140v2-ide.md",
+      "progress": "closed done by backend_mid: 全仓 kill/续跑核实：续跑 embed 433,579=剩余块数；峰值 RSS 2.87GB≤首建 2.89GB；终块 867,698 一致；测试全绿；fmt 干净；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-140",
+      "goal": "按 WP-140 v2 WP-A",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-143 phase-0 plan (ide): fold code first-build/rebuild into the incremental path + save per batch + atomic writes\nParent: WP-140 v2 WP-A. Files: src/engines/code_search/**, the code branch of engines/mod.rs, code_search_ipc/server.rs (wiring). No Session files, no src/tools logic (see R3).\n\n## 1. Callers of the full-build path (rg on the current tree) and where each migrates\nSymbols: build_full_index, rebuild_index_in_runtime, warmup_index (full branch), should_full_rebuild, begin_building, update_build_progress.\n- mod.rs:696-713 warmup_index: the rebuild branch calls build_full_index → switches to `start_fresh_index` (§2) and then the incremental update_files on the stamp/queue backlog.\n- mod.rs:727-731 rebuild_index_in_runtime (manual rebuild): → start_fresh_index + enqueue all, same path.\n- code_search_ipc/server.rs:100-102 (warmup) and 239-256 (tick needs_rebuild → rebuild): → the same entry, wiring only.\n- engines/mod.rs:1006 begin_building (code branch): removed; the status comes from the queue/progress (refreshing).\n- src/tools/code_search.rs:554-555 begin_building/update_build_progress: test/helper inside src/tools; needs permission (R3).\n- Tests calling build_full_index: semantic_engine.rs:80, retrieve.rs:254/274/304, reconcile.rs:201/244/260, mod.rs:1009, fs_notify.rs:46, build.rs:368, engines/mod.rs:1914, tests/optional_code_search.rs:79/304 → a test helper `build_index_for_test(root,&mut emb)` that goes through start_fresh_index + update_files (the production path, not a copy).\n- index_status.rs: JobKind::Building / begin_building / update_build_progress. Under the WP-A §6 semantics, a stale Building job is treated as \"scan and enqueue on load\". IndexStatus::Building stays an enum variant (no new or removed states); code simply stops producing it. Delete the producers and keep the tests asserting it never appears.\n- build.rs: the whole build_full_index is deleted. scan_stat_candidates/scannable_files/the chunking helpers move to reconcile.rs or stay in build.rs without the full path.\n- Finish line: `rg \"build_full_index|rebuild_index_in_runtime|begin_building|update_build_progress\"` returns 0 hits in src/tests (except the death-list test strings).\n\n## 2. First build / incompatible rebuild\nstart_fresh_index(root, embedder_id):\n1. Remove the old vectors/chunks/meta/stamps/queue (index dir files only; the dir stays).\n2. Write the new meta (pipeline/model/embedder/dim/chunk params consistent, 0 chunks) through atomic_write_set.\n3. Create an empty CodeIndex in memory, publish it to the runtime (so search works during the build; the status is refreshing).\n4. Enqueue all scan_stat_candidates into queue.json (stamps empty).\n5. Run update_files in a loop. An interrupt restarts from the queue plus stamps (WP-141 reconcile: a file with a stamp is not enqueued; a file without one is enqueued, and the content-identical check means already-embedded chunks are not re-embedded).\nKeep the exact two-pass total (chunk first, then embed), with monotonic kept_chunks/progress. Percent = real, no estimates.\n\n## 3. Save per EMBED_BATCH\nupdate_files: chunk all the files → embed one batch of EMBED_BATCH chunks → insert → batch boundary = the files whose chunks are all complete → index.save (atomic) → stamps for those files → write_code_queue (remove them).\nA file is \"committed\" only when all its chunks are in a saved batch. A file spanning batches gets its stamp only at the last batch.\nNo more whole-index save per file. save count = number of batches (+1 for the meta of the fresh index).\n\n## 4. Atomic store write + consistency check on load\nsave(): atomic_write_set([vectors, chunks, meta]) (signature in .tmp/wp143_atomic_sig.md), meta last.\nload():\n- sweep_atomic_tmp first.\n- Check: ann.size() == chunks lines == meta.indexed_chunks, every chunk id is in ann, and meta version is compatible.\n- On inconsistency (a crash between renames): keep the intersection of ids present in both ann and chunks, drop orphans (ann.remove / omit the chunk line), and invalidate the stamps of every path that had an orphan chunk or any chunk with a missing vector. Those files go back to the queue and are re-read; there is no whole-index rebuild. Rewrite meta from the actual counts.\n- Meta incompatible (model/pipeline) → start_fresh_index, as now.\n\n## 5. Tests (all with hash/counting embedder, no network)\n- kill_resume_first_build: CountingEmbedder panics/stops after N batches (injection) → load → resume → total embed calls == total chunks (no repeats), embed calls after resume == remaining chunks.\n- kill_resume_rebuild: the same for an incompatible meta.\n- crash_injection_between_renames: test hook `ATOMIC_FAIL_AFTER_RENAME=k` (cfg(test) static) for k=0,1,2 → load → vectors/chunks/meta consistent, search returns paths matching the chunks, affected files are back in the queue, others are not re-embedded.\n- crash_injection_mid_tmp_write: the old files stay intact, and tmp leftovers are swept.\n- save_count_equals_batches: a save counter (cfg(test) AtomicUsize) == ceil(chunks/EMBED_BATCH) (+1 for the fresh meta).\n- searchable_during_first_build: after the first saved batch, search returns hits; status refreshing, not Warming; percent monotonic.\n- Existing suites stay green: scan, stamps, progress reporting, engines/tools/integration; fmt exit 0; dead-name test extended with build_full_index etc. (needles built with format!).\n\n## 6. Large-repo measurement\n- Linux shallow clone (depth 1) under .tmp/wp143/linux, deleted right after.\n- Measure (release vs debug per R4): full first-build time and peak RSS; kill at about 50% → restart → resume time and embed calls == remaining; hot no-op reconcile time.\n- Embedder: the production embedder if available on the box, else hash; report which one was used.\n\n## Guardrails\nMemAvailable ≥6GiB before any cargo/measurement run, else don't run. cargo -j2, shared main target (flock .tmp/cargo-target.lock), HOME=$PWD/.tmp/home, timeout, </dev/null. Measurement: prlimit AS=4GiB, taskset 0-3, RSS watchdog 3.5GiB. rustfmt on our own files only; whole-repo fmt --check exit 0. No commit, no git checkout/stash of whole files. Andy's rules: language-generic, no estimates, 448/RRF unchanged, no new states, no Warming. .tmp artifacts cleaned when the package closes.\n\n## Rulings requested from backend_mid\n- R1 Consistency check granularity: intersection + invalidate the stamps of orphan paths (proposed), vs adding a per-save generation id to the meta/chunks header (more exact, but a schema change).\n- R2 A file spanning several batches: stamp only after its last batch (proposed). On a kill, its partially saved chunks remain and are reused via the content-identical check.\n- R3 src/tools/code_search.rs:554-555 uses begin_building/update_build_progress (test/helper): permission to change it to the new path, or leave it to the tools owner?\n- R4 Large-repo measurement: the hash embedder is not realistic for time; the production embedder on 95k files is very slow. Proposal: production embedder on a subset (e.g. kernel/ + mm/) plus hash on the whole repo. Debug or release build?\n- R5 meta.indexed_files/indexed_chunks: rewrite from the actual counts after repair (proposed), no new fields.\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T18:27:15.861Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-140 v2 WP-A"
+        },
+        {
+          "ts": "2026-10-13T18:35:05.926Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-143 phase-0 plan (ide): fold code first-build/rebuild into the incremental "
+        },
+        {
+          "ts": "2026-10-13T18:35:06.179Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "phase-0 plan; atomic sig .tmp/wp143_atomic_sig.md; rulings R1-R5"
+        },
+        {
+          "ts": "2026-10-13T18:35:34.998Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "phase-0 批准：R1 选交集+印章失效不改格式；R2 同意；R3 src/tools 改动由 IDE 出 diff 交 Tools 落地；R4 同意，release -j2+护栏；R5 同意"
+        },
+        {
+          "ts": "2026-10-13T18:36:05.271Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T00:06:02.691Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "artifact .litecode/ops/artifacts/WP-140v2-ide.md; 34k gap bug fixed; full-repo resume blocked by AS=4GiB (memory analysis in artifact)"
+        },
+        {
+          "ts": "2026-10-14T01:23:09.561Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "全仓 kill/续跑核实：续跑 embed 433,579=剩余块数；峰值 RSS 2.87GB≤首建 2.89GB；终块 867,698 一致；测试全绿；fmt 干净；未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-144",
+      "domain": "ide-substrate",
+      "title": "Session：session 首建/重建按批检查点续跑",
+      "result": "按 WP-140 v2 WP-B",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-144-session.md",
+      "progress": "closed done by backend_mid: 4 轮 IDE 交叉审通过（r4 R4-1 已修，IDE 预授通过）；209 passed/0 failed；fmt 干净；未 commit",
+      "status_entered_at": null,
+      "parent": "WP-140",
+      "goal": "按 WP-140 v2 WP-B",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-144 / Session：session 首建/重建按批检查点续跑（phase-0 计划）\n\n父：WP-140 v2 §WP-B（board WP-140，GM 已批）。owner=session，approver=backend_mid，IDE 交叉审。批准前不写代码。\n\n## 现状（只读核实）\n- semantic_index.rs:607-611：`for batch in staged.chunks(EMBED_BATCH) { embed_and_add(..) }`，全部只在内存中进行。\n- :640-647：整轮结束后才 `write_vectors` + `write_chunks`（usearch 整体 persist，加上 chunks.jsonl 用 File::create 非原子覆盖）→ `write_settled` → `save_meta`。中途被 kill 时，本轮嵌入全部丢失。\n- settled 行在切块时（~:560 `self.settled.insert`）就先入内存，早于该行的向量存在；到末尾才落盘，所以眼下不出错，但按批提交时必须改。\n- :1216-1227：`consume_session_index` 在需要重建时先 `remove_file(meta)`，再换成空索引，然后一次性 reconcile 全库。meta 缺失期间 `session_should_rebuild` 一直为真；被打断后重启只能从零重来。\n- :792 `write_json_atomic` 是 WP-135 时我方自写的临时文件 + rename 实现，与 IDE 的 index_status.rs:158 `write_json`（同样是同目录临时文件 + 原子序号）重复。\n\n## 设计\n### 1. 重建 = 建空正式库 + 水位线从头 + 按批提交\n- 重建时不再删 meta。改为：清旧的 vectors/chunks/settled → 立即写兼容的新 meta（model/embedder/pipeline/doc_schema 当前版本，last_change_id=0，keys_hash=0，新增 `build: in_progress`，旧 meta 缺这个字段时按 complete 处理）→ 写空的 vectors/chunks/settled。之后就是一次普通的增量 reconcile：所有活跃行都在 to_add 里。\n- 按批提交，沿用 EMBED_BATCH，不新增配置。每批 `embed_and_add` 之后按以下顺序：\n  1) 向量：persist_usearch 写临时文件再 rename；\n  2) 本批 chunks 追加到 chunks.jsonl（见 Q1；或整体原子重写）；\n  3) 检查点：本批完整嵌入的行追加到 settled（settled 就是检查点；一个行的所有 doc 都已提交才算 settled）；\n  4) job.json 的 done += 本批块数。\n- settled 改成延迟写入：切块时只记录\"行 → staged doc 区间\"，行的最后一个 doc 所在批提交后，该行才进 settled。跨批的行不会出现半个 settled。\n- meta 的 last_change_id/keys_hash 只在整轮结束时推进，并把 build 置为 complete。中途 meta 的水位线保持在本轮开始时的值，这样重启后 `latest != last_change_id`，一定会继续跑。\n### 2. 续跑\n- 重启后加载：meta 存在、build=in_progress → 正常 load 已提交部分 → 一致性收敛：只保留 settled doc_keys 引用到的 chunk/vector，凡是在\"向量已写、检查点未写\"之间崩溃留下的孤儿，一律丢弃，下一轮重做。\n- 然后正常 reconcile：to_add = live − settled，已提交的行不会再次 embed。\n- WP-135 的进度记录：续跑的 scanning/embedding 中 done 从已提交块数（= 收敛后的 chunks.len()）起算，total = 已提交 + 本轮 staged；同一刷新周期内 done 单调（契约已改为\"周期内单调\"）。queue.json 的 kept_chunks 用同一口径。job.json 的 stale running 仍只在 worker 加载时清理（WP-135 第四轮规则）。\n### 3. 原子写复用 IDE（WP-143）\n- 使用 IDE 在 WP-143 中公开的原子写函数（目前候选是 code_search/index_status.rs:158 的私有 `write_json`，需要 IDE 公开为字节和 JSON 两个入口），并删除我方 :792 `write_json_atomic`；job.json/queue.json/meta/settled/chunks/vectors 的写入都走它。\n- **依赖：** WP-143 仍在 drafting，签名尚未发布。我方按签名编码；签名发布前不动这块（见 Q2）。\n### 4. Warming / NeedsRebuild 语义\n- 首建、不兼容重建：在 build=in_progress 期间，session 稠密路 Warming（按本包要求\"首建/不兼容重建直到完成仍是 Warming\"），完成后转 Warm。NeedsRebuild 只在 meta 缺失或不兼容时出现；in_progress 不算 NeedsRebuild（否则会再次清库）。\n- 与 WP-140 验收 4\"首建进行中可搜（非 Warming）\"有冲突 → Q3。\n\n## 测试设计（embed 计数 + 注入）\n- 计数 embedder：记录 embed_batch 的调用次数和文本数。\n- 注入点：仅测试用的 `#[cfg(test)]` 钩子枚举 `CrashAt { AfterBatchCommit(n), BetweenVectorsAndChunks(n), BetweenChunksAndCheckpoint(n), BeforeFinalMeta }`，命中即返回 Err，或用 panic 模拟崩溃（catch_unwind 收尾）。\n- 进程级 kill：集成测试启动子进程（cargo test 二进制自调用，带 env 标识），在第 N 批提交后 SIGKILL，父进程再加载续跑（Linux only；Windows 跳过）。\n- 断言：\n  1) 续跑的 embed 文本数 = 总块数 − 已提交块数（没有重复 embed）；\n  2) 结束后 chunks/vectors/settled 条数一致，等于全量重建结果；搜索命中的 key 与 chunk 一一对应；\n  3) 每个注入点都不会丢 doc、不会重复 doc；\n  4) save 次数 = 批数（存盘开销不随 行数×库大小 增长，Q1 决定 chunks 的形式）；\n  5) 进度：续跑周期内 done 从已提交块数起、单调、结束时 done==total；\n  6) 主进程 tick 不改 job.json（WP-135 测试保留）。\n\n## 护栏\n- 跑测试前检查 /proc/meminfo，MemAvailable ≥ 6GiB 才跑；cargo -j2；只用共用主 target；HOME=$PWD/.tmp/home，unset RUSTUP_HOME/CARGO_HOME；.tmp 产物在包封后清理；不 commit；不碰 windows workflows。\n\n## 开放问题\n- Q1：chunks.jsonl/settled.jsonl 按批 append（O(批)）还是整体原子重写（O(批×库)）？usearch 只能整体 persist；是否接受向量每批整体 persist，还是每 K 批一次检查点？\n- Q2：WP-143 原子写函数的公开签名和位置（建议 `code_search::atomic_write_json(path,&T)` 和 `atomic_write_bytes(path,&[u8])`，或直接复用 workspace::file_ops::atomic_write_bytes）？\n- Q3：首建期间 session 是 Warming（本包要求）还是可搜的 refreshing（WP-140 验收 4）？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-13T18:27:16.150Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 按 WP-140 v2 WP-B"
+        },
+        {
+          "ts": "2026-10-13T18:35:29.509Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-144 / Session：session 首建/重建按批检查点续跑（phase-0 计划）\n\n父：WP-140 v2 §WP-B（board WP-"
+        },
+        {
+          "ts": "2026-10-13T18:35:29.769Z",
+          "actor": "session",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T18:37:12.291Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "phase-0 批准（以 .tmp/wp144_plan.md 为准）：Q1 选(c) 追加写+小检查点原子提交，IDE 在 atomic.rs 提供；Q3 按 GM 10-14 新口径，首建/重建进行中可搜走 refreshing"
+        },
+        {
+          "ts": "2026-10-13T18:37:35.350Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-13T18:48:34.057Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-140v2-session.md\" -> \".litecode/ops/artifacts/WP-144-session.md\""
+        },
+        {
+          "ts": "2026-10-13T18:48:34.360Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "append-only logs + meta checkpoint; 197 tests pass; seam SWAP(WP-143) for IDE review"
+        },
+        {
+          "ts": "2026-10-13T20:31:19.302Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "IDE 交叉审 .tmp/wp143/wp144_review.md：M1 load 出错删 meta 整库重建→改抢救截尾；M2 commit 出错残尾被记入→append_durable/truncate_to_committed；补4测试（半条尾、文件短于检查点、迁移中途崩溃、出错后续commit）；换 v3 接口删 seam；vectors 峰值内存与迁移崩溃测试一并修"
+        },
+        {
+          "ts": "2026-10-13T20:52:05.516Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "round2: v3 API swap, seam deleted, M1 salvage, M2 append_durable+reload, streamed vectors, migration atomic set; 202 passed"
+        },
+        {
+          "ts": "2026-10-13T20:55:09.589Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "IDE 复审 r2 (.tmp/wp143/wp144_review_r2.md) R2-1 必修：仅 meta 解析失败才删 meta，其余错误保留 meta+error! 日志下次重试；read_until+from_utf8 跳坏行；补非法UTF-8与注入IO错误测试；建议 reload 失败标记强制重载"
+        },
+        {
+          "ts": "2026-10-13T20:58:11.752Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "round3: R2-1 meta deleted only on parse failure, utf8-safe line reads, forced reload flag; 206 passed"
+        },
+        {
+          "ts": "2026-10-13T22:38:18.839Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "IDE 复审 r3 (.tmp/wp143/wp144_review_r3.md) R3-1 必修：session_should_rebuild 读 meta I/O 错误不得判 Rebuild（Err=>false）+测试；迁移失败日志措辞改正；reload_reason 改带类型错误"
+        },
+        {
+          "ts": "2026-10-13T22:40:53.962Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "round4: R3-1 meta read Err is not a rebuild, typed LoadFailure, migration log wording; 208 passed"
+        },
+        {
+          "ts": "2026-10-13T22:45:54.975Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "4 轮 IDE 交叉审通过（r4 R4-1 已修，IDE 预授通过）；209 passed/0 failed；fmt 干净；未 commit",
           "to": "done"
         }
       ]

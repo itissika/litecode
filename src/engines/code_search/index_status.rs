@@ -214,7 +214,10 @@ pub fn clear_index_job(workspace_root: &Path) {
     let _ = std::fs::remove_file(job_path(workspace_root));
 }
 
-pub fn begin_building(workspace_root: &Path) {
+/// Test-only: an old-binary `job.json` with status `building` (WP-143 removed
+/// every writer; readers still map and reclaim it).
+#[cfg(test)]
+pub(crate) fn write_legacy_building_job(workspace_root: &Path) {
     let _ = write_json(
         &job_path(workspace_root),
         &IndexJobFile {
@@ -293,18 +296,6 @@ pub fn update_chunk_progress(workspace_root: &Path, done: u64, total: Option<u64
     }
     job.chunks = Some(JobChunks { done, total });
     let _ = write_json(&job_path(workspace_root), &job);
-}
-
-pub fn update_build_progress(workspace_root: &Path, progress: IndexingProgress) {
-    let _ = write_json(
-        &job_path(workspace_root),
-        &IndexJobFile {
-            status: JobKind::Building,
-            progress: Some(progress),
-            error: None,
-            chunks: read_job(workspace_root).and_then(|j| j.chunks),
-        },
-    );
 }
 
 pub fn mark_index_job_failed(workspace_root: &Path, error: impl Into<String>) {
@@ -602,7 +593,7 @@ mod tests {
     #[test]
     fn job_file_overrides_to_building() {
         let dir = TempDir::new().unwrap();
-        begin_building(dir.path());
+        write_legacy_building_job(dir.path());
         let view = resolve_index_view(dir.path(), None);
         assert_eq!(view.status, IndexStatus::Building);
         assert!(view.progress.is_some());
@@ -790,21 +781,12 @@ mod tests {
     fn corpus_job_scanning_then_embedding() {
         use crate::engines::progress::CorpusPhase;
         let dir = tempfile::TempDir::new().unwrap();
-        begin_building(dir.path());
+        // WP-143: first build is a refresh job; scanning then embedding.
+        begin_refreshing(dir.path());
         let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
         assert_eq!(p.phase, Some(CorpusPhase::Scanning));
         assert_eq!(p.chunks_total, None);
         update_chunk_progress(dir.path(), 3, Some(10));
-        // Legacy progress write must not drop the chunk counters.
-        update_build_progress(
-            dir.path(),
-            IndexingProgress {
-                phase: IndexPhase::Embedding,
-                files_done: 1,
-                files_total: 2,
-                chunks_done: 3,
-            },
-        );
         let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
         assert_eq!(p.phase, Some(CorpusPhase::Embedding));
         assert_eq!((p.chunks_done, p.chunks_total), (3, Some(10)));
@@ -843,7 +825,7 @@ mod tests {
             IndexWork::Update { .. } | IndexWork::Rebuild { .. }
         ));
 
-        begin_building(dir.path());
+        write_legacy_building_job(dir.path());
         assert!(reclaim_stale_index_job(dir.path()));
         assert!(read_job(dir.path()).is_none());
 
@@ -859,7 +841,7 @@ mod tests {
         let mut q = HashSet::new();
         q.insert(("a.rs".to_string(), false));
         write_code_queue(dir.path(), &q);
-        begin_building(dir.path());
+        begin_refreshing(dir.path());
         update_chunk_progress(dir.path(), 1, Some(2));
         let idx = meta::index_dir(dir.path());
         let names: Vec<String> = std::fs::read_dir(&idx)

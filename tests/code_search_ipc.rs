@@ -19,7 +19,16 @@ fn spawn_warmed(root: &Path) -> CodeSearchWorkerClient {
     let mut client = CodeSearchWorkerClient::spawn().expect("spawn worker");
     client.initialize(root, None).expect("initialize");
     client.warmup().expect("warmup");
+    first_build(&mut client);
     client
+}
+
+/// WP-143: warmup only loads (or starts an empty index); the first build runs
+/// on the incremental path, as the serve tick's code refresh does.
+fn first_build(client: &mut CodeSearchWorkerClient) {
+    client
+        .refresh_scope(RefreshScope::Code)
+        .expect("first-build refresh");
 }
 
 fn shutdown(mut client: CodeSearchWorkerClient) {
@@ -47,6 +56,7 @@ fn worker_ping_initialize_warmup_search_shutdown() {
 
     client.initialize(root, None).expect("initialize");
     client.warmup().expect("warmup");
+    first_build(&mut client);
 
     let ping = client.ping().expect("ping after warmup");
     assert!(ping.ready);
@@ -79,6 +89,7 @@ fn warmup_without_session_db_then_inject_session_lane() {
     let mut client = CodeSearchWorkerClient::spawn().expect("spawn worker");
     client.initialize(root, None).expect("initialize");
     client.warmup().expect("warmup");
+    first_build(&mut client);
 
     let hits = client.search("ipc_target", None, 5).expect("code search");
     assert!(hits.iter().any(|h| h.path.contains("ipc.rs")));
@@ -207,7 +218,10 @@ fn warmup_existing_index_reconciles_without_digest() {
     shutdown(first);
 
     std::fs::write(root.join("later.rs"), "pub fn later_unique_symbol() {}\n").unwrap();
-    let mut client = spawn_warmed(root);
+    // Warmup only (no refresh), so the reconcile result is observable.
+    let mut client = CodeSearchWorkerClient::spawn().expect("spawn worker");
+    client.initialize(root, None).expect("initialize");
+    client.warmup().expect("warmup");
     assert!(
         read_code_queue(root).queued > 0,
         "second warmup must reconcile later.rs into the dirty hint"

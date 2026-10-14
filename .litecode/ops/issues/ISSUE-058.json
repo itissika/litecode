@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-058",
+  "grade": "4",
+  "layer": null,
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "session 索引追加日志无压缩：已删会话数据留到下次重建才清",
+  "history": [
+    {
+      "ts": "2026-10-13T18:49:18.180Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-144）"
+    }
+  ]
+}

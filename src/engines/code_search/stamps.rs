@@ -91,6 +91,11 @@ fn parse(workspace_root: &Path, body: &str) -> Option<StampEntries> {
         }
         let mut parts = line.splitn(3, '\t');
         let (m, l, path) = (parts.next()?, parts.next()?, parts.next()?);
+        // WP-143: appended lines override earlier ones; `-` drops the path.
+        if m == "-" && l == "-" {
+            out.remove(path);
+            continue;
+        }
         let stamp = if m == "?" && l == "?" {
             None
         } else {
@@ -132,6 +137,53 @@ pub fn save(workspace_root: &Path, entries: &StampEntries) {
     if std::fs::write(&tmp, body).is_err() || std::fs::rename(&tmp, &path).is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// One appended change: `Some(Some(stamp))` stamped, `Some(None)` indexed
+/// without a stamp, `None` = path dropped.
+pub type StampChange = Option<Option<FileStamp>>;
+
+fn change_line(path: &str, change: &StampChange) -> String {
+    match change {
+        Some(Some(s)) => format!("{}\t{}\t{path}\n", s.mtime_ns, s.len),
+        Some(None) => format!("?\t?\t{path}\n"),
+        None => format!("-\t-\t{path}\n"),
+    }
+}
+
+/// WP-143: append changes to a valid `stamps.v1` (header still matches the
+/// index meta). Returns false when the caller must write the full file
+/// (absent, other header, or an I/O error). Bytes ≈ the changes.
+pub fn append(workspace_root: &Path, changes: &[(String, StampChange)]) -> bool {
+    use std::io::{BufRead, Write};
+    let Some(meta) = meta::read_meta(workspace_root).ok().flatten() else {
+        return false;
+    };
+    let path = stamps_path(workspace_root);
+    let Ok(file) = std::fs::File::open(&path) else {
+        return false;
+    };
+    let mut first = String::new();
+    if std::io::BufReader::new(file).read_line(&mut first).is_err() {
+        return false;
+    }
+    let Ok(header) = serde_json::from_str::<Header>(first.trim_end()) else {
+        return false;
+    };
+    if header != header_for(workspace_root, &meta) {
+        return false;
+    }
+    let mut body = String::new();
+    for (p, c) in changes {
+        if !p.contains('\n') {
+            body.push_str(&change_line(p, c));
+        }
+    }
+    let Ok(mut f) = std::fs::OpenOptions::new().append(true).open(&path) else {
+        return false;
+    };
+    // A torn tail line only fails the parse ⇒ full read; never wrong data.
+    f.write_all(body.as_bytes()).is_ok() && f.sync_data().is_ok()
 }
 
 #[cfg(test)]

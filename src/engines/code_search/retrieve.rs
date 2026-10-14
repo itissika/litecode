@@ -238,8 +238,8 @@ pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
 mod tests {
     use super::*;
     use crate::engines::code_search::bm25::{self, Bm25Index};
-    use crate::engines::code_search::build::build_full_index;
     use crate::engines::code_search::embed::{HashEmbedder, hash_vector};
+    use crate::engines::code_search::index_workspace_blocking;
     use tempfile::TempDir;
 
     #[test]
@@ -250,8 +250,8 @@ mod tests {
         std::fs::write(root.join("src/code.rs"), "pub fn rust_fn() {}\n").unwrap();
         std::fs::write(root.join("notes.md"), "# rust_fn in markdown\n").unwrap();
 
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         let query = "rust_fn";
         let qvec = hash_vector(query);
         let hits = semantic_search(&index, &qvec, Some("**/*.rs"), 8).unwrap();
@@ -270,8 +270,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         index.save(root).unwrap();
         bm25::rebuild(root, index.chunks()).unwrap();
         let bm25 = Bm25Index::open(root).unwrap();
@@ -300,8 +300,8 @@ mod tests {
         )
         .unwrap();
 
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         index.save(root).unwrap();
         bm25::rebuild(root, index.chunks()).unwrap();
         let bm25 = Bm25Index::open(root).unwrap();

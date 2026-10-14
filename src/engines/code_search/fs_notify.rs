@@ -36,14 +36,14 @@ pub fn queue_fs_changes(runtime: &SharedRuntime, paths: &[String], deleted: bool
 mod tests {
     use super::*;
     use crate::engines::code_search::CodeSearchRuntime;
-    use crate::engines::code_search::build::build_full_index;
     use crate::engines::code_search::embed::HashEmbedder;
+    use crate::engines::code_search::index_workspace_blocking;
     use std::sync::{Arc, RwLock};
     use tempfile::TempDir;
 
     fn runtime_at(root: &std::path::Path) -> SharedRuntime {
-        let mut emb = HashEmbedder;
-        let index = build_full_index(root, &mut emb).unwrap();
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
         Arc::new(RwLock::new(Some(CodeSearchRuntime::new(
             root.to_path_buf(),
             index,

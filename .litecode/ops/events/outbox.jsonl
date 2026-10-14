@@ -233,3 +233,13 @@
 {"event_id":"E-1791914147825-4940-WP139-acceptance_requested","ts":"2026-10-13T17:55:47.825Z","type":"team_ops.acceptance_requested","wp":"WP-139","target":"gm"}
 {"event_id":"E-1791914252533-16630-WP133-acceptance_requested","ts":"2026-10-13T17:57:32.533Z","type":"team_ops.acceptance_requested","wp":"WP-133","target":"gm"}
 {"event_id":"E-1791914381252-61060-WP131-acceptance_requested","ts":"2026-10-13T17:59:41.252Z","type":"team_ops.acceptance_requested","wp":"WP-131","target":"gm"}
+{"event_id":"E-1791916041168-41060-WP140-approval_requested","ts":"2026-10-13T18:27:21.168Z","type":"team_ops.approval_requested","wp":"WP-140","target":"gm"}
+{"event_id":"E-1791916506180-81610-WP143-approval_requested","ts":"2026-10-13T18:35:06.180Z","type":"team_ops.approval_requested","wp":"WP-143","target":"backend_mid"}
+{"event_id":"E-1791916529770-87460-WP144-approval_requested","ts":"2026-10-13T18:35:29.770Z","type":"team_ops.approval_requested","wp":"WP-144","target":"backend_mid"}
+{"event_id":"E-1791917314361-76230-WP144-acceptance_requested","ts":"2026-10-13T18:48:34.361Z","type":"team_ops.acceptance_requested","wp":"WP-144","target":"backend_mid"}
+{"event_id":"E-1791924725519-85080-WP144-acceptance_requested","ts":"2026-10-13T20:52:05.519Z","type":"team_ops.acceptance_requested","wp":"WP-144","target":"backend_mid"}
+{"event_id":"E-1791925091753-62930-WP144-acceptance_requested","ts":"2026-10-13T20:58:11.753Z","type":"team_ops.acceptance_requested","wp":"WP-144","target":"backend_mid"}
+{"event_id":"E-1791931253965-56340-WP144-acceptance_requested","ts":"2026-10-13T22:40:53.966Z","type":"team_ops.acceptance_requested","wp":"WP-144","target":"backend_mid"}
+{"event_id":"E-1791936362696-82170-WP143-acceptance_requested","ts":"2026-10-14T00:06:02.696Z","type":"team_ops.acceptance_requested","wp":"WP-143","target":"backend_mid"}
+{"event_id":"E-1791942610394-94530-WP140-acceptance_requested","ts":"2026-10-14T01:50:10.394Z","type":"team_ops.acceptance_requested","wp":"WP-140","target":"gm"}
+{"event_id":"E-1791942728023-48360-WP139-acceptance_requested","ts":"2026-10-14T01:52:08.023Z","type":"team_ops.acceptance_requested","wp":"WP-139","target":"gm"}

@@ -10,9 +10,9 @@ use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{
     CodeSearchRuntime, EMBEDDER_ID_HASH, HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
-    build_full_index, index_dir, init_workspace_index, needs_rebuild, open_production_embedder,
-    production_embedder_id, read_code_queue, read_meta, resolve_index_view, search, warmup_index,
-    write_meta,
+    index_dir, index_workspace_blocking, init_workspace_index, needs_rebuild,
+    open_production_embedder, production_embedder_id, read_code_queue, read_meta,
+    resolve_index_view, search, warmup_index, write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
 use litecode::optional::EngineManager;
@@ -75,8 +75,8 @@ fn small_repo_index_round_trip_and_query() {
     let root = dir.path();
     std::fs::write(root.join("find.rs"), "pub fn target_fn() {}\n").unwrap();
 
-    let mut emb = HashEmbedder;
-    let index = build_full_index(root, &mut emb).unwrap();
+    let emb = HashEmbedder;
+    let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
     index.save(root).unwrap();
 
     let runtime = CodeSearchRuntime::new(
@@ -113,7 +113,8 @@ fn warmup_loads_compatible_index_without_full_rebuild() {
     std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
 
     let mut emb = HashEmbedder;
-    let first = warmup_index(root, &mut emb).unwrap();
+    // WP-143: the first build runs on the incremental path, not in warmup.
+    let first = index_workspace_blocking(root, Box::new(HashEmbedder)).unwrap();
     let n = first.chunks().len();
     assert!(n >= 1);
 
@@ -142,7 +143,12 @@ fn pipeline_version_change_triggers_rebuild() {
     let index = warmup_index(root, &mut emb).unwrap();
     let meta = read_meta(root).unwrap().unwrap();
     assert_eq!(meta.pipeline_version, PIPELINE_VERSION);
-    assert!(index.chunks().len() >= 1);
+    // WP-143: incompatible ⇒ a fresh, empty, compatible index; the files are
+    // then indexed by the incremental path.
+    assert!(index.chunks().is_empty());
+    assert!(!needs_rebuild(&meta));
+    let built = index_workspace_blocking(root, Box::new(HashEmbedder)).unwrap();
+    assert!(built.chunks().len() >= 1);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -250,10 +256,8 @@ async fn per_workspace_indexes_are_isolated() {
     init_workspace_index(root_a).unwrap();
     init_workspace_index(root_b).unwrap();
 
-    let mut emb = HashEmbedder;
-    warmup_index(root_a, &mut emb).unwrap();
-    let mut emb2 = HashEmbedder;
-    warmup_index(root_b, &mut emb2).unwrap();
+    index_workspace_blocking(root_a, Box::new(HashEmbedder)).unwrap();
+    index_workspace_blocking(root_b, Box::new(HashEmbedder)).unwrap();
 
     let meta_a = read_meta(root_a).unwrap().unwrap();
     let meta_b = read_meta(root_b).unwrap().unwrap();
@@ -300,8 +304,8 @@ fn embedder_id_recorded_in_meta_and_triggers_rebuild() {
     init_workspace_index(root).unwrap();
     std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
 
-    let mut emb = HashEmbedder;
-    let index = build_full_index(root, &mut emb).unwrap();
+    let emb = HashEmbedder;
+    let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
     index.save(root).unwrap();
 
     let meta = read_meta(root).unwrap().unwrap();
@@ -479,6 +483,16 @@ async fn code_search_lifecycle_rebuild_stale_consume_stop() {
         "first desired with no index must auto-rebuild"
     );
     assert!(index_dir(root).join("vectors.usearch").is_file());
+    // WP-143: the first build is the incremental path, run by the code tick.
+    let build_deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while resolve_index_view(root, engines.state("code_search")).status != IndexStatus::Ready {
+        assert!(
+            std::time::Instant::now() < build_deadline,
+            "first build did not finish via the code tick"
+        );
+        let _ = engines.code_index_tick();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let ready = resolve_index_view(root, engines.state("code_search"));
     assert_eq!(ready.status, IndexStatus::Ready);
 

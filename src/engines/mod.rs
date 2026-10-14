@@ -940,7 +940,7 @@ impl WorkspaceEngines {
             return CodeIndexTick::Skipped(Skip::NotDesired);
         }
         // WP-141: the periodic stat-only scan rides this tick (no timer of its
-        // own). Worker up → IPC reconcile (works with a cooled RAM index).
+        // own). Worker up → IPC stat scan (works with a cooled RAM index).
         // Otherwise the serve process stats `stamps.v1` into queue.json.
         if self.code_search.worker_alive() {
             self.code_search.request_reconcile();
@@ -1003,7 +1003,8 @@ impl WorkspaceEngines {
         let mode = if touch_code_job {
             match work {
                 code_search::IndexWork::Rebuild { .. } => {
-                    code_search::begin_building(root);
+                    // WP-143: a rebuild is the incremental path from empty.
+                    code_search::begin_refreshing(root);
                     RefreshAcceptedMode::Rebuild
                 }
                 _ => {
@@ -1910,8 +1911,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
-        let mut emb = code_search::HashEmbedder;
-        let index = code_search::build_full_index(root, &mut emb).unwrap();
+        let emb = code_search::HashEmbedder;
+        let index = code_search::index_workspace_blocking(root, Box::new(emb)).unwrap();
         index.save(root).unwrap();
         // Persist stamps.v1 (fresh-build path), then drop the in-process runtime.
         drop(code_search::CodeSearchRuntime::new(
@@ -2020,7 +2021,7 @@ mod tests {
             code_search::IndexWork::Rebuild { .. }
         ));
         let accepted = engines.consume_index_work().unwrap();
-        // Deterministic proof: Rebuild mode <=> begin_building + Warming (rebuild_cooling).
+        // Deterministic proof: a code Rebuild would be accepted as mode Rebuild.
         assert_eq!(accepted.mode, RefreshAcceptedMode::Incremental);
         // No worker in unit tests: the spawned refresh hits the worker-failed
         // handler, which sets Idle asynchronously. Wait for it to settle instead
