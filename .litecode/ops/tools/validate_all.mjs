@@ -10,8 +10,7 @@ const args=process.argv.slice(2); const wp=(()=>{const i=args.indexOf("--wp");re
 const r = spawnSync(process.execPath, [path.join(ops, "validate.mjs")], { encoding: "utf8" });
 process.stdout.write(r.stdout||""); process.stderr.write(r.stderr||"");
 if (r.status !== 0) process.exit(r.status||1);
-const demand = JSON.parse(fs.readFileSync(path.join(ops,"demand","board.json"),"utf8"));
-if (demand.schema_version !== 1) { console.error("demand schema_version"); process.exit(1); }
+// v20: demand board removed (需求官撤销，需求由直属领导审批); no longer read.
 // v15: issues — file name must equal its id, ids unique, reserved ids must not exist as files
 {
   const idir = path.join(ops, "issues"); const seen = new Map(); const errs = [];
@@ -35,4 +34,4 @@ if (ks.errors > 0) {
   process.exit(1);
 }
 recordTrace(ops, wp, "ops.validate_board", reg.tools_version);
-console.log(JSON.stringify({ ok:true, tools_version: reg.tools_version, demands: demand.demands.length, kb: kbSummary, board: ".litecode/ops/tools/board.md" }));
+console.log(JSON.stringify({ ok:true, tools_version: reg.tools_version, kb: kbSummary, board: ".litecode/ops/tools/board.md" }));

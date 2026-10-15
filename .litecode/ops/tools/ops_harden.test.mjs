@@ -32,7 +32,7 @@ function fresh() {
   fs.mkdirSync(ops, { recursive: true });
   for (const f of ["board.json", "board.schema.json", "validate.mjs", "log.jsonl", "tool_traces.jsonl"]) fs.copyFileSync(path.join(realOps, f), path.join(ops, f));
   fs.mkdirSync(path.join(ops, "events")); fs.writeFileSync(path.join(ops, "events", "inbox.json"), JSON.stringify({ inbox: [], updated_at: null }, null, 2));
-  fs.mkdirSync(path.join(ops, "demand")); fs.copyFileSync(path.join(realOps, "demand", "board.json"), path.join(ops, "demand", "board.json"));
+ 
   fs.cpSync(path.join(realOps, "issues"), path.join(ops, "issues"), { recursive: true });
   fs.cpSync(here, path.join(ops, "tools"), { recursive: true, filter: (s) => !s.includes(".kb_nav_tmp") });
   return ops;
@@ -247,6 +247,23 @@ await group("8 toolchain_check: broken rustup proxy on PATH → FAIL; wrapper �
   r = runSync(ops, "toolchain_check.mjs", ["--json"], envGood);
   j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
   ok(j.results.find((x) => x.flavour === "inherited").ok && j.results.find((x) => x.flavour.startsWith("bash -c")).ok, "working cargo first on PATH → inherited + bash -c ok");
+});
+
+await group("8b toolchain_check env -i: sources cargo_env.sh; must be ops .toolchain cargo at rust-toolchain.toml pin", async () => {
+  const ops = fresh();
+  const root = path.dirname(path.dirname(ops));
+  const run = () => { const r = runSync(ops, "toolchain_check.mjs", ["--json"]); return { r, row: JSON.parse(r.stdout.slice(r.stdout.indexOf("{"))).results.find((x) => x.flavour.startsWith("env -i")) }; };
+  fs.writeFileSync(path.join(root, "rust-toolchain.toml"), '[toolchain]\nchannel = "1.99.0"\n');
+  let { row } = run();
+  ok(row.ok === false && row.which_cargo !== row.expect_cargo, "no ops .toolchain (system cargo or none) → env -i FAIL");
+  const bin = path.join(ops, ".toolchain", "cargo", "bin"); fs.mkdirSync(bin, { recursive: true });
+  const fake = (v) => { fs.writeFileSync(path.join(bin, "cargo"), `#!/bin/sh\necho 'cargo ${v} (fake)'\n`, { mode: 0o755 }); fs.writeFileSync(path.join(bin, "rustup"), `#!/bin/sh\necho '${v}-x86_64-unknown-linux-gnu (overridden)'\n`, { mode: 0o755 }); };
+  fake("1.85.1"); ({ row } = run());
+  ok(row.ok === false && /!= pin 1\.99\.0/.test(row.reason || ""), "ops cargo at wrong version (1.85.1) → env -i FAIL with pin reason");
+  fake("1.99.0"); ({ row } = run());
+  ok(row.ok === true && row.which_cargo === path.join(bin, "cargo") && row.pin === "1.99.0", "ops .toolchain cargo == pin → env -i ok");
+  fs.rmSync(path.join(root, "rust-toolchain.toml")); ({ row } = run());
+  ok(row.ok === false && /channel missing/.test(row.reason || ""), "missing rust-toolchain.toml → env -i FAIL");
 });
 
 await group("9 old-WP compat: old-model WPs (dynamic count) validate/gate unchanged; old alert summary; old WPs re-alert after 60m, never escalate", async () => {

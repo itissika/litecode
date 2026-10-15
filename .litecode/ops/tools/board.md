@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-15T01:59:03.786Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-15T04:40:23.436Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -173,7 +173,7 @@
 | WP-155 | └ WP-154A 后端工作区打开链路耗时（只读） | done | ide | backend_mid |
 | WP-156 | └ WP-154B serve 握手与会话加载耗时（只读） | done | session | backend_mid |
 | WP-157 | └ WP-154C 前端握手到可交互耗时（只读） | done | frontend_mid | backend_mid |
-| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | review | frontend_mid | gm |
+| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | done | frontend_mid | gm |
 | WP-159 | └ WP-158 B1 web：低风险删改与依赖声明 | done | frontend | frontend_mid |
 | WP-160 | └ WP-158 B1 desktop：低风险删改 | done | frontend_desktop | frontend_mid |
 | WP-161 | └ WP-158 B2 desktop：跨端桥接契约 | done | frontend_desktop | frontend_mid |
@@ -183,9 +183,11 @@
 | WP-165 | 打开工作区启动排位整改 | ready | backend_mid | gm |
 | WP-166 | └ 启动排位整改·Session 域 | in_progress | session | backend_mid |
 | WP-167 | └ 启动排位整改·IDE 域 | in_progress | ide | backend_mid |
-| WP-168 | └ 启动排位整改·壳与前端 | in_progress | frontend_mid | backend_mid |
+| WP-168 | └ 启动排位整改·壳与前端 | done | frontend_mid | backend_mid |
 | WP-169 | 　└ 启动排位整改·desktop 壳 | done | frontend_desktop | frontend_mid |
-| WP-170 | 　└ 启动排位整改·web 前端 | in_progress | frontend | frontend_mid |
+| WP-170 | 　└ 启动排位整改·web 前端 | done | frontend | frontend_mid |
+| WP-171 | 新电脑 litecode 环境初始化 | in_progress | tools_steward | gm |
+| WP-172 | 重型校验迁到 GitHub Actions | in_progress | tools_steward | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
@@ -457,3 +459,11 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 ## 边界
 
 - 仅 team-ops 维护；产品 bot / 群对本启动无感知，直至 Andy 群内统一启动
+## tools_version 20（WP-171，2026-10-15）
+- 新增 `ops.init_env`：`bash .litecode/ops/tools/init_env.sh`，新电脑一键初始化，流程与证据见 `.litecode/ops/artifacts/WP-171/init-flow.md`。
+- `cargo_env.sh` 的 LC_ROOT 可覆盖（默认取脚本所在仓库）；仓库加 `rust-toolchain.toml` pin。
+- `toolchain_check` v2：env -i 行先 source cargo_env.sh，必须解析到 ops .toolchain 的 cargo，且版本等于 pin。
+- 需求官撤销：`demand/` 已删除，tick 和 validate_all 不再读取；需求改由各 bot 的直属领导审批。
+- 全局内存规则（云电脑兜底，2026-10-15）：`LC_MIN_MEM_GIB` 默认 **2**（启动门槛/余量），`LC_KILL_MEM_GIB` 默认 **1**（看门狗杀线）。Andy「留 2GiB」指开跑前余量，不是杀线；run5 曾把两条都设成 2 误杀正常编译峰值（谷底 1.96GiB）。仍可用环境变量覆盖。
+- init_env v2：测试阶段改为 4 步全部执行（cargo test 加 --no-fail-fast），任一失败则 exit 6，并生成 `test_failures.txt`（由 ops.test_failures 产出，每条为 测试名 @ 文件:行 — 消息）；前面各步仍 fail-fast。
+- **WP-172（进行中）重型默认改走 GitHub Actions**：`.github/workflows/ci-linux.yml`（cargo + web + desktop）与 `ci-init-env.yml`（干净 init_env）均为 **仅 `workflow_dispatch`**，禁止 push/PR 自动全量；现有 tag→release 自动保持。中层用法见 `.litecode/ops/artifacts/WP-172/gh-workflow-run.md`。云电脑门禁保留作兜底，不删。

@@ -5,5 +5,5 @@
 set -euo pipefail
 t=3000; if [ "${1:-}" = "-t" ]; then t=$2; shift 2; fi
 source "$(dirname "$(readlink -f "$0")")/cargo_env.sh"
-cd /workspace/litecode
+cd "$LC_ROOT"
 exec flock "$LC_CARGO_LOCK" timeout "$t" cargo "$@" </dev/null

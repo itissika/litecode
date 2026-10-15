@@ -6,7 +6,6 @@ printVersionHeader(reg, "ops.tick");
 const ops = opsRoot(import.meta.url);
 const boardPath = path.join(ops, "board.json");
 const board = JSON.parse(fs.readFileSync(boardPath, "utf8"));
-const demand = JSON.parse(fs.readFileSync(path.join(ops, "demand", "board.json"), "utf8"));
 const args = process.argv.slice(2);
 const wp = (() => { const i = args.indexOf("--wp"); return i >= 0 ? args[i + 1] : null; })();
 const forceTimeout = args.includes("--force-timeout-scan");
@@ -34,7 +33,6 @@ if (backfilled) {
 
 const ready = board.work_packages.filter((w) => w.status === "ready" || w.status === "backlog");
 const blocked = board.work_packages.filter((w) => w.status === "blocked");
-const intake = demand.demands.filter((d) => ["intake", "refined", "in_pipeline"].includes(d.status));
 const breakpoints = board.work_packages.filter((w) => w.progress && String(w.progress).includes("BREAK"));
 const openClock = board.work_packages
   .filter((w) => OPEN_CLOCK_STATUSES.has(w.status))
@@ -55,7 +53,6 @@ console.log(JSON.stringify({
   tick_at: new Date().toISOString(),
   ready_wp: ready.map((w) => w.id),
   blocked_wp: blocked.map((w) => w.id),
-  demand_open: intake.map((d) => d.id),
   breakpoints: breakpoints.map((w) => ({ id: w.id, progress: w.progress })),
   open_clock_wp: openClock,
   awaiting_approval_wp: board.work_packages.filter((w) => w.status === "awaiting_approval").map((w) => ({ id: w.id, approver: w.approver ?? w.reviewer, parent: w.parent ?? null, status_entered_at: w.status_entered_at })),
@@ -68,7 +65,7 @@ console.log(JSON.stringify({
     merged: timeout.merged,
   },
   watcher,
-  team_ops_agents: board.agents.filter((a) => ["gm", "demand_officer", "tools_steward"].includes(a.id)).map((a) => ({ id: a.id, status: a.status })),
+  team_ops_agents: board.agents.filter((a) => ["gm", "tools_steward"].includes(a.id)).map((a) => ({ id: a.id, status: a.status })),
   board: ".litecode/ops/tools/board.md",
   board_md_wp_table: wpTable,
   rule: "WP timeout events (team_ops.wp_timeout) fire only in HKT work hours when an open WP exceeds 1h; GM tick consumes unacked ones (wp_watch also POSTs them to the GM callback). v11: heartbeat of wp_watch missing/older than 15m -> one team_ops.watcher_down (restart: node .litecode/ops/tools/wp_watch.mjs start). Quiet when none stale. v15: one alert per chain to the actor nearest the stuck point (matter dedup, acked matter re-sent after 60m); tick only reports while wp_watch is healthy, auto-restarts a dead watcher (event team_ops.watcher_restarted). v13: awaiting_approval also times out; new-model WPs escalate once (unacked >5m) to the parent's approver, top-level stops at gm.",

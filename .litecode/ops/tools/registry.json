@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "tools_version": 19,
-  "updated_at": "2026-10-15T01:45:00.000Z",
+  "tools_version": 20,
+  "updated_at": "2026-10-15T02:45:00.000Z",
   "hot_reload": true,
   "tools": [
     {
       "id": "ops.validate_board",
       "version": 9,
-      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id",
+      "purpose": "校验 board.json 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id；v20 不再读取 demand board（已撤销）",
       "invoke": "node .litecode/ops/tools/validate_all.mjs",
       "required_for": [
         "WP done",
@@ -165,8 +165,8 @@
     },
     {
       "id": "ops.toolchain_check",
-      "version": 1,
-      "purpose": "rust 工具链体检：继承 env / bash -c / bash -lc / env -i 四种 shell 下 cargo -V + rustup active-toolchain，任一失败 exit 1",
+      "version": 2,
+      "purpose": "rust 工具链体检：继承 env / bash -c / bash -lc / env -i 四种 shell 下 cargo -V + rustup active-toolchain，任一失败 exit 1；v2(tools_version 20) env -i 行先 source cargo_env.sh，须解析到仓库 .litecode/ops/.toolchain 的 cargo 且版本=rust-toolchain.toml pin，系统 cargo 判 FAIL",
       "invoke": "node .litecode/ops/tools/toolchain_check.mjs [--json] [--wp WP-x]",
       "required_for": [
         "cargo 报 no default toolchain 时自查",
@@ -187,7 +187,7 @@
     {
       "id": "ops.cargo_env",
       "version": 1,
-      "purpose": "source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK",
+      "purpose": "source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK；v20 LC_ROOT 可由环境覆盖（默认 /workspace/litecode）",
       "invoke": "source .litecode/ops/tools/cargo_env.sh",
       "required_for": [
         "任何 cargo 调用"
@@ -213,9 +213,30 @@
         "磁盘回滚/工具链异常后"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.init_env",
+      "version": 2,
+      "purpose": "WP-171：全新 Linux 机器从零初始化 litecode（apt→clone→rustup 装到 .litecode/ops/.toolchain 并 pin rust-toolchain.toml→fnm Node 22→npm ci web/desktop→cargo build --locked→validate_all+toolchain_check→测试）；幂等；重型步骤内存门槛 LC_MIN_MEM_GIB(默认2，启动门槛)/看门狗 LC_KILL_MEM_GIB(默认1)/CARGO_BUILD_JOBS(默认2)，被杀不重试；heavy_stats.tsv 记时长与最低 MemAvailable；v2 测试阶段：cargo test --no-fail-fast，ops/cargo/web/desktop 四步全部跑完；任一失败则 exit 6，并生成 test_failures.txt（逐条列出 测试名 @ 文件:行）。安装/构建/validate/toolchain_check 阶段仍 fail-fast；日志默认 $DIR/.tmp/init-logs（可用 LC_INIT_LOG_DIR 覆盖，避免 HOME 被重置丢日志）；heavy_stats 记 start/min/peak_used MemAvailable",
+      "invoke": "bash .litecode/ops/tools/init_env.sh [--repo URL] [--branch B] [--dir DIR] [--skip-heavy]",
+      "required_for": [
+        "新电脑/新账号环境初始化（重型步骤需 backend_mid 排队许可）"
+      ],
+      "stdout_header": "=== [time] step ..."
+    },
+    {
+      "id": "ops.test_failures",
+      "version": 1,
+      "purpose": "WP-171：把测试日志（cargo test / vitest / node --test TAP / tsc）解析成可直接转发给负责人的失败清单，每条格式为 step: 测试名 @ 文件:行 — 首行消息；init_env 测试阶段失败时会调用",
+      "invoke": "node .litecode/ops/tools/test_failures.mjs <step>=<log> ...",
+      "required_for": [
+        "init_env 测试汇总",
+        "任何测试失败转发"
+      ],
+      "stdout_header": "TEST FAILURES: N item(s)"
     }
   ],
   "board": ".litecode/ops/tools/board.md",
   "owner": "tools_steward",
-  "gm_policy": "GM must not edit tool scripts; request changes via demand board / events; GM may run tick as fallback"
+  "gm_policy": "GM must not edit tool scripts; request changes from tools_steward via events/WP (demand board removed v20; requirements approved by each bot's direct leader); GM may run tick as fallback"
 }

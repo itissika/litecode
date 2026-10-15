@@ -1,6 +1,6 @@
 # LiteCode ops: shared cargo build env. Usage: source /workspace/litecode/.litecode/ops/tools/cargo_env.sh
 # Sets absolute HOME (cargo 1.99 panics on relative HOME), ops toolchain RUSTUP_HOME/CARGO_HOME, shared target dir.
-LC_ROOT=/workspace/litecode
+LC_ROOT="${LC_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 unset RUSTUP_HOME CARGO_HOME RUSTUP_TOOLCHAIN
 export HOME="$LC_ROOT/.tmp/home"; mkdir -p "$HOME"
 export RUSTUP_HOME="$LC_ROOT/.litecode/ops/.toolchain/rustup"

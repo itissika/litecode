@@ -1,0 +1,124 @@
+name: CI Linux (manual)
+
+# WP-172: heavy validation on GitHub Actions. Manual only — no push/PR auto runs.
+# (Existing tag→release workflows stay automatic; this file must not gain on.push/on.pull_request.)
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note (WP id / reason)"
+        required: false
+        type: string
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            build-essential pkg-config libssl-dev
+
+      - name: Install Rust (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@stable
+        # File pin (channel 1.99.0) wins over "stable" when rust-toolchain.toml is present.
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/package-lock.json
+
+      - name: Prepare log dir
+        run: mkdir -p ci-logs && echo "note=${{ inputs.note }}" > ci-logs/meta.txt && date -u >> ci-logs/meta.txt
+
+      - name: npm ci (web)
+        run: npm --prefix web ci --no-audit --no-fund 2>&1 | tee ci-logs/npm_ci_web.log
+
+      - name: npm ci (desktop)
+        run: npm --prefix desktop ci --no-audit --no-fund 2>&1 | tee ci-logs/npm_ci_desktop.log
+
+      # Serial heavy steps: each continues on failure; final gate fails the job if any failed.
+      - name: cargo build --locked
+        id: cargo_build
+        continue-on-error: true
+        run: cargo build --locked 2>&1 | tee ci-logs/cargo_build.log
+
+      - name: cargo test --locked --no-fail-fast
+        id: cargo_test
+        continue-on-error: true
+        run: cargo test --locked --no-fail-fast 2>&1 | tee ci-logs/cargo_test.log
+
+      - name: web tsc
+        id: web_tsc
+        continue-on-error: true
+        run: npm --prefix web exec -- tsc -b 2>&1 | tee ci-logs/web_tsc.log
+
+      # Actions: --maxWorkers=2 (more RAM). Cloud-box acceptance (init_env / WP-171) uses --maxWorkers=1.
+      - name: web vitest
+        id: web_vitest
+        continue-on-error: true
+        run: cd web && npx vitest run --maxWorkers=2 2>&1 | tee ../ci-logs/web_vitest.log
+
+      - name: desktop tsc + test
+        id: desktop_test
+        continue-on-error: true
+        run: npm --prefix desktop test 2>&1 | tee ci-logs/desktop_test.log
+
+      - name: Summarize failures
+        id: summary
+        if: always()
+        run: |
+          set +e
+          FAILED=()
+          for pair in \
+            "cargo_build:${{ steps.cargo_build.outcome }}" \
+            "cargo_test:${{ steps.cargo_test.outcome }}" \
+            "web_tsc:${{ steps.web_tsc.outcome }}" \
+            "web_vitest:${{ steps.web_vitest.outcome }}" \
+            "desktop_test:${{ steps.desktop_test.outcome }}"; do
+            name="${pair%%:*}"
+            outcome="${pair##*:}"
+            echo "$name=$outcome" | tee -a ci-logs/summary.txt
+            if [ "$outcome" != "success" ]; then
+              FAILED+=("$name")
+            fi
+          done
+          if [ ${#FAILED[@]} -gt 0 ]; then
+            echo "FAILED_STEPS=${FAILED[*]}" | tee -a ci-logs/summary.txt
+            echo "has_failures=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_failures=false" >> "$GITHUB_OUTPUT"
+          echo "all steps passed" | tee -a ci-logs/summary.txt
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-linux-logs-${{ github.run_id }}
+          path: ci-logs/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Fail job if any step failed
+        if: always() && steps.summary.outputs.has_failures == 'true'
+        run: |
+          echo "One or more validation steps failed; see ci-logs artifact and summary.txt"
+          cat ci-logs/summary.txt
+          exit 1

@@ -1,27 +1,8 @@
 name: Windows sidecar
 
+# WP-172: manual only — push/PR auto triggers removed (Andy: no auto heavy/build on push/PR).
+# windows-desktop stays workflow_dispatch; windows-signed-release keeps tag/release automatic.
 on:
-  push:
-    tags-ignore:
-      - "v*"
-    paths:
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "web/**"
-      - "scripts/assemble_product.*"
-      - "scripts/smoke_product.*"
-      - "scripts/bundle_embed_model.sh"
-      - ".github/workflows/windows-sidecar.yml"
-  pull_request:
-    paths:
-      - "src/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "web/**"
-      - "scripts/assemble_product.*"
-      - "scripts/smoke_product.*"
-      - ".github/workflows/windows-sidecar.yml"
   workflow_dispatch:
 
 jobs:
