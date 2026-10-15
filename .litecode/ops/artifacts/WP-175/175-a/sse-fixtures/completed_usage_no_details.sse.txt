@@ -1,0 +1,4 @@
+data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}
+
+data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_luna_diag","object":"response","created_at":1,"model":"gpt-6-luna","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hello","annotations":[]}]}],"usage":{"input_tokens":120,"output_tokens":45}}}
+
