@@ -1,7 +1,7 @@
 # WP-158 前端瘦身合并报告
 
 父包 WP-158 · 执行 frontend_web / frontend_desktop · 审批 frontend_mid  
-日期：2026-10-15 · **未 commit**（提交由 Andy / GM 决定）
+日期：2026-10-15 · 已提交：`05ab3c4`（web/desktop，和 WP-165 线混在一起）+ `6399cca`（scripts）
 
 ## 总览与包状态
 
@@ -86,7 +86,7 @@ B1/B2 当时为 176/1363；B3 因新增 StatusBar.test（+1 文件、+2 条）�
 ## 风险
 
 1. **ps1 / yaml 仅静态核对**：箱内无 pwsh、无 yaml 库，未实跑；需首次 GitHub CI 确认（尤其 release tag 核对与 sidecar 触发）。
-2. **sidecar 进度文案变更**：main 侧「Session ready. Token is filled in automatically.」缩短为「Session ready.」，紧接「Opening workspace…」——属 A4 过渡提示，界面文案有可见变化。
+2. **sidecar 进度文案变更**：main 侧「Session ready. Token is filled in automatically.」缩短为「Session ready.」，紧接「Opening workspace…」——属 A4 过渡提示，界面文案有可见变化。**GM 已批准**（去掉 “Token is filled in automatically.”）。
 
 ## 遗留
 
@@ -95,4 +95,8 @@ B1/B2 当时为 176/1363；B3 因新增 StatusBar.test（+1 文件、+2 条）�
 
 ## 提交
 
-主树全部改动**未 commit**。是否打一个提交、如何切分，由 Andy 或 GM 决定。
+前端改动已经进了两个提交（用 `git log` / `git show --stat` 核对过）：
+- `05ab3c4` feat(web,desktop)：WP-159~164 的 web/、desktop/ 改动。**同一个提交里还混着 WP-165 线**（WP-169 desktop 启动排位、WP-170 web 启动排位）和 WP-166/167 的 Rust（src/、tests/）。
+- `6399cca` chore(scripts)：scripts/ 下 14 个文件，包括 WP-160 的 package_win.ps1、package_local_cuda.ps1（删除），以及 WP-164 R5–R7 的 12 个脚本。
+
+各子包的 diff 和文件/hunk 归属见 `WP-158/WP-158-file-map.md`，各 `WP-15x/16x-*.diff` 也在同一目录。GM 提醒过：以后不同的包要分开提交，这样才能单独回退。

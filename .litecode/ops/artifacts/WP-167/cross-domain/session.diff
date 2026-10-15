@@ -1,6 +1,8 @@
---- a/src/serve/run.rs	2026-10-15 02:39:32.378348080 +0800
-+++ b/src/serve/run.rs	2026-10-15 02:39:32.406348080 +0800
-@@ -71,8 +71,11 @@
+diff --git a/src/serve/run.rs b/src/serve/run.rs
+index b3f7d2c..1691ceb 100644
+--- a/src/serve/run.rs
++++ b/src/serve/run.rs
+@@ -71,8 +71,12 @@ pub fn run(
      tracing::info!("web dist: {}", web_dist.display());
  
      // Reap language servers leaked by earlier instances that died without
@@ -9,12 +11,13 @@
 +    // graceful shutdown (pre job-object builds, crashes, taskkill). WP-167:
 +    // runs in the background; every language-server spawn waits for it
 +    // (crate::lsp::sweep_gate), so it still finishes before the first one.
++    // Must arm before ServeState / LspHub construction (WorkspaceEngines::new).
 +    crate::lsp::sweep_gate::global()
 +        .start_background(crate::proc_lifetime::sweep_orphan_lsp_processes);
  
      let turn_guard = Arc::new(TurnGuard::new());
      let mut settings_writer = SettingsWriter::new(turn_guard.clone());
-@@ -81,7 +84,8 @@
+@@ -81,7 +85,8 @@ pub fn run(
      settings_writer.set_engine_manager(Arc::clone(&engine_manager));
      let settings_writer = Arc::new(settings_writer);
  

@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-15T04:40:23.436Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-15T05:26:11.013Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -180,13 +180,13 @@
 | WP-162 | └ WP-158 B2 web：改用契约与样式收拢 | done | frontend | frontend_mid |
 | WP-163 | └ WP-158 B3 web：重复组件合并与断开态 | done | frontend | frontend_mid |
 | WP-164 | └ WP-158 B3 desktop：重复实现合并与跳过令牌 | done | frontend_desktop | frontend_mid |
-| WP-165 | 打开工作区启动排位整改 | ready | backend_mid | gm |
-| WP-166 | └ 启动排位整改·Session 域 | in_progress | session | backend_mid |
-| WP-167 | └ 启动排位整改·IDE 域 | in_progress | ide | backend_mid |
+| WP-165 | 打开工作区启动排位整改 | done | backend_mid | gm |
+| WP-166 | └ 启动排位整改·Session 域 | done | session | backend_mid |
+| WP-167 | └ 启动排位整改·IDE 域 | done | ide | backend_mid |
 | WP-168 | └ 启动排位整改·壳与前端 | done | frontend_mid | backend_mid |
 | WP-169 | 　└ 启动排位整改·desktop 壳 | done | frontend_desktop | frontend_mid |
 | WP-170 | 　└ 启动排位整改·web 前端 | done | frontend | frontend_mid |
-| WP-171 | 新电脑 litecode 环境初始化 | in_progress | tools_steward | gm |
+| WP-171 | 新电脑 litecode 环境初始化 | done | tools_steward | gm |
 | WP-172 | 重型校验迁到 GitHub Actions | in_progress | tools_steward | gm |
 <!-- WP_STATUS:END -->
 

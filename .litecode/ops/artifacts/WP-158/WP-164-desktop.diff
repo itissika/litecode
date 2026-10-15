@@ -1,0 +1,781 @@
+# WP-164-desktop
+# 来源: git show 05ab3c4 -- hub.ts main.ts slim-packaging.test.ts + git show 6399cca -- <12 scripts>
+# 注意: 这是按文件范围从合并提交切出的 diff；共享文件里含其他包的 hunk，详见 WP-158-file-map.md
+diff --git a/desktop/src/hub.ts b/desktop/src/hub.ts
+index e156eb0..85b02c7 100644
+--- a/desktop/src/hub.ts
++++ b/desktop/src/hub.ts
+@@ -4,7 +4,7 @@ import path from "node:path";
+ import { dvThemeAttr, readUiTheme, type UiThemeName } from "./ui-theme";
+ 
+ /** Resolve the product's tokens.css (single source of --_dk-* definitions). */
+-export function loadThemeTokensCss(): string {
++function loadThemeTokensCss(): string {
+   const candidates = [
+     path.join(__dirname, "theme-tokens.css"),
+     path.resolve(__dirname, "../../web/src/theme/tokens.css"),
+@@ -103,15 +103,6 @@ function hubLayoutCss(logoFontSrc: string): string {
+ ${fontFace}
+ ${logoStyles}
+ *{box-sizing:border-box}
+-/* Scrollbars: thin, low-contrast — matches web/src/theme/index.css (agent
+-   panel message list). Applied app-wide so the home list's vertical scrollbar
+-   uses the same theme styling. */
+-*{scrollbar-width:thin;scrollbar-color:var(--_dk-line) transparent}
+-*::-webkit-scrollbar{width:8px;height:8px}
+-*::-webkit-scrollbar-track{background:transparent;border:0 none}
+-*::-webkit-scrollbar-thumb{background:var(--_dk-line);border-radius:4px;border:0 none;outline:0 none}
+-*::-webkit-scrollbar-thumb:hover{background:var(--_dk-text-disabled)}
+-*::-webkit-scrollbar-corner{background:transparent}
+ html,body{height:100%;margin:0;overflow:hidden}
+ body{
+   background:var(--_dk-root);
+@@ -412,7 +403,7 @@ function hubScript(): string {
+       selectedDir = null;
+       await refreshDirs();
+       setStep("step-path");
+-      message("Connected. Choose a workspace folder.");
++      message("Connected.");
+     } catch (error) {
+       setStep("step-auth");
+       message(error instanceof Error ? error.message : String(error), true);
+@@ -458,7 +449,7 @@ function hubScript(): string {
+   };
+ 
+   $("dir-open").onclick = async () => {
+-    if (!selectedDir) { message("Select a folder, or double-click to enter it.", true); return; }
++    if (!selectedDir) { message("Select a folder first.", true); return; }
+     remotePath = remotePath === "." ? selectedDir : remotePath + "/" + selectedDir;
+     selectedDir = null;
+     await refreshDirs();
+@@ -469,7 +460,7 @@ function hubScript(): string {
+       ? (remotePath === "." ? selectedDir : remotePath + "/" + selectedDir)
+       : remotePath;
+     if (!workspace || workspace === ".") {
+-      message("Choose a workspace folder below the remote home.", true);
++      message("Pick a folder inside your home directory.", true);
+       return;
+     }
+     bindProgress();
+@@ -477,8 +468,19 @@ function hubScript(): string {
+       message("Starting remote server…");
+       const done = await bridge.completeRemoteSession(sessionId, workspace);
+       tokenBox.textContent = done.token;
+-      setStep("step-token");
+-      message("Token generated automatically. Copy if needed, then enter the workspace.");
++      // A4: token is filled in automatically, so go straight into the workspace.
++      // Step 4 is only the fallback when that automatic entry fails.
++      if (!done.token) {
++        setStep("step-token");
++        message("Session token missing. Try again or cancel.", true);
++        return;
++      }
++      try {
++        await bridge.enterRemoteWorkbench(sessionId);
++      } catch (error) {
++        setStep("step-token");
++        message(error instanceof Error ? error.message : String(error), true);
++      }
+     } catch (error) {
+       message(error instanceof Error ? error.message : String(error), true);
+     }
+@@ -495,7 +497,6 @@ function hubScript(): string {
+ 
+   $("token-enter").onclick = async () => {
+     try {
+-      message("Opening workspace…");
+       await bridge.enterRemoteWorkbench(sessionId);
+     } catch (error) {
+       message(error instanceof Error ? error.message : String(error), true);
+@@ -565,7 +566,7 @@ function hubScript(): string {
+       if (!localRows.length && !remoteRows.length) {
+         const empty = document.createElement("div");
+         empty.className = "empty";
+-        empty.textContent = "No workspaces yet. Open a local folder, or connect a remote machine over SSH.";
++        empty.textContent = "No workspaces yet.";
+         list.append(empty);
+         return;
+       }
+@@ -631,7 +632,7 @@ function hubScript(): string {
+  * `loadFile`s it so the Electron preload bridge is available — `data:`
+  * pages do not reliably receive `window.litecode`.
+  */
+-export function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
++function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
+   const tokens = loadThemeTokensCss();
+   const dvTheme = dvThemeAttr(theme);
+   const logoFontB64 = loadLogoFontBase64();
+@@ -674,7 +675,6 @@ ${hubLayoutCss(logoFontSrc)}
+ 
+ <section id="remote-view" class="hidden">
+   <h1>Open remote</h1>
+-  <p class="lead">Connect with user@host, deploy Litecode automatically, then choose a workspace.</p>
+   <div class="panel" id="step-auth">
+     <h2>1. Connect</h2>
+     <label class="field">user@host
+@@ -706,7 +706,7 @@ ${hubLayoutCss(logoFontSrc)}
+     <h2>2. Deploy</h2>
+     <div class="progress">
+       <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+-      <div class="progress-msg" id="progress-msg">Preparing…</div>
++      <div class="progress-msg" id="progress-msg"></div>
+     </div>
+     <div class="panel-actions">
+       <button type="button" class="btn-ghost" id="remote-cancel">Cancel</button>
+@@ -728,7 +728,7 @@ ${hubLayoutCss(logoFontSrc)}
+ 
+   <div class="panel hidden" id="step-token">
+     <h2>4. Session token</h2>
+-    <p class="lead">Generated automatically for this session. You do not need to type it.</p>
++    <p class="lead">Could not open the workspace automatically. Copy the token or try again.</p>
+     <div class="token-box" id="token-box"></div>
+     <div class="panel-actions">
+       <button type="button" class="btn" id="token-copy">Copy token</button>
+diff --git a/desktop/src/main.ts b/desktop/src/main.ts
+index 2f9cc1c..9266c7c 100644
+--- a/desktop/src/main.ts
++++ b/desktop/src/main.ts
+@@ -50,7 +50,6 @@ import { RecentWorkspaces, type RecentWorkspace } from "./recents";
+ import { deleteSecret, getSecret, setSecret } from "./secure-store";
+ import { RemoteTargets, type SavedRemoteTarget } from "./remote-targets";
+ import {
+-  REMOTE_PROGRESS_CHANNEL,
+   ensureComponentForRemote as ensureComponentForRemoteCore,
+   type RemoteProgressEvent,
+ } from "./remote-progress";
+@@ -62,6 +61,7 @@ import {
+   RecoveryCounter,
+   recoveryDelayMs,
+ } from "./process-recovery";
++import { isBootAborted, runBootSequence } from "./boot-sequence";
+ import { startSidecar, stopSidecar, watchSidecarExit, type SidecarHandle } from "./sidecar";
+ import {
+   BUNDLED_MODEL_REL,
+@@ -74,6 +74,10 @@ import {
+ import { sidecarRoot } from "./paths";
+ import {
+   COMPONENT_PROGRESS_CHANNEL,
++  REMOTE_DISCONNECTED_CHANNEL,
++  REMOTE_PROGRESS_CHANNEL,
++} from "./bridge-contract";
++import {
+   ComponentManager,
+   isComponentId,
+   type ComponentId,
+@@ -121,8 +125,6 @@ let registry: InstanceRegistry | null = null;
+ let recents: RecentWorkspaces | null = null;
+ let remoteTargets: RemoteTargets | null = null;
+ let sshTargets: SshTargets | null = null;
+-/** Desktop-only: tunnel died unexpectedly (must match preload literal). */
+-const REMOTE_DISCONNECTED_CHANNEL = "litecode:remote-disconnected";
+ 
+ type ManagedRemote = {
+   session: SshSession;
+@@ -160,7 +162,19 @@ function createToken(): string {
+   return crypto.randomBytes(32).toString("base64url");
+ }
+ 
+-type BootContent = { kind: "url"; url: string } | { kind: "hub" };
++type BootContent = { kind: "hub" } | { kind: "skeleton" };
++
++/**
++ * WP-169 skeleton: theme background only, whole page draggable (frameless
++ * window), no text, no script. A data: URL is never a trusted IPC surface
++ * (ipc-trust only trusts the hub file URL and the workbench origin).
++ */
++const SKELETON_URL =
++  "data:text/html;charset=utf-8," +
++  encodeURIComponent(
++    '<!doctype html><html><head><meta charset="utf-8"></head>' +
++      '<body style="margin:0;width:100vw;height:100vh;background:#0a0a0a;-webkit-app-region:drag"></body></html>',
++  );
+ 
+ function hubPagePath(): string {
+   return path.join(app.getPath("userData"), "hub-index.html");
+@@ -386,7 +400,10 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
+   if (content.kind === "hub") {
+     await loadHub(win);
+   } else {
+-    await safeLoadURL(win, content.url);
++    // Skeleton: no trusted surface while the backend is starting. The
++    // workbench later goes through safeLoadURL into this same window.
++    trustContext = null;
++    await win.loadURL(SKELETON_URL);
+   }
+   return win;
+ }
+@@ -395,7 +412,7 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
+ function resolveBootWorkspace(): string | null {
+   const fromEnv =
+     process.env.LITECODE_WORKSPACE?.trim() ||
+-    process.argv.find((a, i, arr) => arr[i - 1] === "--workspace") ||
++    process.argv.find((_a, i, arr) => arr[i - 1] === "--workspace") ||
+     null;
+   return fromEnv ? normalizeWorkspace(fromEnv) : null;
+ }
+@@ -700,7 +717,7 @@ async function stopManagedRemote(): Promise<void> {
+   removeMaterializedKey(active.keyDirectory);
+ }
+ 
+-function scheduleTunnelReconnect(targetId: string, workspace: string, attempt: number): void {
++function scheduleTunnelReconnect(targetId: string, attempt: number): void {
+   cancelTunnelReconnect();
+   const delay = recoveryDelayMs(attempt, DEFAULT_TUNNEL_RECOVERY);
+   tunnelReconnectTimer = setTimeout(() => {
+@@ -738,7 +755,7 @@ function onTunnelUnexpectedExit(info: TunnelExitInfo, binding: ManagedRemote): v
+     console.warn("[litecode] tunnel auto-reconnect exhausted");
+     return;
+   }
+-  scheduleTunnelReconnect(targetId, workspace, tunnelRecovery.count);
++  scheduleTunnelReconnect(targetId, tunnelRecovery.count);
+ }
+ 
+ function attachTunnelWatch(binding: ManagedRemote): void {
+@@ -773,7 +790,7 @@ function attachSidecarWatch(handle: SidecarHandle): void {
+         void dialog.showMessageBox(mainWindow, {
+           type: "error",
+           title: "Litecode sidecar crashed",
+-          message: "The local server exited unexpectedly and could not be restarted.",
++          message: "The local server stopped and could not restart.",
+           detail: `code=${info.code ?? "null"} signal=${info.signal ?? "null"}`,
+         });
+       }
+@@ -824,7 +841,7 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
+       emitRemoteProgress({
+         stage: "download",
+         ratio: 0.12,
+-        message: "Embed model unavailable — remote code search will be off. Continuing…",
++        message: "Code search unavailable on remote (no embed model).",
+       });
+     }
+   }
+@@ -1035,7 +1052,7 @@ async function startRemoteSessionBody(input: StartRemoteInput): Promise<{
+       ...(credentialMaterial ? { credentialMaterial } : {}),
+     };
+     setPendingRemote(pending);
+-    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: "Choose a workspace folder." });
++    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: "Connected." });
+     // Ownership of the temp key dir now lives in the pending session (cleaned
+     // on cancel/complete/stale-clear); clear it so finally does not remove it.
+     keyDirectory = undefined;
+@@ -1071,7 +1088,7 @@ async function completeRemoteSessionBody(
+   const pending = getPendingRemote(sessionId);
+   const relative = String(workspace ?? "").trim() || ".";
+   if (relative === ".") {
+-    throw new Error("Choose a workspace folder below the remote home (not home itself).");
++    throw new Error("Pick a folder inside your home directory.");
+   }
+ 
+   // Idempotent: a double-complete reuses the already-started serve (D4).
+@@ -1102,7 +1119,8 @@ async function completeRemoteSessionBody(
+   emitRemoteProgress({
+     stage: "ready",
+     ratio: 0.96,
+-    message: "Remote session ready. Review the token, then enter the workspace.",
++    // A4: transient — the hub enters the workspace right after this.
++    message: "Session ready.",
+   });
+ 
+   return {
+@@ -1341,8 +1359,6 @@ async function boot(): Promise<void> {
+   if (!remoteUrl) {
+     assertDevUiConfigured(devUi, devUpstreamFilePath());
+   }
+-  let content: BootContent;
+-
+   if (remoteUrl) {
+     const token = process.env.LITECODE_TOKEN?.trim();
+     if (!token) {
+@@ -1353,44 +1369,103 @@ async function boot(): Promise<void> {
+     sessionMode = "remote";
+     authToken = token;
+     const expected = process.env.LITECODE_WORKSPACE?.trim();
+-    await waitForWorkspaceHealth(
+-      healthUrlFromBase(remoteUrl),
+-      expected ? normalizeWorkspace(expected) : undefined,
+-    );
+-    content = { kind: "url", url: handshakeUrl(remoteUrl, authToken) };
+-    if (expected) {
+-      currentWorkspace = normalizeWorkspace(expected);
+-    }
+-  } else {
+-    sessionMode = "local";
+-    authToken = createToken();
+-    const workspace = resolveBootWorkspace();
+-    if (workspace) {
+-      sidecar = await startSidecar({
++    const expectedWorkspace = expected ? normalizeWorkspace(expected) : null;
++    // S1b: skeleton first; /health only gates loadURL(handshakeUrl).
++    await runBootSequence<BrowserWindow, null>({
++      startBackend: async () => {
++        await waitForWorkspaceHealth(healthUrlFromBase(remoteUrl), expectedWorkspace ?? undefined);
++        return null;
++      },
++      createSkeleton: () => createBootSkeleton(expectedWorkspace),
++      prepare: async () => {
++        if (expectedWorkspace) currentWorkspace = expectedWorkspace;
++        return handshakeUrl(remoteUrl, authToken);
++      },
++      loadWorkbench: (win, url) => safeLoadURL(win, url),
++      stopBackend: async () => undefined,
++      closeSkeleton: closeFailedBootSkeleton,
++      // No local process to stop; quit must not wait for the health poll.
++    });
++    return;
++  }
++
++  sessionMode = "local";
++  authToken = createToken();
++  const workspace = resolveBootWorkspace();
++  if (!workspace) {
++    const hubWindow = await createWindow({ kind: "hub" });
++    mainWindow = hubWindow;
++    hubWindow.on("closed", () => {
++      if (mainWindow === hubWindow) mainWindow = null;
++    });
++    await startRegistry(hubWindow, null);
++    return;
++  }
++  // S1: skeleton window in parallel with the sidecar; READY + attach check +
++  // /health only gate the workbench loadURL into the same window.
++  await runBootSequence<BrowserWindow, SidecarHandle>({
++    startBackend: (signal) =>
++      startSidecar({
+         token: authToken,
+         parentPid: process.pid,
+         workspace,
+-      });
+-      await verifySidecarAttached(sidecar);
+-      attachSidecarWatch(sidecar);
++        // Window closed during the skeleton: kill the child now, not at READY.
++        signal,
++      }),
++    createSkeleton: () => createBootSkeleton(workspace),
++    onBackend: (handle) => {
++      sidecar = handle;
++    },
++    prepare: async (handle) => {
++      await verifySidecarAttached(handle);
++      attachSidecarWatch(handle);
+       currentWorkspace = workspace;
+-      recordRecent(workspace);
+-      content = { kind: "url", url: await localWorkbenchUrl(sidecar.readyUrl) };
+-    } else {
+-      content = { kind: "hub" };
+-    }
+-  }
++      return localWorkbenchUrl(handle.readyUrl);
++    },
++    loadWorkbench: (win, url) => safeLoadURL(win, url),
++    stopBackend: async (handle) => {
++      await stopSidecar(handle);
++      if (sidecar === handle) {
++        sidecar = null;
++        syncDevUpstream(null);
++      }
++    },
++    closeSkeleton: closeFailedBootSkeleton,
++    // S2: boot-time recents write only after the workbench loaded.
++    recordRecent: () => recordRecent(workspace),
++    onAbort: (cleanup) => {
++      bootAbortCleanup = cleanup;
++    },
++  });
++}
+ 
+-  mainWindow = await createWindow(content);
++/** Set while a failed boot closes its skeleton, so that close does not quit the app. */
++let closingFailedBoot = false;
++/** Abort cleanup (sidecar stop) when the user closed the skeleton; awaited before exit. */
++let bootAbortCleanup: Promise<void> | null = null;
++
++async function startRegistry(win: BrowserWindow, workspace: string | null): Promise<void> {
+   registry = new InstanceRegistry();
+-  await registry.start(mainWindow);
+-  if (currentWorkspace) {
+-    registry.setWorkspace(currentWorkspace);
++  await registry.start(win);
++  if (workspace) {
++    registry.setWorkspace(workspace);
+   }
++}
+ 
+-  mainWindow.on("closed", () => {
+-    mainWindow = null;
++/** Skeleton window + registry as soon as the workspace is known (second open focuses it). */
++async function createBootSkeleton(workspace: string | null): Promise<BrowserWindow> {
++  const win = await createWindow({ kind: "skeleton" });
++  mainWindow = win;
++  win.on("closed", () => {
++    if (mainWindow === win) mainWindow = null;
+   });
++  await startRegistry(win, workspace);
++  return win;
++}
++
++function closeFailedBootSkeleton(win: BrowserWindow): void {
++  closingFailedBoot = true;
++  win.destroy();
+ }
+ 
+ function targetWindow(
+@@ -1535,22 +1610,6 @@ function registerIpc(): void {
+     return { id: result.id, path: result.path, downloaded: result.downloaded };
+   });
+ 
+-  handleTrusted("litecode:component-pause", "both", (_e, id: unknown) => {
+-    if (!isComponentId(id)) throw new Error("Unknown component");
+-    return { ok: componentManager().pause(id) };
+-  });
+-
+-  handleTrusted("litecode:component-stop", "both", (_e, id: unknown) => {
+-    if (!isComponentId(id)) throw new Error("Unknown component");
+-    return { ok: componentManager().stop(id) };
+-  });
+-
+-  handleTrusted("litecode:component-retry", "both", async (_e, id: unknown) => {
+-    if (!isComponentId(id)) throw new Error("Unknown component");
+-    const result = await componentManager().retry(id);
+-    return { id: result.id, path: result.path, downloaded: result.downloaded };
+-  });
+-
+   onTrusted("litecode:get-ui-theme", "both", (event) => {
+     event.returnValue = readUiTheme();
+   });
+@@ -1703,10 +1762,6 @@ function registerIpc(): void {
+     return connectManagedSsh(targetId, workspace);
+   });
+ 
+-  handleTrusted("litecode:focus-workspace", "workbench", async (_e, workspacePath: string) => {
+-    return InstanceRegistry.tryFocusWorkspace(String(workspacePath));
+-  });
+-
+   handleTrusted("litecode:notify-workspace", "workbench", async (_e, workspacePath: string | null) => {
+     currentWorkspace = workspacePath ? normalizeWorkspace(String(workspacePath)) : null;
+     registry?.setWorkspace(currentWorkspace);
+@@ -1830,6 +1885,8 @@ app.whenReady().then(async () => {
+   try {
+     await boot();
+   } catch (err) {
++    // WP-169: the user closed the skeleton; the normal quit path cleans up.
++    if (isBootAborted(err)) return;
+     const message = err instanceof Error ? err.message : String(err);
+     // DESK-04: if boot fails after the sidecar was spawned (e.g. health
+     // never verifies), stop it so we never leave an orphan server process.
+@@ -1842,6 +1899,8 @@ app.whenReady().then(async () => {
+ });
+ 
+ app.on("window-all-closed", () => {
++  // A failed boot shows its error dialog and exits itself.
++  if (closingFailedBoot) return;
+   if (process.platform !== "darwin") {
+     app.quit();
+   }
+@@ -1860,6 +1919,8 @@ app.on("before-quit", (e) => {
+       /* ignore */
+     }
+     registry?.stop();
++    // WP-169: skeleton closed while the sidecar was still starting.
++    await bootAbortCleanup?.catch(() => undefined);
+     await sidecarLifecycle.run(async () => {
+       await stopSidecar(sidecar);
+       await stopManagedRemote();
+diff --git a/desktop/src/slim-packaging.test.ts b/desktop/src/slim-packaging.test.ts
+index 3d9a413..e16d91b 100644
+--- a/desktop/src/slim-packaging.test.ts
++++ b/desktop/src/slim-packaging.test.ts
+@@ -52,4 +52,23 @@ describe("slim packaging hygiene", () => {
+       /if \(\$IncludeModel -and \(Test-Path \(Join-Path \$Root "models"\)\)\)[\s\S]*?Copy-Item -Recurse -Force \(Join-Path \$Root "models\\\*"\)/,
+     );
+   });
++
++  it("sh/ps1 script pairs cross-reference each other and keep the release remap in sync", () => {
++    const read = (name: string) => fs.readFileSync(path.join(repoRoot, "scripts", name), "utf8");
++    const pairs: Array<[string, string]> = [
++      ["assemble_product.sh", "assemble_product.ps1"],
++      ["smoke_product.sh", "smoke_product.ps1"],
++      ["serve.sh", "serve_win.ps1"],
++    ];
++    for (const [sh, ps1] of pairs) {
++      assert.ok(read(sh).includes(`Paired with scripts/${ps1}`), `${sh} header must point at ${ps1}`);
++      assert.ok(read(ps1).includes(`Paired with scripts/${sh}`), `${ps1} header must point at ${sh}`);
++    }
++    const assembleSh = read("assemble_product.sh");
++    const assemblePs1 = read("assemble_product.ps1");
++    for (const needle of ["--remap-path-prefix=", "=/rustc/registry", "=/rustc/git", "RUSTFLAGS (release remap)"]) {
++      assert.ok(assembleSh.includes(needle), `assemble_product.sh missing ${needle}`);
++      assert.ok(assemblePs1.includes(needle), `assemble_product.ps1 missing ${needle}`);
++    }
++  });
+ });
+diff --git a/scripts/assemble_product.ps1 b/scripts/assemble_product.ps1
+index aabe31c..680c1a1 100644
+--- a/scripts/assemble_product.ps1
++++ b/scripts/assemble_product.ps1
+@@ -1,4 +1,5 @@
+ # Assemble a cwd-independent product tree for smoke / Electron extraResources.
++# Paired with scripts/assemble_product.sh: change one, keep the other in sync (WP-164 R6).
+ # Does not build Electron.
+ param(
+   [string]$OutDir = "",
+@@ -17,6 +18,7 @@ param(
+ 
+ $ErrorActionPreference = "Stop"
+ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
++. (Join-Path $PSScriptRoot "lib\common.ps1")
+ if (-not $OutDir) { $OutDir = Join-Path $Root "dist\product" }
+ 
+ $ProfileDir = if ($Profile -eq "debug") { "debug" } else { "release" }
+@@ -105,7 +107,7 @@ $ErrorActionPreference = "Continue"
+ try {
+   $cargoOut = & cargo @CargoArgs 2>&1
+   $cargoOut | ForEach-Object { Write-Host "$_" }
+-  if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
++  Assert-LastExitCode "cargo build"
+ } finally {
+   $ErrorActionPreference = $prevEa
+   Pop-Location
+diff --git a/scripts/assemble_product.sh b/scripts/assemble_product.sh
+index 6229cb6..9f26e4c 100755
+--- a/scripts/assemble_product.sh
++++ b/scripts/assemble_product.sh
+@@ -1,5 +1,6 @@
+ #!/usr/bin/env bash
+ # Assemble a cwd-independent product tree for smoke / future installers.
++# Paired with scripts/assemble_product.ps1: change one, keep the other in sync (WP-164 R6).
+ # Does not build Electron.
+ set -euo pipefail
+ 
+diff --git a/scripts/build_components.mjs b/scripts/build_components.mjs
+index 80a006e..f19e170 100644
+--- a/scripts/build_components.mjs
++++ b/scripts/build_components.mjs
+@@ -10,6 +10,9 @@
+ //       [--out dist/components] [--model-dir models/ibm-granite/...]
+ //       [--linux-tar dist/linux/litecode-server-linux-x64.tar.gz]
+ //       [--app-version 0.2.2] [--allow-missing]
++//   node scripts/build_components.mjs --print-version
++//       Print Cargo.toml [package].version and exit. Single source for the
++//       product version: package_linux.sh and product_version.ps1 call this.
+ import { createHash } from "node:crypto";
+ import fs from "node:fs";
+ import path from "node:path";
+@@ -41,7 +44,7 @@ function parseArgs(argv) {
+     const a = argv[i];
+     if (!a.startsWith("--")) throw new Error(`unexpected argument ${a}`);
+     const key = a.slice(2);
+-    if (key === "allow-missing") { out[key] = true; continue; }
++    if (key === "allow-missing" || key === "print-version") { out[key] = true; continue; }
+     const value = argv[++i];
+     if (value === undefined) throw new Error(`--${key} needs a value`);
+     out[key] = value;
+@@ -49,10 +52,15 @@ function parseArgs(argv) {
+   return out;
+ }
+ 
++/** `version` inside the `[package]` table only (other tables may carry their own). */
+ function cargoVersion() {
+   const toml = fs.readFileSync(path.join(ROOT, "Cargo.toml"), "utf8");
++  let inPackage = false;
+   for (const line of toml.split(/\r?\n/)) {
+-    const m = /^\s*version\s*=\s*"([^"]+)"\s*$/.exec(line);
++    const table = /^\s*\[([^\]]+)\]\s*(#.*)?$/.exec(line);
++    if (table) { inPackage = table[1].trim() === "package"; continue; }
++    if (!inPackage) continue;
++    const m = /^\s*version\s*=\s*"([^"]+)"\s*(#.*)?$/.exec(line);
+     if (m) return m[1];
+   }
+   throw new Error("Could not read [package].version from Cargo.toml");
+@@ -122,6 +130,10 @@ async function writeTarGz(entries, dest) {
+ 
+ async function main() {
+   const args = parseArgs(process.argv.slice(2));
++  if (args["print-version"]) {
++    process.stdout.write(`${cargoVersion()}\n`);
++    return;
++  }
+   const appVersion = (args["app-version"] ?? cargoVersion()).replace(/^v/, "");
+   const tag = args.tag ?? `v${appVersion}`;
+   const repo = args.repo ?? process.env.GITHUB_REPOSITORY ?? "itissika/litecode";
+diff --git a/scripts/dev_win.ps1 b/scripts/dev_win.ps1
+index fd207b1..aac1ef3 100644
+--- a/scripts/dev_win.ps1
++++ b/scripts/dev_win.ps1
+@@ -40,15 +40,12 @@ param(
+ 
+ $ErrorActionPreference = "Stop"
+ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
++. (Join-Path $PSScriptRoot "lib\common.ps1")
+ $Product = Join-Path $Root "dist\product"
+ $WebIndex = Join-Path $Root "web\dist\index.html"
+ $Desktop = Join-Path $Root "desktop"
+ $SidecarExe = Join-Path $Product "litecode.exe"
+ 
+-function Test-Command([string]$Name) {
+-  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+-}
+-
+ function Restore-EnvValue([string]$Name, $Value) {
+   if ($null -eq $Value -or "$Value" -eq "") {
+     Remove-Item "Env:\$Name" -ErrorAction SilentlyContinue
+diff --git a/scripts/lib/common.ps1 b/scripts/lib/common.ps1
+new file mode 100644
+index 0000000..8896b58
+--- /dev/null
++++ b/scripts/lib/common.ps1
+@@ -0,0 +1,12 @@
++# Shared PowerShell helpers (dot-source: . (Join-Path $PSScriptRoot "lib\common.ps1")).
++
++function Test-Command([string]$Name) {
++  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
++}
++
++# Throw if the last native command exited non-zero.
++function Assert-LastExitCode([string]$What) {
++  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
++    throw "$What failed with exit code $LASTEXITCODE"
++  }
++}
+diff --git a/scripts/package_linux.sh b/scripts/package_linux.sh
+index fc3b80c..ae23029 100755
+--- a/scripts/package_linux.sh
++++ b/scripts/package_linux.sh
+@@ -11,7 +11,8 @@ BUNDLE_MODEL="${LITECODE_BUNDLE_MODEL:-0}"
+ VERSION="${LITECODE_VERSION:-}"
+ 
+ if [[ -z "$VERSION" ]]; then
+-  VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
++  # Single source: build_components.mjs --print-version (same as product_version.ps1).
++  VERSION="$(node "$ROOT/scripts/build_components.mjs" --print-version)"
+   VERSION="${VERSION//$'\r'/}"
+ fi
+ if [[ -z "$VERSION" ]]; then
+diff --git a/scripts/package_local.ps1 b/scripts/package_local.ps1
+index c05c318..218e91f 100644
+--- a/scripts/package_local.ps1
++++ b/scripts/package_local.ps1
+@@ -20,6 +20,7 @@ param(
+ 
+ $ErrorActionPreference = "Stop"
+ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
++. (Join-Path $PSScriptRoot "lib\common.ps1")
+ . (Join-Path $PSScriptRoot "product_version.ps1")
+ $Version = Get-LitecodeProductVersion -Root $Root
+ 
+@@ -36,9 +37,7 @@ function ConvertTo-WslPath([string]$WinPath) {
+ 
+ function Invoke-WslBash([string]$Script) {
+   & wsl.exe -e bash -lc $Script
+-  if ($LASTEXITCODE -ne 0) {
+-    throw "WSL command failed with exit code $LASTEXITCODE"
+-  }
++  Assert-LastExitCode "WSL command"
+ }
+ 
+ if (-not $WslRoot) {
+@@ -110,7 +109,7 @@ if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.o
+ 
+ Write-Host "==> staging on-demand components (dist\components)"
+ & node (Join-Path $Root "scripts\build_components.mjs") --tag "v$Version" --out (Join-Path $winDist "components")
+-if ($LASTEXITCODE -ne 0) { throw "build_components.mjs failed with exit code $LASTEXITCODE" }
++Assert-LastExitCode "build_components.mjs"
+ 
+ $outDir = Join-Path $Root "desktop\out"
+ $setup = Join-Path $outDir "Litecode-Setup-$Version-x64.exe"
+diff --git a/scripts/product_version.ps1 b/scripts/product_version.ps1
+index b3bc77e..d76460f 100644
+--- a/scripts/product_version.ps1
++++ b/scripts/product_version.ps1
+@@ -1,21 +1,22 @@
+ # Shared product version + Linux bundle path helpers (dot-source from other scripts).
+-# Canonical version: [package].version in Cargo.toml.
++# Canonical version: [package].version in Cargo.toml, read by
++# `node scripts/build_components.mjs --print-version` (also used by package_linux.sh).
+ 
+ function Get-LitecodeProductVersion {
+     param(
+         [Parameter(Mandatory = $true)]
+         [string]$Root
+     )
+-    $cargoToml = Join-Path $Root "Cargo.toml"
+-    if (-not (Test-Path -LiteralPath $cargoToml)) {
+-        throw "Cargo.toml not found at $cargoToml"
++    $script = Join-Path $Root "scripts\build_components.mjs"
++    $out = & node $script --print-version
++    if ($LASTEXITCODE -ne 0) {
++        throw "build_components.mjs --print-version failed with exit code $LASTEXITCODE"
+     }
+-    foreach ($line in Get-Content -LiteralPath $cargoToml) {
+-        if ($line -match '^\s*version\s*=\s*"([^"]+)"\s*$') {
+-            return $Matches[1]
+-        }
++    $version = "$out".Trim()
++    if (-not $version) {
++        throw "Could not read [package].version from Cargo.toml"
+     }
+-    throw "Could not read [package].version from Cargo.toml"
++    return $version
+ }
+ 
+ function Get-LinuxBundleLayout {
+diff --git a/scripts/serve.sh b/scripts/serve.sh
+index d3df78f..8e41ed9 100755
+--- a/scripts/serve.sh
++++ b/scripts/serve.sh
+@@ -1,5 +1,6 @@
+ #!/usr/bin/env bash
+ # Start litecode with binaries built from the current tree (never a stale target/release/litecode).
++# Paired with scripts/serve_win.ps1: change one, keep the other in sync (WP-164 R6).
+ #
+ # Usage:
+ #   ./scripts/serve.sh                 # API (host cargo) + Vite dev UI
+diff --git a/scripts/serve_win.ps1 b/scripts/serve_win.ps1
+index 4849484..fa0f07f 100644
+--- a/scripts/serve_win.ps1
++++ b/scripts/serve_win.ps1
+@@ -1,4 +1,5 @@
+ # Windows browser/Vite transition loop (HMR). Not the Electron end-state shell.
++# Paired with scripts/serve.sh: change one, keep the other in sync (WP-164 R6).
+ #
+ # Starts host cargo `litecode serve` + Vite, generates a session-local auth token,
+ # and prints a handshake URL you can open in a normal browser.
+@@ -64,6 +65,7 @@ for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+   }
+ }
+ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
++. (Join-Path $PSScriptRoot "lib\common.ps1")
+ $WebDir = Join-Path $Root "web"
+ $WebIndex = Join-Path $WebDir "dist\index.html"
+ # CUDA builds live beside the CPU cache (same dir as dev_win.ps1 -Cuda) so
+@@ -77,10 +79,6 @@ if ($Cuda -and $WebOnly) {
+   Write-Warning "-Cuda only affects the API process; ignored with -WebOnly"
+ }
+ 
+-function Test-Command([string]$Name) {
+-  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+-}
+-
+ function New-DevToken {
+   $bytes = New-Object byte[] 32
+   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+diff --git a/scripts/smoke_product.ps1 b/scripts/smoke_product.ps1
+index cb22c69..8544fec 100644
+--- a/scripts/smoke_product.ps1
++++ b/scripts/smoke_product.ps1
+@@ -1,4 +1,5 @@
+ # Smoke-test a product tree from a non-repo cwd (Windows).
++# Paired with scripts/smoke_product.sh: change one, keep the other in sync (WP-164 R6).
+ param(
+   [string]$ProductDir = ""
+ )
+diff --git a/scripts/smoke_product.sh b/scripts/smoke_product.sh
+index bd0b297..8aefa0e 100755
+--- a/scripts/smoke_product.sh
++++ b/scripts/smoke_product.sh
+@@ -1,5 +1,6 @@
+ #!/usr/bin/env bash
+ # Smoke-test a product tree from a non-repo cwd.
++# Paired with scripts/smoke_product.ps1: change one, keep the other in sync (WP-164 R6).
+ set -euo pipefail
+ 
+ ROOT="$(cd "$(dirname "$0")/.." && pwd)"

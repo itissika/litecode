@@ -1,0 +1,13 @@
+
+ RUN  v5.0.3 /workspace/litecode/web
+
+
+ Test Files  179 passed (179)
+      Tests  1381 passed (1381)
+   Start at  11:36:16
+   Duration  176.36s (environment 50%, import 35%, tests 12%, transform 2%)
+
+Environment  jsdom was created 179 times · 79.76s total, 50% of tracked time
+             create it once per worker with pool: 'vmThreads' (keeps per-file isolation) or isolate: false (shares it across files)
+             learn more: https://vitest.dev/guide/improving-performance#test-environments
+

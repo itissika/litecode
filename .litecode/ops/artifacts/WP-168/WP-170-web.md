@@ -115,16 +115,22 @@ rg -o "@font-face\{[^}]*font-weight:[0-9]+" dist/assets/*.css | sort | uniq -c
 ```
 环境变量：`PATH=/exec-daemon:$PATH`（用 v22.14.0）；`NODE_OPTIONS=--max-old-space-size=2048` 仅用于 build。
 
-## build 证据（版本 A：build 成功后填数）
+## build 证据（版本 A：已填，2026-10-15 11:40 HKT）
+- 命令：`web/` 下 `NODE_OPTIONS=--max-old-space-size=2048 /exec-daemon/node node_modules/vite/bin/vite.js build`（只跑 vite build；package.json 的 build 脚本含 tsc -b，所以没用）。自写内存守护：每 1s 采样 MemAvailable，低于 2097152 kB 就杀掉进程树。rc=0，用时 3.27s，没触发守护；MemAvailable 最低 4,403,628 kB（约 4.20GiB），最高 6,268,372 kB。原始输出：`WP-170-vite-build.txt`；守护日志：`WP-170-memguard.txt`。
 - 旧入口大小：build 前 web/dist 不存在，旧报告没有记录，写「未测」。
-- 入口 chunk：`assets/<填>.js`，原始 `<填> kB`，gzip `<填> kB`。
+- 入口 chunk：`assets/index-VLsqxIc3.js`，原始 5,264,416 B（vite 报 5,264.41 kB），gzip 1,083,964 B（`gzip -c` 默认级别；vite 报 1,095.19 kB）。体积大，但不是 monaco 带来的，见下一条。
 - 入口 chunk 和 index.html 的 modulepreload 中没有 monaco：
-  - index.html 的 script 和 modulepreload 列表：`<填>`，不含 monaco；
-  - 入口 chunk 的静态 import 列表：`<填>`，不含 monaco；
-  - monaco 单独成的 chunk 名：`<填>`（由 `rg -l monaco dist/assets` 得到）。
+  - index.html 的 script 和 modulepreload 列表：`index-VLsqxIc3.js`，以及 rolldown-runtime-C0FnF6B9、react-DiVRNtpo、preload-helper-BLdHbfdN、connectionStore-DelWKO2_、markdownFlush-D1NyG5ly、path-BCuXWHjK、editorStore-LPgH70bF；css 只有 `index-CztSOLd2.css`。这 7 个预载 chunk 用 rg 搜 monaco，0 命中。
+  - 入口 chunk 的静态 import 列表：rolldown-runtime、react、preload-helper、editorStore、connectionStore、path，不含 monaco。入口里唯一的 `monaco-editor` 字样是 About 面板的版本号字符串 `{name:"monaco-editor",version:"0.55.1"}`，不是 import。
+  - monaco 单独成的 chunk 名：`EditorPanel-D_WZAQPi.js`（1,375,702 B）、`editor.api-BdB7rlVo.js`（2,735,985 B），另有 editor.worker、json.worker、jsonMode。这些都只通过入口里的动态 import（`__vite__mapDeps`，其中 m.f 首项是 EditorPanel）加载。
 - 首屏只加载两份 400 字重：
-  - index.html 引用的 css 里只含 inter 400 和 jetbrains-mono 400 的 @font-face：`<填>`；
-  - 其余 5 份字重在 `fontsDeferred` 对应的 chunk 里：`<填>`。
+  - index.html 引用的 `index-CztSOLd2.css` 一共 13 个 @font-face，全部是 font-weight:400：Inter 400 有 7 个子集（cyrillic、cyrillic-ext、greek、greek-ext、latin、latin-ext、vietnamese），JetBrains Mono 400 有 6 个子集（同上，少 greek-ext），每个子集都是 woff2 + woff。没有 200、300、500。
+  - 其余 5 份字重在 `fontsDeferred` 对应的 chunk 里：`fontsDeferred-Cdw9oN_j.css`，含 font-weight 200×7、300×13、500×13（Inter 200/300/500，JetBrains Mono 300/500），只在入口里通过动态 import 引用。
+  - dist 里其余字体（KaTeX_*、codicon）只由按需 chunk 引用，不在首屏 css 里。
+- 其他重型校验（WP-158 重验，同一份 web 代码）：
+  - `.litecode/ops/artifacts/WP-158/rerun-web-tsc.txt`：0 字节，即 tsc -b 无输出，rc 0（见 `rerun-summary.md:9`）；
+  - `rerun-web-vitest.txt`：Test Files 179 passed、Tests 1381 passed (1381)；
+  - `rerun-web-knip.txt`：Unused files 1 / exports 23 / exported types 21，devDep 和未声明均为 0，即 23/21/1/0/0（见 `rerun-summary.md:11`）。
 
 ## build 证据（版本 B：改用源码层面证据，入口大小和 preload 标「待 build」）
 - 入口大小（原始和 gzip）：**待 build**。旧入口大小：未测。

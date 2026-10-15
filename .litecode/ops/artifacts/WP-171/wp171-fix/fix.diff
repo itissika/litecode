@@ -1,0 +1,87 @@
+diff --git a/src/lsp/mod.rs b/src/lsp/mod.rs
+index f21d306..d7b4d6d 100644
+--- a/src/lsp/mod.rs
++++ b/src/lsp/mod.rs
+@@ -176,18 +176,29 @@ mod tests {
+         );
+     }
+ 
++    /// Drive letters are case-insensitive only on Windows; on Unix `/E:` and
++    /// `/e:` are distinct directories, so this half is Windows-only.
++    #[cfg(windows)]
+     #[test]
+     fn publish_diagnostics_uri_matches_drive_case() {
+         assert!(publish_diagnostics_uri_matches(
+             "file:///E:/litecode/src/a.rs",
+             "file:///e:/litecode/src/a.rs"
+         ));
++    }
++
++    /// Verbatim-URI recovery is string-level and holds on every platform.
++    #[test]
++    fn publish_diagnostics_uri_matches_mangled_verbatim() {
+         assert!(publish_diagnostics_uri_matches(
+             "file:////?/E:/litecode/src/a.rs",
+             "file:///E:/litecode/src/a.rs"
+         ));
+     }
+ 
++    /// `Path::starts_with` on `E:\...` only splits into components on
++    /// Windows; on Unix the whole string is one component.
++    #[cfg(windows)]
+     #[test]
+     fn normalize_makes_verbatim_path_prefix_compatible() {
+         let root = PathBuf::from(r"E:\litecode");
+@@ -219,9 +230,24 @@ mod tests {
+ 
+     #[test]
+     fn uri_to_path_recovers_mangled_verbatim_file_uri() {
+-        let path = uri_to_path("file:////?/E:/litecode/src/agent/core.rs")
+-            .expect("mangled uri should parse after normalize");
+-        assert_eq!(path, PathBuf::from(r"E:\litecode\src\agent\core.rs"));
++        // Platform-independent: the mangled URI is rewritten and parses.
++        let mangled = "file:////?/E:/litecode/src/agent/core.rs";
++        assert_eq!(
++            crate::lsp::uri::normalize_windows_file_uri(mangled),
++            "file:///E:/litecode/src/agent/core.rs"
++        );
++        let path = uri_to_path(mangled).expect("mangled uri should parse after normalize");
++        assert_eq!(
++            Some(path),
++            uri_to_path("file:///E:/litecode/src/agent/core.rs"),
++            "mangled and clean URIs map to the same path"
++        );
++        // The concrete `E:\` form is Windows path semantics.
++        #[cfg(windows)]
++        assert_eq!(
++            uri_to_path(mangled).unwrap(),
++            PathBuf::from(r"E:\litecode\src\agent\core.rs")
++        );
+     }
+ 
+     #[test]
+diff --git a/src/optional/mod.rs b/src/optional/mod.rs
+index 575bbc4..ea81ebf 100644
+--- a/src/optional/mod.rs
++++ b/src/optional/mod.rs
+@@ -465,13 +465,19 @@ mod tests {
+         assert_eq!(mgr.builds.load(Ordering::SeqCst), 2, "1 + webfetch rebuild");
+     }
+ 
++    /// WP-167 contract (tools.md (b)): `reconcile` on a manager with no client
++    /// builds nothing; the first tool call (`ensure_warm`) builds it. Before
++    /// WP-167 reconcile warmed eagerly, which is what this test used to assert.
+     #[test]
+     fn reconcile_starts_warmup_for_network_core() {
+         let global = GlobalSettings::default();
+         let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+         let mgr = EngineManager::new();
+         mgr.reconcile(&resolved);
+-        assert!(mgr.is_warmed("webfetch", &resolved));
++        assert!(!mgr.is_warmed("webfetch", &resolved), "reconcile is lazy");
++        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
++        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
++        assert!(mgr.is_warmed("webfetch", &resolved), "first use warms");
+     }
+ 
+     #[test]

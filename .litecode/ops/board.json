@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-12T05:17:03.842Z",
+  "updated_at": "2026-10-15T02:33:36.164Z",
   "domains": [
     {
       "id": "team-ops",
@@ -257,7 +257,7 @@
         "直接改产品代码",
         "跳过验收进管线"
       ],
-      "status": "active"
+      "status": "fired"
     },
     {
       "id": "tools_steward",
@@ -11548,13 +11548,13 @@
       ],
       "owner": "frontend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
-      "artifact_path": ".litecode/ops/artifacts/WP-158-frontend-slim.md",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-14T18:25:41.474Z",
+      "artifact_path": ".litecode/ops/artifacts/WP-158/WP-158-file-map.md",
+      "progress": "closed done by gm: GM 验收：清单落地抽查通过；子包 diff+file-map 齐；当前树串行重跑 web tsc/vitest 1381/knip 基线一致、desktop tsc/140 全过，原始输出在 artifacts/WP-158。A4 文案 GM 已批。CI 两项待首次 CI 确认。",
+      "status_entered_at": null,
       "parent": null,
       "goal": "按 WP-151 产物与 13 项裁定执行前端瘦身，风险从低到高分批；多语言不在本包",
       "approver": "gm",
@@ -11598,6 +11598,31 @@
           "actor": "frontend_mid",
           "action": "deliver",
           "note": "前端瘦身六包全 done：合并报告已写；web 177/1365 knip 23/21/1/0/0；desktop 128/128；未 commit"
+        },
+        {
+          "ts": "2026-10-15T03:09:46.961Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-158-frontend-slim.md\" -> \".litecode/ops/artifacts/WP-158-frontend-slim.md\""
+        },
+        {
+          "ts": "2026-10-15T03:40:15.783Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "progress: \"awaiting acceptance by gm\" -> \"补证完成：各子包 diff 与 file-map 在 artifacts/WP-158/；合并报告改为 05ab3c4"
+        },
+        {
+          "ts": "2026-10-15T03:40:43.527Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-158-frontend-slim.md\" -> \".litecode/ops/artifacts/WP-158/WP-158-file-map.md\""
+        },
+        {
+          "ts": "2026-10-15T03:40:43.659Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：清单落地抽查通过；子包 diff+file-map 齐；当前树串行重跑 web tsc/vitest 1381/knip 基线一致、desktop tsc/140 全过，原始输出在 artifacts/WP-158。A4 文案 GM 已批。CI 两项待首次 CI 确认。",
+          "to": "done"
         }
       ]
     },
@@ -12091,12 +12116,12 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "ready",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "plan approved by gm",
+      "progress": "closed done by gm: GM 代码侧验收：166/167/168 全 done；serve 已接 start_background，残留 LSP 清扫不挡 LITECODE_READY；exact 证据与 diff 在 artifacts/WP-165。真机 11 项挂账转 Andy 本机验收，不挡本包 close。",
       "status_entered_at": null,
       "parent": null,
       "goal": "按 WP-154 结论把启动工作排到正确阶段：打开前只做必须项，其余挪到打开后立即做或按需做；行为不变",
@@ -12129,6 +12154,31 @@
           "actor": "gm",
           "action": "approve",
           "note": "批。WP-168 需同时覆盖 D5 recordRecent→P2、/api/workspace/engines 与 settings summary→P2、文件树 loadRoot 排到 session/new 之后；D3/D4 只挡 loadURL"
+        },
+        {
+          "ts": "2026-10-15T05:25:53.959Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "接线已在 tip 0554d72；接 IDE exact 验证后 deliver"
+        },
+        {
+          "ts": "2026-10-15T05:25:57.036Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"tip 0554d72：start_background+defer_reconcile+followup+death"
+        },
+        {
+          "ts": "2026-10-15T05:25:57.191Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "后端代码侧收口：166/167 done；165 接线在 tip 0554d72 且 exact 验证绿。Andy 真机项仍挂账（artifacts/WP-165/acceptance-hanging-notes.md），请 GM 验收代码侧并决定何时合成转 Andy。未 push team-framework。"
+        },
+        {
+          "ts": "2026-10-15T05:26:10.922Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 代码侧验收：166/167/168 全 done；serve 已接 start_background，残留 LSP 清扫不挡 LITECODE_READY；exact 证据与 diff 在 artifacts/WP-165。真机 11 项挂账转 Andy 本机验收，不挡本包 close。",
+          "to": "done"
         }
       ]
     },
@@ -12146,13 +12196,13 @@
       ],
       "owner": "session",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus 构建失败）无法编译，等工具链管理员补装后重跑；未标 blocked，等待环境",
-      "status_entered_at": "2026-10-14T18:33:29.824Z",
+      "progress": "closed done by backend_mid: 后端中层验收通过：check --bins EXIT=0（F1 已修）；行为测认 WP-171 run7 全绿含 wp166_tests；F2 认可无兜底（acceptance-backend-mid.md）；impl.diff 已落 artifact。",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "先回 list 再回放；maintain_snapshots 与 warm_snapshot_repo 挪到 P1 后台并持 workspace_snapshot_lock；会话索引首次 tick 与 gc_stale_empty_sessions 挪到 P2；行为不变",
       "approver": "backend_mid",
@@ -12196,6 +12246,25 @@
           "actor": "session",
           "action": "set",
           "note": "progress: \"in progress\" -> \"代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus "
+        },
+        {
+          "ts": "2026-10-15T05:21:52.066Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus  -> \"check --bins EXIT=0（F1 已修）；run7 已覆盖 wp166 行为测全绿；F2 后端中层认可无兜"
+        },
+        {
+          "ts": "2026-10-15T05:22:06.822Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "backend_mid 验收通过：check --bins EXIT=0；行为测认 WP-171 run7 全绿（含 wp166_tests）；F2 不加兜底超时，已写入 artifacts/WP-166/acceptance-backend-mid.md。产物：impl.diff / fix_e0618.diff / acceptance-backend-mid.md"
+        },
+        {
+          "ts": "2026-10-15T05:22:13.763Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "后端中层验收通过：check --bins EXIT=0（F1 已修）；行为测认 WP-171 run7 全绿含 wp166_tests；F2 认可无兜底（acceptance-backend-mid.md）；impl.diff 已落 artifact。",
+          "to": "done"
         }
       ]
     },
@@ -12213,13 +12282,13 @@
       ],
       "owner": "ide",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-167/plan.md",
-      "progress": "重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff 均完整；WP-166 仍 in_progress 未合入，run.rs 未改；session.diff 在现状可 apply，待 WP-166 合入后 rebase；未编译",
-      "status_entered_at": "2026-10-14T18:36:29.392Z",
+      "progress": "closed done by backend_mid: 后端中层验收通过：tip 0554d72；exact 全绿（death_list 9、sweep_gate/spawn 5、lazy-warm 1 + optional_p0×2）；start_background+defer_reconcile+sweep_gate 接线在 tip；F6/routes 无夹带；READY/health/session/new 未动；未 push team-framework。看板曾误写 in_review，已规范为 review 后 close。",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "sweep_orphan_lsp 挪到 P1 后台且在第一个 language server 启动前完成；EngineManager::reconcile 与 remove_legacy_text_index 挪到 P2；LSP --version/npm prefix 探测改为按需（语言通用）；行为不变",
       "approver": "backend_mid",
@@ -12287,6 +12356,13 @@
           "actor": "ide",
           "action": "set",
           "note": "progress: \"tools.diff 第3版（Stopped 后重新启用回归已修+测试），待 Tools 签字；ide.diff 仅  -> \"重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff"
+        },
+        {
+          "ts": "2026-10-15T05:25:51.361Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "后端中层验收通过：tip 0554d72；exact 全绿（death_list 9、sweep_gate/spawn 5、lazy-warm 1 + optional_p0×2）；start_background+defer_reconcile+sweep_gate 接线在 tip；F6/routes 无夹带；READY/health/session/new 未动；未 push team-framework。看板曾误写 in_review，已规范为 review 后 close。",
+          "to": "done"
         }
       ]
     },
@@ -12304,13 +12380,13 @@
       ],
       "owner": "frontend_mid",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
-      "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-14T18:32:20.358Z",
+      "artifact_path": ".litecode/ops/artifacts/WP-168/",
+      "progress": "closed done by backend_mid: 静态验收有条件通过（后端中层 2026-10-15）：S1/S1b/S2–S6 与契约已对照代码+产物核对。真机项（骨架外观、切换闪烁、无边框拖动、骨架期 Alt+F4/任务栏退出、sidecar/health 失败路径、非400字重闪变）挂到 WP-165 验收清单，整线收完后由 GM 转 Andy；提交与 WP-158 混在 05ab3c4 记账；入口 chunk 5.26MB 另开瘦身项。清单见 artifacts/WP-168/real-device-checklist.md。",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "窗口先出骨架与 serve 并行（READY+/health 只挡 loadURL）；monaco 与非首屏字体懒加载；WP-154 前端 A 节其余项按裁定落位（hello/new 不合并，根面板不等 list 的方案不做）；在 WP-158 瘦身改动之上改，不回退",
       "approver": "backend_mid",
@@ -12348,6 +12424,25 @@
           "actor": "frontend_mid",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-15T03:41:15.008Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-168/\""
+        },
+        {
+          "ts": "2026-10-15T03:41:15.156Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "169 desktop/170 web 均 done：骨架窗口并行、READY+/health 只挡 loadURL、monaco 与字体懒加载、engines/summary/loadRoot 等 centre settle；叠在 WP-158 之上不回退；web tsc 0/vitest 1381/knip 无新增，desktop 140/140；证据在 artifacts/WP-168/ 与 WP-158/rerun-*；骨架外观待真机验"
+        },
+        {
+          "ts": "2026-10-15T04:06:13.213Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "静态验收有条件通过（后端中层 2026-10-15）：S1/S1b/S2–S6 与契约已对照代码+产物核对。真机项（骨架外观、切换闪烁、无边框拖动、骨架期 Alt+F4/任务栏退出、sidecar/health 失败路径、非400字重闪变）挂到 WP-165 验收清单，整线收完后由 GM 转 Andy；提交与 WP-158 混在 05ab3c4 记账；入口 chunk 5.26MB 另开瘦身项。清单见 artifacts/WP-168/real-device-checklist.md。",
+          "to": "done"
         }
       ]
     },
@@ -12431,13 +12526,13 @@
       ],
       "owner": "frontend",
       "reviewer": "frontend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
-      "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-14T18:35:35.988Z",
+      "artifact_path": ".litecode/ops/artifacts/WP-168/WP-170-web.md",
+      "progress": "closed done by frontend_mid: S3–S6/Q2 已在 05ab3c4 落地并逐行核对；vite build 通过，首屏无 monaco、只载 400 字重；tsc/vitest 1381/knip 引用 WP-158 重验；入口 5.26MB 偏大与 monaco 无关，另议；未 commit",
+      "status_entered_at": null,
       "parent": "WP-168",
       "goal": "monaco 懒加载；首屏只载 400 字重；engines 与 settings summary 延后到 centre settle 后；文件树 loadRoot 排在 session/new 之后；在 WP-158 改动之上，不 commit",
       "approver": "frontend_mid",
@@ -12475,6 +12570,262 @@
           "actor": "frontend",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-15T03:40:46.509Z",
+          "actor": "frontend",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-168/WP-170-web.md\""
+        },
+        {
+          "ts": "2026-10-15T03:40:46.646Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "S3–S6+Q2 已在 05ab3c4；vite build rc=0（入口无 monaco、首屏仅 400 字重）；tsc 0 / vitest 1381/1381 / knip 23/21/1/0/0 见 WP-158 rerun-*；未 commit"
+        },
+        {
+          "ts": "2026-10-15T03:41:14.850Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "S3–S6/Q2 已在 05ab3c4 落地并逐行核对；vite build 通过，首屏无 monaco、只载 400 字重；tsc/vitest 1381/knip 引用 WP-158 重验；入口 5.26MB 偏大与 monaco 无关，另议；未 commit",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-171",
+      "domain": "team-ops",
+      "title": "新电脑 litecode 环境初始化",
+      "result": "在一台全新电脑上，从零把 litecode 开发环境初始化到可构建、可跑测试、可用 ops 工具集的状态，并沉淀为可重复执行的初始化流程",
+      "done_when": [
+        "全新机器按流程一次跑通，无需人工补步骤",
+        "cargo build 与 web/desktop 依赖安装成功，相关测试可跑",
+        "ops 工具集 validate_all 与 toolchain_check 通过",
+        "初始化流程与实测证据写入 artifact"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-171/init-flow.md",
+      "progress": "closed done by gm: GM 验收：run7 lcfresh 无人工干预全绿（build/test/validate/toolchain/web/desktop）；MIN=2 KILL=1 口径正确；demand/ 已删；证据在 artifacts/WP-171。临时 tip fa9aa97 未 push，合入另议。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "在一台全新电脑上，从零把 litecode 开发环境初始化到可构建、可跑测试、可用 ops 工具集的状态，并沉淀为可重复执行的初始化流程",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-171 计划：新电脑 litecode 环境初始化（direct）\n\nowner：tools_steward；approver：gm。产物目录：`.litecode/ops/artifacts/WP-171/`，包括 init-flow.md 和 evidence/*.log。\n\n## 现状（只读核对）\n- 远端仓库 https://github.com/itissika/litecode.git 是公开的，ops/team-framework 分支在远端存在，匿名就能 clone。\n- Rust：单 crate workspace，edition 2024，仓库里没有 rust-toolchain 文件。web/ 和 desktop/ 都用 npm，各有 package-lock.json。\n- 需要注意的 ops 工具：`cargo_env.sh` 把 `LC_ROOT=/workspace/litecode` 写死了；`toolchain_check.mjs` 只能在 Linux 上跑（依赖 sh、bash、env -i）；`validate_all.mjs` 是纯 node。\n- 结论：这套 ops 工具集是给 Linux 云端电脑用的，所以“新电脑”就按 Linux 来验证。Windows 只在文档里列出差异，不作为本包的验收环境。\n\n## “全新机器”的定义\n在云端电脑上新建一个 Linux 用户 `lcfresh`，HOME 为空，没有 rustup、cargo、node 和任何缓存，clone 到它自己的目录里。这台电脑没有 docker，所以不用容器。系统级依赖（git、gcc/g++、pkg-config、curl 等 apt 包）也由脚本负责安装，并且是幂等的。已有的 /workspace/litecode 完全不碰。\n\n## 步骤\n1. 新增 `.litecode/ops/tools/init_env.sh`（幂等，可重复执行）：\n   1. 检查并用 apt 安装系统依赖；\n   2. 用 rustup 在用户空间安装 stable，装到 `$LC_ROOT/.litecode/ops/.toolchain`，路径与 cargo_env.sh 保持一致；\n   3. 用 fnm 安装 Node 22 LTS；\n   4. 在 web/ 和 desktop/ 下执行 `npm ci`；\n   5. `cargo build --locked`；\n   6. 跑 `validate_all` 和 `toolchain_check`；\n   7. 跑测试烟测：`cargo test --locked` 选相关目标、web vitest `--maxWorkers=1`、ops 的 `node --test`。\n\n   每一步都会写日志，失败立即退出。\n2. 对 cargo_env.sh 做最小改动：`LC_ROOT` 改为 `${LC_ROOT:-/workspace/litecode}`，向后兼容，同时 tools_version 加 1（本人职责）。\n3. 用 `lcfresh` 身份从 clone 开始完整跑一遍，全程不人工介入。中途失败的话，就修脚本、删掉 lcfresh 重新建、从头再跑，直到一次跑通为止。\n4. 把流程、各项版本、耗时和日志摘要写进 init-flow.md，最后 deliver。\n\n## 风险\n- 云端电脑可用内存只有约 3GiB（总共 15GiB）：cargo 用 `CARGO_BUILD_JOBS=2`，vitest 用单 worker，重型任务串行执行。\n- 首次全量编译耗时较长，可能要几十分钟。\n- 仓库里没有 rust-toolchain pin，stable 漂移可能导致不可复现。打算在 init-flow.md 里记录实测通过的版本，pin 是否落库由 gm 决定。\n- desktop 是 Electron，npm ci 需要下载二进制，可能受网络影响。\n- 远端分支落后于本机工作区里未提交的改动，验证以远端 HEAD 为准。\n\n## 需要 gm 确认\n1. 是否同意用云端电脑上的新用户代替真机？\n2. init_env.sh 和 cargo_env.sh 的改动，是否由 gm 经 Andy 确认后再提交（本包不 commit）？\n3. 是否需要 pin rust-toolchain？"
+      },
+      "history": [
+        {
+          "ts": "2026-10-15T02:25:28.387Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 在一台全新电脑上，从零把 litecode 开发环境初始化到可构建、可跑测试、可用 ops 工具集的状态，并沉淀为可重复执行的初始化流程"
+        },
+        {
+          "ts": "2026-10-15T02:29:04.426Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "direct: # WP-171 计划：新电脑 litecode 环境初始化（direct）\n\nowner：tools_steward；approver：gm。产物目录：`.l"
+        },
+        {
+          "ts": "2026-10-15T02:29:04.660Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": "计划见 content。验证环境为云端电脑上的新 Linux 用户 lcfresh（无 docker）。待 gm 确认 3 个问题"
+        },
+        {
+          "ts": "2026-10-15T02:32:30.541Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批准。Q1：同意，云电脑新用户 lcfresh 就是验收环境（活在云电脑上干，Andy 在本地验收）。Q2：本包不 commit，验收后由 GM 经 Andy 确认提交。Q3：要 pin，pin 到实测通过的版本并落库。内存：首编等重型任务独占且空闲≥4.5GiB 才开跑，不够就停下报告，不硬跑；CARGO_BUILD_JOBS=2，配内存看门狗。"
+        },
+        {
+          "ts": "2026-10-15T02:34:05.311Z",
+          "actor": "tools_steward",
+          "action": "start",
+          "note": "开工：轻量改动先行；重型任务需后端中层放行+MemAvailable>=4.5GiB"
+        },
+        {
+          "ts": "2026-10-15T02:35:40.876Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-171/init-flow.md\""
+        },
+        {
+          "ts": "2026-10-15T02:35:41.035Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"扩展范围（gm 批）：移除 demand board 依赖已完成（tick/validate_all/registry"
+        },
+        {
+          "ts": "2026-10-15T02:51:03.050Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"扩展范围（gm 批）：移除 demand board 依赖已完成（tick/validate_all/registry -> \"lcfresh 实测（temp bcda584，一次性例外 3GiB/jobs1）：npm ci×2、cargo bu"
+        },
+        {
+          "ts": "2026-10-15T02:58:11.859Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"lcfresh 实测（temp bcda584，一次性例外 3GiB/jobs1）：npm ci×2、cargo bu -> \"prep ready for rerun: wp171-temp=8c39f247f6dbd8749ee9481380"
+        },
+        {
+          "ts": "2026-10-15T03:13:39.098Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"prep ready for rerun: wp171-temp=8c39f247f6dbd8749ee9481380 -> \"run2 (8c39f24): build/npm ci/validate_all/toolchain_check/o"
+        },
+        {
+          "ts": "2026-10-15T03:34:40.015Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run2 (8c39f24): build/npm ci/validate_all/toolchain_check/o -> \"run3 (5b7d483, 2GiB/jobs1): npm ci/build/validate_all/toolc"
+        },
+        {
+          "ts": "2026-10-15T03:36:12.006Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run3 (5b7d483, 2GiB/jobs1): npm ci/build/validate_all/toolc -> \"init_env v2 (no-fail-fast test stage + ops.test_failures fi"
+        },
+        {
+          "ts": "2026-10-15T03:56:14.694Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"init_env v2 (no-fail-fast test stage + ops.test_failures fi -> \"run4 (527e798) aborted: box rebooted ~11:50 HKT mid-run; lc"
+        },
+        {
+          "ts": "2026-10-15T03:57:30.384Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run4 (527e798) aborted: box rebooted ~11:50 HKT mid-run; lc -> \"run5 prep ready: wp171-temp=6ac33372ce4eb5d641323d5a6192222"
+        },
+        {
+          "ts": "2026-10-15T04:18:34.690Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run5 prep ready: wp171-temp=6ac33372ce4eb5d641323d5a6192222 -> \"run5 (6ac3337): apt deps installed (g++/build-essential/pkg"
+        },
+        {
+          "ts": "2026-10-15T04:40:23.352Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run5 (6ac3337): apt deps installed (g++/build-essential/pkg -> \"run6 (2536258ee61aea6485b8632ad60d00bb3e618920, MIN=2 KILL="
+        },
+        {
+          "ts": "2026-10-15T05:17:23.457Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-171/init-flow.md\" -> \".litecode/ops/artifacts/WP-171/init-flow.md\""
+        },
+        {
+          "ts": "2026-10-15T05:17:23.600Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"run6 (2536258ee61aea6485b8632ad60d00bb3e618920, MIN=2 KILL= -> \"run7 (fa9aa975f8f2ac0e3d69386a318851e271e28dee) FULL PASS e"
+        },
+        {
+          "ts": "2026-10-15T05:17:23.739Z",
+          "actor": "tools_steward",
+          "action": "deliver",
+          "note": "run7 full pass (fa9aa97): init_env v2 MIN=2 KILL=1; npm ci/build/validate_all/toolchain_check/ops/cargo_test/web/desktop all rc=0; evidence/run7 + init-flow.md"
+        },
+        {
+          "ts": "2026-10-15T05:17:50.565Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：run7 lcfresh 无人工干预全绿（build/test/validate/toolchain/web/desktop）；MIN=2 KILL=1 口径正确；demand/ 已删；证据在 artifacts/WP-171。临时 tip fa9aa97 未 push，合入另议。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-172",
+      "domain": "team-ops",
+      "title": "重型校验迁到 GitHub Actions",
+      "result": "Actions 上手动重型流水线可用，WP 验收可链 run URL",
+      "done_when": [
+        "ci-linux.yml 可手动跑通并上传日志 artifact",
+        "ci-init-env.yml（或等价）可手动跑通干净验收",
+        "文档写明中层如何 gh workflow run",
+        "云电脑重型门禁保留作兜底",
+        "无 push/PR 自动全量触发",
+        "validate_all 通过"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-172",
+      "progress": "pushed ops/wp-172-actions-ci (2c97fa7); registered workflows on main (e31f484); runs: ci-linux 38684362565, ci-init-env 38684365761; watching; not delivered",
+      "status_entered_at": "2026-10-15T04:35:03.585Z",
+      "parent": null,
+      "goal": "把 cargo/web/desktop 等重型校验从云电脑迁到 GitHub Actions；云电脑只做改代码和轻量检查。workflow 一律 workflow_dispatch 手动触发，禁止 push/PR 自动全量跑；仅现有 tag→release 可保持自动。工具集管家拥有 workflow 与 init_env 的 Actions 入口。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "方案要点：1) 加 ci-linux.yml：ubuntu-latest 串行 cargo build --locked、cargo test --locked --no-fail-fast、web tsc/vitest、desktop tsc/test；失败继续跑、最后汇总判成败；日志上传 artifact。2) 加 ci-init-env.yml：干净 checkout 跑 init_env 重型段（或 Actions 入口），用于新机/工具链验收。3) 触发硬约束：两条新流水线只能 workflow_dispatch；禁止 on.push / on.pull_request 自动全量。现有 windows tag→release 自动保持不动。4) 使用方式：推独立分支 → gh workflow run -R itissika/litecode --ref <branch> <workflow> → run URL+artifact 写入 WP artifacts。5) 云电脑重型门禁（开跑≥2GiB可用 / 杀线1GiB）保留兜底，中层默认改走 Actions。6) 文档写进 ops 工具说明；validate_all 通过。"
+      },
+      "history": [
+        {
+          "ts": "2026-10-15T04:34:17.835Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 把 cargo/web/desktop 等重型校验从云电脑迁到 GitHub Actions；云电脑只做改代码和轻量检查。workflow 一律 workflow_dispatch 手动触发，禁止 push/PR 自动全量跑；仅现有 tag→release 可保持自动。工具集管家拥有 workflow 与 init_env 的 Actions 入口。"
+        },
+        {
+          "ts": "2026-10-15T04:34:22.282Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "progress: \"drafting\" -> \"方案已定：ci-linux + ci-init-env，仅 workflow_dispatch；tag release"
+        },
+        {
+          "ts": "2026-10-15T04:34:22.420Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "direct: 方案要点：1) 加 ci-linux.yml：ubuntu-latest 串行 cargo build --locked、cargo test --locked"
+        },
+        {
+          "ts": "2026-10-15T04:34:22.553Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-15T04:34:22.688Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "手动触发硬约束；tag release 除外"
+        },
+        {
+          "ts": "2026-10-15T04:35:03.585Z",
+          "actor": "tools_steward",
+          "action": "start",
+          "note": "开始起草 ci-linux / ci-init-env workflow 与 ops 文档；仅轻量，不 push、不触发 CI；WP-171 run6 仍在跑"
+        },
+        {
+          "ts": "2026-10-15T04:36:17.321Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"draft: ci-linux.yml + ci-init-env.yml + gh-workflow-run.md "
+        },
+        {
+          "ts": "2026-10-15T04:37:24.027Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"draft: ci-linux.yml + ci-init-env.yml + gh-workflow-run.md  -> \"GM answers applied: sidecar dispatch-only; ci-linux CARGO_B"
+        },
+        {
+          "ts": "2026-10-15T04:59:48.534Z",
+          "actor": "tools_steward",
+          "action": "set",
+          "note": "progress: \"GM answers applied: sidecar dispatch-only; ci-linux CARGO_B -> \"pushed ops/wp-172-actions-ci (2c97fa7); registered workflow"
         }
       ]
     }
