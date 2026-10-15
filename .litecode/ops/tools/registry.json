@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "tools_version": 19,
-  "updated_at": "2026-10-15T01:45:00.000Z",
+  "tools_version": 20,
+  "updated_at": "2026-10-15T07:30:00.000Z",
   "hot_reload": true,
   "tools": [
     {
@@ -186,8 +186,8 @@
     },
     {
       "id": "ops.cargo_env",
-      "version": 1,
-      "purpose": "source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK",
+      "version": 2,
+      "purpose": "v20：无系统 g++（或 LC_FORCE_USERSPACE_GXX=1）时自动把 .toolchain/gxx-bin 放进 PATH 并设 CXX；set -u 安全（可选变量用 ${VAR:-}）。 source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK",
       "invoke": "source .litecode/ops/tools/cargo_env.sh",
       "required_for": [
         "任何 cargo 调用"
@@ -196,8 +196,8 @@
     },
     {
       "id": "ops.cargo_locked",
-      "version": 1,
-      "purpose": "cargo_env + flock .tmp/cargo-target.lock + timeout + </dev/null；共享 target 的唯一约定入口",
+      "version": 2,
+      "purpose": "v20：取锁前先 registry_verify.sh --quick（只 stat，健康约 0.2s）；发现损坏自动 --fix 并只打印一行；LC_SKIP_VERIFY=1 跳过。 cargo_env + flock .tmp/cargo-target.lock + timeout + </dev/null；共享 target 的唯一约定入口",
       "invoke": ".litecode/ops/tools/cargo_locked.sh [-t SECS] <cargo args>",
       "required_for": [
         "cargo build/test/check（重型任务仍需 backend_mid 排队许可）"
@@ -206,9 +206,9 @@
     },
     {
       "id": "ops.registry_verify",
-      "version": 1,
-      "purpose": "核对 ops cargo registry：src 每个 crate 与 cache/.crate 逐文件比对（存在/大小/sha256）+ .cargo-ok；cache .crate 对 Cargo.lock sha256；--fix 重解压损坏 crate。不编译",
-      "invoke": ".litecode/ops/tools/registry_verify.sh [--fix] [--lock <Cargo.lock>]",
+      "version": 2,
+      "purpose": "v20：新增 --quick（按 tarball 文件清单的 manifest 做存在+大小比对，输出损坏 crate 名）；检测会发现缺 build/、target/ 目录名的整目录丢失；新增 g++ 检查（系统 g++ 在则 ok；否则 --fix 用 .toolchain/debs 离线重解压到 gxx-root/gxx-bin 并编译 std::string 自测）。 核对 ops cargo registry：src 每个 crate 与 cache/.crate 逐文件比对（存在/大小/sha256）+ .cargo-ok；cache .crate 对 Cargo.lock sha256；--fix 重解压损坏 crate。不编译",
+      "invoke": ".litecode/ops/tools/registry_verify.sh [--fix] [--quick] [--lock <Cargo.lock>]",
       "required_for": [
         "磁盘回滚/工具链异常后"
       ],

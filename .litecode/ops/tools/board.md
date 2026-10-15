@@ -5,14 +5,14 @@
 
 ## 当前版本
 
-- `tools_version`: **19**
+- `tools_version`: **20**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-15T01:59:03.786Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-15T07:42:46.960Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -173,25 +173,26 @@
 | WP-155 | └ WP-154A 后端工作区打开链路耗时（只读） | done | ide | backend_mid |
 | WP-156 | └ WP-154B serve 握手与会话加载耗时（只读） | done | session | backend_mid |
 | WP-157 | └ WP-154C 前端握手到可交互耗时（只读） | done | frontend_mid | backend_mid |
-| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | review | frontend_mid | gm |
+| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | done | frontend_mid | gm |
 | WP-159 | └ WP-158 B1 web：低风险删改与依赖声明 | done | frontend | frontend_mid |
 | WP-160 | └ WP-158 B1 desktop：低风险删改 | done | frontend_desktop | frontend_mid |
 | WP-161 | └ WP-158 B2 desktop：跨端桥接契约 | done | frontend_desktop | frontend_mid |
 | WP-162 | └ WP-158 B2 web：改用契约与样式收拢 | done | frontend | frontend_mid |
 | WP-163 | └ WP-158 B3 web：重复组件合并与断开态 | done | frontend | frontend_mid |
 | WP-164 | └ WP-158 B3 desktop：重复实现合并与跳过令牌 | done | frontend_desktop | frontend_mid |
-| WP-165 | 打开工作区启动排位整改 | ready | backend_mid | gm |
-| WP-166 | └ 启动排位整改·Session 域 | in_progress | session | backend_mid |
-| WP-167 | └ 启动排位整改·IDE 域 | in_progress | ide | backend_mid |
-| WP-168 | └ 启动排位整改·壳与前端 | in_progress | frontend_mid | backend_mid |
+| WP-165 | 打开工作区启动排位整改 | done | backend_mid | gm |
+| WP-166 | └ 启动排位整改·Session 域 | done | session | backend_mid |
+| WP-167 | └ 启动排位整改·IDE 域 | done | ide | backend_mid |
+| WP-168 | └ 启动排位整改·壳与前端 | done | frontend_mid | backend_mid |
 | WP-169 | 　└ 启动排位整改·desktop 壳 | done | frontend_desktop | frontend_mid |
-| WP-170 | 　└ 启动排位整改·web 前端 | in_progress | frontend | frontend_mid |
+| WP-170 | 　└ 启动排位整改·web 前端 | done | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-15 | v20：registry_verify 加 --quick 与 g++ 检查（debs 离线重建用户态 g++）；cargo_locked 取锁前自动 quick verify/自修；cargo_env 自动用 gxx-bin、set -u 安全；文档：g++ 两条路径、重启清单、registry 丢 target/build 目录的取证（工具集管家）|
 | 2026-10-15 | v19：watcher 韧性（事故：快照回滚后 watcher 消失 7 小时，tick 无人驱动）。wp_watch v4：ensure / test-callback / watchdog-start|stop，start 等新心跳；ops.wp v6：写操作顺带 softEnsureWatcher；测试 ops_harden 组 10（工具集管家）|
 | 2026-10-13 | v17：validate_board v9 新规则「每个 WP.domain 必须在 board.domains」；ops.wp v5 已封包可 `set --field domain` 重新归类（其他字段仍拒）；WP-070/071→ide-substrate、WP-082/083/089/093/097→client-ux；wp.test 组 7 / ops_harden 组 9 老包数改为从 board 动态计算（>0）并逐包校验（工具集管家）|
 | 2026-10-13 | v16：ops.wp v4 `set --field domain`（owner/approver；须为 board.domains 已有 id；history+log+trace；校验失败回滚）；新增 `reassign --owner`（包 approver 或父包 owner；新 owner 须已注册；只改 owner；history+log；回滚）；用它们把 WP-103 domain ide-base→ide-substrate；新 agent provider（model-config 域 provider/模型部分，bot id 记 agents_cold/bot_ids.json）（工具集管家）|
@@ -436,7 +437,11 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 - 先 unset 旧的 RUSTUP_HOME/CARGO_HOME/RUSTUP_TOOLCHAIN，再设为 `/workspace/litecode/.litecode/ops/.toolchain/rustup` 和 `.../cargo`（绝对路径）。不要自己装工具链。
 - CARGO_TARGET_DIR：默认共享主 target `/workspace/litecode/target`；独立实验（release/bench）用 `.tmp/<wp>/target-*`。
 - 锁：**只用 `/workspace/litecode/.tmp/cargo-target.lock`**（flock，包住整个 cargo 调用；用独立 target 也要拿，作内存护栏）。`.tmp/target.lock` 没有任何脚本/文档引用，是冗余空文件，不要用。重型任务仍需 backend_mid 排队许可。
-- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。
+- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。`--quick` 只做 stat 比对（按 tarball 文件清单 manifest，健康约 0.2s）。
+- v20：`cargo_locked.sh` 取锁前自动跑 `--quick`，有损坏才 `--fix` 并只打印一行；`LC_SKIP_VERIFY=1` 跳过。
+- **反复丢文件的原因（2026-10-15 取证）**：快照/回滚后，registry/src 里**所有名为 `target` 或 `build` 的目录**整体消失（cc 的 src/target、thiserror/rustversion 的 build/、cxx 的 book/src/build、ort-sys 的 build/download、zstd-sys 的 zstd/build 共 12 个 crate），其它文件都在，cache/*.crate 完好；全 registry 里已找不到任何同名目录。仓库 .gitignore 第 2 行 `target` 会匹配任意层级，`build` 不在其中，所以更像快照/恢复工具按「常见构建产物目录名」过滤。结论是推断（没法看到恢复工具本身）。对策：verify 按 tarball 文件清单比对（不是只看目录在不在），cargo_locked 自动修。
+- **g++（v20）**：两条路径互不冲突。① 系统 g++：`sudo apt-get install g++`（backend_mid 本次开机装的 14.2，重启即丢）。② 用户态兜底：`.toolchain/debs`（缓存的 .deb）→ `.toolchain/gxx-root`（dpkg -x）→ `.toolchain/gxx-bin/{g++,c++}`（wrapper，自带 -B/-isystem/-L）。`cargo_env.sh` 在**没有系统 g++ 或 LC_FORCE_USERSPACE_GXX=1** 时自动把 gxx-bin 放进 PATH 并设 CXX；有系统 g++ 时静默不动。`registry_verify.sh --fix` 会离线从 debs 重建 gxx-root/gxx-bin。
+- **重启/快照恢复后清单**：`.litecode/ops/tools/registry_verify.sh --fix`；`node .litecode/ops/tools/wp_watch.mjs ensure && node .litecode/ops/tools/wp_watch.mjs watchdog-start`（需 shell 有 webhook env，v19）。
 
 **Issue 编号**
 - 新建 issue 一律用 `ops.issue_new`：加锁，取 max(文件, git HEAD, `issues/.reserved.json`)+1，独占创建，绝不覆盖。禁止手写编号。

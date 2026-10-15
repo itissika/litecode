@@ -11548,13 +11548,13 @@
       ],
       "owner": "frontend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-158-frontend-slim.md",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-14T18:25:41.474Z",
+      "progress": "closed done by gm: GM 验收：六子包均 done，合并报告 .litecode/ops/artifacts/WP-158-frontend-slim.md；web 177/1365 + tsc0，desktop 128/128 + tsc0。残留：主树多数改动已在 ops/team-framework，两处 Windows workflow yaml 仍未提交（延后）；ps1/yaml 箱内未实跑，靠首次 CI；A4 过渡文案有可见缩短。提交切分仍由 Andy/GM 另定。",
+      "status_entered_at": null,
       "parent": null,
       "goal": "按 WP-151 产物与 13 项裁定执行前端瘦身，风险从低到高分批；多语言不在本包",
       "approver": "gm",
@@ -11598,6 +11598,13 @@
           "actor": "frontend_mid",
           "action": "deliver",
           "note": "前端瘦身六包全 done：合并报告已写；web 177/1365 knip 23/21/1/0/0；desktop 128/128；未 commit"
+        },
+        {
+          "ts": "2026-10-15T03:07:25.944Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：六子包均 done，合并报告 .litecode/ops/artifacts/WP-158-frontend-slim.md；web 177/1365 + tsc0，desktop 128/128 + tsc0。残留：主树多数改动已在 ops/team-framework，两处 Windows workflow yaml 仍未提交（延后）；ps1/yaml 箱内未实跑，靠首次 CI；A4 过渡文案有可见缩短。提交切分仍由 Andy/GM 另定。",
+          "to": "done"
         }
       ]
     },
@@ -12091,12 +12098,12 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "ready",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "plan approved by gm",
+      "progress": "closed done by gm: GM 验收：云盒 check 通过；定向测试/vite build/真机转 Andy 本地补验",
       "status_entered_at": null,
       "parent": null,
       "goal": "按 WP-154 结论把启动工作排到正确阶段：打开前只做必须项，其余挪到打开后立即做或按需做；行为不变",
@@ -12129,6 +12136,19 @@
           "actor": "gm",
           "action": "approve",
           "note": "批。WP-168 需同时覆盖 D5 recordRecent→P2、/api/workspace/engines 与 settings summary→P2、文件树 loadRoot 排到 session/new 之后；D3/D4 只挡 loadURL"
+        },
+        {
+          "ts": "2026-10-15T07:42:16.588Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "子包 166/167/168(169/170) 全部 done。云盒已验：Rust check --bins 通过（166、167）、前端 tsc/vitest/knip 全过、desktop 单测 140/140。未跑（转 Andy 本机）：Rust 定向测试（WP-166 四组；WP-167 见 artifacts/WP-167/verify-local.md）、vite build 与首屏三项核对（WP-168/WP-170-web.md）、骨架窗口真机项。已知风险：WP-167 的 9 条测试仅 unix，另立 issue。均未 commit。"
+        },
+        {
+          "ts": "2026-10-15T07:42:46.661Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：云盒 check 通过；定向测试/vite build/真机转 Andy 本地补验",
+          "to": "done"
         }
       ]
     },
@@ -12146,13 +12166,13 @@
       ],
       "owner": "session",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
-      "artifact_path": null,
-      "progress": "代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus 构建失败）无法编译，等工具链管理员补装后重跑；未标 blocked，等待环境",
-      "status_entered_at": "2026-10-14T18:33:29.824Z",
+      "artifact_path": ".litecode/ops/artifacts/WP-166/impl.diff",
+      "progress": "closed done by backend_mid: 验收：代码+impl.diff 在位；IDE 附条件签署且阻断项（cfg(test) 错挂）已修；check --bins -j1 10:00 通过 rc=0；四组定向测试未跑，转 Andy 本地补验（session:: serve:: config:: wp166_tests）",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "先回 list 再回放；maintain_snapshots 与 warm_snapshot_repo 挪到 P1 后台并持 workspace_snapshot_lock；会话索引首次 tick 与 gc_stale_empty_sessions 挪到 P2；行为不变",
       "approver": "backend_mid",
@@ -12196,6 +12216,37 @@
           "actor": "session",
           "action": "set",
           "note": "progress: \"in progress\" -> \"代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus "
+        },
+        {
+          "ts": "2026-10-15T03:07:07.819Z",
+          "actor": "session",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-166/impl.diff\""
+        },
+        {
+          "ts": "2026-10-15T03:07:08.082Z",
+          "actor": "session",
+          "action": "set",
+          "note": "progress: \"代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus  -> \"blocked：云盒重启后缺 c++/g++（link-cplusplus 构建失败），无法编译验证；代码与 diff"
+        },
+        {
+          "ts": "2026-10-15T03:08:40.711Z",
+          "actor": "session",
+          "action": "set",
+          "note": "progress: \"blocked：云盒重启后缺 c++/g++（link-cplusplus 构建失败），无法编译验证；代码与 diff -> \"g++ 已补装（sudo apt install g++，2026-10-15 11:07 HKT）；代码与 impl"
+        },
+        {
+          "ts": "2026-10-15T05:53:00.466Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": "代码+diff 完成；cargo check --bins 曾在云盒通过(10:00, rc=0)，四组定向测试未在云盒跑，验证转 Andy 本地"
+        },
+        {
+          "ts": "2026-10-15T05:54:43.021Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收：代码+impl.diff 在位；IDE 附条件签署且阻断项（cfg(test) 错挂）已修；check --bins -j1 10:00 通过 rc=0；四组定向测试未跑，转 Andy 本地补验（session:: serve:: config:: wp166_tests）",
+          "to": "done"
         }
       ]
     },
@@ -12213,13 +12264,13 @@
       ],
       "owner": "ide",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-167/plan.md",
-      "progress": "重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff 均完整；WP-166 仍 in_progress 未合入，run.rs 未改；session.diff 在现状可 apply，待 WP-166 合入后 rebase；未编译",
-      "status_entered_at": "2026-10-14T18:36:29.392Z",
+      "progress": "closed done by backend_mid: 验收：ide.diff（8 文件）+Tools 三轮签字的 tools.diff+run.rs 两处；check --bins -j1 通过（错误 0，Send 无错）；3 条 lsp/tools 警告非本包引入；定向测试未跑，转 Andy 本机补验，命令见 artifacts/WP-167/verify-local.md",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "sweep_orphan_lsp 挪到 P1 后台且在第一个 language server 启动前完成；EngineManager::reconcile 与 remove_legacy_text_index 挪到 P2；LSP --version/npm prefix 探测改为按需（语言通用）；行为不变",
       "approver": "backend_mid",
@@ -12287,6 +12338,19 @@
           "actor": "ide",
           "action": "set",
           "note": "progress: \"tools.diff 第3版（Stopped 后重新启用回归已修+测试），待 Tools 签字；ide.diff 仅  -> \"重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff"
+        },
+        {
+          "ts": "2026-10-15T07:41:34.065Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "代码、diff、Tools 签字、check --bins 通过（错误 0，Send 无错，峰值 RSS 1.36GiB，最低 MemAvailable 5.29GiB）；未跑：lsp::、engines::、optional::、tools::、startup_order_death_list（两条 serve_run_* 已对照代码论证应满足）、optional_lsp，转 Andy 本地补验，命令见 .litecode/ops/artifacts/WP-167/verify-local.md。"
+        },
+        {
+          "ts": "2026-10-15T07:42:16.194Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收：ide.diff（8 文件）+Tools 三轮签字的 tools.diff+run.rs 两处；check --bins -j1 通过（错误 0，Send 无错）；3 条 lsp/tools 警告非本包引入；定向测试未跑，转 Andy 本机补验，命令见 artifacts/WP-167/verify-local.md",
+          "to": "done"
         }
       ]
     },
@@ -12304,13 +12368,13 @@
       ],
       "owner": "frontend_mid",
       "reviewer": "backend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-14T18:32:20.358Z",
+      "progress": "closed done by backend_mid: 验收：desktop tsc 0/单测 140/knip 无新增；web tsc 0/vitest 1381/knip 持平；vite build 未跑，转 Andy 真机验（骨架外观、闪烁、窗口拖动、入口 chunk、modulepreload 无 monaco、首屏两份 400 字重字体）",
+      "status_entered_at": null,
       "parent": "WP-165",
       "goal": "窗口先出骨架与 serve 并行（READY+/health 只挡 loadURL）；monaco 与非首屏字体懒加载；WP-154 前端 A 节其余项按裁定落位（hello/new 不合并，根面板不等 list 的方案不做）；在 WP-158 瘦身改动之上改，不回退",
       "approver": "backend_mid",
@@ -12348,6 +12412,19 @@
           "actor": "frontend_mid",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-15T05:54:01.669Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "骨架窗口、懒加载 monaco/字体、recordRecent 与 engines/summary/loadRoot 后移均已完成；tsc/vitest/knip 通过；骨架外观与 build 三项待真机验"
+        },
+        {
+          "ts": "2026-10-15T05:54:43.307Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "验收：desktop tsc 0/单测 140/knip 无新增；web tsc 0/vitest 1381/knip 持平；vite build 未跑，转 Andy 真机验（骨架外观、闪烁、窗口拖动、入口 chunk、modulepreload 无 monaco、首屏两份 400 字重字体）",
+          "to": "done"
         }
       ]
     },
@@ -12431,13 +12508,13 @@
       ],
       "owner": "frontend",
       "reviewer": "frontend_mid",
-      "status": "in_progress",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": null,
-      "progress": "in progress",
-      "status_entered_at": "2026-10-14T18:35:35.988Z",
+      "progress": "closed done by frontend_mid: S3–S6 落地；tsc、vitest 1381、knip 持平；vite build 未跑（GM 定版本 B），入口大小/modulepreload/首屏字体三项待 Andy 本地验证，命令见 WP-170-web.md",
+      "status_entered_at": null,
       "parent": "WP-168",
       "goal": "monaco 懒加载；首屏只载 400 字重；engines 与 settings summary 延后到 centre settle 后；文件树 loadRoot 排在 session/new 之后；在 WP-158 改动之上，不 commit",
       "approver": "frontend_mid",
@@ -12475,6 +12552,19 @@
           "actor": "frontend",
           "action": "start",
           "note": null
+        },
+        {
+          "ts": "2026-10-15T05:53:29.383Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-15T05:54:01.517Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "S3–S6 落地；tsc、vitest 1381、knip 持平；vite build 未跑（GM 定版本 B），入口大小/modulepreload/首屏字体三项待 Andy 本地验证，命令见 WP-170-web.md",
+          "to": "done"
         }
       ]
     }

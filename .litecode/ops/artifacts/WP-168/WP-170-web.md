@@ -115,18 +115,7 @@ rg -o "@font-face\{[^}]*font-weight:[0-9]+" dist/assets/*.css | sort | uniq -c
 ```
 环境变量：`PATH=/exec-daemon:$PATH`（用 v22.14.0）；`NODE_OPTIONS=--max-old-space-size=2048` 仅用于 build。
 
-## build 证据（版本 A：build 成功后填数）
-- 旧入口大小：build 前 web/dist 不存在，旧报告没有记录，写「未测」。
-- 入口 chunk：`assets/<填>.js`，原始 `<填> kB`，gzip `<填> kB`。
-- 入口 chunk 和 index.html 的 modulepreload 中没有 monaco：
-  - index.html 的 script 和 modulepreload 列表：`<填>`，不含 monaco；
-  - 入口 chunk 的静态 import 列表：`<填>`，不含 monaco；
-  - monaco 单独成的 chunk 名：`<填>`（由 `rg -l monaco dist/assets` 得到）。
-- 首屏只加载两份 400 字重：
-  - index.html 引用的 css 里只含 inter 400 和 jetbrains-mono 400 的 @font-face：`<填>`；
-  - 其余 5 份字重在 `fontsDeferred` 对应的 chunk 里：`<填>`。
-
-## build 证据（版本 B：改用源码层面证据，入口大小和 preload 标「待 build」）
+## build 证据（采用源码层面证据；版本 A 已删除）
 - 入口大小（原始和 gzip）：**待 build**。旧入口大小：未测。
 - modulepreload 里有没有 monaco：**待 build**。
 - monaco 不在首屏的源码依据：
@@ -136,3 +125,20 @@ rg -o "@font-face\{[^}]*font-weight:[0-9]+" dist/assets/*.css | sort | uniq -c
 - 首屏只有两份 400 字重的依据：
   - `bootImports.test.ts`：main.tsx 静态引入的 `@fontsource/*` 只有 inter/400.css 和 jetbrains-mono/400.css；另 5 份只在 `fontsDeferred.ts`，且只通过 `import("./fontsDeferred")` 动态加载；
   - 产物层面的 @font-face 核对：**待 build**。
+
+## 收口说明（2026-10-15 13:53，GM 指示）
+**vite build 未在云箱跑。** 第一次在 MemAvailable 降到 4.22GiB 时被 guard 杀掉，之后按 GM 指示不再在云箱重跑。以下三项**待 build，由 Andy 本地验证**：
+1. 入口 chunk 大小（原始和 gzip）；旧入口大小：未测。
+2. 入口 chunk 和 index.html 的 modulepreload 里没有 monaco，并确认 monaco 单独成的 chunk 名。
+3. 首屏只加载 inter 400 和 jetbrains-mono 400 两份字体。
+
+本地核对命令（在 web/ 下）：
+```
+npm run build        # 即 tsc -b && vite build，输出到 dist/
+ls -l dist/assets | sort -k5 -n | tail -5
+gzip -c dist/assets/<入口chunk>.js | wc -c
+rg -o '<script[^>]*src="[^"]+"|<link[^>]*modulepreload[^>]*>|<link[^>]*stylesheet[^>]*>' dist/index.html
+rg -l "monaco" dist/assets -g '*.js'          # monaco 单独成的 chunk；入口 chunk 和 index.html 引用里不应出现
+rg -o "@font-face\{[^}]*font-weight:[0-9]+" dist/assets/*.css | sort | uniq -c   # index.html 引用的 css 里只应有两份 400
+```
+云箱已通过的验证：tsc -b rc=0、vitest 179 个文件 / 1381 条全过、knip 23/21/1/0/0（见上文）。
