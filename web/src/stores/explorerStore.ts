@@ -2,17 +2,17 @@ import { create } from "zustand";
 
 import { remapPathPrefix } from "../utils/path";
 
-export type ExplorerClipboard = {
+type ExplorerClipboard = {
   mode: "cut" | "copy";
   paths: string[];
 };
 
-export type InlineEdit =
+type InlineEdit =
   | { kind: "rename"; path: string }
   | { kind: "newFile"; parent: string }
   | { kind: "newFolder"; parent: string };
 
-export type ExplorerMenu = {
+type ExplorerMenu = {
   x: number;
   y: number;
   /** Workspace path, or `null` for blank/root area. */

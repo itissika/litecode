@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   knowledgeFixture,
   knowledgeFolderFixture,
-} from "../../lib/knowledge/fixture";
+} from "../../test/fixtures/knowledge";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import {
   knowledgeSnapshot,

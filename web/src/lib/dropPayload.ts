@@ -6,13 +6,13 @@ export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
 /** Monaco selection: path plus 1-based line span. The plain-text payload stays the code. */
 export const LITECODE_SPAN_MIME = "application/x-litecode-span";
 
-export interface CodeSpan {
+interface CodeSpan {
   path: string;
   start: number;
   end: number;
 }
 
-export interface LineSelection {
+interface LineSelection {
   isEmpty(): boolean;
   startLineNumber: number;
   endLineNumber: number;

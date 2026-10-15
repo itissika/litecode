@@ -45,12 +45,12 @@ export function assertDevUiConfigured(uiUrl: string | null, upstreamFile: string
 }
 
 /** Loopback only. A published upstream is an open proxy target for the dev server. */
-export function isLoopbackDevHost(hostname: string): boolean {
+function isLoopbackDevHost(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
-export function sidecarDevOrigin(readyUrl: string): string {
+function sidecarDevOrigin(readyUrl: string): string {
   let url: URL;
   try {
     url = new URL(readyUrl);

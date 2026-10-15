@@ -25,7 +25,7 @@ function selectionObserver(view: EditorView): SelectionObserver {
  * stays on the opener until the view is told to follow that document.
  * `updateRoot` only clears the cache; the selection listener stays behind.
  */
-export function rebindEditorView(view: EditorView): void {
+function rebindEditorView(view: EditorView): void {
   if (view.isDestroyed) return;
   const dom = view.dom;
   if (!dom.isConnected) return;

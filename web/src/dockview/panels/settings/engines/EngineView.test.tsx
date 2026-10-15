@@ -14,6 +14,7 @@ import type { EnginesDetail } from "../../../../api/workspace";
 import type { WorkspaceEnginesDoc } from "../../../../api/settings";
 import * as workspace from "../../../../api/workspace";
 import { useSettingsStore } from "../../../../stores/settingsStore";
+import { stubDesktopBridge } from "../../../../test/desktopBridge";
 
 const installServer = vi.spyOn(workspace, "installServer");
 const getInstallStatus = vi.spyOn(workspace, "getInstallStatus");
@@ -332,18 +333,19 @@ describe("EngineView embed model (slim installer)", () => {
   }
 
   it("lets the download card own the missing-model state, then goes fully green", () => {
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       getSessionMode: () => "local",
       ensureComponent: vi.fn(),
       getComponentStatus: vi.fn(async () => ({
-        id: "embed-model",
+        id: "embed-model" as const,
         installed: false,
         path: null,
         downloading: false,
         error: null,
+        status: "idle" as const,
       })),
       onComponentProgress: () => () => undefined,
-    };
+    });
     const { rerender } = render(<EngineView detail={missingModel()} onChanged={() => {}} />);
     const retrieval = within(section());
     expect(retrieval.getByRole("group", { name: "Embedding model download" })).toBeTruthy();
@@ -374,18 +376,19 @@ describe("EngineView embed model (slim installer)", () => {
   it("after a successful download restarts the failed engine and refetches detail", async () => {
     const refresh = vi.spyOn(workspace, "refreshRetrieval").mockResolvedValue({ desired: true, mode: "full" } as never);
     const detailSpy = vi.spyOn(workspace, "getEnginesDetail").mockResolvedValue(missingModel());
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       getSessionMode: () => "local",
-      ensureComponent: vi.fn(async () => ({ id: "embed-model", path: "C:/m", downloaded: true })),
+      ensureComponent: vi.fn(async () => ({ id: "embed-model" as const, path: "C:/m", downloaded: true })),
       getComponentStatus: vi.fn(async () => ({
-        id: "embed-model",
+        id: "embed-model" as const,
         installed: false,
         path: null,
         downloading: false,
         error: null,
+        status: "idle" as const,
       })),
       onComponentProgress: () => () => undefined,
-    };
+    });
     const onChanged = vi.fn();
     render(<EngineView detail={missingModel()} onChanged={onChanged} />);
     fireEvent.click(within(section()).getByRole("button", { name: "Download" }));

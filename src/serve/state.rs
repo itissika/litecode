@@ -76,7 +76,6 @@ impl ServeState {
         // Snapshot the sessions DB path up front: `workspace_state` is moved
         // into `RuntimeHandle::new` below, so we cannot borrow it afterwards.
         let sessions_db_path = workspace_state.paths.sessions_db.clone();
-        let snapshots_dir = workspace_state.paths.snapshots_dir.clone();
         let litecode_dir = sessions_db_path
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -94,20 +93,9 @@ impl ServeState {
                     sessions_db_path.display()
                 )
             })?;
-        match crate::session::snapshot::maintain_snapshots(
-            &snapshots_dir,
-            &session_data.list_session_ids_blocking().unwrap_or_default(),
-        ) {
-            Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {
-                tracing::info!(
-                    orphans = report.orphans_removed,
-                    stale = report.stale_removed,
-                    "snapshot maintenance"
-                );
-            }
-            Err(e) => tracing::warn!(error = %e, "snapshot maintenance failed"),
-            _ => {}
-        }
+        // WP-166: snapshot maintenance (and the snapshot-repo warm) run in the
+        // background after bind, under workspace_snapshot_lock — see
+        // `serve::router::spawn_snapshot_upkeep`.
         let workspace = WorkspaceService::new(project.clone())?;
         let terminal_hub = Arc::new(TerminalHub::new());
         install_hub(Arc::clone(&terminal_hub));

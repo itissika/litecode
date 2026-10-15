@@ -5,7 +5,7 @@ import { citationRefKey, resolveCitation, type Citation } from "./refDisplay";
 import { externalPreviewId, useEditorStore } from "../../stores/editorStore";
 import { knowledgeRefState, useKnowledgeStore } from "../../stores/knowledgeStore";
 
-export const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
+const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
 
 /** Show the knowledge graph on the main center. */
 export function openKnowledgeGraphPanel(): void {

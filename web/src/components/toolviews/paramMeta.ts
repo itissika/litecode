@@ -6,7 +6,7 @@
  * default JSON dump in `ToolContentView`. Adding a tool = one entry here + one
  * registration in `registry.tsx` — no changes to the dispatcher.
  */
-export interface ToolParamConfig {
+interface ToolParamConfig {
   /** Fields rendered inline by the view. Every other field lands in the infoicon. */
   primary: string[];
 }

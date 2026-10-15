@@ -27,7 +27,7 @@ import { useToastStore } from "../stores/toastStore";
  */
 
 /** One feature worth a single line of guidance once the workspace is usable. */
-export interface ExploreStep {
+interface ExploreStep {
   id: string;
   emoji: string;
   /** Markdown, one or two short sentences at most. */
@@ -42,11 +42,11 @@ export interface ExploreStep {
  * The explore list. v1 consumes only the max-steps step; the shape is here so
  * later steps are data, not UI.
  */
-export const EXPLORE_STEPS: ExploreStep[] = [
+const EXPLORE_STEPS: ExploreStep[] = [
   {
     id: "max-steps",
     emoji: "🧗",
-    md: "Default **Max steps** is 50 — long tasks stop early. 200 is a saner default.",
+    md: "Long tasks may need ~200.",
     section: "agents",
     anchor: "max-steps",
   },

@@ -6,7 +6,7 @@ import { useTurnStore } from "../stores/turnStore";
 import { clearFoldCardOpen } from "./foldCardState";
 import { isSubagentRosterHeld } from "./subagentRosterHolds";
 
-export interface TeardownScope {
+interface TeardownScope {
   /**
    * Also drop the local projection (message + turn slices). `false` keeps them
    * so the next expand can catch up INCREMENTALLY instead of cold-starting.

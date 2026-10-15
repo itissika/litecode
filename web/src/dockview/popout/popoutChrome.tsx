@@ -6,7 +6,7 @@ import { bindPopoutPin } from "./popoutPin";
 const LAYOUT_WATCH_MS = 100;
 
 /** Marks a popout document so its tab-bar void stays a window drag handle. */
-export const POPOUT_DOCUMENT_CLASS = "litecode-popout";
+const POPOUT_DOCUMENT_CLASS = "litecode-popout";
 
 /** Copy the main document's dockview theme onto a popout document. */
 export function preparePopoutDocument(doc: Document, dvTheme: string): void {

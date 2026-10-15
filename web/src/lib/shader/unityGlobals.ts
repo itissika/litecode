@@ -10,7 +10,7 @@
 // Unity 内置变量定义
 // ============================================================================
 
-export interface UnityVariable {
+interface UnityVariable {
   name: string;
   type: string;
   description: string;
@@ -368,7 +368,7 @@ export const unityBuiltinVariables: UnityVariable[] = [
 // Unity 内置函数定义
 // ============================================================================
 
-export interface UnityFunction {
+interface UnityFunction {
   name: string;
   signature: string;
   description: string;
@@ -718,7 +718,7 @@ export const unityBuiltinFunctions: UnityFunction[] = [
 // Unity 常用宏定义
 // ============================================================================
 
-export interface UnityMacro {
+interface UnityMacro {
   name: string;
   description: string;
   usage?: string;
@@ -903,7 +903,7 @@ export const unityBuiltinMacros: UnityMacro[] = [
 // ShaderLab 关键字定义
 // ============================================================================
 
-export interface ShaderLabKeyword {
+interface ShaderLabKeyword {
   name: string;
   description: string;
   snippet?: string;
@@ -1063,7 +1063,7 @@ export const shaderLabKeywords: ShaderLabKeyword[] = [
 // ShaderLab 属性类型
 // ============================================================================
 
-export interface ShaderLabPropertyType {
+interface ShaderLabPropertyType {
   name: string;
   description: string;
   defaultValue: string;
@@ -1143,7 +1143,7 @@ export const shaderLabPropertyTypes: ShaderLabPropertyType[] = [
 // Pragma 指令
 // ============================================================================
 
-export interface PragmaDirective {
+interface PragmaDirective {
   name: string;
   description: string;
   example: string;

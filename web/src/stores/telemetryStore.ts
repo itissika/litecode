@@ -13,7 +13,7 @@ export function formatRssMb(rssKb: number): string {
   return `${mb.toFixed(1)}M`;
 }
 
-export interface MemoryBreakdown {
+interface MemoryBreakdown {
   totalKb: number | null;
   coreKb: number | null;
   embedKb: number | null;

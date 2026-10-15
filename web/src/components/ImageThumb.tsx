@@ -7,7 +7,7 @@ const objectUrls = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
 
 /** File name inside a `litecode-media:` ref, or null when it is not one. */
-export function mediaNameFromRef(mediaRef: string): string | null {
+function mediaNameFromRef(mediaRef: string): string | null {
   const name = mediaRef.startsWith("litecode-media:")
     ? mediaRef.slice("litecode-media:".length)
     : "";

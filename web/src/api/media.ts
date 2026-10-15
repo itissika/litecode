@@ -1,6 +1,6 @@
 import { apiFetch } from "./auth";
 
-export interface UploadedMedia {
+interface UploadedMedia {
   ref: string;
   mime: string;
   width: number;

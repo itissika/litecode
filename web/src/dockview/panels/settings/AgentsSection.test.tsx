@@ -161,7 +161,7 @@ describe("AgentsSection persist UX", () => {
     expect(screen.queryByText("Max steps")).toBeNull();
     expect(
       screen.getByText(
-        "Compaction only assigns a model. Prompt, tools, and max steps are built in.",
+        "Only the model is configurable.",
       ),
     ).toBeTruthy();
   });
@@ -753,7 +753,7 @@ describe("AgentsSection first-run anchor", () => {
     });
     const row = document.querySelector('[data-anchor="max-steps"]');
     expect(row?.className).toContain("ring-(--_dk-amber-500)");
-    expect(screen.getByText(/runs out on long tasks/)).toBeTruthy();
+    expect(screen.getByText(/Long tasks may need ~200/)).toBeTruthy();
     expect(document.activeElement).toBe(row?.querySelector("input"));
     expect(useSettingsStore.getState().focusAnchor).toBeNull();
     // Guidance only: the 50 → 200 edit stays the user's.
@@ -771,14 +771,14 @@ describe("AgentsSection first-run anchor", () => {
     await waitFor(() => {
       expect(useSettingsStore.getState().focusAnchor).toBeNull();
     });
-    expect(screen.queryByText(/runs out on long tasks/)).toBeNull();
+    expect(screen.queryByText(/Long tasks may need ~200/)).toBeNull();
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it("stays quiet without an anchor", () => {
     useSettingsStore.setState({ focusAnchor: null });
     render(<AgentsSection />);
-    expect(screen.queryByText(/runs out on long tasks/)).toBeNull();
+    expect(screen.queryByText(/Long tasks may need ~200/)).toBeNull();
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 });

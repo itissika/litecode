@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CaretDown, CaretUp } from "@phosphor-icons/react";
 
 import { useConnectionStore } from "../stores/connectionStore";
@@ -8,6 +8,7 @@ import {
   useTelemetryStore,
 } from "../stores/telemetryStore";
 import type { LogLine } from "../api/types";
+import { REMOTE_SERVE_HINT } from "../lib/uiCopy";
 
 function formatLogTime(tsMs: number): string {
   const d = new Date(tsMs);
@@ -55,6 +56,16 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
+  // Desktop bridge contract: `onRemoteDisconnected` sets the disconnected look.
+  // Nothing here clears it — after reconnect desktop reloads the whole window,
+  // which remounts this bar in its normal state.
+  const [remoteDisconnected, setRemoteDisconnected] = useState(false);
+  useEffect(() => {
+    return window.litecode?.onRemoteDisconnected(() =>
+      setRemoteDisconnected(true),
+    );
+  }, []);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el || !logsExpanded) return;
@@ -81,7 +92,10 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
       : formatMemoryTitle(memory);
 
   return (
-    <div className="status-bar-root">
+    <div
+      className="status-bar-root"
+      data-disconnected={remoteDisconnected ? "" : undefined}
+    >
       {logsExpanded ? (
         <div
           ref={scrollRef}
@@ -102,7 +116,7 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
         {sessionMode === "remote" ? (
           <span
             className="status-bar-rss"
-            title="Connected to a remote litecode serve (no local sidecar)"
+            title={REMOTE_SERVE_HINT}
           >
             Remote
           </span>

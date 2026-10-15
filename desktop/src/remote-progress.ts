@@ -1,22 +1,6 @@
-export type RemoteProgressStage =
-  | "authenticating"
-  | "download"
-  | "upload"
-  | "verify"
-  | "extract"
-  | "ready"
-  | "starting"
-  | "attaching";
+import type { RemoteProgressEvent } from "./bridge-contract";
 
-export type RemoteProgressEvent = {
-  stage: RemoteProgressStage;
-  /** 0..1 */
-  ratio: number;
-  message: string;
-};
-
-/** IPC channel for managed remote deploy progress (must match preload.ts literal). */
-export const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
+export type { RemoteProgressEvent };
 
 /** Minimal shape of a ComponentProgressEvent used for Open Remote mirroring. */
 export type ComponentProgressLike = {

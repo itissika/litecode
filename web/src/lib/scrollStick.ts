@@ -24,7 +24,7 @@ export const SCROLL_INTENT_KEYS = new Set([
  * (other than `root`). The message list and FoldCards use this so scrolling an
  * inner scroller (a FoldCard, a bash output pre) never unpins the outer one.
  */
-export function wheelTargetIsNestedScroller(
+function wheelTargetIsNestedScroller(
   target: EventTarget | null,
   root: HTMLElement,
 ): boolean {

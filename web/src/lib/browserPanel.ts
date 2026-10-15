@@ -2,21 +2,11 @@ import { onPanelRemoved } from "../dockview/workbench/events";
 import { openPanel } from "../dockview/workbench/commands";
 import type { GroupRole } from "../dockview/workbench/model";
 
-export type BrowserBounds = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-export type BrowserPanelState = {
-  id: string;
-  url: string;
-  title: string;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  loading: boolean;
-};
+// Single source: desktop/src/bridge-contract.ts (type-only).
+export type {
+  BrowserBounds,
+  BrowserState as BrowserPanelState,
+} from "../../../desktop/src/bridge-contract";
 
 const SCHEME = /^[a-zA-Z][a-zA-Z+\-.]*:/;
 const MAX_URL_LENGTH = 8000;

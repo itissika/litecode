@@ -17,6 +17,9 @@ pub struct EngineUsability {
 impl WorkspaceEngines {
     /// Compute retrieval + LSP detail payloads used by HTTP and other adapters.
     pub fn engines_detail_view(&self, workspace_root: &Path) -> Value {
+        // WP-167: the detail view is a first need for the deferred LSP probe,
+        // so state/error/usable read exactly as with the former eager probe.
+        let _ = self.ensure_lsp_probed_blocking();
         let statuses = self.workspace_engine_statuses(workspace_root);
         let retrieval_status = statuses
             .get("code_search")
@@ -45,6 +48,7 @@ impl WorkspaceEngines {
     }
 
     pub fn lsp_usability(&self, workspace_root: &Path) -> EngineUsability {
+        let _ = self.ensure_lsp_probed_blocking();
         let status = self
             .workspace_engine_statuses(workspace_root)
             .get("lsp")

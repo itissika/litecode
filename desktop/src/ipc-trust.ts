@@ -36,7 +36,7 @@ export function exactHttpOrigin(raw: string): string | null {
   }
 }
 
-export function classifySurfaceUrl(
+function classifySurfaceUrl(
   raw: string,
   context: IpcTrustContext,
 ): IpcSurface | null {
@@ -124,7 +124,7 @@ function parsedHttpUrl(raw: string): URL | null {
 }
 
 /** Workbench popout document. Pathname only — the query is checked separately. */
-export function isWorkbenchPopoutDocument(
+function isWorkbenchPopoutDocument(
   raw: string,
   context: IpcTrustContext | null,
 ): boolean {

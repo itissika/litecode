@@ -5,7 +5,7 @@ import { INITIAL, type StateStack } from "shiki/textmate";
 import { getMarkdownHighlighter } from "./shiki";
 import { shaderSuggests, type ShaderSuggestKind } from "./shader/completions";
 
-export const SHADER_LANGUAGE_IDS = ["hlsl", "shaderlab"] as const;
+const SHADER_LANGUAGE_IDS = ["hlsl", "shaderlab"] as const;
 
 const C_LIKE: Monaco.languages.LanguageConfiguration = {
   comments: { lineComment: "//", blockComment: ["/*", "*/"] },

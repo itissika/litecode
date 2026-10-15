@@ -35,20 +35,20 @@ export function isCompactCutRow(row: HumanRow): boolean {
 }
 
 /** A durable background job event: visible as a system mark, never a chat bubble. */
-export function isBashExitReminderRow(
+function isBashExitReminderRow(
   row: HumanRow,
 ): row is BashExitReminderLogRow {
   return row.kind === "reminder/bash_exit";
 }
 
-export function isSubagentSettledRow(
+function isSubagentSettledRow(
   row: HumanRow,
 ): row is SubagentSettledLogRow {
   return row.kind === "reminder/subagent_settled";
 }
 
 /** The system-issued plan-execution trigger: a system mark, never a chat bubble. */
-export function isPlanExecuteRow(row: HumanRow): row is PlanExecuteLogRow {
+function isPlanExecuteRow(row: HumanRow): row is PlanExecuteLogRow {
   return row.kind === "plan/execute";
 }
 
@@ -172,7 +172,7 @@ export function isMessageItem(item: Item): item is MessageItem {
   return item.type === "message" && "role" in item && "content" in item;
 }
 
-export function isUserMessage(item: Item): item is InputMessageItem {
+function isUserMessage(item: Item): item is InputMessageItem {
   return isMessageItem(item) && item.role === "user";
 }
 
@@ -199,7 +199,7 @@ export function isReasoningItem(item: Item): item is ReasoningItem {
 }
 
 /** Authority id for matching live rows ↔ buffer/item (item.id, else call_id). */
-export function itemAuthorityId(item: Item): string | undefined {
+function itemAuthorityId(item: Item): string | undefined {
   if ("id" in item && typeof item.id === "string" && item.id.length > 0) {
     return item.id;
   }
@@ -270,20 +270,6 @@ export function latestAssistantText(rows: HumanRow[]): string {
   return latest;
 }
 
-/** True when a live Item shell has no visible/semantic content yet. */
-export function isEmptyItemShell(item: Item): boolean {
-  if (isAssistantMessage(item)) {
-    return !itemPlainText(item);
-  }
-  if (isReasoningItem(item)) {
-    return !itemPlainText(item);
-  }
-  if (isFunctionCall(item)) {
-    return !item.name && !item.arguments;
-  }
-  return false;
-}
-
 export function functionCallOutputText(out: FunctionCallOutputItem): string {
   if (typeof out.output === "string") return out.output;
   return out.output
@@ -299,27 +285,11 @@ export function parseFunctionArguments(argumentsJson: string): unknown {
   }
 }
 
-const FILE_TOOLS = new Set(["read", "write", "edit"]);
-
 export function normalizeToolFilePath(
   filePath: string,
   projectRoot?: string | null,
 ): string | null {
   return toWorkspacePath(filePath, projectRoot);
-}
-
-export function extractToolFilePath(
-  toolName: string,
-  input: unknown,
-  projectRoot?: string | null,
-): string | null {
-  if (!FILE_TOOLS.has(toolName)) return null;
-  if (!input || typeof input !== "object") return null;
-
-  const filePath = (input as Record<string, unknown>).file_path;
-  if (typeof filePath !== "string" || !filePath) return null;
-
-  return normalizeToolFilePath(filePath, projectRoot);
 }
 
 /**
@@ -339,7 +309,7 @@ export function sealMismatchError(live: Item, committed: Item): string | null {
 }
 
 /** Visible payload only — status is stamped separately so a seal does not rebuild the tree. */
-export function itemVisibleContentEqual(a: Item, b: Item): boolean {
+function itemVisibleContentEqual(a: Item, b: Item): boolean {
   if (a.type !== b.type) return false;
   if (isUserMessage(a) && isUserMessage(b)) {
     return itemPlainText(a) === itemPlainText(b);

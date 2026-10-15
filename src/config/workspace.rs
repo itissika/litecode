@@ -489,6 +489,22 @@ pub fn read_contract_result(workspace_root: &Path) -> ContractRead {
 /// downstream consumers resolve workspace paths through `active_paths()`,
 /// which this function initializes explicitly below.
 pub fn load_workspace_state(override_path: Option<&Path>) -> Result<WorkspaceState> {
+    load_workspace_state_with(override_path, WarmSnapshot::Now)
+}
+
+/// WP-166: whether [`load_workspace_state_with`] warms the shadow snapshot
+/// repo inline. `serve` passes `Deferred` and warms it in the background after
+/// bind (P1, `serve::router::listen`); every other caller keeps `Now`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarmSnapshot {
+    Now,
+    Deferred,
+}
+
+pub fn load_workspace_state_with(
+    override_path: Option<&Path>,
+    warm: WarmSnapshot,
+) -> Result<WorkspaceState> {
     let workspace_root = resolve_workspace_root(override_path)?;
     init_workspace(&workspace_root)?;
     let workspace_id = super::workspace_identity::ensure_workspace_identity(&workspace_root)?;
@@ -510,7 +526,9 @@ pub fn load_workspace_state(override_path: Option<&Path>) -> Result<WorkspaceSta
         workspace_mcp_servers,
         workspace_custom_tools,
     };
-    if let Err(e) = snapshot::warm_snapshot_repo(&workspace_root, &paths.snapshots_dir) {
+    if warm == WarmSnapshot::Now
+        && let Err(e) = snapshot::warm_snapshot_repo(&workspace_root, &paths.snapshots_dir)
+    {
         tracing::warn!(error = %e, "snapshot warm failed");
     }
     Ok(state)
@@ -765,6 +783,32 @@ mod tests {
                 .sessions_db
                 .ends_with(std::path::Path::new(".litecode").join("sessions.db"))
         );
+    }
+
+    /// WP-166 T2-5: serve's deferred load does not touch the shadow repo; the
+    /// default load still warms it inline (CLI and every other caller).
+    #[test]
+    fn load_workspace_state_deferred_does_not_warm() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let state = load_workspace_state_with(Some(dir.path()), WarmSnapshot::Deferred).unwrap();
+        assert!(state.paths.snapshots_dir.is_dir(), "dir still created");
+        assert!(
+            git2::Repository::open_bare(&state.paths.snapshots_dir).is_err(),
+            "deferred load must not init/warm the snapshot repo"
+        );
+    }
+
+    #[test]
+    fn load_workspace_state_default_still_warms() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let state = load_workspace_state(Some(dir.path())).unwrap();
+        let repo = git2::Repository::open_bare(&state.paths.snapshots_dir)
+            .expect("default load warms the snapshot repo");
+        assert!(!repo.index().unwrap().is_empty(), "warm populated the index");
     }
 
     #[test]

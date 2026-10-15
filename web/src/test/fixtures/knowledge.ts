@@ -1,6 +1,6 @@
-import { knowledgeFromFiles } from "./document";
-import type { KnowledgeIssue } from "./types";
-import { knowledgeCorpusFiles } from "./corpus";
+import { knowledgeFromFiles } from "../../lib/knowledge/document";
+import type { KnowledgeIssue } from "../../lib/knowledge/types";
+import { knowledgeCorpusFiles } from "../../lib/knowledge/corpus";
 
 const indexed = knowledgeFromFiles(knowledgeCorpusFiles);
 

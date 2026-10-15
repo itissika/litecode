@@ -3,7 +3,7 @@ interface SkeletonProps {
   style?: React.CSSProperties;
 }
 
-export function Skeleton({ className = "", style }: SkeletonProps) {
+function Skeleton({ className = "", style }: SkeletonProps) {
   return (
     <div
       className={`skeleton-shimmer rounded ${className}`}

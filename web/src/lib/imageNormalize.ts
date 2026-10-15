@@ -2,7 +2,7 @@
 export const IMAGE_LONG_SIDE = 1568;
 
 /** JPEG quality for the stored asset. */
-export const JPEG_QUALITY = 0.85;
+const JPEG_QUALITY = 0.85;
 
 /** How many images one composer message may hold. Matches the server cap. */
 export const MAX_COMPOSER_IMAGES = 16;

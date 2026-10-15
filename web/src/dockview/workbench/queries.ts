@@ -1,4 +1,4 @@
-import type { DockviewApi, DockviewPanel } from "dockview-react";
+import type { DockviewApi } from "dockview-react";
 
 import { dockIdFromPopoutUrl } from "../config/popoutUrl";
 import { dockview, onDockviewAttached } from "./host";
@@ -201,5 +201,3 @@ export function mainCenterHasPanel(api?: DockviewApi | null): boolean {
 export function roleOfGroup(group: GroupLike): GroupRole | null {
   return groupRole(readGroup(group));
 }
-
-export type LivePanel = DockviewPanel;

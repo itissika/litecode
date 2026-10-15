@@ -10,7 +10,7 @@
 // URP 内置变量定义
 // ============================================================================
 
-export interface URPVariable {
+interface URPVariable {
   name: string;
   type: string;
   description: string;
@@ -177,7 +177,7 @@ export const urpBuiltinVariables: URPVariable[] = [
 // URP 内置函数定义
 // ============================================================================
 
-export interface URPFunction {
+interface URPFunction {
   name: string;
   signature: string;
   description: string;
@@ -557,7 +557,7 @@ export const urpBuiltinFunctions: URPFunction[] = [
 // URP 常用宏定义
 // ============================================================================
 
-export interface URPMacro {
+interface URPMacro {
   name: string;
   description: string;
   usage?: string;

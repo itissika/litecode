@@ -1,8 +1,8 @@
 import type { TreeEntry } from "../api/workspace";
 
-export type FileTreeGhostKind = "newFile" | "newFolder";
+type FileTreeGhostKind = "newFile" | "newFolder";
 
-export type VisibleTreeRow =
+type VisibleTreeRow =
   | { type: "entry"; entry: TreeEntry; depth: number }
   | {
       type: "ghost";
@@ -11,7 +11,7 @@ export type VisibleTreeRow =
       kind: FileTreeGhostKind;
     };
 
-export type FileTreeGhost = {
+type FileTreeGhost = {
   parent: string;
   kind: FileTreeGhostKind;
 };

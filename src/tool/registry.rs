@@ -127,14 +127,17 @@ fn instantiate_tool(
     }
 
     if tool_id == "webfetch" {
-        return vec![Arc::new(WebFetchTool::new(engines.webfetch_client()))];
+        return vec![Arc::new(
+            WebFetchTool::new(engines.webfetch_client())
+                .with_warm_hook(engines.warm_hook("webfetch")),
+        )];
     }
 
     if tool_id == "websearch" {
-        return vec![Arc::new(WebSearchTool::new(
-            engines.websearch_client(),
-            engines.websearch_endpoint(),
-        ))];
+        return vec![Arc::new(
+            WebSearchTool::new(engines.websearch_client(), engines.websearch_endpoint())
+                .with_warm_hook(engines.warm_hook("websearch")),
+        )];
     }
 
     if tool_id == "code_search" {

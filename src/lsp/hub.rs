@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde_json::Value;
@@ -33,6 +33,7 @@ fn effective_restart_count(prior_restarts: u32, lifetime: Duration, watchdog_kil
 use crate::lsp::conn::LspReply;
 use crate::lsp::server_map::{program_from_command, server_command_for_ext};
 use crate::lsp::status::{LspInstanceStatus, LspLifecycle};
+use crate::lsp::sweep_gate::SweepGate;
 use crate::lsp::uri::{canonical_project_root, file_to_uri, uri_to_path};
 use crate::types::{LitecodeError, Result};
 
@@ -98,6 +99,54 @@ pub struct LspHub {
     rt: std::mem::ManuallyDrop<Runtime>,
     handle: Handle,
     diag_tx: broadcast::Sender<LspDiagnosticEvent>,
+    /// WP-167: every spawn waits for the orphan sweep (see [`crate::lsp::sweep_gate`]).
+    sweep_gate: Arc<SweepGate>,
+    /// WP-167: deferred availability probe for the configured commands. A
+    /// fresh cell per `activate_deferred` / `stop`, so a probe runs at most
+    /// once per activation.
+    probe: Mutex<Arc<OnceLock<std::result::Result<(), String>>>>,
+    /// Commands in their configured order (the eager probe's order).
+    probe_order: Mutex<Vec<String>>,
+    /// Receives the original probe error so the owning engine can record
+    /// `Failed` with the same text the eager probe used to produce.
+    probe_failure_sink: Mutex<Option<ProbeFailureSink>>,
+}
+
+pub type ProbeFailureSink = Arc<dyn Fn(String) + Send + Sync>;
+
+#[derive(Clone)]
+struct ProbeInput {
+    cell: Arc<OnceLock<std::result::Result<(), String>>>,
+    commands: Vec<String>,
+    cwd: Option<PathBuf>,
+}
+
+/// Returns the cached or fresh result, and whether this call ran the probe.
+fn run_probe(input: &ProbeInput) -> (std::result::Result<(), String>, bool) {
+    let mut first_run = false;
+    let result = input
+        .cell
+        .get_or_init(|| {
+            first_run = true;
+            probe_commands(&input.commands, input.cwd.as_deref())
+        })
+        .clone();
+    (result, first_run)
+}
+
+/// The former eager `activate` loop, unchanged: every configured command,
+/// probed from the workspace root (proxies pick its toolchain), first failure
+/// wins with the same message.
+fn probe_commands(
+    commands: &[String],
+    probe_cwd: Option<&Path>,
+) -> std::result::Result<(), String> {
+    for cmd in commands {
+        let program = program_from_command(cmd);
+        deps::command_runnable_command_in(cmd, probe_cwd)
+            .map_err(|e| format!("language server '{program}' not runnable: {e}"))?;
+    }
+    Ok(())
 }
 
 impl LspHub {
@@ -122,7 +171,24 @@ impl LspHub {
             rt: std::mem::ManuallyDrop::new(rt),
             handle,
             diag_tx,
+            sweep_gate: Arc::clone(crate::lsp::sweep_gate::global()),
+            probe: Mutex::new(Arc::new(OnceLock::new())),
+            probe_order: Mutex::new(Vec::new()),
+            probe_failure_sink: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_sweep_gate_for_test(mut self, gate: Arc<SweepGate>) -> Self {
+        self.sweep_gate = gate;
+        self
+    }
+
+    pub fn set_probe_failure_sink(&self, sink: ProbeFailureSink) {
+        *self
+            .probe_failure_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(sink);
     }
 
     pub fn subscribe_diagnostics(&self) -> broadcast::Receiver<LspDiagnosticEvent> {
@@ -134,6 +200,8 @@ impl LspHub {
         binary: crate::lsp::install::LanguageServerBinary,
         root: PathBuf,
     ) -> Result<LspServer> {
+        // WP-167: the orphan sweep must finish before any language server starts.
+        self.sweep_gate.wait().await;
         let diag_tx = self.diag_tx.clone();
         self.handle
             .spawn(async move { LspServer::spawn(&binary, &root, Some(diag_tx)).await })
@@ -196,25 +264,124 @@ impl LspHub {
             inner.configured_commands = commands.iter().cloned().collect();
             inner.active = true;
         }
+        // Tests that only configure commands keep their pre-WP-167 meaning:
+        // no availability probe.
+        let _ = self
+            .probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set(Ok(()));
     }
 
-    /// Verify configured LS binaries and mark hub active (no spawn).
-    pub fn activate(&self, commands: &[String]) -> Result<()> {
-        // Probe from the workspace root when known (proxies pick its toolchain).
-        let probe_cwd = self.workspace_root();
-        for cmd in commands {
-            let program = program_from_command(cmd);
-            deps::command_runnable_command_in(cmd, probe_cwd.as_deref()).map_err(|e| {
-                LitecodeError::Config(format!("language server '{program}' not runnable: {e}"))
-            })?;
-        }
+    /// Record the configured commands and mark the hub active. Metadata only:
+    /// no subprocess. The availability probe runs on first need
+    /// ([`Self::ensure_probed`]), like Zed resolving a server binary only when
+    /// a buffer first needs that server.
+    pub fn activate_deferred(&self, commands: &[String]) -> Result<()> {
         let mut inner = self
             .inner
             .lock()
             .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
         inner.configured_commands = commands.iter().cloned().collect();
         inner.active = true;
+        drop(inner);
+        *self.probe_order.lock().unwrap_or_else(|e| e.into_inner()) = commands.to_vec();
+        self.reset_probe();
         Ok(())
+    }
+
+    /// Eager form (probe now, then activate), kept for callers that want the
+    /// old contract. Startup uses [`Self::activate_deferred`].
+    pub fn activate(&self, commands: &[String]) -> Result<()> {
+        let probe_cwd = self.workspace_root();
+        probe_commands(commands, probe_cwd.as_deref()).map_err(LitecodeError::Config)?;
+        self.activate_deferred(commands)?;
+        let _ = self
+            .probe
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set(Ok(()));
+        Ok(())
+    }
+
+    fn reset_probe(&self) {
+        *self.probe.lock().unwrap_or_else(|e| e.into_inner()) = Arc::new(OnceLock::new());
+    }
+
+    /// Probe every configured command once per activation (same check, same
+    /// order and same error text as the former eager `activate`). On failure
+    /// the hub goes inactive, as it stayed inactive when the eager probe
+    /// failed, and the original error goes to the failure sink.
+    pub fn ensure_probed_blocking(&self) -> std::result::Result<(), String> {
+        let Some(input) = self.probe_input() else {
+            return Ok(());
+        };
+        let outcome = run_probe(&input);
+        self.finish_probe(&input, outcome)
+    }
+
+    /// Async form of [`Self::ensure_probed_blocking`]; the probe subprocesses
+    /// run on the blocking pool.
+    pub async fn ensure_probed(&self) -> std::result::Result<(), String> {
+        let Some(input) = self.probe_input() else {
+            return Ok(());
+        };
+        if let Some(cached) = input.cell.get() {
+            return cached.clone();
+        }
+        let worker_input = input.clone();
+        let outcome = tokio::task::spawn_blocking(move || run_probe(&worker_input))
+            .await
+            .unwrap_or_else(|e| (Err(format!("lsp probe task failed: {e}")), false));
+        self.finish_probe(&input, outcome)
+    }
+
+    /// `None` when the hub is inactive (nothing to probe).
+    fn probe_input(&self) -> Option<ProbeInput> {
+        let cell = Arc::clone(&*self.probe.lock().unwrap_or_else(|e| e.into_inner()));
+        let inner = self.inner.lock().ok()?;
+        if !inner.active {
+            return None;
+        }
+        let commands = self
+            .probe_order
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        Some(ProbeInput {
+            cell,
+            commands,
+            cwd: inner.workspace_root.clone(),
+        })
+    }
+
+    fn finish_probe(
+        &self,
+        input: &ProbeInput,
+        (result, first_run): (std::result::Result<(), String>, bool),
+    ) -> std::result::Result<(), String> {
+        if let Err(error) = &result
+            && first_run
+        {
+            let still_current = Arc::ptr_eq(
+                &input.cell,
+                &*self.probe.lock().unwrap_or_else(|e| e.into_inner()),
+            );
+            if still_current {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.active = false;
+                }
+                let sink = self
+                    .probe_failure_sink
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if let Some(sink) = sink {
+                    sink(error.clone());
+                }
+            }
+        }
+        result
     }
 
     async fn resolve_server_key(&self, abs_path: &Path) -> Result<ServerKey> {
@@ -243,6 +410,12 @@ impl LspHub {
             }
             root
         };
+
+        // WP-167: availability probe on first need. On failure the hub is now
+        // inactive and the caller sees the same text as before the deferral.
+        if self.ensure_probed().await.is_err() {
+            return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
+        }
 
         let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let cmd = server_command_for_ext(ext)
@@ -405,6 +578,14 @@ impl LspHub {
             }
             inner.servers.remove(&key)
         };
+        // WP-167: deferred probe; a failure leaves the hub inactive, which is
+        // what the eager probe used to leave behind.
+        if self.ensure_probed().await.is_err() {
+            if let Some(old) = old {
+                old.shutdown().await;
+            }
+            return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
+        }
         if let Some(old) = old {
             old.set_lifecycle(LspLifecycle::Restarting);
             old.shutdown().await;
@@ -450,6 +631,7 @@ impl LspHub {
             inner.configured_commands.clear();
             inner.servers.drain().map(|(_, s)| s).collect()
         };
+        self.reset_probe();
         for server in servers {
             server.shutdown().await;
         }

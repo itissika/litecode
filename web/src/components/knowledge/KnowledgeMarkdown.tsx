@@ -5,7 +5,6 @@ import ReactMarkdown, {
 } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import { knowledgeFirstLineSegments } from "../../lib/knowledge/markers";
 import {
   parseKnowledgeRef,
   parseLocationRef,
@@ -107,33 +106,6 @@ const components: Components = {
   },
 };
 
-/** One prose line with mention chips — for graph card summaries. */
-export function KnowledgeInlineBody({
-  sourceId,
-  text,
-}: {
-  sourceId: string;
-  text: string;
-}) {
-  const segments = knowledgeFirstLineSegments(text);
-  return (
-    <KnowledgeSourceContext.Provider value={sourceId}>
-      <div className="knowledge-inline-body">
-        {segments.map((segment, index) => {
-          if (segment.type === "text") {
-            return segment.value ? (
-              <span key={index} className="knowledge-inline-text">
-                {segment.value}
-              </span>
-            ) : null;
-          }
-          return <BodyRefChip key={index} marker={segment.id} label={segment.label} />;
-        })}
-      </div>
-    </KnowledgeSourceContext.Provider>
-  );
-}
-
 export function KnowledgeMarkdown({
   sourceId,
   text,
@@ -153,25 +125,5 @@ export function KnowledgeMarkdown({
         </ReactMarkdown>
       </div>
     </KnowledgeSourceContext.Provider>
-  );
-}
-
-export function knowledgeStatusLabel(
-  status: "enabled" | "disabled" | "pending",
-): string {
-  if (status === "disabled") return "禁用";
-  if (status === "pending") return "待审阅";
-  return "启用";
-}
-
-export function KnowledgeStatusBadge({
-  status,
-}: {
-  status: "enabled" | "disabled" | "pending";
-}) {
-  return (
-    <span className={`knowledge-status is-${status}`}>
-      {knowledgeStatusLabel(status)}
-    </span>
   );
 }

@@ -1,15 +1,15 @@
 import { kindForComponent } from "../workbench/kinds";
 
 /** Center tabs live on the main grid or in a popout. Edge tabs are the side rails. */
-export type TabClass = "center" | "edge";
+type TabClass = "center" | "edge";
 
 /** Where a dock drop is aimed. A missing group is the center grid's own outer split. */
-export type DockTarget = "center" | "edge" | "root";
+type DockTarget = "center" | "edge" | "root";
 
-export type DockDecision = "allow" | "reject";
+type DockDecision = "allow" | "reject";
 
 /** What a center-tab release does after Dockview has had its chance to accept the drop. */
-export type ReleaseDecision = "stay" | "join" | "popout";
+type ReleaseDecision = "stay" | "join" | "popout";
 
 export interface WindowBox {
   screenX: number;
@@ -42,7 +42,7 @@ export function tabClass(
 }
 
 /** Edge rails are edge. Grid and popout, including a hidden popout anchor, are center. */
-export function dockTarget(locationType: string | undefined): DockTarget {
+function dockTarget(locationType: string | undefined): DockTarget {
   if (locationType === "edge") return "edge";
   if (locationType === "grid" || locationType === "popout") return "center";
   return "root";
@@ -86,7 +86,7 @@ export function decideRelease(
   return "join";
 }
 
-export function containsPoint(
+function containsPoint(
   box: WindowBox,
   point: { screenX: number; screenY: number },
 ): boolean {

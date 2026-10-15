@@ -78,7 +78,13 @@ export async function startSidecar(opts: {
   /** Required: one sidecar process = one workspace. */
   workspace: string;
   timeoutMs?: number;
+  /**
+   * WP-169: abort the boot (e.g. window closed during the skeleton). Kills the
+   * child immediately and rejects with `signal.reason`. Omitted = unchanged.
+   */
+  signal?: AbortSignal;
 }): Promise<SidecarHandle> {
+  if (opts.signal?.aborted) throw opts.signal.reason;
   const workspace = normalizeWorkspace(opts.workspace);
   const productRoot = sidecarRoot();
   const bin = litecodeBinary(productRoot);
@@ -113,7 +119,7 @@ export async function startSidecar(opts: {
   });
 
   const timeoutMs = opts.timeoutMs ?? 90_000;
-  const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace });
+  const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace }, opts.signal);
   const handle: SidecarHandle = {
     process: child,
     readyUrl,
@@ -127,10 +133,12 @@ export async function startSidecar(opts: {
   return handle;
 }
 
-function waitForReady(
+/** Exported for tests. `signal` aborts: kill the child, reject with its reason. */
+export function waitForReady(
   child: ChildProcess,
   timeoutMs: number,
   ctx: { bin: string; workspace: string },
+  signal?: AbortSignal,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -138,10 +146,24 @@ function waitForReady(
     let stderrBuf = "";
     const captured: string[] = [];
 
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        child.kill();
+      } catch {
+        /* ignore */
+      }
+      reject(signal?.reason);
+    };
+    const detachAbort = () => signal?.removeEventListener("abort", onAbort);
+
     const fail = (err: Error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      detachAbort();
       console.error(err.message);
       reject(err);
     };
@@ -185,11 +207,20 @@ function waitForReady(
         if (!m || settled) continue;
         settled = true;
         clearTimeout(timer);
+        detachAbort();
         const url = m[1].endsWith("/") ? m[1] : `${m[1]}/`;
         resolve(url);
         return;
       }
     };
+
+    if (signal) {
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
 
     if (!child.stdout || !child.stderr) {
       fail(new Error("sidecar stdio pipes missing"));

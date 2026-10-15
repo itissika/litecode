@@ -9,7 +9,7 @@ import {
 const KNOWLEDGE_SCHEME = "knowledge:";
 const LOC_SCHEME = "loc:";
 
-export function knowledgeRefHref(key: string): string {
+function knowledgeRefHref(key: string): string {
   return `${KNOWLEDGE_SCHEME}${encodeURIComponent(key)}`;
 }
 
@@ -28,7 +28,7 @@ export function parseKnowledgeRef(href: string | undefined): string | null {
  * present. `lines` is the raw range attribute, carried only so the chip can find
  * its `ref_key`; a symbol citation carries neither.
  */
-export function locationHref(
+function locationHref(
   path: string,
   line?: number | null,
   symbol?: string | null,

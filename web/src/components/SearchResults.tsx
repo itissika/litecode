@@ -86,7 +86,7 @@ export interface SearchResultGroup {
   highlightCaseSensitive?: boolean;
 }
 
-export function SearchResultLineRow({
+function SearchResultLineRow({
   line,
   highlight,
   caseSensitive,

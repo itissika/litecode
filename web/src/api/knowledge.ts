@@ -1,9 +1,9 @@
 import { apiFetch } from "./auth";
 
 /** Wire shapes of `GET /api/workspace/knowledge` (`docs/knowledge-references.md` §10.1). */
-export type WireSeverity = "error" | "warning";
+type WireSeverity = "error" | "warning";
 
-export interface WireKnowledgeIssue {
+interface WireKnowledgeIssue {
   severity: WireSeverity;
   code: string;
   message: string;
@@ -11,7 +11,7 @@ export interface WireKnowledgeIssue {
   args: Record<string, unknown>;
 }
 
-export interface WireKnowledgeRef {
+interface WireKnowledgeRef {
   ref_key: string;
   kind: "node" | "file" | "symbol" | "range";
   key: string | null;

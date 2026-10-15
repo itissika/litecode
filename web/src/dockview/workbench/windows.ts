@@ -10,7 +10,7 @@ import type { GroupLike } from "./readGroup";
  * A handle may exist on the other side before this record does. Callers that
  * need the OS window fail closed; they do not wait.
  */
-export interface WorkbenchWindow {
+interface WorkbenchWindow {
   dockId: string | null;
   window: Window;
   groupId: string | null;
@@ -75,7 +75,7 @@ export function onDidRegisterWindow(
   };
 }
 
-export function onDidUnregisterWindow(
+function onDidUnregisterWindow(
   listener: (entry: WorkbenchWindow) => void,
 ): () => void {
   unregisterListeners.add(listener);

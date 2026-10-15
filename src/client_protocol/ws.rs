@@ -487,6 +487,41 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                 );
                 continue;
             }
+            // WP-166: answer session/list here, off the serial session loop, so
+            // the reply is never queued behind a subscribe/replay. The loop
+            // still owns subscribe/unsubscribe/send and every session frame;
+            // this path only reads. On failure the request falls back to the
+            // loop's SESSION_LIST branch so the error frames stay identical.
+            if rpc.method == methods::SESSION_LIST {
+                let sessions = state.sessions.clone();
+                let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
+                let list_tx = response_tx.clone();
+                let fallback_tx = request_tx.clone();
+                tokio::spawn(async move {
+                    match crate::client_protocol::controller::build_session_list(
+                        &sessions, &resolved,
+                    )
+                    .await
+                    {
+                        Ok(list) => {
+                            emit(
+                                &list_tx,
+                                serde_json::to_value(ok_response(
+                                    rpc.id.clone(),
+                                    serde_json::json!({"sessions": list}),
+                                ))
+                                .unwrap(),
+                            );
+                            sessions.mark_startup_settled();
+                        }
+                        Err(error) => {
+                            tracing::debug!(%error, "session/list fast path failed; using session loop");
+                            let _ = fallback_tx.send(SessionRequest::JsonRpc(rpc));
+                        }
+                    }
+                });
+                continue;
+            }
             if request_tx.send(SessionRequest::JsonRpc(rpc)).is_err() {
                 break;
             }
@@ -522,3 +557,7 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
     let _ = loop_handle.await;
     writer.abort();
 }
+
+#[cfg(test)]
+#[path = "ws_wp166_tests.rs"]
+mod wp166_tests;

@@ -365,14 +365,14 @@ describe("download UX helpers (D6/D7)", () => {
   });
 });
 
-describe("ComponentManager pause/stop/retry + Range (D7)", () => {
+describe("ComponentManager abort + Range resume (D7)", () => {
   it("emits status, percent, and bytesPerSecond while downloading", async () => {
     const { out, manifest } = buildComponents();
     const linux = manifest.components.find((c) => c.id === "linux-server")!;
     const payload = fs.readFileSync(path.join(out, linux.file));
 
     let pullCount = 0;
-    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const fetchImpl = (async (input: string | URL | Request, _init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith(COMPONENTS_MANIFEST_NAME)) {
         return new Response(fs.readFileSync(path.join(out, COMPONENTS_MANIFEST_NAME)), { status: 200 });
@@ -410,7 +410,7 @@ describe("ComponentManager pause/stop/retry + Range (D7)", () => {
     assert.equal(pullCount >= 1, true);
   });
 
-  it("pauses (keeps .part), stops (deletes .part), and retries with Range resume", async () => {
+  it("abortAll keeps .part and the next ensure Range-resumes", async () => {
     const { out, manifest } = buildComponents();
     const linux = manifest.components.find((c) => c.id === "linux-server")!;
     const full = fs.readFileSync(path.join(out, linux.file));
@@ -419,7 +419,7 @@ describe("ComponentManager pause/stop/retry + Range (D7)", () => {
     let rangeSeen = false;
     let fullFetches = 0;
     let gate!: () => void;
-    let blocked = new Promise<void>((r) => {
+    const blocked = new Promise<void>((r) => {
       gate = r;
     });
     let blockOnce = true;
@@ -471,38 +471,19 @@ describe("ComponentManager pause/stop/retry + Range (D7)", () => {
       await new Promise((r) => setTimeout(r, 10));
     }
     assert.ok(fs.existsSync(part), "partial .part should exist before pause");
-    assert.equal(mgr.pause("linux-server"), true);
+    mgr.abortAll();
     gate();
     await assert.rejects(first, (err: unknown) => isDownloadControlError(err) && err.kind === "pause");
-    assert.ok(fs.existsSync(part), "pause must keep .part");
+    assert.ok(fs.existsSync(part), "abort must keep .part");
     assert.equal(mgr.status("linux-server").status, "paused");
 
-    // Retry should Range-resume from mid.
-    const result = await mgr.retry("linux-server");
+    // Next ensure should Range-resume from mid.
+    const result = await mgr.ensure("linux-server");
     assert.equal(result.downloaded, true);
     assert.ok(rangeSeen, "expected Range resume request");
     assert.equal(fs.readFileSync(result.path).equals(full), true);
     assert.ok(!fs.existsSync(part), "part removed after success");
 
-    // Stop deletes an in-progress part.
-    blockOnce = true;
-    blocked = new Promise<void>((r) => {
-      gate = r;
-    });
-    // Remove installed so ensure downloads again.
-    fs.rmSync(result.path, { force: true });
-    fs.rmSync(`${result.path}.sha256`, { force: true });
-    fs.rmSync(path.join(bundles, "components.json"), { force: true });
-    const mgr2 = manager({ bundles, env: {}, fetchImpl });
-    const second = mgr2.ensure("linux-server");
-    for (let i = 0; i < 200; i++) {
-      if (fs.existsSync(part) && fs.statSync(part).size >= mid) break;
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    assert.equal(mgr2.stop("linux-server"), true);
-    gate();
-    await assert.rejects(second, (err: unknown) => isDownloadControlError(err) && err.kind === "stop");
-    assert.ok(!fs.existsSync(part), "stop must delete .part");
     void fullFetches;
   });
 

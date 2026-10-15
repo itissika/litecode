@@ -129,12 +129,29 @@ impl ConfigManager {
     /// migrated) before the one-time legacy credential / model-reference
     /// migration reads the old tables.
     pub fn load_runtime_bundle(override_path: Option<&Path>) -> Result<ResolvedConfig> {
-        Self::load_runtime_bundle_from(&global_db::default_db_path(), override_path)
+        Self::load_runtime_bundle_with(override_path, workspace::WarmSnapshot::Now)
+    }
+
+    /// WP-166: as [`Self::load_runtime_bundle`]; `serve` passes
+    /// `WarmSnapshot::Deferred` and warms the snapshot repo after bind.
+    pub fn load_runtime_bundle_with(
+        override_path: Option<&Path>,
+        warm: workspace::WarmSnapshot,
+    ) -> Result<ResolvedConfig> {
+        Self::load_runtime_bundle_from_with(&global_db::default_db_path(), override_path, warm)
     }
 
     pub fn load_runtime_bundle_from(
         db_path: &Path,
         override_path: Option<&Path>,
+    ) -> Result<ResolvedConfig> {
+        Self::load_runtime_bundle_from_with(db_path, override_path, workspace::WarmSnapshot::Now)
+    }
+
+    fn load_runtime_bundle_from_with(
+        db_path: &Path,
+        override_path: Option<&Path>,
+        warm: workspace::WarmSnapshot,
     ) -> Result<ResolvedConfig> {
         let catalog = provider_catalog::shared_for_db(db_path)?;
         global_db::with_conn(db_path, |conn| {
@@ -143,7 +160,7 @@ impl ConfigManager {
         })?;
         let global = Self::load_global_from(db_path)?;
         Self::validate_structural(&global)?;
-        let workspace = Self::load_workspace(override_path)?;
+        let workspace = workspace::load_workspace_state_with(override_path, warm)?;
         let resolved = Self::resolve(global, workspace, catalog);
         super::bridge::warn_unresolved_agent_models(&resolved);
         Ok(resolved)

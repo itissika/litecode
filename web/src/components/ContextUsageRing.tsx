@@ -53,7 +53,7 @@ const RING_STOPS: { color: string; at: number }[] = [
 
 // Exported for Remotion compositions (c-switch ring replica) so the hit-rate →
 // hue mapping stays single-sourced with the product component.
-export function ringColorForHitRate(rate: number): string {
+function ringColorForHitRate(rate: number): string {
   const clamped = Math.max(0, Math.min(1, rate));
   let lo = RING_STOPS[0];
   let hi = RING_STOPS[RING_STOPS.length - 1];

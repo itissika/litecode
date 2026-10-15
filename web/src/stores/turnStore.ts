@@ -35,7 +35,7 @@ import { useMessageStore, type TurnEndNotice } from "./messageStore";
 import { useNotificationStore } from "./notificationStore";
 import { useToastStore } from "./toastStore";
 
-export interface PendingPermission {
+interface PendingPermission {
   turn_id: string;
   request_id: string;
   tool: string;
@@ -101,15 +101,6 @@ export function emptySlice(): TurnSlice {
   return { ...EMPTY_SLICE };
 }
 
-/** UI / callers: current ask is the FIFO head, or null when the queue is empty. */
-export function headPermission(
-  slice: TurnSlice | undefined | null,
-): PendingPermission | null {
-  const q = slice?.permissionQueue;
-  return q && q.length > 0 ? q[0]! : null;
-}
-
-
 export const EMPTY_SLICE: TurnSlice = {
   runState: "idle",
   replaying: false,
@@ -165,7 +156,7 @@ function todoPatchFromItems(
   };
 }
 
-export interface ReplaySettings {
+interface ReplaySettings {
   primaryId: string;
   modelId: string;
   thinkingTier: ThinkingTier;

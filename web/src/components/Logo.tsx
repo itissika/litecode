@@ -14,11 +14,6 @@ const TEXT = "LiteCode";
 /** Splash overlay is one-shot per document lifetime (survives React remounts). */
 let splashConsumed = false;
 
-/** Mark the splash as already shown so it never covers the workbench (Remotion renders). */
-export function skipSplash() {
-  splashConsumed = true;
-}
-
 function injectStyles() {
   const id = "logo-styles";
   if (document.getElementById(id)) return;

@@ -85,13 +85,6 @@ function resolveFont(raw: string, cs: CSSStyleDeclaration): string {
   return raw;
 }
 
-/** Read tokens for the currently active theme from the live document. */
-export function readDkTokens(
-  root: HTMLElement = document.documentElement,
-): DkTokens {
-  return readVars(root);
-}
-
 /**
  * Read tokens for a specific theme even if it is not currently active.
  * Temporarily flips the document theme attribute and restores it within the

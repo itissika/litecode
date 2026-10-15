@@ -12,7 +12,7 @@
 const DEFAULT_WIDTH = 960;
 const DEFAULT_HEIGHT = 640;
 
-export interface PopoutScreenBox {
+interface PopoutScreenBox {
   left: number;
   top: number;
   width: number;

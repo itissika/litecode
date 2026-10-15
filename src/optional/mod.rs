@@ -8,7 +8,9 @@ mod webfetch_engine;
 mod websearch_engine;
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -44,7 +46,15 @@ pub struct EngineManager {
     engines: Arc<HashMap<String, Arc<dyn ToolEngine>>>,
     webfetch: Arc<WebfetchEngine>,
     websearch: Arc<WebsearchEngine>,
+    /// WP-167: one client build at a time per engine (see [`Self::ensure_warm`]).
+    warm_locks: Arc<HashMap<String, Mutex<()>>>,
+    #[cfg(test)]
+    builds: Arc<AtomicUsize>,
 }
+
+/// Called by a web tool at the start of every call (WP-167): builds the
+/// client on first use; `Err` when the build failed this time.
+pub type WarmHook = Arc<dyn Fn() -> std::result::Result<(), String> + Send + Sync>;
 
 impl EngineManager {
     pub fn new() -> Self {
@@ -72,6 +82,14 @@ impl EngineManager {
             engines: Arc::new(engines),
             webfetch,
             websearch,
+            warm_locks: Arc::new(
+                ["webfetch", "websearch"]
+                    .into_iter()
+                    .map(|id| (id.to_string(), Mutex::new(())))
+                    .collect(),
+            ),
+            #[cfg(test)]
+            builds: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -162,98 +180,134 @@ impl EngineManager {
         }
     }
 
+    /// Settings changed (or CLI startup): rebuild now. The old client is
+    /// dropped and a new one is built with the current settings, on the
+    /// blocking pool when a runtime exists, inline otherwise.
     fn start_warmup(&self, resolved: &ResolvedConfig, tool_id: &str) {
         if tool_id == "websearch" {
             self.websearch.configure(resolved.websearch());
         }
-
-        {
-            let states = self
-                .states
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if matches!(
-                states.get(tool_id),
-                Some(EngineWarmupState::Warm | EngineWarmupState::Warming)
-            ) {
-                return;
-            }
-        }
-
-        {
-            let mut states = self
-                .states
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            states.insert(tool_id.to_string(), EngineWarmupState::Warming);
-        }
-
-        let Some(engine) = self.engines.get(tool_id).cloned() else {
+        // WP-167: only a client that already exists is rebuilt; otherwise the
+        // new settings wait for the first call.
+        // Only reached for an enabled engine (`reconcile` → `should_run_engine`;
+        // disabling goes through `stop_engine`). Clear a previous Stopped /
+        // Failed record so the next `ensure_warm` builds.
+        self.states
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tool_id);
+        self.last_errors
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tool_id);
+        if !self.has_client(tool_id) {
             return;
-        };
+        }
+        {
+            let Some(lock) = self.warm_locks.get(tool_id) else {
+                return;
+            };
+            let _guard = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(engine) = self.engines.get(tool_id) {
+                engine.stop();
+            }
+            self.states
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(tool_id);
+        }
+        let manager = self.clone();
         let tool_id_owned = tool_id.to_string();
-
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            let states = Arc::clone(&self.states);
-            let errors = Arc::clone(&self.last_errors);
-            let tool_id_for_log = tool_id_owned.clone();
-            handle.spawn(async move {
-                let result = tokio::task::spawn_blocking(move || engine.warmup()).await;
-                let (warm, err_msg) = match result {
-                    Ok(Ok(())) => (true, None),
-                    Ok(Err(e)) => (false, Some(e.to_string())),
-                    Err(e) => (false, Some(format!("warmup task failed: {e}"))),
-                };
-                let mut states = states
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if states.get(&tool_id_owned) == Some(&EngineWarmupState::Warming) {
-                    states.insert(
-                        tool_id_owned.clone(),
-                        if warm {
-                            EngineWarmupState::Warm
-                        } else {
-                            EngineWarmupState::Failed
-                        },
-                    );
-                }
-                let mut errors = errors
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if warm {
-                    errors.remove(&tool_id_owned);
-                } else if let Some(msg) = err_msg {
-                    errors.insert(tool_id_owned, msg);
-                }
-                tracing::debug!(tool = %tool_id_for_log, warm, "optional engine warmup finished");
+            handle.spawn_blocking(move || {
+                let warm = manager.ensure_warm(&tool_id_owned).is_ok();
+                tracing::debug!(tool = %tool_id_owned, warm, "optional engine warmup finished");
             });
         } else {
-            let result = engine.warmup();
-            let warm = result.is_ok();
-            let mut states = self
-                .states
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if states.get(tool_id) == Some(&EngineWarmupState::Warming) {
-                states.insert(
-                    tool_id_owned.clone(),
-                    if warm {
-                        EngineWarmupState::Warm
-                    } else {
-                        EngineWarmupState::Failed
-                    },
-                );
-            }
-            let mut errors = self
-                .last_errors
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if warm {
+            let _ = manager.ensure_warm(&tool_id_owned);
+        }
+    }
+
+    /// WP-167: build the engine's client if it is missing; reuse it otherwise.
+    /// Idempotent and safe under concurrent calls (one build at a time, and a
+    /// waiter that finds a client returns without building). A failure is
+    /// recorded as `Failed` + error for this call only: the next call tries
+    /// again. `Stopped` (user disabled) returns `Ok` without building, so
+    /// callers keep the existing "not warmed" message.
+    pub fn ensure_warm(&self, tool_id: &str) -> std::result::Result<(), String> {
+        let Some(engine) = self.engines.get(tool_id).cloned() else {
+            return Ok(());
+        };
+        if self.has_client(tool_id) {
+            return Ok(());
+        }
+        let Some(lock) = self.warm_locks.get(tool_id) else {
+            return Ok(());
+        };
+        let _guard = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.has_client(tool_id) {
+            return Ok(());
+        }
+        // Stopped (user disabled): nothing to build; the caller finds no
+        // client and returns its existing "not warmed" message.
+        if self.state(tool_id) == Some(EngineWarmupState::Stopped) {
+            return Ok(());
+        }
+        self.states
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(tool_id.to_string(), EngineWarmupState::Warming);
+        #[cfg(test)]
+        self.builds.fetch_add(1, Ordering::SeqCst);
+        let result = engine.warmup();
+        let mut states = self
+            .states
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut errors = self
+            .last_errors
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match result {
+            Ok(()) => {
+                states.insert(tool_id.to_string(), EngineWarmupState::Warm);
                 errors.remove(tool_id);
-            } else if let Err(e) = result {
+                Ok(())
+            }
+            Err(e) => {
+                states.insert(tool_id.to_string(), EngineWarmupState::Failed);
                 errors.insert(tool_id.to_string(), e.to_string());
+                Err(e.to_string())
             }
         }
+    }
+
+    fn has_client(&self, tool_id: &str) -> bool {
+        let handle = match tool_id {
+            "webfetch" => self.webfetch.client_handle(),
+            "websearch" => self.websearch.client_handle(),
+            _ => return false,
+        };
+        handle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
+    }
+
+    /// Entry hook handed to the web tools (called once per tool call).
+    pub fn warm_hook(&self, tool_id: &'static str) -> WarmHook {
+        let manager = self.clone();
+        Arc::new(move || manager.ensure_warm(tool_id))
+    }
+
+    /// WP-167: serve startup. Record the websearch endpoint only (cheap);
+    /// no client is built until the first web tool call.
+    pub fn defer_reconcile(&self, resolved: &ResolvedConfig) {
+        self.websearch.configure(resolved.websearch());
     }
 
     fn stop_engine(&self, tool_id: &str) {
@@ -295,6 +349,121 @@ mod tests {
     use super::*;
     use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::GlobalSettings;
+
+    #[test]
+    fn defer_reconcile_builds_no_client() {
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
+        let mgr = EngineManager::new();
+        mgr.defer_reconcile(&resolved);
+        assert!(mgr.webfetch_client().read().unwrap().is_none());
+        assert!(mgr.websearch_client().read().unwrap().is_none());
+        assert_eq!(mgr.state("webfetch"), None);
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn ensure_warm_builds_once_and_reuses() {
+        let mgr = EngineManager::new();
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
+        assert!(mgr.webfetch_client().read().unwrap().is_some());
+        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn concurrent_first_calls_build_once() {
+        let mgr = EngineManager::new();
+        let hook = mgr.warm_hook("webfetch");
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let hook = Arc::clone(&hook);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    hook()
+                })
+            })
+            .collect();
+        for t in threads {
+            assert_eq!(t.join().unwrap(), Ok(()));
+        }
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn failed_build_is_not_cached_and_retries() {
+        let mgr = EngineManager::new();
+        // No endpoint yet: websearch warmup fails.
+        let err = mgr.ensure_warm("websearch").expect_err("unconfigured");
+        assert!(err.contains("not configured"), "{err}");
+        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Failed));
+        assert!(mgr.websearch_client().read().unwrap().is_none());
+        *mgr.websearch_endpoint().write().unwrap() = Some("https://example.invalid/mcp".into());
+        assert_eq!(mgr.ensure_warm("websearch"), Ok(()), "next call retries");
+        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Warm));
+        assert_eq!(mgr.last_error("websearch"), None);
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn stopped_engine_is_not_rebuilt() {
+        let mgr = EngineManager::new();
+        mgr.stop_engine("webfetch");
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()), "nothing to build");
+        assert!(mgr.webfetch_client().read().unwrap().is_none());
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reenable_after_stop_builds_on_next_call() {
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
+        let mgr = EngineManager::new();
+        mgr.stop_engine("webfetch");
+        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Stopped));
+        // An old Failed record must not survive a settings change either.
+        assert!(mgr.ensure_warm("websearch").is_err(), "no endpoint yet");
+        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Failed));
+
+        mgr.reconcile(&resolved);
+        assert_eq!(mgr.state("webfetch"), None, "Stopped cleared on re-enable");
+        assert_eq!(
+            mgr.state("websearch"),
+            None,
+            "Failed cleared on settings change"
+        );
+        assert_eq!(mgr.last_error("websearch"), None);
+
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
+        assert!(mgr.webfetch_client().read().unwrap().is_some());
+        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
+    }
+
+    #[test]
+    fn settings_reconcile_rebuilds_immediately() {
+        let resolved =
+            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
+        let mgr = EngineManager::new();
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
+        let before = mgr.webfetch_client().read().unwrap().is_some();
+        assert!(before);
+        // No runtime here, so the rebuild is inline.
+        mgr.reconcile(&resolved);
+        assert!(mgr.webfetch_client().read().unwrap().is_some());
+        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
+        assert!(
+            mgr.websearch_client().read().unwrap().is_none(),
+            "no websearch client existed, so none is built"
+        );
+        assert!(
+            mgr.websearch_endpoint().read().unwrap().is_some(),
+            "configure still runs"
+        );
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 2, "1 + webfetch rebuild");
+    }
 
     #[test]
     fn reconcile_starts_warmup_for_network_core() {

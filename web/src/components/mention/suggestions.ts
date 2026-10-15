@@ -10,7 +10,7 @@ export interface LockedFile {
   name: string;
 }
 
-export type FilePhase =
+type FilePhase =
   | { mode: "file"; filter: string }
   | { mode: "symbol"; filter: string; locked: LockedFile };
 

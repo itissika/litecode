@@ -3,7 +3,7 @@ import { create } from "zustand";
 import type { WorkspaceChangeKind } from "../api/workspace";
 
 /** Latest workspace change tick, for panels that must re-read a file. */
-export interface WorkspaceChangeTick {
+interface WorkspaceChangeTick {
   seq: number;
   paths: string[];
   kind: WorkspaceChangeKind;

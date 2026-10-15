@@ -1,13 +1,14 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopComponentProgress, LitecodeDesktopBridge } from "../../../../api/auth";
+import type { ComponentProgressEvent, LitecodeDesktopBridge } from "../../../../api/auth";
 import {
   EmbedModelDownloadCard,
   cleanIpcError,
   embedDownloadAvailable,
   useEmbedModelDownload,
 } from "./EmbedModelDownload";
+import { stubDesktopBridge } from "../../../../test/desktopBridge";
 
 function Harness({ onInstalled }: { onInstalled: () => void }) {
   const { available, state, start } = useEmbedModelDownload(onInstalled);
@@ -16,15 +17,16 @@ function Harness({ onInstalled }: { onInstalled: () => void }) {
 }
 
 function installBridge(overrides: Partial<LitecodeDesktopBridge>) {
-  let progress: ((event: DesktopComponentProgress) => void) | null = null;
-  window.litecode = {
+  let progress: ((event: ComponentProgressEvent) => void) | null = null;
+  window.litecode = stubDesktopBridge({
     getSessionMode: () => "local",
     getComponentStatus: vi.fn(async () => ({
-      id: "embed-model",
+      id: "embed-model" as const,
       installed: false,
       path: null,
       downloading: false,
       error: null,
+      status: "idle" as const,
     })),
     onComponentProgress: (handler) => {
       progress = handler;
@@ -33,8 +35,8 @@ function installBridge(overrides: Partial<LitecodeDesktopBridge>) {
       };
     },
     ...overrides,
-  };
-  return { emit: (event: DesktopComponentProgress) => progress?.(event) };
+  });
+  return { emit: (event: ComponentProgressEvent) => progress?.(event) };
 }
 
 afterEach(() => {
@@ -45,7 +47,7 @@ afterEach(() => {
 describe("EmbedModelDownload", () => {
   it("is hidden without the desktop bridge or in remote sessions", () => {
     expect(embedDownloadAvailable()).toBe(false);
-    window.litecode = { ensureComponent: vi.fn(), getSessionMode: () => "remote" };
+    window.litecode = stubDesktopBridge({ ensureComponent: vi.fn(), getSessionMode: () => "remote" });
     expect(embedDownloadAvailable()).toBe(false);
   });
 
@@ -53,8 +55,8 @@ describe("EmbedModelDownload", () => {
     let resolve!: () => void;
     const ensureComponent = vi.fn(
       () =>
-        new Promise<{ id: string; path: string; downloaded: boolean }>((r) => {
-          resolve = () => r({ id: "embed-model", path: "C:/m", downloaded: true });
+        new Promise<{ id: "embed-model"; path: string; downloaded: boolean }>((r) => {
+          resolve = () => r({ id: "embed-model" as const, path: "C:/m", downloaded: true });
         }),
     );
     const { emit } = installBridge({ ensureComponent });
@@ -64,7 +66,7 @@ describe("EmbedModelDownload", () => {
     fireEvent.click(screen.getByRole("button", { name: "Download" }));
     expect(ensureComponent).toHaveBeenCalledWith("embed-model");
     act(() =>
-      emit({ id: "embed-model", phase: "downloading", received: 50, total: 200, message: "Downloading — 50 B" }),
+      emit({ id: "embed-model", phase: "downloading", received: 50, total: 200, percent: 25, message: "Downloading — 50 B" }),
     );
     expect(screen.getByText("25%")).toBeTruthy();
     expect(screen.queryByRole("button")).toBeNull();
@@ -79,7 +81,7 @@ describe("EmbedModelDownload", () => {
       .mockRejectedValueOnce(
         new Error("Error invoking remote method 'litecode:ensure-component': Error: sha256 mismatch"),
       )
-      .mockResolvedValueOnce({ id: "embed-model", path: "C:/m", downloaded: true });
+      .mockResolvedValueOnce({ id: "embed-model" as const, path: "C:/m", downloaded: true });
     installBridge({ ensureComponent });
     const onInstalled = vi.fn();
     render(<Harness onInstalled={onInstalled} />);
@@ -101,16 +103,16 @@ describe("EmbedModelDownload", () => {
     render(<Harness onInstalled={onInstalled} />);
     await act(async () => undefined);
 
-    act(() => emit({ id: "embed-model", phase: "downloading", received: 1, total: 4, message: "Downloading" }));
+    act(() => emit({ id: "embed-model", phase: "downloading", received: 1, total: 4, percent: 25, message: "Downloading" }));
     expect(screen.getByText("25%")).toBeTruthy();
-    act(() => emit({ id: "embed-model", phase: "error", message: "failed", error: "offline" }));
+    act(() => emit({ id: "embed-model", phase: "error", percent: 0, message: "failed", error: "offline" }));
     expect(screen.getByText("offline")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 
     // Retried from another view and finished: no error line, no progress bar left behind.
-    act(() => emit({ id: "embed-model", phase: "resolving", message: "Looking up" }));
+    act(() => emit({ id: "embed-model", phase: "resolving", percent: 0, message: "Looking up" }));
     expect(screen.queryByText("offline")).toBeNull();
-    act(() => emit({ id: "embed-model", phase: "done", message: "ready" }));
+    act(() => emit({ id: "embed-model", phase: "done", percent: 0, message: "ready" }));
     const card = screen.getByRole("group", { name: "Embedding model download" });
     expect(card.getAttribute("data-phase")).toBe("done");
     expect(screen.queryByText("offline")).toBeNull();
@@ -123,11 +125,12 @@ describe("EmbedModelDownload", () => {
     installBridge({
       ensureComponent: vi.fn(),
       getComponentStatus: vi.fn(async () => ({
-        id: "embed-model",
+        id: "embed-model" as const,
         installed: false,
         path: null,
         downloading: false,
         error: "Cannot read litecode-components.json",
+        status: "error" as const,
       })),
     });
     render(<Harness onInstalled={vi.fn()} />);

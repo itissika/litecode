@@ -413,7 +413,7 @@ function LspServerCard({
         aria-pressed={checked}
         disabled={!ready && !checked}
         onClick={onToggle}
-        aria-label={`${probe.id} server, ${checked ? "enabled" : "disabled"}. Click the card to toggle.`}
+        aria-label={`${probe.id} server, ${checked ? "enabled" : "disabled"}`}
         className="tool-binding-toggle"
       />
       <div className="tool-binding-content flex flex-col">

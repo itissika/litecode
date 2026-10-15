@@ -6,22 +6,14 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore,
 } from "react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { CaretDownIcon } from "@phosphor-icons/react";
 
-import { useConnectionStore } from "../../stores/connectionStore";
 import { useSessionStore } from "../../stores/sessionStore";
-import { useToastStore } from "../../stores/toastStore";
 import { useTurnStore } from "../../stores/turnStore";
-import { displayMessages, useMessageStore } from "../../stores/messageStore";
-import {
-  clearPendingReveal,
-  fallbackSessionTitle,
-  getPendingReveal,
-  subscribePendingReveal,
-} from "../../lib/sessionPanelNav";
+import { useMessageStore } from "../../stores/messageStore";
+import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
 import { AgentChatInput } from "../../components/AgentChatInput";
 import {
   MessageList,
@@ -29,15 +21,21 @@ import {
 } from "../../components/MessageList";
 import { LlmReconnectBubble } from "../../components/LlmReconnectBubble";
 import { PermissionCard } from "../../components/PermissionModal";
-import { ProgressiveBlur } from "../../components/ProgressiveBlur";
 import { SessionStatusLine } from "../../components/SessionStatusLine";
-import { releaseSessionTab } from "../../components/sessionTeardown";
 import { hostElementFromTarget, viewOf } from "../../lib/domView";
 import { SubagentReadOnlyContent } from "../../components/SubagentReadOnlyContent";
+import { useSessionPanelBootstrap } from "./useSessionPanelBootstrap";
 import { composerCardClass } from "../../components/composerCard";
 import { UserMessageRail } from "../../components/transcript/UserMessageRail";
 import { useScrollUserAnchors } from "../../components/transcript/useScrollUserAnchors";
 import type { RevealSeq } from "../../components/transcript/transcriptScrollGlide";
+import {
+  TranscriptTopBlur,
+  TranscriptVeil,
+  usePendingRevealScroll,
+  useTopBlur,
+  useTranscriptFeed,
+} from "../../components/transcript/TranscriptBody";
 import {
   USER_RAIL_PAD_LEFT,
   USER_RAIL_PAD_RIGHT,
@@ -97,57 +95,11 @@ export function AgentPanel(props: IDockviewPanelProps) {
   // do NOT guess with a timeout: absent metadata still fails closed. A restored
   // legacy `agent-<child>` panel carries no such param and stays read-only.
   const explicitRootIntent = params.sessionKind === "root";
-  const connState = useConnectionStore((s) => s.state);
-  const [isActive, setIsActive] = useState(props.api.isActive);
-
-  // Track the dockview panel active state — drives the focused/unfocused
-  // emphasis (bigger + brighter vs smaller + dimmer) on the whole chat shell.
-  useEffect(() => {
-    const d = props.api.onDidActiveChange((e) => setIsActive(e.isActive));
-    return () => d.dispose();
-  }, [props.api]);
-
-  // (Re)subscribe while the socket is usable. Re-runs on every transition to
-  // "connected", including reconnects, so a dropped subscription self-heals.
-  useEffect(() => {
-    if (!sessionId || connState !== "connected") return;
-    let disposed = false;
-    useConnectionStore
-      .getState()
-      .ensureSubscribe(sessionId)
-      .catch((error: unknown) => {
-        if (disposed) return;
-        const message =
-          error instanceof Error ? error.message : "Failed to open session";
-        if (/session.*not found/i.test(message)) {
-          useToastStore
-            .getState()
-            .showToast("This session no longer exists", "error");
-          props.api.close();
-        }
-        // Any other failure (socket dropped mid-flight, timeout) is left to the
-        // next "connected" transition rather than surfaced as a scary toast.
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [props.api, sessionId, connState]);
-
-  // Tear down the subscription and local projection only on real unmount — and
-  // not at all while an expanded roster card still holds the session.
-  useEffect(() => {
-    if (!sessionId) return;
-    return () => {
-      releaseSessionTab(sessionId);
-    };
-  }, [sessionId]);
-
-  // Mirror the session-list preview as the tab title. The default dockview
-  // tab clamps/truncates the text, so we get the same "summary" form the
-  // SessionItem shows. Falls back to "NEW" for a writable session that has no
-  // preview yet (a freshly created one); a child keeps its short id.
-  const preview = useSessionStore(
-    (s) => s.sessions.find((x) => x.id === sessionId)?.preview?.trim() ?? "",
+  // Subscription lifecycle (re-armed on every reconnect, closes on a missing
+  // session, released on real unmount) lives in the shared bootstrap hook.
+  const { isActive, session, preview } = useSessionPanelBootstrap(
+    props.api,
+    sessionId,
   );
 
   // Identity classification against the known session list. This is the SAFETY
@@ -162,11 +114,12 @@ export function AgentPanel(props: IDockviewPanelProps) {
   // do we trust either the trusted root intent (fresh `newSession` root, absent
   // from the list) or a present session (known root). An unknown id with no
   // intent fails closed.
-  const session = useSessionStore((s) =>
-    s.sessions.find((x) => x.id === sessionId),
-  );
   const knownChild = session !== undefined && !!session.parent_session_id;
   const writable = !knownChild && (explicitRootIntent || session !== undefined);
+  // Mirror the session-list preview as the tab title. The default dockview
+  // tab clamps/truncates the text, so we get the same "summary" form the
+  // SessionItem shows. Falls back to "NEW" for a writable session that has no
+  // preview yet (a freshly created one); a child keeps its short id.
   useEffect(() => {
     props.api.setTitle(preview || fallbackSessionTitle(sessionId, writable));
   }, [props.api, sessionId, preview, writable]);
@@ -217,46 +170,7 @@ export function AgentChatShell({
   const jumpToEndRef = useRef<(() => void) | null>(null);
   const revealBashRef = useRef<((callId: string) => void) | null>(null);
   const revealSeqRef = useRef<RevealSeq | null>(null);
-  const pendingReveal = useSyncExternalStore(
-    subscribePendingReveal,
-    getPendingReveal,
-  );
-  const hydrated = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.hydrated ?? false,
-  );
-
-  useEffect(() => {
-    if (!pendingReveal || pendingReveal.sessionId !== sessionId) return;
-    if (!hydrated) return;
-    const gen = pendingReveal.gen;
-    const seq = pendingReveal.seq;
-    let cancelled = false;
-    void (async () => {
-      const ok = await useMessageStore
-        .getState()
-        .ensureSeqLoaded(
-          sessionId,
-          seq,
-          () => !cancelled && getPendingReveal()?.gen === gen,
-        );
-      if (cancelled) return;
-      if (!ok) {
-        clearPendingReveal(gen);
-        return;
-      }
-      revealSeqRef.current?.(seq);
-      clearPendingReveal(gen);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    sessionId,
-    hydrated,
-    pendingReveal?.sessionId,
-    pendingReveal?.seq,
-    pendingReveal?.gen,
-  ]);
+  usePendingRevealScroll(sessionId, revealSeqRef);
 
   const openMini = useCallback((anchor: EditingUserAnchor) => {
     if (dismissTimerRef.current !== null) {
@@ -378,40 +292,17 @@ function MessageListRegion({
   revealSeqRef: RefObject<RevealSeq | null>;
   composerCollapsed: boolean;
 }) {
-  const messages = useMessageStore((s) =>
-    displayMessages(s.bySession.get(sessionId)),
-  );
-  const loadingHistory = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.loadingHistory ?? false,
-  );
-  const fromSeq = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.fromSeq ?? 0,
-  );
-  const runState = useTurnStore(
-    (s) => s.byId.get(sessionId)?.runState ?? "idle",
-  );
-  const loadMoreHistoryAction = useMessageStore((s) => s.loadMoreHistory);
-  const loadMoreHistory = useCallback(() => {
-    loadMoreHistoryAction(sessionId);
-  }, [loadMoreHistoryAction, sessionId]);
+  const { messages, loadingHistory, canLoadMore, isRunning, loadMoreHistory } =
+    useTranscriptFeed(sessionId);
 
   const listRef = useRef<HTMLDivElement>(null);
   const userRailLayoutRef = useRef<UserRailLayoutMark[]>([]);
   const userRailNotifyRef = useRef<(() => void) | null>(null);
   const userRail = useScrollUserAnchors(sessionId);
-  const [blurOpacity, setBlurOpacity] = useState(0);
-
-  const canLoadMore = fromSeq > 0;
-  const isRunning = runState === "running" || runState === "cancelling";
+  const { blurOpacity, onScroll } = useTopBlur(listRef);
   const maxFileRevertSeq = useSessionStore(
     (s) => s.byId.get(sessionId)?.maxFileRevertSeq ?? null,
   );
-
-  const onScroll = () => {
-    const el = listRef.current;
-    if (!el) return;
-    setBlurOpacity(Math.min(el.scrollTop / 72, 1));
-  };
 
   return (
     <>
@@ -503,24 +394,9 @@ function MessageListRegion({
             the composer dock (absolute inset-0 z-10, mounted after this
             region). pointer-events-none so it never blocks scroll, click or
             hover. */}
-        <div
-          aria-hidden
-          className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
-            isActive ? "opacity-0" : "opacity-[0.33]"
-          }`}
-          style={{ background: "var(--_dk-editor)" }}
-        />
+        <TranscriptVeil isActive={isActive} />
       </div>
-      <ProgressiveBlur
-        side="top"
-        opacity={blurOpacity}
-        tintColor="var(--_dk-editor)"
-        tint={1}
-        height={56}
-        strength={5}
-        tintCurve={1}
-        offset={16}
-      />
+      <TranscriptTopBlur opacity={blurOpacity} />
     </>
   );
 }

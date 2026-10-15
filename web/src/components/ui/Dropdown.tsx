@@ -7,6 +7,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { useFloatingLayer } from "./useFloatingLayer";
+
 /** Display + width fallback per variant, applied to the root wrapper.
  *  Placed BEFORE the caller's `className`, so any display/width utility the
  *  caller passes overrides it (equal specificity, source order wins). The
@@ -54,7 +56,7 @@ const BORDER: Record<"up" | "down", string> = {
   up: "border border-(--_dk-line-visible)",
 };
 
-export type DropdownVariant = "select" | "menu" | "panel";
+type DropdownVariant = "select" | "menu" | "panel";
 
 /** Shared item classes for select/menu variants — import and apply per item
  *  so item styling is also defined in one place. */
@@ -339,39 +341,23 @@ export function Dropdown({
     }
   }, [open, flip, pos, maxHeight]);
 
+  useFloatingLayer({
+    open,
+    rootRef,
+    panelRef,
+    onDismiss: () => setOpen(false),
+    onScroll: update,
+    onResize: update,
+  });
+
+  // Re-clamp when the dock pane the trigger lives in is resized.
   useEffect(() => {
     if (!open) return;
-    const el = rootRef.current;
-    const view = el?.ownerDocument.defaultView ?? window;
-    const doc = el?.ownerDocument ?? document;
-    const onScroll = () => update();
-    const onResize = () => update();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (rootRef.current && rootRef.current.contains(t)) return;
-      if (panelRef.current && panelRef.current.contains(t)) return;
-      setOpen(false);
-    };
-    view.addEventListener("scroll", onScroll, true);
-    view.addEventListener("resize", onResize);
-    view.addEventListener("keydown", onKey);
-    doc.addEventListener("mousedown", onDown);
     const pane = rootRef.current ? dockPane(rootRef.current) : null;
-    let observer: ResizeObserver | null = null;
-    if (pane && typeof ResizeObserver !== "undefined") {
-      observer = new ResizeObserver(() => update());
-      observer.observe(pane);
-    }
-    return () => {
-      observer?.disconnect();
-      view.removeEventListener("scroll", onScroll, true);
-      view.removeEventListener("resize", onResize);
-      view.removeEventListener("keydown", onKey);
-      doc.removeEventListener("mousedown", onDown);
-    };
+    if (!pane || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(pane);
+    return () => observer.disconnect();
   }, [open, direction, align, variant, maxHeight, flip]);
 
   const placement: "up" | "down" = pos?.bottom != null ? "up" : "down";

@@ -52,4 +52,23 @@ describe("slim packaging hygiene", () => {
       /if \(\$IncludeModel -and \(Test-Path \(Join-Path \$Root "models"\)\)\)[\s\S]*?Copy-Item -Recurse -Force \(Join-Path \$Root "models\\\*"\)/,
     );
   });
+
+  it("sh/ps1 script pairs cross-reference each other and keep the release remap in sync", () => {
+    const read = (name: string) => fs.readFileSync(path.join(repoRoot, "scripts", name), "utf8");
+    const pairs: Array<[string, string]> = [
+      ["assemble_product.sh", "assemble_product.ps1"],
+      ["smoke_product.sh", "smoke_product.ps1"],
+      ["serve.sh", "serve_win.ps1"],
+    ];
+    for (const [sh, ps1] of pairs) {
+      assert.ok(read(sh).includes(`Paired with scripts/${ps1}`), `${sh} header must point at ${ps1}`);
+      assert.ok(read(ps1).includes(`Paired with scripts/${sh}`), `${ps1} header must point at ${sh}`);
+    }
+    const assembleSh = read("assemble_product.sh");
+    const assemblePs1 = read("assemble_product.ps1");
+    for (const needle of ["--remap-path-prefix=", "=/rustc/registry", "=/rustc/git", "RUSTFLAGS (release remap)"]) {
+      assert.ok(assembleSh.includes(needle), `assemble_product.sh missing ${needle}`);
+      assert.ok(assemblePs1.includes(needle), `assemble_product.ps1 missing ${needle}`);
+    }
+  });
 });

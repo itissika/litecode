@@ -5,9 +5,9 @@ import {
   type WebContents,
 } from "electron";
 
+import { BROWSER_STATE_CHANNEL } from "./bridge-contract";
 import {
   BROWSER_PARTITION,
-  BROWSER_STATE_CHANNEL,
   BrowserHost,
   type BrowserPage,
   type BrowserViewHandle,

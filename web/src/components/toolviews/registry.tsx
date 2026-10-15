@@ -33,7 +33,7 @@ export interface ToolViewProps {
  * covered tools — add a view here plus an entry in `paramMeta.ts`. Tools without
  * an entry fall back to the default input/output rendering in `ToolContentView`.
  */
-export const TOOL_VIEWS: Record<
+const TOOL_VIEWS: Record<
   string,
   (props: ToolViewProps) => ReactElement | null
 > = {

@@ -70,8 +70,9 @@ impl LspEngine {
                 "lsp: no language server commands resolved from configuration".into(),
             ));
         }
-        // activate is metadata-only (no language-server I/O).
-        self.hub.activate(&commands)?;
+        // Metadata only: no subprocess. The `--version` / npm-prefix
+        // availability probe runs on first need (WP-167, `LspHub::ensure_probed`).
+        self.hub.activate_deferred(&commands)?;
         Ok(())
     }
 

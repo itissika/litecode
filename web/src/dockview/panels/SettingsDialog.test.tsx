@@ -90,7 +90,7 @@ describe("SettingsDialog", () => {
 
   it("shows a turn banner when a session is running and keeps navigation clickable", () => {
     render(<SettingsDialog />);
-    expect(screen.queryByText(/settings saves are disabled/i)).toBeNull();
+    expect(screen.queryByText(/saving is paused/i)).toBeNull();
 
     act(() => {
       useTurnStore.setState({
@@ -98,7 +98,7 @@ describe("SettingsDialog", () => {
       });
     });
 
-    expect(screen.getByText(/settings saves are disabled/i)).toBeTruthy();
+    expect(screen.getByText(/saving is paused/i)).toBeTruthy();
     const provider = screen.getByRole("button", { name: /Provider/ });
     expect(provider.hasAttribute("disabled")).toBe(false);
     fireEvent.click(provider);

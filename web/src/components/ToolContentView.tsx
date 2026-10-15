@@ -57,8 +57,8 @@ export function ToolContentView({
       <div className="flex items-start gap-2 rounded-md bg-(--_dk-amber-500)/10 px-2 py-1.5 text-dk-sm leading-relaxed text-(--_dk-amber-500)">
         <span>
           {resourceBusy.heldBy
-            ? `Resource is held by session ${resourceBusy.heldBy.slice(0, 8)}. It will be retried automatically once released — switch sessions or wait.`
-            : "Resource is held by another session. It will be retried automatically once released."}
+            ? `Held by session ${resourceBusy.heldBy.slice(0, 8)}; will retry when released.`
+            : "Held by another session; will retry when released."}
         </span>
       </div>
     );

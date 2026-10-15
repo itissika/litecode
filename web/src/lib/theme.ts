@@ -47,10 +47,3 @@ function syncDockviewTheme(name: ThemeName) {
   const dvTheme = name === "light" ? "light" : "dark";
   document.documentElement.setAttribute("data-dv-theme", dvTheme);
 }
-
-/** Toggle between light and default themes. */
-export function toggleTheme(): ThemeName {
-  const next = getTheme() === "light" ? "default" : "light";
-  setTheme(next);
-  return next;
-}

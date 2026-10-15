@@ -14,7 +14,7 @@ const DEFAULT_HEIGHT = 640;
 const MIN_SPAN = 200;
 const CASCADE = 36;
 
-export type PopoutRect = { x: number; y: number; width: number; height: number };
+type PopoutRect = { x: number; y: number; width: number; height: number };
 
 const staged = new Map<string, PopoutRect>();
 

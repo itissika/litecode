@@ -1,7 +1,7 @@
 import type { LlmReconnectNotice } from "../api/types";
 
 /** `500` → `0.5s`, `1000` and above → whole seconds. */
-export function formatReconnectDelay(delayMs: number): string {
+function formatReconnectDelay(delayMs: number): string {
   if (delayMs >= 1000) return `${Math.round(delayMs / 1000)}s`;
   return `${Math.round(delayMs / 100) / 10}s`;
 }

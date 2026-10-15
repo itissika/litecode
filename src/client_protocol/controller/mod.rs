@@ -1,4 +1,5 @@
 mod session_lifecycle;
+pub(crate) use session_lifecycle::build_session_list;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

@@ -235,6 +235,10 @@ pub async fn handle_jsonrpc(
 
     match rpc.method.as_str() {
         methods::AGENT_RUN => {
+            // WP-166 §9: a client that runs turns without ever sending
+            // session/list or session/new (e.g. `?session=` hint) still
+            // releases P2 startup work on its first agent/run.
+            session.sessions.mark_startup_settled();
             #[derive(serde::Deserialize)]
             struct Params {
                 #[serde(default)]
@@ -677,40 +681,44 @@ pub async fn handle_jsonrpc(
             );
         }
 
-        methods::SESSION_NEW => match session.new_session().await {
-            Ok(session_id) => {
-                for msg in session.take_all_outgoing() {
-                    emit(sink, msg);
+        methods::SESSION_NEW => {
+            match session.new_session().await {
+                Ok(session_id) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::json!({"session_id": session_id}),
+                        ))
+                        .unwrap(),
+                    );
                 }
-                emit(
-                    sink,
-                    serde_json::to_value(ok_response(
-                        id,
-                        serde_json::json!({"session_id": session_id}),
-                    ))
-                    .unwrap(),
-                );
+                Err(e) => {
+                    let msg = e.to_string();
+                    let sid = session.first_session_id().unwrap_or_default();
+                    emit(
+                        sink,
+                        operation_error(
+                            session,
+                            &sid,
+                            false,
+                            &msg,
+                            OperationKind::NewSession,
+                            ErrorCode::Internal,
+                        ),
+                    );
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                    );
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                let sid = session.first_session_id().unwrap_or_default();
-                emit(
-                    sink,
-                    operation_error(
-                        session,
-                        &sid,
-                        false,
-                        &msg,
-                        OperationKind::NewSession,
-                        ErrorCode::Internal,
-                    ),
-                );
-                emit(
-                    sink,
-                    serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
-                );
-            }
-        },
+            // WP-166: the first list/new reply releases P2 startup work.
+            session.sessions.mark_startup_settled();
+        }
 
         methods::SESSION_SUBSCRIBE => {
             #[derive(serde::Deserialize)]
@@ -888,40 +896,44 @@ pub async fn handle_jsonrpc(
             }
         }
 
-        methods::SESSION_LIST => match session.list_sessions().await {
-            Ok(sessions) => {
-                for msg in session.take_all_outgoing() {
-                    emit(sink, msg);
+        methods::SESSION_LIST => {
+            match session.list_sessions().await {
+                Ok(sessions) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::json!({"sessions": sessions}),
+                        ))
+                        .unwrap(),
+                    );
                 }
-                emit(
-                    sink,
-                    serde_json::to_value(ok_response(
-                        id,
-                        serde_json::json!({"sessions": sessions}),
-                    ))
-                    .unwrap(),
-                );
+                Err(e) => {
+                    let msg = e.to_string();
+                    let sid = session.first_session_id().unwrap_or_default();
+                    emit(
+                        sink,
+                        operation_error(
+                            session,
+                            &sid,
+                            false,
+                            &msg,
+                            OperationKind::ListSessions,
+                            ErrorCode::Internal,
+                        ),
+                    );
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
+                    );
+                }
             }
-            Err(e) => {
-                let msg = e.to_string();
-                let sid = session.first_session_id().unwrap_or_default();
-                emit(
-                    sink,
-                    operation_error(
-                        session,
-                        &sid,
-                        false,
-                        &msg,
-                        OperationKind::ListSessions,
-                        ErrorCode::Internal,
-                    ),
-                );
-                emit(
-                    sink,
-                    serde_json::to_value(err_response(id, -32000, msg)).unwrap(),
-                );
-            }
-        },
+            // WP-166: the first list/new reply releases P2 startup work.
+            session.sessions.mark_startup_settled();
+        }
 
         methods::SESSION_SNAPSHOT => {
             #[derive(serde::Deserialize)]

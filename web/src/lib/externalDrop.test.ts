@@ -5,6 +5,7 @@ import { useSessionStore } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
 import { foreignDropIntent, previewForeignDrop } from "./externalDrop";
 import { fakeTransfer } from "../test/fakeTransfer";
+import { stubDesktopBridge } from "../test/desktopBridge";
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -44,7 +45,7 @@ describe("foreign drop routing", () => {
   it("opens a temporary preview for a dropped file and a workspace file for a path", async () => {
     const file = new File(["hello"], "notes.ts", { type: "text/plain" });
     const files = fakeTransfer({ files: [file] });
-    window.litecode = { getPathForFile: () => "C:\\outside\\notes.ts" };
+    window.litecode = stubDesktopBridge({ getPathForFile: () => "C:\\outside\\notes.ts" });
     await previewForeignDrop(files);
     const tab = useEditorStore.getState().tabs[0];
     expect(tab?.external).toBe(true);

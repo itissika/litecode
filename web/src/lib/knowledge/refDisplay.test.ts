@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { knowledgeFixture } from "./fixture";
+import { knowledgeFixture } from "../../test/fixtures/knowledge";
 import { chipForMarker, citationRefKey, relationStripChips, resolveCitation } from "./refDisplay";
 import { normalizeKey } from "./markers";
 import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";

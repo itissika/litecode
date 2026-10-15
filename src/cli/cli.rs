@@ -91,7 +91,13 @@ fn workspace_override(cli: &Cli) -> Option<&Path> {
 }
 
 fn load_runtime_bundle_from_cli(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
-    ConfigManager::load_runtime_bundle(workspace_override(cli)).map_err(Into::into)
+    // WP-166: serve warms the snapshot repo in the background after bind.
+    let warm = if matches!(cli.command, Some(Commands::Serve { .. })) {
+        crate::config::workspace::WarmSnapshot::Deferred
+    } else {
+        crate::config::workspace::WarmSnapshot::Now
+    };
+    ConfigManager::load_runtime_bundle_with(workspace_override(cli), warm).map_err(Into::into)
 }
 
 /// Key of the provider the default agent's model belongs to, else the first

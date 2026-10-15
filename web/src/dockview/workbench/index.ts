@@ -16,54 +16,13 @@
  *   when the anchor still exists. Otherwise the group is reattached on the
  *   main grid.
  *
- * Features open, reveal, move, and pop panels through the functions below.
+ * Features open, reveal, move, and pop panels through this directory (commands.ts, edges.ts).
  * They do not receive Dockview's add, move, or popout methods.
  *
  * A panel component's own props.api may set its title, close itself, and
  * listen for visibility. Cross-panel actions go through this module.
  */
 
-export type {
-  CenterPlacement,
-  EdgeRail,
-  PanelKindSpec,
-  Zone,
-} from "./kinds";
-export { PANEL_KINDS, edgeKinds, kindForComponent } from "./kinds";
-export type { GroupFacts, GroupRole, PanelWhere, PanelWindow } from "./model";
-export { groupRole, isUsableCenter } from "./model";
-export type { CenterGroupQuery, PopoutWindowInfo } from "./queries";
-export {
-  activePanelComponent,
-  activePanelId,
-  centerGroups,
-  hasPanel,
-  isInMainWindow,
-  mainCenterHasPanel,
-  panelVisible,
-  popoutWindows,
-  roleOfGroup,
-  whereIs,
-} from "./queries";
-export { bindDockview, onDockviewAttached } from "./host";
-export type { PanelRemoved } from "./events";
-export { onPanelRemoved } from "./events";
-export type { OpenPanelRequest } from "./commands";
-export {
-  closePanel,
-  joinPopoutWindow,
-  movePanelToMain,
-  openPanel,
-  popoutPanel,
-  revealPanel,
-} from "./commands";
-export {
-  ensureDefaultEdges,
-  ensureEdgePanel,
-  recoverDefaultLayout,
-  revealEdgePanel,
-} from "./edges";
-export type { LayoutStore } from "./lifecycle";
-export { isLayoutRestoring } from "./restoreGate";
-export { LAYOUT_SCHEMA_VERSION, layoutStore, startWorkbench, stopWorkbench } from "./lifecycle";
-export { ensureMainCenterGroup, placementFor, resetPlacementForTests } from "./placement";
+// Only re-exports that have a consumer outside workbench/ (WP-159 / U3).
+// Other modules import workbench submodules directly.
+export { groupRole } from "./model";

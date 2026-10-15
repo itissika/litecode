@@ -6,6 +6,7 @@ import {
   useServerVersionTags,
   VersionTags,
 } from "../../components/VersionTags";
+import { REMOTE_SERVE_HINT } from "../../lib/uiCopy";
 
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
@@ -65,7 +66,7 @@ export function TitleBar({
               borderRadius: 2,
               lineHeight: "16px",
             }}
-            title="Connected to a remote litecode serve (no local sidecar)"
+            title={REMOTE_SERVE_HINT}
           >
             Remote
           </span>

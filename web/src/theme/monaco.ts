@@ -174,7 +174,7 @@ function semanticTokenRules(
  * Monaco editor colors — derived from the live dark theme tokens:
  *   background: t.editor   widget bg: t.overlay
  */
-export function defineMonacoThemeDark(monaco: Monaco): void {
+function defineMonacoThemeDark(monaco: Monaco): void {
   const t = readDkTokensForTheme("dark");
   monaco.editor.defineTheme(LITECODE_MONACO_THEME_DARK, {
     base: "vs-dark",
@@ -188,7 +188,7 @@ export function defineMonacoThemeDark(monaco: Monaco): void {
  * Light Monaco theme — derived from the live light theme tokens.
  * Colors are normalized to hex so setTheme does not blank the editor.
  */
-export function defineMonacoThemeLight(monaco: Monaco): void {
+function defineMonacoThemeLight(monaco: Monaco): void {
   const t = readDkTokensForTheme("light");
   monaco.editor.defineTheme(LITECODE_MONACO_THEME_LIGHT, {
     base: "vs",

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installBrowserChromeObscure, pushBrowserObscure } from "./browserObscure";
 import { bindWindowRegistry, resetWindowsForTests } from "../dockview/workbench/windows";
+import { stubDesktopBridge } from "../test/desktopBridge";
 
 const quietApi = {
   onDidAddPopoutGroup: () => ({ dispose() {} }),
@@ -22,9 +23,9 @@ afterEach(() => {
 describe("pushBrowserObscure", () => {
   it("stays hidden until every lease is released", () => {
     const calls: boolean[] = [];
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserSetObscured: (obscured) => calls.push(obscured),
-    };
+    });
     const first = pushBrowserObscure();
     const second = pushBrowserObscure();
     expect(calls.at(-1)).toBe(true);
@@ -40,9 +41,9 @@ describe("installBrowserChromeObscure", () => {
   it("hides pages while a context menu is open", () => {
     vi.useFakeTimers();
     const calls: boolean[] = [];
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserSetObscured: (obscured) => calls.push(obscured),
-    };
+    });
     const stop = installBrowserChromeObscure();
     window.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
     expect(calls.at(-1)).toBe(true);
@@ -54,9 +55,9 @@ describe("installBrowserChromeObscure", () => {
 
   it("hides pages once a tab drag actually moves", () => {
     const calls: boolean[] = [];
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserSetObscured: (obscured) => calls.push(obscured),
-    };
+    });
     const stop = installBrowserChromeObscure();
     const tab = document.createElement("div");
     tab.className = "dv-tab";
@@ -78,9 +79,9 @@ describe("installBrowserChromeObscure", () => {
   it("hides pages for a popout context menu and ignores it after unregister", () => {
     vi.useFakeTimers();
     const calls: boolean[] = [];
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserSetObscured: (obscured) => calls.push(obscured),
-    };
+    });
     const target = new EventTarget();
     const child = {
       closed: false,

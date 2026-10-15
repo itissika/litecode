@@ -6,9 +6,9 @@ import { BrowserWindow } from "electron";
 
 import { normalizeWorkspace } from "./lap-path";
 
-export { normalizeWorkspace, stripVerbatimLap } from "./lap-path";
+export { normalizeWorkspace } from "./lap-path";
 
-export type InstanceRecord = {
+type InstanceRecord = {
   pid: number;
   port: number;
   workspace: string | null;

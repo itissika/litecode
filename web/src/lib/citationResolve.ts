@@ -2,13 +2,13 @@ import { resolveCitations, type CitationRefHit } from "../api/workspace";
 import { citationCacheKey, type CitationTarget } from "./citationRef";
 
 /** Positive hits stay cached. Misses do not, so a later retry can see a new file. */
-export interface CitationHit {
+interface CitationHit {
   exists: true;
   path: string;
   line?: number;
 }
 
-export type CitationLookup = CitationHit | { exists: false } | null;
+type CitationLookup = CitationHit | { exists: false } | null;
 
 const CHUNK = 32;
 
@@ -24,13 +24,6 @@ const hits = new Map<string, CitationHit>();
 const inflight = new Map<string, Promise<CitationLookup>>();
 let queue: Queued[] = [];
 let flushScheduled = false;
-
-export function peekCitation(
-  workspace: string,
-  target: CitationTarget,
-): CitationHit | undefined {
-  return hits.get(citationCacheKey(workspace, target));
-}
 
 export function requestCitation(
   workspace: string,

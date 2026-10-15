@@ -32,6 +32,13 @@ import { useEngineStore } from "./engineStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 import { useKnowledgeStore } from "./knowledgeStore";
 import type { KnowledgeChanged } from "../api/knowledge";
+import {
+  noteRootAttached,
+  noteSessionListSettled,
+  noteTransportFailed,
+  whenCentreSettled,
+} from "../lib/centreSettle";
+import { whenIdle } from "../lib/idle";
 
 interface StoreLike {
   getState: () => any;
@@ -168,6 +175,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               // Clear the local record so each AgentPanel re-subscribes
               // itself on (re)connect via its own connection-state effect.
               set({ state: connection, subscribedSessions: new Set() });
+              // A failed or dropped socket must not hold back startup work
+              // waiting on the centre (engines, summary, file tree).
+              if (connection === "disconnected" || connection === "reconnecting") {
+                noteTransportFailed();
+              }
             }
             siblingStores.telemetry?.getState().onConnectionChange(connection);
           },
@@ -261,7 +273,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               );
             }
             settings?.setRevision(hello.settings_revision);
-            void useEngineStore.getState().ensureLoaded();
+            // Engines are not first-screen: fetch once the centre settled and
+            // the browser is idle. Views still pull on demand.
+            void whenCentreSettled()
+              .then(whenIdle)
+              .then(() => useEngineStore.getState().ensureLoaded());
             void settings?.noteWorkspaceReady();
             // hello.session_id is empty string in single-WS mode; only set
             // global info (project, workspace_id, models, settings_revision, etc.).
@@ -293,6 +309,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
 
           case "session/list": {
             session?.onSessionList((params as unknown as SessionList).sessions);
+            noteSessionListSettled();
             return;
           }
 
@@ -385,17 +402,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             return;
           }
 
-          case "session/compact_started": {
-            const started = params as unknown as CompactLifecycle;
-            session?.applySnapshot(started.snapshot);
-            turn?.onCompactLifecycle?.({
-              ...started,
-              trigger: started.trigger ?? "manual",
-              stage: "started",
-            });
-            return;
-          }
-
           case "agent/operation_result": {
             session?.onOperationResult(params as unknown as OperationResult);
             return;
@@ -479,6 +485,7 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
             const sessions = new Set(get().subscribedSessions);
             sessions.add(sid);
             set({ subscribedSessions: sessions });
+            noteRootAttached();
           })
           .finally(() => {
             if (pendingSubscriptions.get(sid) === request) {

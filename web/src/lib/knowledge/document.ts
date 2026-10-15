@@ -20,7 +20,7 @@ export interface KnowledgeSourceFile {
   markdown: string;
 }
 
-export interface ParsedKnowledgeFile {
+interface ParsedKnowledgeFile {
   path: string;
   key: string;
   status: KnowledgeStatus;

@@ -395,6 +395,11 @@ async fn post_retrieval_search(
     State(state): State<ServeState>,
     Json(body): Json<crate::engines::code_search::HumanSearchRequest>,
 ) -> Response {
+    // WP-166 §9: HTTP-only clients never send session/list or session/new; the
+    // first retrieval search releases P2 startup work (session-index tick, GC).
+    if !state.sessions.is_startup_settled() {
+        state.sessions.mark_startup_settled();
+    }
     let root = state
         .runtime
         .read()

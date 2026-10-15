@@ -5,7 +5,7 @@
  * and Microsoft HLSL documentation.
  */
 
-export interface IParam {
+interface IParam {
   label: string;
   documentation?: string;
 }
@@ -16,7 +16,7 @@ export class IEntry {
 }
 
 //TODO: support multiple entry per name
-export interface IEntries {
+interface IEntries {
   [name: string]: IEntry;
 }
 

@@ -11,7 +11,7 @@ export interface FlowPointNode {
   position: WorldPoint;
 }
 
-export interface PositionWrite {
+interface PositionWrite {
   id: string;
   x: number;
   y: number;

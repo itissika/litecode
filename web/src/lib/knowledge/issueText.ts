@@ -6,7 +6,7 @@ import type {
 } from "./types";
 
 /** `args.reason` of `invalid_lines` on a symbol citation written with `lines` (KR-SYM-6). */
-export const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
+const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
 
 type Template = (args: KnowledgeIssueArgs) => string | null;
 
@@ -121,7 +121,7 @@ export function isKnowledgeIssueCode(code: string): code is KnowledgeIssueCode {
 }
 
 /** Text for one code. Unknown code or missing args → the backend message. */
-export function knowledgeProblemText(
+function knowledgeProblemText(
   code: string,
   args: KnowledgeIssueArgs | undefined,
   message: string,

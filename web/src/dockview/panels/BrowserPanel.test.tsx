@@ -3,6 +3,7 @@ import type { IDockviewPanelProps } from "dockview-react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BrowserPanel } from "./BrowserPanel";
+import { stubDesktopBridge } from "../../test/desktopBridge";
 
 const PANEL_ID = "browser-11111111-1111-4111-8111-111111111111";
 
@@ -62,11 +63,11 @@ describe("BrowserPanel page actions", () => {
   it("stops a pending load and reloads once it settles", async () => {
     const stop = vi.fn(async () => state({ loading: false }));
     const reload = vi.fn(async () => state({ loading: true }));
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserCreate: async () => state({ loading: true }),
       browserStop: stop,
       browserReload: reload,
-    };
+    });
 
     render(<BrowserPanel {...panelProps()} />);
 
@@ -79,10 +80,10 @@ describe("BrowserPanel page actions", () => {
   });
 
   it("keeps reload off until the page has an address", async () => {
-    window.litecode = {
+    window.litecode = stubDesktopBridge({
       browserCreate: async () => state({ url: "about:blank" }),
       browserReload: vi.fn(),
-    };
+    });
 
     render(<BrowserPanel {...panelProps()} />);
 

@@ -364,9 +364,50 @@ pub struct SessionManager {
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
     /// WP-090: optional turn status hook (default none = no-op). Session installs.
     turn_status_hook: std::sync::RwLock<Option<TurnStatusHook>>,
+    /// WP-166: flips to `true` once, when the first `session/list` or
+    /// `session/new` reply has been emitted on any connection. P2 startup work
+    /// (session-index first tick, empty-session GC) waits on it.
+    startup_settled: tokio::sync::watch::Sender<bool>,
     /// Test-only: next `start_turn` pretends fanout thread spawn failed.
     #[cfg(test)]
     fail_next_fanout_spawn: std::sync::atomic::AtomicBool,
+}
+
+/// WP-166 tests: park `resume_session` for one session id so a test can hold a
+/// `session/subscribe` mid-replay. Compiled only under `cfg(test)`.
+#[cfg(test)]
+pub(crate) mod resume_gate_for_test {
+    use std::collections::HashMap;
+    use std::sync::{Arc, LazyLock, Mutex};
+
+    pub(crate) struct Gate {
+        pub(crate) entered: tokio::sync::Notify,
+        pub(crate) release: tokio::sync::Semaphore,
+    }
+
+    static GATES: LazyLock<Mutex<HashMap<String, Arc<Gate>>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    /// Install a closed gate for `session_id`; the next resume parks on it.
+    pub(crate) fn install(session_id: &str) -> Arc<Gate> {
+        let gate = Arc::new(Gate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        GATES
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), Arc::clone(&gate));
+        gate
+    }
+
+    pub(crate) async fn wait(session_id: &str) {
+        let gate = GATES.lock().unwrap().remove(session_id);
+        if let Some(gate) = gate {
+            gate.entered.notify_one();
+            let _ = gate.release.acquire().await;
+        }
+    }
 }
 
 const EVENT_BUFFER_CAPACITY: usize = 1024;
@@ -401,6 +442,7 @@ impl SessionManager {
             _test_lease: test_lease,
             lifecycle_tx,
             turn_status_hook: std::sync::RwLock::new(None),
+            startup_settled: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         }
@@ -416,6 +458,7 @@ impl SessionManager {
             _test_lease: None,
             lifecycle_tx,
             turn_status_hook: std::sync::RwLock::new(None),
+            startup_settled: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             fail_next_fanout_spawn: std::sync::atomic::AtomicBool::new(false),
         };
@@ -474,6 +517,31 @@ impl SessionManager {
         let receipt = self.data.mutate_blocking(mutation)?;
         self.note_receipt(&receipt);
         Ok(receipt)
+    }
+
+    /// WP-166: record that the first `session/list` / `session/new` reply went
+    /// out. Idempotent; only the first call has an effect.
+    pub fn mark_startup_settled(&self) {
+        self.startup_settled.send_if_modified(|settled| {
+            if *settled {
+                false
+            } else {
+                *settled = true;
+                true
+            }
+        });
+    }
+
+    pub fn is_startup_settled(&self) -> bool {
+        *self.startup_settled.borrow()
+    }
+
+    /// WP-166: resolves once [`Self::mark_startup_settled`] has been called
+    /// (immediately if it already was). No timeout: P2 work starts only after
+    /// the client has its list / new reply.
+    pub async fn wait_startup_settled(&self) {
+        let mut rx = self.startup_settled.subscribe();
+        let _ = rx.wait_for(|settled| *settled).await;
     }
 
     /// Private in-memory registry for tests that need an isolated manager
@@ -672,6 +740,8 @@ impl SessionManager {
     }
 
     pub async fn resume_session(&self, session_id: &str) -> Result<()> {
+        #[cfg(test)]
+        resume_gate_for_test::wait(session_id).await;
         let mut records = self.records.lock().unwrap();
         if records.contains_key(session_id) {
             return Ok(());

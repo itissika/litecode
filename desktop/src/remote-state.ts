@@ -10,11 +10,3 @@ export function clearManagedRemoteIfSession<T extends { session: unknown }>(
   return current?.session === session ? null : current;
 }
 
-/** Assign managed remote only after a successful attach (D8). */
-export function managedRemoteAfterSuccessfulConnect<T>(
-  previous: T | null,
-  next: T,
-): T {
-  void previous;
-  return next;
-}

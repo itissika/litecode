@@ -1,6 +1,6 @@
 // --- ErrorCode (snake_case) ---
 
-export type ErrorCode =
+type ErrorCode =
   | "llm_http"
   | "llm_parse"
   | "max_steps"
@@ -18,14 +18,14 @@ export type ErrorCode =
   | "nothing_to_compact"
   | "internal";
 
-export interface StructuredError {
+interface StructuredError {
   code: ErrorCode;
   message: string;
   /** Present when the turn can be continued with `agent/retry`. */
   retryable?: boolean;
 }
 
-export type LlmReconnectPhase = "waiting" | "connecting" | "cleared" | "failed";
+type LlmReconnectPhase = "waiting" | "connecting" | "cleared" | "failed";
 
 /** Structured LLM reconnect status. English copy is formatted on the client. */
 export interface LlmReconnectNotice {
@@ -36,7 +36,7 @@ export interface LlmReconnectNotice {
   delay_ms?: number;
 }
 
-export type CompactionKind =
+type CompactionKind =
   | "first_pass"
   | "second_pass"
   | "aggressive_truncate"
@@ -68,7 +68,7 @@ export type InputContent =
     }
   | { type: "input_file"; [key: string]: unknown };
 
-export type OutputContent =
+type OutputContent =
   | {
       type: "output_text";
       text: string;
@@ -174,14 +174,14 @@ export interface WireServerHello {
 }
 
 /** Persisted SessionEvent rows. `kind` is the only projection discriminator. */
-export type ItemLogKind =
+type ItemLogKind =
   | "item/user"
   | "item/assistant"
   | "item/tool_call"
   | "item/tool_result";
 
 /** A committed row's lifecycle, as the session log itself records it. */
-export type LogRowState = "in_progress" | "final" | "aborted";
+type LogRowState = "in_progress" | "final" | "aborted";
 
 /** Every committed row carries the log envelope; `seq` is its identity. */
 interface LogRowEnvelope {
@@ -199,18 +199,18 @@ interface LogRowEnvelope {
   hidden?: boolean;
 }
 
-export interface ItemLogRow extends LogRowEnvelope {
+interface ItemLogRow extends LogRowEnvelope {
   kind: ItemLogKind;
   body: Item;
   child_session_id?: string;
 }
 
-export interface CompactedLogRow extends LogRowEnvelope {
+interface CompactedLogRow extends LogRowEnvelope {
   kind: "compacted";
   body: { summary: string; from: number; to: number };
 }
 
-export interface BashExitEntry {
+interface BashExitEntry {
   job_id: string;
   command: string;
   exit_code: number;
@@ -228,7 +228,7 @@ export interface BashExitReminderLogRow extends LogRowEnvelope {
   };
 }
 
-export interface SettledChildBody {
+interface SettledChildBody {
   child_session_id: string;
   turn_id: string;
   agent: string;
@@ -245,7 +245,7 @@ export interface SubagentSettledLogRow extends LogRowEnvelope {
 }
 
 /** A durable plan-review reminder: a system mark, never a chat bubble. */
-export interface PlanChangedLogRow extends LogRowEnvelope {
+interface PlanChangedLogRow extends LogRowEnvelope {
   kind: "reminder/plan_changed";
   body: {
     kind: "plan_changed";
@@ -262,7 +262,7 @@ export interface PlanExecuteLogRow extends LogRowEnvelope {
   body: Item;
 }
 
-export interface ControlLogRow extends LogRowEnvelope {
+interface ControlLogRow extends LogRowEnvelope {
   kind: "turn/start" | "turn/end" | "request/header" | "request/context";
   body: Record<string, unknown>;
 }
@@ -281,7 +281,7 @@ export type WireBufferEvent =
 export type HumanRow = WireBufferEvent;
 
 /** One `item/user` position from `buffer/user-anchors`. */
-export interface UserAnchorRef {
+interface UserAnchorRef {
   seq: number;
 }
 
@@ -367,7 +367,7 @@ export interface LogLine {
 }
 
 /** WP-095: initiator of a cancelled turn (stop_and_send internal stop = parent). */
-export type CancelledBy = "user" | "parent" | null;
+type CancelledBy = "user" | "parent" | null;
 
 export type SessionStatus =
   | "idle"
@@ -406,7 +406,7 @@ export interface SessionList {
   sessions: SessionInfo[];
 }
 
-export type SessionLifecycleEvent =
+type SessionLifecycleEvent =
   | "created"
   | "deleted"
   | "turn_started"
@@ -417,7 +417,7 @@ export type SessionLifecycleEvent =
   /** WP-086: aggregate status change (e.g. parent ↔ running_with_subagent). */
   | "status_changed";
 
-export type TurnStepKind = "reasoning" | "toolcall" | "text";
+type TurnStepKind = "reasoning" | "toolcall" | "text";
 
 export interface SessionLifecycle {
   session_id: string;
@@ -443,17 +443,12 @@ export interface SessionLifecycle {
   status?: SessionStatus;
 }
 
-export interface SessionAttached {
-  session_id: string;
-  turn: TurnSnapshot;
-}
-
 export interface WorkspaceChanged {
   paths: string[];
   kind: string;
 }
 
-export interface BufferState {
+interface BufferState {
   last_seq: number;
   next_seq: number;
   revision: number;
@@ -563,7 +558,7 @@ export interface BashTailResult {
 export type ThinkingTier = "low" | "medium" | "high";
 export type ContextMode = "standard" | "max";
 
-export type TurnEndReason = "completed" | "cancelled" | "max_steps" | "error";
+type TurnEndReason = "completed" | "cancelled" | "max_steps" | "error";
 
 export interface TurnStarted {
   session_id: string;
@@ -582,7 +577,7 @@ export interface TurnEventEnvelope {
   parent_session_id?: string;
 }
 
-export interface TurnTokenStats {
+interface TurnTokenStats {
   prompt_tokens: number;
   completion_tokens: number;
   cache_hit_tokens: number;
@@ -655,14 +650,6 @@ export interface CompactLifecycle {
   operation_id?: string | null;
   error?: StructuredError | null;
   snapshot: SessionSnapshot;
-}
-
-/** @deprecated Use CompactLifecycle stage=started. Kept for one-release wire compat. */
-export interface CompactStarted {
-  session_id: string;
-  operation_id: string;
-  snapshot: SessionSnapshot;
-  trigger?: "manual" | "auto";
 }
 
 export type AskKind = "permission" | "approval" | "ask_user";
@@ -767,29 +754,7 @@ export type WireEvent =
     }
   | { type: "snapshot_notice"; level: string; message: string };
 
-// --- JSON-RPC 2.0 types ---
-
-export interface JsonRpcRequest {
-  jsonrpc: "2.0";
-  method: string;
-  params?: Record<string, unknown>;
-  id: string | number;
-}
-
-export interface JsonRpcResponse {
-  jsonrpc: "2.0";
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-  id: string | number | null;
-}
-
-export interface JsonRpcNotification {
-  jsonrpc: "2.0";
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-export interface LspWireError {
+interface LspWireError {
   code: number;
   message: string;
 }
@@ -800,20 +765,11 @@ export interface LspResult {
   error?: LspWireError;
 }
 
-export interface LspNotification {
-  method: string;
-  params: Record<string, unknown>;
-}
-
 export type ConnectionState =
   | "disconnected"
   | "connecting"
   | "connected"
   | "reconnecting";
-
-export type TransportRequest =
-  | { subscribe_session: { session_id: string } }
-  | { unsubscribe_session: { session_id: string } };
 
 export type AgentRunState = "idle" | "running" | "cancelling";
 

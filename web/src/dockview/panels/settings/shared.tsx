@@ -74,7 +74,7 @@ const RANK: PersistStatus[] = [
   "saved",
 ];
 
-export function PersistStatusLabel() {
+function PersistStatusLabel() {
   const section = useSettingsStore((s) => s.section);
   const persistByDoc = useSettingsStore((s) => s.persistByDoc);
   const statuses = SECTION_PERSIST_DOCS[section].map(

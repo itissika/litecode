@@ -3,6 +3,7 @@ import type { IDockviewHeaderActionsProps } from "dockview-react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { BrowserHeaderAction } from "./BrowserHeaderAction";
+import { stubDesktopBridge } from "../../test/desktopBridge";
 
 afterEach(() => {
   cleanup();
@@ -23,13 +24,13 @@ function headerProps(type: "grid" | "edge"): IDockviewHeaderActionsProps {
 
 describe("BrowserHeaderAction", () => {
   it("offers a new browser on a desktop grid tab bar", () => {
-    window.litecode = { browserCreate: async () => ({}) as never };
+    window.litecode = stubDesktopBridge({ browserCreate: async () => ({}) as never });
     render(<BrowserHeaderAction {...headerProps("grid")} />);
     expect(screen.getByRole("button", { name: "New Browser" })).toBeTruthy();
   });
 
   it("stays off edge rails and off a browser workbench", () => {
-    window.litecode = { browserCreate: async () => ({}) as never };
+    window.litecode = stubDesktopBridge({ browserCreate: async () => ({}) as never });
     const { rerender } = render(<BrowserHeaderAction {...headerProps("edge")} />);
     expect(screen.queryByRole("button", { name: "New Browser" })).toBeNull();
     delete window.litecode;

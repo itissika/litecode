@@ -32,7 +32,7 @@ export interface SessionSearchFooter {
   more?: string;
 }
 
-export type SessionSearchView =
+type SessionSearchView =
   | {
       kind: "hits";
       groups: SessionSearchGroup[];

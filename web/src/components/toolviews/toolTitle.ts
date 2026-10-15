@@ -1,7 +1,7 @@
 const MAX_TITLE_CHARS = 90;
 const MAX_TOKEN_CHARS = 24;
 
-export interface ToolTitle {
+interface ToolTitle {
   summary: string;
 }
 
