@@ -10,6 +10,9 @@
 //       [--out dist/components] [--model-dir models/ibm-granite/...]
 //       [--linux-tar dist/linux/litecode-server-linux-x64.tar.gz]
 //       [--app-version 0.2.2] [--allow-missing]
+//   node scripts/build_components.mjs --print-version
+//       Print Cargo.toml [package].version and exit. Single source for the
+//       product version: package_linux.sh and product_version.ps1 call this.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,7 +44,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (!a.startsWith("--")) throw new Error(`unexpected argument ${a}`);
     const key = a.slice(2);
-    if (key === "allow-missing") { out[key] = true; continue; }
+    if (key === "allow-missing" || key === "print-version") { out[key] = true; continue; }
     const value = argv[++i];
     if (value === undefined) throw new Error(`--${key} needs a value`);
     out[key] = value;
@@ -49,10 +52,15 @@ function parseArgs(argv) {
   return out;
 }
 
+/** `version` inside the `[package]` table only (other tables may carry their own). */
 function cargoVersion() {
   const toml = fs.readFileSync(path.join(ROOT, "Cargo.toml"), "utf8");
+  let inPackage = false;
   for (const line of toml.split(/\r?\n/)) {
-    const m = /^\s*version\s*=\s*"([^"]+)"\s*$/.exec(line);
+    const table = /^\s*\[([^\]]+)\]\s*(#.*)?$/.exec(line);
+    if (table) { inPackage = table[1].trim() === "package"; continue; }
+    if (!inPackage) continue;
+    const m = /^\s*version\s*=\s*"([^"]+)"\s*(#.*)?$/.exec(line);
     if (m) return m[1];
   }
   throw new Error("Could not read [package].version from Cargo.toml");
@@ -122,6 +130,10 @@ async function writeTarGz(entries, dest) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  if (args["print-version"]) {
+    process.stdout.write(`${cargoVersion()}\n`);
+    return;
+  }
   const appVersion = (args["app-version"] ?? cargoVersion()).replace(/^v/, "");
   const tag = args.tag ?? `v${appVersion}`;
   const repo = args.repo ?? process.env.GITHUB_REPOSITORY ?? "itissika/litecode";

@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\common.ps1")
 . (Join-Path $PSScriptRoot "product_version.ps1")
 $Version = Get-LitecodeProductVersion -Root $Root
 
@@ -36,9 +37,7 @@ function ConvertTo-WslPath([string]$WinPath) {
 
 function Invoke-WslBash([string]$Script) {
   & wsl.exe -e bash -lc $Script
-  if ($LASTEXITCODE -ne 0) {
-    throw "WSL command failed with exit code $LASTEXITCODE"
-  }
+  Assert-LastExitCode "WSL command"
 }
 
 if (-not $WslRoot) {
@@ -110,7 +109,7 @@ if (-not (Test-Path (Join-Path $ModelDir "artifacts\ort-lin-q8-emb-q4-bs128-a1.o
 
 Write-Host "==> staging on-demand components (dist\components)"
 & node (Join-Path $Root "scripts\build_components.mjs") --tag "v$Version" --out (Join-Path $winDist "components")
-if ($LASTEXITCODE -ne 0) { throw "build_components.mjs failed with exit code $LASTEXITCODE" }
+Assert-LastExitCode "build_components.mjs"
 
 $outDir = Join-Path $Root "desktop\out"
 $setup = Join-Path $outDir "Litecode-Setup-$Version-x64.exe"

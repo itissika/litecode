@@ -11,7 +11,8 @@ BUNDLE_MODEL="${LITECODE_BUNDLE_MODEL:-0}"
 VERSION="${LITECODE_VERSION:-}"
 
 if [[ -z "$VERSION" ]]; then
-  VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)"
+  # Single source: build_components.mjs --print-version (same as product_version.ps1).
+  VERSION="$(node "$ROOT/scripts/build_components.mjs" --print-version)"
   VERSION="${VERSION//$'\r'/}"
 fi
 if [[ -z "$VERSION" ]]; then

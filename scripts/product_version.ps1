@@ -1,21 +1,22 @@
 # Shared product version + Linux bundle path helpers (dot-source from other scripts).
-# Canonical version: [package].version in Cargo.toml.
+# Canonical version: [package].version in Cargo.toml, read by
+# `node scripts/build_components.mjs --print-version` (also used by package_linux.sh).
 
 function Get-LitecodeProductVersion {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Root
     )
-    $cargoToml = Join-Path $Root "Cargo.toml"
-    if (-not (Test-Path -LiteralPath $cargoToml)) {
-        throw "Cargo.toml not found at $cargoToml"
+    $script = Join-Path $Root "scripts\build_components.mjs"
+    $out = & node $script --print-version
+    if ($LASTEXITCODE -ne 0) {
+        throw "build_components.mjs --print-version failed with exit code $LASTEXITCODE"
     }
-    foreach ($line in Get-Content -LiteralPath $cargoToml) {
-        if ($line -match '^\s*version\s*=\s*"([^"]+)"\s*$') {
-            return $Matches[1]
-        }
+    $version = "$out".Trim()
+    if (-not $version) {
+        throw "Could not read [package].version from Cargo.toml"
     }
-    throw "Could not read [package].version from Cargo.toml"
+    return $version
 }
 
 function Get-LinuxBundleLayout {

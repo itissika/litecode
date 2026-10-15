@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Start litecode with binaries built from the current tree (never a stale target/release/litecode).
+# Paired with scripts/serve_win.ps1: change one, keep the other in sync (WP-164 R6).
 #
 # Usage:
 #   ./scripts/serve.sh                 # API (host cargo) + Vite dev UI

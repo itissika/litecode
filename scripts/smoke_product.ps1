@@ -1,4 +1,5 @@
 # Smoke-test a product tree from a non-repo cwd (Windows).
+# Paired with scripts/smoke_product.sh: change one, keep the other in sync (WP-164 R6).
 param(
   [string]$ProductDir = ""
 )

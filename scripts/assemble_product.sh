@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Assemble a cwd-independent product tree for smoke / future installers.
+# Paired with scripts/assemble_product.ps1: change one, keep the other in sync (WP-164 R6).
 # Does not build Electron.
 set -euo pipefail
 
