@@ -1,0 +1,65 @@
+name: CI init_env (manual)
+
+# WP-172: clean-runner acceptance of ops.init_env heavy path. Manual only — no push/PR auto runs.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional note (WP id / reason)"
+        required: false
+        type: string
+      skip_heavy:
+        description: "If true, run init_env with --skip-heavy (install/toolchain only)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  init-env:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Cloud-box gate defaults kept as fallback; Actions runners have ample RAM.
+      LC_MIN_MEM_GIB: "2"
+      LC_KILL_MEM_GIB: "1"
+      CARGO_BUILD_JOBS: "2"
+      LC_INIT_LOG_DIR: ${{ github.workspace }}/.tmp/ci-init-env-logs
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require init_env.sh
+        run: |
+          test -f .litecode/ops/tools/init_env.sh || {
+            echo "missing .litecode/ops/tools/init_env.sh on this ref (needs WP-171 commit)"
+            exit 2
+          }
+
+      - name: Prepare log dir
+        run: |
+          mkdir -p "$LC_INIT_LOG_DIR"
+          echo "note=${{ inputs.note }}" > "$LC_INIT_LOG_DIR/meta.txt"
+          echo "ref=${{ github.ref }} sha=${{ github.sha }}" >> "$LC_INIT_LOG_DIR/meta.txt"
+          date -u >> "$LC_INIT_LOG_DIR/meta.txt"
+
+      - name: Run init_env (clean runner)
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [ "${{ inputs.skip_heavy }}" = "true" ]; then EXTRA+=(--skip-heavy); fi
+          # Reuse the Actions checkout; init_env will fetch/ff-only to the branch tip.
+          bash .litecode/ops/tools/init_env.sh \
+            --repo "https://github.com/${{ github.repository }}.git" \
+            --branch "${{ github.ref_name }}" \
+            --dir "${{ github.workspace }}" \
+            "${EXTRA[@]}"
+
+      - name: Upload init_env logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-init-env-logs-${{ github.run_id }}
+          path: |
+            .tmp/ci-init-env-logs/
+          if-no-files-found: warn
+          retention-days: 14
