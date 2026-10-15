@@ -6,7 +6,7 @@
 echo "LITECODE_OPS tools_version=$(node -e 'console.log(require(process.argv[1]).tools_version)' "$(dirname "$0")/registry.json") tool=ops.registry_verify"
 # v20: g++ check. System g++ present -> ok. Else ensure user-space g++ (.toolchain/gxx-root + gxx-bin) from cached debs in .toolchain/debs; --fix re-extracts offline.
 TC=/workspace/litecode/.litecode/ops/.toolchain; GXX_RC=0
-gxx_ok() { PATH="$TC/gxx-bin:$PATH" sh -c 'd=$(mktemp -d); printf "#include <string>\nint main(){std::string s=\"a\"; s+=\"b\"; return s.size()==2?0:1;}\n" > $d/t.cpp; g++ $d/t.cpp -o $d/t 2>/dev/null && $d/t; r=$?; rm -rf $d; exit $r'; }
+gxx_ok() { [ -x "$TC/gxx-bin/g++" ] && sh -c 'd=$(mktemp -d); printf "#include <string>\nint main(){std::string s=\"a\"; s+=\"b\"; return s.size()==2?0:1;}\n" > $d/t.cpp; "$0" $d/t.cpp -o $d/t 2>/dev/null && $d/t; r=$?; rm -rf $d; exit $r' "$TC/gxx-bin/g++"; }
 if [ -z "$LC_FORCE_USERSPACE_GXX" ] && command -v g++ >/dev/null 2>&1; then echo "gxx: system g++ present ($(g++ --version | head -1))"
 else
   if [ "$1" = "--fix" ] && ! gxx_ok; then
