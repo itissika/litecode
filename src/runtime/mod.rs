@@ -7,6 +7,7 @@ pub mod llm_resolve;
 pub mod observer;
 pub mod pending_auto_turn;
 pub(crate) mod phase;
+pub(crate) mod diagnostics;
 pub mod provider_registry;
 mod stream_projection;
 pub mod subagent_auto_turn;
@@ -849,6 +850,25 @@ impl AgentRuntime {
             error_kind,
             cancelled_by,
         });
+        // WP-188 observe-only: wire path + last-turn on Error (no protocol change).
+        if reason == TurnEndReason::Error {
+            let err_msg = if text.is_empty() {
+                "turn failed"
+            } else {
+                text.as_str()
+            };
+            diagnostics::log_turn_error_wire(&self.session_id, turn_id, err_msg);
+            let data_root = self.sessions.data_root_path();
+            diagnostics::note_wire_pointer(&data_root, &self.session_id);
+            diagnostics::heartbeat_last_turn(
+                &data_root,
+                &self.session_id,
+                turn_id,
+                step,
+                "failed",
+                Some(err_msg),
+            );
+        }
         match reason {
             TurnEndReason::Error => Err(LitecodeError::Llm(if text.is_empty() {
                 "turn failed".to_string()
@@ -931,6 +951,14 @@ impl AgentRuntime {
             TurnInput::Wake { anchor_user_seq } => (UserInput::text(""), true, anchor_user_seq),
             TurnInput::User(input) => (input, false, None),
         };
+        // WP-188 observe-only: TLS session/turn for panic hook + tool audit.
+        let data_root_for_diag = self.sessions.data_root_path();
+        let _diag_guard = diagnostics::DiagContext::enter(
+            data_root_for_diag.clone(),
+            self.session_id.clone(),
+            turn_id.to_string(),
+        );
+        diagnostics::note_wire_pointer(&data_root_for_diag, &self.session_id);
         self.latency_turn_start = crate::telemetry::latency::now();
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {

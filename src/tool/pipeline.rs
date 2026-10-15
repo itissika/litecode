@@ -7,6 +7,7 @@ use crate::tool::write_lock::ResourceKey;
 use crate::types::{FunctionToolCall, ToolCallResult, Transcript};
 
 use super::executor::{outputs_from_tool_results, partition_tool_calls, run_tool};
+use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 
 pub struct ToolPipeline {
     runtime: Arc<RuntimeContext>,
@@ -125,9 +126,9 @@ impl ToolPipeline {
                     if is_cancelled() || cancel.is_cancelled() {
                         // Signal is already set. Join remaining tasks so cancellable
                         // tools can kill their process trees; do not abort-and-forget.
-                        Self::join_tool_handle(handle, &captured_id, &mut results_by_id).await;
+                        self.join_tool_handle(handle, &captured_id, &mut results_by_id, invocations).await;
                         for (id, remaining) in iter {
-                            Self::join_tool_handle(remaining, &id, &mut results_by_id).await;
+                            self.join_tool_handle(remaining, &id, &mut results_by_id, invocations).await;
                         }
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
                         return Err(crate::types::LitecodeError::Canceled);
@@ -138,7 +139,7 @@ impl ToolPipeline {
                             results_by_id.insert(tool_use_id, result);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
-                                    Self::join_tool_handle(remaining, &id, &mut results_by_id)
+                                    self.join_tool_handle(remaining, &id, &mut results_by_id, invocations)
                                         .await;
                                 }
                                 self.append_cancelled_outputs(
@@ -154,6 +155,23 @@ impl ToolPipeline {
                                 "tokio task panicked during concurrent tool execution: {}",
                                 join_err
                             );
+                            // WP-188 observe-only
+                            let tool_name = invocations
+                                .iter()
+                                .find(|c| c.call_id == captured_id)
+                                .map(|c| c.name.as_str())
+                                .unwrap_or("unknown");
+                            let mut event = AuditEvent::new(
+                                "panic",
+                                &self.session_id,
+                                tool_name,
+                                &captured_id,
+                            );
+                            event.ok = Some(false);
+                            event.error_kind = Some("panic".into());
+                            let msg = format!("tool execution task panicked: {join_err}");
+                            event.error = Some(msg.chars().take(200).collect());
+                            emit_tool_audit(&self.runtime.data_root, &event);
                             results_by_id.insert(
                                 captured_id.clone(),
                                 ToolCallResult::error(format!(
@@ -247,9 +265,11 @@ impl ToolPipeline {
     /// Join a spawned tool task. Cancellation must kill-and-wait inside the
     /// tool; dropping the wrapper with `abort()` is not process recovery.
     async fn join_tool_handle(
+        &self,
         handle: tokio::task::JoinHandle<(String, ToolCallResult)>,
         captured_id: &str,
         results_by_id: &mut HashMap<String, ToolCallResult>,
+        invocations: &[FunctionToolCall],
     ) {
         match handle.await {
             Ok((tool_use_id, result)) => {
@@ -260,6 +280,23 @@ impl ToolPipeline {
                     "tokio task panicked during concurrent tool execution: {}",
                     join_err
                 );
+                // WP-188 observe-only: join panic → audit phase=panic
+                let tool_name = invocations
+                    .iter()
+                    .find(|c| c.call_id == captured_id)
+                    .map(|c| c.name.as_str())
+                    .unwrap_or("unknown");
+                let mut event = AuditEvent::new(
+                    "panic",
+                    &self.session_id,
+                    tool_name,
+                    captured_id,
+                );
+                event.ok = Some(false);
+                event.error_kind = Some("panic".into());
+                let msg = format!("tool execution task panicked: {join_err}");
+                event.error = Some(msg.chars().take(200).collect());
+                emit_tool_audit(&self.runtime.data_root, &event);
                 results_by_id.insert(
                     captured_id.to_string(),
                     ToolCallResult::error(format!("tool execution task panicked: {join_err}")),
