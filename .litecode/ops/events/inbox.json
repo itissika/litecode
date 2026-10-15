@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-15T02:03:30.139Z",
+  "updated_at": "2026-10-15T07:42:16.592Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -7221,6 +7221,542 @@
           "WP-169"
         ],
         "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1792032477203-98690-watcher-restarted",
+      "ts": "2026-10-15T02:47:57.203Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T02:08:06.955Z); ops.tick auto-restart OK supervisor_pid=19891",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T02:08:06.955Z",
+        "age_sec": 2390,
+        "old_pid": 226295,
+        "supervisor_pid": 19891
+      }
+    },
+    {
+      "id": "E-1792033581716-80020-WP158",
+      "ts": "2026-10-15T03:06:21.716Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-158 review open 520m since 2026-10-14T18:25:41.474Z (work-hours >1h); owner=frontend_mid reviewer=gm; target=gm",
+      "wp": "WP-158",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "review",
+        "status_entered_at": "2026-10-14T18:25:41.474Z",
+        "age_minutes": 520,
+        "owner": "frontend_mid",
+        "reviewer": "gm",
+        "level": 0,
+        "parent": null,
+        "path": [
+          "WP-158"
+        ],
+        "target": "gm",
+        "actor": "gm",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-158|review|2026-10-14T18:25:41.474Z|gm"
+      }
+    },
+    {
+      "id": "E-1792033581716-80021-WP166",
+      "ts": "2026-10-15T03:06:21.716Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-166 in_progress open 512m since 2026-10-14T18:33:29.824Z (work-hours >1h); owner=session reviewer=backend_mid; target=session",
+      "wp": "WP-166",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:33:29.824Z",
+        "age_minutes": 512,
+        "owner": "session",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-166"
+        ],
+        "target": "session",
+        "actor": "session",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-166|in_progress|2026-10-14T18:33:29.824Z|session"
+      }
+    },
+    {
+      "id": "E-1792033581716-80022-WP167",
+      "ts": "2026-10-15T03:06:21.716Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-167 in_progress open 509m since 2026-10-14T18:36:29.392Z (work-hours >1h); owner=ide reviewer=backend_mid; target=ide",
+      "wp": "WP-167",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:36:29.392Z",
+        "age_minutes": 509,
+        "owner": "ide",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-167"
+        ],
+        "target": "ide",
+        "actor": "ide",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-167|in_progress|2026-10-14T18:36:29.392Z|ide"
+      }
+    },
+    {
+      "id": "E-1792033581716-80023-WP170",
+      "ts": "2026-10-15T03:06:21.716Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-170 in_progress open 510m since 2026-10-14T18:35:35.988Z (work-hours >1h); owner=frontend reviewer=frontend_mid; target=frontend",
+      "wp": "WP-170",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:35:35.988Z",
+        "age_minutes": 510,
+        "owner": "frontend",
+        "reviewer": "frontend_mid",
+        "level": 2,
+        "parent": "WP-168",
+        "path": [
+          "WP-165",
+          "WP-168",
+          "WP-170"
+        ],
+        "target": "frontend",
+        "actor": "frontend",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-170|in_progress|2026-10-14T18:35:35.988Z|frontend"
+      }
+    },
+    {
+      "id": "E-1792039851575-87760-watcher-restarted",
+      "ts": "2026-10-15T04:50:51.575Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T03:50:33.412Z); ops.tick auto-restart OK supervisor_pid=36116",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T03:50:33.412Z",
+        "age_sec": 3618,
+        "old_pid": 36152,
+        "supervisor_pid": 36116
+      }
+    },
+    {
+      "id": "E-1792039854975-89060-watcher-restarted",
+      "ts": "2026-10-15T04:50:54.975Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T03:50:33.412Z); ops.tick auto-restart OK supervisor_pid=36116",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T03:50:33.412Z",
+        "age_sec": 3622,
+        "old_pid": 36152,
+        "supervisor_pid": 36116
+      }
+    },
+    {
+      "id": "E-1792039860652-90510-watcher-restarted",
+      "ts": "2026-10-15T04:51:00.652Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T03:50:33.412Z); ops.tick auto-restart OK supervisor_pid=36116",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T03:50:33.412Z",
+        "age_sec": 3627,
+        "old_pid": 36152,
+        "supervisor_pid": 36116
+      }
+    },
+    {
+      "id": "E-1792039890122-95430-WP166",
+      "ts": "2026-10-15T04:51:30.122Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-166 in_progress open 618m since 2026-10-14T18:33:29.824Z (work-hours >1h); owner=session reviewer=backend_mid; target=session",
+      "wp": "WP-166",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:33:29.824Z",
+        "age_minutes": 618,
+        "owner": "session",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-166"
+        ],
+        "target": "session",
+        "actor": "session",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-166|in_progress|2026-10-14T18:33:29.824Z|session"
+      }
+    },
+    {
+      "id": "E-1792039890122-95431-WP167",
+      "ts": "2026-10-15T04:51:30.122Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-167 in_progress open 615m since 2026-10-14T18:36:29.392Z (work-hours >1h); owner=ide reviewer=backend_mid; target=ide",
+      "wp": "WP-167",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:36:29.392Z",
+        "age_minutes": 615,
+        "owner": "ide",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-167"
+        ],
+        "target": "ide",
+        "actor": "ide",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-167|in_progress|2026-10-14T18:36:29.392Z|ide"
+      }
+    },
+    {
+      "id": "E-1792039890122-95432-WP170",
+      "ts": "2026-10-15T04:51:30.122Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-170 in_progress open 615m since 2026-10-14T18:35:35.988Z (work-hours >1h); owner=frontend reviewer=frontend_mid; target=frontend",
+      "wp": "WP-170",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:35:35.988Z",
+        "age_minutes": 615,
+        "owner": "frontend",
+        "reviewer": "frontend_mid",
+        "level": 2,
+        "parent": "WP-168",
+        "path": [
+          "WP-165",
+          "WP-168",
+          "WP-170"
+        ],
+        "target": "frontend",
+        "actor": "frontend",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-170|in_progress|2026-10-14T18:35:35.988Z|frontend"
+      }
+    },
+    {
+      "id": "E-1792043185764-53250-watcher-restarted",
+      "ts": "2026-10-15T05:46:25.764Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T04:55:30.331Z); ops.tick auto-restart OK supervisor_pid=39532",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T04:55:30.331Z",
+        "age_sec": 3055,
+        "old_pid": 39543,
+        "supervisor_pid": 39532
+      }
+    },
+    {
+      "id": "E-1792043187922-54540-watcher-restarted",
+      "ts": "2026-10-15T05:46:27.922Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.tick",
+      "summary": "wp_watch was down (last heartbeat 2026-10-15T04:55:30.331Z); ops.tick auto-restart OK supervisor_pid=39532",
+      "wp": null,
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "target": "gm",
+        "ok": true,
+        "last_heartbeat_at": "2026-10-15T04:55:30.331Z",
+        "age_sec": 3058,
+        "old_pid": 39543,
+        "supervisor_pid": 39532
+      }
+    },
+    {
+      "id": "E-1792043522838-56670-WP166",
+      "ts": "2026-10-15T05:52:02.838Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-166 in_progress open 678m since 2026-10-14T18:33:29.824Z (work-hours >1h); owner=session reviewer=backend_mid; target=session",
+      "wp": "WP-166",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:33:29.824Z",
+        "age_minutes": 678,
+        "owner": "session",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-166"
+        ],
+        "target": "session",
+        "actor": "session",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-166|in_progress|2026-10-14T18:33:29.824Z|session"
+      }
+    },
+    {
+      "id": "E-1792043522838-56671-WP167",
+      "ts": "2026-10-15T05:52:02.838Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-167 in_progress open 675m since 2026-10-14T18:36:29.392Z (work-hours >1h); owner=ide reviewer=backend_mid; target=ide",
+      "wp": "WP-167",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:36:29.392Z",
+        "age_minutes": 675,
+        "owner": "ide",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-167"
+        ],
+        "target": "ide",
+        "actor": "ide",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-167|in_progress|2026-10-14T18:36:29.392Z|ide"
+      }
+    },
+    {
+      "id": "E-1792043522838-56672-WP170",
+      "ts": "2026-10-15T05:52:02.838Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-170 in_progress open 676m since 2026-10-14T18:35:35.988Z (work-hours >1h); owner=frontend reviewer=frontend_mid; target=frontend",
+      "wp": "WP-170",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:35:35.988Z",
+        "age_minutes": 676,
+        "owner": "frontend",
+        "reviewer": "frontend_mid",
+        "level": 2,
+        "parent": "WP-168",
+        "path": [
+          "WP-165",
+          "WP-168",
+          "WP-170"
+        ],
+        "target": "frontend",
+        "actor": "frontend",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-170|in_progress|2026-10-14T18:35:35.988Z|frontend"
+      }
+    },
+    {
+      "id": "E-1792043580467-31710-WP166-acceptance_requested",
+      "ts": "2026-10-15T05:53:00.467Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-166 awaiting acceptance by backend_mid (owner session)",
+      "wp": "WP-166",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "session",
+        "path": [
+          "WP-165",
+          "WP-166"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1792043609383-64060-WP170-acceptance_requested",
+      "ts": "2026-10-15T05:53:29.383Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-170 awaiting acceptance by frontend_mid (owner frontend)",
+      "wp": "WP-170",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "frontend_mid",
+        "owner": "frontend",
+        "path": [
+          "WP-165",
+          "WP-168",
+          "WP-170"
+        ],
+        "target": "frontend_mid"
+      }
+    },
+    {
+      "id": "E-1792043641669-99920-WP168-acceptance_requested",
+      "ts": "2026-10-15T05:54:01.669Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-168 awaiting acceptance by backend_mid (owner frontend_mid)",
+      "wp": "WP-168",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "frontend_mid",
+        "path": [
+          "WP-165",
+          "WP-168"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1792047303663-38560-WP167",
+      "ts": "2026-10-15T06:55:03.663Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-167 in_progress open 738m since 2026-10-14T18:36:29.392Z (work-hours >1h); owner=ide reviewer=backend_mid; target=ide",
+      "wp": "WP-167",
+      "acked": [
+        "gm"
+      ],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-14T18:36:29.392Z",
+        "age_minutes": 738,
+        "owner": "ide",
+        "reviewer": "backend_mid",
+        "level": 1,
+        "parent": "WP-165",
+        "path": [
+          "WP-165",
+          "WP-167"
+        ],
+        "target": "ide",
+        "actor": "ide",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-167|in_progress|2026-10-14T18:36:29.392Z|ide"
+      }
+    },
+    {
+      "id": "E-1792050094066-98700-WP167-acceptance_requested",
+      "ts": "2026-10-15T07:41:34.066Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-167 awaiting acceptance by backend_mid (owner ide)",
+      "wp": "WP-167",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "backend_mid",
+        "owner": "ide",
+        "path": [
+          "WP-165",
+          "WP-167"
+        ],
+        "target": "backend_mid"
+      }
+    },
+    {
+      "id": "E-1792050136589-4300-WP165-acceptance_requested",
+      "ts": "2026-10-15T07:42:16.589Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-165 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-165",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-165"
+        ],
+        "target": "gm"
       }
     }
   ],

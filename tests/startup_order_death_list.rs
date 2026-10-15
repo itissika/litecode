@@ -8,7 +8,9 @@
 //! - The new code has no language-specific branch.
 //!
 //! WP-165 lands WP-167's cross-domain session.diff in `serve::run`
-//! (background sweep + `defer_reconcile`).
+//! (background sweep + `defer_reconcile`). The two `serve_run_*` tests scan
+//! `src/serve/run.rs` as changed by WP-167; WP-166's snapshot warm lives in
+//! `cli.rs`/`router.rs`/`state.rs` and does not touch these checks.
 
 fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
     let start = src.find(sig).unwrap_or_else(|| panic!("missing {sig}"));
