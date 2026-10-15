@@ -1,0 +1,8 @@
+2026-10-14T16:27:27.016201Z  INFO log dir: /workspace/litecode/.tmp/wp154/big/.litecode/logs
+2026-10-14T16:27:27.016271Z  INFO log file: /workspace/litecode/.tmp/wp154/big/.litecode/logs/litecode.log
+2026-10-14T16:27:27.016279Z  INFO workspace ready workspace=/workspace/litecode/.tmp/wp154/big session_db=/workspace/litecode/.tmp/wp154/big/.litecode/sessions.db
+2026-10-14T16:27:27.016312Z  INFO web dist: /workspace/litecode/.tmp/wp154/webstub
+2026-10-14T16:27:27.042162Z  INFO LITECODE_READY http://127.0.0.1:45609/
+2026-10-14T16:27:27.065530Z  INFO websocket connected hint=None projections=0
+2026-10-14T16:27:30.081940Z  INFO websocket connected hint=None projections=0
+2026-10-14T16:27:30.092285Z  INFO serve shutting down (stdin EOF)

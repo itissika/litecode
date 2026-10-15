@@ -5,14 +5,14 @@
 
 ## 当前版本
 
-- `tools_version`: **17**
+- `tools_version`: **19**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-14T03:07:36.256Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-15T01:59:03.786Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -166,12 +166,33 @@
 | WP-149 | 　└ Runtime：主 agent 默认绑定 code_search（seed+只补缺行迁移） | done | runtime | backend_mid |
 | WP-147 | └ 前端：设置页 bind 只显示 desire | done | frontend_mid | gm |
 | WP-150 | 　└ WP-147 web：code_search bind 开关只显示库存期望 | done | frontend | frontend_mid |
+| WP-151 | 前端瘦身调研（只读，为多语言与介绍文档铺路） | done | frontend_mid | gm |
+| WP-152 | └ WP-151 web：前端瘦身只读调研 | done | frontend | frontend_mid |
+| WP-153 | └ WP-151 desktop：前端瘦身只读调研 | done | frontend_desktop | frontend_mid |
+| WP-154 | 打开工作区延迟调研（只读） | done | backend_mid | gm |
+| WP-155 | └ WP-154A 后端工作区打开链路耗时（只读） | done | ide | backend_mid |
+| WP-156 | └ WP-154B serve 握手与会话加载耗时（只读） | done | session | backend_mid |
+| WP-157 | └ WP-154C 前端握手到可交互耗时（只读） | done | frontend_mid | backend_mid |
+| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | review | frontend_mid | gm |
+| WP-159 | └ WP-158 B1 web：低风险删改与依赖声明 | done | frontend | frontend_mid |
+| WP-160 | └ WP-158 B1 desktop：低风险删改 | done | frontend_desktop | frontend_mid |
+| WP-161 | └ WP-158 B2 desktop：跨端桥接契约 | done | frontend_desktop | frontend_mid |
+| WP-162 | └ WP-158 B2 web：改用契约与样式收拢 | done | frontend | frontend_mid |
+| WP-163 | └ WP-158 B3 web：重复组件合并与断开态 | done | frontend | frontend_mid |
+| WP-164 | └ WP-158 B3 desktop：重复实现合并与跳过令牌 | done | frontend_desktop | frontend_mid |
+| WP-165 | 打开工作区启动排位整改 | ready | backend_mid | gm |
+| WP-166 | └ 启动排位整改·Session 域 | in_progress | session | backend_mid |
+| WP-167 | └ 启动排位整改·IDE 域 | in_progress | ide | backend_mid |
+| WP-168 | └ 启动排位整改·壳与前端 | in_progress | frontend_mid | backend_mid |
+| WP-169 | 　└ 启动排位整改·desktop 壳 | done | frontend_desktop | frontend_mid |
+| WP-170 | 　└ 启动排位整改·web 前端 | in_progress | frontend | frontend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-15 | v19：watcher 韧性（事故：快照回滚后 watcher 消失 7 小时，tick 无人驱动）。wp_watch v4：ensure / test-callback / watchdog-start|stop，start 等新心跳；ops.wp v6：写操作顺带 softEnsureWatcher；测试 ops_harden 组 10（工具集管家）|
 | 2026-10-13 | v17：validate_board v9 新规则「每个 WP.domain 必须在 board.domains」；ops.wp v5 已封包可 `set --field domain` 重新归类（其他字段仍拒）；WP-070/071→ide-substrate、WP-082/083/089/093/097→client-ux；wp.test 组 7 / ops_harden 组 9 老包数改为从 board 动态计算（>0）并逐包校验（工具集管家）|
 | 2026-10-13 | v16：ops.wp v4 `set --field domain`（owner/approver；须为 board.domains 已有 id；history+log+trace；校验失败回滚）；新增 `reassign --owner`（包 approver 或父包 owner；新 owner 须已注册；只改 owner；history+log；回滚）；用它们把 WP-103 domain ide-base→ide-substrate；新 agent provider（model-config 域 provider/模型部分，bot id 记 agents_cold/bot_ids.json）（工具集管家）|
 | 2026-10-12 | v15（WP-032）：超时按父子链合并、只叫离卡点最近真正要动手的人（有未封子包的 in_progress 父包不算卡点），matter 去重，已 ack 60 分钟内不重发（老 WP 同）；tick 在 watcher 健康时只报告、watcher 挂了自动拉起并记 team_ops.watcher_restarted；事件加锁 + fsync 原子写，先落 inbox+events/outbox.jsonl 再发，重启排空 outbox，所有告警类型都走 webhook（payload 带 target/type/actor/merged/matter_key）；新增 ops.issue_new（加锁分配 issue 号，独占创建）、issues/.reserved.json（031/006 作废）、validate_all 查 issue 名实/重复；新增 ops.toolchain_check；ops.wp v3 加 set；~/.cargo/bin 换 wrapper、~/.rustup 指向 ops toolchain（备份在 ~/.litecode-toolchain-backup-20261012-184910）（工具集管家）|
@@ -265,7 +286,15 @@
 
 接入：`validate_all` 每次都跑全库，error > 0 即失败；`wp_gate --to review|done` 对知识类 WP（domain=knowledge，或 WP 文本里写了 `knowledge/…md` / `[@ key="…"]` / `node:<key>`，或有节点 `domain :` 等于该 WP 的域，或传 `--kb-nodes`）要求涉及节点无 error，`--dry-run` 同样检查。基线结果：`.litecode/ops/artifacts/kb_check-baseline.md`。
 
-## ops.wp_watch 用法（v11）
+## ops.wp_watch 用法（v11；v19 韧性）
+
+v19（2026-10-15 事故：快照回滚/VM fork 后 watcher 进程消失，无人调 tick，7 小时无超时告警）：
+- `wp_watch.mjs ensure`：幂等。没跑/陈旧 pid → 起；进程在但心跳 >10 分钟（`--stale-min N`）→ 杀掉重起；健康 → 不动。
+- `wp_watch.mjs test-callback`：向真实回调发一条 `team_ops.watcher_test`（target=tools_steward）测试，只打印 http 码，写 wp_watch.log，不进 inbox。
+- `wp_watch.mjs watchdog-start|watchdog-stop`：独立保活循环（每 `--watchdog-sec 60` 跑 ensure），pid 在 .tmp/wp_watchdog.pid；`status` 里有 watchdog 字段。
+- 任何 `ops.wp` 写操作会顺带检查（watcher 死或心跳 >10 分钟 → detached ensure，5 分钟限频，记 `team_ops.watcher_restarted` source=ops.wp；`LITECODE_WP_NO_AUTOENSURE=1` 关闭）。
+- 限制：本盒无 systemd/cron/rc.local，**开机/快照恢复后没有自启**；watcher 与 watchdog 都是普通进程，VM 重启/回滚会一起消失，下一次任何 ops.wp 写、tick 或手动 `watchdog-start` 才会拉起。重启后第一件事：`node .litecode/ops/tools/wp_watch.mjs ensure && node .litecode/ops/tools/wp_watch.mjs watchdog-start`（需 shell 里有 webhook env）。
+
 
 常驻 watcher，把 WP 超时从「GM 主动扫」改成「回调触发」。纯 Node，无依赖，不依赖 systemd。
 
@@ -400,6 +429,14 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 - 只有一个发事件的进程：wp_watch。tick 在 watcher 健康时只报告（`report_only`）。watcher 心跳失效时，tick 自动执行 `wp_watch start` 并记一条 `team_ops.watcher_restarted`（`--no-autostart` 可关闭）；起不来再兜底 emit。
 - 事件写入：`events/.inbox.lock` 加锁，写 tmp，fsync，rename，再 fsync 目录。可投递类型（超时、approval/acceptance_requested、watcher_down/restarted）同时追加到 `events/outbox.jsonl`（fsync）。**落盘之后才可能被 POST。**
 - wp_watch 启动时和每个周期都会排空 outbox 里「没送达、没 ack」的条目。delivered/retry 状态以 fsync 方式写入。按 `x-litecode-event-id` 幂等。
+
+**编译环境与共享 target 锁（v18）**
+- 一律 `source .litecode/ops/tools/cargo_env.sh` 或直接用 `.litecode/ops/tools/cargo_locked.sh [-t SECS] <cargo args>`。
+- HOME 必须是绝对路径：`/workspace/litecode/.tmp/home`（cargo 1.99 遇到相对 HOME 会 panic）。
+- 先 unset 旧的 RUSTUP_HOME/CARGO_HOME/RUSTUP_TOOLCHAIN，再设为 `/workspace/litecode/.litecode/ops/.toolchain/rustup` 和 `.../cargo`（绝对路径）。不要自己装工具链。
+- CARGO_TARGET_DIR：默认共享主 target `/workspace/litecode/target`；独立实验（release/bench）用 `.tmp/<wp>/target-*`。
+- 锁：**只用 `/workspace/litecode/.tmp/cargo-target.lock`**（flock，包住整个 cargo 调用；用独立 target 也要拿，作内存护栏）。`.tmp/target.lock` 没有任何脚本/文档引用，是冗余空文件，不要用。重型任务仍需 backend_mid 排队许可。
+- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。
 
 **Issue 编号**
 - 新建 issue 一律用 `ops.issue_new`：加锁，取 max(文件, git HEAD, `issues/.reserved.json`)+1，独占创建，绝不覆盖。禁止手写编号。

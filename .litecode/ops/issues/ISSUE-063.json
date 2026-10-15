@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-063",
+  "grade": "5",
+  "layer": null,
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "delete_session_snapshots 删快照不持 workspace_snapshot_lock（重复执行无害）",
+  "history": [
+    {
+      "ts": "2026-10-14T18:32:59.478Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-166）"
+    }
+  ]
+}

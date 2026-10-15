@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-061",
+  "grade": "4",
+  "layer": null,
+  "domain": "ide-base",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "serve 收到 SIGTERM 后 code-search-worker 子进程不退出，成孤儿继续 embed（约 2.8G RSS）",
+  "history": [
+    {
+      "ts": "2026-10-14T17:01:57.471Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-154）"
+    }
+  ]
+}

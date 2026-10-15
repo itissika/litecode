@@ -10985,6 +10985,1498 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-151",
+      "domain": "team-ops",
+      "title": "前端瘦身调研（只读，为多语言与介绍文档铺路）",
+      "result": "只读调研 web+desktop 前端，出清单，不改代码",
+      "done_when": [
+        "死代码/未用文件组件导出依赖清单（knip 等现成工具+人工确认，附路径证据）",
+        "可合并的重复组件清单",
+        "多余提示文案清单（按面板：可删/合并/缩短）",
+        "功能介绍文档大纲：只收有界面有交互的功能，内生特性不写（供左侧栏最下常驻问号按钮+设置同款弹框使用）",
+        "硬编码 UI 文案规模统计",
+        "每条附建议与风险，产品判断标待 Andy 定",
+        "后端报错原样，不碰",
+        "只读不改代码"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-151-frontend-audit.md",
+      "progress": "closed done by gm: 验收通过；待定13项由GM按Andy口径裁定",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "只读调研 web+desktop 前端，出清单，不改代码",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-151 前端瘦身调研（只读，不改代码）\n\n目标：盘点 web 和 desktop 的可瘦身项，交付 `.litecode/ops/artifacts/WP-151-frontend-audit.md`，作为后续瘦身包和多语言包的依据。整包只读：不改产品代码，不加依赖，不 commit。knip 一类工具只能临时用 npx 跑或装在 /tmp，不写进 package.json 和锁文件。\n\n## 交付内容（五节，每条都附建议和风险；需要产品判断的标「待 Andy 定」；后端报错原样保留，不在统计和删改范围内）\n1. 死代码：没被用到的文件、组件、导出和依赖。先用 knip 扫（web 再加 ts-prune，或用 tsc 的未用检查交叉验证），再逐条人工确认，附路径和证据（rg 无引用、只被测试引用、动态 import 等）。分成「确认可删」「疑似，需复核」两类。\n2. 可合并的重复组件：给出成组的路径、差异点、建议的合并目标，以及影响面。\n3. 多余提示文案：按面板列（设置各节、引擎、Agents、Providers、聊天区、工具视图、桌面壳等），每条标「可删 / 可合并 / 可缩短」，附原文和建议文。\n4. 功能介绍文档大纲：只收有界面、有交互的功能，内部特性不写。按左侧栏底部常驻问号按钮打开的弹框（和设置弹框同款）来组织：分节标题、每节一句要点、对应入口。\n5. 写死在界面里的文案统计：按目录和面板列条数与字符量，区分普通 UI 文案、提示和 tooltip、错误提示（不含后端原样透传的报错），并说明统计口径和脚本，给多语言包估量用。\n\n## 拆分（kind=split，三个子包按顺序，不打乱在途任务）\n- 子包 A（owner frontend / 前端-web）：web 部分的五节原始调研，产物写到 `WP-151-web-audit.md`。\n- 子包 B（owner frontend-desktop / 前端-desktop）：desktop 和 scripts 部分的五节调研（主要是第 1、2、5 节；第 3、4 节有界面的才写），产物写到 `WP-151-desktop-audit.md`。只做静态分析，不构建，不在真机运行。\n- 两个子包可以并行，因为目录不重叠，都只读，也不占同一文件。\n- 前端中层：交叉抽查证据（死代码每类抽样 rg 复核），然后合成总产物 `WP-151-frontend-audit.md`。总产物里给出跨端的重复组件、「待 Andy 定」汇总，以及按风险排好的后续瘦身包建议顺序。\n\n## 验收（done_when）\n- 五节齐全，范围覆盖 web 和 desktop。\n- 每条有路径和证据，并附建议和风险。\n- 「待 Andy 定」单列成表。\n- 文案统计附口径和可复跑的命令。\n- `git status` 显示产品代码零改动，package.json 和锁文件零改动。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:42:49.528Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 只读调研 web+desktop 前端，出清单，不改代码"
+        },
+        {
+          "ts": "2026-10-14T14:43:30.115Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-151 前端瘦身调研（只读，不改代码）\n\n目标：盘点 web 和 desktop 的可瘦身项，交付 `.litecode/ops/artifacts/"
+        },
+        {
+          "ts": "2026-10-14T14:43:30.284Z",
+          "actor": "frontend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-151-frontend-audit.md\" -> \".litecode/ops/artifacts/WP-151-frontend-audit.md\""
+        },
+        {
+          "ts": "2026-10-14T14:43:39.846Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "只读调研；split 为 web/desktop 两子包并行，中层合成总产物"
+        },
+        {
+          "ts": "2026-10-14T14:44:05.378Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "计划通过"
+        },
+        {
+          "ts": "2026-10-14T14:44:33.727Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:53:52.035Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:54:35.650Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过；待定13项由GM按Andy口径裁定",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-152",
+      "domain": "client-ux",
+      "title": "WP-151 web：前端瘦身只读调研",
+      "result": "WP-151-web-audit.md",
+      "done_when": [
+        "五节齐全",
+        "每条路径+证据+建议+风险",
+        "待 Andy 定单列",
+        "统计口径+命令",
+        "产品代码与依赖零改动"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-151-web-audit.md",
+      "progress": "closed done by frontend_mid",
+      "status_entered_at": null,
+      "parent": "WP-151",
+      "goal": "web 五节调研：死代码/重复组件/多余文案/功能介绍大纲/硬编码文案统计",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-152 计划：web 前端瘦身只读调研（父 WP-151，子包 A）\n\n范围：`/workspace/litecode/web`（src/、public/、scripts/、index.html、vite/ts 配置、package.json 只读）。产物：`.litecode/ops/artifacts/WP-151-web-audit.md`。\n\n## 硬规则\n- 只读：不改产品代码、package.json、package-lock.json、tsconfig、vite 配置；不 commit。\n- knip / ts-prune 等只用 `npx --yes` 临时跑，或装到 `/tmp/wp152-tools`（`npm i --prefix /tmp/wp152-tools knip ts-prune`），不写进 web 的依赖。若 npx 会在 web 下产生缓存或文件，改为在 /tmp 安装后用绝对路径调用。\n- 后端报错文案（从 API 原样透传的 `error` / `message` / toast 里直接显示的服务端字符串）不纳入统计，也不提删改建议。\n- 收尾时用 `git status --short` 和 `git diff --stat -- web` 证明零改动，结果写进产物。\n- Node 用 `/exec-daemon/node` v22.14.0。\n\n## 第 1 节 死代码\n- 工具：\n  - `knip --directory web --reporter json`（入口：main.tsx、index.html、vite.config.ts、*.test.ts(x)、scripts/*）；\n  - `ts-prune -p web/tsconfig.app.json`；\n  - 交叉验证：在 /tmp 复制一份 tsconfig，加 `noUnusedLocals` / `noUnusedParameters`，用 `tsc --noEmit -p` 跑（不改仓库内配置）。\n- 依赖：knip 的 unused dependencies / devDependencies，再对每个包 rg import 和配置文件里的引用。\n- 人工确认标准：\n  - **确认可删**：rg 全 web（含字符串、动态 `import()`、`import.meta.glob`、vite/vitest 配置、index.html、CSS `@import`）都无引用；或只被自身测试引用（测试一并列出）。\n  - **疑似**：只被测试引用的导出、动态或字符串拼接引用、类型导出被 d.ts 消费、对外协议类型、预留的 feature flag、knip 和 ts-prune 结论不一致的项。\n- 每条附：路径、导出名、证据命令及输出摘要、建议、风险。\n\n## 第 2 节 可合并重复组件\n- 方法：按命名族和结构找候选（`rg -l` 同名或近名组件，如 *Badge/*Pill/*Chip、*Dialog/*Modal、*Section 表单行、*List/*Row、空状态、确认弹框、复制按钮、spinner、tooltip 包装）；对比 props、JSX 结构和样式类；可选在 /tmp 用 `jscpd`（npx）检测重复片段，阈值 50 tokens。\n- 每组列：路径、差异点、建议合并目标（保留哪个或抽公共组件）、影响面（引用处数量、测试文件、视觉差异）、风险。\n\n## 第 3 节 多余提示文案\n- 范围（按面板）：设置各节（Providers / Models / Agents / Engines / MCP / Custom tools / Files / Advanced）、引擎、聊天区、工具视图、侧栏、会话列表、子代理面板、弹框、空状态。\n- 方法：抽取 JSX 文本、`title` / `aria-label` / `placeholder` / tooltip props / toast 文案 / 说明段落，人工逐面板读。\n- 分类：**可删**（重复界面已表达的信息、开发期说明）、**可合并**（同屏同义多处）、**可缩短**（超过一句或超过约 80 字符的说明）。每条附原文、建议文、风险（例如 aria-label 影响无障碍和测试选择器）。\n- 无障碍必需的 aria-label 默认保留；涉及产品语气或用户引导的标「待 Andy 定」。\n\n## 第 4 节 功能介绍文档大纲\n- 只收有界面、有交互的功能，内部特性（轮询、缓存、协议细节）不写。\n- 组织方式按左侧栏底部常驻问号按钮打开的弹框（与设置弹框同款，左侧分节导航、右侧内容）：分节标题 → 每节一句要点 → 入口（如「侧栏 › 设置 › Agents」）。\n- 来源：路由和面板注册（dockview 面板列表、侧栏按钮、设置分节、命令和快捷键），逐个核对交互点。\n- 只出大纲，不写正文，不实现按钮。\n\n## 第 5 节 硬编码文案统计\n- 工具：写一个只读脚本 `/tmp/wp152/count-strings.mjs`，用 TypeScript compiler API（从 /tmp 安装的 typescript 或 web/node_modules 只读引用）遍历 `web/src/**/*.{ts,tsx}`，排除 `*.test.*`、`test/`、`*.d.ts`。脚本只放在 /tmp，并在产物里附全文和复跑命令。\n- 收集：JsxText；JSX 属性 `title` / `aria-label` / `placeholder` / `alt` / `label` / `description` / `tooltip`；传给 `showToast` / `toast` / `throw new Error` / `setError` 的字符串字面量和模板字面量的静态部分。\n- 分类口径：\n  - **UI**：JsxText、label、按钮文字、标题。\n  - **提示与 tooltip**：title、tooltip、placeholder、help / description 文本、说明段落。\n  - **前端自有错误文案**：前端代码里写的 toast / Error / 校验文案。\n  - **排除**：后端透传（变量里的 `err.message`、`body.error`）、纯标识符或 CSS 类、单字符或纯符号、URL、日志 `console.*`、测试。\n- 输出：按目录（api / components / dockview/panels/... / stores / lib）和面板分组，列条数、字符量（去重前后各一），汇总表；附 JSON 原始数据路径（/tmp）。\n- 误差说明：模板字面量动态部分、拼接字符串、常量表间接引用会漏计或多计，抽样 20 条人工核对，并记录误差。\n\n## 交付格式\n每条附建议与风险。「待 Andy 定」单独列表（第 3、4 节为主，第 1 节涉及预留功能的也列）。末尾附工具版本、所有命令、`git status` 零改动证据。\n\n## 风险与待定问题\n- R1：knip 对 vite 别名、动态 import 和测试入口有误报 → 以人工确认为准，有疑问一律归「疑似」。\n- R2：npx 可能在 `~/.npm` 写缓存（仓库外，可接受）；任何在 web/ 下生成的文件（如 .knip 缓存）都要在收尾时删掉，并用 git status 证明。\n- R3：文案统计属于启发式，误差在产物里量化说明。\n- Q1：第 4 节入口命名用英文界面原文还是中文描述？（计划：英文原文 + 中文要点）\n- Q2：第 5 节是否需要把 aria-label 单列一类，便于估算多语言工作量？（计划：并入「提示与 tooltip」，同时给出子计数）\n- Q3：web 与 desktop 共享的组件如果被发现，是否在本包标注？（计划：只标「疑似跨端」，由中层合成）\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:43:39.520Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: web 五节调研：死代码/重复组件/多余文案/功能介绍大纲/硬编码文案统计"
+        },
+        {
+          "ts": "2026-10-14T14:45:50.197Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-152 计划：web 前端瘦身只读调研（父 WP-151，子包 A）\n\n范围：`/workspace/litecode/web`（src/、publi"
+        },
+        {
+          "ts": "2026-10-14T14:45:50.527Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:46:14.475Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:46:36.119Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:51:15.718Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "五节齐全：死代码确认可删 24 条、疑似 14 条；重复组件 10 组；多余提示文案 18 条；硬编码文案 548 条/10293 字符（去重 486 条/9470 字符，不含 lib/shader 单列的 1007 条）；待 Andy 定 8 条；web/ 零改动。见 .litecode/ops/artifacts/WP-151-web-audit.md"
+        },
+        {
+          "ts": "2026-10-14T14:51:50.193Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-153",
+      "domain": "release-desktop",
+      "title": "WP-151 desktop：前端瘦身只读调研",
+      "result": "WP-151-desktop-audit.md",
+      "done_when": [
+        "适用各节齐全",
+        "路径+证据+建议+风险",
+        "仅静态不构建",
+        "产品代码与依赖零改动"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-151-desktop-audit.md",
+      "progress": "closed done by frontend_mid",
+      "status_entered_at": null,
+      "parent": "WP-151",
+      "goal": "desktop+scripts 静态调研：死代码/重复/文案/有界面功能/硬编码文案统计",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-153 计划（frontend_desktop · direct · 只读调研）\n\n父包：WP-151 · 范围：`desktop/` + `scripts/`（及 Windows workflows 仅作脚本引用证据）\n产物：`.litecode/ops/artifacts/WP-151-desktop-audit.md`\n**批准前不开工；只做静态分析；不构建、不真机运行；不改产品代码、依赖、锁文件；工具只用 npx 临时跑或装 /tmp；不 commit；后端报错不纳入。**\n\n## 步骤\n1. 基线：记录 `git status` 与 package.json/lock 哈希，结束时复核零改动。\n2. 死代码（第1节）：`npx knip`（desktop，配置放 /tmp）+ `tsc --noEmit --noUnusedLocals --noUnusedParameters`（输出到 /tmp，不写 dist）交叉；scripts 用 rg 查谁调用（workflows/其它脚本/package.json scripts/文档）。逐条人工确认，附 rg 证据；分「确认可删」「疑似」。依赖：未被 import 的 deps/devDeps。\n3. 重复实现（第2节）：desktop 内部重复 + desktop↔web（如进度/下载状态、版本、路径解析、协议类型）+ scripts 内 sh/ps1 及多脚本重复逻辑；给成组路径、差异、合并目标、影响面。\n4. 多余提示文案（第3节）：只看有界面的部分（壳窗口/Hub、对话框 dialog.show*、下载/安装提示、NSIS 安装器文案、托盘/菜单）；每条标 可删/可合并/可缩短，附原文与建议文。\n5. 功能大纲（第4节）：只收有界面、有交互的桌面端功能（Hub、Open Remote/SSH、工作区切换、组件下载暂停/停止/重试、更新等），按「分节标题 + 一句要点 + 入口」组织，供问号弹框用。\n6. 硬编码文案统计（第5节）：按文件/面板统计条数与字符量，分普通 UI / 提示与 tooltip / 错误提示（排除后端透传）；写明口径（含哪些文件、怎么认定用户可见字符串、排除日志与内部 throw）并附可复跑命令（node 脚本放 /tmp 或内联在产物中）。\n7. 每条附建议与风险；产品判断项标「待 Andy 定」并单列成表。\n8. 复核零改动 → 私信前端中层交叉抽查 → 通过后 deliver。\n\n## done-when\n- 五节按适用覆盖 desktop+scripts，每条有路径、证据、建议、风险。\n- 「待 Andy 定」单列。\n- 文案统计有口径和可复跑命令。\n- `git status` 仅新增产物文件；产品代码、package.json、锁文件零改动；未 commit。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:43:39.683Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: desktop+scripts 静态调研：死代码/重复/文案/有界面功能/硬编码文案统计"
+        },
+        {
+          "ts": "2026-10-14T14:45:45.945Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-153 计划（frontend_desktop · direct · 只读调研）\n\n父包：WP-151 · 范围：`desktop/` + `scri"
+        },
+        {
+          "ts": "2026-10-14T14:45:46.269Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "read-only audit plan for desktop+scripts; await approval"
+        },
+        {
+          "ts": "2026-10-14T14:46:00.658Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:46:12.182Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "approved; starting read-only audit"
+        },
+        {
+          "ts": "2026-10-14T14:51:35.733Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "mid cross-check passed; audit artifact WP-151-desktop-audit.md; zero product/lock changes; no commit"
+        },
+        {
+          "ts": "2026-10-14T14:51:54.224Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-154",
+      "domain": "team-ops",
+      "title": "打开工作区延迟调研（只读）",
+      "result": "确定打开工作区时明显延迟的来源，并按三阶段分类：打开前必须做 / 打开后立即要做 / 打开后可延迟按需做",
+      "done_when": [
+        "打开工作区全链路步骤清单（前后端握手到可交互）",
+        "每步实测耗时（冷/热启动，附复跑命令与测量口径）",
+        "每步归入三阶段：打开前必须/打开后立即/可延迟按需，并说明理由",
+        "标出当前被放在关键路径上但应延迟的步骤",
+        "只读不改代码",
+        "内存护栏 MemAvailable≥6GiB、-j2"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-154-open-workspace-latency.md",
+      "progress": "closed done by gm: GM 验收：19 项排位不一致+P0 候选清单成立；5 项裁定见 GM 消息",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "确定打开工作区时明显延迟的来源，并按三阶段分类：打开前必须做 / 打开后立即要做 / 打开后可延迟按需做",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "# WP-154 打开工作区延迟调研（只读）— 方案\n\n## 目标\n找出从前后端握手到界面可交互全链路上每一个耗时环节，实测冷/热启动耗时，归入三阶段：\nP0 打开前必须做 / P1 打开后马上要做 / P2 打开后可延迟按需做；单独标出「挡在关键路径但应延后」的步骤。\n\n## 拆分（只读，不改产品/测试代码；临时探针只能放 .tmp，测完删）\n- 子包 A（ide）：后端工作区打开链路 — workspace 注册/扫描、ide_base、terminal、lsp 启动与 initialize、engines（code_search/BM25 load、stamp 校验、warm）、proc_lifetime。\n- 子包 B（session）：serve 握手与会话侧 — 连接/鉴权握手、client_protocol 首批消息、session 列表与最近会话加载/回放、session_search 索引 load。\n- 子包 C（frontend_mid）：前端侧 — 桌面壳启动、web 首屏、握手请求时序、首个可交互时刻（输入框可用）及阻塞它的请求。\n- 后端中层：定统一测量口径、交叉核对时间线、合并成 artifact。\n\n## 统一测量口径\n- 起点 T0 = 前端发起首个握手请求；终点 T_int = 输入框可用且首个用户操作可被响应。\n- 冷启动：进程首次启动、OS 页缓存清空不可行时以「新进程 + 首次打开该工作区（无索引/无缓存）」与「新进程 + 已有索引」分别记；热启动：同进程内再次打开/切换。\n- 每步记：开始/结束时间戳（单调时钟）、是否在 T0→T_int 关键路径上、是否串行等待。\n- 语料：本仓库 /workspace/litecode（大仓，含全量索引）+ 一个小仓；各跑 ≥3 次取中位数。\n- 只用现有日志/tracing、外部计时（curl/time/hyperfine）、.tmp 下的脚本；附可复跑命令。\n\n## 每个子包交付（写到 .tmp/wp154/<domain>.md）\n步骤清单（含源码位置）→ 冷/热实测（中位数+原始数据）→ 阶段归类及理由 → 关键路径上应延后的候选。\n\n## 护栏\nMemAvailable ≥ 6GiB 才编译/测；-j2；共享主 target；三方错开编译；跑大仓时 RSS watchdog；封包后清 .tmp/wp154。不 commit。不打乱在途任务。\n\n## 验收\nartifact 覆盖全链路无断档；每步有冷/热数字与口径和复跑命令；三阶段归类有理由；关键路径应延后项单列，并按 Andy 严重度分级。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:44:18.136Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 确定打开工作区时明显延迟的来源，并按三阶段分类：打开前必须做 / 打开后立即要做 / 打开后可延迟按需做"
+        },
+        {
+          "ts": "2026-10-14T14:45:17.867Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: # WP-154 打开工作区延迟调研（只读）— 方案\n\n## 目标\n找出从前后端握手到界面可交互全链路上每一个耗时环节，实测冷/热启动耗时，归入三阶段：\nP0 "
+        },
+        {
+          "ts": "2026-10-14T14:45:18.180Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-154-open-workspace-latency.md\" -> \".litecode/ops/artifacts/WP-154-open-workspace-latency.md\""
+        },
+        {
+          "ts": "2026-10-14T14:45:18.498Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:45:44.726Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "计划通过"
+        },
+        {
+          "ts": "2026-10-14T14:46:06.395Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:40:44.884Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "启动工作全清单；不一致项 19 项列在最前；5 项待 GM 定"
+        },
+        {
+          "ts": "2026-10-14T18:26:26.078Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM 验收：19 项排位不一致+P0 候选清单成立；5 项裁定见 GM 消息",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-155",
+      "domain": "team-ops",
+      "title": "WP-154A 后端工作区打开链路耗时（只读）",
+      "result": "workspace/ide_base/terminal/lsp/engines 打开链路步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-155-ide.md",
+      "progress": "closed done by backend_mid: accepted; warm_snapshot_repo sync on config load verified (workspace.rs:513); LSP version probe P2",
+      "status_entered_at": null,
+      "parent": "WP-154",
+      "goal": "workspace/ide_base/terminal/lsp/engines 打开链路步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-155 phase-0 plan (ide): back-end workspace-open path latency — measurement method (read-only)\nParent WP-154. Definitions from .tmp/wp154/plan.md. **This step submits the method only; no measuring yet.** No product or test code changes; probes live only under .tmp/wp154 and are deleted afterwards. No commit.\n\n## 1. Call graph of the open path (rg + reading the code; one workspace = one `litecode serve` process, hot-switching is on the death list)\nProcess start → `cli::run` (src/cli/cli.rs:701)\n1. `load_runtime_bundle_from_cli` (cli.rs:93/733): config + WorkspaceState (workspace registration / paths / sessions.db path)\n2. `setup_logging` (cli.rs:115): JSON file log `<ws>/.litecode/logs/litecode.log` with timestamps → \"workspace ready\"\n3. `serve::run` (src/serve/run.rs:51)\n   - 3a `resolve_web_dist` (run.rs:70)\n   - 3b **`proc_lifetime::sweep_orphan_lsp_processes`** (run.rs:75 → src/proc_lifetime.rs:48): synchronous scan of the process table\n   - 3c `EngineManager::reconcile` / **`WorkspaceEngines::reconcile`** (run.rs:84-85 → src/engines/mod.rs:~775 → `start` :1105). No tokio runtime exists yet → `std::thread::spawn(engine.warmup())` (mod.rs:1171), off the main thread:\n     - code_search: `CodeSearchEngine::warmup` (src/engines/code_search_engine.rs:374) → `spawn_ready_worker` (:399) → child process `code-search-worker` + `handshake_worker` (:438) → worker side `code_search_ipc/server.rs` warmup (~:100): `CodeSearchIndex::load` (store.rs:137: sweep tmp / restore_usearch / replay logs / repair) → `CodeSearchRuntime::new` (stamps::load) → BM25 open/resync → `queue_reconcile_dirty` (stat-check stamps)\n     - lsp: `LspEngine::warmup` (src/engines/lsp_engine.rs:48) → `LspHub::activate` (src/lsp/hub.rs:202) is metadata only; the actual language-server spawn `spawn_ls` (hub.rs:~132 → src/lsp/server.rs:144) + `initialize` (server.rs:544) happens lazily on the first LSP request\n   - 3d `path_index().attach` (run.rs:86 → src/engines/path_index/mod.rs:83): background scan worker\n   - 3e **`ServeState::new`** (run.rs:91 → src/serve/state.rs): `SessionData::open` (state.rs:90, sessions.db) → `maintain_snapshots` (:97, synchronous) → `WorkspaceService::new` (:111 → src/workspace/service.rs:97) → `TerminalHub::new` + `install_hub` (:112-113, no PTY created) → `IdeBaseHandle::new` (src/ide_base.rs) → RuntimeHandle / SessionManager / auto_turn installs (Session's domain, B measures)\n   - 3f tokio runtime → `router::listen` (src/serve/router.rs:101): **`restart_watcher`** (router.rs:112 → src/workspace/watcher.rs:~270, awaited, recursive OS watch registration) → change-bus/tick tasks spawned (code_index_tick, session tick; first tick runs immediately) → `TcpListener::bind` (:253) → stdout `LITECODE_READY http://…/` (:255)\n4. Front end connects `/ws` (router.rs:71 → src/client_protocol/ws.rs) → subscriptions → `handshake_frames` (ws.rs:339 → controller/mod.rs:1190 → `server_hello` project.rs:621) → session loop; subsequent session/list/attach etc. are Session's (B)\n5. Terminal: `terminal/create` (client_protocol/workspace.rs:74 handle_jsonrpc) spawns a PTY on demand, only when the front end asks\n6. LSP first request: `lsp/request` → spawn_ls + initialize (lazy, see 3c)\n7. proc_lifetime: besides 3b, job object / parent-pid watch (shutdown.rs, ServeOptions.parent_pid) is only a shutdown concern; measured only as 3b\nThe table in the artifact lists one row per step (file:line).\n\n## 2. How each step is timed (order of preference)\na. **External boundaries, no code changes**, collected by a Python probe under .tmp/wp154/probe/ with a monotonic clock (`time.monotonic_ns`):\n   - process spawn t_spawn → stdout `LITECODE_READY` line (t_ready)\n   - WS connect → first frame (`server/hello`, t_hello) → response to the proxy request (§4, t_int)\n   - /proc polling every 10 ms: when the child `code-search-worker` appears, when language-server child processes appear\n   - poll worker-side job.json / index files and the status endpoint every 50 ms (time engine state turns Warm: t_cs_warm)\nb. **Existing logs**: the JSON timestamps in `<ws>/.litecode/logs/litecode.log` (\"workspace ready\", \"web dist\", engine warmup/BM25/reconcile info/warn, \"code_search loading index…\"). The log level comes from settings in the isolated HOME (debug); the user's real config is not touched.\nc. **Gaps:** there are almost no info logs at the internal step boundaries (only 9 log points across router/state/engines/watcher/path_index/proc_lifetime), and the box has no strace/perf/hyperfine (not installed; I won't install anything without approval). So the time splits inside 3b/3c/3e/3f (sweep, reconcile, SessionData::open, maintain_snapshots, WorkspaceService::new, restart_watcher) cannot be measured with only (a)+(b). Options, **pending ruling (R1)**:\n   - **R1-A (recommended):** a standalone harness crate under .tmp/wp154/harness (path dependency on litecode, `CARGO_TARGET_DIR` = main target, -j2) that calls the same public functions in the same order as serve::run with `Instant` around each step. No src changes; deleted afterwards. Limitation: only `pub` items can be called. Anything not pub (e.g. some inside router::listen) falls back to (a)/(b). This is an extra build (deps are reused, so mostly an incremental build).\n   - **R1-B:** temporary `tracing::info!(elapsed_ms=…)` timing lines at about 8 step boundaries in src/serve/run.rs, state.rs and router.rs, plus worker warmup (server.rs); restored after measuring and verified with git diff to be byte-identical. Touches files outside IDE ownership (serve) → needs explicit permission.\n   - R1-C: if (a)+(b) is enough, give up the internal split and report only boundary times plus process-level evidence.\n\n## 3. How to tell whether a step is on the critical path (serial wait)\n- Rule: a step is on the critical path ⇔ the time it needs falls between T0 and T_int, and T_int cannot happen before it ends. Back-end side, statically: it runs synchronously on the main thread before `TcpListener::bind`/READY (3a-3f, all serial), or it runs inside the ws handshake before `handshake_frames` is sent, or the proxy request's handler waits on it (lock/await).\n- Dynamic check (both have to agree):\n  1. Timeline overlap: the step's [start, end] lies inside [t_spawn, t_int], and t_int − end_step < measurement resolution (it finished right before T_int).\n  2. Counterfactual: under the same conditions, remove the step's input (e.g. with/without an index, code_search engine desired=false, lsp off) and see whether t_ready/t_int move by that step's duration. If they move, it is serial; if not, it is parallel/background.\n- Background threads (warmup thread, path_index, ticks) are off the critical path by default. The exception is when the proxy request has to wait for them (e.g. the response contains engine state and waits on a lock). The same counterfactual check is used.\n\n## 4. Building the scenarios and simulating T0 / input box available without a front end\n- **Isolation:** each run gets its own HOME=.tmp/wp154/home-<run> (copied from a seed that contains settings and engine desired flags), so it does not touch the user's real config or other agents. Use a release-build `litecode serve --bind 127.0.0.1:0 --loopback-only --shutdown-on-stdin-eof`, and read the port from the READY line.\n- **Corpora:**\n  - Large repo: a clean copy of this repo, `git archive HEAD | tar -x -C .tmp/wp154/big` (1,505 tracked files). Don't serve the live working tree; that would write an index into /workspace/litecode/.litecode and touch other agents' running work.\n  - Small repo: a shallow clone of the public `serde-rs/json` (depth 1, pinned SHA recorded, about 100 files, mostly Rust) under .tmp/wp154/small. **Keep its .git** (lesson from WP-143: without .git the parent repo's .gitignore gets applied).\n- **Cold, no index:** new process; delete `<corpus>/.litecode` (keep only the seeded settings) → spawn.\n- **Cold, with index:** after the previous run, wait until the index is complete (job.json cleared, state Warm). Stop the process with stdin EOF, wait for the worker and language servers to exit (check /proc), then spawn a new process.\n- **Hot:** within the same serve process, close the WS and reconnect (a new client connection → new handshake / hello / proxy request). Because hot-switching workspaces is on the death list, \"reopening in the same process\" = the front end reconnecting / reloading the page. **Pending ruling R2:** confirm this definition with the front end (C) and Session (B).\n- **T0 proxy:** the moment the probe sends the WS upgrade request (the first handshake request). The process-start segment t_spawn→READY is reported separately: the desktop shell starts serve first and then the web view connects. Whether T0 includes process start in the shell's timing is up to C; I report both segments so they can be joined.\n- **T_int proxy:** after receiving `server/hello`, the probe immediately sends the requests the front end needs before the input box is enabled. The response time of the last of these is t_int. **Which requests these are is decided by C (front end) and B (Session), pending ruling R3.** Tentatively: the session list + model list (models in hello) + attach to the most recent session. Limitations of this proxy:\n  - no browser render or JS execution time;\n  - the request order may differ from the real front end;\n  - it does not cover whether the \"first user action can be answered\" (e.g. sending the first message). For that I add a supplementary measurement: send a no-op request (e.g. a workspace status / settings read) and record its response, without sending a chat that would call the model.\n- **Page cache:** dropping it needs root (`/proc/sys/vm/drop_caches`), which we don't have (uid 1000), so I won't try. Handling:\n  - \"cold\" means \"new process + no index/cache in this process\". It is labeled \"page cache warm (not cleared)\".\n  - Use a first-touch corpus: each round makes a new copy of the corpus (a different path, freshly written files; mostly still in page cache after the write, so this is still only an approximation). In the report, note that the cold numbers are lower bounds and give the corpus size so the disk-read cost can be estimated by bandwidth (marked as an estimate, kept separate from measured values).\n- **Embedder:** the production embedder (granite-97m ORT) is used, because the worker loads the model during warm and that is a real cost. The first build of the large repo with the production embedder is a background task (estimated at about 1 h at about 7 chunks/s, not on the critical path), and it is only needed once before the cold-with-index runs. **Pending ruling R4:** allow building the index with hash to save time? If yes, the warm in the with-index scenario would not load ORT, which biases the result; I recommend not doing it.\n- Each scenario × corpus at least 3 times, median reported with the raw values. Order: small repo first (to validate the probe), then the large repo.\n\n## 5. Stage classification criteria\n- **P0, required before opening:** if it is missing, T_int is wrong or unsafe. Examples: config/workspace paths, sessions.db open, binding the port/READY, the WS handshake/hello, and the data the input box needs (decided by B/C).\n- **P1, needed right after opening:** not needed for T_int, but expected within seconds of the first action. Examples: the file watcher (otherwise changes are missed), code_search/BM25 load and warm (needed by the first search), stamp checking/reconcile (otherwise stale results).\n- **P2, can be deferred/on demand:** only used when a feature is used. Examples: LSP spawn/initialize (first LSP request), terminal PTY (first terminal/create), path_index full scan, orphan LSP sweep (could run in the background), snapshot maintenance.\n- **Listed separately:** \"on the critical path but should be deferred\" = a step that §3 shows is serial before T_int but §5 classifies as P1/P2 (current suspects: 3b sweep, 3e maintain_snapshots, 3f restart_watcher on the large repo; the data decides). Graded by Andy's severity scale: share of T_int × frequency.\n\n## 6. Re-runnable commands and artifact structure\n- Commands:\n  - `python3 .tmp/wp154/probe/run.py --corpus {big|small} --scenario {cold_noindex|cold_index|hot} --runs 3 --bin target/release/litecode --out .tmp/wp154/raw/<corpus>_<scenario>.jsonl`\n  - with R1-A additionally `.tmp/wp154/harness/run.sh <corpus>`\n  - Each record: run_id, t_spawn/t_ready/t_ws/t_hello/t_int/t_cs_worker/t_cs_warm/t_lsp_spawn (ms relative to the T0 proxy), peak RSS, step durations extracted from the logs.\n- Artifact `.tmp/wp154/ide.md`:\n  1. Definitions and limitations (proxy definitions, page cache, embedder, corpus SHAs)\n  2. Call graph and step table: step / source location / main thread or background / P0-P1-P2 / critical path yes/no / reason\n  3. Cold no-index / cold with-index / hot × large/small: median + raw values + RSS\n  4. Critical-path timeline (text Gantt chart)\n  5. List of \"on the critical path but should be deferred\" items + Andy severity\n  6. Re-run commands\n  7. Cleanup record\n\n## 7. Guardrails\n- MemAvailable ≥ 6 GiB before compiling or measuring. Release build with -j2, shared main target, flock (reusing the WP-143 wrapper pattern under .tmp/wp154), and compile schedules staggered with Session and the front end; check that no other cargo/rustc is running before each start.\n- During measurement: a 3.5 GiB RSS watchdog on serve + worker + language-server child processes, timeout on every run, taskset 0-3. Make sure no serve/worker/language-server processes are left behind afterwards.\n- No changes to src/tests, no commit, no checkout/stash. The user's HOME/config is not touched (isolated HOME). After closing: delete .tmp/wp154/{big,small,home-*,probe,harness,raw} and keep ide.md plus a short summary of the raw data.\n\n## Rulings needed from backend_mid\n- R1 How to split the internal time: A harness crate (.tmp, recommended) / B temporary timing logs in src (serve files; needs permission; restored after) / C boundary times only.\n- R2 The \"hot start\" definition: within the same serve process, WS reconnect / page reload (hot-switching is on the death list). Please confirm with B/C.\n- R3 The set of requests that serve as the \"input box available\" proxy (front end C + Session B decide; tentatively session list + attach to the most recent session).\n- R4 Index the large repo with the production embedder (recommended, one-time about 1 h in the background) vs hash (faster, but biases the warm cost).\n- R5 The page cache cannot be dropped: accept \"new process + new copy of the corpus\" as the cold approximation, labeled as a lower bound?\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:45:16.674Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: workspace/ide_base/terminal/lsp/engines 打开链路步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码"
+        },
+        {
+          "ts": "2026-10-14T14:48:29.733Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-155 phase-0 plan (ide): back-end workspace-open path latency — measurement "
+        },
+        {
+          "ts": "2026-10-14T14:48:30.037Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "phase-0 measurement method; rulings R1-R5"
+        },
+        {
+          "ts": "2026-10-14T14:49:13.130Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "approved: R1=A(+C) no src edits; R2 both reconnect+reload; R3 per-message, frontend_mid decides; R4 real embedder w/ RSS watchdog; R5 accepted as lower bound"
+        },
+        {
+          "ts": "2026-10-14T14:49:59.701Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T16:44:17.941Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "W3 first build + W4 timing (36 probe runs, 12 harness runs, true-cold mincore), artifact .tmp/wp154/ide.md; cleanup done, seeds and test repos kept for Session/FE"
+        },
+        {
+          "ts": "2026-10-14T16:44:33.556Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".tmp/wp154/ide.md\" -> \".litecode/ops/artifacts/WP-155-ide.md\""
+        },
+        {
+          "ts": "2026-10-14T16:46:05.125Z",
+          "actor": "backend_mid",
+          "action": "return",
+          "note": "数据扎实，缺三阶段归类+关键路径应延后清单+大仓 READY 未归因段+RA 自启 cargo 解释；复跑脚本需保留到 ops 路径"
+        },
+        {
+          "ts": "2026-10-14T16:51:27.177Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-155-ide.md\" -> \".litecode/ops/artifacts/WP-155-ide.md\""
+        },
+        {
+          "ts": "2026-10-14T16:51:30.740Z",
+          "actor": "ide",
+          "action": "deliver",
+          "note": "Rework: conclusions added (§10 three-stage step table with P0/P1/P2, §11 critical-path deferral: warm_snapshot_repo severity (3), §12 +400ms attribution = snapshot warm inside load_runtime_bundle, §13 RA --version probe from LSP warmup, no cargo); re-run kit in .litecode/ops/artifacts/WP-155/; no new runs"
+        },
+        {
+          "ts": "2026-10-14T16:52:41.988Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "accepted; warm_snapshot_repo sync on config load verified (workspace.rs:513); LSP version probe P2",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-156",
+      "domain": "team-ops",
+      "title": "WP-154B serve 握手与会话加载耗时（只读）",
+      "result": "serve 握手/client_protocol 首批/会话列表与回放/session_search load 步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".tmp/wp154/session.md",
+      "progress": "closed done by backend_mid",
+      "status_entered_at": null,
+      "parent": "WP-154",
+      "goal": "serve 握手/client_protocol 首批/会话列表与回放/session_search load 步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-156 Session 子包测量方法（只读调研，父包 WP-154）\n\n## 范围\nserve 连接与握手（`src/serve/router.rs` `/ws` → `client_protocol/ws.rs::ws_handler/handle_socket`）、client_protocol 首批消息（ServerHello、SessionSnapshot/TurnSnapshot 等，`protocol.rs`）、会话列表（ListSessions）与最近会话加载/回放（`src/session` 读库 + transcript replay）、session_search 索引 load（`load_session_index`、`check_meta_or_drop`、迁移、ANN 内存重建）。\n\n## 口径（沿用 .tmp/wp154/plan.md）\n- T0 = 模拟前端发起首个握手请求（WS upgrade 请求发出时刻，客户端单调时钟）。\n- 终点 T_int（后端视角\"输入框可用\"）：客户端收到\"可发起 Start 的最后一条前置消息\"的时刻。**建议**以活动会话的 SessionSnapshot（含 TurnSnapshot 且 phase=Idle）送达为准；若前端实际还等 ListSessions 回包，则取两者较晚者。确切消息待与 frontend_mid 核对（见待决问题 1）。另记一个\"首个操作被响应\"点：T_int 后立即发一个 ListSessions，取回包时刻。\n- 冷启动（无 root，不能 drop page cache）分两档：\n  - C1 = 新 serve 进程 + 首次打开该工作区：HOME 指向新建空目录，工作区 `.litecode/session-index` 拷到空副本（无索引、无 job/queue），sessions.db 用语料副本。\n  - C2 = 新 serve 进程 + 已有索引（真实\"重启后打开\"）。\n  - 页缓存：用 `vmtouch -e`（如可用）或 `dd`+`posix_fadvise(DONTNEED)`（python `os.posix_fadvise`，无需 root）尝试逐出语料与索引文件；能否逐出以 `fincore`/mincore 读数核实并在结果中注明。\n- 热启动 W = 同一 serve 进程内断开再重连 WS（新连接重走握手），以及切换到另一会话。\n- 每档 ≥3 次，报中位数并附原始数据。\n\n## 模拟前端握手\n`.tmp/wp156/ws_client.py`（python websockets，或现有依赖不可用时用 Rust/Node 小脚本放 .tmp）：按前端真实顺序发首批请求（顺序从 web 源码/frontend_mid 提供的抓包核对），记录每条收发的单调时间戳和消息类型、字节数，不记录内容。鉴权按 `serve/auth.rs` 的本地 token 流程，token 只在进程内传递、不落盘不打印。\n\n## 后端插桩\n- 优先现有 tracing（`config/log_filter.rs` 的环境变量过滤，开 debug 级 serve/client_protocol/session/engines::session_search 目标），用时间戳对齐客户端时间线。\n- 现有 span 不覆盖的步骤：不改产品代码；用外部手段分段——(a) 单独计时的 .tmp 小程序调用公开函数（如 `load_session_index`、会话列表/回放的读接口）测各步耗时，作为分解；(b) `strace -f -tt -e trace=openat,read,fsync` 观察文件访问时序（可选）。\n- 若某关键步骤只能靠新加 span 才能看清，只记录为建议，不加入产品代码。\n\n## 语料与仓库\n- 会话库：`.tmp/wp102/corpus/sessions.db`（25MB）。以只读 `mode=ro` 打开统计 sessions/transcript_items 行数和字节数，只报聚合数，session id 用 sha256 前 8 位表示，不输出任何消息文本。测量时用副本，不改原件。\n- 大仓：`/workspace/litecode`（含全量索引）；小仓：`.tmp/wp156/small_repo`（新建的十余个文件小 git 仓库）。两仓使用同一份会话库副本（会话按工作区过滤的影响单独注明）。\n\n## 每步记录\n源码位置、冷(C1/C2)/热耗时中位数、是否在 T0→T_int 关键路径上、阶段 P0/P1/P2 及理由、复跑命令。挡在关键路径上但应延后的步骤单独列表。\n\n## 护栏\nMemAvailable ≥ 6GiB 且无其他 cargo/rustc 时才编译/测（每分钟轮询，最多约 30 分钟，否则上报）；-j2；共享主 target；HOME=$PWD/.tmp/home，unset RUSTUP_HOME/CARGO_HOME；与 IDE/前端错开编译；大仓运行时 RSS watchdog（`.tmp/wp102/mem_sample.py` 同类脚本）；只读，不改产品/测试代码，临时脚本只放 .tmp/wp156，封包时清理；不 commit。产物写 `.tmp/wp154/session.md`。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:45:17.085Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: serve 握手/client_protocol 首批/会话列表与回放/session_search load 步骤+冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码"
+        },
+        {
+          "ts": "2026-10-14T14:47:29.703Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-156 Session 子包测量方法（只读调研，父包 WP-154）\n\n## 范围\nserve 连接与握手（`src/serve/router.rs`"
+        },
+        {
+          "ts": "2026-10-14T14:47:30.046Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "measurement method for approval; no runs before approval"
+        },
+        {
+          "ts": "2026-10-14T14:48:06.583Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "approved with rulings: endpoint per-message, frontend_mid decides unlock; small repo both empty+rehung copy; page-cache caveat accepted"
+        },
+        {
+          "ts": "2026-10-14T14:48:46.097Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:28:21.511Z",
+          "actor": "session",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:28:52.975Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": null,
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-157",
+      "domain": "team-ops",
+      "title": "WP-154C 前端握手到可交互耗时（只读）",
+      "result": "桌面壳+web 首屏+握手时序+首个可交互时刻及阻塞请求 冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "backend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".tmp/wp154/frontend_mid.md",
+      "progress": "closed done by backend_mid: 测量按 Andy 改方向取消，交付清单；产物 .litecode/ops/artifacts/WP-154/frontend.md，静态发现和脚本在 artifacts/WP-157/",
+      "status_entered_at": null,
+      "parent": "WP-154",
+      "goal": "桌面壳+web 首屏+握手时序+首个可交互时刻及阻塞请求 冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "WP-157 前端握手到可交互耗时（只读）测量方法 — kind=direct，执行方是 frontend_mid（不再拆子包）\n\n口径：完全沿用 .tmp/wp154/plan.md。T0 是前端发出首个握手请求，T_int 是输入框可用（textarea 未禁用，且首次按键能被响应）。T0 之前的壳启动耗时单独列。\n\n1. 静态梳理（列源码位置）\n   - web 首屏：入口 main.tsx，经 App 和 dockview 布局，到 Chat 输入框；列出决定输入框 disabled 或可见的条件。\n   - 握手和首批请求：列出 web/src 里连接 serve、首批 fetch 和 WS 消息的调用点与 await 链，标明哪些请求挡住输入框（串行或并行）。\n   - 桌面壳：desktop/ 下从启动、拉起后端、等待就绪到加载 web 的流程，只做静态分析。按规则 desktop 只静态检查，box 也不是 Windows，所以壳的实际耗时标为「待真机测」，只给出由代码推导的步骤和等待点，例如轮询间隔、超时时长、健康检查。\n\n2. 实测（在 box 上跑 web 和 serve）\n   - 方法：用已构建的 serve 加 web 的 vite preview（如需构建，按护栏和后端错开，-j2，MemAvailable 至少 6GiB）。用临时 Playwright 脚本（放 /tmp 或 .tmp/wp154/fe/，不改 package.json 和锁文件）以新 context 打开页面，记录：\n     - navigationStart、FCP、首个握手请求发出（T0）；\n     - 每个后端请求的开始、结束和 URL（来自 PerformanceResourceTiming 和 page 的请求事件，WS 消息按帧时间戳记录）；\n     - T_int：轮询到输入框 enabled 且 focus 后输入能回显。\n   - 冷热定义：冷启动是新的 serve 进程加新的浏览器 context（无缓存），分两组，一组用无索引的小仓，一组用已有索引的大仓 /workspace/litecode。热启动是同一 serve 进程，新开页面或切换工作区。每组至少跑 3 次，取中位数，附原始数据。\n   - RSS watchdog 跟随后端口径。测完删除 .tmp 探针。\n\n3. 交付 .tmp/wp154/frontend_mid.md\n   - 步骤表，列：步骤、源码位置、冷启动中位数、热启动中位数、是否在 T0 到 T_int 的关键路径上、是否串行等待、阶段（P0、P1 或 P2）及理由。\n   - 前端等待的后端请求清单：每条请求的端点、相对 T0 的开始和结束时间、耗时，供与 ide、session 的时间线对齐。\n   - 关键路径上应延后的候选，按 Andy 的五级分级。\n   - 可复跑命令。\n\n护栏：只读，不改产品和测试代码，不 commit，不动依赖。编译和测量前先跟后端中层报一声，错开时段。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T14:45:17.523Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 桌面壳+web 首屏+握手时序+首个可交互时刻及阻塞请求 冷热实测+阶段归类；口径见 .tmp/wp154/plan.md；只读不改代码"
+        },
+        {
+          "ts": "2026-10-14T14:47:14.662Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "direct: WP-157 前端握手到可交互耗时（只读）测量方法 — kind=direct，执行方是 frontend_mid（不再拆子包）\n\n口径：完全沿用 .tmp/w"
+        },
+        {
+          "ts": "2026-10-14T14:47:14.803Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T14:47:50.908Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "approved; desktop shell static-only, numbers marked 待真机测; Playwright under .tmp, remove after"
+        },
+        {
+          "ts": "2026-10-14T14:48:03.550Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:40:16.784Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:40:44.596Z",
+          "actor": "backend_mid",
+          "action": "close",
+          "note": "测量按 Andy 改方向取消，交付清单；产物 .litecode/ops/artifacts/WP-154/frontend.md，静态发现和脚本在 artifacts/WP-157/",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-158",
+      "domain": "team-ops",
+      "title": "前端瘦身（按 WP-151 清单与 GM 裁定）",
+      "result": "按 WP-151 产物与 13 项裁定执行前端瘦身，风险从低到高分批；多语言不在本包",
+      "done_when": [
+        "确认可删死代码删除，疑似项复核后定",
+        "补 dockview/@tanstack/virtual-core 声明，删 remotion 与无用 types",
+        "重复实现按唯一来源合并，跨端契约无兼容层",
+        "多余文案按清单处理",
+        "13 项裁定落地（A2 只做状态栏视觉断开态，不加文字提示；U6 中文暂不改，留给多语言）",
+        "只删不加功能，界面行为不变",
+        "前端测试全绿，tsc 0，knip 不新增告警",
+        "是否需与后端中层同步由前端中层自定"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "gm",
+      "status": "review",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-158-frontend-slim.md",
+      "progress": "awaiting acceptance by gm",
+      "status_entered_at": "2026-10-14T18:25:41.474Z",
+      "parent": null,
+      "goal": "按 WP-151 产物与 13 项裁定执行前端瘦身，风险从低到高分批；多语言不在本包",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "WP-158 前端瘦身（kind=split）。依据是 .litecode/ops/artifacts/WP-151-frontend-audit.md，13 项按 GM 裁定执行。多语言和帮助弹框都不在本包范围内。\n\n分批进行，风险由低到高，各批之间串行，同一文件不并行修改。\nB1（低风险，web 与 desktop 可以同时做，两边不碰同一文件）\n- WP-159 web（frontend）：\n  - 删除 §1.1 中确认可删的 24 项；§1.2 的疑似项逐条复核后再决定。\n  - U1：删除 remotion 和 @remotion/cli。\n  - §1.3：在 package.json 中显式声明 dockview 和 @tanstack/virtual-core（这项和 U1 允许改 package.json 与锁文件）。\n  - U2：ws-smoke 补进 README。\n  - U3：workbench 桶文件只保留实际用到的导出。\n  - U5：采用建议文。\n  - §3：web 侧多余提示的删除、合并或缩短。\n  - U4：对照后端协议，只删除已废弃的类型。逐条清单先交前端中层，由中层向后端中层确认。\n  - 新增：删除 onopen 里多余的 auth 帧（agentWs.ts:140-141）。token 在 WS 握手时已经用 ?token= 校验过，serve 会对这条帧回 -32601。删除前由中层向后端中层确认。\n- WP-160 desktop（frontend_desktop）：\n  - 删除 D1–D7，§1.2 的疑似项逐条复核。\n  - A1：删除组件暂停、停止、重试的 IPC，以及对应的 preload 和类型。\n  - A3：把 package_local_cuda.ps1 移出 scripts。\n  - A5：不改。\n  - §3：desktop 侧提示文案。\nB2（跨端契约，等 B1 全部 done 后开工）\n- WP-161 desktop（frontend_desktop），先做：\n  - X3/X4：以 desktop 为唯一源头，新建只含类型的 bridge-contract.d.ts（桥接接口和组件进度类型），web 和 desktop 的 tsconfig 都要能引用它。\n  - X5：percent 改为必填。\n- WP-162 web（frontend），等 WP-161 done 后开工：\n  - 删除 auth.ts 里手抄的 LitecodeDesktopBridge，改为引用契约。\n  - 删除 web 自己的 percent()。\n  - X1：给 tokens.css 加文件头注释。\n  - X2：滚动条样式收进 tokens.css，删除 hub 内联的那一份（hub 在 desktop 里，这处小改由 web 一并完成，事先告知 desktop）。\n  - 以上不做兼容层。\nB3（中风险，等 B2 done 后开工）\n- WP-163 web（frontend）：\n  - §2.1 中 web 内部 10 组重复组件的合并。\n  - A2：状态栏增加视觉上的断开态，只改样式，不加文字。\n- WP-164 desktop（frontend_desktop）：\n  - R4–R8 重复实现的合并。\n  - A4：远程向导自动跳过令牌那一步。\n  - 如果 A4 需要 web 配合，由中层另行协调。\n\n验收（每个子包都要满足，父包合成时再核一遍）\n- 除 A2、A4 外，界面行为不变。\n- web：vitest 全绿，tsc -b 为 0。\n- desktop：按规则只做静态检查，tsc 为 0；能跑的单测必须全绿。\n- knip 告警只能比 /tmp 的 WP-151 基线少，不能新增。knip 照旧临时运行，不写进 package.json。\n- 不 commit，提交由 Andy 或 GM 决定。\n- 缺陷在包内修掉。只支持一种格式，不加兼容层或回退。\n\n中层职责：审批每个子包的计划；向后端中层确认 U4 和 auth 帧；交叉审查每批交付并抽查；最后合成产物 .litecode/ops/artifacts/WP-158-frontend.md，交付给 GM。\n另外 WP-157 测量还在进行中。测量所用的 web build 必须在 B1 改动之前做，或者 B1 等测量完再落地，两者不能互相干扰。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:02:55.250Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-151 产物与 13 项裁定执行前端瘦身，风险从低到高分批；多语言不在本包"
+        },
+        {
+          "ts": "2026-10-14T15:04:12.203Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: WP-158 前端瘦身（kind=split）。依据是 .litecode/ops/artifacts/WP-151-frontend-audit.md，13 "
+        },
+        {
+          "ts": "2026-10-14T15:04:16.693Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:04:50.215Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "计划通过；B1 等 WP-157 采样后落地"
+        },
+        {
+          "ts": "2026-10-14T15:05:06.928Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:25:41.474Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "前端瘦身六包全 done：合并报告已写；web 177/1365 knip 23/21/1/0/0；desktop 128/128；未 commit"
+        }
+      ]
+    },
+    {
+      "id": "WP-159",
+      "domain": "team-ops",
+      "title": "WP-158 B1 web：低风险删改与依赖声明",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: 抽查通过：remotion 已清、auth 帧已删、依赖已声明；tsc 0、vitest 1363 全绿（maxWorkers=1）、knip 23/21/1/0/0",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-159 计划：B1 web 瘦身（父 WP-158；依据 WP-151-frontend-audit.md，参考 WP-151-web-audit.md）\n\n## 开工前提\n- 等前端中层通知 **WP-157 测量结束** 后才 start。在此之前不改 web/ 下任何文件，也不在 web/ 下跑会生成文件的命令。\n- 开工时先记录 git status 和 knip 基线（直接用 `/tmp/wp152/knip.json`：145 个未用导出、101 个未用类型、6 个未用文件、3 个未用 devDependency、2 个未声明依赖）。\n\n## 范围与规则\n- 只改 web/（含 package.json、package-lock.json）。不碰 desktop/ 的任何文件。不 commit。\n- 不做兼容层或回退。缺陷在包内修掉。knip 照旧装在 /tmp 临时运行，不写进 package.json。\n- Node 用 /exec-daemon/node v22.14.0，安装用 `npm`（PATH=/exec-daemon）。\n\n## 1. 删除确认可删的 24 项（§1.1 W1–W24）\n| # | 路径 | 符号 / 动作 |\n|---|---|---|\n| 1 | src/api/json.ts | 删文件（JsonValue） |\n| 2 | src/theme/dockview.ts | 删文件（转发 adapter） |\n| 3 | src/theme/dockview.css | 删文件（adapter.css 的旧副本） |\n| 4 | src/utils/turnPhase.ts | 删文件（formatTurnPhase / turnPhaseTone） |\n| 5 | src/components/knowledge/KnowledgeRelationStrip.tsx | 删文件 |\n| 6 | src/api/adapter.ts:274 | isEmptyItemShell |\n| 7 | src/api/adapter.ts:311 | extractToolFilePath |\n| 8 | src/components/Logo.tsx:18 | skipSplash |\n| 9 | src/lib/citationResolve.ts:28 | peekCitation |\n| 10 | src/lib/litecodeLsp.ts:1641 | refreshDiagnostics |\n| 11 | src/lib/theme.ts:52 | toggleTheme |\n| 12 | src/stores/settingsDocuments.ts:168 | isRevisionedDocument |\n| 13 | src/stores/settingsStore.ts:698 | mcpServersFromStore |\n| 14 | src/stores/turnStore.ts:105 | headPermission |\n| 15 | src/components/knowledge/KnowledgeMarkdown.tsx:111 | KnowledgeInlineBody |\n| 16 | src/components/knowledge/KnowledgeMarkdown.tsx:167 | KnowledgeStatusBadge |\n| 17 | src/components/transcript/transcriptUserRailMarks.ts:134 | newestUserSeq |\n| 18 | src/dockview/workbench/model.ts:54 | groupHasComponent |\n| 19 | src/lib/knowledge/markers.ts:321 | extractSymbolRefs |\n| 20 | src/components/PermissionModal.tsx:10 | 删 `export type { PermissionGrantOpts }` 中转行 |\n| 21 | src/dockview/menu/menuItems.ts:27 | menuItems 常量 |\n| 22 | package.json devDependencies | remotion（U1） |\n| 23 | package.json devDependencies | @remotion/cli（U1） |\n| 24 | package.json devDependencies | @types/opentype.js |\n- 做法：每项删除前再跑一次 rg（全 web，含字符串、动态 import、CSS @import、desktop 对 web 的引用）确认零引用。删函数时，把因此变成没人用的私有辅助函数和 import 一并删掉；涉及的 README 或注释同步更新。\n- 22–24 用 `npm uninstall --no-audit --no-fund remotion @remotion/cli @types/opentype.js` 改 package.json 和锁文件，之后核对锁文件里没有无关的版本漂移。\n\n## 2. 疑似项复核（§1.2）\n| 项 | 复核方法 | 处理 |\n|---|---|---|\n| W-S1–7 api/types 7 个类型 | 走 U4（见第 5 节） | 等中层回复 |\n| W-S8 workbench/queries.ts LivePanel | rg 零引用，再看 queries.ts 内部是否用到 | 若无引用，并入 U3 一起删 |\n| W-S9 workbench/index.ts 桶文件 | 走 U3 | 见第 3 节 |\n| W-S10 providerBilling.ts API_PROVIDER_IDS | rg 零引用；分类逻辑不依赖这张列表（未知 provider 一律归 API） | 删常量，在注释里留一行说明 API 侧的口径 |\n| W-S11 theme/tokens.ts readDkTokens | 只在 theme/README.md 里提到 | 删函数，同步改 README |\n| W-S12 lib/knowledge/fixture.ts | 只有 3 个测试 import | 移到 src/test/fixtures/knowledge.ts，并改那 3 个测试的 import |\n| W-S14 209 个「只在本文件内用到却导出了」的符号 | 逐个 rg，包括测试 | 被测试 import 的保留；其余只去掉 `export`，不删代码。量大，是否在本包做见 Q3 |\n\n## 3. U1 / U2 / U3 / U5 与依赖声明\n- **U1**：删除 remotion 和 @remotion/cli（见第 1 节 22–23）。\n- **U2**：保留 scripts/ws-smoke.mjs，在 web/README.md 加一节「WS smoke script」，写清用途（WS 握手和 list 冒烟）和三个子命令 `handshake [--token]`、`list`、`bad-handshake [--bad-token]` 的用法。脚本本身不改。\n- **U3**：workbench/index.ts 只保留实际用到的转发导出。目前只有 `groupRole`（被 shell/BrowserHeaderAction.tsx:4 使用），其余约 50 个删掉。改之前用 rg 全 web 核对 `from \"…/workbench\"` 的所有引用，包括测试。\n- **U5**：AgentsSection.tsx:266 改为 \"Long tasks may need ~200.\"\n- **§1.3 依赖声明**：用锁文件里已有的版本显式声明，不升级：`dockview` `^8.4.1`（和 dockview-react 8.4.1 一致）写入 dependencies；`@tanstack/virtual-core` `^3.17.2` 写入 devDependencies（目前只有测试 prependAnchor.test.ts 直接用到，见 Q4）。用 `npm install --save-exact=false` 指定版本，或手改 package.json 后跑 `npm install --no-audit --no-fund`，核对锁文件只多了顶层声明、没有版本变化。\n\n## 4. §3 web 侧提示文案（W-C1–C17，采用 audit 建议文）\n| # | 位置 | 改动 |\n|---|---|---|\n| C1+C2 | FilesSection.tsx:130-135、188-189 | 顶部段落缩成 \"Saved in .litecode/excludes.json; changes apply immediately. Semantic search uses the suffix list below.\"；搜索排除项的标签改为 \"Extra hides for search and glob.\" |\n| C3 | FilesSection.tsx:210-211 | \"File suffixes to index, one per line.\" |\n| C4 | McpServersSection.tsx:327-328 | \"Workspace overrides global. Bind mcp_<id> on Agents.\" |\n| C5 | McpServersSection.tsx:249 | \"Save, then Start. Restart after config changes.\" |\n| C6 | CustomToolsSection.tsx:222 | 本包只改文案为 \"Bind on Agents. Workspace overrides global.\"；抽共享提示组件要依赖 W-R1，放到 B3（WP-163） |\n| C7 | AgentsSection.tsx:236-239 | \"Replaces the built-in persona (builtin: keeps default).\" |\n| C8 | AgentsSection.tsx:266 | 即 U5 |\n| C9 | AgentsSection.tsx:341 | \"Select at least one subagent, or launches will fail.\" |\n| C10 | AgentsSection.tsx:999 | \"Only the model is configurable.\" |\n| C11 | AgentsSection.tsx:460 aria-label | 改为 `{id} tool binding, {state}`；核对并更新依赖这段文案的测试正则（AgentsSection*.test.tsx 用的是前缀匹配，预计不受影响） |\n| C12 | AdvancedSection.tsx:70-72 | \"Optional Exa API key (or EXA_API_KEY) for higher limits.\" |\n| C13 | SettingsDialog.tsx:67 | \"Agent is busy — saving is paused.\" |\n| C14 | ModelsSection.tsx:232、ModelSwitcher.tsx:364,594 | 三处统一为 \"No models yet — add a provider key in Settings › Provider.\"，抽成共享常量 |\n| C15 | TitleBar.tsx:68、StatusBar.tsx:105 | 抽常量 REMOTE_SERVE_HINT，两处共用 |\n| C16 | SessionItem.tsx:128,134 | aria-label 和 title 共用一个变量 |\n| C17 | ToolContentView.tsx:59 | \"Held by session {id}; will retry when released.\"（另一分支改为 \"Held by another session; will retry when released.\"） |\n- 有测试断言旧文案的，同步改断言，不删测试。\n- C18（U6，15 条中文统一成英文）是否在本包做，见 Q1。\n\n## 5. U4：api/types.ts 未用类型清单（先交中层，由中层和后端确认后再删）\n| # | 类型（行号） | 定义 | 前端现状 | 初步判断 |\n|---|---|---|---|---|\n| 1 | SessionAttached（446） | `{ session_id; turn: TurnSnapshot }` | 全 web 零引用 | 请后端确认：session_attached 事件或响应是否还存在 |\n| 2 | CompactStarted（661） | 已标 `@deprecated Use CompactLifecycle stage=started. Kept for one-release wire compat.`，字段 session_id、operation_id、snapshot、trigger? | 类型没人用，但 connectionStore.ts:388 仍在处理 `session/compact_started` 事件 | 若后端已不再发这个事件：删类型，同时删 connectionStore 的这个分支（只支持一种格式）。请确认 |\n| 3 | JsonRpcRequest（772） | `{ jsonrpc:\"2.0\"; method; params?; id }` | 零引用（agentWs 内部自己拼帧） | 不是后端独有的协议，属于前端死类型：建议删 |\n| 4 | JsonRpcResponse（779） | `{ jsonrpc:\"2.0\"; result?; error?; id }` | 零引用 | 同 3 |\n| 5 | JsonRpcNotification（786） | `{ jsonrpc:\"2.0\"; method; params? }` | 零引用 | 同 3 |\n| 6 | LspNotification（803） | `{ method; params }` | 零引用（LSP 通知走 litecodeLsp.ts 自己的类型） | 请确认 LSP 通知格式没有变；没变就删 |\n| 7 | TransportRequest（814） | `{ subscribe_session: {session_id} } \\| { unsubscribe_session: {session_id} }` | 零引用 | 请后端确认 subscribe_session / unsubscribe_session 是否已废弃 |\n- 得到回复前一律不删。仍有效的保留，并加一行注释说明对应的协议出处。\n\n## 6. 删除 onopen 里多余的 auth 帧（agentWs.ts:140-141，需后端确认）\n- 现状：`if (this.needsAuth && this.options.authToken) this.send(\"auth\", { token })`。token 已经在握手时通过 `?token=` 校验过，serve 会对这条帧回 -32601。\n- 做法（等中层确认后）：删掉这两行；`needsAuth` 字段（:74、:89）如果因此没人用了，一并删掉。`authToken` 仍在 :329、:339 用于拼握手 URL，保留。补一个测试：onopen 之后不再发出 `auth` 帧。\n\n## 7. 验收\n- web 全量 vitest 全绿；`tsc -b` 退出 0。\n- knip（/tmp 临时运行）各类告警数都不高于 /tmp/wp152/knip.json 基线，也没有新增类别。交付时附前后对比表。\n- 界面行为不变（只是文案变化）。不 commit。\n- 交付物：`.litecode/ops/artifacts/WP-158-web-B1.md`，包括逐条改动、复核证据、knip 对比、测试结果、git status。\n\n## 风险\n- 删 refreshDiagnostics 等 LSP 函数：靠 tsc 和全量测试兜底。\n- U3 精简桶文件后，以后的新代码可能又从桶文件 import，属于约束变化。\n- 依赖声明改锁文件时，npm 可能顺带升级其他包：用 `npm install --no-audit --no-fund` 并 diff 锁文件，只接受新增的顶层声明。\n\n## 需要中层回答的问题\n- Q1：W-C18（U6：15 条中文统一成英文，GM 已裁定「先统一英文」）在不在 WP-159 范围内？fill.txt 的 B1 只列了 U5 和 §3。在的话会同步改中文断言的测试（例如 WP-089 roster 测试）。\n- Q2：交付物命名用 `WP-158-web-B1.md` 可以吗？\n- Q3：W-S14 那 209 个「只在本文件内用到却导出了」的符号，要不要在本包批量去掉 `export`？量大但风险低。不做的话，留给后续包。\n- Q4：`@tanstack/virtual-core` 只被测试直接引用，放 devDependencies 可以吗？还是放 dependencies，和 react-virtual 对齐？\n- Q5：U4 第 2 条 CompactStarted 如果确认已废弃，是否同意顺带删掉 connectionStore.ts:388 的 `session/compact_started` 处理分支？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:12.344Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:06:25.467Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-159 计划：B1 web 瘦身（父 WP-158；依据 WP-151-frontend-audit.md，参考 WP-151-web-audit.m"
+        },
+        {
+          "ts": "2026-10-14T15:06:25.611Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:07:06.328Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:23:09.859Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:55:55.833Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": "B1 web 已落主树：tsc -b 0；vitest 176 个文件/1363 条全部通过（--maxWorkers=1）；knip 23/21/1/0/0，各类都低于基线 145/101/6/3/2（基线取自 WP-151 审计）；ws-smoke 三个子命令都通过；worktree 已删；未 commit。详见 WP-158-web-B1.md"
+        },
+        {
+          "ts": "2026-10-14T17:56:38.372Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "抽查通过：remotion 已清、auth 帧已删、依赖已声明；tsc 0、vitest 1363 全绿（maxWorkers=1）、knip 23/21/1/0/0",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-160",
+      "domain": "team-ops",
+      "title": "WP-158 B1 desktop：低风险删改",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: B1 desktop 落主树，rg 静态核对干净；tsc/单测按规矩只做静态检查",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-160 计划（frontend_desktop · direct · B1 desktop 瘦身）\n\n父包：WP-158 · 依据：`.litecode/ops/artifacts/WP-151-frontend-audit.md` 和 `WP-151-desktop-audit.md`\n范围：`desktop/`、`scripts/`；**不碰 web 的任何文件**。\n**等 WP-157 延迟测量结束、前端中层通知后才开工。** 不 commit。\n\n## 改动\n1. **D1–D7（确认可删）**\n   - D1：删除 `remote-state.ts` 的 `managedRemoteAfterSuccessfulConnect`。\n   - D2：去掉 `scheduleTunnelReconnect` 没用到的 `workspace` 参数，调用点一起改。\n   - D3/D4：未用参数改用 `_` 前缀，或换成不需要这个参数的写法。\n   - D5/D6：16 个导出和 7 个导出类型只去掉 `export`，实现不动；如果有测试直接引用，就保留它的 export 并在产物里说明。\n   - D7：`instance-registry.ts` 的再导出里去掉 `stripVerbatimLap`。\n2. **疑似项复核（S1–S7）**\n   - S1 就是 A1，见下一条。\n   - S2（`onRemoteDisconnected`）：A2 归 WP-163 处理，本包不动，只在产物里记录。\n   - S3（`focusWorkspace`）：先逐行核对 `openWorkspace` 是否已经覆盖这条路径。确认覆盖就删 preload、handler 和类型；不确定就保留，标记出来交中层。\n   - S4（electron-builder）是误报，保留。\n   - S6（废弃的空操作参数）：rg 确认 workflows 和脚本里都没有调用者后再删；有调用者就保留并说明。\n   - S7 保留。\n3. **A1**：删除组件的暂停、停止、重试。包括 preload 里的 `pauseComponent`、`stopComponent`、`retryComponent`；main.ts 里 `litecode:component-pause|stop|retry` 三个 handler；只为这三个功能存在的 Manager 方法和类型；对应的单测。`abortAll`（退出时调用）、Range 续传、启动时清扫 `.tmp` 都保留，因为它们有别的调用方。web 的 `auth.ts` 里手抄的这几个类型，留给 WP-161/162 统一处理，本包不改。\n4. **A3**：`scripts/package_local_cuda.ps1` 移到 `/workspace/litecode/tools/local/package_local_cuda.ps1`，用 `git mv` 保留历史。移动后它的路径计算要跟着改：`$Root` 改成上两级目录，`product_version.ps1` 改用 `$Root\\scripts\\` 下的路径，其余对 `scripts\\` 的引用已经基于 `$Root`，保持不变。另外 rg 确认没有其它地方引用旧路径。\n5. **A5**：SSH 指纹对话框（C8）不动。\n6. **desktop 侧提示文案（C1–C7、C9–C11）**：按审计里的建议文改。C3 只做「三句合并成一句」，令牌那一步要不要跳过（A4）留给 WP-164。C4 改成只由主进程发一次 \"Opening workspace…\"。\n\n## 验收（只做静态检查，不构建、不在真机运行）\n- `tsc --noEmit` 为 0。\n- `cd desktop && npm test` 能跑的单测全绿；如果要先编译测试，就编译到 /tmp。\n- knip 照旧临时跑，告警只能比 WP-151 的 /tmp 基线少，不能新增。\n- `git status` 不出现 web 的改动，package.json 和锁文件零改动，不 commit。\n- 开工前和结束时各记一份 git status 摘要，连同复跑命令写进产物 `.litecode/ops/artifacts/WP-158-desktop-B1.md`。\n\n## 风险\n- A1 删掉以后，以后要做暂停或重试就得重新加回来（这是 GM 已经裁定的）。\n- A3：如果有人在本地手动跑旧路径，会找不到脚本；产物里写明新位置。\n- S3：多实例聚焦有中等风险，所以只在确认 `openWorkspace` 已经覆盖时才删。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:12.476Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:06:11.269Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-160 计划（frontend_desktop · direct · B1 desktop 瘦身）\n\n父包：WP-158 · 依据：`.litecod"
+        },
+        {
+          "ts": "2026-10-14T15:06:11.575Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": "B1 desktop plan; start only after WP-157 measurement and mid go"
+        },
+        {
+          "ts": "2026-10-14T15:06:28.684Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:22:34.779Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": "start in worktree .tmp/wp158-desktop; main tree untouched until WP-157 done"
+        },
+        {
+          "ts": "2026-10-14T17:42:09.153Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "patch applied to main tree; rg static checks clean; tsc/test/knip pending heavy window; no commit"
+        },
+        {
+          "ts": "2026-10-14T17:43:11.313Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "B1 desktop 落主树，rg 静态核对干净；tsc/单测按规矩只做静态检查",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-161",
+      "domain": "team-ops",
+      "title": "WP-158 B2 desktop：跨端桥接契约",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: 契约落地，tsc 0、单测 127/127、knip 降到 0（另有 4 个类型留给 WP-162 引用）；preload 通道名用 typeof 锁类型的做法认可",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-161 计划（frontend_desktop · direct · B2 桥接契约）\n\n父包：WP-158 · 依据：WP-151-frontend-audit.md 的 X3/X4/X5，以及中层对 A2 的补充\n开工条件：B1（WP-159、WP-160）全部 done，且前端中层批准。不 commit。\n\n## 改动\n1. X3/X4：以 desktop 为唯一源头，新建只含类型的 `desktop/src/bridge-contract.d.ts`，包含桥接接口（preload 暴露的 `LitecodeDesktopBridge`）和组件进度类型。内容以 preload.ts、components.ts 的真实实现为准。\n2. desktop 侧：preload.ts 和 components.ts 改为引用这份契约（或用 `satisfies` 对齐），实现和契约不会再漂移。\n3. tsconfig：desktop 纳入这份文件；web 怎么引用它的路径方案写进产物，由 WP-162 落到 web（本包不改 web 文件）。\n4. X5：进度事件的 `percent` 改为必填，desktop 每个发事件的地方都保证给值。\n5. 清掉组件状态里的 `\"stopped\"`：WP-160 删掉 stop 后它已经不会出现，契约和 desktop 实现里都去掉；web 随 WP-162 引用契约后自然对齐。\n6. 契约里不包含 WP-160 已删的 `focusWorkspace` 和三个组件控制接口；web `auth.ts` 里残留的手抄声明由 WP-162 删掉。\n7. 远程断开事件（给 WP-163 的 A2 断开态用），契约里写清：\n   - 通道名 `litecode:remote-disconnected`，主进程发给渲染端，单向。\n   - 载荷 `{ reason: string }`。reason 只作排障参考，按中层口径界面不显示文字。\n   - 触发点：隧道意外断开（\"SSH tunnel disconnected.\"）、隧道自动重连失败（错误信息）、远程模式下本地 sidecar 崩溃（\"Local sidecar crashed.\"）。\n   - preload 已有订阅口 `onRemoteDisconnected(handler)`，返回取消订阅函数，本包让它的类型引用契约。通道名常量现在 main.ts 和 preload.ts 各写一份，改为由契约统一导出。\n   - 恢复路径（中层 10-15 裁定）：不加 `remote-reconnected`。重连成功后整窗 reload 就是唯一的恢复路径。web 侧断开态只由 `remote-disconnected` 置上、靠 reload 清除，契约注释写明，WP-163 做 A2 照此实现。\n8. 只支持一种格式，不加兼容层。\n\n## 验收\n- 只做静态检查：desktop `tsc --noEmit` 为 0，能跑的单测全绿，knip 不新增告警（重型任务按护栏由中层申请放行后再跑）。\n- 不改 web 文件、package.json 和锁文件，不 commit。\n- 产物 `.litecode/ops/artifacts/WP-158-desktop-B2.md`：契约内容、web 引用方案、git status 前后摘要。\n\n## 风险\n- web 要等 WP-162 才接上；中间这段时间 web 仍用手抄类型，但 desktop 行为不变，运行时没有影响。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:12.612Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:23:03.322Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-161 计划（frontend_desktop · direct · B2 桥接契约）\n\n父包：WP-158 · 依据：WP-151-frontend"
+        },
+        {
+          "ts": "2026-10-14T15:25:15.984Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-161 计划（frontend_desktop · direct · B2 桥接契约）\n\n父包：WP-158 · 依据：WP-151-frontend"
+        },
+        {
+          "ts": "2026-10-14T17:42:36.336Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-161 计划（frontend_desktop · direct · B2 桥接契约）\n\n父包：WP-158 · 依据：WP-151-frontend"
+        },
+        {
+          "ts": "2026-10-14T17:43:30.953Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-161 计划（frontend_desktop · direct · B2 桥接契约）\n\n父包：WP-158 · 依据：WP-151-frontend"
+        },
+        {
+          "ts": "2026-10-14T17:43:31.250Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T17:43:58.682Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准，附一条修正：契约既要导出通道名常量（运行时值），就不能是只含类型的 .d.ts。改为 desktop/src/bridge-contract.ts，类型用 export type，常量用 export const；web 由 WP-162 用 import type 引用类型，通道名是 desktop 内部的事，web 不需要。开工等 WP-159 done。"
+        },
+        {
+          "ts": "2026-10-14T17:57:03.301Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:01:54.734Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "bridge-contract.ts; tsc 0, tests 127/127 (1 worker), knip: unused exports 9->0, 4 contract types pending WP-162; min MemAvailable 5.32GiB; no commit"
+        },
+        {
+          "ts": "2026-10-14T18:02:21.423Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "契约落地，tsc 0、单测 127/127、knip 降到 0（另有 4 个类型留给 WP-162 引用）；preload 通道名用 typeof 锁类型的做法认可",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-162",
+      "domain": "team-ops",
+      "title": "WP-158 B2 web：改用契约与样式收拢",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: web 已改为引用契约；tsc 0、vitest 1363 全绿、knip 与 WP-159 持平；desktop tsc 0、4 个类型的告警已消失",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-162 计划：B2 web 跨端契约（父 WP-158；依据 WP-151-frontend-audit.md §2.3 X1–X5，以及 /tmp/wp158-fill.txt）\n\n## 开工前提（全部满足才 start）\n1. WP-159（B1 web）的补丁已经落到主树（中层通知），并且 B1 全部 done。\n2. WP-161（desktop）done：`bridge-contract.d.ts` 已经存在，两侧 tsconfig 都能引用它，`percent` 已改为必填。\n3. 中层确认 WP-157 测量和 W4 静默窗口都已结束（重负载任务能跑）。\n\n## 规则\n- 只改 web/。唯一例外是 X2：要删 desktop/src/hub.ts 里内联的滚动条样式，fill.txt 写明这处小改由 web 一并完成，开工前由中层告知 frontend_desktop，并只改 hub.ts 的这一处。\n- 不 commit。不做兼容层或回退，只支持一种格式。\n\n## 做法\n1. **X3+X4 桥接契约**：\n   - 删掉 web/src/api/auth.ts 里手抄的 `LitecodeDesktopBridge`（:25 起）和 `DesktopComponentProgress`（:8 起），改为从 WP-161 产出的 `bridge-contract.d.ts` 只导入类型（`import type`）。\n   - 更新 auth.ts:184-190、EmbedModelDownload.tsx:4/52，以及所有用到这两个类型的地方（包括测试 mock，让它们符合契约的必填字段）。\n   - web 侧需要的 tsconfig include 或路径配置，按 WP-161 交付说明来做。\n2. **X5**：删掉 EmbedModelDownload.tsx:95 的 `percent()`，只读 `event.percent`（契约中为必填）。同步改 embedInstall.test.ts 和 EmbedModelDownload.test.tsx 的断言和 fixture，不删测试。\n3. **X1**：在 web/src/theme/tokens.css 文件头加注释，写明 desktop 的 scripts/copy-theme-tokens.mjs 和 src/hub.ts 会直接读取这份文件，它是唯一源，不能挪、不能改名。\n4. **X2**：\n   - 把 theme/index.css 里的滚动条规则（:185-200 一带，`scrollbar-width` / `scrollbar-color` / `::-webkit-scrollbar*`）移进 tokens.css；index.css 已经引入 tokens.css，web 端效果不变。\n   - 删掉 desktop/src/hub.ts:106 起内联的那份滚动条副本，hub 改走 X1 的同一通道读取。\n   - 需要目测一次 hub 首页的列表滚动条。由于 desktop 不在真机运行，这一步由中层安排。\n\n## 验收\n- web 全量 vitest 全绿；`tsc -b` 为 0；desktop 的 `tsc` 由 frontend_desktop 或中层复核为 0。\n- knip（/tmp 临时运行）各类告警数不高于 WP-151 基线（/tmp/wp152/knip.json），也不高于 B1 落地后的数值。\n- 界面行为不变。不 commit。\n- 交付物：`.litecode/ops/artifacts/WP-158-web-B2.md`。\n\n## 风险\n- 涉及构建边界：web 引用 desktop 的 d.ts，路径配置错了会影响 vite 和 vitest 的类型解析。路径以 WP-161 的交付为准。\n- X2 移动滚动条规则可能改变层叠顺序：tokens.css 在 index.css 中先于其他组件 CSS 引入，需要比对。\n\n## 待中层回答\n- Q1：X2 的 hub.ts 改动是否由 web 来做？fill.txt 写的是由 web 一并完成，请确认已经告知 desktop，并且 WP-164 不会同时改 hub.ts。\n- Q2：滚动条规则放进 tokens.css 后，tokens.css 就不再是纯 token 文件了。是否接受？还是另建一个共享片段，由 copy-theme-tokens 一起复制（这需要改 desktop 脚本）？\n- Q3：契约文件路径和 web 引用方式（相对路径还是 tsconfig paths）等 WP-161 定，如果需要改 web 的 tsconfig 和 vite 配置，是否在本包允许范围内？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:12.748Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:26:32.244Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-162 计划：B2 web 跨端契约（父 WP-158；依据 WP-151-frontend-audit.md §2.3 X1–X5，以及 /tmp/"
+        },
+        {
+          "ts": "2026-10-14T15:26:32.405Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:27:24.267Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:03:06.843Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:10:51.441Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:11:22.637Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "web 已改为引用契约；tsc 0、vitest 1363 全绿、knip 与 WP-159 持平；desktop tsc 0、4 个类型的告警已消失",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-163",
+      "domain": "team-ops",
+      "title": "WP-158 B3 web：重复组件合并与断开态",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: 9 组合并和 A2 已完成；tsc 通过，vitest 1365 条全绿，knip 持平。jscpd 按裁定没跑。范围外的观察（另外两处『点外部关闭』）记为遗留",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-163 计划：B3 web 重复组件合并 + A2（父 WP-158；依据 WP-151-frontend-audit.md §2.1 W-R1–W-R10、A2，以及 /tmp/wp158-fill.txt）\n\n## 开工前提\n- WP-159（B1）的补丁已经落主树，且 B2（WP-161、WP-162）全部 done。B3 依赖 B2 的桥接契约，A2 要订阅 onRemoteDisconnected。\n- 重负载窗口可用（中层通知）。\n\n## 规则\n- 只改 web/，不碰 desktop。不 commit。除 A2 外界面行为不变。不删测试，只改断言或选择器。不做兼容层，旧组件合并后直接删除。\n- 每组合并后先跑相关测试，最后再跑全量。各组依次进行，一组完成再做下一组。\n\n## 做法（按风险由低到高）\n| 组 | 现状 | 做法 | 回归重点 |\n|---|---|---|---|\n| W-R7 | FileParamView / WriteToolView / EditToolView 的文件路径头重复 | 抽出 `components/toolviews/FilePathHeader.tsx` | ToolCallCard 测试 |\n| W-R8 | AskUserCard 和 ToastMarkdown 的 markdown 组件映射重复 | 抽出 `compactMarkdownComponents`，放在 `components/compactMarkdown.tsx` | AskUserCard、ToastHost 测试 |\n| W-R9 | GitPanel 和 SearchPanel 的折叠分组标题重复 | 抽出 `components/ui/CollapsibleSectionHeader.tsx` | 两个面板的快照和交互 |\n| W-R6 | ModelSwitcher 和 ui/Select 的触发按钮重复 | ModelSwitcher 复用 Select 的触发按钮（Select 增加对应参数） | ModelSwitcher 测试 |\n| W-R10 | ImagePreview↔MediaPreview、KnowledgeGraphPanel↔KnowledgePanel 两对外壳重复 | 各抽一个共享外壳 | 预览和知识库面板 |\n| W-R4 | AgentTab / EditorTab / KnowledgeGraphTab / BrowserTab 的标签外壳重复 | 抽出 `dockview/tabs/BaseTab.tsx`，图标和标题由参数传入 | AgentTab、EdgeTab 测试，中键关闭 |\n| W-R1 | CustomToolsSection 和 McpServersSection 重复 93 行 | 抽出 `settings/ScopedDefinitionEditor.tsx`，各节通过参数传入自己的操作按钮；顺带完成 W-C6，两节共用提示组件 | 两节的保存逻辑和测试 |\n| W-R5 | Dropdown 和 Popover 的浮层逻辑重复 | 抽出 hook `useFloatingLayer`（定位、Esc、点外部关闭） | Dropdown 测试、焦点、a11y |\n| W-R2 | AgentPanel 和 SubagentReadOnlyPanel 的会话加载逻辑重复 70 行 | 抽出 hook `useSessionPanelBootstrap(sessionId)` | AgentPanel、SubagentReadOnlyPanel 测试 |\n| W-R3 | SubagentReadOnlyContent 和 AgentPanel 的 transcript 渲染重复 63 行 | 抽出共享的 `TranscriptBody`，用 `readOnly` 参数区分 | 虚拟列表滚动、MessageList 测试 |\n\n**A2 断开态**：StatusBar 通过 B2 契约里的 `onRemoteDisconnected` 订阅远程断开事件。断开时给状态栏根节点加 `data-disconnected` 属性和对应样式（例如变灰或红色细边），只改样式，不加文字；重连成功后复原。补测：触发事件后有该属性，恢复后属性消失。\n\n## 验收\n- web 全量 vitest 全绿；`tsc -b` 为 0；knip 各类告警不高于 WP-151 基线和 B2 落地后的数值；jscpd 重复行数下降（交付时附前后对比）。\n- 除 A2 外界面行为不变。不 commit。\n- 交付物：`.litecode/ops/artifacts/WP-158-web-B3.md`。\n\n## 风险\n- W-R3 和 W-R5 涉及虚拟列表、焦点管理，风险中等，放在最后做，并单独回归。\n- 测试按组件名或 testid 定位的，合并后可能需要更新选择器。只改选择器，不改断言含义。\n\n## 待中层回答\n- Q1：A2 的视觉方案（变灰还是红色细边、落在哪个元素上）由中层或 Andy 指定，还是由我按现有 token 自定后交审？\n- Q2：A2 恢复的时机：以重连成功为准（connectionStore 进入 connected 状态），还是 desktop 另有恢复事件？\n- Q3：W-R10 收益小，是否允许在时间紧时跳过并在交付物里说明？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:12.991Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:26:32.694Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-163 计划：B3 web 重复组件合并 + A2（父 WP-158；依据 WP-151-frontend-audit.md §2.1 W-R1–W-"
+        },
+        {
+          "ts": "2026-10-14T15:26:32.852Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T15:27:24.438Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:12:02.241Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:24:25.102Z",
+          "actor": "frontend",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:24:47.608Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "9 组合并和 A2 已完成；tsc 通过，vitest 1365 条全绿，knip 持平。jscpd 按裁定没跑。范围外的观察（另外两处『点外部关闭』）记为遗留",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-164",
+      "domain": "team-ops",
+      "title": "WP-158 B3 desktop：重复实现合并与跳过令牌",
+      "result": "见 WP-158 计划",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: A4、R4–R8 已完成；两处 CI 小缺陷已在包内修掉；tsc 0，单测 128/128；ps1 和 yaml 都只做了静态核对（箱内没有 pwsh），首次跑 CI 时需要确认",
+      "status_entered_at": null,
+      "parent": "WP-158",
+      "goal": "见 WP-158 计划",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-164 计划（frontend_desktop · direct · B3 desktop）\n\n父包：WP-158 · 依据：WP-151-desktop-audit.md 的 R4–R8，以及 GM 在 WP-158 裁定里定下的 A4\n开工条件：B2 done，WP-162 done（它改 hub.ts），且前端中层批准。不 commit。\n\n## 改动\n1. R4：三套进度阶段类型不合并（用途不同），只确认 B1 已经去掉 export。\n2. R5：版本号读取统一。`build_components.mjs` 加一个只打印版本号的入口，`package_linux.sh` 和 `product_version.ps1` 改为调用它，或者三处共用同一个正则。改完核对版本三角（Cargo、desktop/package.json、tag）读出的结果一致。\n3. R6：sh/ps1 成对脚本不合并。在文件头互相标注「改一处必须同步另一处」，并在 `slim-packaging.test.ts` 里加一条 sh/ps1 一致性断言（比如两边都含 release remap）。\n4. R7：重复的 ps1 小函数（Test-Command、退出码检查）抽到 `scripts/lib/common.ps1`，各脚本 dot-source 引用。\n5. R8：「打开工作区」文案如果 B1 的 C4 已经处理，这里只做核对。\n6. A4（GM 已定）：远程向导自动跳过第 4 步「Session token」。主进程拿到令牌、自动填好后直接进入工作区，不再停在第 4 步等用户点。hub.ts 只改向导第 4 步相关的部分（:720 一带的 markup 和对应的步骤切换 JS），main.ts 里 \"Session ready…\" 那条进度要么跟着去掉，要么只作为过渡提示一闪而过。不需要 web 配合。\n7. 不改 web。\n\n## 验收\n- 除 A4 外界面行为不变；远程连接成功后直接进入工作区。\n- desktop `tsc --noEmit` 为 0，单测全绿，knip 不新增告警（重型任务由中层申请放行后一个接一个跑）。\n- hub.ts 只改 A4 相关部分。\n- 不改 web 文件、package.json 和锁文件，不 commit。\n- 产物 `.litecode/ops/artifacts/WP-158-desktop-B3.md`：改动清单、git status 前后摘要。\n\n## 风险\n- A4 改变了向导流程：令牌自动填写失败时要有回退，仍停在第 4 步，让用户手动操作。\n- R5 关系到发布版本号，要用现有 tag 和 Cargo.toml 实际核对一遍。\n- R7 会影响 CI 里的 ps1 路径，箱内没有 pwsh，只能静态核对，建议 CI 回归。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T15:04:13.125Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 见 WP-158 计划"
+        },
+        {
+          "ts": "2026-10-14T15:23:03.641Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-164 计划（frontend_desktop · direct · B3 desktop）\n\n父包：WP-158 · 依据：WP-151-deskt"
+        },
+        {
+          "ts": "2026-10-14T18:05:44.730Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-164 计划（frontend_desktop · direct · B3 desktop）\n\n父包：WP-158 · 依据：WP-151-deskt"
+        },
+        {
+          "ts": "2026-10-14T18:05:45.033Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:06:12.364Z",
+          "actor": "frontend_mid",
+          "action": "reject",
+          "note": "A4 已经定了（GM 在 WP-158 的 13 条裁定里，B3 由 WP-164 做），必须放进本包。hub.ts 的冲突按时序解决：B3 要等 B2（WP-162 改 hub.ts）done 后才开工，WP-163 不碰 hub.ts。本包允许改 hub.ts，但只限 A4 涉及的向导第 4 步，验收那条改成『hub.ts 只改 A4 相关部分』。"
+        },
+        {
+          "ts": "2026-10-14T18:06:35.893Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-164 计划（frontend_desktop · direct · B3 desktop）\n\n父包：WP-158 · 依据：WP-151-deskt"
+        },
+        {
+          "ts": "2026-10-14T18:06:36.214Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:06:47.983Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准。自动填写失败时退回第 4 步让用户手动处理，这属于正常的交互路径，不算兼容回退。开工等 WP-162 done 后由中层通知。"
+        },
+        {
+          "ts": "2026-10-14T18:11:48.068Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:16:48.204Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "R4-R8+A4; tsc 0, tests 128/128 (1 worker), knip no new warnings; min MemAvailable 5.57GiB; hub.ts A4 only; no commit"
+        },
+        {
+          "ts": "2026-10-14T18:17:18.892Z",
+          "actor": "frontend_mid",
+          "action": "return",
+          "note": "两处 CI 风险都按小缺陷包内修掉：1) release 流程里调 node 的『核对 tag』步骤挪到 setup-node 之后，不依赖 runner 自带的 node；2) windows-sidecar.yml 的触发 paths 补上 scripts/lib/**。改完静态核对一遍，再 deliver。"
+        },
+        {
+          "ts": "2026-10-14T18:17:52.153Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "CI fixes: tag check after setup-node; sidecar paths +scripts/lib/**"
+        },
+        {
+          "ts": "2026-10-14T18:18:09.632Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "A4、R4–R8 已完成；两处 CI 小缺陷已在包内修掉；tsc 0，单测 128/128；ps1 和 yaml 都只做了静态核对（箱内没有 pwsh），首次跑 CI 时需要确认",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-165",
+      "domain": "team-ops",
+      "title": "打开工作区启动排位整改",
+      "result": "按 WP-154 结论把启动工作排到正确阶段：打开前只做必须项，其余挪到打开后立即做或按需做；行为不变",
+      "done_when": [
+        "WP-154 第一节 19 项按 GM 五项裁定落位",
+        "hello/new 不合并",
+        "先回 list 再回放",
+        "窗口先出骨架与 serve 并行",
+        "monaco 和非首屏字体改懒加载",
+        "测试全绿",
+        "Andy 真机确认打开体感变快"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "ready",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "plan approved by gm",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 WP-154 结论把启动工作排到正确阶段：打开前只做必须项，其余挪到打开后立即做或按需做；行为不变",
+      "approver": "gm",
+      "content": {
+        "kind": "split",
+        "text": "WP-165 启动排位整改 · 拆分方案（backend_mid）\n依据：WP-154 第一节 19 项 + GM 五项裁定。功能行为不变。\n- WP-166 Session（harness-core）：先回 list 再回放（subscribe/回放 P0→P1）；maintain_snapshots 与 warm_snapshot_repo 均 P1 后台、持 workspace_snapshot_lock；会话索引首次 tick、gc_stale_empty_sessions P1→P2。\n- WP-167 IDE（ide-substrate）：sweep_orphan_lsp P0→P1 后台，第一个 language server 启动前必须完成；EngineManager::reconcile、remove_legacy_text_index P0→P2；LSP --version/npm prefix 探测 P1→P2 按需，语言通用、无单语言特例。\n- WP-168 前端中层（client-ux/release-desktop）：窗口先出骨架与 serve 并行，READY+/health 只挡 loadURL；monaco 与非首屏字体懒加载；A 节其余项按裁定；在 WP-158 未提交瘦身改动之上改，不回退不覆盖。\n不做：hello/new 合并；根面板不等 list。\n流程：各子包先 fill+submit 由我批；改完 diff 落 artifact；重型任务（编译/全量测试）由我串行放行，单重型 ≥4.5GiB，vitest 1 worker；我交叉审后汇总交 GM；最后一条「Andy 真机确认」由 GM 安排。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:28:17.323Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-154 结论把启动工作排到正确阶段：打开前只做必须项，其余挪到打开后立即做或按需做；行为不变"
+        },
+        {
+          "ts": "2026-10-14T18:29:20.782Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "split: WP-165 启动排位整改 · 拆分方案（backend_mid）\n依据：WP-154 第一节 19 项 + GM 五项裁定。功能行为不变。\n- WP-166 "
+        },
+        {
+          "ts": "2026-10-14T18:29:21.094Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "拆 3 子包 WP-166/167/168"
+        },
+        {
+          "ts": "2026-10-14T18:29:42.518Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批。WP-168 需同时覆盖 D5 recordRecent→P2、/api/workspace/engines 与 settings summary→P2、文件树 loadRoot 排到 session/new 之后；D3/D4 只挡 loadURL"
+        }
+      ]
+    },
+    {
+      "id": "WP-166",
+      "domain": "harness-core",
+      "title": "启动排位整改·Session 域",
+      "result": "先回 list 再回放；maintain_snapshots 与 warm_snapshot_repo 挪到 P1 后台并持 workspace_snapshot_lock；会话索引首次 tick 与 gc_stale_empty_sessions 挪到 P2；行为不变",
+      "done_when": [
+        "list 不再被回放阻塞",
+        "两项快照工作 P1 后台持锁",
+        "首 tick 与 gc 延后",
+        "行为不变测试全绿",
+        "diff 落 artifact"
+      ],
+      "owner": "session",
+      "reviewer": "backend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus 构建失败）无法编译，等工具链管理员补装后重跑；未标 blocked，等待环境",
+      "status_entered_at": "2026-10-14T18:33:29.824Z",
+      "parent": "WP-165",
+      "goal": "先回 list 再回放；maintain_snapshots 与 warm_snapshot_repo 挪到 P1 后台并持 workspace_snapshot_lock；会话索引首次 tick 与 gc_stale_empty_sessions 挪到 P2；行为不变",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-166 启动排位整改 · Session 域 — 实施方案（session）\n\n父包 WP-165（GM 已批）。阶段定义见 .tmp/wp154/plan.md:5（P0 打开前必须做 / P1 打开后马上做 / P2 打开后可延迟按需做）。参考 .litecode/ops/artifacts/WP-154/session.md、backend.md。\n行号均已对照当前 HEAD（3ddc643）核实。功能行为不变；批准前不改代码。注：任务描述里的 \"connection.rs\" 实际路径为 src/client_protocol/connection.rs，\"state.rs\" 为 src/serve/state.rs。\n\n## 0. 现状核实（HEAD）\n- 串行循环：src/client_protocol/connection.rs:1626 run_session_loop，select! 在 :1642；JsonRpc 分派在 :1767 / :1919 / :1969 → handle_jsonrpc（:226）。\n- session/list：connection.rs:891 → controller/session_lifecycle.rs:410 list_sessions（list_sessions_blocking 全表 + 每行 is_session_empty / is_turn_running / session_status / list_binding_projection，N+1）；回包前先 take_all_outgoing（controller/mod.rs:1197）冲刷所有 projection 待发帧。\n- session/subscribe：connection.rs:715（await 在 :748）→ controller/mod.rs:996 subscribe_checked → manager.rs:714 ensure_entry → :674 resume_session（SQLite meta/revision）→ attach → Projection → proj.snapshot → push Snapshot；回包前 take_outgoing_for（controller/mod.rs:1212）先发 Snapshot，再发 ok 回包。\n- 请求入口：src/client_protocol/ws.rs:377 读循环，:391 已有 workspace 方法旁路，:490 其余送 request_tx。\n- maintain_snapshots：src/serve/state.rs:97-109（ServeState::with_project 内、SessionData::open 之后同步执行）→ src/session/snapshot.rs:1258。**当前不取 workspace_snapshot_lock**。\n- warm_snapshot_repo：定义 src/session/snapshot.rs:1003（已取锁 :1004）；唯一生产调用点 src/config/workspace.rs:513，位于 load_workspace_state（:491）末尾，serve 与 CLI 共用，在 bind 之前同步执行。\n- workspace_snapshot_lock：snapshot.rs:112（每工作区一把 std::sync::Mutex，SNAPSHOT_LOCKS 表锁 :105 仅取 Arc 时短暂持有）。\n- 会话索引 tick：src/serve/router.rs:32 SESSION_INDEX_TICK=30s；spawn 在 :182-207，interval 首 tick 立即完成（:189-193 注释），首 tick 跑 spawn_sparse_maintenance（engines/session_search/lexical.rs:289）与 consume_session_index_work（engines/mod.rs:865）。\n- gc_stale_empty_sessions：router.rs:172-178（spawn 后立即跑一次，然后每 60min）→ session/manager.rs:2014。\n\n## 1. 先回 list，再做回放（subscribe/回放 P0→P1）\n\n### 改动位置\n1. 抽纯函数：controller/session_lifecycle.rs:410 list_sessions 的主体抽成 `pub(crate) fn build_session_list(sessions: &SessionManager, resolved: &ResolvedConfig) -> anyhow::Result<Vec<SessionInfo>>`（逐行逻辑、过滤、字段完全不动）；原 `list_sessions(&mut self)` 改为调用它（保留，供测试与 deferred 路径）。\n2. list 快车道：ws.rs:490 之前（与 :391 workspace 旁路同层）拦截 `methods::SESSION_LIST`：clone `state.sessions`(Arc<SessionManager>) 与 resolved，`tokio::task::spawn_blocking` 里跑 build_session_list，直接 emit 回包/错误到 response_tx（同一 writer 任务，保证整帧原子）。错误分支保持现有 -32000 + operation_error(ListSessions) 两帧（operation_error 需要的 first_session_id 改由 SessionManager 读取，等价）。\n3. connection.rs:891 原分支保留（loop 内 fallback / 单测路径），行为不变。\n4. subscribe 本身不改（仍在串行循环、仍 await subscribe_checked），因此回放仍由同一循环串行产出 —— 这就是\"回放降到 P1\"：它不再挡 list 回包。\n\n### 保证行为不变\n- **同一会话回放的顺序与内容**：subscribe_checked、proj.snapshot、take_outgoing_for、ok 回包的代码路径一字不改，仍在唯一的 session 循环内执行；一个会话的 Snapshot → 增量（merged_rx 分支 :1645）→ 回包的相对顺序只由该循环决定，快车道不产生任何会话事件帧，所以不会插进回放序列。\n- **Snapshot 与后续增量的 seq 连续性**：增量由 subscribe_checked 里 spawn 的 forward_task 经 merged_tx 进循环，Projection 用 proj 内状态去重/接续；快车道不碰 Projection、不碰 merged_rx，连续性条件与现在相同。\n- **同一连接上消息相对顺序**：唯一变化是 list 回包可能早于之前已发出、尚未完成的 subscribe 回包。JSON-RPC 按 id 配对，允许乱序；前端中层已确认 unlock 以 list 回包为准、根面板不等 list（WP-165\"不做\"项），回放消费 Snapshot 不依赖 list 先后。除 list 回包外，其他所有帧的相对顺序不变。\n- **take_all_outgoing 冲刷**：快车道不再在 list 回包前冲刷 projection 待发帧。核对：循环的每个产生帧的分支（merged_rx :1645、perm :1660、subscribe :748、各 RPC）都会在本分支末尾自行冲刷，list 前的冲刷只是兜底；loop 内 fallback 分支保留冲刷。用测试 T1-5 断言没有帧滞留。\n- **并发 subscribe / unsubscribe / send**：三者仍走串行循环，处理顺序 = 到达顺序，与今天完全一致；快车道只读（list_sessions_blocking、is_session_empty、is_turn_running、session_status 都是读），与它们的竞争和今天\"多连接同时 list\"的竞争相同（session_status/is_turn_running 本就是瞬时读）。list 中某会话 running/status 的读取时刻可能比原来更早（在 subscribe 前），这与另一窗口在同一时刻 list 的结果等价，不是新语义。\n- 跨连接：每个连接各自快车道，无共享可变状态。\n- spawn_blocking 避免同步 SQLite 读压在 async worker 上（今天在循环里同步读，属于既有问题，顺带不恶化）。\n\n### 测试（connection.rs tests 模块 / ws 层）\n- T1-1 `session_list_not_blocked_by_inflight_subscribe`：cfg(test) 钩子在 resume_session 前挂 barrier，使 subscribe 卡住；发 subscribe 再发 list；断言 list 回包先到且 sessions 内容正确，放开 barrier 后 subscribe 回包到达。\n- T1-2 `session_list_fastlane_matches_controller_list`：同一 DB（含空父会话、空子会话 WP-091、运行中会话），断言 build_session_list 与 controller.list_sessions 结果逐字段相等；保留并继续通过 `wp091_list_sessions_includes_empty_child`（:2756）。\n- T1-3 `subscribe_replay_frames_unchanged`：有回合的会话，subscribe 后收集帧，断言顺序为 [可选 session_attached] → Snapshot → ok 回包，Snapshot 内容与改动前 golden（同一 fixture 生成）相等。\n- T1-4 `snapshot_then_delta_seq_contiguous_with_concurrent_list`：subscribe 时并发跑回合产生增量并穿插 list，断言 Snapshot 最后 seq + 1 == 第一条增量 seq，无重复无缺口。\n- T1-5 `no_projection_frames_stranded_after_fastlane_list`：在有待发帧时发 list，断言后续一次循环迭代内所有帧被发出。\n- T1-6 `subscribe_unsubscribe_send_order_preserved`：同一连接依次 subscribe A → agent/run A → unsubscribe A → list，断言前三者回包与事件顺序与改动前一致，list 不影响。\n- T1-7 `session_list_error_emits_operation_error_and_rpc_error`：DB 读失败时仍是两帧、code 不变。\n- 现有 `ask_does_not_block_other_session_rpc`（:2286）保持绿。\n\n## 2. maintain_snapshots 与 warm_snapshot_repo：P1 后台、持 workspace_snapshot_lock\n\n### 改动位置\n1. snapshot.rs:1258 maintain_snapshots 签名改为接收 workspace 与一个 id 提供闭包：`maintain_snapshots(workspace, snapshots_dir, active_ids: impl FnOnce() -> Vec<String>)`；函数内先 `workspace_snapshot_lock(workspace).lock()`，**持锁后**再调用闭包读活跃 id、再枚举 refs 与删除。删除逻辑、判定（孤儿/陈旧/空 refs）不变。\n2. state.rs:97-109 的同步调用删除，改为在 router listen 完成 bind 之后（router.rs 现有后台 spawn 区，:172 前）`tokio::task::spawn_blocking`，闭包为 `session_data.list_session_ids_blocking()`（session/data/mod.rs:503 / :360），日志与错误处理文案保持原样。\n3. warm_snapshot_repo：config/workspace.rs:513 的调用从 load_workspace_state 移出——新增 `load_workspace_state_with(override, WarmSnapshot::{Now, Deferred})`，原 `load_workspace_state` = Now（CLI 及其他调用方行为不变）；serve 启动路径（serve/run.rs:~56-91 经 ConfigManager 取 workspace state 处）用 Deferred，并在 bind 后与 maintain 同一后台任务里先 warm 再 maintain（顺序与今天一致：今天 warm 在 load_workspace_state 里，maintain 在 ServeState 里，warm 先）。warm 本身已持锁，不改函数体。\n4. 首回合先于 warm 的兜底：snapshot.rs 增加每工作区 `WARMED` 标记（与 SNAPSHOT_LOCKS 同表或并列 LazyLock<HashSet>），warm 成功后置位；snapshot_track（:1023）/ snapshot_record_patch / snapshot_restore 在**已持锁**后若未置位，先执行 `clear_stale_index_lock(repo.path())`（warm 里唯一 track 不做的副作用；write-tree 由 track 自己做）。这样即使首回合抢在 warm 前拿到锁，也与今天\"warm 已完成\"等价。\n\n### 保证不竞争 / 不死锁\n取 workspace_snapshot_lock 的全部位置（HEAD）：\n| 位置 | 函数 | 执行线程 |\n|---|---|---|\n| snapshot.rs:1004 | warm_snapshot_repo | 现：load_workspace_state 同步；改后：spawn_blocking |\n| snapshot.rs:1029 | snapshot_track | runtime/mod.rs:1122 spawn_blocking |\n| snapshot.rs:1075 | snapshot_record_patch | runtime/mod.rs:1214 后台 |\n| snapshot.rs:1134 | snapshot_restore | controller/mod.rs:1368 block_in_place+spawn_blocking；runtime/pending_auto_turn.rs 测试 |\n| 新增 | maintain_snapshots | spawn_blocking |\n| snapshot.rs:1875/1902/1915 | 测试 | — |\n未取锁、同样改 refs 的：snapshot.rs:1245 delete_session_snapshots（session/data/sqlite/session.rs:1642 删除会话时调用）。它与 maintain 都只是删 refs/patch，幂等，不会产生错误结果；为不\"顺手改别的\"，本包**不**给它加锁，作为观察项列出，是否另立包由审批人定。\n- 死锁分析：锁为不可重入 std::Mutex；以上持锁函数体内均不调用另一个持锁函数（maintain 只调内部 delete_session_refs/delete_session_patches，不调 delete_session_snapshots）；SNAPSHOT_LOCKS 表锁在拿到 Arc 后即释放，不与工作区锁嵌套；maintain 的 id 闭包只读 SQLite（SessionData 自己的连接锁），SQLite 侧任何路径都不会反向等待快照锁 → 无环，无死锁。所有持锁方都在 blocking 线程，不会卡 async worker。\n- 正确性竞争：今天 maintain 在任何连接之前跑，所以\"活跃 id 列表\"与 refs 一致。后台化后若先读 id 再枚举 refs，会话在两者之间新建并 track 会被误判孤儿删除。方案在锁内读 id：track 需要同一把锁，所以锁内枚举期间不可能新增 refs；锁前已 track 的会话其行在 session/new（manager.rs:555 mutate Create）时就已写入 → 一定在活跃 id 里。删除会话与 maintain 并发：两边都删同一 refs，幂等。\n- 中毒语义与现有持锁方一致（expect）。\n\n### 测试（snapshot.rs tests、config/workspace.rs tests、serve 测试）\n- T2-1 `maintain_snapshots_waits_for_workspace_lock`：测试线程持锁，后台跑 maintain，断言未返回；释放后完成。\n- T2-2 `maintain_reads_active_ids_under_lock_no_false_orphan`：在锁内模拟\"新会话建行 + track\"，断言新会话 refs 不被删除。\n- T2-3 现有 maintain 相关测试（孤儿/陈旧/空 refs 计数）全部保持断言值不变，仅改调用签名。\n- T2-4 `track_before_warm_clears_stale_index_lock`：放一个超龄 index.lock，未 warm 直接 track，断言成功且 ref 写入；与先 warm 再 track 的结果 tree oid 相同。\n- T2-5 `load_workspace_state_deferred_does_not_warm`、`load_workspace_state_default_still_warms`（扩展 :745 load_workspace_state_uses_external_snapshots_dir）。\n- T2-6 `serve_state_does_not_run_snapshot_maintenance_inline`：构造 ServeState 后 refs 仍在；触发后台任务后孤儿被删，日志计数一致。\n- 现有 `workspace_snapshot_lock_is_shared_per_workspace`（:1350）与 :1875-1941 并发测试保持绿。\n\n## 3. 会话索引首次 tick 与 gc_stale_empty_sessions：P1→P2\n\n### 改动位置（src/serve/router.rs）\n- 新增 `startup_settled: Arc<tokio::sync::Notify>`（或 watch<bool>）放 ServeState；在任一连接首个 session/list 或 session/new **回包发出后**触发一次；兜底超时 `P2_FALLBACK = 10s`（无客户端连接的 headless 场景也会执行）。\n- router.rs:172-178：gc 首次执行前 `await settled_or_timeout`，之后每 60min 不变；EMPTY_SESSION_TTL 不变。\n- router.rs:182-207：循环前先 `await settled_or_timeout`，再用现有 interval（首 tick 立即）进入原循环；循环体（sparse maintenance 每 tick、dense turn-gated、consume_session_index_work）一字不改。\n\n### 语义不变\n- gc：判定（空会话 + TTL）不变，只推迟首跑若干秒；session/list 本就过滤空父会话（session_lifecycle.rs:417），所以 gc 早晚不影响 list 输出；与 session/new 的竞争和今天每小时那次一样（TTL 保护新建空会话）。\n- 索引：搜索路径本就只读索引现状（router.rs:178-180 注释\"stale is fine, wrong is not\"，build_agent_view 复核命中），首次修复推迟到 P2 只会让启动后最初几秒的搜索看到与今天首 tick 前相同的旧索引；修复内容、频率、turn 门控不变。\n- 跨域：tick 调用的是 IDE 域 engines API（spawn_sparse_maintenance、consume_session_index_work、session_reader），**本包不改 engines 代码**，只改 router.rs 的调用时机；需 IDE 知会/会签。\n\n### 测试\n- T3-1 `session_index_first_tick_waits_for_startup_settled`（tokio::time::pause）：未触发 settled 时推进 9s，断言 consume 未被调用（计数钩子）；触发后立即调用一次。\n- T3-2 `session_index_first_tick_falls_back_after_timeout`：不触发，推进 10s，断言执行。\n- T3-3 `gc_stale_empty_sessions_deferred_until_settled`：同上两路断言；首跑后 60min 周期不变。\n- T3-4 现有 manager.rs gc 测试与 engines/mod.rs:1709 `consume_session_index_work_does_not_mark_code_refreshing` 保持绿（不改）。\n\n## 4. 跨域项（单独标出）\n- src/config/workspace.rs（model-config 域，无 owner_agent → 需后端中层/GM 指定会签）：新增 load_workspace_state_with + WarmSnapshot 枚举，默认路径行为不变。\n- src/serve/router.rs 会话索引 tick：代码在 serve（本域），但调用对象是 engines（IDE 基座域），语义由 IDE 定义 → 请 IDE 会签\"推迟首 tick\"。\n- 与 WP-167（IDE）在 router.rs / serve 启动路径可能同文件改动（EngineManager::reconcile P0→P2 在 serve/run.rs:84-88），需后端中层排定合并顺序以免冲突。\n- 不涉及前端代码；前端只依赖 list 回包可能先于 subscribe 回包（已确认）。\n\n## 5. 风险与回退\n- R1 前端隐式依赖 list 在 subscribe 之后：前端中层已确认不依赖；仍以 T1-1/T1-6 + WP-168 联调验证。回退：ws.rs 拦截处加开关 `LITECODE_LIST_FASTLANE=0` 回到循环内分支（原代码保留）。\n- R2 快车道漏冲刷帧：T1-5 覆盖；回退同 R1。\n- R3 maintain 后台误删：锁内读 id（T2-2）；回退：把调用移回 state.rs:97 原位（函数仍持锁，安全）。\n- R4 首回合早于 warm：WARMED 兜底（T2-4）；回退：serve 改用 WarmSnapshot::Now。\n- R5 P2 推迟导致首几秒搜索略旧：与今天首 tick 前一致；回退：P2_FALLBACK 设 0。\n- 每项独立 commit、diff 落 .litecode/ops/artifacts/WP-166/，可单项 revert。\n\n## 6. 执行与护栏\n批准后才改代码。编译/测试为重型任务，由后端中层放行：-j2、单重型 ≥4.5GiB、RSS watchdog。只跑相关模块测试（client_protocol::connection、session::snapshot、config::workspace、serve::router、session::manager）后再按放行跑全量。不 commit 他人在途改动。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:29:10.995Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 先回 list 再回放；maintain_snapshots 与 warm_snapshot_repo 挪到 P1 后台并持 workspace_snapshot_lock；会话索引首次 tick 与 gc_stale_empty_sessions 挪到 P2；行为不变"
+        },
+        {
+          "ts": "2026-10-14T18:32:27.573Z",
+          "actor": "session",
+          "action": "fill",
+          "note": "direct: # WP-166 启动排位整改 · Session 域 — 实施方案（session）\n\n父包 WP-165（GM 已批）。阶段定义见 .tmp/wp154/p"
+        },
+        {
+          "ts": "2026-10-14T18:32:27.868Z",
+          "actor": "session",
+          "action": "submit",
+          "note": "方案见 .litecode/ops/artifacts/WP-166-plan.md；跨域：config/workspace.rs（model-config）、router 会话索引 tick 调 engines（IDE 会签）"
+        },
+        {
+          "ts": "2026-10-14T18:32:59.618Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批，附条件：去掉 LITECODE_LIST_FASTLANE 开关；去掉 10s 兜底，只靠首个 list/new 回包信号；workspace.rs:513 由 Runtime 签；router.rs 由 IDE 签；合入顺序 WP-166 先、WP-167 后基于其 rebase run.rs；delete_session_snapshots 不纳入，另立 issue"
+        },
+        {
+          "ts": "2026-10-14T18:33:29.824Z",
+          "actor": "session",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-15T01:59:03.619Z",
+          "actor": "session",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"代码修复与 diff 已完成；check --bins 因盒子重启后缺 c++/g++（link-cplusplus "
+        }
+      ]
+    },
+    {
+      "id": "WP-167",
+      "domain": "ide-substrate",
+      "title": "启动排位整改·IDE 域",
+      "result": "sweep_orphan_lsp 挪到 P1 后台且在第一个 language server 启动前完成；EngineManager::reconcile 与 remove_legacy_text_index 挪到 P2；LSP --version/npm prefix 探测改为按需（语言通用）；行为不变",
+      "done_when": [
+        "四项按裁定落位",
+        "LSP 启动前 sweep 必完成",
+        "无单语言特例",
+        "测试全绿",
+        "diff 落 artifact"
+      ],
+      "owner": "ide",
+      "reviewer": "backend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-167/plan.md",
+      "progress": "重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff 均完整；WP-166 仍 in_progress 未合入，run.rs 未改；session.diff 在现状可 apply，待 WP-166 合入后 rebase；未编译",
+      "status_entered_at": "2026-10-14T18:36:29.392Z",
+      "parent": "WP-165",
+      "goal": "sweep_orphan_lsp 挪到 P1 后台且在第一个 language server 启动前完成；EngineManager::reconcile 与 remove_legacy_text_index 挪到 P2；LSP --version/npm prefix 探测改为按需（语言通用）；行为不变",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-167 启动排位整改 · IDE 域 · 实施方案（ide，只读起草）\n\n依据：board WP-165（GM 已批拆分）/ WP-167 goal；`.litecode/ops/artifacts/WP-154/backend.md` §(a) 第 2/3/5/6 条及表 #8/#9/#11/#24–#27。\n基线：HEAD 3ddc643，工作区 src 与 HEAD 一致（rollback-loss-ide.md）。行号均为当前工作区，只读核实。\n约束：功能行为不变；语言通用、不加单语言特例；不加新状态（只用现有 EngineState::{Warming,Warm,Failed,Stopped} 与「未出现在 map」）；工具可见性只用 bind（不改）；批准前不改代码、不编译。\n\n## 0. 归属核对\n| 位置 | 归属（board domains.place） | 本包处理 |\n|---|---|---|\n| src/lsp/**, src/engines/**（含 path_index、lsp_engine、status_view） | ide（src/{workspace,terminal,lsp,engines}） | 我落地 |\n| src/serve/run.rs（serve::run 调用点） | session（src/{session,client_protocol,serve}） | 跨域 diff，交 owner |\n| src/optional/**（EngineManager）、src/tools/**（webfetch/websearch/lsp 工具）、src/tool/registry.rs | tools（src/{tool,tools,…,optional}） | 跨域 diff，交 owner |\n| src/proc_lifetime.rs | 不在任何 domain.place 中（crate 根文件，最近由 release 提交 70c91f8 触及） | **不改**；只换调用方式 |\n| src/cli/cli.rs:803 `engine_manager.reconcile` | runtime（兼 cli/optional） | 不动（CLI 不在本次启动路径） |\n注：path_index 在 src/engines/path_index/，属 ide，第 3 项全部在我域。\n\n---\n\n## 1. sweep_orphan_lsp_processes：P0 → P1 后台，第一个 language server 启动前必完成\n\n### 现状\n- src/serve/run.rs:73-75 同步调用 `crate::proc_lifetime::sweep_orphan_lsp_processes()`（≤3 轮扫进程表，proc_lifetime.rs:48）。\n- 所有 language server 进程只有一个出生点：`LspHub::spawn_ls`（src/lsp/hub.rs:132-142 → `LspServer::spawn`，server.rs:137；`rg \"LspServer::spawn\"` 仅此一处）。它的 3 个调用点：首启 hub.rs:366、自动重启 :345、手动 `restart_server` :418。\n\n### 改动\n1. 新文件 **src/lsp/sweep_gate.rs**（我域）：\n   ```rust\n   pub struct SweepGate { state: Mutex<GateState>, cv: Condvar, tx: tokio::sync::watch::Sender<bool> }\n   enum GateState { Unarmed, Running, Open }   // 内部私有枚举，非引擎状态\n   pub fn global() -> &'static Arc<SweepGate>  // static OnceLock\n   impl SweepGate {\n       /// serve 启动时调用：置 Running，起线程跑 sweep；线程起不来就当场同步跑（= 今日行为）。\n       pub fn start_background(self: &Arc<Self>, sweep: fn())\n       /// spawn_ls 前 await；Unarmed（CLI/测试未走 serve）与 Open 立即返回。\n       pub async fn wait(&self)\n   }\n   struct OpenOnDrop(Arc<SweepGate>);           // Drop 里无条件 open()\n   ```\n   线程体：`let _g = OpenOnDrop(gate.clone()); let _ = std::panic::catch_unwind(AssertUnwindSafe(sweep));` —— 正常返回、提前 return、panic 三条路径都经 Drop 打开门闩；`catch_unwind` 让 panic 不传播、只 `tracing::warn!`。`open()` 用 `Mutex` 置 Open + `watch::send_replace(true)`；`Mutex` 中毒用 `into_inner()`（与仓库现有写法一致），不会因中毒而永不打开。`thread::Builder::spawn` 失败分支：同步执行 sweep（同样包在 OpenOnDrop 里）。**不设超时**：超时放行会破坏「先 sweep 后 spawn」保证；sweep 本身 2.2 ms（WP-155 §5），极端情况下只延后首次 spawn，不死锁。\n2. **src/lsp/hub.rs:132 `spawn_ls`** 开头加 `self.sweep_gate.wait().await;`（`LspHub` 持 `Arc<SweepGate>`，`new()` 默认取 `sweep_gate::global()`；测试用 `with_sweep_gate_for_test`）。因三条 spawn 路径都经此处，「第一个 LS 启动前 sweep 完成」由单一阻塞点保证。\n3. **跨域（Session）src/serve/run.rs:73-75**：一行替换\n   `crate::proc_lifetime::sweep_orphan_lsp_processes();` → `crate::lsp::sweep_gate::global().start_background(crate::proc_lifetime::sweep_orphan_lsp_processes);`\n   位置不变（仍在 `workspace_engines.reconcile` 之前 arm，故任何 LSP warmup/spawn 都看得到 Running）。\n\n### 行为不变的理由\n- sweep 的判定与杀进程逻辑（proc_lifetime.rs）一字不改；只是从主线程挪到 `lsp-orphan-sweep` 线程。\n- 今日顺序「sweep 完 → 之后才可能 spawn」由门闩保持；被扫的只是父进程已死的旧 LS，本进程新起的 `--version` 探测子进程父进程存活，不在扫描范围，故探测不需等门闩（与今日并发关系一致）。\n- CLI / 单测从不 arm → `wait()` 直通，等同今日（今日 CLI 也不 sweep）。\n\n### 测试\n| 测试名 | 断言 |\n|---|---|\n| `lsp::sweep_gate::tests::wait_passes_when_never_armed` | 新建 gate 未 arm，`wait()` 在 50 ms 内完成 |\n| `…::wait_blocks_until_sweep_returns` | sweep 闭包阻塞在 channel 上；`wait()` 200 ms 内未完成；放行后 1 s 内完成 |\n| `…::gate_opens_when_sweep_panics` | sweep `panic!()`；`wait()` 1 s 内完成；测试进程不 panic |\n| `…::second_start_is_noop_after_open` | 已 Open 时再 `start_background` 不再调用 sweep（计数器 = 1） |\n| `lsp::hub::tests::spawn_ls_waits_for_sweep_gate` | 自有 gate 处 Running；配置一个 mock LS（沿用 conn.rs 的 mock 脚本手法，启动即写 marker 文件），发起 spawn；放行前 marker 不存在；放行后存在 |\n| `tests/startup_order_death_list.rs::serve_run_does_not_sweep_inline` | 源码扫描 `serve::run` 函数体不含 `sweep_orphan_lsp_processes()` 直接调用；`spawn_ls` 函数体含 `sweep_gate.wait()`（标识符边界匹配，沿用 WP-051 C1/C2 做法） |\n\n---\n\n## 2. EngineManager::reconcile（webfetch/websearch HTTP client）：P0 → P2（首次使用时建）——**全部跨域（Tools + Session）**\n\n### 现状\n- src/serve/run.rs:84 `engine_manager.reconcile(&resolved)`，此时尚无 tokio runtime，走 src/optional/mod.rs:230 `else` 分支在主线程同步 `warmup()`，建 reqwest blocking client（webfetch_engine.rs:28、websearch_engine.rs:42）。\n- 消费方：工具在 client 为 `None` 时直接报错 `\"webfetch engine not warmed\"`（src/tools/webfetch.rs:22-29）/ `\"websearch engine not warmed\"`（src/tools/websearch.rs:25-31）。`EngineManager::engine_status` 无调用方（rg 只有定义 optional/mod.rs:142），UI 不展示其状态。\n- 可见性：`should_include_in_llm_list`（src/tool/availability.rs）不读 EngineManager（参数 `_engines`），webfetch 为 core，无需 bind 以外任何门控 —— 不变。\n\n### 改动（最小化，交 Tools 落地；Session 只删/换一行）\n1. **Tools · src/optional/mod.rs:149 附近**新增\n   - `pub fn defer_reconcile(&self, resolved: &ResolvedConfig)`：保存 `desired: HashSet<&'static str>`（按 `should_run_engine`）与 `websearch.configure(resolved.websearch())`（只写 endpoint 字符串，零成本，保证 `\"websearch is not configured\"` 文案路径不变）；不建 client、不写 states（map 中缺省 = 今日「从未启动」，非新状态）。\n   - `pub fn ensure_warm(&self, id: &str)`：若 client 已在 → 返回；若 `id ∈ desired` → 走既有 `start_warmup` 的同步 `else` 分支逻辑（抽成私有 `warm_now`）。用一把 `Mutex<()>` 防并发双建。\n   - 既有 `reconcile`（settings 变更时 runtime/mod.rs:185、settings_writer.rs:293 调用）不改 → 设置变更后仍立即建，行为同今日；`reconcile` 同时刷新 `desired` 集合，保证之后 `ensure_warm` 判定与最新配置一致。\n2. **Tools · src/tool/registry.rs:130/134**：把 `engines.webfetch_ensure()`（`Arc<dyn Fn() + Send + Sync>`，内部调 `ensure_warm(\"webfetch\")`）随 client handle 一起传入工具构造。\n3. **Tools · src/tools/webfetch.rs:22 / websearch.rs:25**：读 client 为 `None` 时先调一次 ensure，再读；仍为 `None` 才返回原文 `\"... engine not warmed\"`。（各 +2 行）\n4. **Session · src/serve/run.rs:84**：`engine_manager.reconcile(&resolved);` → `engine_manager.defer_reconcile(&resolved);`\n\n### 行为不变\n- 首次 webfetch/websearch 调用拿到的 client 与今日启动时建的完全同参（同一 `warmup()`）；未配置 websearch 的报错文案不变；禁用时（不在 desired）仍得 `not warmed`，与今日 `stop_engine` 后一致。\n- 首次调用多付一次 client 构建（WP-154 §5 实测 0.4 ms）。\n\n### 测试（Tools 落地）\n| 测试名 | 断言 |\n|---|---|\n| `optional::tests::defer_reconcile_builds_no_client` | `defer_reconcile` 后 `webfetch_client().read().is_none()` 且 `state(\"webfetch\") == None` |\n| `optional::tests::ensure_warm_builds_once_for_desired` | `ensure_warm(\"webfetch\")` 两次（含 2 线程并发）后 client `Some`，`state == Warm`，warmup 计数 = 1 |\n| `optional::tests::ensure_warm_skips_undesired` | 未启用 websearch → `ensure_warm(\"websearch\")` 后 client 仍 `None` |\n| `tools::webfetch::tests::cold_engine_warms_on_first_call` | 只 `defer_reconcile`，调用 fetch 非法 URL → 报错不含 `not warmed`（证明已按需建） |\n| `tools::websearch::tests::unconfigured_message_unchanged`（沿用 websearch.rs:131/144 断言） | 未配 endpoint → 仍含 `not configured` |\n| 既有 `optional::tests::reconcile_starts_warmup_for_network_core`（mod.rs:300） | 不改，必须仍绿 |\n| `tests/startup_order_death_list.rs::serve_run_does_not_warm_optional_engines` | `serve::run` 体内不含 `engine_manager.reconcile(` |\n\n---\n\n## 3. remove_legacy_text_index：P0 → P2（我域）\n\n### 现状\n`PathIndex::attach`（src/engines/path_index/mod.rs:83-118）在 :98 同步 `remove_legacy_text_index(&root)`（:400，一次性 `remove_dir_all(.litecode/text-index)`），由 serve/run.rs:86-88 在 READY 前调用。\n\n### 改动\n- 删除 :98 这一行；在 worker `run()`（:229）里 **首次 `fill(&root)` 完成且未 stop 之后**、`flush_pending()` 之前调用 `remove_legacy_text_index(&root)`。即：它不再挡 attach/READY，也不和首屏要用的路径补全抢 IO（排在 fill 后 = 「可延后」的 P2 位置）。\n- serve/run.rs:86-88 **不改**（attach 仍在原位，只是变快）；无跨域。\n\n### 行为不变\n- 目录仍会被删、日志文案不变；`.litecode/**` 本就被 Explorer 预设排除（src/workspace/filter/defaults.rs:38/46），fill 看不到它，先后顺序不影响路径索引结果。\n- 换根（attach 新 root）仍会对新 root 执行一次，与今日一致；同 root 重复 attach 且 worker 存活时今日即不执行（:94 早返回），今后同。worker 已结束再 attach 会重跑 run → 同今日。\n\n### 测试\n| 测试名 | 断言 |\n|---|---|\n| 改 `attach_fills_explorer_corpus_and_second_attach_does_not_restart`（mod.rs:612） | 原「attach 返回即 `!legacy.exists()`」改为：在既有 2 s deadline 循环内等到 `app.rs` 可搜后断言 `!legacy.exists()`；其余断言不变 |\n| 新 `legacy_text_index_removed_by_worker_after_fill` | 预置 legacy 目录 + 若干文件；attach；deadline 内 legacy 消失且 `mention_paths` 正常 |\n| 新 `attach_does_not_touch_legacy_text_index_inline` | 源码扫描：`fn attach` 体内无 `remove_legacy_text_index(`，`fn run` 体内有（death_list 写法） |\n\n---\n\n## 4. LSP `--version` / `npm config get prefix` 探测：P1 → P2 按需（语言通用）\n\n### 现状（调用链）\n- `WorkspaceEngines::start(\"lsp\")`（src/engines/mod.rs:1105）起线程跑 `LspEngine::warmup`（src/engines/lsp_engine.rs:48-76）→ `LspHub::activate`（src/lsp/hub.rs:202-218）对 **每个配置的 server** 调 `deps::command_runnable_command_in(cmd, workspace_root)`（deps.rs:490）：`resolve_server_binary` → `resolve_path_candidate` → `npm_bin_search_dirs` → `npm_config_prefix`（deps.rs:129，起 node 进程），再 `run_version_probe`（deps.rs:423，`<server> --version`，cwd=工作区）。任一失败 → warmup `Err(\"language server '<program>' not runnable: …\")` → `EngineState::Failed` + `last_error`。\n- lsp_engine.rs:73 注释写「activate is metadata-only」，与事实不符（WP-154 已指出）。\n- 依赖该结果的地方：\n  - `LspTool::ensure_ready/availability_failure`（src/tools/lsp.rs:56-145）：Warming 时等待、Failed 时返回 `\"LSP is unavailable … : <last_error>. Check Settings → Engines → LSP\"`。\n  - `lsp_feedback`（src/tools/lsp_feedback.rs:42）：非 Warm 则静默。\n  - `/api/workspace/engines`（src/workspace/routes.rs:302，summary：state/error）与 `/engines/detail`（routes.rs:319 → status_view.rs:19-45，另跑 `probe_workspace_servers` 得 `usable`）。前端：`engineStore.ts:84-87` 存 lsp state/error；渲染只用 `desired`（EditorPane.tsx:111）与 detail 的 `usable`（EnginesSection.tsx:75）。\n- **可见性**：lsp 工具 = bind + `workspace_readiness_from_engines`（src/config/workspace.rs:324，只看 engines.json `desired && servers 非空`），与引擎状态、探测结果无关 —— 符合 Andy「只用 bind 控制可见性」，本包**不改**可见性代码。\n\n### 参考做法（已从 GitHub 拉源码核对，非凭印象）\n- **Zed**（zed-industries/zed，main @ e463c5a）：\n  - 打开 buffer 才注册并启动 server：`LocalLspStore::register_buffer_with_language_servers`（crates/project/src/lsp_store.rs:3162）→ 按需 `self.start_language_server(…)`（:448，已有实例则复用 :433-435）。\n  - 二进制在启动时才解析：`start_language_server`（:477）→ `get_language_server_binary`（:542 调用，定义 :753）→ `CachedLspAdapter::get_language_server_command`（crates/language/src/language.rs:388，带 `cached_binary` 缓存）→ 适配器 `check_if_user_installed`（language.rs:713 trait 默认、:837 调用）。没有单独的打开时可用性探测。\n  - 启动前门闩：`get_language_server_binary` 接收 `wait_until_worktree_trust: Option<watch::Receiver<bool>>`（lsp_store.rs:761/769-780），**在 spawn 前 await 一个 watch 门闩**——第 1 项 SweepGate 的 `watch` 形态即仿此。\n- **VS Code**（microsoft/vscode，main @ 5ea3f38）：\n  - 语言扩展在用到该语言时才激活：`LanguageService` 在 `onDidRequestRichLanguageFeatures` 时 `activateByEvent('onLanguage:${languageId}')`（src/vs/workbench/services/language/common/languageService.ts:286-291）；`AbstractExtensionService.activateByEvent`（src/vs/workbench/services/extensions/common/abstractExtensionService.ts:993）。例：extensions/typescript-language-features/package.json:61 `\"onLanguage:typescript\"`。\n  - 激活后的 LanguageClient 直接 spawn server，失败即报错，不先跑 `--version`：vscode-languageserver-node `client/src/node/main.ts:294 createMessageTransports` → `cp.spawn(command.command, args, options)`（:506/516/530）。\n- 采纳：Zed 的「首次需要时解析+校验并缓存」（语言无关，挂在唯一启动点上）+ watch 门闩；不照搬 VS Code 的「跳过校验直接 spawn」，因为我们要保留今日 Failed 文案。\n\n### 改动（我域为主）\n1. **src/engines/lsp_engine.rs:48-76 `warmup`**：仍做 engines.json 读取、`commands_for_server_ids` 与两条空配置报错（文案不变）；`self.hub.activate(&commands)` 改为 `self.hub.activate_deferred(&commands)`（只记 `configured_commands`、`active=true`、清探测缓存）。warmup 因而毫秒级返回 → `Warm`。修正 :73 注释。\n2. **src/lsp/hub.rs:202 `activate` 拆分**：\n   - `activate_deferred(commands)`：上述元数据；`probe: tokio::sync::OnceCell<Result<(), String>>` 重置（随 `stop()` 与新 activate 一起换新 cell，即按 warmup epoch 失效）。\n   - `pub async fn ensure_probed(&self) -> Result<(), String>`：`probe.get_or_init` 里 `spawn_blocking` 跑**原 activate 循环原样**（全部 configured commands、同一 `command_runnable_command_in(cmd, workspace_root)`、同一错误串 `language server '{program}' not runnable: {e}`）。全量探测而非只探目标语言，保证「一个 server 坏 → 整个 lsp Failed」的今日语义不变；结果缓存，每 epoch 至多一次。\n   - 失败回写：hub 持 `probe_failed: Option<Arc<dyn Fn(String) + Send + Sync>>`，由 `WorkspaceEngines::new`（src/engines/mod.rs）注入，回调里对 `states[\"lsp\"]` 写 `Failed`、`last_errors[\"lsp\"]` 写原错误串（若当前为 `Stopped` 则不写，与 mod.rs `finish` 闭包同规则）。**只用既有状态**。\n   - `resolve_server_key`（hub.rs:220）在「active 校验」后、解析/spawn 前 `self.ensure_probed().await.map_err(LitecodeError::Config)?`。→ 编辑器 RPC、`lsp_feedback`、`restart_server`（:384）全部覆盖。\n   - `npm config get prefix` 随 `resolve_server_binary` 一起只在探测/spawn 时发生（与 Zed `get_language_server_binary` 同时机）；本包不另加缓存，避免改变 PATH/npm 变更后的解析结果。\n3. **src/engines/mod.rs** 新增 `pub async fn ensure_lsp_probed(&self) -> Result<(), String>`（转调 hub；`state(\"lsp\") != Warm` 时直接返回 Ok 不探测）及同步版 `ensure_lsp_probed_blocking`（给 spawn_blocking 上下文用）。\n4. **src/engines/status_view.rs:19 `engines_detail_view`**：开头调 `ensure_lsp_probed_blocking()`，使 detail（设置页 Engines）读到的 `state/error/usable` 与今日完全一致（该端点本就会跑 `probe_workspace_servers`，属按需）。`lsp_usability`（:47）同理。\n5. **跨域（Tools）src/tools/lsp.rs:103 `ensure_ready`**：`if self.is_ready()` 分支前加\n   `if let Err(_) = self.engines.ensure_lsp_probed().await { /* state 已被回写为 Failed */ }`，随后走原逻辑 → Failed 分支返回原 `availability_failure` 文案。（+3 行，不改文案、不改等待逻辑）\n   `lsp_feedback.rs` 不改：Warm 时调 hub → hub 内 `ensure_probed` 失败 → `Unavailable` → 原样不附提示，与今日 Failed 时静默一致。\n\n### 引擎状态与 UI 的表现（行为对照）\n| 场景 | 今日 | 改后 |\n|---|---|---|\n| 所有 server 可运行 | Warming(~0.4–0.6 s 探测) → Warm | Warming(ms) → Warm；首次需要时后台探测一次，成功无变化 |\n| 某 server 不可运行，打开设置 → Engines | state=failed，error=`language server 'X' not runnable: …`，usable=unavailable | detail 请求触发探测 → **相同** state/error/usable |\n| 同上，agent 调 lsp 工具 | `LSP is unavailable in the current workspace (root=…): language server 'X' not runnable: …. Check Settings → Engines → LSP, then retry` | ensure_ready 先探测 → 回写 Failed → **同一文案** |\n| 同上，写文件后的诊断提示 | 非 Warm → 静默 | hub 探测失败 → Unavailable → 静默 |\n| 同上，编辑器打开该语言文件（RPC 经 hub） | activate 失败未置 active → `LSP hub not active` | resolve_server_key 探测失败 → 返回 `language server 'X' not runnable: …`，状态转 Failed。**错误串不同**（更具体），见未决 Q6 |\n| `/api/workspace/engines` summary（P0 后前端会拉，WP-168 将挪到 P2） | failed | **首次需要前为 warm**；前端只用其 `desired`（EditorPane.tsx:111），无可见差异 → 见未决 Q1 |\n| 工具可见性 | bind + engines.json | 不变 |\n\n### 测试\n| 测试名 | 断言 |\n|---|---|\n| `engines::lsp_engine::tests::warmup_spawns_no_probe_process` | engines.json 配一个 server，命令指向测试脚本（被 `--version` 调用即写 marker）；`warmup()` Ok、`state==Warm` 后 marker 不存在 |\n| `engines::tests::lsp_first_need_probe_failure_sets_failed_same_error` | 配不存在的命令；warmup 后 Warm；`ensure_lsp_probed().await` Err；`state(\"lsp\")==Failed`；`last_error` 以 `language server '<program>' not runnable:` 开头（与 hub.rs:208 今日文案逐字一致） |\n| `engines::tests::lsp_probe_runs_once_per_epoch` | 计数脚本：两次 ensure + 一次 resolve → 计数 1；`stop()`+重新 start 后再 ensure → 计数 2 |\n| `engines::tests::lsp_probe_failure_after_stop_does_not_resurrect_state` | 探测进行中 stop → 回调不覆盖 `Stopped` |\n| `engines::status_view::tests::detail_after_deferred_probe_matches_eager` | 坏命令：`engines_detail_view` 的 `lsp.state==\"failed\"`、`error` 同上、`usable==\"unavailable\"` |\n| `lsp::hub::tests::resolve_server_key_probes_before_spawn` | 坏命令下 resolve 返回含 `not runnable` 的错误且 mock spawn 未被调用 |\n| 既有 `lsp::mod::tests::coverage_requires_active_and_configured_command`、`stop_clears_active_and_coverage`、`restart_server_rejects_*` | 不改，必须仍绿（activate_deferred 维持 active/configured 语义） |\n| Tools：`tools::lsp::tests::broken_server_first_call_message_unchanged` | 坏命令 + Warm 起步；首次工具调用返回文本 == 今日 Failed 分支 `availability_failure` 文本 |\n| `tests/startup_order_death_list.rs::lsp_warmup_runs_no_subprocess` | `LspEngine::warmup` 体内不含 `activate(`/`command_runnable_command`；`activate_deferred` 体内不含 `run_version_probe`/`npm_`/`Command::new` |\n| `…::no_language_specific_branch_added` | 新增函数（`activate_deferred`、`ensure_probed`、`ensure_lsp_probed*`、`sweep_gate` 模块）体内不出现 `SERVER_METAS` 中任一 server id 字面量（既有 deps.rs:494 pyright 分支原样保留，不在扫描范围） |\n\n---\n\n## 5. 跨域 diff，交 owner 落地（尽量只移动调用）\n| owner | 文件:行 | 改动 | 规模 |\n|---|---|---|---|\n| session | src/serve/run.rs:73-75 | `sweep_orphan_lsp_processes()` → `crate::lsp::sweep_gate::global().start_background(crate::proc_lifetime::sweep_orphan_lsp_processes)` | 1 行替换 |\n| session | src/serve/run.rs:84 | `engine_manager.reconcile(&resolved)` → `engine_manager.defer_reconcile(&resolved)` | 1 行替换 |\n| tools | src/optional/mod.rs:149 附近 | 新增 `defer_reconcile` / `ensure_warm` / `webfetch_ensure` / `websearch_ensure`；`start_warmup` 同步分支抽 `warm_now` | ~40 行，原逻辑不改 |\n| tools | src/tool/registry.rs:130/134 | 构造工具时多传 ensure 回调 | 2 处 |\n| tools | src/tools/webfetch.rs:22、websearch.rs:25 | client 为 None 时先 ensure 再读 | 各 +2 行 |\n| tools | src/tools/lsp.rs:103 | `ensure_ready` 开头 `ensure_lsp_probed().await` | +3 行 |\n我将把以上写成可 `git apply --check` 的 diff 放 `.litecode/ops/artifacts/WP-167/cross-domain/{session,tools}.diff`（批准后、与我域 diff 一起），由 owner 审后落地。\n\n## 6. 编译与测试计划\n- `target/` 已不存在（回滚后），**首轮必须全量重编**；重型任务一律等 backend_mid 串行放行（WP-165 流程：单重型 ≥4.5 GiB）。\n- 环境：`HOME=.tmp/home`、`timeout`、`</dev/null`、共享 target 排队；不 commit / checkout / stash。\n- 顺序：① `cargo test --lib lsp::sweep_gate lsp::hub engines::lsp_engine engines::path_index engines::status_view engines::tests` ② `--test startup_order_death_list` ③ Tools 落地后 `--lib optional tools::webfetch tools::websearch tools::lsp` ④ 全量 `cargo test`（含 `--test optional_code_search`、`code_search_ipc`）⑤ 启动时序复测：沿用 WP-155 harness（`.litecode/ops/artifacts/WP-155/harness`）各跑 3 次，确认 READY 前不再出现 sweep/HTTP client/legacy 删除，且打开后无 `npm`/`--version` 子进程直到首次 LSP 需要。\n\n## 7. 未决问题（请 backend_mid 定）\n1. **summary 端点的 lsp.state**：坏 server 在「首次需要」前读作 `warm`（今日 `failed`）。前端不渲染它（只用 desired），设置页走 detail 已一致。可接受？若不可，备选是让 `/engines` summary 也触发探测——但 WP-168 挪到 P2 之前它在启动即被调用，会把探测拉回启动期。\n2. **webfetch/websearch 按需的形态**由 Tools 决定：上表回调式是我建议的最小改动；若 Tools 更愿意让工具直接持 `Arc<EngineManager>` 也可，只要求 serve::run 不再同步建 client。\n3. **src/proc_lifetime.rs 无 domain 归属**：本方案不改它；若要把门闩放进它（更内聚），需先定 owner。\n4. **sweep 门闩不设超时**：保证优先；若希望兜底（例如 10 s 后放行并 warn），会弱化「必先完成」，需 GM 口径。\n5. lsp 工具 Warming 等待（tools/lsp.rs `LSP_WARM_WAIT`）在改后几乎不会触发（warmup 变毫秒级），首次探测改在 ensure 内 await；工具首调的总等待不超过今日（今日等 warmup 探测，改后等同一探测）。仅告知。\n6. **编辑器 RPC 的错误串**：坏 server 时今日为 `LSP hub not active`，改后为 `language server 'X' not runnable: …`。如要逐字不变，可在 hub 探测失败后同时置 `active=false` 并返回原串（代价：一个语言坏会让后续请求都走 inactive，与今日一致）。倾向后者以守「行为不变」，请定。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:29:11.351Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: sweep_orphan_lsp 挪到 P1 后台且在第一个 language server 启动前完成；EngineManager::reconcile 与 remove_legacy_text_index 挪到 P2；LSP --version/npm prefix 探测改为按需（语言通用）；行为不变"
+        },
+        {
+          "ts": "2026-10-14T18:34:31.804Z",
+          "actor": "ide",
+          "action": "fill",
+          "note": "direct: # WP-167 启动排位整改 · IDE 域 · 实施方案（ide，只读起草）\n\n依据：board WP-165（GM 已批拆分）/ WP-167 goal；"
+        },
+        {
+          "ts": "2026-10-14T18:34:32.147Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-167/plan.md\""
+        },
+        {
+          "ts": "2026-10-14T18:34:32.449Z",
+          "actor": "ide",
+          "action": "submit",
+          "note": "方案见 artifacts/WP-167/plan.md；含 Session/Tools 跨域 diff 清单与 6 个未决问题；未改代码未编译"
+        },
+        {
+          "ts": "2026-10-14T18:35:41.561Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批。1 接受摘要首用前显示 warm（前端只读 desired，详情一致）；2 web 工具预热方式由 Tools 定并签跨域 diff；3 门闩放 src/lsp，不动 proc_lifetime；4 不设超时；5 探测失败置 hub inactive 返回原文本，行为不变。合入在 WP-166 之后，run.rs 基于其 rebase"
+        },
+        {
+          "ts": "2026-10-14T18:36:29.392Z",
+          "actor": "ide",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:40:44.053Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"我域 1–4 项代码+测试已写（未编译）；ide.diff、cross-domain/{session,tools}."
+        },
+        {
+          "ts": "2026-10-14T18:45:30.900Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"我域 1–4 项代码+测试已写（未编译）；ide.diff、cross-domain/{session,tools}. -> \"tools.diff 按 Tools 审意见改第2版（只重建已有client、失败返回真实错误、websearch c"
+        },
+        {
+          "ts": "2026-10-14T18:47:09.141Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"tools.diff 按 Tools 审意见改第2版（只重建已有client、失败返回真实错误、websearch c -> \"tools.diff 第3版（Stopped 后重新启用回归已修+测试），待 Tools 签字；ide.diff 仅 "
+        },
+        {
+          "ts": "2026-10-15T01:35:24.952Z",
+          "actor": "ide",
+          "action": "set",
+          "note": "progress: \"tools.diff 第3版（Stopped 后重新启用回归已修+测试），待 Tools 签字；ide.diff 仅  -> \"重启后核对：我域改动、Tools 已打入的 tools.diff(5文件)、ide.diff、session.diff"
+        }
+      ]
+    },
+    {
+      "id": "WP-168",
+      "domain": "client-ux",
+      "title": "启动排位整改·壳与前端",
+      "result": "窗口先出骨架与 serve 并行（READY+/health 只挡 loadURL）；monaco 与非首屏字体懒加载；WP-154 前端 A 节其余项按裁定落位（hello/new 不合并，根面板不等 list 的方案不做）；在 WP-158 瘦身改动之上改，不回退",
+      "done_when": [
+        "骨架窗口并行",
+        "monaco 与字体懒加载",
+        "不覆盖 WP-158",
+        "测试全绿",
+        "diff 落 artifact"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "backend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "in progress",
+      "status_entered_at": "2026-10-14T18:32:20.358Z",
+      "parent": "WP-165",
+      "goal": "窗口先出骨架与 serve 并行（READY+/health 只挡 loadURL）；monaco 与非首屏字体懒加载；WP-154 前端 A 节其余项按裁定落位（hello/new 不合并，根面板不等 list 的方案不做）；在 WP-158 瘦身改动之上改，不回退",
+      "approver": "backend_mid",
+      "content": {
+        "kind": "split",
+        "text": "# WP-168 启动排位整改·壳与前端 · 实施方案（frontend_mid）\n\n父包 WP-165（backend_mid，GM 已批）· 审批 backend_mid · kind = split\n依据：`.litecode/ops/artifacts/WP-154/frontend.md` A/B 节；GM 五项裁定；backend_mid 补充要求（recordRecent→P2、engines/summary→P2、loadRoot 排在 session/new 后、READY+/health 只挡 loadURL）。\n基线：主树带 WP-158 未提交瘦身改动（6 包已关）。**一律在其上改，不回退、不覆盖、不 commit。** 行号为当前主树（含 WP-158）静态阅读所得，批准前不改代码。\n\n## 0. 拆分\n拆两个子包，可并行开发，重型校验串行：\n- **WP-169 · desktop**（owner frontend_desktop，approver frontend_mid）：S1 骨架窗口并行 + S2 recordRecent→P2 + D8 远端同理。\n- **WP-170 · web**（owner frontend，approver frontend_mid）：S3 monaco 懒加载、S4 字体按需、S5 engines/summary→P2、S6 loadRoot 排在 session/new 后。\n两侧无共享文件（不碰 bridge-contract.ts / preload.ts；如 S1 需新 IPC 则另报）。\n\n## 1. 条目\n\n### S1 窗口先出骨架，READY+/health 只挡 loadURL（D3/D4/D5/D6，desktop）\n- 位置：`desktop/src/main.ts:1369-1386`（boot 本地分支 startSidecar→verifySidecarAttached→attachSidecarWatch→recordRecent→localWorkbenchUrl→createWindow）；`main.ts:311-336` createWindow（BootContent 增一种 `{kind:\"skeleton\"}`）；`main.ts:293-309` 工作台 loadURL 入口；`sidecar.ts:107-116`（READY 等待，90s 超时）**不改语义**，只换调用时机。\n- 改法：resolveBootWorkspace 后立刻 `createWindow({kind:\"skeleton\"})`（本地静态骨架页，背景 #0a0a0a，与现有 backgroundColor 一致，无脚本、无 IPC），**同时** `startSidecar`；`await READY → verifySidecarAttached → attachSidecarWatch` 完成后再对同一窗口走现有工作台 loadURL（含 trustContext 设置）。registry.start 仍在窗口创建后（D7 P1 不变）。\n- 行为不变：token、cwd、READY/health 超时与校验条件、attachSidecarWatch 重启逻辑（main.ts:758-802）、失败报错文案不变；唯一变化是窗口早出现。失败路径：sidecar/health 失败时沿用现有报错流程，并关闭骨架窗口，不留空窗。骨架页需进 window-guard/url-policy 白名单（只允许本地 file:，与 hub 同类），工作台 URL 仍只走 G5 校验。mainWindow 在 loadURL 前已注册（现有注释 main.ts:331-334 的约束保持）。\n- 测试：静态 rg（boot 顺序、无残留 createWindow(content) 旧调用）；`tsc --noEmit` 0；单测：url-policy.test.ts / window-guard.test.ts 增骨架页允许、远程 URL 仍拒绝的断言；把「boot 时序」抽成可注入的小函数（如 `boot-sequence.ts`）并新增 `boot-sequence.test.ts`：断言 createWindow 先于 READY 解析、loadURL 在 verify 之后、失败时关窗。\n- 与 WP-158 叠加：main.ts（WP-160 删符号/IPC、WP-164 A4 进度文案）、window-guard 未动、url-policy 未动。A4 改的 hub 进入逻辑（hub.ts）不碰。\n- owner：frontend_desktop。\n\n### S1b 远端模式同理（D8，desktop）\n- 位置：`main.ts:1350-1365` waitForWorkspaceHealth(remote) 后 createWindow。\n- 改法：同 S1，先建骨架窗口，health 通过后 loadURL(handshakeUrl)。行为同上。测试并入 boot-sequence.test.ts。与 WP-158：main.ts 同上。owner：frontend_desktop。\n\n### S2 recordRecent → P2（D5，desktop）\n- 位置：`main.ts:1379`（boot）、`main.ts:1296`（工作区切换路径）；定义 `main.ts:416-422`。\n- 改法：boot 路径改为窗口 `did-finish-load` 之后（或 setImmediate）调用，保持 try/catch 吞错。1296/1706/1743 处为用户操作路径，**不改**。\n- 行为不变：写入内容与条件不变，只延后；失败仍只 console.error。测试：recents.test.ts 不变须全绿；boot-sequence.test.ts 断言 recordRecent 在 loadURL 之后被调用一次。WP-158：main.ts 同上。owner：frontend_desktop。\n\n### S3 monaco 懒加载（W1，web）\n- 位置：`web/src/main.tsx:15` 删除 `import \"./lib/monaco\"`；`web/src/dockview/config/registry.ts:6,29` EditorPanel 改 `React.lazy(() => import(\"../panels/EditorPanel\"))` 包 Suspense（fallback 为空白编辑区，沿用现有底色）；`lib/monaco.ts` 的 loader.config 改由 EditorPanel 模块顶部 `import \"../../lib/monaco\"` 触发（保证 Editor 渲染前已 config 为本地 bundle，不回落 CDN）。\n- 行为不变：编辑器功能、主题（theme/monaco.ts）、LSP 绑定（litecodeLsp.ts 仅 `import type`）不变；首屏无编辑器时不再解析 monaco。恢复布局含编辑器 tab 时，仅多一次 chunk 加载。\n- 测试：新增 `src/main.test.ts`（或 registry 测试）断言 main.tsx 不静态引用 monaco（读源文件 rg 式断言）；现有 EditorPane 相关测试保持全绿；若测试中 registry 被同步渲染，补 Suspense 等待。\n- WP-158 叠加：main.tsx WP-158 未改；registry.ts 未改；lib/monacoShaders.ts、theme/monaco.ts 被 WP-158 改过（只读不改）。owner：frontend。\n\n### S4 首屏只载 400 字重（W1b，web）\n- 位置：`web/src/main.tsx:1-7`。保留 `inter/400.css`、`jetbrains-mono/400.css`；其余 5 份（inter 200/300/500，mono 300/500）移到新文件 `src/fontsDeferred.ts`，main.tsx 在首帧后 `requestIdleCallback`（无则 setTimeout 0）`import(\"./fontsDeferred\")`。\n- 行为不变：@font-face 后注册，浏览器按需取字，界面字形最终一致；首帧前非 400 字重会短暂用 400 回退（预期内的视觉差，见风险）。\n- 测试：同 S3 的源文件断言（main.tsx 只同步 import 两份 400）；tsc。WP-158：main.tsx 未改，theme/index.css/tokens.css 已改但本项不碰。owner：frontend。\n\n### S5 engines 与 settings summary → P2（W14/W15，web）\n- 位置：`web/src/stores/connectionStore.ts:264`（hello 时 `ensureLoaded()`）；`web/src/stores/settingsStore.ts:418-435` noteWorkspaceReady（先 noteTransportReady 再 GET summary）。\n- 改法：在 `lib/centreChat.ts` 增 `whenCentreSettled(): Promise<void>`——ensureCentreChat 决定「不需新建」时立即 resolve；发了 session/new 则在回复（成功或失败）后 resolve（sessionStore.ts:581-600 的 then/catch 末尾通知）。connectionStore hello 分支把 engines 拉取改为 `whenCentreSettled().then(idle).then(ensureLoaded)`；settingsStore 中 noteTransportReady 保持立即，summary GET 同样排到 settled+idle 之后。打开设置面板 / Engines 页 / EditorPane 挂载时已有的按需拉取保持不变（作为按需入口）。connectionStore.ts:441 重连路径同样处理。\n- 为何不是纯「按需」：summary 驱动 firstRun（lib/firstRun.ts:192，无 key→Provider 页）；engines 驱动 warming 轮询与索引状态。纯按需会改变首跑引导与索引状态展示，违背「行为不变」，故取「P2 = 首屏后自动补取 + 视图按需」。\n- 行为不变：两请求内容、错误处理、firstRun、catalog 轮询逻辑不变，只延后到 centre settle 之后。\n- 测试：centreChat.test.ts 增 whenCentreSettled 三种情形（无需新建 / new 成功 / new 失败）；connectionStore.test.ts 断言 hello 时不立即调用 getEngines，settle 后调用；settingsStore.test.ts 断言 noteWorkspaceReady 立即触发 noteTransportReady，summary 在 settle 后；firstRun 相关测试保持全绿；engineStore.test.ts 不变须绿。\n- WP-158 叠加：connectionStore.ts、settingsStore.ts、engineStore.ts、sessionStore.ts 均被 WP-159/162/163 改过——在现状上做最小 diff，不回退其改动。owner：frontend。\n\n### S6 文件树 loadRoot 排在 session/new 之后（W19，web）\n- 位置：`web/src/components/FileTree.tsx:468-470` 挂载 effect；`stores/treeStore.ts:133-146` loadRoot 不改。\n- 改法：effect 改为 `whenCentreSettled().then(() => loadRoot())`（带卸载取消标志）。恢复路径无 session/new 时立即放行。为防 WS 永不就绪导致树永不加载（现状树走 HTTP、与 WS 无关），加兜底：transport 失败或 3s 超时也放行。\n- 行为不变：请求与渲染不变，仅顺序后移。\n- 测试：treeStore.test.ts 不变；新增 FileTree 挂载测试（或在 centreChat.test 层）断言 settle 前不调用 loadRoot、settle 后调用一次、超时兜底调用。WP-158：FileTree.tsx / treeStore.ts 未被 WP-158 改动（git status 无）。owner：frontend。\n\n## 2. A 节其余项落位\n| 项 | 结论 | 理由 |\n|---|---|---|\n| D5 createWindow/show 提前 | 在范围 → S1 | GM 裁定 |\n| D3/D4 只挡 loadURL | 在范围 → S1 | GM 裁定 |\n| W1 monaco | 在范围 → S3 | GM 裁定 |\n| W1b 字体 | 在范围 → S4 | GM 裁定 |\n| W9 auth 帧 | 范围外（已完成） | WP-159 已删，改走握手 URL |\n| W14 engines / W15 summary | 在范围 → S5 | backend_mid 要求 |\n| W19 loadRoot | 在范围 → S6 | backend_mid 要求 |\n| W17 根面板不等 session/list | **不做** | GM 裁定：由后端「先回 list 再回放」（WP-166）覆盖 |\n| B 节 W12→W13 hello/new 合并 | **不做** | GM 裁定 |\n| D8 远端先建窗 | 在范围 → S1b | 与 S1 同理，C 表标 P1 |\n| W16 notifyWorkspace、W4/W6/W10a/W11a | 范围外 | 已是 fire-and-forget/effect，不在关键路径，改动无收益 |\n\n## 3. 校验闸门（重型须 backend_mid 逐项放行，串行，MemAvailable ≥4.5GiB 否则停）\n- desktop：静态 rg 核对 → `tsc --noEmit` 0 → 单测 concurrency=1 全绿（现 128 + 新增）→ knip 无新增告警。\n- web：`tsc -b` 0 → `vitest --maxWorkers=1` 全绿（现 177/1365 + 新增）→ knip 不高于 23/21/1/0/0。\n- 两侧重型校验串行，不并发；不跑 npm install（无新依赖）。\n- 产物：各子包 diff 与结果落 `.litecode/ops/artifacts/WP-168-desktop.md`、`WP-168-web.md`，我汇总为 `WP-168.md` 交 backend_mid。\n- **不 commit。**\n\n## 4. 顺序\n1. backend_mid 批本方案 → 两子包 fill/submit，我批。\n2. desktop 与 web 并行改码（各自只读对方）。\n3. 重型校验：先 desktop（较轻），再 web；由 backend_mid 串行放行。\n4. 我交叉审 diff（重点：未回退 WP-158 任何行）→ deliver。体感确认由 GM 安排 Andy 真机。\n\n## 5. 风险\n1. 骨架窗口无法在箱内真机验证（Electron 未运行），失败路径（sidecar 超时、health 不匹配）仅靠单测+静态核对。\n2. 骨架页→工作台的导航切换可能出现一帧闪烁；用同色背景缓解，需真机确认。\n3. 字体延后：首帧非 400 字重短暂回退为 400（FOUT），属可见但预期内的差异。\n4. monaco 懒加载：恢复布局有编辑器 tab 时多一个 chunk 往返；loader.config 必须先于 Editor 渲染，否则回落 CDN（离线失败）——测试须覆盖。\n5. S5 推迟 summary 会让首跑「无 key→Provider 页」晚出现约一个 session/new RTT（~60ms）。\n6. S6 兜底超时值（3s）是新常量。\n7. WP-158 未提交改动与本包叠在同一工作树，交付 diff 需按文件区分两包来源。\n\n## 6. 待定问题（请 backend_mid 定）\n- Q1 S5 取「首屏后自动补取 + 视图按需」而非纯按需（为保 firstRun 与索引状态），可否？\n- Q2 S6 兜底 3s 超时是否接受，或只在 transport 失败时放行？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:29:11.648Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: 窗口先出骨架与 serve 并行（READY+/health 只挡 loadURL）；monaco 与非首屏字体懒加载；WP-154 前端 A 节其余项按裁定落位（hello/new 不合并，根面板不等 list 的方案不做）；在 WP-158 瘦身改动之上改，不回退"
+        },
+        {
+          "ts": "2026-10-14T18:31:23.376Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "split: # WP-168 启动排位整改·壳与前端 · 实施方案（frontend_mid）\n\n父包 WP-165（backend_mid，GM 已批）· 审批 back"
+        },
+        {
+          "ts": "2026-10-14T18:31:23.511Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "split: WP-169 desktop / WP-170 web；方案见 .tmp/wp168/plan.md；待定 Q1/Q2 见第 6 节"
+        },
+        {
+          "ts": "2026-10-14T18:31:59.881Z",
+          "actor": "backend_mid",
+          "action": "approve",
+          "note": "批。S5 接受空闲自动发（挤出关键路径、行为不变）；S6 不加 3s 兜底，centre 就绪或连接失败时放行。在 WP-158 之上改；diff 落 artifact；重型任务找我放行"
+        },
+        {
+          "ts": "2026-10-14T18:32:20.358Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-169",
+      "domain": "release-desktop",
+      "title": "启动排位整改·desktop 壳",
+      "result": "骨架窗口先出与 sidecar 并行，READY+/health 只挡 loadURL（本地与远端）；boot 路径 recordRecent 延后；在 WP-158 改动之上，不 commit",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend_desktop",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "closed done by frontend_mid: 骨架窗口、AbortSignal、recordRecent 后移已落地；tsc 0、单测 140/140、knip 无新增；骨架外观、切换闪烁、无边框拖动待真机验",
+      "status_entered_at": null,
+      "parent": "WP-168",
+      "goal": "骨架窗口先出与 sidecar 并行，READY+/health 只挡 loadURL（本地与远端）；boot 路径 recordRecent 延后；在 WP-158 改动之上，不 commit",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-169 计划（frontend_desktop · direct · 启动整改 desktop）\n\n父包：WP-168 · 依据：`.tmp/wp168/plan.md` 的 S1、S1b、S2\n前提：在 WP-158 尚未提交的改动之上改；只动 `desktop/src/main.ts` 和测试；不动 hub.ts、bridge-contract.ts、preload.ts、sidecar.ts。不 commit。\n\n## 改动\n1. S1 本地模式（main.ts 1369-1386 的 boot 本地分支）：拿到工作区后，先用 `createWindow({kind:\"skeleton\"})` 建窗并显示，同时启动 sidecar。等 READY、verifySidecarAttached 和 /health 都过了，再 `loadWorkbench(win, localWorkbenchUrl(...))`。等待只挡 loadURL，不挡窗口出现。sidecar.ts 的 READY 等待和 90s 超时都不改，只是换了调用时机。\n2. 失败路径：sidecar 启动或校验失败时，关掉骨架窗口，再按现在的方式抛错，错误提示和现在一致。不在骨架窗口里显示错误。\n3. S1b 远程模式（main.ts 1350-1365）：同样先建骨架窗口，`waitForWorkspaceHealth` 通过后再 loadURL(handshakeUrl)。失败时同样关窗，原样抛错。\n4. S2：boot 里的 `recordRecent(workspace)` 改到工作台 loadURL 成功之后再调，写入内容和条件不变，失败仍然只 console.error。用户操作触发的调用（1296、1706、1743）不变。没有工作区、走 hub 的分支不受影响。\n5. createWindow（311-336）：BootContent 增加 `{kind:\"skeleton\"}`，表示不加载任何页面，但仍按现有 `ready-to-show` 或立即 show 显示。工作台页面加载后，窗口还是同一个，不重建。\n\n## 三件要写清的事\n- 骨架长什么样：一个空窗口，只有现有主题的背景色（createWindow 里已有的 `backgroundColor: \"#0a0a0a\"`），不加文字、不加 spinner、不加新页面。frameless 窗口在骨架期间没有标题栏按钮，这一点照实标出，待真机验。\n- 窗口尺寸和位置：沿用 createWindow 现有参数，也就是固定 1280×800，由系统摆放。现在代码里没有保存或恢复位置的逻辑，本包也不加，行为和现在完全一样。\n- 单实例和第二次打开：`InstanceRegistry` 仍在建窗后 start，`setWorkspace(currentWorkspace)` 的调用时机不晚于现在（工作区一确定就调用）。第二次打开同一工作区时聚焦已有窗口，打开别的工作区时新开实例，这些行为都不变。骨架期间被第二次打开时，也聚焦这个骨架窗口。\n\n## 测试\n- 新增 `boot-sequence.test.ts`（把 boot 里的顺序抽成可注入依赖的小函数来测）：骨架窗口在 sidecar 就绪前创建；loadURL 在 READY 和 /health 之后；失败时窗口被关闭且错误原样抛出；recordRecent 在 loadURL 之后被调用一次；远程分支同理。\n- recents.test.ts 等现有测试不改，必须全绿。\n\n## 验收\n- diff 和结果放进 `.litecode/ops/artifacts/WP-168/`（`WP-169-desktop.patch` 和 `WP-168-desktop.md`）。\n- 静态检查：rg 核对，desktop `tsc --noEmit` 为 0，单测用 1 个 worker 全绿（现有 128 个加新增）。重型任务先找后端中层放行。\n- 骨架窗口的实际观感、首屏时间和无边框表现都标为「待真机验」。\n- 不改 hub.ts、bridge-contract.ts、preload.ts，不 commit。\n\n## 风险\n- 骨架期间窗口可见但没有标题栏，用户没法拖动或关闭，要等真机验了再看需不需要补。\n- 工作台的 trustContext 和 mainWindow 注册时机提前了，要保证骨架期间的 IPC 不会被误放行（骨架不加载页面，所以不会发 IPC）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:31:17.168Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: 骨架窗口先出与 sidecar 并行，READY+/health 只挡 loadURL（本地与远端）；boot 路径 recordRecent 延后；在 WP-158 改动之上，不 commit"
+        },
+        {
+          "ts": "2026-10-14T18:33:27.950Z",
+          "actor": "frontend_desktop",
+          "action": "fill",
+          "note": "direct: # WP-169 计划（frontend_desktop · direct · 启动整改 desktop）\n\n父包：WP-168 · 依据：`.tmp/wp16"
+        },
+        {
+          "ts": "2026-10-14T18:33:28.265Z",
+          "actor": "frontend_desktop",
+          "action": "submit",
+          "note": null
+        },
+        {
+          "ts": "2026-10-14T18:33:57.016Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准，附两条：1) 骨架窗口整窗都设为拖动区（-webkit-app-region: drag），不加按钮或文字；在骨架期间用系统方式（Alt+F4 或任务栏）关窗，要干净地中止这次启动、杀掉 sidecar，不能留下孤儿进程，并补一条单测。2) knip 要跑，和 tsc、单测一起，先找后端中层放行，串行跑。"
+        },
+        {
+          "ts": "2026-10-14T18:34:15.883Z",
+          "actor": "frontend_desktop",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-15T01:58:19.621Z",
+          "actor": "frontend_desktop",
+          "action": "deliver",
+          "note": "S1/S1b/S2 + draggable skeleton + abort-on-close via AbortSignal in sidecar.ts; tsc 0, tests 140/140 (1 worker), knip no new; min MemAvailable 6.4GiB; skeleton look pending real-device check; no commit"
+        },
+        {
+          "ts": "2026-10-15T01:58:50.821Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "骨架窗口、AbortSignal、recordRecent 后移已落地；tsc 0、单测 140/140、knip 无新增；骨架外观、切换闪烁、无边框拖动待真机验",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-170",
+      "domain": "client-ux",
+      "title": "启动排位整改·web 前端",
+      "result": "monaco 懒加载；首屏只载 400 字重；engines 与 settings summary 延后到 centre settle 后；文件树 loadRoot 排在 session/new 之后；在 WP-158 改动之上，不 commit",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "frontend",
+      "reviewer": "frontend_mid",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": null,
+      "progress": "in progress",
+      "status_entered_at": "2026-10-14T18:35:35.988Z",
+      "parent": "WP-168",
+      "goal": "monaco 懒加载；首屏只载 400 字重；engines 与 settings summary 延后到 centre settle 后；文件树 loadRoot 排在 session/new 之后；在 WP-158 改动之上，不 commit",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-170 计划：WP-168 web 启动整改（S3–S6）\n\n父包 WP-168，总方案 `.tmp/wp168/plan.md`。owner：frontend；approver：frontend_mid。\n基线：主树带着 WP-158 未提交的改动（WP-159/162/163）。在它上面做最小 diff，不回退、不 commit，不碰 desktop 和后端。\n行号都是当前主树静态阅读所得。diff 和结果放到 `.litecode/ops/artifacts/WP-168/`（web.diff、WP-168-web.md）。\n\n## 规则\n- 批准前不改代码，也不跑重型任务。\n- 重型任务（tsc -b、vitest --maxWorkers=1、knip）先找后端中层放行，串行执行，用 `.tmp/wp159/guard.sh` 守护（阈值 4.5GiB，跌破即停）。\n- 不删测试，只改断言或 mock。不做兼容层。\n- 中层裁定：S6 和 S5 **不加 3 秒兜底**，只在 centre 就绪或连接失败时放行。\n\n## S3 monaco 随编辑器面板懒加载\n- 现状：`main.tsx:15` 有 `import \"./lib/monaco\"`；`dockview/config/registry.ts:6` 静态 import EditorPanel，链路是 registry → EditorPanel(`panels/EditorPanel.tsx:2`) → EditorPane(`components/EditorPane.tsx:1` 引 `@monaco-editor/react`)。\n  - rg 核对过：theme/monaco.ts、lib/litecodeLsp.ts、lib/monacoShaders.ts 对 monaco 都只做 `import type`；其它 store 和组件不引 monaco。AboutPanel 只有版本号字符串。所以切断这两处后，首屏就不会再拉 monaco。\n- 改法：\n  1. 删掉 `main.tsx:15`。\n  2. `registry.ts:6,29`：`editor` 改为 `lazy(() => import(\"../panels/EditorPanel\").then(m => ({ default: m.EditorPanel })))`，外面包一层 `Suspense`，fallback 是沿用编辑区底色的空 div。为满足 `FunctionComponent<IDockviewPanelProps>` 的类型，用一个很薄的 `LazyEditorPanel` 包装。\n  3. `panels/EditorPanel.tsx` 顶部第一行加 `import \"../../lib/monaco\";`。ES 模块按顺序求值，所以 loader.config(本地 bundle) 一定在 EditorPane 模块求值、Editor 首次渲染之前完成，不会回落到 CDN。\n- 行为不变：编辑器功能、主题、LSP 都不变。恢复布局里带编辑器 tab 时，只多一次 chunk 加载。EditorTab(标签头)本来就不依赖 monaco，不改。\n- 测试：\n  - 新增 `src/bootImports.test.ts`，读源文件做断言：\n    - main.tsx 不含 `lib/monaco`；\n    - registry.ts 不静态 import EditorPanel；\n    - EditorPanel.tsx 的第一条 import 是 `lib/monaco`。\n  - 现有 EditorPane 等测试保持全绿；如果有测试同步渲染 registry 的 editor，就补上等待 Suspense。\n\n## S4 首屏只加载 400 字重\n- 现状：`main.tsx:1-7` 同步引入 7 份字体：inter 200/300/400/500，mono 300/400/500。\n- 改法：\n  - main.tsx 只保留 `inter/400.css` 和 `jetbrains-mono/400.css`；\n  - 其余 5 份移到新文件 `src/fontsDeferred.ts`；\n  - main.tsx 在 render 之后调用 `whenIdle(() => import(\"./fontsDeferred\"))`。`whenIdle` 放在新文件 `lib/idle.ts`：有 requestIdleCallback 就用它，没有就退回 setTimeout 0。S5 也复用它。\n- 行为不变：字体最终一致。首帧非 400 字重会短暂用 400 显示（FOUT），这是预期内的差异。\n- 测试：`bootImports.test.ts` 断言 main.tsx 只同步引入两份 400 字重的 css；`fontsDeferred.ts` 含另外 5 份。\n\n## S5 whenCentreSettled；engines 和 settings summary 等 centre 就绪且空闲后再发\n- 新 API：`lib/centreChat.ts` 增加 `whenCentreSettled(): Promise<void>`。每次页面加载只 resolve 一次，之后调用立即 resolve。`resetCentreChatForTests` 一并重置。\n- 内部新增 3 个信号函数：\n  - `noteSessionListSettled()`：session/list 的回复或推送已到；\n  - `noteRootAttached()`：某个面板订阅成功；\n  - `noteTransportFailed()`：连接失败。\n  - 另外订阅 sessionStore 的 `pendingSessionOp`。\n- 放行规则：任一路径满足即 resolve。具体是哪些触发点见下文「三条路径的 settle 证明」。\n- 改动点：\n  - `connectionStore.ts:264`（hello 分支）：`void useEngineStore.getState().ensureLoaded()` 改为 `void whenCentreSettled().then(whenIdle).then(() => useEngineStore.getState().ensureLoaded())`。\n  - `settingsStore.ts:418-435` noteWorkspaceReady：`noteTransportReady()` 仍然立即调用（这是 centre 新建的前提，必须保留）；`getSettingsSummary()` 及其后的 `noteHello(summary)` 排到 `await whenCentreSettled(); await whenIdle()` 之后。firstRun 的逻辑不变，只是晚一个 session/new 往返左右。\n  - `connectionStore.ts:441` 是 `settings/changed` 推送（总方案把它写成了“重连路径”，有误）：属于运行时的按需刷新，**不改**。重连会重新收到 hello，走 264 那一路；这时 settled 已经 resolve，等于只多一次空闲等待。\n  - `engineStore.ts:76` 的轮询、设置页、Engines 页、EditorPane 的按需拉取都不改。\n- 测试见下文“计划新增的 vitest”。\n\n## S6 loadRoot 等 whenCentreSettled\n- 现状：`components/FileTree.tsx:468-470` 挂载后立即 `loadRoot()`（走 HTTP）。\n- 改法：\n```ts\nuseEffect(() => {\n  let alive = true;\n  void whenCentreSettled().then(() => {\n    if (alive) void loadRoot();\n  });\n  return () => {\n    alive = false;\n  };\n}, [loadRoot]);\n```\n  - 不加超时兜底。treeStore 不改。\n- 测试：新增 `components/FileTree.settle.test.tsx`：settle 前不调用 loadRoot；settle 后调用一次；settle 前就卸载则不调用。\n\n## 三条路径的 settle 证明（触发点）\ncentre 何时“考虑”新建：`centreChat.ts:23-28` 的 ensureCentreChat 要同时满足 layout settled 和 transport ready。\n- layout settled 来自 `lifecycle.ts:100`。startWorkbench 的所有分支（`lifecycle.ts:159/184-218/226/229`）最终都会走到 finishChromeAndSettle → scheduleLayoutSettled，fromJSON 另有 2s 安全定时器 `lifecycle.ts:217`。\n- transport ready 来自 `settingsStore.ts:422`，即收到 hello 时。\n\n**路径 A：新 profile 或 centre 为空，走 session/new 回复**\n- 触发：`centreChat.ts:27` 调用 newSession，进入 `sessionStore.ts:581-600`。\n- settle：`pendingSessionOp` 从 \"new_session\" 变回 null，触发点是成功分支 `sessionStore.ts:593` 和失败分支 `sessionStore.ts:598`。\n- 为什么一定会 settle：\n  1. `agentWs.ts:292-295` 有 30s RPC 超时；\n  2. socket 断开时 `agentWs.ts:104/164/242` 的 rejectAllPendingRpc 会让请求 reject；\n  3. 所以 sendRpc 一定会进入 then 或 catch。\n- 如果调用 newSession 时已有别的会话操作在进行（`sessionStore.ts:583` 直接 return，pendingSessionOp 不会是 \"new_session\"），就在调用后检查到这一点，立即 settle。\n\n**路径 B：恢复布局（centre 已有面板），走 session/list 回复或面板 attach 完成**\n- 触发：`centreChat.ts:26` 发现 mainCenterHasPanel 为真，不新建会话，开始等列表或 attach 任一信号。\n- settle 信号：\n  - (a) `sessionStore.ts:692` listSessions 的 `.finally(settle)`，成功或失败都算；\n  - (b) `connectionStore.ts:295` 收到 session/list 推送；\n  - (c) `connectionStore.ts:464-469` ensureSubscribe 成功，也就是 AgentPanel 或 SubagentReadOnlyPanel 经 `useSessionPanelBootstrap.ts:36-38` attach 完成。\n- 为什么一定会 settle：每次 connected 都会发一次 session/list（`connectionStore.ts:164`），而 hello 必然在 connected 之后，并受同一套 30s 超时和断开 reject 保护。列表信号会被锁存：先到的回复（早于 layout settle）也算数。\n\n**路径 C：连接失败或重连**\n- 触发：`connectionStore.ts:170` 的非 connected 分支（disconnected 或 reconnecting）在 init 之后首次出现时，调用 `noteTransportFailed()`，立即 settle。\n- 握手失败时，`agentWs.ts:26` 有 2s 握手超时，然后走 `agentWs.ts:452/457` 置为 disconnected 或 reconnecting，所以连接卡在 connecting 不会是永久状态。\n- 重连：settle 只发生一次。之后的 hello 和 loadRoot 不再等待；engines 和 summary 只多一次空闲等待。\n- 首次失败后放行：文件树走 HTTP，照常加载（和现状一致）；engines 和 summary 请求会失败，失败处理和现状一样。\n\n### 计划新增的 vitest（每条路径各一条，另加接入点测试）\n1. `centreChat.test.ts`「A：centre 为空」：sendRpc(\"session/new\") 返回一个手动控制的 promise。在 layout 和 transport 都就绪后，whenCentreSettled 仍然 pending；resolve 后 settle；另外测 reject 也会 settle；再测 pendingSessionOp 已被别的操作占用时立即 settle。\n2. `centreChat.test.ts`「B：恢复布局」：mock mainCenterHasPanel 为 true，确认不会发 session/new。分别验证调用 noteSessionListSettled、或 noteRootAttached 后会 settle；以及列表回复早于 layout settle 时，layout 一到就立即 settle。\n3. `connectionStore.reconnect.test.ts`「C：连接失败」：init 后 onConnectionChange(\"reconnecting\")，没有 hello，whenCentreSettled 也会 resolve；settle 之后再重连，hello 分支不再等待。\n4. 接入点测试：\n   - `connectionStore.test.ts`：收到 hello 后 getEngines 不会立即被调用，settle 加 idle 之后才调用；\n   - `settingsStore.test.ts`：noteWorkspaceReady 立即调用 noteTransportReady，summary 在 settle 之后才请求；\n   - `FileTree.settle.test.tsx`（同 S6）；\n   - firstRun 相关测试和 engineStore.test 保持全绿。\n\n## 可能永不 settle 的边角路径和对策\n| # | 边角路径 | 分析 | 对策 |\n|---|---|---|---|\n| E1 | 恢复布局，centre 只有编辑器或 subagent，没有根面板 | 走路径 B：每次 connected 都会发 session/list（connectionStore:164），回复或失败都会放行 | 不需要额外处理；B 的测试覆盖“没有根面板”的情况 |\n| E2 | 所有面板都在独立窗口（popout），主 centre 是空的 | mainCenterHasPanel 只看主窗口的网格，结果为 false，会新建会话，走路径 A（和现状行为一致） | 不需要额外处理；加一条测试：主网格为空时走 A |\n| E3 | popout 恢复失败或超时 | 不影响 settle：noteLayoutSettled 来自 finishChromeAndSettle，与 releasePopouts(POPOUT_RESTORE_MS) 无关 | 不需要额外处理 |\n| E4 | 窗口在后台启动，rAF 被暂停 | `lifecycle.ts:95` 的 rAF 不会触发，layout 迟迟不 settle，路径 A 和 B 都会被推迟到窗口可见时。现状下 centre 新建也是这样推迟；但树、engines、summary 原本不受影响，现在会跟着推迟 | **开放问题 Q1** |\n| E5 | 连接成功，但 dockview 从未挂载（startWorkbench 没被调用），例如 App 停在错误或鉴权页 | layout 永远不 settle，只有 transport 就绪，A 和 B 都不会触发，summary 和 engines 永不发出；文件树也不存在 | **开放问题 Q2**：需要确认是否存在这种 App 状态；若存在，建议把“App 不渲染 workbench”当作 settled 来处理 |\n| E6 | 已经 connected、还没收到 hello，就一直挂着 | agentWs 的 hello 定时器会重试，属于连接失败一类，会走 disconnected 或 reconnecting，即路径 C | 不需要额外处理 |\n| E7 | 测试环境的全局状态会在用例之间泄漏 | 模块级的 promise 会被下一个用例继承 | resetCentreChatForTests 一并重建 promise 和锁存标志 |\n\n## 改动文件（预计）\n- web/src/main.tsx\n- web/src/fontsDeferred.ts（新增）\n- web/src/lib/idle.ts（新增）\n- web/src/dockview/config/registry.ts\n- web/src/dockview/panels/EditorPanel.tsx\n- web/src/lib/centreChat.ts\n- web/src/stores/connectionStore.ts\n- web/src/stores/settingsStore.ts\n- web/src/stores/sessionStore.ts：可选，只在需要导出订阅时改；倾向不改，用 zustand 的 subscribe\n- web/src/components/FileTree.tsx\n- 测试：centreChat.test、connectionStore(.reconnect).test、settingsStore.test、bootImports.test（新增）、FileTree.settle.test（新增）\n\n## 校验（批准、放行后，串行执行）\n1. tsc -b 为 0；\n2. vitest --maxWorkers=1 全绿，基数为 177/1365 加上新增；\n3. knip 不高于 23/21/1/0/0。\n\n最后交付 diff 和结果文档到 `artifacts/WP-168/`。\n\n## 开放问题（交中层）\n- Q1（E4）：后台启动、rAF 暂停时，loadRoot、engines、summary 会一起推迟到窗口可见。可以接受吗？还是给 layout settle 加一个“页面不可见时改用 setTimeout”的分支？这样改了 lifecycle，属于范围扩大。\n- Q2（E5）：是否存在“已连接但不渲染 workbench”的 App 状态？如果存在，那 summary(firstRun) 会永不发出，需要定对策。\n- Q3：总方案里 S5 写的“connectionStore.ts:441 重连路径”实际上是 settings/changed 推送，我打算不改。可以吗？\n- Q4：路径 B 用“session/list 回复，或任一 ensureSubscribe 成功”作为放行信号，后者不区分是不是根面板（subagent 面板 attach 也算）。可以吗？\n- Q5：S3 的 Suspense fallback 用空白编辑区底色，不加加载文字。可以吗？\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-14T18:31:20.324Z",
+          "actor": "frontend_mid",
+          "action": "create",
+          "note": "goal: monaco 懒加载；首屏只载 400 字重；engines 与 settings summary 延后到 centre settle 后；文件树 loadRoot 排在 session/new 之后；在 WP-158 改动之上，不 commit"
+        },
+        {
+          "ts": "2026-10-14T18:34:17.684Z",
+          "actor": "frontend",
+          "action": "fill",
+          "note": "direct: # WP-170 计划：WP-168 web 启动整改（S3–S6）\n\n父包 WP-168，总方案 `.tmp/wp168/plan.md`。owner：fro"
+        },
+        {
+          "ts": "2026-10-14T18:34:17.819Z",
+          "actor": "frontend",
+          "action": "submit",
+          "note": "S3-S6 计划，含三路径 settle 证明与 5 个开放问题"
+        },
+        {
+          "ts": "2026-10-14T18:34:54.833Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "批准。Q1 接受：窗口不可见时推迟没有用户可感知的影响。Q3 接受。Q4 接受：任一面板订阅成功都说明连接和列表已经通了。Q5 接受，只用底色。Q2 是开工前要先查清的条件：自己用 rg 查 App 有没有『已连接但不渲染工作区』的状态（欢迎页、选择工作区、鉴权门之类）。如果有，就让 settle 在那个状态上同样触发，并补一条 vitest；如果没有，在产物里写明查过的位置。"
+        },
+        {
+          "ts": "2026-10-14T18:35:35.988Z",
+          "actor": "frontend",
+          "action": "start",
+          "note": null
+        }
+      ]
     }
   ],
   "pipelines": [

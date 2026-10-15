@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   loadRegistry, printVersionHeader, opsRoot, recordTrace, renderWpStatusTable, applyStatusEnteredAt,
-  wpById, childrenOf, approverOf, isApproved, isNewModelWp, wpTreeOrder, wpChain, CLOSED_STATUSES, writeBoardValidated, appendOpsLog, mutateInbox, newEventId, escalationTarget,
+  wpById, childrenOf, softEnsureWatcher, approverOf, isApproved, isNewModelWp, wpTreeOrder, wpChain, CLOSED_STATUSES, writeBoardValidated, appendOpsLog, mutateInbox, newEventId, escalationTarget,
 } from "./_lib.mjs";
 
 const TOOL = "ops.wp";
@@ -71,6 +71,7 @@ function commit(id, summary, extraOut = {}) {
   appendOpsLog(ops, { kind: "wp_lifecycle", source: as, summary: `${summary} (ops.wp ${cmd})`, evidence: [".litecode/ops/board.json"] });
   const t = renderWpStatusTable(ops);
   recordTrace(ops, id, TOOL, reg.tools_version);
+  softEnsureWatcher(ops);
   console.log(JSON.stringify({ ok: true, cmd, id, as, written: true, validated: true, board_md_wp_table: t.rows, tools_version: reg.tools_version, ...extraOut }));
 }
 function nextId() {

@@ -1,5 +1,5 @@
 // ops.wp_watch (v11; v13 payload adds hierarchy/escalation fields; v15 durable outbox delivery, all alert types, payload type/target/actor/merged/matter_key) — resident WP-timeout watcher with callback delivery.
-//   start | stop | status | supervise | run | once     (see tools/board.md「ops.wp_watch 用法」)
+//   start | stop | status | supervise | run | once | ensure | test-callback | watchdog | watchdog-start | watchdog-stop   (v19: ensure = idempotent start/kill-hung-restart; test-callback = one labelled POST; watchdog = keepalive loop; see tools/board.md「ops.wp_watch 用法」)
 // Env (never written to repo / git config):
 //   LITECODE_WP_WEBHOOK_URL  callback URL (POST JSON)
 //   LITECODE_WP_WEBHOOK_KEY  secret → Authorization: Bearer <key> + X-LiteCode-Signature HMAC-SHA256
@@ -31,7 +31,7 @@ const HB_MS = Math.min(num("--heartbeat-sec", 60) * 1000, INTERVAL_MS);
 const FORCE = rest.includes("--force-timeout-scan");
 const wpTrace = opt("--wp");
 const LOG_MAX = 1024 * 1024; // rotate at 1 MiB → wp_watch.log.1 (one generation kept)
-const ROLE = cmd === "supervise" ? "sup" : cmd === "run" || cmd === "once" ? "worker" : "ctl";
+const ROLE = cmd === "watchdog" ? "dog" : cmd === "supervise" ? "sup" : cmd === "run" || cmd === "once" ? "worker" : "ctl";
 
 function log(level, msg) {
   const line = `${new Date().toISOString()} [${ROLE} ${process.pid}] ${level} ${msg}\n`;
@@ -201,18 +201,75 @@ function status() {
     paths: { log: rel(P.log), state: rel(P.state), pid: rel(P.pid) },
     webhook_env_in_this_shell: { url: !!process.env.LITECODE_WP_WEBHOOK_URL, key: !!process.env.LITECODE_WP_WEBHOOK_KEY },
     stale_pidfile: !!p && !alive,
+    watchdog: (() => { const d = readJsonOr(path.join(P.tmp, "wp_watchdog.pid"), null); return { running: !!d && isWatchPidAlive2(d.pid), pid: d?.pid ?? null }; })(),
   };
 }
 async function start() {
   const p = readPid();
   if (p && isWatchPidAlive(p.pid)) { console.log(JSON.stringify({ ok: true, already_running: true, ...status() })); return; }
   if (p) { try { fs.unlinkSync(P.pid); } catch {} }
+  const spawnedAt = Date.now();
   const c = spawn(process.execPath, [SELF, "supervise", ...rest], { detached: true, stdio: "ignore", env: process.env, cwd: path.join(ops, "..", "..") });
   c.unref();
-  for (let i = 0; i < 30; i++) { await new Promise((r) => setTimeout(r, 200)); const q = readPid(); if (q && q.pid === c.pid && readJsonOr(P.heartbeat, null)) break; }
+  // v19: wait for a heartbeat written AFTER this spawn (a restored/stale heartbeat file must not look like success)
+  for (let i = 0; i < 50; i++) { await new Promise((r) => setTimeout(r, 200)); const q = readPid(); const hb = readJsonOr(P.heartbeat, null); if (q && q.pid === c.pid && hb && Date.parse(hb.ts) >= spawnedAt) break; }
   log("INFO", `start requested; supervisor pid=${c.pid}`);
   recordTrace(ops, wpTrace, TOOL, reg.tools_version);
   console.log(JSON.stringify({ ok: true, started: true, ...status() }));
+}
+const HB_STALE_MS = num("--stale-min", 10) * 60000;
+/** v19 idempotent ensure: not running → start; running but heartbeat older than --stale-min (default 10) → kill + start; else no-op. */
+async function ensure() {
+  const p = readPid(); const alive = !!p && isWatchPidAlive(p.pid);
+  const hb = readJsonOr(P.heartbeat, null); const age = hb ? Date.now() - Date.parse(hb.ts) : null;
+  if (alive && age !== null && age <= HB_STALE_MS) return { ok: true, action: "none", reason: "healthy", supervisor_pid: p.pid, heartbeat_age_sec: Math.round(age / 1000) };
+  let reason = !p ? "no pidfile" : !alive ? "stale pidfile (process gone)" : age === null ? "no heartbeat" : `heartbeat ${Math.round(age / 60000)}m old (hung?)`;
+  if (alive) { // hung: kill supervisor + recorded worker
+    for (const pid of [hb?.pid, p.pid]) if (Number.isInteger(pid) && pid !== process.pid && isWatchPidAlive(pid)) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  for (const f of [P.pid]) try { fs.unlinkSync(f); } catch {}
+  log("WARN", `ensure: restarting wp_watch (${reason})`);
+  const out = []; const orig = console.log; console.log = (s) => out.push(s);
+  try { await start(); } finally { console.log = orig; }
+  const st = status();
+  return { ok: st.running && st.heartbeat.age_sec !== null && st.heartbeat.age_sec < 60, action: "restarted", reason, supervisor_pid: st.supervisor_pid, heartbeat_age_sec: st.heartbeat.age_sec };
+}
+/** v19: ONE labelled test POST (type team_ops.watcher_test, target tools_steward). Not written to inbox/outbox; logged; prints http code only. */
+async function testCallback() {
+  const url = process.env.LITECODE_WP_WEBHOOK_URL, key = process.env.LITECODE_WP_WEBHOOK_KEY;
+  if (!url || !key) { console.log(JSON.stringify({ ok: false, error: "webhook env unset in this shell" })); process.exit(1); }
+  const now = new Date();
+  const ev = { id: `E-TEST-${now.getTime()}-watcher_test`, ts: now.toISOString(), type: "team_ops.watcher_test", wp: null, summary: "TEST callback from ops.wp_watch test-callback (not a real alert; no action needed)", meta: { target: "tools_steward", actor: "ops.wp_watch" } };
+  let code = null, err = null;
+  try { code = await post(url, key, webhookPayloadOf(ev)); } catch (e) { err = e.name === "TimeoutError" ? "timeout" : (e.cause?.code || e.message); }
+  log(code >= 200 && code < 300 ? "INFO" : "WARN", `test-callback ${ev.id} target=tools_steward http=${code ?? err}`);
+  console.log(JSON.stringify({ ok: code !== null && code >= 200 && code < 300, http: code, error: err, event_id: ev.id }));
+  if (!(code >= 200 && code < 300)) process.exit(1);
+}
+// v19 independent keepalive: loop every --watchdog-sec (60); runs ensure(); own pidfile; survives nothing a VM restore kills (see board.md)
+const DOG_PID = path.join(P.tmp, "wp_watchdog.pid");
+async function watchdogLoop() {
+  const sec = num("--watchdog-sec", 60);
+  const cur = readJsonOr(DOG_PID, null);
+  if (cur && cur.pid !== process.pid && isWatchPidAlive2(cur.pid)) { log("ERROR", `watchdog already running pid=${cur.pid}`); process.exit(3); }
+  writeJsonAtomic(DOG_PID, { pid: process.pid, started_at: new Date().toISOString(), interval_sec: sec });
+  for (const s of ["SIGTERM", "SIGINT"]) process.on(s, () => { try { fs.unlinkSync(DOG_PID); } catch {} process.exit(0); });
+  log("INFO", `watchdog start interval=${sec}s stale_after=${HB_STALE_MS / 60000}m`);
+  const loop = async () => { try { const r = await ensure(); if (r.action !== "none") log(r.ok ? "WARN" : "ERROR", `watchdog: ${JSON.stringify(r)}`); } catch (e) { log("ERROR", "watchdog: " + e.message); } };
+  await loop(); setInterval(loop, sec * 1000);
+}
+function isWatchPidAlive2(pid) { try { process.kill(pid, 0); } catch (e) { if (e.code !== "EPERM") return false; } try { return fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").includes("wp_watch.mjs"); } catch { return true; } }
+function watchdogStart() {
+  const cur = readJsonOr(DOG_PID, null);
+  if (cur && isWatchPidAlive2(cur.pid)) { console.log(JSON.stringify({ ok: true, already_running: true, watchdog_pid: cur.pid })); return; }
+  try { fs.unlinkSync(DOG_PID); } catch {}
+  const c = spawn(process.execPath, [SELF, "watchdog", ...rest], { detached: true, stdio: "ignore", env: process.env, cwd: path.join(ops, "..", "..") }); c.unref();
+  console.log(JSON.stringify({ ok: true, started: true, watchdog_pid: c.pid }));
+}
+function watchdogStop() {
+  const cur = readJsonOr(DOG_PID, null);
+  if (cur && isWatchPidAlive2(cur.pid)) { process.kill(cur.pid, "SIGTERM"); console.log(JSON.stringify({ ok: true, stopped: true, watchdog_pid: cur.pid })); } else { try { fs.unlinkSync(DOG_PID); } catch {} console.log(JSON.stringify({ ok: true, was_running: false })); }
 }
 async function stop() {
   const p = readPid();
@@ -232,6 +289,11 @@ switch (cmd) {
   case "supervise": runSupervisor(); break;
   case "start": await start(); break;
   case "stop": await stop(); break;
+  case "ensure": { const r = await ensure(); console.log(JSON.stringify(r)); recordTrace(ops, wpTrace, TOOL, reg.tools_version); if (!r.ok) process.exit(1); break; }
+  case "test-callback": await testCallback(); recordTrace(ops, wpTrace, TOOL, reg.tools_version); break;
+  case "watchdog": await watchdogLoop(); break;
+  case "watchdog-start": watchdogStart(); break;
+  case "watchdog-stop": watchdogStop(); break;
   case "status": console.log(JSON.stringify({ ok: true, ...status() }, null, 2)); break;
   default:
     console.error("usage: wp_watch.mjs start|stop|status|supervise|run|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]");

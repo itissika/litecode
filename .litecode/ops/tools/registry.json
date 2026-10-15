@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "tools_version": 17,
-  "updated_at": "2026-10-13T12:10:00.000Z",
+  "tools_version": 19,
+  "updated_at": "2026-10-15T01:45:00.000Z",
   "hot_reload": true,
   "tools": [
     {
@@ -100,9 +100,9 @@
     },
     {
       "id": "ops.wp_watch",
-      "version": 3,
-      "purpose": "常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起；v13 回调体增加 level/parent/path/target/escalated（旧字段不变）；v15 事件先 fsync 落盘（inbox+events/outbox.jsonl）再发，启动/每轮排空 outbox，重启不丢；所有告警类型（超时、方案待批、待验收、watcher_down/restarted）都走 webhook，payload 带 target/type/actor/merged/matter_key；state/心跳/日志 fsync",
-      "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
+      "version": 4,
+      "purpose": "v19（tools_version 19）：新增 ensure（幂等：没跑→起；心跳>10 分钟→杀掉重起）、test-callback（发一条标注 team_ops.watcher_test→tools_steward 的测试 POST，只打印 http 码，不进 inbox）、watchdog-start/stop（独立保活循环，每 60 秒 ensure）；start 等到心跳晚于 spawn 才算成功；任何 ops.wp 写操作发现 watcher 死/心跳>10 分钟会自动 ensure（5 分钟限频，记 watcher_restarted）。 常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起；v13 回调体增加 level/parent/path/target/escalated（旧字段不变）；v15 事件先 fsync 落盘（inbox+events/outbox.jsonl）再发，启动/每轮排空 outbox，重启不丢；所有告警类型（超时、方案待批、待验收、watcher_down/restarted）都走 webhook，payload 带 target/type/actor/merged/matter_key；state/心跳/日志 fsync",
+      "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once|ensure|test-callback|watchdog-start|watchdog-stop [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
       "required_for": [
         "WP 超时回调触发",
         "watcher 稳定性（tick 查心跳）"
@@ -134,8 +134,8 @@
     },
     {
       "id": "ops.wp",
-      "version": 5,
-      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类",
+      "version": 6,
+      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类；v6（tools_version 19）每次写操作顺带 softEnsureWatcher（watcher 死/心跳>10 分钟则 detached ensure）",
       "invoke": "node .litecode/ops/tools/wp.mjs <new|fill|submit|approve|start|deliver|reject|close|set|reassign|tree|summary|history> --as <agent_id|andy> [...]",
       "required_for": [
         "新模型 WP 填写→请审→批准→执行→封包",
@@ -181,6 +181,36 @@
       "invoke": "node .litecode/ops/tools/ops_harden.test.mjs [--json] [--keep]",
       "required_for": [
         "ops 加固回归"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.cargo_env",
+      "version": 1,
+      "purpose": "source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK",
+      "invoke": "source .litecode/ops/tools/cargo_env.sh",
+      "required_for": [
+        "任何 cargo 调用"
+      ],
+      "stdout_header": "(none, sourced)"
+    },
+    {
+      "id": "ops.cargo_locked",
+      "version": 1,
+      "purpose": "cargo_env + flock .tmp/cargo-target.lock + timeout + </dev/null；共享 target 的唯一约定入口",
+      "invoke": ".litecode/ops/tools/cargo_locked.sh [-t SECS] <cargo args>",
+      "required_for": [
+        "cargo build/test/check（重型任务仍需 backend_mid 排队许可）"
+      ],
+      "stdout_header": "(cargo output)"
+    },
+    {
+      "id": "ops.registry_verify",
+      "version": 1,
+      "purpose": "核对 ops cargo registry：src 每个 crate 与 cache/.crate 逐文件比对（存在/大小/sha256）+ .cargo-ok；cache .crate 对 Cargo.lock sha256；--fix 重解压损坏 crate。不编译",
+      "invoke": ".litecode/ops/tools/registry_verify.sh [--fix] [--lock <Cargo.lock>]",
+      "required_for": [
+        "磁盘回滚/工具链异常后"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
     }

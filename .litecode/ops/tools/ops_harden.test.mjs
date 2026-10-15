@@ -1,4 +1,4 @@
-// ops.ops_harden.test (v1, tools_version 15, WP-032). Everything runs in temp copies of .litecode/ops (os.tmpdir,
+// ops.ops_harden.test (v1; group 10 watcher resilience added in tools_version 19; originally tools_version 15, WP-032). Everything runs in temp copies of .litecode/ops (os.tmpdir,
 // removed at the end unless --keep). Real webhook env is stripped; delivery tests use a fake local HTTP receiver.
 // Groups: 1 chain merge · 2 re-alert 60m · 3 single emitter · 4 escalation · 5 concurrent/crash-safe writes ·
 //         6 restart-safe delivery · 7 issue_new · 8 toolchain_check · 9 old-WP compat · R replay of 2026-10-12 08:00–08:25Z
@@ -307,6 +307,48 @@ await group("R replay 2026-10-12 08:00–08:25Z (GM acks everything right after 
   ok(win(oldSent).length === 7, `v14 replay reproduces 7 GM wakes in 08:07–08:22 (got ${win(oldSent).length})`);
   ok(win(newSent).length <= 2 && win(newSent).filter((x) => x.target === "gm").length === 0, `v15: ≤2 posts, none targeting gm (got ${JSON.stringify(win(newSent))})`);
   ok(!newSent.some((x) => x.wp === "WP-021" || x.wp === "WP-022"), "v15 never alerts parents WP-021/WP-022 while children run");
+});
+
+await group("10 watcher resilience (v19): ensure from stale pid/heartbeat, hung kill, idempotent, test-callback, softEnsure from ops.wp", async () => {
+  const ops = fresh(); const tmp = path.join(ops, ".tmp"); fs.mkdirSync(tmp, { recursive: true });
+  const rx = await receiver(); const env = { ...baseEnv, LITECODE_WP_WEBHOOK_URL: rx.url, LITECODE_WP_WEBHOOK_KEY: "test-key-not-secret" };
+  const st = () => JSON.parse(runSync(ops, "wp_watch.mjs", ["status"], env).stdout.split("\n").filter((l) => !l.startsWith("LITECODE_OPS")).join("\n"));
+  const L = await lib(ops);
+  try {
+    ok(L.softEnsureWatcher(ops).action === "none", "softEnsure: no heartbeat file (never set up) → no-op, nothing spawned");
+    // snapshot-rollback state: stale pidfile (dead pid) + 7h-old heartbeat
+    fs.writeFileSync(path.join(tmp, "wp_watch.pid"), JSON.stringify({ pid: 999999, started_at: iso(0) }));
+    fs.writeFileSync(path.join(tmp, "wp_watch.heartbeat.json"), JSON.stringify({ pid: 999998, ts: iso(Date.now() - 7 * 3600e3), cycles: 55 }));
+    let r = await runAsync(ops, "wp_watch.mjs", ["test-callback"], env); // async: receiver lives in this process
+    ok(r.status === 0 && /"http":200/.test(r.stdout) && !r.stdout.includes("test-key-not-secret"), "test-callback http 200, no secret printed");
+    const g = rx.got.at(-1)?.body;
+    ok(g && g.type === "team_ops.watcher_test" && g.target === "tools_steward" && /TEST/.test(g.summary), "test payload labelled watcher_test → tools_steward");
+    ok(/test-callback .* http=200/.test(fs.readFileSync(path.join(tmp, "wp_watch.log"), "utf8")), "test-callback logged");
+    ok(!fs.readFileSync(path.join(ops, "events", "inbox.json"), "utf8").includes("watcher_test"), "test-callback leaves inbox untouched");
+    r = runSync(ops, "wp_watch.mjs", ["ensure"], env);
+    ok(r.status === 0 && /"action":"restarted"/.test(r.stdout), "ensure restarts from stale pidfile + old heartbeat: " + r.stdout.slice(-200));
+    let s = st(); ok(s.running === true && s.heartbeat.age_sec < 30 && !s.stale_pidfile, "running, fresh heartbeat");
+    const sup = s.supervisor_pid;
+    r = runSync(ops, "wp_watch.mjs", ["ensure"], env);
+    ok(/"action":"none"/.test(r.stdout) && st().supervisor_pid === sup, "ensure idempotent when healthy (same supervisor)");
+    // hung: heartbeat file made old while process alive → ensure kills + restarts
+    fs.writeFileSync(path.join(tmp, "wp_watch.heartbeat.json"), JSON.stringify({ pid: s.worker_pid, ts: iso(Date.now() - 30 * 60e3), cycles: 1 }));
+    r = runSync(ops, "wp_watch.mjs", ["ensure"], env);
+    s = st(); ok(/"action":"restarted"/.test(r.stdout) && /hung/.test(r.stdout) && s.running && s.supervisor_pid !== sup, "hung watcher (old heartbeat, live pid) killed and restarted");
+    // softEnsure from ops.wp: kill watcher, then any wp write revives it
+    runSync(ops, "wp_watch.mjs", ["stop"], env);
+    runSync(ops, "wp.mjs", ["new", "--as", "gm", "--title", "t", "--goal", "g", "--owner", "gm", "--approver", "andy"], { ...env });
+    for (let i = 0; i < 40 && !st().running; i++) await new Promise((x) => setTimeout(x, 250));
+    s = st(); ok(s.running === true, "ops.wp write revived a dead watcher (softEnsure)");
+    ok(inbox(ops).some((e) => e.type === "team_ops.watcher_restarted" && e.source === "ops.wp"), "softEnsure recorded team_ops.watcher_restarted");
+    // watchdog loop
+    runSync(ops, "wp_watch.mjs", ["stop"], env);
+    r = runSync(ops, "wp_watch.mjs", ["watchdog-start", "--watchdog-sec", "1"], env);
+    for (let i = 0; i < 60 && !st().running; i++) await new Promise((x) => setTimeout(x, 250));
+    ok(st().running === true && st().watchdog.running === true, "watchdog restarted a stopped watcher");
+  } finally {
+    runSync(ops, "wp_watch.mjs", ["watchdog-stop"], env); await new Promise((x) => setTimeout(x, 800)); runSync(ops, "wp_watch.mjs", ["stop"], env); await rx.close();
+  }
 });
 
 if (!keep) for (const r of tmpRoots) fs.rmSync(r, { recursive: true, force: true });
