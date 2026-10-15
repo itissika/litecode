@@ -176,18 +176,29 @@ mod tests {
         );
     }
 
+    /// Drive letters are case-insensitive only on Windows; on Unix `/E:` and
+    /// `/e:` are distinct directories, so this half is Windows-only.
+    #[cfg(windows)]
     #[test]
     fn publish_diagnostics_uri_matches_drive_case() {
         assert!(publish_diagnostics_uri_matches(
             "file:///E:/litecode/src/a.rs",
             "file:///e:/litecode/src/a.rs"
         ));
+    }
+
+    /// Verbatim-URI recovery is string-level and holds on every platform.
+    #[test]
+    fn publish_diagnostics_uri_matches_mangled_verbatim() {
         assert!(publish_diagnostics_uri_matches(
             "file:////?/E:/litecode/src/a.rs",
             "file:///E:/litecode/src/a.rs"
         ));
     }
 
+    /// `Path::starts_with` on `E:\...` only splits into components on
+    /// Windows; on Unix the whole string is one component.
+    #[cfg(windows)]
     #[test]
     fn normalize_makes_verbatim_path_prefix_compatible() {
         let root = PathBuf::from(r"E:\litecode");
@@ -219,9 +230,24 @@ mod tests {
 
     #[test]
     fn uri_to_path_recovers_mangled_verbatim_file_uri() {
-        let path = uri_to_path("file:////?/E:/litecode/src/agent/core.rs")
-            .expect("mangled uri should parse after normalize");
-        assert_eq!(path, PathBuf::from(r"E:\litecode\src\agent\core.rs"));
+        // Platform-independent: the mangled URI is rewritten and parses.
+        let mangled = "file:////?/E:/litecode/src/agent/core.rs";
+        assert_eq!(
+            crate::lsp::uri::normalize_windows_file_uri(mangled),
+            "file:///E:/litecode/src/agent/core.rs"
+        );
+        let path = uri_to_path(mangled).expect("mangled uri should parse after normalize");
+        assert_eq!(
+            Some(path),
+            uri_to_path("file:///E:/litecode/src/agent/core.rs"),
+            "mangled and clean URIs map to the same path"
+        );
+        // The concrete `E:\` form is Windows path semantics.
+        #[cfg(windows)]
+        assert_eq!(
+            uri_to_path(mangled).unwrap(),
+            PathBuf::from(r"E:\litecode\src\agent\core.rs")
+        );
     }
 
     #[test]

@@ -76,6 +76,10 @@ fn webfetch_list_requires_bind_not_warmup() {
     ));
 }
 
+/// WP-167 (Tools-signed): network core engines are lazy. `reconcile` does not
+/// build the HTTP client; the first tool call (`ensure_warm`) does. Stopping
+/// still records `Stopped`. Name kept for history; see
+/// `optional::tests::reconcile_starts_warmup_for_network_core`.
 #[test]
 fn network_core_engines_always_warmup() {
     let dir = TempDir::new().expect("dir");
@@ -84,6 +88,11 @@ fn network_core_engines_always_warmup() {
     let resolved = ConfigManager::resolve(global, workspace, common::default_test_catalog());
     let engines = EngineManager::new();
     engines.reconcile(&resolved);
+    assert!(
+        !engines.is_warmed("webfetch", &resolved),
+        "reconcile must not pre-build webfetch (WP-167 lazy warm)"
+    );
+    assert_eq!(engines.ensure_warm("webfetch"), Ok(()));
     assert!(engines.is_warmed("webfetch", &resolved));
     engines.stop_all();
     assert!(!engines.is_warmed("webfetch", &resolved));
@@ -201,11 +210,21 @@ fn settings_reload_reconciles_engine_manager() {
     writer
         .write_log(litecode::config::schema::LogSettings { level: None })
         .expect("bump");
+    // DocId::ALL includes Engines → RuntimeHandle::apply calls
+    // engine_manager.reconcile (WP-167: configure only; no client yet).
     runtime.apply(litecode::config::DocId::ALL).expect("reload");
+    assert!(
+        !runtime
+            .engine_manager
+            .is_warmed("webfetch", &runtime.resolved),
+        "settings reload reconcile must stay lazy (WP-167)"
+    );
+    assert_eq!(runtime.engine_manager.ensure_warm("webfetch"), Ok(()));
     assert!(
         runtime
             .engine_manager
-            .is_warmed("webfetch", &runtime.resolved)
+            .is_warmed("webfetch", &runtime.resolved),
+        "first ensure_warm after reload must build the client"
     );
 
     let rt = tokio::runtime::Builder::new_current_thread()

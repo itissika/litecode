@@ -465,13 +465,19 @@ mod tests {
         assert_eq!(mgr.builds.load(Ordering::SeqCst), 2, "1 + webfetch rebuild");
     }
 
+    /// WP-167 contract (tools.md (b)): `reconcile` on a manager with no client
+    /// builds nothing; the first tool call (`ensure_warm`) builds it. Before
+    /// WP-167 reconcile warmed eagerly, which is what this test used to assert.
     #[test]
     fn reconcile_starts_warmup_for_network_core() {
         let global = GlobalSettings::default();
         let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
         let mgr = EngineManager::new();
         mgr.reconcile(&resolved);
-        assert!(mgr.is_warmed("webfetch", &resolved));
+        assert!(!mgr.is_warmed("webfetch", &resolved), "reconcile is lazy");
+        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
+        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
+        assert!(mgr.is_warmed("webfetch", &resolved), "first use warms");
     }
 
     #[test]

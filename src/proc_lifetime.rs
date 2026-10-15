@@ -46,13 +46,27 @@ pub fn bind_child_to_parent(pid: u32) {
 /// once their own parent dies. Best-effort; never kills processes with a
 /// live parent (other running litecode instances keep their servers).
 pub fn sweep_orphan_lsp_processes() {
+    // WP-165: timing/summary logs. Runs on the `lsp-orphan-sweep` thread under
+    // `serve` (see crate::lsp::sweep_gate); measurement only, no timeout.
+    let started = std::time::Instant::now();
+    tracing::info!("orphaned language-server sweep started");
+    let mut passes = 0u32;
+    let mut killed_total = 0usize;
     for pass in 0..3 {
+        passes += 1;
         let killed = sweep_once();
+        killed_total += killed;
         if killed == 0 {
-            return;
+            break;
         }
         tracing::info!(pass, killed, "orphaned language-server sweep pass");
     }
+    tracing::info!(
+        passes,
+        killed = killed_total,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "orphaned language-server sweep finished"
+    );
 }
 
 #[cfg(windows)]

@@ -329,10 +329,10 @@ async fn session_list_error_emits_operation_error_and_rpc_error() {
         .paths
         .sessions_db
         .clone();
-    let conn = rusqlite::Connection::open(&db).expect("open db");
-    conn.busy_timeout(Duration::from_secs(5)).unwrap();
-    conn.execute_batch("ALTER TABLE sessions RENAME TO sessions_wp166_gone;")
-        .expect("break sessions table");
+    crate::session::data::sqlite::test_support::rename_sessions_table(
+        &db,
+        "sessions_wp166_gone",
+    );
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/list", json!({})).await;
     let (reply, before) = until_reply(&mut ws, 1).await;
@@ -405,13 +405,11 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
         .expect("stale empty");
     let kept = seeded_session(&env.state, "has rows");
     let db = env.state.runtime.read().unwrap().workspace.paths.sessions_db.clone();
-    let conn = rusqlite::Connection::open(&db).expect("open db");
-    conn.busy_timeout(Duration::from_secs(5)).unwrap();
-    conn.execute(
-        "UPDATE sessions SET updated_at = 0 WHERE id IN (?1, ?2)",
-        rusqlite::params![stale_empty, kept],
-    )
-    .expect("age sessions");
+    crate::session::data::sqlite::test_support::set_sessions_updated_at(
+        &db,
+        &[&stale_empty, &kept],
+        0,
+    );
 
     let gc = crate::serve::router::spawn_empty_session_gc(env.state.sessions.clone());
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -437,14 +435,14 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_settled_fires_without_list_or_new() {
     // agent/run on a `?session=` connection (no list/new ever sent).
-    let env = env().await;
-    let sid = seeded_session(&env.state, "hinted");
-    let url = format!("{}&session={sid}", env.url);
+    let env1 = env().await;
+    let sid = seeded_session(&env1.state, "hinted");
+    let url = format!("{}&session={sid}", env1.url);
     let mut ws = connect(&url).await;
-    assert!(!env.state.sessions.is_startup_settled());
+    assert!(!env1.state.sessions.is_startup_settled());
     send(&mut ws, 1, "agent/run", json!({"session_id": sid, "input": ""})).await;
     let _ = until_reply(&mut ws, 1).await;
-    assert!(env.state.sessions.is_startup_settled(), "first agent/run settles startup");
+    assert!(env1.state.sessions.is_startup_settled(), "first agent/run settles startup");
 
     // HTTP-only retrieval search, no WS at all.
     let env = env().await;

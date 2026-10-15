@@ -117,6 +117,13 @@ mod tests {
             args: Vec::new(),
         };
         assert_eq!(shell_label(&spec), "bash");
+    }
+
+    /// Backslash is a path separator only on Windows; on Unix the whole string
+    /// is one file name, so this case is meaningful only under cfg(windows).
+    #[cfg(windows)]
+    #[test]
+    fn shell_label_uses_the_program_stem_windows_path() {
         let windows = ShellSpec {
             program: PathBuf::from(
                 "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",

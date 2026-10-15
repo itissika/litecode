@@ -7,8 +7,8 @@
 //! - Every language-server spawn waits for the sweep gate.
 //! - The new code has no language-specific branch.
 //!
-//! The two `serve_run_*` tests depend on the cross-domain session.diff
-//! (src/serve/run.rs) and stay red until it lands.
+//! WP-165 lands WP-167's cross-domain session.diff in `serve::run`
+//! (background sweep + `defer_reconcile`).
 
 fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
     let start = src.find(sig).unwrap_or_else(|| panic!("missing {sig}"));
@@ -75,6 +75,37 @@ fn serve_run_does_not_sweep_inline() {
     assert!(
         has_ident(&body, "start_background"),
         "serve::run must start the sweep through the gate"
+    );
+    // WP-165: gate must be armed before ServeState / LspHub exist, otherwise
+    // a concurrent first-need spawn could race an unarmed gate.
+    let start = body
+        .find("start_background")
+        .expect("start_background call");
+    let engines = body
+        .find("WorkspaceEngines::new")
+        .expect("WorkspaceEngines::new creates LspHub");
+    let state = body
+        .find("ServeState::new")
+        .expect("ServeState::new");
+    assert!(
+        start < engines && start < state,
+        "start_background must precede ServeState and LspHub construction"
+    );
+}
+
+#[test]
+fn serve_run_arms_sweep_before_ready_path() {
+    // Source-level: READY is printed in router::listen after ServeState is
+    // built; the only call site that arms the gate is serve::run, and it
+    // must not await the sweep (no wait / join / block_on around it).
+    let body = code_only(fn_body(SERVE_RUN, "pub fn run("));
+    let start = body.find("start_background").expect("armed");
+    let listen = body.find("router::listen").expect("listen");
+    assert!(start < listen, "sweep is armed before listen/READY");
+    // No synchronous wait on the gate in serve::run (spawn_ls waits instead).
+    assert!(
+        !body.contains("sweep_gate.wait()") && !has_ident(&body, "join"),
+        "serve::run must not wait for the sweep before READY"
     );
 }
 

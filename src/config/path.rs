@@ -162,6 +162,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)] // Path::starts_with on `\\?\` + `\` components is Windows-only semantics; string strip is covered cross-platform above
     fn strip_makes_verbatim_prefix_compatible() {
         let root = PathBuf::from(r"E:\litecode");
         let verbatim_file = PathBuf::from(r"\\?\E:\litecode\src\agent\core.rs");

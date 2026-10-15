@@ -11,6 +11,18 @@
 //! cannot be started, the sweep runs inline, as before. There is deliberately
 //! no timeout: opening early would break the "sweep before spawn" guarantee.
 //! A gate that was never armed (CLI, unit tests) lets every waiter through.
+//!
+//! Non-serve entries are unarmed on purpose (WP-167 plan §1, "CLI / 单测从不
+//! arm → wait() 直通，等同今日"): only `serve::run` ever called the sweep, so
+//! CLI never swept before WP-167 either, and arming there would add a sweep
+//! that did not exist. `serve::run` (src/serve/run.rs) is the only production
+//! caller of [`SweepGate::start_background`]; `cli.rs` reaches it only via the
+//! `Serve` subcommand. Known gaps (unchanged by WP-167, not a regression):
+//! a non-serve process never reaps orphans, and if a future non-serve entry
+//! wants "sweep before spawn" it must arm the global gate itself, before its
+//! first `LspHub` spawn; otherwise `wait()` passes immediately. The sweep
+//! itself logs start / finish / passes / killed / elapsed
+//! (`proc_lifetime::sweep_orphan_lsp_processes`).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
