@@ -27,7 +27,7 @@
     "endpoint_kind": {
       "type": "string",
       "description": "Wire protocol. Closed set: a new value needs a new codec.",
-      "enum": ["responses", "chat_completions"]
+      "enum": ["responses", "chat_completions", "messages"]
     },
     "auth_kind": {
       "type": "string",
@@ -108,7 +108,7 @@
         },
         "endpoint": {
           "type": "string",
-          "description": "API base URL, without /responses or /chat/completions.",
+          "description": "API base URL, without /responses, /chat/completions, or /messages.",
           "examples": ["https://api.deepseek.com", "https://opencode.ai/zen/v1"]
         },
         "endpoint_type": {

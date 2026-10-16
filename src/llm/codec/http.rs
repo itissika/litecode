@@ -1,4 +1,4 @@
-//! Shared HTTP substrate for both codecs: client shape, cancellable send with
+//! Shared HTTP substrate for every codec: client shape, cancellable send with
 //! bounded retry, and transport diagnostics.
 //!
 //! Codec selection lives in [`super`]; the streaming contract that keeps
@@ -171,13 +171,15 @@ pub(super) async fn send_cancellable(
 }
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    // 529 is Anthropic's overloaded status. It is not in the standard set, and
+    // other vendors do not emit it, so the extra match does not widen their retries.
     matches!(
         status,
         reqwest::StatusCode::REQUEST_TIMEOUT
             | reqwest::StatusCode::BAD_GATEWAY
             | reqwest::StatusCode::SERVICE_UNAVAILABLE
             | reqwest::StatusCode::GATEWAY_TIMEOUT
-    )
+    ) || status.as_u16() == 529
 }
 
 /// Count an empty-body stream loss against the same budget as connect retries.

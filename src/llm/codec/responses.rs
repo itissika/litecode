@@ -1520,7 +1520,9 @@ provider_id = "p"
             ResponseStreamEvent::ResponseOutputItemAdded(ev) => {
                 assert_eq!(ev.sequence_number, 0);
                 match ev.item {
-                    OutputItem::FunctionCall(FunctionToolCall { arguments, name, .. }) => {
+                    OutputItem::FunctionCall(FunctionToolCall {
+                        arguments, name, ..
+                    }) => {
                         assert_eq!(name, "bash");
                         assert_eq!(arguments, r#"{"command":"ls"}"#);
                     }

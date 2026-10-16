@@ -26,6 +26,8 @@ pub enum EndpointKind {
     Responses,
     /// OpenAI Chat Completions - one conversion pass.
     ChatCompletions,
+    /// Anthropic Messages - one conversion pass.
+    Messages,
 }
 
 impl EndpointKind {
@@ -33,6 +35,7 @@ impl EndpointKind {
         match self {
             Self::Responses => "responses",
             Self::ChatCompletions => "chat_completions",
+            Self::Messages => "messages",
         }
     }
 
@@ -40,18 +43,21 @@ impl EndpointKind {
         match s.trim() {
             "responses" => Some(Self::Responses),
             "chat_completions" => Some(Self::ChatCompletions),
+            "messages" => Some(Self::Messages),
             _ => None,
         }
     }
 
     /// Every endpoint kind, in codec-factory order.
-    pub const ALL: &'static [EndpointKind] = &[Self::Responses, Self::ChatCompletions];
+    pub const ALL: &'static [EndpointKind] =
+        &[Self::Responses, Self::ChatCompletions, Self::Messages];
 
     /// Request path appended to the catalog base URL.
     pub fn request_path(self) -> &'static str {
         match self {
             Self::Responses => "/responses",
             Self::ChatCompletions => "/chat/completions",
+            Self::Messages => "/messages",
         }
     }
 
@@ -68,6 +74,8 @@ impl EndpointKind {
         match self {
             Self::Responses => true,
             Self::ChatCompletions => modality == Modality::Text,
+            // Video and audio have no Messages block. PDF is a document block.
+            Self::Messages => matches!(modality, Modality::Text | Modality::Image | Modality::Pdf),
         }
     }
 }
@@ -386,6 +394,7 @@ pub const RESERVED_BODY_KEYS: &[&str] = &[
     "input",
     "instructions",
     "messages",
+    "system",
     "tools",
     "tool_choice",
     "stream",
@@ -394,9 +403,15 @@ pub const RESERVED_BODY_KEYS: &[&str] = &[
     "max_tokens",
     "max_completion_tokens",
     "temperature",
+    "top_p",
+    "top_k",
     "reasoning",
     "reasoning_effort",
     "thinking",
+    "output_config",
+    "cache_control",
+    "metadata",
+    "stop_sequences",
     "text",
     "response_format",
 ];
@@ -406,6 +421,7 @@ pub const RESERVED_HEADER_NAMES: &[&str] = &[
     "authorization",
     "api-key",
     "x-api-key",
+    "anthropic-version",
     "content-type",
     "accept",
     "user-agent",

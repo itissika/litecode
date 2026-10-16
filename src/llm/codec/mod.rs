@@ -1,4 +1,4 @@
-//! The two product codecs.
+//! The product codecs.
 //!
 //! [EndpointKind](crate::provider_catalog::EndpointKind) is the only codec
 //! selector: providers are data, protocols are code. A codec receives a fully
@@ -8,6 +8,9 @@ pub(crate) mod chat;
 pub(crate) mod chat_synth;
 pub(crate) mod chat_usage;
 pub(super) mod http;
+pub(crate) mod messages;
+pub(crate) mod messages_synth;
+pub(crate) mod messages_usage;
 pub(super) mod replay;
 pub(super) mod responses;
 pub(super) mod responses_harden;
@@ -31,6 +34,7 @@ pub(crate) fn build(model: Arc<ResolvedModel>) -> Result<Box<dyn LlmProvider>> {
     match model.endpoint_type {
         EndpointKind::Responses => Ok(Box::new(responses::ResponsesCodec::new(model)?)),
         EndpointKind::ChatCompletions => Ok(Box::new(chat::ChatCompletionsCodec::new(model)?)),
+        EndpointKind::Messages => Ok(Box::new(messages::MessagesCodec::new(model)?)),
     }
 }
 
@@ -42,6 +46,7 @@ pub(crate) fn error_prefix(model: &ResolvedModel) -> String {
         EndpointKind::ChatCompletions => {
             format!("provider '{}' (Chat Completions)", model.provider_name)
         }
+        EndpointKind::Messages => format!("provider '{}' (Messages)", model.provider_name),
     }
 }
 

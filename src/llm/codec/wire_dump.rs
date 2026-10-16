@@ -363,7 +363,7 @@ impl Capture {
         });
         append(&self.sse_path, &record.to_string());
         if let Ok(mut stats) = self.stream.lock() {
-            stats.fold(line, ms);
+            stats.fold(&self.codec, line, ms);
         }
     }
 
@@ -421,7 +421,7 @@ impl Drop for Capture {
 }
 
 impl StreamStats {
-    fn fold(&mut self, line: &str, ms: f64) {
+    fn fold(&mut self, codec: &str, line: &str, ms: f64) {
         self.lines += 1;
         self.last_ms = ms;
         // `sse_data_payload` hides the `[DONE]` sentinel; it is a terminal here.
@@ -448,6 +448,10 @@ impl StreamStats {
             return;
         };
         note_response_identity(self, &value);
+        if codec == "messages" {
+            self.fold_messages(&value);
+            return;
+        }
         if let Some(kind) = value.get("type").and_then(Value::as_str) {
             // Responses dialect: the event type is the unit.
             *self.events.entry(kind.to_string()).or_default() += 1;
@@ -497,6 +501,72 @@ impl StreamStats {
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             self.tool_call_deltas += calls.len() as u64;
+        }
+    }
+
+    /// Messages SSE is addressed by `type`, like Responses, but the deltas live
+    /// under `delta` and usage arrives on `message_start` / `message_delta`.
+    fn fold_messages(&mut self, value: &Value) {
+        let kind = value
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        *self.events.entry(kind.to_string()).or_default() += 1;
+        match kind {
+            "content_block_delta" => match value.pointer("/delta/type").and_then(Value::as_str) {
+                Some("thinking_delta") => {
+                    if let Some(text) = value.pointer("/delta/thinking").and_then(Value::as_str) {
+                        self.reasoning_chars += text.chars().count() as u64;
+                    }
+                }
+                Some("text_delta") => {
+                    if let Some(text) = value.pointer("/delta/text").and_then(Value::as_str) {
+                        self.content_chars += text.chars().count() as u64;
+                    }
+                }
+                Some("input_json_delta") => self.tool_call_deltas += 1,
+                _ => {}
+            },
+            "message_start" => {
+                if let Some(message) = value.get("message") {
+                    if self.response_id.is_none() {
+                        if let Some(id) = message
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                        {
+                            self.response_id = Some(id.to_string());
+                        }
+                    }
+                    if self.response_model.is_none() {
+                        if let Some(model) = message
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .filter(|model| !model.is_empty())
+                        {
+                            self.response_model = Some(model.to_string());
+                        }
+                    }
+                    if let Some(usage) = message.get("usage").filter(|usage| !usage.is_null()) {
+                        self.usage = Some(usage.clone());
+                    }
+                }
+            }
+            "message_delta" => {
+                if let Some(usage) = value.get("usage").filter(|usage| !usage.is_null()) {
+                    self.usage = Some(merge_usage(self.usage.take(), usage));
+                }
+                if let Some(reason) = value
+                    .pointer("/delta/stop_reason")
+                    .and_then(Value::as_str)
+                    .filter(|reason| !reason.is_empty())
+                {
+                    self.finish_reason = Some(reason.to_string());
+                }
+            }
+            "message_stop" => self.terminal = Some("message_stop".into()),
+            "error" => self.terminal = Some("error".into()),
+            _ => {}
         }
     }
 
@@ -558,16 +628,30 @@ fn tokens_of(usage: Option<&Value>) -> Value {
             "total": null,
         });
     };
-    let input =
+    let creation = json_u64(usage.get("cache_creation_input_tokens"));
+    let read = json_u64(usage.get("cache_read_input_tokens"));
+    let mut input =
         json_u64(usage.get("prompt_tokens")).or_else(|| json_u64(usage.get("input_tokens")));
+    // Anthropic's input_tokens excludes cache reads and writes. Responses
+    // input_tokens already includes them, so only add when those keys exist.
+    if creation.is_some() || read.is_some() {
+        input = Some(
+            input
+                .unwrap_or(0)
+                .saturating_add(creation.unwrap_or(0))
+                .saturating_add(read.unwrap_or(0)),
+        );
+    }
     let output =
         json_u64(usage.get("completion_tokens")).or_else(|| json_u64(usage.get("output_tokens")));
     let cached = json_u64(usage.pointer("/prompt_tokens_details/cached_tokens"))
         .or_else(|| json_u64(usage.pointer("/input_tokens_details/cached_tokens")))
         .or_else(|| json_u64(usage.get("cached_tokens")))
-        .or_else(|| json_u64(usage.get("prompt_cache_hit_tokens")));
+        .or_else(|| json_u64(usage.get("prompt_cache_hit_tokens")))
+        .or_else(|| read);
     let reasoning = json_u64(usage.pointer("/completion_tokens_details/reasoning_tokens"))
-        .or_else(|| json_u64(usage.pointer("/output_tokens_details/reasoning_tokens")));
+        .or_else(|| json_u64(usage.pointer("/output_tokens_details/reasoning_tokens")))
+        .or_else(|| json_u64(usage.pointer("/output_tokens_details/thinking_tokens")));
     let total = json_u64(usage.get("total_tokens")).or_else(|| match (input, output) {
         (Some(input), Some(output)) => Some(input.saturating_add(output)),
         _ => None,
@@ -579,6 +663,34 @@ fn tokens_of(usage: Option<&Value>) -> Value {
         "reasoning": reasoning,
         "total": total,
     })
+}
+
+/// `message_delta.usage` is cumulative. A null field keeps the previous value.
+fn merge_usage(previous: Option<Value>, next: &Value) -> Value {
+    let Some(previous) = previous else {
+        return next.clone();
+    };
+    let (Some(prev), Some(next_obj)) = (previous.as_object(), next.as_object()) else {
+        return next.clone();
+    };
+    let mut merged = prev.clone();
+    for (key, value) in next_obj {
+        if value.is_null() {
+            continue;
+        }
+        if let (Some(Value::Object(old)), Value::Object(new_child)) = (merged.get(key), value) {
+            let mut child = old.clone();
+            for (child_key, child_value) in new_child {
+                if !child_value.is_null() {
+                    child.insert(child_key.clone(), child_value.clone());
+                }
+            }
+            merged.insert(key.clone(), Value::Object(child));
+        } else {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(merged)
 }
 
 fn json_u64(value: Option<&Value>) -> Option<u64> {
@@ -607,7 +719,12 @@ fn sent_stats(codec: &str, body: &Value) -> Value {
         "stream": body.get("stream").cloned().unwrap_or(Value::Null),
         "tools": body.get("tools").and_then(Value::as_array).map_or(0, Vec::len),
         "tool_names": tool_names(body),
-        "effort": body.get("reasoning_effort").or_else(|| body.pointer("/reasoning/effort")).cloned().unwrap_or(Value::Null),
+        "effort": body
+            .get("reasoning_effort")
+            .or_else(|| body.pointer("/reasoning/effort"))
+            .or_else(|| body.pointer("/output_config/effort"))
+            .cloned()
+            .unwrap_or(Value::Null),
         "system_reminders": count_needle(&rendered, "<system-reminder>"),
         "items": json!({}),
         "assistant": empty_assistant(),
@@ -617,6 +734,8 @@ fn sent_stats(codec: &str, body: &Value) -> Value {
     });
     let layered = if codec == "chat" {
         chat_sent(body)
+    } else if codec == "messages" {
+        messages_sent(body)
     } else {
         responses_sent(body)
     };
@@ -714,6 +833,98 @@ fn chat_sent(body: &Value) -> Value {
     })
 }
 
+fn messages_sent(body: &Value) -> Value {
+    let mut roles: BTreeMap<String, u64> = BTreeMap::new();
+    if body.get("system").is_some() {
+        *roles.entry("system".into()).or_default() += 1;
+    }
+    let (mut assistant, mut with_tools, mut filled, mut empty, mut absent, mut asst_chars) =
+        (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
+    let (mut items, mut signed, mut with_text, mut redacted, mut chars) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
+    for message in body
+        .get("messages")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let role = message.get("role").and_then(Value::as_str).unwrap_or("?");
+        *roles.entry(role.to_string()).or_default() += 1;
+        if role != "assistant" {
+            continue;
+        }
+        assistant += 1;
+        let mut saw_tool = false;
+        let mut saw_thinking = false;
+        let mut turn_chars = 0u64;
+        for block in message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match block.get("type").and_then(Value::as_str).unwrap_or("") {
+                "tool_use" => saw_tool = true,
+                "thinking" => {
+                    saw_thinking = true;
+                    items += 1;
+                    let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                    if block
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .is_some_and(|signature| !signature.is_empty())
+                    {
+                        signed += 1;
+                    }
+                    if !text.is_empty() {
+                        with_text += 1;
+                        let n = text.chars().count() as u64;
+                        chars += n;
+                        turn_chars += n;
+                    }
+                }
+                "redacted_thinking" => {
+                    saw_thinking = true;
+                    items += 1;
+                    redacted += 1;
+                }
+                _ => {}
+            }
+        }
+        if saw_tool {
+            with_tools += 1;
+        }
+        if !saw_thinking {
+            absent += 1;
+        } else if turn_chars > 0 {
+            filled += 1;
+            asst_chars += turn_chars;
+        } else {
+            empty += 1;
+        }
+    }
+    json!({
+        "items": roles,
+        "assistant": {
+            "turns": assistant,
+            "with_tool_calls": with_tools,
+            "reasoning_filled": filled,
+            "reasoning_empty": empty,
+            "reasoning_absent": absent,
+            "reasoning_chars": asst_chars,
+        },
+        "reasoning": {
+            "items": items,
+            "encrypted": signed,
+            "with_text": with_text,
+            "with_summary": redacted,
+            "chars": chars,
+        },
+        // Tool-use ids pair a call with its result. They are not item ids.
+        "ids_on_wire": 0,
+    })
+}
+
 fn responses_sent(body: &Value) -> Value {
     let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
     let (mut reasoning, mut encrypted, mut with_text, mut with_summary, mut ids) =
@@ -792,6 +1003,14 @@ fn human_line(n: u64, codec: &str, sent: &Value, received: &Value) -> String {
             get(sent, "/assistant/reasoning_empty"),
             get(sent, "/assistant/reasoning_absent"),
             get(sent, "/assistant/reasoning_chars"),
+        )
+    } else if codec == "messages" {
+        format!(
+            "thinking signed {} / text {} / redacted {}, {} chars",
+            get(sent, "/reasoning/encrypted"),
+            get(sent, "/reasoning/with_text"),
+            get(sent, "/reasoning/with_summary"),
+            get(sent, "/reasoning/chars"),
         )
     } else {
         format!(
@@ -919,11 +1138,12 @@ mod tests {
     fn stream_fold_counts_both_dialects_and_the_terminal() {
         let mut chat = StreamStats::default();
         chat.fold(
+            "chat",
             r#"data: {"id":"chatcmpl_1","model":"deepseek-v4.1-flash","choices":[{"delta":{"reasoning_content":"abc"}}]}"#,
             10.0,
         );
-        chat.fold(r#"data: {"choices":[{"delta":{"content":"hi","tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":4}}"#, 20.0);
-        chat.fold("data: [DONE]", 30.0);
+        chat.fold("chat", r#"data: {"choices":[{"delta":{"content":"hi","tool_calls":[{"index":0}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"prompt_tokens_details":{"cached_tokens":0},"prompt_cache_hit_tokens":4}}"#, 20.0);
+        chat.fold("chat", "data: [DONE]", 30.0);
         let summary = chat.summary(31.0);
         assert_eq!(summary["reasoning_chars"], 3);
         assert_eq!(summary["content_chars"], 2);
@@ -942,14 +1162,17 @@ mod tests {
 
         let mut responses = StreamStats::default();
         responses.fold(
+            "responses",
             r#"data: {"type":"response.created","response":{"id":"resp_1","model":"mimo-v2.6-flash"}}"#,
             1.0,
         );
         responses.fold(
+            "responses",
             r#"data: {"type":"response.reasoning_summary_text.delta","delta":"ab"}"#,
             5.0,
         );
         responses.fold(
+            "responses",
             r#"data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":9,"output_tokens":2,"input_tokens_details":{"cached_tokens":7}}}}"#,
             9.0,
         );
@@ -963,6 +1186,93 @@ mod tests {
         assert_eq!(summary["tokens"]["output"], 2);
         assert_eq!(summary["response_id"], "resp_1");
         assert_eq!(summary["response_model"], "mimo-v2.6-flash");
+    }
+
+    #[test]
+    fn messages_body_counts_signed_redacted_and_text_thinking() {
+        let body = json!({
+            "model": "claude-sonnet-5-5",
+            "max_tokens": 128000,
+            "stream": true,
+            "output_config": {"effort": "max"},
+            "tools": [{"name": "read"}],
+            "system": [{"type": "text", "text": "sys"}],
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+                {"role": "assistant", "content": [
+                    {"type": "thinking", "thinking": "Need it", "signature": "sig"},
+                    {"type": "redacted_thinking", "data": "opaque"},
+                    {"type": "thinking", "thinking": "", "signature": "omit"},
+                    {"type": "tool_use", "id": "toolu_01", "name": "read", "input": {}}
+                ]}
+            ]
+        });
+        let sent = sent_stats("messages", &body);
+        assert_eq!(sent["effort"], "max");
+        assert_eq!(sent["max_output_tokens"], 128000);
+        assert_eq!(sent["tool_names"][0], "read");
+        assert_eq!(sent["items"]["system"], 1);
+        assert_eq!(sent["items"]["assistant"], 1);
+        assert_eq!(sent["assistant"]["with_tool_calls"], 1);
+        assert_eq!(sent["assistant"]["reasoning_filled"], 1);
+        assert_eq!(sent["reasoning"]["items"], 3);
+        assert_eq!(sent["reasoning"]["encrypted"], 2);
+        assert_eq!(sent["reasoning"]["with_text"], 1);
+        assert_eq!(sent["reasoning"]["with_summary"], 1);
+        assert_eq!(sent["reasoning"]["chars"], 7);
+        assert_eq!(sent["ids_on_wire"], 0);
+        let line = human_line(1, "messages", &sent, &json!({"status": 200, "tokens": {}}));
+        assert!(
+            line.contains("thinking signed 2 / text 1 / redacted 1, 7 chars"),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn messages_stream_folds_deltas_and_adds_cache_into_input() {
+        let mut stats = StreamStats::default();
+        stats.fold(
+            "messages",
+            r#"data: {"type":"message_start","message":{"id":"msg_01","model":"claude-sonnet-5-5","usage":{"input_tokens":100,"cache_creation_input_tokens":20,"cache_read_input_tokens":0,"output_tokens":1}}}"#,
+            4.0,
+        );
+        stats.fold(
+            "messages",
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"ab"}}"#,
+            5.0,
+        );
+        stats.fold(
+            "messages",
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hi"}}"#,
+            6.0,
+        );
+        stats.fold(
+            "messages",
+            r#"data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            7.0,
+        );
+        stats.fold(
+            "messages",
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":30,"cache_read_input_tokens":40,"input_tokens":null,"output_tokens_details":{"thinking_tokens":8}}}"#,
+            8.0,
+        );
+        stats.fold("messages", r#"data: {"type":"message_stop"}"#, 9.0);
+        let summary = stats.summary(10.0);
+        assert_eq!(summary["reasoning_chars"], 2);
+        assert_eq!(summary["content_chars"], 2);
+        assert_eq!(summary["tool_call_deltas"], 1);
+        assert_eq!(summary["terminal"], "message_stop");
+        assert_eq!(summary["finish_reason"], "tool_use");
+        assert_eq!(summary["response_id"], "msg_01");
+        assert_eq!(summary["response_model"], "claude-sonnet-5-5");
+        assert!(summary["events"].get("thinking_delta").is_none());
+        assert_eq!(summary["events"]["content_block_delta"], 3);
+        // 100 uncached + 20 creation + 40 read. The null input_tokens kept 100.
+        assert_eq!(summary["tokens"]["input"], 160);
+        assert_eq!(summary["tokens"]["cached"], 40);
+        assert_eq!(summary["tokens"]["output"], 30);
+        assert_eq!(summary["tokens"]["reasoning"], 8);
+        assert_eq!(summary["usage"]["input_tokens"], 100);
     }
 
     #[test]

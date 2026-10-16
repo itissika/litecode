@@ -164,13 +164,96 @@ fn seed_declares_reasoning_summaries_only_for_the_gpt_family() {
                 "{}: GPT models on Responses hosts declare the summary literal",
                 model.reference
             );
+        } else if model.endpoint_type == EndpointKind::Messages {
+            if let Some(summary) = model.reasoning_summary.as_deref() {
+                assert_eq!(
+                    summary, "summarized",
+                    "{}: Messages thinking display is the summarized literal",
+                    model.reference
+                );
+            }
         } else {
             assert_eq!(
                 model.reasoning_summary, None,
-                "{}: only the GPT family declares a summary literal",
+                "{}: only the GPT family and Messages models declare a summary literal",
                 model.reference
             );
         }
+    }
+}
+
+#[test]
+fn seed_claude_messages_models_use_the_documented_routes() {
+    let catalog = seeded();
+    let expect = [
+        (
+            "opencode/claude-opus-5-5",
+            "https://opencode.ai/inference/anthropic/v1/messages",
+            None,
+            true,
+        ),
+        (
+            "opencode/claude-sonnet-5-5",
+            "https://opencode.ai/inference/anthropic/v1/messages",
+            Some("between_tools"),
+            true,
+        ),
+        (
+            "opencode/claude-haiku-5-5",
+            "https://opencode.ai/inference/anthropic/v1/messages",
+            Some("disabled"),
+            true,
+        ),
+        (
+            "opencode-go/claude-haiku-5-5",
+            "https://opencode.ai/inference/go/anthropic/v1/messages",
+            Some("disabled"),
+            true,
+        ),
+        (
+            "commandcode/claude-opus-5-5",
+            "https://api.commandcode.ai/provider/v1/messages",
+            None,
+            false,
+        ),
+        (
+            "commandcode/claude-sonnet-5-5",
+            "https://api.commandcode.ai/provider/v1/messages",
+            Some("between_tools"),
+            false,
+        ),
+        (
+            "commandcode/claude-haiku-5-5",
+            "https://api.commandcode.ai/provider/v1/messages",
+            Some("disabled"),
+            false,
+        ),
+    ];
+    for (reference, url, off, pdf) in expect {
+        let model = catalog.model(reference).unwrap();
+        assert_eq!(model.endpoint_type, EndpointKind::Messages, "{reference}");
+        assert_eq!(model.request_url, url, "{reference}");
+        assert_eq!(model.reasoning_off.as_deref(), off, "{reference}");
+        assert_eq!(
+            model.reasoning_summary.as_deref(),
+            Some("summarized"),
+            "{reference}"
+        );
+        assert_eq!(model.context_window, 256_000, "{reference}");
+        assert_eq!(model.context_window_max, 1_000_000, "{reference}");
+        assert_eq!(model.max_output, 128_000, "{reference}");
+        assert!(model.supports(Modality::Text), "{reference}");
+        assert!(model.supports(Modality::Image), "{reference}");
+        assert_eq!(model.supports(Modality::Pdf), pdf, "{reference}");
+        let tiers = model.reasoning.as_ref().unwrap();
+        assert_eq!(tiers.low, "low");
+        assert_eq!(tiers.medium, "high");
+        assert_eq!(tiers.high, "max");
+        let session = model
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-opencode-session" && value == "{{session_id}}");
+        assert_eq!(session, reference.starts_with("opencode"), "{reference}");
     }
 }
 
@@ -580,6 +663,7 @@ fn endpoint_must_be_a_bare_absolute_url() {
         "https://api.example.com/v1#frag",
         "https://api.example.com/v1/responses",
         "https://api.example.com/v1/chat/completions",
+        "https://api.example.com/v1/messages",
     ] {
         assert!(validate_endpoint(bad).is_err(), "{bad} must be refused");
     }
@@ -607,6 +691,25 @@ fn header_templates_only_allow_session_id() {
         std::collections::BTreeMap::from([("x-session".to_string(), "{{api_key}}".to_string())]);
     let message = validate_headers(&bad).unwrap_err();
     assert!(message.contains("{{api_key}}"), "{message}");
+}
+
+#[test]
+fn messages_refuses_unimplemented_controls() {
+    let json_output = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\njson_output = true\n",
+    );
+    assert!(
+        json_output.contains("json_output is not implemented"),
+        "{json_output}"
+    );
+    let quirk = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\nquirks = [\"reasoning_replay\"]\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\n",
+    );
+    assert!(quirk.contains("responses codec"), "{quirk}");
+    let summary = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    );
+    assert!(summary.contains("responses codec"), "{summary}");
 }
 
 #[test]

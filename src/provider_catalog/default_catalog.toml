@@ -7,9 +7,9 @@
 # file. API keys live in Settings, not here.
 #
 # Rules worth knowing:
-#   * endpoint is the API base only. The path (/responses, /chat/completions) is
-#     chosen by endpoint_type, so never write it twice.
-#   * endpoint_type picks the codec: "responses" or "chat_completions".
+#   * endpoint is the API base only. The path (/responses, /chat/completions,
+#     /messages) is chosen by endpoint_type, so never write it twice.
+#   * endpoint_type picks the codec: "responses", "chat_completions", or "messages".
 #   * reasoning.tiers maps LiteCode's three thinking levels onto the vendor's own
 #     effort literals: low = the vendor's lowest thinking level, medium = its mid
 #     level (or high when it has only two), high = its top level (up to "max").
@@ -17,9 +17,9 @@
 #     Thinking OFF (compaction) sends `tiers.off` when the vendor has such a
 #     literal (DeepSeek "none", Doubao "disabled") and nothing at all otherwise.
 #   * reasoning.summary is the opt-in a reasoning model needs before it emits a
-#     summary of its thinking: the OpenAI family never exposes raw reasoning and
-#     returns nothing unless asked ("auto" / "concise" / "detailed"). Declare it
-#     only for a host whose dialect is verified to accept the field.
+#     summary of its thinking. On Responses hosts the OpenAI family uses
+#     "auto" / "concise" / "detailed". On Messages it is the thinking display
+#     literal ("summarized"). Declare it only where the dialect accepts it.
 #   * reasoning.replay is how a Responses host takes reasoning back. ciphertext
 #     (default) returns encrypted blobs to their producer. summary is Bailian:
 #     the item this provider minted, with its id and summary_text. Foreign
@@ -322,8 +322,8 @@ reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max"
 id = "gpt-6.1-sol"
 provider_id = "opencode"
 label = "GPT-6.1 Sol"
-# Zen serves the GPT family over Responses while every other model on this
-# provider stays on Chat Completions, so the path is chosen per model.
+# Zen serves the GPT family over Responses, Claude over Messages, and the
+# rest over Chat Completions, so the path is chosen per model.
 endpoint_type = "responses"
 context_window = 256000
 context_window_max = 1050000
@@ -418,6 +418,46 @@ max_output = 32768
 modalities = ["text"]
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
+# Claude 5.5 on the Anthropic Messages route. Opus cannot disable thinking.
+# Sonnet's floor is between_tools. Haiku can disable. Display is summarized.
+# 1M context, 128K output. No beta header.
+
+[[models]]
+id = "claude-opus-5-5"
+provider_id = "opencode"
+label = "Claude Opus 5.5"
+endpoint = "https://opencode.ai/inference/anthropic/v1"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image", "pdf"]
+reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "claude-sonnet-5-5"
+provider_id = "opencode"
+label = "Claude Sonnet 5.5"
+endpoint = "https://opencode.ai/inference/anthropic/v1"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image", "pdf"]
+reasoning = { summary = "summarized", tiers = { off = "between_tools", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "claude-haiku-5-5"
+provider_id = "opencode"
+label = "Claude Haiku 5.5"
+endpoint = "https://opencode.ai/inference/anthropic/v1"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image", "pdf"]
+reasoning = { summary = "summarized", tiers = { off = "disabled", low = "low", medium = "high", high = "max" } }
+
 # ── OpenCode Go ──────────────────────────────────────────────────────────────
 # The same id can declare a different vocabulary on each host, which is exactly
 # why tiers live on the model when the vendor differs per host.
@@ -431,8 +471,9 @@ context_window_max = 1000000
 max_output = 128000
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
-# Go serves the GPT family over Responses, like Zen, while the rest of the plan
-# stays on Chat Completions.
+# Go serves the GPT family over Responses, like Zen. Claude Haiku is the only
+# Claude model on this host, and it speaks Messages. The rest stay on Chat
+# Completions.
 
 [[models]]
 id = "gpt-6-luna"
@@ -529,6 +570,20 @@ context_window = 256000
 context_window_max = 1048576
 max_output = 128000
 modalities = ["text"]
+
+# Go's Claude route is Haiku 5.5 only, on the Messages base.
+
+[[models]]
+id = "claude-haiku-5-5"
+provider_id = "opencode-go"
+label = "Claude Haiku 5.5"
+endpoint = "https://opencode.ai/inference/go/anthropic/v1"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image", "pdf"]
+reasoning = { summary = "summarized", tiers = { off = "disabled", low = "low", medium = "high", high = "max" } }
 
 # ── Command Code Goat ───────────────────────────────────────────────────────
 
@@ -641,6 +696,42 @@ max_output = 128000
 modalities = ["text", "image"]
 usage_patch = "fill_empty_token_details"
 reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+
+# Claude speaks Messages on the provider base. This host accepts text and
+# images; PDF is refused. Opus is listed for pay-as-you-go use.
+
+[[models]]
+id = "claude-opus-5-5"
+provider_id = "commandcode"
+label = "Claude Opus 5.5"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "claude-sonnet-5-5"
+provider_id = "commandcode"
+label = "Claude Sonnet 5.5"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { summary = "summarized", tiers = { off = "between_tools", low = "low", medium = "high", high = "max" } }
+
+[[models]]
+id = "claude-haiku-5-5"
+provider_id = "commandcode"
+label = "Claude Haiku 5.5"
+endpoint_type = "messages"
+context_window = 256000
+context_window_max = 1000000
+max_output = 128000
+modalities = ["text", "image"]
+reasoning = { summary = "summarized", tiers = { off = "disabled", low = "low", medium = "high", high = "max" } }
 
 # ── Zhipu ────────────────────────────────────────────────────────────────────
 # GLM-5.3 rejects `disabled` and any effort outside low/high/max.

@@ -268,6 +268,15 @@ fn resolve_model(
             "thinking_type_switch"
         ));
     }
+    if endpoint_type == EndpointKind::Messages && quirks.contains(&ProviderQuirk::ReasoningReplay) {
+        return Err(format!(
+            "quirk '{}' is only implemented by the responses codec",
+            "reasoning_replay"
+        ));
+    }
+    if endpoint_type == EndpointKind::Messages && model.json_output {
+        return Err("json_output is not implemented by the messages codec".into());
+    }
 
     if model.context_window == 0 {
         return Err("context_window must be > 0".into());
@@ -398,6 +407,14 @@ pub fn validate_provider(provider: &RawProvider) -> std::result::Result<(), Stri
             "thinking_type_switch"
         ));
     }
+    if provider.endpoint_type == EndpointKind::Messages
+        && provider.quirks.contains(&ProviderQuirk::ReasoningReplay)
+    {
+        return Err(format!(
+            "quirk '{}' is only implemented by the responses codec",
+            "reasoning_replay"
+        ));
+    }
     Ok(())
 }
 
@@ -434,7 +451,7 @@ pub fn validate_endpoint(endpoint: &str) -> std::result::Result<(), String> {
         ));
     }
     let path = url.path().trim_end_matches('/');
-    for suffix in ["/responses", "/chat/completions"] {
+    for suffix in ["/responses", "/chat/completions", "/messages"] {
         if path.ends_with(suffix) {
             return Err(format!(
                 "endpoint '{trimmed}' must be the API base without '{suffix}'"

@@ -669,7 +669,13 @@ impl AgentRuntime {
             )
         } else {
             (
-                crate::llm::strip_foreign_ciphertext(&mut input, &producers, &provider_id),
+                crate::llm::strip_foreign_ciphertext(
+                    &mut input,
+                    &producers,
+                    &provider_id,
+                    self.turn_llm.model.endpoint_type.as_str(),
+                    &self.turn_llm.model_ref,
+                ),
                 0,
             )
         };
@@ -717,19 +723,27 @@ impl AgentRuntime {
     fn llm_input_producers(
         &self,
         item_seqs: &[Option<crate::session::event::Seq>],
-    ) -> Vec<Option<String>> {
+    ) -> Vec<Option<crate::llm::ItemProducer>> {
         let headers = self
             .sessions
             .request_origins(&self.session_id)
             .unwrap_or_default()
             .into_iter()
             .map(|(seq, body)| {
-                let provider = body
-                    .get("provider_id")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                (seq, provider)
+                let field = |key: &str| {
+                    body.get(key)
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string)
+                };
+                (
+                    seq,
+                    crate::llm::ItemProducer {
+                        provider_id: field("provider_id").unwrap_or_default(),
+                        endpoint_type: field("endpoint_type"),
+                        model_ref: field("model_ref"),
+                    },
+                )
             })
             .collect::<Vec<_>>();
         crate::llm::producers_for_seqs(item_seqs, &headers)

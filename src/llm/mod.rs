@@ -1,7 +1,7 @@
 //! LLM product surface — authority `Item` / `ModelRequest` only.
 //!
-//! Wire dialects live exclusively under private `codec/`. There are exactly two
-//! codecs, selected by the catalog's [EndpointKind](crate::provider_catalog::EndpointKind);
+//! Wire dialects live exclusively under private `codec/`. One codec per
+//! [EndpointKind](crate::provider_catalog::EndpointKind);
 //! providers themselves are data.
 
 mod codec;
@@ -19,7 +19,7 @@ pub use request::{ModelRequest, ToolDef};
 /// reasoning id, ciphertext only to its producer, and summary replay drops
 /// reasoning any other provider produced.
 pub(crate) use replay_compat::{
-    producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
+    ItemProducer, producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
 };
 
 /// Folding a provider's stream into canonical `Item`s.

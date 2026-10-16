@@ -53,7 +53,7 @@ export interface CatalogModelDto {
   enabled: boolean;
 }
 
-export type EndpointType = "responses" | "chat_completions";
+export type EndpointType = "responses" | "chat_completions" | "messages";
 
 export interface CatalogProviderDto {
   id: string;
