@@ -27,6 +27,7 @@ fn build_state(project: std::path::PathBuf, global_db_path: std::path::PathBuf) 
         workspace_root: project.clone(),
         workspace_id: workspace_id.clone(),
         contract: String::new(),
+        agents_md: String::new(),
         paths: WorkspacePaths::for_workspace(&project, &workspace_id),
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),

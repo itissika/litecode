@@ -254,6 +254,7 @@ fn light_workspace(dir: &std::path::Path) -> litecode::config::WorkspaceState {
         workspace_root: dir.to_path_buf(),
         workspace_id: workspace_id.clone(),
         contract: String::new(),
+        agents_md: String::new(),
         paths: litecode::config::WorkspacePaths::for_workspace(dir, &workspace_id),
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),

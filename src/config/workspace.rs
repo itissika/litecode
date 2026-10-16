@@ -446,15 +446,23 @@ pub fn read_contract(workspace_root: &Path) -> String {
     }
 }
 
-/// Contract string for one new turn. Does not mutate the process workspace.
+/// Process snapshot of `AGENTS.md`. Missing or unreadable is empty.
 ///
-/// `Found` (including an empty file) and `Missing` both replace `fallback`.
-/// `IoError` keeps `fallback` so a transient read does not blank the prompt.
-pub fn contract_snapshot_for_turn(workspace_root: &Path, fallback: &str) -> String {
-    match read_contract_result(workspace_root) {
-        ContractRead::Found(content) => content,
-        ContractRead::Missing => String::new(),
-        ContractRead::IoError(_) => fallback.to_string(),
+/// Called only from workspace load. Turns reuse [`WorkspaceState::agents_md`]
+/// and do not read the file again.
+fn read_agents_md(workspace_root: &Path) -> String {
+    let path = workspace_root.join("AGENTS.md");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "failed to read AGENTS.md; process snapshot stays empty"
+            );
+            String::new()
+        }
     }
 }
 
@@ -482,9 +490,11 @@ pub fn read_contract_result(workspace_root: &Path) -> ContractRead {
     }
 }
 
-/// Load workspace layer: resolve root, init layout, read contract.
+/// Load workspace layer: resolve root, init layout, snapshot `CLAUDE.md` and `AGENTS.md`.
 ///
 /// Process contract: one serve/CLI process owns one workspace for life.
+/// Instruction files are read here and not again, so a later disk edit does not
+/// move the prompt-cache prefix until the process restarts.
 /// The process cwd is left untouched (no global `chdir` side effect); all
 /// downstream consumers resolve workspace paths through `active_paths()`,
 /// which this function initializes explicitly below.
@@ -521,6 +531,7 @@ pub fn load_workspace_state_with(
         workspace_root: workspace_root.clone(),
         workspace_id,
         contract: read_contract(&workspace_root),
+        agents_md: read_agents_md(&workspace_root),
         paths: paths.clone(),
         workspace_tool_readiness,
         workspace_mcp_servers,
@@ -884,36 +895,17 @@ mod tests {
     }
 
     #[test]
-    fn contract_snapshot_for_turn_reads_disk_over_fallback() {
+    fn load_workspace_state_freezes_instruction_files() {
+        let _home = isolate_litecode_home();
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# fresh\n").unwrap();
-        assert_eq!(
-            contract_snapshot_for_turn(dir.path(), "# startup\n"),
-            "# fresh\n"
-        );
-    }
-
-    #[test]
-    fn contract_snapshot_for_turn_missing_or_empty_clears() {
-        let missing = tempfile::tempdir().unwrap();
-        assert_eq!(
-            contract_snapshot_for_turn(missing.path(), "# startup\n"),
-            ""
-        );
-
-        let empty = tempfile::tempdir().unwrap();
-        std::fs::write(empty.path().join("CLAUDE.md"), "").unwrap();
-        assert_eq!(contract_snapshot_for_turn(empty.path(), "# startup\n"), "");
-    }
-
-    #[test]
-    fn contract_snapshot_for_turn_io_error_keeps_fallback() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("CLAUDE.md")).unwrap();
-        assert_eq!(
-            contract_snapshot_for_turn(dir.path(), "# startup\n"),
-            "# startup\n"
-        );
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "# c1\n").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "# a1\n").unwrap();
+        let state = load_workspace_state(Some(root)).unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# c2\n").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "# a2\n").unwrap();
+        assert_eq!(state.contract, "# c1\n");
+        assert_eq!(state.agents_md, "# a1\n");
     }
 
     #[test]

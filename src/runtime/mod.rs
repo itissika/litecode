@@ -29,7 +29,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::{AgentDeps, TurnOutcome};
 use crate::config::bridge::agent_config_for;
-use crate::config::workspace::{contract_snapshot_for_turn, set_runtime_paths};
+use crate::config::workspace::set_runtime_paths;
 use crate::config::{AgentConfig, ConfigManager, ResolvedConfig, WorkspaceState, log_filter};
 use crate::context_pipeline::{Context, build_context};
 use crate::context_pipeline::{ContextPipeline, ProviderPromptBaseline};
@@ -511,6 +511,9 @@ pub struct AgentRuntime {
     pub(crate) context_pipeline: ContextPipeline,
     /// Cached context for access before lazy tool init (mirrors what runtime_ctx.ctx would hold).
     base_ctx: Context,
+    /// System prompt assembled once from the process instruction snapshot.
+    /// Steps reuse this string; they do not re-splice CLAUDE.md / AGENTS.md.
+    instructions: String,
     observer: Arc<dyn RuntimeObserver>,
     cancel: tokio_util::sync::CancellationToken,
     pub(crate) prompt_usage_baseline: ProviderPromptBaseline,
@@ -563,11 +566,10 @@ impl AgentRuntime {
         max_steps_override: Option<u32>,
     ) -> Result<Self> {
         let cancel = cancel.unwrap_or_default();
-        let mut resolved = runtime.resolved.clone();
-        // Turn-local overlay. The process contract stays the startup snapshot
-        // and is only the fallback when this read fails.
-        let contract = contract_snapshot_for_turn(resolved.workspace_root(), resolved.contract());
-        resolved.workspace_mut().contract = contract;
+        // Instruction files stay the process snapshot on `runtime.resolved`.
+        // Do not re-read CLAUDE.md / AGENTS.md here: a mid-process edit must
+        // not move the prompt-cache prefix.
+        let resolved = runtime.resolved.clone();
         let runtime_handle = runtime.clone();
 
         let mut agent_config = agent_config_for(&resolved, agent_name)?;
@@ -595,6 +597,8 @@ impl AgentRuntime {
         let paths = resolved.paths().clone();
         let cwd = resolved.workspace_root().to_path_buf();
         let context = build_context(&resolved, &cwd, &paths);
+        let instructions =
+            crate::context_pipeline::build_system_prompt(agent_name, &agent_config, Some(&context));
 
         let context_window = turn_llm.context_window;
         let context_pipeline =
@@ -622,6 +626,7 @@ impl AgentRuntime {
             tool_pipeline: None,
             context_pipeline,
             base_ctx: context,
+            instructions,
             observer,
             cancel,
             prompt_usage_baseline: ProviderPromptBaseline::default(),

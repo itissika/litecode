@@ -41,6 +41,7 @@ async fn env() -> Env {
         workspace_root: root.clone(),
         workspace_id: workspace_id.clone(),
         contract: String::new(),
+        agents_md: String::new(),
         paths: WorkspacePaths::for_workspace(&root, &workspace_id),
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
