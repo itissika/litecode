@@ -122,6 +122,10 @@ fn sanitize_git_env(cmd: &mut Command) {
         cmd.env_remove(key);
     }
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+    // `git status` otherwise refreshes the index stat cache, which writes
+    // `.git/index` and would schedule another status. Required locks (add,
+    // commit) are unaffected.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
 }
 
 fn run_git(workspace: &Path, args: &[&str]) -> Result<(i32, Vec<u8>, String), GitError> {
@@ -755,8 +759,22 @@ pub fn git_error_status(err: &GitError) -> axum::http::StatusCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::fs;
     use std::process::Command as StdCommand;
+
+    #[test]
+    fn git_commands_skip_optional_index_locks() {
+        let mut cmd = StdCommand::new("git");
+        sanitize_git_env(&mut cmd);
+        let locks = cmd
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("GIT_OPTIONAL_LOCKS"));
+        assert_eq!(
+            locks,
+            Some((OsStr::new("GIT_OPTIONAL_LOCKS"), Some(OsStr::new("0"))))
+        );
+    }
 
     fn git_available() -> bool {
         find_git_exe().is_some()

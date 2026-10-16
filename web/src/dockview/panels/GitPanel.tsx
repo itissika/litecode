@@ -7,9 +7,8 @@ export function GitPanelHost(props: IDockviewPanelProps) {
   const api = props.api;
 
   useEffect(() => {
-    // Report panel visibility so the store skips refreshes while hidden (the
-    // panel stays mounted in dockview, but its data is not being viewed).
-    // Becoming visible triggers a catch-up refresh.
+    // Status keeps updating while this panel is hidden (file badges share it).
+    // Showing it again pulls the commit log.
     useGitStore.getState().setVisible(api.isVisible);
     const sub = api.onDidVisibilityChange((e) => {
       useGitStore.getState().setVisible(e.isVisible);

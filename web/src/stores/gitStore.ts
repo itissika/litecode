@@ -74,8 +74,10 @@ interface GitStore {
     opts?: { additive?: boolean; range?: boolean; visible?: string[] },
   ) => void;
   clearSelection: () => void;
-  refresh: (opts?: { silent?: boolean }) => Promise<void>;
-  scheduleRefresh: (paths?: string[]) => void;
+  refresh: (opts?: { silent?: boolean; history?: boolean }) => Promise<void>;
+  /** `history` pulls the commit log. File edits leave it false; a branch-tip
+   *  move sets it, and a later file event in the same quiet period keeps it. */
+  scheduleRefresh: (paths?: string[], opts?: { history?: boolean }) => void;
   stagePaths: (paths: string[]) => Promise<void>;
   unstagePaths: (paths: string[]) => Promise<void>;
   restorePaths: (paths: string[]) => Promise<void>;
@@ -87,6 +89,9 @@ interface GitStore {
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshInFlight = false;
 let refreshQueued = false;
+/** OR of history requests waiting on the debounce timer or the in-flight call. */
+let pendingHistory = false;
+let queuedHistory = false;
 const REFRESH_DEBOUNCE_MS = 400;
 
 function toastError(err: unknown) {
@@ -133,8 +138,9 @@ export const useGitStore = create<GitStore>((set, get) => ({
   setVisible: (visible) => {
     const wasHidden = !get().visible && visible;
     set({ visible });
-    // Catch up on the changes that were skipped while hidden.
-    if (wasHidden) void get().refresh({ silent: true });
+    // Status stays current while hidden (file badges). The commit log catches
+    // up when the panel is shown again.
+    if (wasHidden) void get().refresh({ silent: true, history: true });
   },
 
   select: (id, opts) => {
@@ -164,24 +170,33 @@ export const useGitStore = create<GitStore>((set, get) => ({
   clearSelection: () => set({ selected: new Set(), anchorId: null }),
 
   refresh: async (opts) => {
-    // Skip refreshes while the Source Control panel is hidden — the catch-up
-    // in setVisible() re-runs one when it becomes visible again.
-    if (!get().visible) return;
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+    }
+    const history = (opts?.history ?? true) || pendingHistory;
+    pendingHistory = false;
     if (refreshInFlight) {
       refreshQueued = true;
+      if (history) queuedHistory = true;
       return;
     }
     refreshInFlight = true;
     const silent = opts?.silent ?? true;
     if (!silent) set({ loading: true, error: null });
     try {
-      const [status, log] = await Promise.all([gitStatus(), gitLog(50)]);
-      set({
-        status,
-        commits: log.commits,
-        loading: false,
-        error: null,
-      });
+      if (history) {
+        const [status, log] = await Promise.all([gitStatus(), gitLog(50)]);
+        set({
+          status,
+          commits: log.commits,
+          loading: false,
+          error: null,
+        });
+      } else {
+        const status = await gitStatus();
+        set({ status, loading: false, error: null });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       set({ loading: false, error: silent ? get().error : message });
@@ -189,20 +204,24 @@ export const useGitStore = create<GitStore>((set, get) => ({
       refreshInFlight = false;
       if (refreshQueued) {
         refreshQueued = false;
-        void get().refresh({ silent: true });
+        const queued = queuedHistory;
+        queuedHistory = false;
+        void get().refresh({ silent: true, history: queued });
       }
     }
   },
 
-  scheduleRefresh: (paths) => {
-    // No need to track changes while the panel is hidden; setVisible() does a
-    // catch-up refresh when it becomes visible again.
-    if (!get().visible) return;
-    if (!watchPathsAffectGitWorktree(paths)) return;
+  scheduleRefresh: (paths, opts) => {
+    if (opts?.history) pendingHistory = true;
+    // `.git` internals must not schedule a refresh by themselves. A history
+    // request from `git/head` has no paths and still starts the timer.
+    if (!pendingHistory && !watchPathsAffectGitWorktree(paths)) return;
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(() => {
       refreshTimer = null;
-      void get().refresh({ silent: true });
+      const history = pendingHistory;
+      pendingHistory = false;
+      void get().refresh({ silent: true, history });
     }, REFRESH_DEBOUNCE_MS);
   },
 
@@ -212,7 +231,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     try {
       await gitStage(paths);
       get().clearSelection();
-      await get().refresh();
+      await get().refresh({ history: false });
     } catch (err) {
       toastError(err);
     } finally {
@@ -226,7 +245,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     try {
       await gitUnstage(paths);
       get().clearSelection();
-      await get().refresh();
+      await get().refresh({ history: false });
     } catch (err) {
       toastError(err);
     } finally {
@@ -240,7 +259,7 @@ export const useGitStore = create<GitStore>((set, get) => ({
     try {
       await gitRestore(paths);
       get().clearSelection();
-      await get().refresh();
+      await get().refresh({ history: false });
     } catch (err) {
       toastError(err);
     } finally {

@@ -7,6 +7,7 @@ import {
 import { useMessageStore } from "./messageStore";
 import { useSessionStore } from "./sessionStore";
 import { useTurnStore } from "./turnStore";
+import { useGitStore } from "./gitStore";
 import { useWorkspaceChangeStore } from "./workspaceChangeStore";
 
 describe("shouldIgnoreForwardedSubagentEvent", () => {
@@ -108,12 +109,28 @@ describe("workspace/changed → workspace change store", () => {
   });
 
   it("records a HEAD move separately from file changes", () => {
+    const scheduleRefresh = vi.fn();
+    useGitStore.setState({ scheduleRefresh });
     useConnectionStore.getState().dispatchEnvelope({
       method: "git/head",
       params: {},
     });
     expect(useWorkspaceChangeStore.getState().headSeq).toBe(1);
     expect(useWorkspaceChangeStore.getState().last).toBeNull();
+    expect(scheduleRefresh).toHaveBeenCalledWith(undefined, { history: true });
+  });
+
+  it("refreshes status without moving HEAD when history is false", () => {
+    const scheduleRefresh = vi.fn();
+    useGitStore.setState({ scheduleRefresh });
+    useConnectionStore.getState().dispatchEnvelope({
+      method: "git/head",
+      params: { history: false },
+    });
+    expect(useWorkspaceChangeStore.getState().headSeq).toBe(0);
+    expect(scheduleRefresh).toHaveBeenCalledWith(undefined, {
+      history: false,
+    });
   });
 });
 

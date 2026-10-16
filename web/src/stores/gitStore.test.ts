@@ -1,13 +1,26 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { gitLog, gitStatus } from "../api/workspace";
 import {
   actionTargetPaths,
   gitRowId,
   isGitMetaPath,
   parseGitRowId,
   selectedPaths,
+  useGitStore,
   watchPathsAffectGitWorktree,
 } from "./gitStore";
+
+vi.mock("../api/workspace", () => ({
+  gitStatus: vi.fn(),
+  gitLog: vi.fn(),
+  gitStage: vi.fn(),
+  gitUnstage: vi.fn(),
+  gitRestore: vi.fn(),
+  gitCommit: vi.fn(),
+  gitPull: vi.fn(),
+  gitPush: vi.fn(),
+}));
 
 describe("git row ids", () => {
   it("round-trips section and path", () => {
@@ -64,5 +77,78 @@ describe("git file action targets", () => {
         "a.ts",
       ),
     ).toEqual(["a.ts"]);
+  });
+});
+
+const repoStatus = {
+  is_repo: true,
+  branch: "main",
+  upstream_ahead: 0,
+  upstream_behind: 0,
+  staged: [],
+  changes: [],
+};
+
+describe("git refresh timing", () => {
+  const status = vi.mocked(gitStatus);
+  const log = vi.mocked(gitLog);
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    status.mockReset();
+    log.mockReset();
+  });
+
+  it("refreshes status while the panel is hidden and skips the log for a worktree edit", async () => {
+    vi.useFakeTimers();
+    status.mockResolvedValue(repoStatus);
+    log.mockResolvedValue({ is_repo: true, commits: [] });
+    useGitStore.setState({ visible: false });
+    useGitStore.getState().scheduleRefresh(["src/a.ts"]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("keeps a history refresh when a file edit lands in the same quiet period", async () => {
+    vi.useFakeTimers();
+    status.mockResolvedValue(repoStatus);
+    log.mockResolvedValue({ is_repo: true, commits: [] });
+    useGitStore.setState({ visible: false });
+    useGitStore.getState().scheduleRefresh(undefined, { history: true });
+    useGitStore.getState().scheduleRefresh(["src/a.ts"]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh for a .git path on the worktree bus", async () => {
+    vi.useFakeTimers();
+    status.mockResolvedValue(repoStatus);
+    useGitStore.getState().scheduleRefresh([".git/index"]);
+    await vi.advanceTimersByTimeAsync(400);
+    expect(status).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("runs a queued history refresh after an in-flight status refresh", async () => {
+    vi.useFakeTimers();
+    let release: (value: typeof repoStatus) => void = () => {};
+    status.mockResolvedValue(repoStatus);
+    status.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    log.mockResolvedValue({ is_repo: true, commits: [] });
+    const first = useGitStore.getState().refresh({ history: false });
+    useGitStore.getState().scheduleRefresh(undefined, { history: true });
+    await vi.advanceTimersByTimeAsync(400);
+    expect(log).not.toHaveBeenCalled();
+    release(repoStatus);
+    await first;
+    expect(log).toHaveBeenCalledTimes(1);
   });
 });

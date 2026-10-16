@@ -162,15 +162,20 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
         loop {
             match broadcast_rx.recv().await {
                 Ok(change) => {
-                    // HEAD updates do not change the cited worktree file, so the
-                    // knowledge badge would otherwise keep a drift warning until
-                    // some later corpus refresh.
-                    if crate::workspace::change_moves_head(&change)
-                        && workspace_tx
-                            .send(project::notification("git/head", serde_json::json!({})))
+                    // `.git` never reaches `workspace/changed`. `history` is a
+                    // branch-tip move (commit log + knowledge drift). Index,
+                    // upstream refs, and a bare `.git` event only need status.
+                    if let Some(refresh) = crate::workspace::git_meta_refresh(&change) {
+                        let history = matches!(refresh, crate::workspace::GitMetaRefresh::History);
+                        if workspace_tx
+                            .send(project::notification(
+                                "git/head",
+                                serde_json::json!({ "history": history }),
+                            ))
                             .is_err()
-                    {
-                        break;
+                        {
+                            break;
+                        }
                     }
                     let Some(change) = crate::workspace::filter_change_for_ui(change) else {
                         continue;

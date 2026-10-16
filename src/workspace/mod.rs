@@ -37,5 +37,6 @@ pub use tool_path::{
 };
 pub use tree::{GlobListing, TreeEntry, TreeError, list_glob, list_tree, list_tree_reveal};
 pub use watcher::{
-    WorkspaceWatcher, change_moves_head, filter_change_for_ui, restart_watcher, spawn_watcher,
+    GitMetaRefresh, WorkspaceWatcher, change_moves_head, filter_change_for_ui, git_meta_refresh,
+    restart_watcher, spawn_watcher,
 };

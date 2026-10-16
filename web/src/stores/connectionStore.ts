@@ -450,7 +450,11 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           }
 
           case "git/head": {
-            useWorkspaceChangeStore.getState().recordHead();
+            // Absent `history` stays true: older servers only sent this for HEAD.
+            const history =
+              (params as { history?: boolean } | undefined)?.history !== false;
+            if (history) useWorkspaceChangeStore.getState().recordHead();
+            git?.scheduleRefresh?.(undefined, { history });
             return;
           }
 

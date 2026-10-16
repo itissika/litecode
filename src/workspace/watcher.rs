@@ -258,8 +258,84 @@ pub fn change_moves_head(change: &WorkspaceChange) -> bool {
 }
 
 fn moves_git_head(path: &str) -> bool {
+    matches!(
+        classify_root_git_meta(path),
+        Some(GitMetaClass::Head | GitMetaClass::BranchRef)
+    )
+}
+
+/// Source Control refresh for repository metadata that never reaches
+/// `workspace/changed`. Worktree edits use that bus and only need `git status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitMetaRefresh {
+    /// Index, upstream refs, or the `.git` directory itself. Status only.
+    Status,
+    /// A branch tip moved. Status and the commit log.
+    History,
+}
+
+pub fn git_meta_refresh(change: &WorkspaceChange) -> Option<GitMetaRefresh> {
+    let mut status = false;
+    for path in &change.paths {
+        match classify_root_git_meta(path) {
+            Some(GitMetaClass::Head | GitMetaClass::BranchRef) => {
+                return Some(GitMetaRefresh::History);
+            }
+            Some(GitMetaClass::Status) => status = true,
+            None => {}
+        }
+    }
+    status.then_some(GitMetaRefresh::Status)
+}
+
+#[derive(Clone, Copy)]
+enum GitMetaClass {
+    /// `HEAD` or its reflog. Knowledge drift cares about this specifically.
+    Head,
+    /// Loose branch tip (`refs/heads`, or the reflog of one).
+    BranchRef,
+    /// Staged state, upstream tips, or a bare `.git` directory event.
+    Status,
+}
+
+/// Classify a path inside the workspace-root `.git`. Nested repos and lock
+/// files are ignored: a lock is git's own temporary, and `git status` must
+/// not retrigger itself by refreshing the index (`GIT_OPTIONAL_LOCKS=0`).
+fn classify_root_git_meta(path: &str) -> Option<GitMetaClass> {
     let path = path.replace('\\', "/");
-    path == ".git/HEAD" || path == ".git/logs/HEAD" || path.starts_with(".git/refs/heads/")
+    let path = path.trim_start_matches("./");
+    let rest = path.strip_prefix(".git")?;
+    if !rest.is_empty() && !rest.starts_with('/') {
+        return None;
+    }
+    let rel = rest.trim_start_matches('/');
+    if rel.is_empty() {
+        return Some(GitMetaClass::Status);
+    }
+    if rel.split('/').any(|seg| seg.ends_with(".lock")) {
+        return None;
+    }
+    if rel.starts_with("objects/")
+        || rel.starts_with("lfs/")
+        || rel.starts_with("hooks/")
+        || rel.starts_with("subtree-cache/")
+    {
+        return None;
+    }
+    if rel == "HEAD" || rel == "logs/HEAD" {
+        return Some(GitMetaClass::Head);
+    }
+    if rel.starts_with("refs/heads/") || rel.starts_with("logs/refs/heads/") {
+        return Some(GitMetaClass::BranchRef);
+    }
+    if rel == "index"
+        || rel == "packed-refs"
+        || rel.starts_with("refs/remotes/")
+        || rel.starts_with("logs/refs/remotes/")
+    {
+        return Some(GitMetaClass::Status);
+    }
+    None
 }
 
 pub fn spawn_watcher(workspace: Arc<WorkspaceService>) -> anyhow::Result<Arc<WorkspaceWatcher>> {
@@ -644,6 +720,37 @@ mod tests {
         assert!(!change_moves_head(&changed(&[".git/objects/ab/cd"])));
         assert!(!change_moves_head(&changed(&["pkg/.git/logs/HEAD"])));
         assert!(!change_moves_head(&changed(&["src/a.rs"])));
+    }
+
+    #[test]
+    fn git_meta_refresh_splits_status_from_history() {
+        use super::GitMetaRefresh::{History, Status};
+        assert_eq!(git_meta_refresh(&changed(&[".git/index"])), Some(Status));
+        assert_eq!(git_meta_refresh(&changed(&[".git"])), Some(Status));
+        assert_eq!(
+            git_meta_refresh(&changed(&[".git/refs/remotes/origin/main"])),
+            Some(Status)
+        );
+        assert_eq!(
+            git_meta_refresh(&changed(&[".git/packed-refs"])),
+            Some(Status)
+        );
+        assert_eq!(git_meta_refresh(&changed(&[".git/HEAD"])), Some(History));
+        assert_eq!(
+            git_meta_refresh(&changed(&[".git/refs/heads/main"])),
+            Some(History)
+        );
+        assert_eq!(
+            git_meta_refresh(&changed(&[".git/index", ".git/refs/heads/main"])),
+            Some(History)
+        );
+        assert_eq!(git_meta_refresh(&changed(&[".git/index.lock"])), None);
+        assert_eq!(git_meta_refresh(&changed(&[".git/config"])), None);
+        assert_eq!(git_meta_refresh(&changed(&[".git/objects/ab/cd"])), None);
+        assert_eq!(git_meta_refresh(&changed(&[".git/lfs/tmp/1"])), None);
+        assert_eq!(git_meta_refresh(&changed(&["pkg/.git/index"])), None);
+        assert_eq!(git_meta_refresh(&changed(&[".gitignore"])), None);
+        assert_eq!(git_meta_refresh(&changed(&["src/a.rs"])), None);
     }
 
     #[test]

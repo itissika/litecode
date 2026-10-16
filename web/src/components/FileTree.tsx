@@ -496,10 +496,10 @@ export function FileTree() {
     virtualizer.scrollToIndex(idx, { align: "auto" });
   }, [activePath, rows, virtualizer]);
 
-  // Seed git status on mount so change badges render even when the Source
-  // Control panel has never been opened (its own refresh only runs there).
+  // Seed status so change badges render before Source Control has loaded.
+  // The commit log is the panel's own refresh.
   useEffect(() => {
-    void useGitStore.getState().refresh({ silent: true });
+    void useGitStore.getState().refresh({ silent: true, history: false });
   }, []);
 
   const operatePaths = (): string[] => {
