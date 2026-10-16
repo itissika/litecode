@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use crate::context_pipeline::build_system_prompt;
 use crate::llm::ModelRequest;
 use crate::llm::ToolDef;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
@@ -34,9 +33,10 @@ impl AgentDeps for AgentRuntime {
             )
         })?;
 
-        let instructions = view.instructions.clone().unwrap_or_else(|| {
-            build_system_prompt(&self.agent_name, &self.agent_config, Some(&self.base_ctx))
-        });
+        let instructions = view
+            .instructions
+            .clone()
+            .unwrap_or_else(|| self.instructions.clone());
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
@@ -922,7 +922,8 @@ impl AgentRuntime {
 }
 
 /// Process-local fingerprint so consecutive steps can tell whether `instructions`
-/// (body / CLAUDE.md splice) changed. Not a cryptographic hash.
+/// changed. The string is assembled once per runtime from the process snapshot
+/// of CLAUDE.md / AGENTS.md. Not a cryptographic hash.
 fn instructions_fingerprint(instructions: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();

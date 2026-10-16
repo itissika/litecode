@@ -125,6 +125,7 @@ fn enable_code_search_engine_writes_engines_json_and_reload_restores_readiness()
         workspace_root: root.clone(),
         workspace_id: litecode::config::peek_workspace_id(&root).expect("workspace identity"),
         contract: String::new(),
+        agents_md: String::new(),
         paths: {
             let id = litecode::config::peek_workspace_id(&root).expect("workspace identity");
             litecode::config::WorkspacePaths::for_workspace(&root, &id)

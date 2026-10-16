@@ -55,6 +55,10 @@ pub struct WorkspaceState {
     pub workspace_id: String,
     #[serde(default)]
     pub contract: String,
+    /// Process snapshot of `AGENTS.md`. Empty when the file is missing.
+    /// Turns do not re-read it.
+    #[serde(default)]
+    pub agents_md: String,
     pub paths: WorkspacePaths,
     /// Workspace-tool readiness, synced from engines.json.
     #[serde(default)]
@@ -71,6 +75,7 @@ impl WorkspaceState {
         "workspace_root",
         "workspace_id",
         "contract",
+        "agents_md",
         "paths",
         "workspace_tool_readiness",
         "workspace_mcp_servers",
@@ -86,6 +91,7 @@ impl WorkspaceState {
             workspace_root,
             workspace_id,
             contract: String::new(),
+            agents_md: String::new(),
             workspace_tool_readiness: HashMap::new(),
             workspace_mcp_servers: HashMap::new(),
             workspace_custom_tools: HashMap::new(),
@@ -99,6 +105,7 @@ impl WorkspaceState {
             workspace_root,
             workspace_id,
             contract: String::new(),
+            agents_md: String::new(),
             paths,
             workspace_tool_readiness: HashMap::new(),
             workspace_mcp_servers: HashMap::new(),
@@ -139,6 +146,7 @@ impl ResolvedConfig {
         "workspace_root",
         "workspace_id",
         "contract",
+        "agents_md",
         "paths",
         "workspace_tool_readiness",
         "workspace_mcp_servers",
@@ -338,6 +346,11 @@ impl ResolvedConfig {
 
     pub fn contract(&self) -> &str {
         &self.workspace.contract
+    }
+
+    /// Process snapshot of `AGENTS.md` (empty when the file was absent at startup).
+    pub fn agents_md(&self) -> &str {
+        &self.workspace.agents_md
     }
 
     pub fn paths(&self) -> &WorkspacePaths {

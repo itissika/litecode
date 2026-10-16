@@ -4,7 +4,8 @@ use crate::config::global_db::{
 };
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: harness header + editable layers + tool rules + citations + CLAUDE.md.
+/// Unified entry: harness header + editable layers + tool rules + citations
+/// + process-snapshotted `AGENTS.md` then `CLAUDE.md`.
 /// Hidden agents get the editable body only.
 pub fn build_system_prompt(
     agent_id: &str,
@@ -16,8 +17,12 @@ pub fn build_system_prompt(
         return editable;
     }
     let body = splice_harness(&editable);
+    let agents_md = ctx.and_then(|c| c.agents_md.as_deref()).unwrap_or("");
     let claude_md = ctx.and_then(|c| c.claude_md.as_deref()).unwrap_or("");
-    splice_claude_md(&body, claude_md)
+    // Stable order: AGENTS.md then CLAUDE.md. An absent file adds no bytes,
+    // so a CLAUDE-only workspace keeps the same suffix it had before.
+    let body = splice_instruction_file(&body, "AGENTS.md", agents_md);
+    splice_instruction_file(&body, "CLAUDE.md", claude_md)
 }
 
 /// Fixed LiteCode layers around the editable block. An empty editable block still
@@ -45,11 +50,11 @@ fn resolve_body(agent_id: &str, stored: &str) -> String {
     }
 }
 
-fn splice_claude_md(body: &str, claude_md: &str) -> String {
-    if claude_md.is_empty() {
+fn splice_instruction_file(body: &str, filename: &str, content: &str) -> String {
+    if content.is_empty() {
         return body.to_string();
     }
-    format!("{body}\n\n<context from=\"CLAUDE.md\">\n{claude_md}\n</context>\n")
+    format!("{body}\n\n<context from=\"{filename}\">\n{content}\n</context>\n")
 }
 
 #[cfg(test)]
@@ -152,18 +157,25 @@ mod tests {
     }
 
     #[test]
-    fn primary_splices_claude_md_not_agents_md() {
-        let ctx = make_ctx(Some("# contract"), Some("never splice agents md"));
+    fn primary_splices_agents_md_then_claude_md() {
+        let ctx = make_ctx(Some("# contract"), Some("follow agents"));
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
-        assert!(prompt.contains("<context from=\"CLAUDE.md\">"));
-        assert!(prompt.contains("# contract"));
+        let agents = prompt.find("<context from=\"AGENTS.md\">").unwrap();
+        let claude = prompt.find("<context from=\"CLAUDE.md\">").unwrap();
         assert!(prompt.find("# System").unwrap() < prompt.find("General Purpose Agent").unwrap());
-        assert!(
-            prompt.find("# Citations").unwrap()
-                < prompt.find("<context from=\"CLAUDE.md\">").unwrap()
-        );
-        assert!(!prompt.contains("never splice agents md"));
+        assert!(prompt.find("# Citations").unwrap() < agents);
+        assert!(agents < claude);
+        assert!(prompt.contains("follow agents"));
+        assert!(prompt.contains("# contract"));
+    }
+
+    #[test]
+    fn absent_agents_md_leaves_claude_suffix_unchanged() {
+        let ctx = make_ctx(Some("# contract"), None);
+        let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
         assert!(!prompt.contains("AGENTS.md"));
+        assert!(prompt.contains("<context from=\"CLAUDE.md\">"));
+        assert!(prompt.ends_with("<context from=\"CLAUDE.md\">\n# contract\n</context>\n"));
     }
 
     #[test]
