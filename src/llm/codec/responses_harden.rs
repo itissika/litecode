@@ -4,9 +4,12 @@
 //!
 //! 1. **Shell fill** - every Responses payload is completed with the fields the
 //!    authority types require but a vendor may omit on early events (output,
-//!    status, reasoning summary, function-call arguments, annotations). Filling
-//!    an absent required field is safe for every vendor, so it is a codec
-//!    invariant rather than catalog data.
+//!    status, reasoning summary, function-call arguments, annotations,
+//!    `sequence_number`). Filling an absent required field is safe for every
+//!    vendor, so it is a codec invariant rather than catalog data. Tool-call
+//!    text (`arguments`, argument `delta`) is also coerced to a string when a
+//!    gateway sends the parsed JSON value or null: the authority field is a
+//!    string, and rejecting the event aborts the turn.
 //! 2. **`usage_patch`** - vendor-specific repairs, one named value per
 //!    implemented algorithm.
 
@@ -74,12 +77,21 @@ fn fill_shell_value(value: &mut Value, event_type: Option<&str>) {
 }
 
 fn fill_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
-    match map.get("type").and_then(Value::as_str) {
+    let ty = map.get("type").and_then(Value::as_str).map(str::to_owned);
+    if ty
+        .as_deref()
+        .is_some_and(|t| t.starts_with("response.") || t == "error")
+    {
+        map.entry("sequence_number")
+            .or_insert_with(|| Value::from(0u64));
+    }
+    match ty.as_deref() {
         Some("reasoning") => {
             map.entry("summary")
                 .or_insert_with(|| Value::Array(Vec::new()));
         }
         Some("function_call") => {
+            coerce_json_text(map, "arguments");
             map.entry("arguments")
                 .or_insert_with(|| Value::String(String::new()));
             if !map.contains_key("call_id") {
@@ -91,6 +103,16 @@ fn fill_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
                 map.insert("call_id".into(), Value::String(fallback));
             }
             map.entry("name")
+                .or_insert_with(|| Value::String(String::new()));
+        }
+        Some("response.function_call_arguments.delta") => {
+            coerce_json_text(map, "delta");
+            map.entry("delta")
+                .or_insert_with(|| Value::String(String::new()));
+        }
+        Some("response.function_call_arguments.done") => {
+            coerce_json_text(map, "arguments");
+            map.entry("arguments")
                 .or_insert_with(|| Value::String(String::new()));
         }
         Some("message") => {
@@ -118,6 +140,17 @@ fn fill_typed_object(map: &mut Map<String, Value>, stream_event: Option<&str>) {
         }
         _ => {}
     }
+}
+
+/// The authority tool-call fields are strings of JSON. A gateway that already
+/// parsed the value, or that sends null, is the same payload.
+fn coerce_json_text(map: &mut Map<String, Value>, key: &str) {
+    let text = match map.get(key) {
+        None | Some(Value::String(_)) => return,
+        Some(Value::Null) => String::new(),
+        Some(other) => other.to_string(),
+    };
+    map.insert(key.to_string(), Value::String(text));
 }
 
 fn fill_response_object(map: &mut Map<String, Value>, event_type: Option<&str>) {
@@ -248,5 +281,56 @@ mod tests {
         assert_eq!(value["usage"]["total_tokens"], 3);
         assert_eq!(value["output"][0]["effort"], "xhigh");
         assert_eq!(value["output"][0]["summary"], json!([]));
+    }
+
+    #[test]
+    fn tool_call_object_arguments_become_a_json_string() {
+        let mut added = json!({
+            "type": "response.output_item.added",
+            "output_index": 1,
+            "item": {
+                "type": "function_call",
+                "id": "fc_1",
+                "call_id": "call_1",
+                "name": "bash",
+                "arguments": { "command": "ls" }
+            }
+        });
+        harden(&mut added, UsagePatch::None);
+        assert_eq!(added["sequence_number"], 0);
+        assert_eq!(added["item"]["arguments"], "{\"command\":\"ls\"}");
+
+        let mut delta = json!({
+            "type": "response.function_call_arguments.delta",
+            "item_id": "fc_1",
+            "output_index": 1,
+            "delta": { "command": "ls" }
+        });
+        harden(&mut delta, UsagePatch::None);
+        assert_eq!(delta["delta"], "{\"command\":\"ls\"}");
+
+        let mut done = json!({
+            "type": "response.function_call_arguments.done",
+            "item_id": "fc_1",
+            "output_index": 1,
+            "arguments": null
+        });
+        harden(&mut done, UsagePatch::None);
+        assert_eq!(done["arguments"], "");
+        assert_eq!(done["sequence_number"], 0);
+    }
+
+    #[test]
+    fn tool_call_string_arguments_stay_verbatim() {
+        let mut event = json!({
+            "type": "response.function_call_arguments.delta",
+            "sequence_number": 4,
+            "item_id": "fc_1",
+            "output_index": 1,
+            "delta": "{\"command\":"
+        });
+        harden(&mut event, UsagePatch::None);
+        assert_eq!(event["delta"], "{\"command\":");
+        assert_eq!(event["sequence_number"], 4);
     }
 }

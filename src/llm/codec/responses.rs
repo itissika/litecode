@@ -1499,6 +1499,80 @@ provider_id = "p"
         assert!(err.to_string().contains("unknown variant"));
     }
 
+    /// A gateway that emits the parsed arguments object, and omits
+    /// `sequence_number`, must not abort the turn. The authority field is a
+    /// string; the codec coerces before deserialization.
+    #[test]
+    fn nonconforming_tool_call_events_parse_as_function_calls() {
+        use crate::authority::responses::{
+            FunctionToolCall, OutputItem, ResponseFunctionCallArgumentsDeltaEvent,
+            ResponseFunctionCallArgumentsDoneEvent, ResponseStreamEvent,
+        };
+
+        let codec = ResponsesCodec::new(plain("")).unwrap();
+        let added = codec
+            .parse_stream_event(
+                r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"bash","arguments":{"command":"ls"}}}"#,
+            )
+            .expect("object arguments must not fail the stream")
+            .expect("event");
+        match added {
+            ResponseStreamEvent::ResponseOutputItemAdded(ev) => {
+                assert_eq!(ev.sequence_number, 0);
+                match ev.item {
+                    OutputItem::FunctionCall(FunctionToolCall { arguments, name, .. }) => {
+                        assert_eq!(name, "bash");
+                        assert_eq!(arguments, r#"{"command":"ls"}"#);
+                    }
+                    other => panic!("expected function_call, got {other:?}"),
+                }
+            }
+            other => panic!("expected output_item.added, got {other:?}"),
+        }
+
+        let delta = codec
+            .parse_stream_event(
+                r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":{"command":"ls"}}"#,
+            )
+            .expect("object delta must not fail the stream")
+            .expect("event");
+        match delta {
+            ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(
+                ResponseFunctionCallArgumentsDeltaEvent { delta, .. },
+            ) => assert_eq!(delta, r#"{"command":"ls"}"#),
+            other => panic!("expected arguments delta, got {other:?}"),
+        }
+
+        let done = codec
+            .parse_stream_event(
+                r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":1,"arguments":null}"#,
+            )
+            .expect("null arguments must not fail the stream")
+            .expect("event");
+        match done {
+            ResponseStreamEvent::ResponseFunctionCallArgumentsDone(
+                ResponseFunctionCallArgumentsDoneEvent { arguments, .. },
+            ) => assert_eq!(arguments, ""),
+            other => panic!("expected arguments done, got {other:?}"),
+        }
+
+        let completed = codec
+            .parse_stream_event(
+                r#"{"type":"response.completed","sequence_number":3,"response":{"id":"r","object":"response","created_at":1,"model":"gpt-6-luna","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"bash","arguments":{"command":"ls"}}]}}"#,
+            )
+            .expect("completed payload with object arguments must not fail the stream")
+            .expect("event");
+        match completed {
+            ResponseStreamEvent::ResponseCompleted(ev) => match &ev.response.output[0] {
+                OutputItem::FunctionCall(FunctionToolCall { arguments, .. }) => {
+                    assert_eq!(arguments, r#"{"command":"ls"}"#);
+                }
+                other => panic!("expected function_call, got {other:?}"),
+            },
+            other => panic!("expected response.completed, got {other:?}"),
+        }
+    }
+
     // ── streaming ────────────────────────────────────────────────────────────
 
     async fn serve_once(body: String, content_type: &str, declared_len: Option<usize>) -> String {
