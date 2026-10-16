@@ -162,6 +162,38 @@ describe("AgentWsClient incoming frames", () => {
     expect(onEnvelope).toHaveBeenCalledWith(workspaceChanged);
   });
 
+  it("delivers a buffer/load larger than the partial-frame cap", () => {
+    const onEnvelope = vi.fn();
+    const onError = vi.fn();
+    const ws = connectedClient(onEnvelope, onError);
+    const payload = {
+      id: "rpc-1",
+      jsonrpc: "2.0",
+      result: {
+        events: [{ body: { text: "x".repeat(8 * 1024 * 1024) } }],
+      },
+    };
+    ws.onmessage?.({ data: JSON.stringify(payload) });
+    expect(onError).not.toHaveBeenCalled();
+    expect(onEnvelope).toHaveBeenCalledTimes(1);
+    expect(onEnvelope.mock.calls[0]?.[0]).toMatchObject({
+      id: "rpc-1",
+      result: { events: [{ body: { text: "x".repeat(8 * 1024 * 1024) } }] },
+    });
+  });
+
+  it("drops a fragment that never closes once it passes the cap", () => {
+    const onEnvelope = vi.fn();
+    const onError = vi.fn();
+    const ws = connectedClient(onEnvelope, onError);
+    ws.onmessage?.({ data: "{" + "x".repeat(8 * 1024 * 1024) });
+    expect(onEnvelope).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(String(onError.mock.calls[0]?.[0])).toContain(
+      "WebSocket frame did not finish",
+    );
+  });
+
   it("does not toast a split workspace/changed frame", () => {
     const onEnvelope = vi.fn();
     const onError = vi.fn();

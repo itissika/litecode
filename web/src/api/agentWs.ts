@@ -27,7 +27,8 @@ const HANDSHAKE_TIMEOUT_MS = 2000;
 /** Server pushes `server/stats` every 2s. Silence longer than this means the
  *  socket is open in name only (sleep, half-open TCP). */
 const STALE_AFTER_MS = 10_000;
-/** Drop a stuck partial frame rather than holding it forever. */
+/** Drop a fragment that never becomes JSON. A complete message is delivered
+ *  even when it is larger than this. */
 const MAX_WS_BUFFER = 8 * 1024 * 1024;
 
 function resolveWsUrl(explicit?: string): string {
@@ -350,12 +351,6 @@ export class AgentWsClient {
 
   private handleIncoming(chunk: string): void {
     this.lineBuffer += chunk;
-    if (this.lineBuffer.length > MAX_WS_BUFFER) {
-      const preview = this.lineBuffer.trimStart().slice(0, 80);
-      this.lineBuffer = "";
-      this.options.onError?.(`Invalid JSON: ${preview}`);
-      return;
-    }
     const lines = this.lineBuffer.split("\n");
     this.lineBuffer = lines.pop() ?? "";
 
@@ -363,14 +358,19 @@ export class AgentWsClient {
       this.dispatchLine(line);
     }
 
-    // One WS text frame is usually one compact JSON object with no trailing
-    // newline. Parse the remainder only when it is complete; otherwise keep it
-    // so a split frame is not toasted as Invalid JSON.
+    // One WS text message is one compact JSON object, usually with no trailing
+    // newline. Parse it once it is complete. A fragment stays buffered so a
+    // split message is not toasted; only a fragment that never closes is dropped.
     const pending = this.lineBuffer.trim();
     if (!pending) return;
     try {
       JSON.parse(pending);
     } catch {
+      if (this.lineBuffer.length > MAX_WS_BUFFER) {
+        const preview = pending.slice(0, 80);
+        this.lineBuffer = "";
+        this.options.onError?.(`WebSocket frame did not finish (${preview})`);
+      }
       return;
     }
     this.lineBuffer = "";
