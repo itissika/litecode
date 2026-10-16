@@ -2,6 +2,20 @@ Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## \[0.2.5] - 2026-10-16
+
+### 新特性
+
+* **向用户提问可断线续问**：`pending_permissions` 落盘；快照恒带该字段；断线重连后可拉回待答 ask_user，断线不再误当拒绝；回合进入 `waiting_for_user`。
+* **启动排位与前端瘦身**：工作台骨架更快露出；sidecar / 引擎启动顺序与生命周期更稳。
+* **语义索引更克制**：按后缀白名单收录；worker 忙时检索不堵。
+
+### 其他
+
+* Runtime 可观测性：panic / diagnostics / 工具审计与 TurnError 对齐 wire。
+* 修复：网关把工具参数发成对象时不再中断回合；提问卡片选中项悬停底色；指令文件改回进程级组装。
+* FE：snapshot hydrate 与契约测试对齐（PermissionCard 桌面出卡仍未做满）。
+
 ## \[0.2.4] - 2026-10-14
 
 ### 新特性
