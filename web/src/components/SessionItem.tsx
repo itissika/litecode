@@ -1,7 +1,13 @@
 import { memo, useEffect, useState } from "react";
 import type { SessionInfo } from "../api/types";
+import { isWaitingForUserPhase } from "../api/types";
+import { useTurnStore } from "../stores/turnStore";
 import { LivePreview } from "./LivePreview";
-import { SessionStatusDot, type SessionStatus } from "./SessionStatusDot";
+import {
+  SessionStatusDot,
+  isAwaitingPermission,
+  type SessionStatus,
+} from "./SessionStatusDot";
 
 /**
  * DEBUG: when true, every status bar ignores its real status and alternates
@@ -44,9 +50,10 @@ interface SessionItemProps {
  * Pure presentational row for a single session. Single-line layout:
  *   [status dot] [conversation summary] [live summary] [time ⇄ delete]
  * Owns no store subscriptions — `session` + `now` are supplied by the parent.
- * The `pending` (awaiting a permission grant) status is read directly from the
- * session payload (`session.turn?.awaiting_permission`), so it reflects every
- * session in the list — including ones not currently open.
+ * The `pending` status (WP-184 / WP-186): WireTurnPhase `waiting_for_user`
+ * (legacy object key `awaiting_permission`), else trust BE
+ * `turn.awaiting_permission` bool; if that field is absent, derive from local
+ * `permissionQueue` length.
  */
 export const SessionItem = memo(function SessionItem({
   session,
@@ -54,7 +61,13 @@ export const SessionItem = memo(function SessionItem({
   onOpen,
   onDelete,
 }: SessionItemProps) {
-  const pending = session.turn?.awaiting_permission ?? false;
+  // WP-184 Phase B: phase object OR bool / local queue derivation.
+  const pendingCount = useTurnStore(
+    (s) => s.byId.get(session.id)?.permissionQueue.length ?? 0,
+  );
+  const pending =
+    isWaitingForUserPhase(session.turn?.phase) ||
+    isAwaitingPermission(session.turn?.awaiting_permission, pendingCount);
   const subagentBusy =
     session.status === "running_with_subagent" || session.status === "stopping";
   const deleteBlocked = session.running || subagentBusy;

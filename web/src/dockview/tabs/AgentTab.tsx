@@ -1,6 +1,7 @@
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { useSessionStore } from "../../stores/sessionStore";
+import { useTurnStore } from "../../stores/turnStore";
 import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
 import {
   SessionStatusDot,
@@ -21,7 +22,12 @@ export function AgentTab(
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
   );
-  const status = deriveSessionStatus(session);
+  const pendingCount = useTurnStore(
+    (s) => s.byId.get(sessionId)?.permissionQueue.length ?? 0,
+  );
+  const status = deriveSessionStatus(session, {
+    pendingPermissionCount: pendingCount,
+  });
   // Subscribe to the preview directly so the tab shows the live summary instead
   // of relying on setTitle() propagating to api.title.
   const preview = (session?.preview ?? "").trim();

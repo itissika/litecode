@@ -49,6 +49,34 @@ interface PendingPermission {
   questions: AskQuestion[];
 }
 
+/**
+ * Same normalize + shape as live `onPermissionRequest` (WP-184).
+ * Snapshot `pending_permissions` entries require `kind`; live events may omit
+ * it (legacy default `"permission"`).
+ */
+function toPendingPermission(pr: PermissionRequest): PendingPermission {
+  const kind = pr.kind ?? "permission";
+  const questions = normalizeAskQuestions(
+    kind,
+    pr.summary,
+    pr.questions,
+    pr.options,
+    pr.multi_select,
+  );
+  return {
+    turn_id: pr.turn_id,
+    request_id: pr.request_id,
+    tool: pr.tool,
+    rule_id: pr.rule_id,
+    summary: pr.summary,
+    kind,
+    free_text: pr.free_text ?? false,
+    options: pr.options ?? [],
+    multi_select: pr.multi_select ?? false,
+    questions,
+  };
+}
+
 /** Per-session turn runtime state only — no composer/UI draft fields. */
 export interface TurnSlice {
   runState: AgentRunState;
@@ -619,6 +647,8 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     cancel: (sessionId) => {
       const current = getSlice(get().byId, sessionId);
       if (current.runState !== "running") return;
+      // Stop: clear local cards + agent/cancel only — never agent/permission deny
+      // (WP-182 §4.3 / WP-184).
       patch(sessionId, {
         runState: "cancelling",
         pendingCancel: true,
@@ -693,26 +723,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
     onPermissionRequest: (sessionId, pr) => {
       // Always is rule-scoped on the server (`agent, tool, rule_id`); never
       // auto-approve by whole-tool name on the client.
-      const kind = pr.kind ?? "permission";
-      const questions = normalizeAskQuestions(
-        kind,
-        pr.summary,
-        pr.questions,
-        pr.options,
-        pr.multi_select,
-      );
-      const item: PendingPermission = {
-        turn_id: pr.turn_id,
-        request_id: pr.request_id,
-        tool: pr.tool,
-        rule_id: pr.rule_id,
-        summary: pr.summary,
-        kind,
-        free_text: pr.free_text ?? false,
-        options: pr.options ?? [],
-        multi_select: pr.multi_select ?? false,
-        questions,
-      };
+      const item = toPendingPermission(pr);
       const queue = [...getSlice(get().byId, sessionId).permissionQueue];
       const idx = queue.findIndex((p) => p.request_id === item.request_id);
       if (idx >= 0) {
@@ -1050,6 +1061,16 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       const tts = snap.last_turn_token_stats;
       const cum = snap.cumulative_token_stats;
       const pending = snap.pending_messages ?? [];
+      // WP-184: only when the key is present is pending_permissions authoritative
+      // (including explicit []). If the key is ABSENT (pre-WP-181 snapshots),
+      // leave the live permissionQueue untouched so push-in cards survive.
+      const hasPendingPermissions = Object.prototype.hasOwnProperty.call(
+        snap,
+        "pending_permissions",
+      );
+      const permissionQueue = hasPendingPermissions
+        ? (snap.pending_permissions ?? []).map(toPendingPermission)
+        : undefined;
       // Snapshot meter is authoritative: absent last_turn_token_stats (e.g.
       // post-compact) must clear stale provider occupancy so the ring can
       // fall back to context_tokens_estimate.
@@ -1081,6 +1102,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         // Full authority list on every snapshot; absent = empty. This is what
         // lets a rebuilt panel (or a reconnected socket) still see the queue.
         pendingMessages: pending,
+        ...(permissionQueue !== undefined ? { permissionQueue } : {}),
       });
       // A snapshot is a full re-sync: an empty queue here means the batch is
       // gone (delivered long ago, or lost with the process), so an unsealed

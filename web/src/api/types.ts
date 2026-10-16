@@ -42,6 +42,18 @@ type CompactionKind =
   | "aggressive_truncate"
   | "blocked";
 
+/** Payload for the user-gate TurnPhase object form (WP-186). */
+export type TurnPhaseWaitingPayload = {
+  tool: string;
+  rule_id: string;
+  summary: string;
+};
+
+/**
+ * Wire TurnPhase (externally tagged).
+ * WP-186: AwaitingPermission serializes as `waiting_for_user`;
+ * legacy clients may still send `awaiting_permission` — accept both on read.
+ */
 export type TurnPhase =
   | "idle"
   | "starting"
@@ -51,8 +63,30 @@ export type TurnPhase =
   | "executing_tools"
   | "cancelling"
   | "finalizing"
-  | { awaiting_permission: { tool: string; rule_id: string; summary: string } }
+  | { waiting_for_user: TurnPhaseWaitingPayload }
+  | { awaiting_permission: TurnPhaseWaitingPayload } // legacy read alias
   | { failed: { code: ErrorCode } };
+
+/** True when phase is the user-gate object (canonical or legacy wire key). */
+export function isWaitingForUserPhase(
+  phase: TurnPhase | null | undefined,
+): boolean {
+  return (
+    typeof phase === "object" &&
+    phase !== null &&
+    ("waiting_for_user" in phase || "awaiting_permission" in phase)
+  );
+}
+
+/** Payload from either wire key; null if phase is not a user-gate object. */
+export function waitingForUserPayload(
+  phase: TurnPhase | null | undefined,
+): TurnPhaseWaitingPayload | null {
+  if (typeof phase !== "object" || phase === null) return null;
+  if ("waiting_for_user" in phase) return phase.waiting_for_user;
+  if ("awaiting_permission" in phase) return phase.awaiting_permission;
+  return null;
+}
 
 // --- Responses Item (OpenAI / async-openai authority; minimal UI subset) ---
 // Hand-written to match serde of async-openai response-types. Do not invent
@@ -460,6 +494,11 @@ export interface TurnSnapshot {
   step: number;
   step_max: number;
   started_at_ms: number;
+  /**
+   * Derived bool (WP-186): prefer `pending_permissions.length > 0` /
+   * phase == waiting_for_user. Field name on the wire stays
+   * `awaiting_permission` (not renamed). UI cards must use the list.
+   */
   awaiting_permission?: boolean;
 }
 
@@ -507,6 +546,14 @@ export interface SessionSnapshot {
    * notification; absent = empty.
    */
   pending_messages?: PendingMessage[];
+  /**
+   * Outstanding ask / permission cards (WP-179 §5.2 / WP-182 / WP-186).
+   * Same shape as live `agent/permission_request` (1:1); `kind` is required
+   * on snapshot entries. WP-186 always writes the key (including `[]`);
+   * FE overwrites the queue only when the key is present (Phase A hydrate).
+   * Shows only queue[0].
+   */
+  pending_permissions?: PermissionRequest[];
   /**
    * LLM reconnect bubble still showing. Absent after a clear, a new turn, or a
    * finish that was not a transport failure.
@@ -688,6 +735,8 @@ export interface PermissionRequest {
    * permission = Allow once/Always/Deny;
    * approval = Approve/Reject (+ optional free text);
    * ask_user = questions[] batch (+ answers map on reply).
+   * Live `agent/permission_request` may omit (legacy default permission).
+   * Snapshot `pending_permissions[]` entries: kind is required (WP-179 §5.2).
    */
   kind?: AskKind;
   /** Approval card free-text flag only; ask_user ignores it. */
