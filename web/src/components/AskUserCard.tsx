@@ -384,7 +384,7 @@ export function AskUserCard({
                     aria-pressed={pickedOn}
                     data-option-id={opt.id}
                     onClick={() => pick(opt.id)}
-                    className={`permission-card__option ${pickedOn ? "btn-primary" : "btn-ghost"} btn-sm w-full`}
+                    className={`permission-card__option ${pickedOn ? "btn-primary" : "btn-ghost"} btn-sm text-dk-base w-full`}
                   >
                     {/* Chrome, not content: the mark never joins the option's
                         accessible name (the label alone is the name). */}
