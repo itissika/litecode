@@ -2,6 +2,12 @@ Changelog
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 格式，版本号遵循 [SemVer](https://semver.org/lang/zh-CN/)。
 
+## \[0.2.6] - 2026-10-16
+
+### 新特性
+
+* 接入 Claude 5.5（Messages）；源代码管理在暂存、提交和拉取后及时更新。
+
 ## \[0.2.5] - 2026-10-16
 
 ### 新特性
