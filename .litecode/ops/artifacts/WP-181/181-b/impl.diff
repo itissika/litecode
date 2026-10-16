@@ -1,0 +1,330 @@
+diff --git a/src/runtime/phase.rs b/src/runtime/phase.rs
+index 699b013..e4e4ba2 100644
+--- a/src/runtime/phase.rs
++++ b/src/runtime/phase.rs
+@@ -3,12 +3,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
+ 
+ use tokio_util::sync::CancellationToken;
+ 
+-use crate::permission::PermissionSink;
++use crate::permission::{AskOutcome, PermissionSink};
+ use crate::runtime::observer::{InternalEvent, RuntimeObserver, TurnPhase};
+ 
+ use super::AgentRuntime;
+ 
+-/// Wraps a permission sink so L1 emits `PhaseChanged(ExecutingTools)` after approval.
++/// Wraps a permission sink so L1 phase tracks permission wait enter/leave.
++///
++/// Enter: `PermissionAwaiting{true}` + `PhaseChanged(AwaitingPermission{…})`.
++/// Leave: `PermissionAwaiting{false}` + leave phase by outcome
++/// (Allow/Deny → `ExecutingTools`, Aborted → `Cancelling`).
+ pub(crate) struct PhasePermissionSink {
+     inner: Arc<dyn PermissionSink>,
+     observer: Arc<dyn RuntimeObserver>,
+@@ -27,6 +31,25 @@ impl PhasePermissionSink {
+             step,
+         })
+     }
++
++    fn emit_phase(&self, phase: TurnPhase) {
++        let step = self.step.load(Ordering::Relaxed);
++        self.observer
++            .on_internal(InternalEvent::PhaseChanged { phase, step });
++    }
++
++    fn leave_phase(&self, outcome: &AskOutcome) {
++        self.observer
++            .on_internal(InternalEvent::PermissionAwaiting { awaiting: false });
++        match outcome {
++            AskOutcome::Allow { .. } | AskOutcome::Deny => {
++                self.emit_phase(TurnPhase::ExecutingTools);
++            }
++            AskOutcome::Aborted => {
++                self.emit_phase(TurnPhase::Cancelling);
++            }
++        }
++    }
+ }
+ 
+ impl PermissionSink for PhasePermissionSink {
+@@ -35,18 +58,19 @@ impl PermissionSink for PhasePermissionSink {
+         prompt: &crate::permission::AskPrompt<'_>,
+         cancel: &CancellationToken,
+     ) -> crate::permission::AskReply {
++        // enter: bool + authoritative waiting phase (do not wait for PermissionAsk)
+         self.observer
+             .on_internal(InternalEvent::PermissionAwaiting { awaiting: true });
++        self.emit_phase(TurnPhase::AwaitingPermission {
++            tool: prompt.tool.into(),
++            rule_id: prompt.rule_id.into(),
++            summary: prompt.summary.into(),
++        });
++
+         let reply = self.inner.ask(prompt, cancel);
+-        self.observer
+-            .on_internal(InternalEvent::PermissionAwaiting { awaiting: false });
+-        if matches!(reply.outcome, crate::permission::AskOutcome::Allow { .. }) {
+-            let step = self.step.load(Ordering::Relaxed);
+-            self.observer.on_internal(InternalEvent::PhaseChanged {
+-                phase: TurnPhase::ExecutingTools,
+-                step,
+-            });
+-        }
++
++        // leave: bool false + leave AwaitingPermission by outcome
++        self.leave_phase(&reply.outcome);
+         reply
+     }
+ }
+@@ -71,3 +95,251 @@ impl AgentRuntime {
+         });
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::Mutex;
++
++    use crate::permission::{
++        AskOutcome, AskPrompt, AskReply, CancellingPermissionSink, RecordingPermissionSink,
++    };
++
++    struct RecordingObserver {
++        events: Mutex<Vec<InternalEvent>>,
++    }
++
++    impl RecordingObserver {
++        fn new() -> Arc<Self> {
++            Arc::new(Self {
++                events: Mutex::new(Vec::new()),
++            })
++        }
++
++        fn snapshot(&self) -> Vec<InternalEvent> {
++            self.events.lock().expect("events").clone()
++        }
++    }
++
++    impl RuntimeObserver for RecordingObserver {
++        fn on_internal(&self, ev: InternalEvent) {
++            self.events.lock().expect("events").push(ev);
++        }
++    }
++
++    fn wrap_with(
++        inner: Arc<dyn PermissionSink>,
++        observer: Arc<RecordingObserver>,
++        step: u64,
++    ) -> Arc<dyn PermissionSink> {
++        PhasePermissionSink::wrap(inner, observer, Arc::new(AtomicU64::new(step)))
++    }
++
++    fn prompt() -> AskPrompt<'static> {
++        AskPrompt::permission("bash", "rule-shell", "run ls")
++    }
++
++    /// T1: enter emits PermissionAwaiting{true} then PhaseChanged(AwaitingPermission{…}) before inner.
++    #[test]
++    fn t1_enter_emits_awaiting_bool_then_phase() {
++        let observer = RecordingObserver::new();
++        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
++            always: false,
++        }));
++        let sink = wrap_with(inner.clone(), observer.clone(), 3);
++
++        let _ = sink.ask(&prompt(), &CancellationToken::new());
++
++        let events = observer.snapshot();
++        assert!(
++            matches!(
++                events.get(0),
++                Some(InternalEvent::PermissionAwaiting { awaiting: true })
++            ),
++            "first event must be PermissionAwaiting{{true}}, got {:?}",
++            events.first()
++        );
++        assert!(
++            matches!(
++                events.get(1),
++                Some(InternalEvent::PhaseChanged {
++                    phase: TurnPhase::AwaitingPermission {
++                        tool,
++                        rule_id,
++                        summary
++                    },
++                    step: 3,
++                }) if tool == "bash" && rule_id == "rule-shell" && summary == "run ls"
++            ),
++            "second event must be PhaseChanged(AwaitingPermission), got {:?}",
++            events.get(1)
++        );
++        // inner was called (RecordingPermissionSink recorded the ask)
++        assert_eq!(inner.calls.lock().unwrap().len(), 1);
++    }
++
++    /// T2: Allow leave → PermissionAwaiting{false} + ExecutingTools.
++    #[test]
++    fn t2_allow_leave_executing_tools() {
++        let observer = RecordingObserver::new();
++        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
++            always: true,
++        }));
++        let sink = wrap_with(inner, observer.clone(), 1);
++
++        let reply = sink.ask(&prompt(), &CancellationToken::new());
++        assert!(matches!(reply.outcome, AskOutcome::Allow { always: true }));
++
++        let events = observer.snapshot();
++        assert_eq!(events.len(), 4, "enter×2 + leave×2, got {events:?}");
++        assert!(matches!(
++            events[2],
++            InternalEvent::PermissionAwaiting { awaiting: false }
++        ));
++        assert!(matches!(
++            events[3],
++            InternalEvent::PhaseChanged {
++                phase: TurnPhase::ExecutingTools,
++                step: 1,
++            }
++        ));
++    }
++
++    /// T3: Deny leave → PermissionAwaiting{false} + ExecutingTools (leave AwaitingPermission).
++    #[test]
++    fn t3_deny_leave_executing_tools() {
++        let observer = RecordingObserver::new();
++        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Deny));
++        let sink = wrap_with(inner, observer.clone(), 2);
++
++        let reply = sink.ask(&prompt(), &CancellationToken::new());
++        assert_eq!(reply.outcome, AskOutcome::Deny);
++
++        let events = observer.snapshot();
++        assert!(matches!(
++            events[2],
++            InternalEvent::PermissionAwaiting { awaiting: false }
++        ));
++        assert!(
++            matches!(
++                events[3],
++                InternalEvent::PhaseChanged {
++                    phase: TurnPhase::ExecutingTools,
++                    step: 2,
++                }
++            ),
++            "Deny must leave AwaitingPermission → ExecutingTools, got {:?}",
++            events[3]
++        );
++        // Must not still be AwaitingPermission after leave
++        assert!(
++            !events.iter().skip(2).any(|e| matches!(
++                e,
++                InternalEvent::PhaseChanged {
++                    phase: TurnPhase::AwaitingPermission { .. },
++                    ..
++                }
++            )),
++            "post-leave events must not re-assert AwaitingPermission: {events:?}"
++        );
++    }
++
++    /// T4: Aborted leave → PermissionAwaiting{false} + Cancelling.
++    #[test]
++    fn t4_aborted_leave_cancelling() {
++        let observer = RecordingObserver::new();
++        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Aborted));
++        let sink = wrap_with(inner, observer.clone(), 4);
++
++        let reply = sink.ask(&prompt(), &CancellationToken::new());
++        assert_eq!(reply.outcome, AskOutcome::Aborted);
++
++        let events = observer.snapshot();
++        assert!(matches!(
++            events[2],
++            InternalEvent::PermissionAwaiting { awaiting: false }
++        ));
++        assert!(
++            matches!(
++                events[3],
++                InternalEvent::PhaseChanged {
++                    phase: TurnPhase::Cancelling,
++                    step: 4,
++                }
++            ),
++            "Aborted must leave → Cancelling, got {:?}",
++            events[3]
++        );
++    }
++
++    /// T5: CancellingPermissionSink (inner) + cancelled token → Aborted + T4 leave events.
++    #[test]
++    fn t5_cancelling_wrapper_aborted_leave_cancelling() {
++        let observer = RecordingObserver::new();
++        let allow_inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
++            always: false,
++        }));
++        let cancel = CancellationToken::new();
++        cancel.cancel();
++        // Production order: Phase outer, Cancelling inner (mod.rs wrap chain).
++        let cancelling: Arc<dyn PermissionSink> =
++            Arc::new(CancellingPermissionSink::new(allow_inner.clone(), cancel.clone()));
++        let sink = wrap_with(cancelling, observer.clone(), 5);
++
++        let reply = sink.ask(&prompt(), &cancel);
++        assert_eq!(reply.outcome, AskOutcome::Aborted);
++        // Cancelling short-circuited — inner Allow sink never called.
++        assert_eq!(allow_inner.calls.lock().unwrap().len(), 0);
++
++        let events = observer.snapshot();
++        assert!(
++            matches!(
++                events.get(0),
++                Some(InternalEvent::PermissionAwaiting { awaiting: true })
++            ),
++            "enter bool, got {:?}",
++            events.first()
++        );
++        assert!(
++            matches!(
++                events.get(1),
++                Some(InternalEvent::PhaseChanged {
++                    phase: TurnPhase::AwaitingPermission { .. },
++                    step: 5,
++                })
++            ),
++            "enter phase, got {:?}",
++            events.get(1)
++        );
++        assert!(matches!(
++            events.get(2),
++            Some(InternalEvent::PermissionAwaiting { awaiting: false })
++        ));
++        assert!(
++            matches!(
++                events.get(3),
++                Some(InternalEvent::PhaseChanged {
++                    phase: TurnPhase::Cancelling,
++                    step: 5,
++                })
++            ),
++            "Aborted leave → Cancelling, got {:?}",
++            events.get(3)
++        );
++    }
++
++    /// Sanity: reply is forwarded unchanged (Allow always flag preserved).
++    #[test]
++    fn reply_outcome_forwarded_unchanged() {
++        let observer = RecordingObserver::new();
++        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
++            always: true,
++        }));
++        let sink = wrap_with(inner, observer, 0);
++        let reply = sink.ask(&prompt(), &CancellationToken::new());
++        assert_eq!(
++            reply,
++            AskReply::from_outcome(AskOutcome::Allow { always: true })
++        );
++    }
++}
