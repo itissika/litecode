@@ -42,8 +42,8 @@ fn adaptive_thinking(display: Option<&str>) -> Value {
     if let Some(display) = display {
         thinking["display"] = serde_json::json!(display);
     }
-    // Keep-tail compaction and stale-media notes rewrite the prefix. The API
-    // drops thinking bound to the old prefix instead of rejecting the request.
+    // Replay already drops signatures whose prefix was rewritten. This only
+    // covers a mismatch that slips past it, and gateways may not forward it.
     thinking["block_binding"] = serde_json::json!({"prefix_mismatch_behavior": "drop_block"});
     thinking
 }
@@ -724,7 +724,8 @@ fn place_results(
 
 /// Replay thinking only inside the open turn: assistant messages after the
 /// last user message that carries no tool result. Earlier signatures belong
-/// to a prefix this request is not allowed to change.
+/// to a prefix this request is not allowed to change. With no such message
+/// the turn's opener was compacted away, so no signature here can verify.
 fn strip_closed_thinking(messages: &mut [Draft]) {
     let boundary = messages
         .iter()
@@ -740,10 +741,8 @@ fn strip_closed_thinking(messages: &mut [Draft]) {
                 .any(|block| matches!(block.body, Body::ToolResult { .. }));
             if has_result { None } else { Some(index) }
         });
-    let Some(boundary) = boundary else {
-        return;
-    };
-    for message in messages.iter_mut().take(boundary + 1) {
+    let end = boundary.map_or(messages.len(), |boundary| boundary + 1);
+    for message in messages.iter_mut().take(end) {
         if message.assistant {
             message.blocks.retain(|block| {
                 !matches!(block.body, Body::Thinking { .. } | Body::Redacted { .. })
@@ -1325,6 +1324,34 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert_eq!(last["role"], "user");
         assert_eq!(last["content"][0]["text"], ".");
+    }
+
+    #[test]
+    fn thinking_is_omitted_once_the_turn_opener_was_compacted_away() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    assistant("[Conversation summary]\nearlier work"),
+                    thinking("kept", "sig-kept"),
+                    assistant("Grepping."),
+                    call("toolu_01", "read", r#"{"path":"a.rs"}"#),
+                    output_text("toolu_01", "contents"),
+                    thinking("next", "sig-next"),
+                    call("toolu_02", "read", r#"{"path":"b.rs"}"#),
+                    output_text("toolu_02", "more"),
+                    user_text("<system-reminder>\nenv\n</system-reminder>"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(!rendered.contains("sig-kept"));
+        assert!(!rendered.contains("sig-next"));
+        assert!(!rendered.contains(r#""type":"thinking""#));
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            "[Conversation summary]\nearlier work"
+        );
     }
 
     #[test]

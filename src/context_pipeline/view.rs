@@ -42,6 +42,10 @@ pub struct PreparedView {
     /// tool-call pad). The mapping is carried positionally; provider IDs are not
     /// used to recover it because providers may reuse IDs across requests.
     pub item_seqs: Vec<Option<crate::session::event::Seq>>,
+    /// Per item, parallel to `items`: produced on a prefix this view no longer
+    /// sends as it was (compaction or a stale-media note). A signature bound to
+    /// that prefix cannot verify.
+    pub rebased: Vec<bool>,
     pub token_count: usize,
     /// Optional system / instructions string for this step (set by prepare or caller).
     pub instructions: Option<String>,

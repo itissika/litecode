@@ -20,22 +20,44 @@ use crate::authority::responses::{
 use crate::types::Item;
 
 /// Drop media the model has already seen (ephemeral LLM view and budget only).
-pub fn drop_stale_media(items: &mut [Item]) {
+///
+/// Returns, per item, whether it was produced while a part removed here was
+/// still in its prefix: the model output that answered a stripped tool batch,
+/// and the rest of the turn a stripped user message opened.
+pub fn drop_stale_media(items: &mut [Item]) -> Vec<bool> {
     let tool_fresh_from = items
         .iter()
         .rposition(is_model_produced)
         .map_or(0, |index| index + 1);
     let user_fresh_from = current_turn_start(items);
-    for (index, item) in items.iter_mut().enumerate() {
-        let keep = match item {
+    let mut rebased = vec![false; items.len()];
+    for index in 0..items.len() {
+        let keep = match &items[index] {
             Item::FunctionCallOutput(_) => index >= tool_fresh_from,
             Item::Message(MessageItem::Input(_)) => index >= user_fresh_from,
             _ => true,
         };
-        if !keep {
-            strip_item_media(item);
+        if keep || !strip_item_media(&mut items[index]) {
+            continue;
+        }
+        let mut next = index + 1;
+        if matches!(items[index], Item::FunctionCallOutput(_)) {
+            while next < items.len() && !is_model_produced(&items[next]) {
+                next += 1;
+            }
+            while next < items.len() && is_model_produced(&items[next]) {
+                rebased[next] = true;
+                next += 1;
+            }
+        } else {
+            for later in next..user_fresh_from {
+                if is_model_produced(&items[later]) {
+                    rebased[later] = true;
+                }
+            }
         }
     }
+    rebased
 }
 
 /// Remove every image/file part before a transcript is serialized for compact.
@@ -79,15 +101,17 @@ fn is_media(part: &InputContent) -> bool {
     )
 }
 
-fn strip_item_media(item: &mut Item) {
+/// Returns whether any part was removed.
+fn strip_item_media(item: &mut Item) -> bool {
     match item {
         Item::FunctionCallOutput(output) => strip_tool_output(output),
         Item::Message(MessageItem::Input(message)) => strip_input_media(&mut message.content),
-        _ => {}
+        _ => false,
     }
 }
 
-fn strip_input_media(parts: &mut [InputContent]) {
+fn strip_input_media(parts: &mut [InputContent]) -> bool {
+    let mut stripped = false;
     for part in parts.iter_mut() {
         let kind = match part {
             InputContent::InputImage(_) => "image",
@@ -97,18 +121,20 @@ fn strip_input_media(parts: &mut [InputContent]) {
         *part = InputContent::InputText(InputTextContent {
             text: format!("[{kind} already viewed; removed from context]"),
         });
+        stripped = true;
     }
+    stripped
 }
 
-fn strip_tool_output(output: &mut FunctionCallOutputItemParam) {
+fn strip_tool_output(output: &mut FunctionCallOutputItemParam) -> bool {
     let FunctionCallOutput::Content(parts) = &mut output.output else {
-        return;
+        return false;
     };
     let before = parts.len();
     parts.retain(|part| !is_media(part));
     let stripped = before - parts.len();
     if stripped == 0 {
-        return;
+        return false;
     }
     let text = parts
         .iter()
@@ -126,6 +152,7 @@ fn strip_tool_output(output: &mut FunctionCallOutputItemParam) {
     } else {
         format!("{text}\n{note}")
     });
+    true
 }
 
 #[cfg(test)]
@@ -224,6 +251,72 @@ mod tests {
             },
             other => panic!("expected function_call_output, got {other:?}"),
         }
+    }
+
+    fn reasoning() -> Item {
+        Item::Reasoning(crate::authority::responses::ReasoningItem {
+            id: None,
+            summary: vec![],
+            content: None,
+            encrypted_content: Some("sig".into()),
+            status: None,
+        })
+    }
+
+    #[test]
+    fn only_the_answer_to_a_stripped_batch_is_rebased() {
+        let mut items = vec![
+            user_text("go"),
+            reasoning(),
+            call("c1"),
+            tool_image("c1", "https://example.com/old.png"),
+            user_text("<system-reminder>\nnote\n</system-reminder>"),
+            reasoning(),
+            call("c2"),
+            tool_image("c2", "https://example.com/new.png"),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert!(!has_media(&items[3]));
+        assert_eq!(
+            rebased,
+            vec![false, false, false, false, false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn a_batch_without_media_rebases_nothing() {
+        let mut items = vec![
+            user_text("go"),
+            call("c1"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "c1".into(),
+                output: FunctionCallOutput::Text("plain".into()),
+                id: None,
+                status: None,
+            }),
+            reasoning(),
+            call("c2"),
+        ];
+        assert!(drop_stale_media(&mut items).iter().all(|flag| !flag));
+    }
+
+    #[test]
+    fn a_stripped_user_image_rebases_its_whole_turn() {
+        let mut items = vec![
+            user_image("litecode-media:old.png"),
+            reasoning(),
+            call("c1"),
+            tool_image("c1", "https://example.com/shot.png"),
+            reasoning(),
+            assistant_text("done"),
+            user_text("next"),
+            reasoning(),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert_eq!(
+            rebased,
+            vec![false, true, true, false, true, true, false, false]
+        );
     }
 
     #[test]

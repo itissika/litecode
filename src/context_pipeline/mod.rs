@@ -331,7 +331,13 @@ impl ContextPipeline {
         let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
         crate::runtime::project_llm_input_for_model(&mut llm_items, model);
         // Runs before refs expand, so a dropped part never becomes a data URL.
-        media_budget::drop_stale_media(&mut llm_items);
+        let mut rebased = media_budget::drop_stale_media(&mut llm_items);
+        for (flag, compacted) in rebased
+            .iter_mut()
+            .zip(summary::minted_before_summary(&llm_items, &item_seqs))
+        {
+            *flag |= compacted;
+        }
         crate::session::media::resolve_user_media(&mut llm_items, &self.data_root);
 
         let token_count = self
@@ -342,6 +348,7 @@ impl ContextPipeline {
         state.prepared = Some(PreparedView {
             items: llm_items,
             item_seqs,
+            rebased,
             token_count,
             instructions: None,
         });

@@ -15,8 +15,13 @@
 //! 4. Summary replay keeps only reasoning this provider produced. Foreign
 //!    reasoning has no id that host minted, and its input schema requires that
 //!    id, so the item is removed on the request copy.
+//! 5. A Messages signature also covers everything before it. Once compaction or
+//!    a stale-media note rewrites that prefix, the signature is dropped even
+//!    for its own producer. Gateways do not reliably honor `drop_block`, so
+//!    this cannot be left to the API.
 //!
-//! The session log is never rewritten. Rules 2 and 4 run on the per-request copy.
+//! The session log is never rewritten. Rules 2, 4 and 5 run on the per-request
+//! copy.
 
 use crate::authority::responses::Item;
 
@@ -95,6 +100,29 @@ pub fn strip_foreign_ciphertext(
             });
         if !own {
             reasoning.encrypted_content = None;
+            stripped += 1;
+        }
+    }
+    stripped
+}
+
+/// Rule 5 on the request copy: on a Messages target, remove the signature from
+/// reasoning produced on a prefix this request has rewritten. `rebased` is
+/// parallel to `items`. Returns how many signatures were removed.
+pub fn strip_rebased_signatures(
+    items: &mut [Item],
+    rebased: &[bool],
+    endpoint_type: &str,
+) -> usize {
+    if endpoint_type != "messages" {
+        return 0;
+    }
+    let mut stripped = 0;
+    for (item, rebased) in items.iter_mut().zip(rebased) {
+        let Item::Reasoning(reasoning) = item else {
+            continue;
+        };
+        if *rebased && reasoning.encrypted_content.take().is_some() {
             stripped += 1;
         }
     }
@@ -317,6 +345,40 @@ mod tests {
         assert!(matches!(
             &items[0],
             Item::Reasoning(reasoning) if reasoning.encrypted_content.is_none()
+        ));
+    }
+
+    #[test]
+    fn messages_signature_does_not_survive_a_rewritten_prefix() {
+        let mut items = vec![
+            reasoning(Some("before-compaction")),
+            crate::types::user_text("stay"),
+            reasoning(Some("after-compaction")),
+        ];
+        let rebased = [true, true, false];
+        assert_eq!(
+            strip_rebased_signatures(&mut items, &rebased, "messages"),
+            1
+        );
+        assert!(matches!(
+            &items[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.is_none()
+        ));
+        assert_eq!(crate::types::item_text_preview(&items[0]), "think");
+        assert!(matches!(
+            &items[2],
+            Item::Reasoning(reasoning)
+                if reasoning.encrypted_content.as_deref() == Some("after-compaction")
+        ));
+
+        let mut responses = vec![reasoning(Some("gpt-cipher"))];
+        assert_eq!(
+            strip_rebased_signatures(&mut responses, &[true], "responses"),
+            0
+        );
+        assert!(matches!(
+            &responses[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("gpt-cipher")
         ));
     }
 

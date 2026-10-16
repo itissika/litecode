@@ -1,3 +1,4 @@
+use crate::session::event::Seq;
 use crate::types::{Item, assistant_text, item_text_preview};
 
 pub const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
@@ -20,6 +21,27 @@ pub fn compact_summary_message(text: &str, aggressive: bool) -> Item {
 pub fn is_compact_summary_item(item: &Item) -> bool {
     let text = item_text_preview(item);
     text.starts_with(CONVERSATION_SUMMARY_PREFIX) || text.starts_with(AGGRESSIVE_SUMMARY_PREFIX)
+}
+
+/// Per item: persisted before the leading compaction summary, so it was
+/// produced on the history that summary replaced. The summary row's seq is the
+/// compaction itself; kept rows are older and later rows are newer. Without a
+/// seq on the summary, every item counts as rebased.
+pub fn minted_before_summary(items: &[Item], seqs: &[Option<Seq>]) -> Vec<bool> {
+    if !items.first().is_some_and(is_compact_summary_item) {
+        return vec![false; items.len()];
+    }
+    let Some(compacted) = seqs.first().copied().flatten() else {
+        return vec![true; items.len()];
+    };
+    (0..items.len())
+        .map(|index| {
+            seqs.get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|seq| seq < compacted)
+        })
+        .collect()
 }
 
 /// Strip the summary label for UPDATE prompts.
@@ -45,6 +67,29 @@ mod tests {
         assert!(preview.starts_with(CONVERSATION_SUMMARY_PREFIX));
         assert!(preview.contains("decisions"));
         assert!(!preview.contains("<system-reminder>"));
+    }
+
+    #[test]
+    fn kept_rows_older_than_the_summary_are_rebased() {
+        let items = vec![
+            compact_summary_message("prior", false),
+            assistant_text("kept"),
+            crate::types::user_text("pad"),
+            assistant_text("new"),
+        ];
+        assert_eq!(
+            minted_before_summary(&items, &[Some(191), Some(136), None, Some(195)]),
+            vec![false, true, false, false]
+        );
+        assert_eq!(
+            minted_before_summary(&items, &[None, Some(136), None, Some(195)]),
+            vec![true; 4]
+        );
+        let uncompacted = vec![crate::types::user_text("hi"), assistant_text("ok")];
+        assert_eq!(
+            minted_before_summary(&uncompacted, &[Some(1), Some(0)]),
+            vec![false, false]
+        );
     }
 
     #[test]

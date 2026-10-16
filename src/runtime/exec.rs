@@ -40,8 +40,13 @@ impl AgentDeps for AgentRuntime {
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
-        let request =
-            self.build_model_request(&instructions, view.items, view.item_seqs, token_count)?;
+        let request = self.build_model_request(
+            &instructions,
+            view.items,
+            view.item_seqs,
+            &view.rebased,
+            token_count,
+        )?;
         build_lap.done();
         // Turn entry -> first request leaves this process (once per turn).
         latency::report_since(
@@ -647,6 +652,7 @@ impl AgentRuntime {
         instructions: &str,
         input: Vec<Item>,
         item_seqs: Vec<Option<crate::session::event::Seq>>,
+        rebased: &[bool],
         token_count: usize,
     ) -> Result<ModelRequest> {
         let tool_schemas = self.rctx().tool_defs();
@@ -660,6 +666,12 @@ impl AgentRuntime {
         let provider_id = self.turn_llm.provider_id.clone();
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
+        // Before summary replay drops items, while `rebased` still lines up.
+        let rebased_stripped = crate::llm::strip_rebased_signatures(
+            &mut input,
+            rebased,
+            self.turn_llm.model.endpoint_type.as_str(),
+        );
         let (ciphertexts_stripped, reasoning_dropped) = if self.turn_llm.model.reasoning_replay
             == crate::provider_catalog::ReasoningReplay::Summary
         {
@@ -691,6 +703,7 @@ impl AgentRuntime {
             provider_id = %provider_id,
             origin_seq,
             ciphertexts_stripped,
+            rebased_stripped,
             reasoning_dropped,
             tools_count = tool_names.len(),
             tools = ?tool_names,
