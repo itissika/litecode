@@ -901,11 +901,26 @@
   overflow-wrap: anywhere;
 }
 
+/* A picked option carries a wash of its own: the theme's soft accent surface
+   (--_dk-accent-glow), deliberately one step *above* the row's hover wash
+   (--_dk-ix-bg-hover, 6%). --_dk-ix-bg-selected — the 5% halo — sits under it,
+   so a pointer landing on the pick would eat the very state the row is there to
+   show; the pick therefore holds its fill through hover and only steps up on
+   press. */
+.permission-card__option.btn-primary,
+.permission-card__option.btn-primary:hover {
+  background-color: var(--_dk-accent-glow);
+}
+
+.permission-card__option.btn-primary:active {
+  background-color: color-mix(in srgb, var(--_dk-accent-hover) 20%, transparent);
+}
+
 /* The option's seat, in a square: small, mono, lowercase — chrome, not copy, so
-   it stays quiet at rest (L1 line, muted text) and only comes up with the pick
-   (L2 line, secondary text) the way the option's own border does. Sits on the
-   first line of the label: 1px down from the flex start, one line box of 18px
-   under a 16px box. */
+   it stays quiet at rest (L1 line, muted text) and comes up with the pick, where
+   it fills: the accent surface's own selected triple — a fill, the letter knocked
+   out of it, no line left (the fill is the shape). Sits on the first line of the
+   label: 1px down from the flex start, one line box of 18px under a 16px box. */
 .permission-card__mark {
   display: flex;
   flex: 0 0 auto;
@@ -923,8 +938,9 @@
 }
 
 .permission-card__option.btn-primary .permission-card__mark {
-  border-color: var(--_dk-line-visible);
-  color: var(--_dk-text-secondary);
+  border-color: var(--_dk-ix-accent-border-selected);
+  background-color: var(--_dk-ix-accent-bg-selected);
+  color: var(--_dk-ix-accent-fg-selected);
 }
 
 @keyframes permission-card-step-in {
