@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-064",
+  "grade": "4",
+  "layer": null,
+  "domain": "ide-base",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "WP-167 新增 9 条测试依赖 sh 并标 cfg(unix)，Windows 上延后探测/失败回写/先 sweep 后启动无自动测试覆盖（Andy 用 Windows）",
+  "history": [
+    {
+      "ts": "2026-10-15T07:42:16.479Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-167）"
+    }
+  ]
+}

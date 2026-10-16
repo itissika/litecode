@@ -5,7 +5,7 @@
 
 ## 当前版本
 
-- `tools_version`: **19**
+- `tools_version`: **21**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
@@ -212,6 +212,8 @@
 |---|---|
 | 2026-10-15 | v22（WP-174）：wp_watch 冷启动/接管跳过已关闭或状态已变的 approval/acceptance/timeout outbox 重放（eventStillDeliverable + skipped 记入 state）；ops_harden 组 11 回归（工具集管家）|
 | 2026-10-15 | v21（WP-173）：wp_watch 开机自启常驻。新增 ops.wp_watch_service（install/prove/test-callback）；systemd user unit（Restart=always）优先，无 systemctl 时 fallback svc + ~/.profile 钩子；webhook 只写仓库外 `~/.config/litecode/wp-watch.env`（0600），永不打印/入库；去掉「靠定时 tick 提醒」——停滞/升级事件只由常驻 watcher 发出；按 bot 分发回调仅留 resolveWebhook 设计口（工具集管家）|
+| 2026-10-15 | v21：合并 gm/wp165-local 与 ops/team-framework 两条各自的「v20」（一条是 WP-171/172：LC_ROOT/init_env/test_failures；一条是 registry_verify --quick/g++ 用户态/cargo_locked 自动校验），tools_version 取 21；registry 保留两边条目（cargo_env v2 含 LC_ROOT 说明）（工具集管家，合并）|
+| 2026-10-15 | v20：registry_verify 加 --quick 与 g++ 检查（debs 离线重建用户态 g++）；cargo_locked 取锁前自动 quick verify/自修；cargo_env 自动用 gxx-bin、set -u 安全；文档：g++ 两条路径、重启清单、registry 丢 target/build 目录的取证（工具集管家）|
 | 2026-10-15 | v19：watcher 韧性（事故：快照回滚后 watcher 消失 7 小时，tick 无人驱动）。wp_watch v4：ensure / test-callback / watchdog-start|stop，start 等新心跳；ops.wp v6：写操作顺带 softEnsureWatcher；测试 ops_harden 组 10（工具集管家）|
 | 2026-10-13 | v17：validate_board v9 新规则「每个 WP.domain 必须在 board.domains」；ops.wp v5 已封包可 `set --field domain` 重新归类（其他字段仍拒）；WP-070/071→ide-substrate、WP-082/083/089/093/097→client-ux；wp.test 组 7 / ops_harden 组 9 老包数改为从 board 动态计算（>0）并逐包校验（工具集管家）|
 | 2026-10-13 | v16：ops.wp v4 `set --field domain`（owner/approver；须为 board.domains 已有 id；history+log+trace；校验失败回滚）；新增 `reassign --owner`（包 approver 或父包 owner；新 owner 须已注册；只改 owner；history+log；回滚）；用它们把 WP-103 domain ide-base→ide-substrate；新 agent provider（model-config 域 provider/模型部分，bot id 记 agents_cold/bot_ids.json）（工具集管家）|
@@ -475,7 +477,11 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 - 先 unset 旧的 RUSTUP_HOME/CARGO_HOME/RUSTUP_TOOLCHAIN，再设为 `/workspace/litecode/.litecode/ops/.toolchain/rustup` 和 `.../cargo`（绝对路径）。不要自己装工具链。
 - CARGO_TARGET_DIR：默认共享主 target `/workspace/litecode/target`；独立实验（release/bench）用 `.tmp/<wp>/target-*`。
 - 锁：**只用 `/workspace/litecode/.tmp/cargo-target.lock`**（flock，包住整个 cargo 调用；用独立 target 也要拿，作内存护栏）。`.tmp/target.lock` 没有任何脚本/文档引用，是冗余空文件，不要用。重型任务仍需 backend_mid 排队许可。
-- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。
+- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。`--quick` 只做 stat 比对（按 tarball 文件清单 manifest，健康约 0.2s）。
+- v20：`cargo_locked.sh` 取锁前自动跑 `--quick`，有损坏才 `--fix` 并只打印一行；`LC_SKIP_VERIFY=1` 跳过。
+- **反复丢文件的原因（2026-10-15 取证）**：快照/回滚后，registry/src 里**所有名为 `target` 或 `build` 的目录**整体消失（cc 的 src/target、thiserror/rustversion 的 build/、cxx 的 book/src/build、ort-sys 的 build/download、zstd-sys 的 zstd/build 共 12 个 crate），其它文件都在，cache/*.crate 完好；全 registry 里已找不到任何同名目录。仓库 .gitignore 第 2 行 `target` 会匹配任意层级，`build` 不在其中，所以更像快照/恢复工具按「常见构建产物目录名」过滤。结论是推断（没法看到恢复工具本身）。对策：verify 按 tarball 文件清单比对（不是只看目录在不在），cargo_locked 自动修。
+- **g++（v20）**：两条路径互不冲突。① 系统 g++：`sudo apt-get install g++`（backend_mid 本次开机装的 14.2，重启即丢）。② 用户态兜底：`.toolchain/debs`（缓存的 .deb）→ `.toolchain/gxx-root`（dpkg -x）→ `.toolchain/gxx-bin/{g++,c++}`（wrapper，自带 -B/-isystem/-L）。`cargo_env.sh` 在**没有系统 g++ 或 LC_FORCE_USERSPACE_GXX=1** 时自动把 gxx-bin 放进 PATH 并设 CXX；有系统 g++ 时静默不动。`registry_verify.sh --fix` 会离线从 debs 重建 gxx-root/gxx-bin。
+- **重启/快照恢复后清单**：`.litecode/ops/tools/registry_verify.sh --fix`；`node .litecode/ops/tools/wp_watch.mjs ensure && node .litecode/ops/tools/wp_watch.mjs watchdog-start`（需 shell 有 webhook env，v19）。
 
 **Issue 编号**
 - 新建 issue 一律用 `ops.issue_new`：加锁，取 max(文件, git HEAD, `issues/.reserved.json`)+1，独占创建，绝不覆盖。禁止手写编号。
