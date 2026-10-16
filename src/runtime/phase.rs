@@ -85,7 +85,22 @@ impl AgentRuntime {
     }
 
     pub(crate) fn emit_phase(&self, phase: TurnPhase, step: u64) {
+        // WP-188 observe-only: TLS step + last-turn heartbeat (does not touch PhasePermissionSink).
+        crate::runtime::diagnostics::DiagContext::update_step(step);
+        let phase_label = crate::runtime::diagnostics::turn_phase_label(&phase);
         self.emit_internal(InternalEvent::PhaseChanged { phase, step });
+        let data_root = self.sessions.data_root_path();
+        let turn_id = crate::runtime::diagnostics::DiagContext::snapshot()
+            .map(|s| s.turn_id)
+            .unwrap_or_default();
+        crate::runtime::diagnostics::heartbeat_last_turn(
+            &data_root,
+            &self.session_id,
+            &turn_id,
+            step,
+            &phase_label,
+            None,
+        );
     }
 
     pub(crate) fn emit_step_started(&self, step: u64) {

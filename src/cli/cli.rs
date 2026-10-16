@@ -741,6 +741,14 @@ pub fn run() -> anyhow::Result<()> {
     let db_path = workspace.paths.sessions_db.clone();
 
     let _log_guard = setup_logging(&workspace.paths.logs_dir)?;
+    // WP-188 observe-only: process panic → diagnostics/_process or session crash-*.log
+    let panic_fallback = workspace
+        .paths
+        .logs_dir
+        .parent()
+        .unwrap_or(workspace.paths.logs_dir.as_path())
+        .to_path_buf();
+    crate::runtime::diagnostics::install_panic_hook(panic_fallback);
     tracing::info!(
         workspace = %workspace.workspace_root.display(),
         session_db = %db_path.display(),

@@ -902,6 +902,15 @@ impl AgentRuntime {
                     request.model,
                     estimate_request_body_bytes(request),
                 );
+                // WP-188 observe-only: associate LlmHttp TurnError with wire capture path.
+                let turn_id = crate::runtime::diagnostics::DiagContext::snapshot()
+                    .map(|s| s.turn_id)
+                    .unwrap_or_default();
+                crate::runtime::diagnostics::log_turn_error_wire(
+                    &self.session_id,
+                    &turn_id,
+                    &message,
+                );
                 self.emit_internal(InternalEvent::Error(TurnError {
                     reason: FailReason::LlmHttp,
                     message,
