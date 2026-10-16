@@ -1,0 +1,1 @@
+{"type":"response.completed","sequence_number":3,"response":{"id":"resp_luna_diag","object":"response","created_at":1,"model":"gpt-6-luna","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":120,"output_tokens":45}}}
