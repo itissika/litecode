@@ -1,0 +1,58 @@
+# WP-182 live-smoke-idle (阶段1·空闲态 wire)
+time: 2026-10-16 08:36:54 +0800 (Asia/Hong_Kong)
+branch: ops/wp-186-session-pending-permissions
+HEAD: 4590e84f62fccfb14ef3180ea2bac11857ea5289 (4590e84)
+binary: /workspace/litecode/target/debug/litecode
+binary_ls: -rwxr-xr-x 2 box box 604691232 2026-10-16 08:34 /workspace/litecode/target/debug/litecode
+workspace: /tmp/lc-wp182-smoke
+bind: 127.0.0.1:7483
+token: secret (LITECODE_TOKEN)
+LITECODE_WEB_DIST: /tmp/lc-wp182-web-dist (stub index.html; no npm build)
+pid: 448463 (first serve)
+serve_cmd: LITECODE_TOKEN=secret LITECODE_WEB_DIST=/tmp/lc-wp182-web-dist /workspace/litecode/target/debug/litecode --workspace /tmp/lc-wp182-smoke serve --bind 127.0.0.1:7483 --require-auth --loopback-only
+note: first start without WEB_DIST failed with "web dist not found"; stub dist used; no cargo / no serve.sh / no npm ci.
+
+## health
+curl http://127.0.0.1:7483/health
+{"ok":true,"workspace_id":"lc-wp182-smoke_debbf17e15acbe52","workspace_root":"/tmp/lc-wp182-smoke"}
+
+## ws-smoke handshake --token secret
+exit=0
+{
+  "name": "handshake",
+  "reason": "server/hello",
+  "url": "ws://127.0.0.1:7483/ws?token=secret",
+  "opened": true,
+  "hasServerHello": true,
+  "elapsedMs": 10
+}
+
+## ws-smoke list --token secret
+exit=0
+{
+  "name": "session_list",
+  "reason": "session/list",
+  "opened": true,
+  "hasServerHello": true,
+  "sessionListOk": true,
+  "elapsedMs": 9
+}
+
+## idle snapshot probe (session/new → session/snapshot)
+session_id: 01M5126ZR9GXDYF326AWWFKNHT
+has_pending_permissions_key: true
+pending_permissions: []
+pending_len: 0
+turn: null
+probe_exit: 0
+PASS: snapshot JSON always has pending_permissions key; idle value is []
+
+## snapshot fragment
+{
+  "session_id": "01M5126ZR9GXDYF326AWWFKNHT",
+  "pending_permissions": [],
+  "turn": null
+}
+
+## cleanup (after stage2)
+process stopped; ports freed

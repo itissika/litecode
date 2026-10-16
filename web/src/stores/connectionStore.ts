@@ -175,6 +175,9 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
               // Clear the local record so each AgentPanel re-subscribes
               // itself on (re)connect via its own connection-state effect.
               set({ state: connection, subscribedSessions: new Set() });
+              // WP-184 / WP-176: never auto-send agent/permission deny on
+              // disconnect. Keep local permissionQueue as optimistic UI;
+              // the next session snapshot's pending_permissions overwrites it.
               // A failed or dropped socket must not hold back startup work
               // waiting on the centre (engines, summary, file tree).
               if (connection === "disconnected" || connection === "reconnecting") {
