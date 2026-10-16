@@ -15,9 +15,9 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{LitecodeError, Result, ToolCallResult};
 
-/// Empty placeholder after Approve. FE treats blank / legacy "# Plan" as
-/// still-planning (capsule bounce only); opens the panel once the body is written.
-const PLAN_STUB: &str = "";
+/// Heading-only stub after Approve. `edit` can replace it; a blank file cannot.
+/// The plan panel treats this heading as still-planning and opens once the body is written.
+const PLAN_STUB: &str = "# Plan\n";
 
 pub struct PlanTool {
     sessions: Arc<SessionManager>,
@@ -248,7 +248,7 @@ impl PlanTool {
         }
 
         let mut out = format!(
-            "Created plan at {relative}\nUser approved. Write the full plan body with the edit tool at that path (do not use write)."
+            "Created plan at {relative}\nUser approved. The file contains only `# Plan`. Replace that heading with the full plan body using the edit tool (do not use write)."
         );
         if let Some(opinion) = reply.free_text.as_deref() {
             out.push_str("\nUser opinion: ");
@@ -389,6 +389,7 @@ mod tests {
         assert!(entries[0].extension().is_some_and(|e| e == "md"));
         let file_content = std::fs::read_to_string(&entries[0]).unwrap();
         assert_eq!(file_content, PLAN_STUB);
+        assert_eq!(file_content.trim(), "# Plan");
 
         let slug = entries[0]
             .file_stem()
