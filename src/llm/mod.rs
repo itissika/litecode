@@ -43,6 +43,9 @@ pub struct CompactLlmCall<'a> {
     pub provider: &'a dyn LlmProvider,
     pub api_key: &'a str,
     pub model: &'a str,
+    /// The summarizer's own context window. The compact prompt is sized to it,
+    /// not to the session being compacted. `0` means unknown: no cap.
+    pub context_window: usize,
 }
 
 /// Construct the codec that serves a resolved catalog model.

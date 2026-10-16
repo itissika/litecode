@@ -390,7 +390,10 @@ impl CompactPolicy {
         // `kept` and is never serialized into the compact prompt.
         let discarded = &transcript[..cut];
         let kept = transcript[cut..].to_vec();
-        let prompt = build_compaction_prompt(discarded);
+        let prompt = build_compaction_prompt(
+            discarded,
+            summarizer_input_budget(llm.context_window, system_prompt, max_tokens),
+        );
         let summary =
             Self::call_llm_compact(llm, system_prompt, &prompt, max_tokens, session_id, cancel)
                 .await?;
@@ -494,6 +497,17 @@ impl CompactPolicy {
         };
         Ok(summary_text_from_compact_output(&items))
     }
+}
+
+/// Room for the compact user message in the summarizer's window. The local
+/// count is cl100k and a provider's tokenizer can count higher, so only 80% of
+/// what is left after the system prompt and the output reserve is used.
+fn summarizer_input_budget(context_window: usize, system: &str, max_output: u32) -> Option<usize> {
+    if context_window == 0 {
+        return None;
+    }
+    let reserved = crate::session::estimate::count_text_tokens(system) + max_output as usize;
+    Some(context_window.saturating_sub(reserved) * 4 / 5)
 }
 
 /// Keep only assistant output text. Reasoning items must not enter the checkpoint.
@@ -693,6 +707,7 @@ mod tests {
             provider,
             api_key: "sk-test",
             model: "compact-model",
+            context_window: 0,
         }
     }
 

@@ -35,6 +35,7 @@ impl TurnLlmBinding {
             provider: self.provider.as_ref(),
             api_key: &self.api_key,
             model: &self.api_model_id,
+            context_window: self.context_window,
         }
     }
 }

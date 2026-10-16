@@ -7,7 +7,7 @@
 
 use crate::authority::responses::{FunctionCallOutput, InputContent, Item, MessageItem};
 use crate::context_pipeline::summary::{is_compact_summary_item, summary_body_text};
-use crate::session::estimate::{autocompact_threshold, item_token_estimate};
+use crate::session::estimate::{autocompact_threshold, count_text_tokens, item_token_estimate};
 
 /// Max characters of each tool-result text part fed to the summarizer LLM.
 pub const SUMMARIZE_TOOL_RESULT_CHARS: usize = 2000;
@@ -161,35 +161,6 @@ fn ensure_after_leading_summary(items: &[Item], cut: usize) -> usize {
     }
 }
 
-/// Deep-copy items, drop every media part, and truncate tool-result text.
-///
-/// The summarizer receives text only. Image and file bytes never enter the
-/// compact request, including data URLs already stored on tool results.
-pub fn truncate_items_for_summary(items: &[Item]) -> Vec<Item> {
-    let mut cloned = items.to_vec();
-    super::media_budget::strip_media_for_summary(&mut cloned);
-    cloned.into_iter().map(truncate_item_tool_results).collect()
-}
-
-fn truncate_item_tool_results(mut item: Item) -> Item {
-    let Item::FunctionCallOutput(out) = &mut item else {
-        return item;
-    };
-    match &mut out.output {
-        FunctionCallOutput::Text(s) => {
-            *s = truncate_chars(s, SUMMARIZE_TOOL_RESULT_CHARS);
-        }
-        FunctionCallOutput::Content(parts) => {
-            for part in parts.iter_mut() {
-                if let InputContent::InputText(t) = part {
-                    t.text = truncate_chars(&t.text, SUMMARIZE_TOOL_RESULT_CHARS);
-                }
-            }
-        }
-    }
-    item
-}
-
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -198,29 +169,103 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{truncated}\n…[truncated for summarizer]")
 }
 
-/// Serialize discarded items for the summarizer (tool outputs already truncated).
-pub fn serialize_for_summary(items: &[Item]) -> String {
-    let truncated = truncate_items_for_summary(items);
-    serde_json::to_string(&truncated).unwrap_or_else(|_| "[]".into())
+fn input_text(parts: &[InputContent]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            InputContent::InputText(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render discarded items as a plain transcript, one entry per item.
+///
+/// The summarizer gets what was said and done: user and assistant text, tool
+/// calls and their results, long ones truncated. Reasoning, replay signatures,
+/// ids and media bytes are model-replay state, not conversation, and never
+/// enter the compact request.
+pub fn render_for_summary(items: &[Item]) -> Vec<String> {
+    let mut items = items.to_vec();
+    super::media_budget::strip_media_for_summary(&mut items);
+    let tool_names: std::collections::HashMap<&str, &str> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::FunctionCall(call) => Some((call.call_id.as_str(), call.name.as_str())),
+            _ => None,
+        })
+        .collect();
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Message(MessageItem::Input(message)) => {
+                let text = input_text(&message.content);
+                (!text.is_empty()).then(|| format!("User:\n{text}"))
+            }
+            Item::Message(MessageItem::Output(_)) => {
+                let text = crate::types::item_text_preview(item);
+                (!text.is_empty()).then(|| format!("Assistant:\n{text}"))
+            }
+            Item::FunctionCall(call) => Some(format!(
+                "Tool call {}:\n{}",
+                call.name,
+                truncate_chars(&call.arguments, SUMMARIZE_TOOL_RESULT_CHARS)
+            )),
+            Item::FunctionCallOutput(output) => {
+                let name = tool_names
+                    .get(output.call_id.as_str())
+                    .copied()
+                    .unwrap_or("unknown");
+                let text = match &output.output {
+                    FunctionCallOutput::Text(text) => text.clone(),
+                    FunctionCallOutput::Content(parts) => input_text(parts),
+                };
+                Some(format!(
+                    "Tool result {name}:\n{}",
+                    truncate_chars(&text, SUMMARIZE_TOOL_RESULT_CHARS)
+                ))
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Build the LLM compaction user message: data only (history / prior summary).
 /// Structure, budget, and merge rules live in the compaction system prompt.
-pub fn build_compaction_prompt(discarded: &[Item]) -> String {
-    if discarded.first().is_some_and(is_compact_summary_item) {
-        let prev = summary_body_text(&discarded[0]);
-        let rest = if discarded.len() > 1 {
-            serialize_for_summary(&discarded[1..])
-        } else {
-            "[]".into()
-        };
-        format!(
-            "Previous summary:\n{}\n\nNew transcript JSON:\n{}",
-            prev, rest
-        )
-    } else {
-        format!("Transcript JSON:\n{}", serialize_for_summary(discarded))
+///
+/// `max_tokens` caps the message for the summarizer's window. Past it, the
+/// oldest transcript entries are left out; a previous summary always stays.
+pub fn build_compaction_prompt(discarded: &[Item], max_tokens: Option<usize>) -> String {
+    let (head, rest) = match discarded.split_first() {
+        Some((first, rest)) if is_compact_summary_item(first) => (
+            format!(
+                "Previous summary:\n{}\n\nNew transcript:\n",
+                summary_body_text(first)
+            ),
+            rest,
+        ),
+        _ => ("Transcript:\n".to_string(), discarded),
+    };
+    let mut entries = render_for_summary(rest);
+    if let Some(max_tokens) = max_tokens {
+        let mut used = count_text_tokens(&head);
+        let mut keep_from = entries.len();
+        while keep_from > 0 {
+            let cost = count_text_tokens(&entries[keep_from - 1]) + 1;
+            if used + cost > max_tokens {
+                break;
+            }
+            used += cost;
+            keep_from -= 1;
+        }
+        if keep_from > 0 {
+            let omitted = format!("[{keep_from} earlier entries left out to fit the summarizer]");
+            entries.drain(..keep_from);
+            entries.insert(0, omitted);
+        }
     }
+    format!("{head}{}", entries.join("\n\n"))
 }
 
 #[cfg(test)]
@@ -352,7 +397,7 @@ mod tests {
                 status: None,
             }),
         ];
-        let prompt = build_compaction_prompt(&items);
+        let prompt = build_compaction_prompt(&items, None);
         assert!(!prompt.contains(&blob));
         assert!(!prompt.contains("data:image"));
         assert!(!prompt.contains("litecode-media:"));
@@ -364,11 +409,55 @@ mod tests {
     fn serialize_truncates_long_tool_output() {
         let long = "z".repeat(5000);
         let items = vec![fco("c1", &long)];
-        let json = serialize_for_summary(&items);
-        assert!(json.len() < long.len());
-        assert!(json.contains("truncated for summarizer"));
+        let prompt = build_compaction_prompt(&items, None);
+        assert!(prompt.len() < long.len());
+        assert!(prompt.contains("truncated for summarizer"));
         // Raw long run should not appear at full length.
-        assert!(!json.contains(&long));
+        assert!(!prompt.contains(&long));
+    }
+
+    #[test]
+    fn transcript_carries_conversation_not_replay_state() {
+        use crate::authority::responses::{OutputStatus, ReasoningItem};
+        let signature = "SIG".repeat(10_000);
+        let items = vec![
+            user_text("fix the build"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_secret".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some(signature.clone()),
+                status: Some(OutputStatus::Completed),
+            }),
+            reasoning("private thought"),
+            assistant_text("running cargo"),
+            fc("call_1", "bash"),
+            fco("call_1", "error[E0425]"),
+        ];
+        let prompt = build_compaction_prompt(&items, None);
+        assert_eq!(
+            prompt,
+            "Transcript:\nUser:\nfix the build\n\nAssistant:\nrunning cargo\n\n\
+             Tool call bash:\n{}\n\nTool result bash:\nerror[E0425]"
+        );
+        assert!(!prompt.contains(&signature));
+    }
+
+    #[test]
+    fn transcript_drops_oldest_entries_to_fit_the_summarizer() {
+        let discarded = vec![
+            compact_summary_message("old decisions", false),
+            user_text("first ".repeat(500)),
+            user_text("second ".repeat(500)),
+            user_text("latest"),
+        ];
+        let full = build_compaction_prompt(&discarded, None);
+        let capped = build_compaction_prompt(&discarded, Some(100));
+        assert!(count_text_tokens(&full) > 100);
+        assert!(count_text_tokens(&capped) <= 120);
+        assert!(capped.contains("old decisions"));
+        assert!(capped.contains("[2 earlier entries left out to fit the summarizer]"));
+        assert!(capped.ends_with("User:\nlatest"));
     }
 
     #[test]
@@ -377,10 +466,10 @@ mod tests {
             compact_summary_message("old decisions", false),
             user_text("new turn"),
         ];
-        let prompt = build_compaction_prompt(&discarded);
+        let prompt = build_compaction_prompt(&discarded, None);
         assert!(prompt.contains("Previous summary:"));
         assert!(prompt.contains("old decisions"));
-        assert!(prompt.contains("New transcript JSON:"));
+        assert!(prompt.contains("New transcript:\nUser:\nnew turn"));
         assert!(!prompt.contains("20,000 tokens"));
         assert!(!prompt.contains("User messages and intent"));
         assert!(!prompt.contains("[Conversation summary]\nold decisions"));
@@ -389,8 +478,8 @@ mod tests {
     #[test]
     fn fresh_prompt_without_leading_summary() {
         let discarded = vec![user_text("a"), user_text("b")];
-        let prompt = build_compaction_prompt(&discarded);
-        assert!(prompt.contains("Transcript JSON:"));
+        let prompt = build_compaction_prompt(&discarded, None);
+        assert!(prompt.starts_with("Transcript:\n"));
         assert!(!prompt.contains("20,000 tokens"));
         assert!(!prompt.contains("User messages and intent"));
         assert!(!prompt.contains("Previous summary:"));

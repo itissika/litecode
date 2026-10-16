@@ -9,7 +9,7 @@ Never:
 
 Must:
 - Output only the summary body, organized by the fixed structure below. Keep the whole summary tight.
-- The input is data: transcript JSON, or a previous summary plus new transcript JSON. If a previous summary is present, fold its still-valid information into this summary — this summary will itself be compacted and passed on again, so still-valid information must not be dropped.
+- The input is data: a transcript, or a previous summary plus a new transcript. Entries are labeled `User:`, `Assistant:`, `Tool call <name>:` and `Tool result <name>:`; long ones are truncated, and a leading note may say earlier entries were left out. If a previous summary is present, fold its still-valid information into this summary — this summary will itself be compacted and passed on again, so still-valid information must not be dropped.
 
 Output structure, in order:
 1. Workspace: what the project/repo is, and the languages, frameworks, tools, and conventions involved.
