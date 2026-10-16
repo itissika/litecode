@@ -179,6 +179,37 @@ impl SessionData {
         }
     }
 
+
+    /// WP-186: load durable pending permissions for a session.
+    pub fn pending_permissions_blocking(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::session::pending::PendingPermissionRecord>> {
+        match self.read_blocking(SessionRead::PendingPermissions {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::PendingPermissions(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected read value for pending_permissions".into(),
+            )),
+        }
+    }
+
+    /// WP-186: replace durable pending permissions (full list write).
+    pub fn save_pending_permissions_blocking(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        pending: Vec<crate::session::pending::PendingPermissionRecord>,
+    ) -> Result<CommitReceipt> {
+        self.mutate_blocking(SessionMutation::SavePendingPermissions {
+            session_id: session_id.to_string(),
+            expected_revision,
+            operation_id: MutationId::new(),
+            pending,
+        })
+    }
+
     pub fn meta_blocking(&self, session_id: &str) -> Result<crate::session::model::SessionMeta> {
         match self.read_blocking(SessionRead::Meta {
             session_id: session_id.to_string(),

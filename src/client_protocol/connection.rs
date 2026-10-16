@@ -1555,8 +1555,8 @@ fn apply_permission_grant(
     }
 }
 
-/// Non-accept path for outstanding Asks (cancel / quit / disconnect): reject.
-fn reject_all_pending_asks(
+/// Cancel / Stop: resolve outstanding Asks as Aborted (WP-186; not user Skip).
+fn abort_all_pending_asks(
     pending_asks: &mut HashMap<String, PendingAsk>,
 ) -> Vec<(String, String)> {
     pending_asks
@@ -1564,10 +1564,33 @@ fn reject_all_pending_asks(
         .map(|(_, pending)| {
             let _ = pending
                 .reply_tx
-                .send(AskReply::from_outcome(AskOutcome::Deny));
+                .send(AskReply::from_outcome(AskOutcome::Aborted));
             (pending.session_id, pending.tool)
         })
         .collect()
+}
+
+/// Disconnect / Quit: drop connection-local oneshots without Deny/Skipped (WP-186).
+/// Durable sidecar + session list keep the pending cards for the next attach.
+fn retain_pending_on_disconnect(
+    pending_asks: &mut HashMap<String, PendingAsk>,
+) -> Vec<(String, String)> {
+    pending_asks
+        .drain()
+        .map(|(_, pending)| {
+            // Drop reply_tx without send → agent side treats as cancelled/parked
+            // via oneshot closed; bridge maps closed/cancel to Aborted, not Deny.
+            drop(pending.reply_tx);
+            (pending.session_id, pending.tool)
+        })
+        .collect()
+}
+
+/// @deprecated name kept for test migration — Cancel semantics are Aborted.
+fn reject_all_pending_asks(
+    pending_asks: &mut HashMap<String, PendingAsk>,
+) -> Vec<(String, String)> {
+    abort_all_pending_asks(pending_asks)
 }
 
 fn emit_permission_resolved(
@@ -1691,6 +1714,28 @@ pub async fn run_session_loop(
                     }
                 }
 
+                // WP-186: durable sidecar + in-memory list (kind required on write).
+                // Link transcript call_id when the FunctionCall is already logged.
+                let linked_call_id = session
+                    .sessions
+                    .latest_unanswered_call_id_for_tool(&perm.session_id, &perm.tool);
+                session.sessions.upsert_pending_permission(
+                    crate::session::pending::PendingPermissionRecord {
+                        session_id: perm.session_id.clone(),
+                        turn_id: perm.turn_id.clone(),
+                        request_id: perm.request_id.clone(),
+                        tool: perm.tool.clone(),
+                        rule_id: perm.rule_id.clone(),
+                        summary: perm.summary.clone(),
+                        kind: perm.kind,
+                        free_text: perm.free_text,
+                        options: perm.options.clone(),
+                        multi_select: perm.multi_select,
+                        questions: perm.questions.clone(),
+                        call_id: linked_call_id,
+                    },
+                );
+
                 // Race: grant may have arrived before this Ask was registered.
                 let buffered_grant = take_stray_grant_for(session, &perm.request_id);
                 if let Some(SessionRequest::PermissionGrant {
@@ -1725,6 +1770,9 @@ pub async fn run_session_loop(
                         selected,
                         answers,
                     ));
+                    session
+                        .sessions
+                        .remove_pending_permission(&sid, &request_id);
                     emit_permission_resolved(
                         session,
                         &response_tx,
@@ -1750,11 +1798,8 @@ pub async fn run_session_loop(
             req = request_rx.recv() => {
                 match req {
                     Some(SessionRequest::Quit) => {
-                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                            emit_permission_resolved(
-                                session, &response_tx, &sid, &tool, false, false,
-                            );
-                        }
+                        // WP-186: disconnect/quit keeps durable pending; no fake Deny.
+                        let _ = retain_pending_on_disconnect(&mut pending_asks);
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
                             let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
@@ -1762,14 +1807,16 @@ pub async fn run_session_loop(
                         break;
                     }
                     Some(SessionRequest::Cancel) => {
-                        // Non-accept ⇒ reject outstanding Asks, then cancel turns.
-                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                        // WP-186: user Stop → Aborted + clear durable pending.
+                        for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
+                            session.sessions.clear_pending_permissions(&sid);
                             emit_permission_resolved(
                                 session, &response_tx, &sid, &tool, false, false,
                             );
                         }
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
+                            session.sessions.clear_pending_permissions(sid);
                             let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
                         }
                         for msg in session.take_all_outgoing() {
@@ -1781,11 +1828,8 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
-                            for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                                emit_permission_resolved(
-                                    session, &response_tx, &sid, &tool, false, false,
-                                );
-                            }
+                            // Connection tearing down — retain durable pending.
+                            let _ = retain_pending_on_disconnect(&mut pending_asks);
                             break;
                         }
                     }
@@ -1798,6 +1842,7 @@ pub async fn run_session_loop(
                         selected,
                         answers,
                     }) => {
+                        let request_id_for_sidecar = request_id.clone();
                         match apply_permission_grant(
                             &mut pending_asks,
                             request_id,
@@ -1820,6 +1865,10 @@ pub async fn run_session_loop(
                                     approved,
                                     always,
                                     "grant_permission received"
+                                );
+                                session.sessions.remove_pending_permission(
+                                    &session_id,
+                                    &request_id_for_sidecar,
                                 );
                                 emit_permission_resolved(
                                     session,
@@ -1866,11 +1915,8 @@ pub async fn run_session_loop(
                         session.unsubscribe(&session_id);
                     }
                     None => {
-                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                            emit_permission_resolved(
-                                session, &response_tx, &sid, &tool, false, false,
-                            );
-                        }
+                        // WP-186: WS gone — retain durable pending, no Deny.
+                        let _ = retain_pending_on_disconnect(&mut pending_asks);
                         break;
                     }
                 }
@@ -1891,16 +1937,7 @@ pub async fn run_session_loop(
             for req in deferred {
                 match req {
                     SessionRequest::Quit => {
-                        for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                            emit_permission_resolved(
-                                session,
-                                &response_tx,
-                                &rej_sid,
-                                &tool,
-                                false,
-                                false,
-                            );
-                        }
+                        let _ = retain_pending_on_disconnect(&mut pending_asks);
                         let _ = session
                             .sessions
                             .cancel_turn(&sid, crate::types::StopOrigin::User)
@@ -1908,7 +1945,8 @@ pub async fn run_session_loop(
                         return;
                     }
                     SessionRequest::Cancel => {
-                        for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                        for (rej_sid, tool) in abort_all_pending_asks(&mut pending_asks) {
+                            session.sessions.clear_pending_permissions(&rej_sid);
                             emit_permission_resolved(
                                 session,
                                 &response_tx,
@@ -1918,6 +1956,7 @@ pub async fn run_session_loop(
                                 false,
                             );
                         }
+                        session.sessions.clear_pending_permissions(&sid);
                         let _ = session
                             .sessions
                             .cancel_turn(&sid, crate::types::StopOrigin::User)
@@ -1932,16 +1971,7 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
-                            for (rej_sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                                emit_permission_resolved(
-                                    session,
-                                    &response_tx,
-                                    &rej_sid,
-                                    &tool,
-                                    false,
-                                    false,
-                                );
-                            }
+                            let _ = retain_pending_on_disconnect(&mut pending_asks);
                             return;
                         }
                     }
@@ -1968,28 +1998,18 @@ pub async fn run_session_loop(
         for req in dummy_deferred {
             match req {
                 SessionRequest::Quit => {
-                    for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                        emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
-                    }
+                    let _ = retain_pending_on_disconnect(&mut pending_asks);
                     break;
                 }
                 SessionRequest::Cancel => {
-                    for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
+                    for (sid, tool) in abort_all_pending_asks(&mut pending_asks) {
+                        session.sessions.clear_pending_permissions(&sid);
                         emit_permission_resolved(session, &response_tx, &sid, &tool, false, false);
                     }
                 }
                 SessionRequest::JsonRpc(rpc) => {
                     if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
-                        for (sid, tool) in reject_all_pending_asks(&mut pending_asks) {
-                            emit_permission_resolved(
-                                session,
-                                &response_tx,
-                                &sid,
-                                &tool,
-                                false,
-                                false,
-                            );
-                        }
+                        let _ = retain_pending_on_disconnect(&mut pending_asks);
                         return;
                     }
                 }
@@ -2093,7 +2113,7 @@ mod compact_error_tests {
 
 #[cfg(test)]
 mod pending_ask_tests {
-    use super::{GrantApply, PendingAsk, apply_permission_grant, reject_all_pending_asks};
+    use super::{GrantApply, PendingAsk, abort_all_pending_asks, apply_permission_grant, retain_pending_on_disconnect};
     use crate::permission::{AskOutcome, AskReply};
     use std::collections::HashMap;
     use tokio::sync::oneshot;
@@ -2191,15 +2211,26 @@ mod pending_ask_tests {
     }
 
     #[test]
-    fn reject_all_pending_is_deny_not_abort() {
+    fn abort_all_pending_is_aborted_not_deny() {
         let mut pending = HashMap::new();
         let rx_a = insert_ask(&mut pending, "a", "sess-a");
         let rx_b = insert_ask(&mut pending, "b", "sess-b");
-        let rejected = reject_all_pending_asks(&mut pending);
+        let rejected = abort_all_pending_asks(&mut pending);
         assert_eq!(rejected.len(), 2);
         assert!(pending.is_empty());
-        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Deny);
-        assert_eq!(rx_b.blocking_recv().unwrap().outcome, AskOutcome::Deny);
+        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Aborted);
+        assert_eq!(rx_b.blocking_recv().unwrap().outcome, AskOutcome::Aborted);
+    }
+
+    #[test]
+    fn retain_pending_on_disconnect_does_not_deny() {
+        let mut pending = HashMap::new();
+        let rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let listed = retain_pending_on_disconnect(&mut pending);
+        assert_eq!(listed.len(), 1);
+        assert!(pending.is_empty());
+        // oneshot closed without Deny — recv errors / is cancelled.
+        assert!(rx_a.blocking_recv().is_err());
     }
 
     #[test]
@@ -2388,7 +2419,7 @@ mod ask_loop_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_rejects_pending_ask() {
+    async fn cancel_aborts_pending_ask() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions) = test_runtime(dir.path());
         let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
@@ -2435,9 +2466,9 @@ mod ask_loop_tests {
 
         let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
             .await
-            .expect("cancel should reject Ask")
+            .expect("cancel should abort Ask")
             .expect("oneshot open");
-        assert_eq!(reply.outcome, AskOutcome::Deny);
+        assert_eq!(reply.outcome, AskOutcome::Aborted);
 
         let _ = request_tx.send(SessionRequest::Quit);
         let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;

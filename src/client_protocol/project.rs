@@ -1149,6 +1149,33 @@ pub fn as_turn_finished(msg: &serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
+
+/// WP-186: project a durable pending row onto the wire `PermissionRequest` shape.
+/// `kind` is always copied explicitly (required on snapshot write).
+pub fn pending_record_to_wire(
+    rec: &crate::session::pending::PendingPermissionRecord,
+) -> super::protocol::PermissionRequest {
+    super::protocol::PermissionRequest {
+        session_id: rec.session_id.clone(),
+        turn_id: rec.turn_id.clone(),
+        request_id: rec.request_id.clone(),
+        tool: rec.tool.clone(),
+        rule_id: rec.rule_id.clone(),
+        summary: rec.summary.clone(),
+        kind: rec.kind,
+        free_text: rec.free_text,
+        options: rec.options.clone(),
+        multi_select: rec.multi_select,
+        questions: rec.questions.clone(),
+    }
+}
+
+pub fn pending_records_to_wire(
+    recs: &[crate::session::pending::PendingPermissionRecord],
+) -> Vec<super::protocol::PermissionRequest> {
+    recs.iter().map(pending_record_to_wire).collect()
+}
+
 pub fn buffer_snapshot(
     session_id: &str,
     project: &str,
@@ -1213,6 +1240,8 @@ pub fn buffer_snapshot(
         pending_messages: Vec::new(),
         active_plan_path: None,
         llm_reconnect: None,
+        // WP-186: always present (even empty) — filled by Projection/manager.
+        pending_permissions: Vec::new(),
     }
 }
 
@@ -1254,5 +1283,146 @@ mod wp025_turn_error_tests {
             not_compaction.code
         );
         assert!(!not_compaction.retryable);
+    }
+}
+
+
+#[cfg(test)]
+mod wp186_pending_permissions_tests {
+    use super::*;
+    use crate::client_protocol::protocol::{
+        BufferState, PermissionRequest, SessionSnapshot, WireTurnPhase,
+    };
+    use crate::permission::{AskKind, AskOption, AskQuestion};
+
+    fn empty_snap() -> SessionSnapshot {
+        SessionSnapshot {
+            meta: Default::default(),
+            live: None,
+            session_id: "s".into(),
+            project: "p".into(),
+            agent_id: "a".into(),
+            model_id: None,
+            api_model_id: String::new(),
+            label: String::new(),
+            buffer: BufferState {
+                last_seq: -1,
+                next_seq: 0,
+                revision: 0,
+            },
+            turn: None,
+            context_window: 0,
+            context_tokens_estimate: 0,
+            context_token_breakdown: Default::default(),
+            compact_eligible: false,
+            compacting: false,
+            last_turn_token_stats: None,
+            cumulative_token_stats: None,
+            thinking_tier: "medium".into(),
+            context_mode: "standard".into(),
+            max_file_revert_seq: None,
+            bash: None,
+            todos: Vec::new(),
+            pending_messages: Vec::new(),
+            active_plan_path: None,
+            llm_reconnect: None,
+            pending_permissions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn snapshot_always_serializes_pending_permissions_even_when_empty() {
+        let v = serde_json::to_value(empty_snap()).unwrap();
+        let arr = v.get("pending_permissions").expect("field must be present");
+        assert!(arr.is_array());
+        assert_eq!(arr.as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn wire_phase_writes_waiting_for_user_reads_alias() {
+        let phase = WireTurnPhase::AwaitingPermission {
+            tool: "ask_user".into(),
+            rule_id: "ask_user".into(),
+            summary: "q".into(),
+        };
+        let v = serde_json::to_value(&phase).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(
+            obj.contains_key("waiting_for_user"),
+            "write must use waiting_for_user, got {v}"
+        );
+        assert!(!obj.contains_key("awaiting_permission"));
+
+        let legacy = serde_json::json!({
+            "awaiting_permission": {
+                "tool": "bash",
+                "rule_id": "bash.exec",
+                "summary": "run"
+            }
+        });
+        // Externally tagged enum: key is the variant name.
+        let decoded: WireTurnPhase = serde_json::from_value(legacy).unwrap();
+        match decoded {
+            WireTurnPhase::AwaitingPermission { tool, .. } => assert_eq!(tool, "bash"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pending_permissions_matches_frozen_shape_fields() {
+        let req = PermissionRequest {
+            session_id: "sess_example_001".into(),
+            turn_id: "turn_example_001".into(),
+            request_id: "req_ask_user_001".into(),
+            tool: "ask_user".into(),
+            rule_id: "ask_user".into(),
+            summary: "Choose deploy target".into(),
+            kind: AskKind::AskUser,
+            free_text: false,
+            options: vec![],
+            multi_select: false,
+            questions: vec![AskQuestion {
+                id: "q_env".into(),
+                prompt: "Which environment?".into(),
+                options: vec![
+                    AskOption { id: "staging".into(), label: "Staging".into() },
+                    AskOption { id: "prod".into(), label: "Production".into() },
+                ],
+                multi_select: false,
+                free_text: true,
+            }],
+        };
+        let mut snap = empty_snap();
+        snap.pending_permissions = vec![req];
+        let v = serde_json::to_value(&snap).unwrap();
+        let item = &v["pending_permissions"][0];
+        for key in [
+            "session_id", "turn_id", "request_id", "tool", "rule_id", "summary", "kind",
+        ] {
+            assert!(item.get(key).is_some(), "missing {key}");
+        }
+        assert_eq!(item["kind"], "ask_user");
+    }
+
+    #[test]
+    fn turn_awaiting_permission_derived_from_list_len() {
+        let mut snap = empty_snap();
+        assert!(snap.pending_permissions.is_empty());
+        let derived = !snap.pending_permissions.is_empty();
+        assert!(!derived);
+        snap.pending_permissions.push(PermissionRequest {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            request_id: "r".into(),
+            tool: "bash".into(),
+            rule_id: "bash.exec".into(),
+            summary: "x".into(),
+            kind: AskKind::Permission,
+            free_text: false,
+            options: vec![],
+            multi_select: false,
+            questions: vec![],
+        });
+        assert!(!snap.pending_permissions.is_empty());
     }
 }

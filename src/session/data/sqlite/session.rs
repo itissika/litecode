@@ -2409,7 +2409,45 @@ impl Session {
             };
             match &mut item {
                 Item::Message(MessageItem::Output(m)) => m.status = OutputStatus::Incomplete,
-                Item::FunctionCall(fc) => fc.status = Some(OutputStatus::Incomplete),
+                Item::FunctionCall(fc) => {
+                    // WP-186: permission-class waits must become Final so
+                    // seal_tail can run, but must NOT be stamped Incomplete
+                    // (they are intentional unsealed tails, not crash orphans).
+                    let permission_class = super::pending::should_skip_seal_for_call(
+                        self.conn(),
+                        &self.id,
+                        &fc.call_id,
+                        &fc.name,
+                    )
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            error = %e,
+                            call_id = %fc.call_id,
+                            "pending seal-skip lookup failed during seal_in_progress"
+                        );
+                        crate::session::pending::PendingPermissionRecord::is_permission_class_tool_name(
+                            &fc.name,
+                        )
+                    });
+                    if permission_class {
+                        if let Err(e) = super::pending::backfill_call_id(
+                            self.conn(),
+                            &self.id,
+                            &fc.name,
+                            &fc.call_id,
+                        ) {
+                            tracing::warn!(
+                                error = %e,
+                                call_id = %fc.call_id,
+                                tool = %fc.name,
+                                "failed to backfill pending_permissions.call_id"
+                            );
+                        }
+                        // leave status as-is (no Incomplete)
+                    } else {
+                        fc.status = Some(OutputStatus::Incomplete);
+                    }
+                }
                 Item::Reasoning(r) => r.status = Some(OutputStatus::Incomplete),
                 _ => {}
             }
@@ -2738,14 +2776,55 @@ impl Session {
                 .iter()
                 .filter_map(|&index| match &items[index] {
                     Some(Item::FunctionCall(call)) => {
-                        Some(Self::unanswered_call_output(&call.call_id, &call.name))
+                        // WP-186: permission-class tails stay unsealed (restore waiting).
+                        let skip = super::pending::should_skip_seal_for_call(
+                            self.conn(),
+                            &self.id,
+                            &call.call_id,
+                            &call.name,
+                        )
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(
+                                error = %e,
+                                call_id = %call.call_id,
+                                "pending seal-skip lookup failed; sealing as interrupt"
+                            );
+                            false
+                        });
+                        if skip {
+                            tracing::info!(
+                                session_id = %self.id,
+                                call_id = %call.call_id,
+                                tool = %call.name,
+                                "skip seal_tail for permission-class unanswered call"
+                            );
+                            // R4: name-fallback synthesize sidecar when absent.
+                            if let Err(e) = super::pending::ensure_name_fallback_pending(
+                                self.conn(),
+                                &self.id,
+                                &turn_id,
+                                &call.call_id,
+                                &call.name,
+                            ) {
+                                tracing::warn!(
+                                    error = %e,
+                                    call_id = %call.call_id,
+                                    "failed to synthesize pending_permissions fallback"
+                                );
+                            }
+                            None
+                        } else {
+                            Some(Self::unanswered_call_output(&call.call_id, &call.name))
+                        }
                     }
                     _ => None,
                 })
                 .collect();
-            let outcome = self.insert_detail_rows_with_turn(&outputs, &turn_id)?;
-            if let Some((first, last)) = outcome.seq_range {
-                sealed.extend(first..=last);
+            if !outputs.is_empty() {
+                let outcome = self.insert_detail_rows_with_turn(&outputs, &turn_id)?;
+                if let Some((first, last)) = outcome.seq_range {
+                    sealed.extend(first..=last);
+                }
             }
             start = end;
         }

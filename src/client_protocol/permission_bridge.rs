@@ -79,8 +79,9 @@ impl PermissionSink for WsPermissionBridge {
             })
             .is_err()
         {
+            // WP-186 R5: no WS must not look like user Skip (Deny).
             tracing::warn!(tool = %prompt.tool, "no active websocket for permission");
-            return AskReply::from_outcome(AskOutcome::Deny);
+            return AskReply::from_outcome(AskOutcome::Aborted);
         }
         let reply = blocking_wait_oneshot_cancellable(reply_rx, Some(cancel.clone()))
             .unwrap_or_else(|| AskReply::from_outcome(AskOutcome::Aborted));

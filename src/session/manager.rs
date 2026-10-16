@@ -266,6 +266,8 @@ pub struct SessionRecord {
     /// Queued user messages for the live turn. Outlives a turn (a cancel keeps
     /// the queue for the follow-up flush) but never touches the session log.
     pending_messages: Vec<PendingMessage>,
+    /// WP-186: durable user-gate asks mirrored from `session_pending_permissions`.
+    pending_permissions: Vec<crate::session::pending::PendingPermissionRecord>,
     /// WP-098 R-Q: child follow-up turns. Separate from `pending_messages`,
     /// never claimed at a step seam, memory-only (ISSUE on restart loss).
     follow_ups: VecDeque<crate::types::UserInput>,
@@ -305,6 +307,7 @@ impl SessionRecord {
             event_tx,
             event_buffer: VecDeque::new(),
             pending_messages: Vec::new(),
+            pending_permissions: Vec::new(),
             follow_ups: VecDeque::new(),
             subscriber_count: 0,
             agent_id: meta.agent_id.clone(),
@@ -777,6 +780,15 @@ impl SessionManager {
         }
         let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = None;
+        // WP-186: hydrate pending user-gate asks from the P1 sidecar.
+        match self.data.pending_permissions_blocking(session_id) {
+            Ok(pending) => record.pending_permissions = pending,
+            Err(e) => tracing::warn!(
+                error = %e,
+                session_id,
+                "failed to load pending_permissions on resume"
+            ),
+        }
         records.insert(session_id.to_string(), record);
         Ok(())
     }
@@ -1542,6 +1554,112 @@ impl SessionManager {
             .map(|record| record.pending_messages.clone())
             .unwrap_or_default()
     }
+
+    /// WP-186: snapshot pending user-gate asks for wire `pending_permissions`.
+    pub fn pending_permissions_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Vec<crate::session::pending::PendingPermissionRecord> {
+        self.records
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|record| record.pending_permissions.clone())
+            .unwrap_or_default()
+    }
+
+    /// WP-186: upsert one pending ask in memory + durable sidecar.
+    pub fn upsert_pending_permission(
+        &self,
+        rec: crate::session::pending::PendingPermissionRecord,
+    ) {
+        let session_id = rec.session_id.clone();
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(&session_id) else {
+            tracing::warn!(
+                session_id = %session_id,
+                request_id = %rec.request_id,
+                "upsert_pending_permission: no session record"
+            );
+            return;
+        };
+        if let Some(pos) = record
+            .pending_permissions
+            .iter()
+            .position(|p| p.request_id == rec.request_id)
+        {
+            record.pending_permissions[pos] = rec.clone();
+        } else {
+            record.pending_permissions.push(rec.clone());
+        }
+        let pending = record.pending_permissions.clone();
+        let expected = record.revision;
+        drop(records);
+        if let Err(e) = self
+            .data
+            .save_pending_permissions_blocking(&session_id, expected, pending)
+        {
+            tracing::warn!(error = %e, session_id = %session_id, "persist pending_permissions failed");
+        } else if let Ok(rev) = self.data.revision_blocking(&session_id) {
+            if let Some(record) = self.records.lock().unwrap().get_mut(&session_id) {
+                record.revision = rev;
+            }
+        }
+    }
+
+    /// WP-186: remove one pending ask (user answered / cancelled that request).
+    pub fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        let before = record.pending_permissions.len();
+        record
+            .pending_permissions
+            .retain(|p| p.request_id != request_id);
+        if record.pending_permissions.len() == before {
+            return;
+        }
+        let pending = record.pending_permissions.clone();
+        let expected = record.revision;
+        drop(records);
+        if let Err(e) = self
+            .data
+            .save_pending_permissions_blocking(session_id, expected, pending)
+        {
+            tracing::warn!(error = %e, session_id, "persist pending_permissions after remove failed");
+        } else if let Ok(rev) = self.data.revision_blocking(session_id) {
+            if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+                record.revision = rev;
+            }
+        }
+    }
+
+    /// WP-186: clear all pending asks (Cancel → Aborted path).
+    pub fn clear_pending_permissions(&self, session_id: &str) {
+        let mut records = self.records.lock().unwrap();
+        let Some(record) = records.get_mut(session_id) else {
+            return;
+        };
+        if record.pending_permissions.is_empty() {
+            return;
+        }
+        record.pending_permissions.clear();
+        let expected = record.revision;
+        drop(records);
+        if let Err(e) = self.data.save_pending_permissions_blocking(
+            session_id,
+            expected,
+            Vec::new(),
+        ) {
+            tracing::warn!(error = %e, session_id, "persist clear pending_permissions failed");
+        } else if let Ok(rev) = self.data.revision_blocking(session_id) {
+            if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+                record.revision = rev;
+            }
+        }
+    }
+
 
     pub fn has_pending_messages(&self, session_id: &str) -> bool {
         self.records
@@ -2460,6 +2578,37 @@ impl SessionManager {
                     )
                 })
         })
+    }
+
+    /// WP-186: latest unanswered FunctionCall matching `tool_name` from transcript.
+    /// Used to link `pending_permissions.call_id` when the ask is upserted.
+    pub fn latest_unanswered_call_id_for_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+    ) -> Option<String> {
+        let events = self.data.events_blocking(session_id).ok()?;
+        let mut answered = std::collections::HashSet::new();
+        let mut calls: Vec<(String, String)> = Vec::new();
+        for event in events {
+            let Ok(item) = crate::session::event::item_from_event(&event) else {
+                continue;
+            };
+            match item {
+                crate::types::Item::FunctionCall(fc) if !fc.call_id.is_empty() => {
+                    calls.push((fc.call_id, fc.name));
+                }
+                crate::types::Item::FunctionCallOutput(out) => {
+                    answered.insert(out.call_id);
+                }
+                _ => {}
+            }
+        }
+        calls
+            .into_iter()
+            .rev()
+            .find(|(cid, name)| name == tool_name && !answered.contains(cid))
+            .map(|(cid, _)| cid)
     }
 
     /// Snapshot of the replay buffer (bounded at EVENT_BUFFER_CAPACITY). Each
