@@ -15,6 +15,7 @@ pub mod manager;
 pub mod media;
 pub mod media_tokens;
 pub mod model;
+pub mod pending;
 pub mod snapshot;
 pub mod snapshot_paths;
 pub mod store;
