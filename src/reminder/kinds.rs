@@ -106,7 +106,6 @@ pub struct EnvBody {
     pub cwd: String,
     pub os: String,
     pub date: String,
-    pub timezone: String,
     pub text: String,
 }
 
@@ -297,9 +296,7 @@ impl Reminder {
     /// Snapshot identity for Diff kinds. `text` is not part of the comparison.
     pub fn same_snapshot(&self, other: &Reminder) -> bool {
         match (self, other) {
-            (Self::Env(a), Self::Env(b)) => {
-                a.cwd == b.cwd && a.os == b.os && a.date == b.date && a.timezone == b.timezone
-            }
+            (Self::Env(a), Self::Env(b)) => a.cwd == b.cwd && a.os == b.os && a.date == b.date,
             (Self::PlanChanged(a), Self::PlanChanged(b)) => {
                 a.relative_path == b.relative_path && a.revision == b.revision
             }

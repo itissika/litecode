@@ -592,8 +592,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
                 cwd: "/proj".into(),
                 os: "test".into(),
                 date: "2026-09-27".into(),
-                timezone: "+00:00".into(),
-                text: "Environment: cwd /proj; os test; date 2026-09-27; timezone +00:00.".into(),
+                text: "Environment: cwd /proj; os test; date 2026-09-27.".into(),
             }),
         )
         .unwrap();
@@ -685,8 +684,7 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
                 cwd: "/proj".into(),
                 os: "test".into(),
                 date: "2026-09-27".into(),
-                timezone: "+00:00".into(),
-                text: "Environment: cwd /proj; os test; date 2026-09-27; timezone +00:00.".into(),
+                text: "Environment: cwd /proj; os test; date 2026-09-27.".into(),
             }),
         )
         .unwrap();
