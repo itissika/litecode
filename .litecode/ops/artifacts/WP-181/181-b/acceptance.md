@@ -1,29 +1,34 @@
-# WP-187（WP-181-b）acceptance
+# WP-187（181-b）acceptance — PhasePermissionSink
 
-**branch:** `runtime/wp-187-phase-permission-sink` @ `4590e84` + dirty `phase.rs`  
-**cargo:** **NOT RUN YET** — awaiting backend_mid heavy slot (`LC_MIN_MEM_GIB=2`, `CARGO_BUILD_JOBS=1`)
+**branch:** `runtime/wp-187-phase-permission-sink` @ `9cd19a6` (+ this evidence commit)  
+**baseline:** `4590e84` (WP-186)  
+**when:** 2026-10-16 Asia/Hong_Kong
 
-## done_when checklist
-
-- [x] Enter: `PermissionAwaiting{true}` + `PhaseChanged(AwaitingPermission{tool,rule_id,summary})` implemented in `PhasePermissionSink`
-- [x] Leave Allow → ExecutingTools; Deny → ExecutingTools; Aborted → Cancelling; bool false on leave
-- [x] No second ask channel; AskOutcome semantics unchanged
-- [x] No H1 codec / permission_bridge / connection reject_all / FE / manager edits
-- [ ] T1–T5 green under `cargo test -p litecode --lib phase::` (pending slot)
-- [ ] deliver → backend_mid review
-
-## Command to run when slot granted
+## cargo
 
 ```bash
 LC_MIN_MEM_GIB=2 LC_KILL_MEM_GIB=1 CARGO_BUILD_JOBS=1 \
   cargo test -p litecode --lib phase:: -- --nocapture
 ```
 
-Paste stdout / pass count here after run.
+**Result: 6 passed; 0 failed**
 
-## Evidence paths
+- t1_enter_emits_awaiting_bool_then_phase
+- t2_allow_leave_executing_tools
+- t3_deny_leave_executing_tools
+- t4_aborted_leave_cancelling
+- t5_cancelling_wrapper_aborted_leave_cancelling
+- reply_outcome_forwarded_unchanged
 
-- `plan.md` (from plan-draft; Q1–Q6 defaults)
-- `impl-notes.md`
-- `impl.diff`
-- `notes.md` (cold-recovery handoff)
+Log: `cargo-phase.txt` (compile ~1m21s incremental; pre-existing warnings only)
+
+## Scope
+
+- Only `src/runtime/phase.rs` (+ 181-b artifacts)
+- No permission_bridge / connection reject_all / H1 / FE / manager
+- Enter: PermissionAwaiting{true} + PhaseChanged(AwaitingPermission{…})
+- Leave: Allow/Deny → ExecutingTools; Aborted → Cancelling
+
+## Artifacts
+
+plan.md, impl-notes.md, impl.diff, notes.md (cold-recovery handoff), this file
