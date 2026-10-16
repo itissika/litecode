@@ -235,9 +235,7 @@ function AgentProfileFields({
           disabled={saveBlocked}
         />
         <p className="mt-1 text-[11px] text-(--_dk-text-muted)">
-          Replaces identity, work, and voice. A <code>builtin:</code> value
-          uses the built-in text. System, tool, and citation sections are
-          always added.
+          Replaces the built-in persona (<code>builtin:</code> keeps default).
         </p>
       </div>
       <div
@@ -263,7 +261,7 @@ function AgentProfileFields({
         />
         {flashMaxSteps ? (
           <p className="mt-1 text-[11px] text-(--_dk-amber-500)">
-            Default 50 runs out on long tasks — 200 is a saner default.
+            Long tasks may need ~200.
           </p>
         ) : null}
       </div>
@@ -338,8 +336,7 @@ function AllowedSubagentsSelect({
       <h3 className="settings-section-title">Allowed subagents</h3>
       {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
         <p className="text-xs text-(--_dk-amber-500)">
-          subagent_launch is enabled but no subagents are allowed — launches
-          will fail until you select at least one.
+          Select at least one subagent, or launches will fail.
         </p>
       ) : null}
       {subagentIds.length === 0 ? (
@@ -378,7 +375,7 @@ function AllowedSubagentsSelect({
   );
 }
 
-export function AgentToolsGrid({
+function AgentToolsGrid({
   draft,
   bindableTools,
   mcpServers,
@@ -457,7 +454,7 @@ export function AgentToolsGrid({
                 type="button"
                 disabled={saveBlocked}
                 aria-pressed={enabled}
-                aria-label={`${entry.id} tool binding, ${enabled ? "enabled" : "disabled"}. Click the card to toggle.`}
+                aria-label={`${entry.id} tool binding, ${enabled ? "enabled" : "disabled"}`}
                 className="tool-binding-toggle"
                 onClick={toggleEnabled}
               />
@@ -996,8 +993,7 @@ export function AgentsSection() {
           />
         ) : isHiddenAgent ? (
           <p className="text-xs text-(--_dk-text-disabled)">
-            Compaction only assigns a model. Prompt, tools, and max steps are
-            built in.
+            Only the model is configurable.
           </p>
         ) : null}
       </div>

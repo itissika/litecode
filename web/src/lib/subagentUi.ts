@@ -8,13 +8,13 @@ export function inputString(input: unknown, key: string): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-export function outputField(text: string, key: string): string | undefined {
+function outputField(text: string, key: string): string | undefined {
   const match = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(text);
   const value = match?.[1]?.trim();
   return value ? value : undefined;
 }
 
-export function countWaitIds(input: unknown): number | undefined {
+function countWaitIds(input: unknown): number | undefined {
   if (!input || typeof input !== "object" || Array.isArray(input))
     return undefined;
   const ids = (input as Record<string, unknown>).ids;

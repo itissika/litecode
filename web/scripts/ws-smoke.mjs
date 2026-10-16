@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Temporary WS smoke probe (Phase 0 manual acceptance automation).
+ * Manual WS smoke probe against `litecode serve` (JSON-RPC 2.0 over WebSocket).
+ * The token rides the handshake URL (`?token=`); no auth frame is sent.
  * Usage:
- *   node web/scripts/ws-smoke.mjs handshake [--token secret]
- *   node web/scripts/ws-smoke.mjs list
- *   node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]
+ *   node web/scripts/ws-smoke.mjs handshake [--token secret]   # expect server/hello
+ *   node web/scripts/ws-smoke.mjs list [--token secret]        # also call session/list
+ *   node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]  # wrong token: no server/hello
  */
 const WebSocket = globalThis.WebSocket;
 if (!WebSocket) {
@@ -19,87 +20,82 @@ const token =
     ? "wrong"
     : (process.argv.find((_, i, a) => a[i - 1] === "--token") ?? process.env.WS_TOKEN ?? "secret");
 const timeoutMs = Number(process.env.WS_TIMEOUT_MS ?? 2500);
+const LIST_ID = 1;
 
 function wsUrl() {
   const sep = BASE.includes("?") ? "&" : "?";
   return `${BASE}${sep}token=${encodeURIComponent(token)}`;
 }
 
+/** Frames may carry several newline-delimited JSON-RPC messages. */
 function ingestFrame(data, state) {
-  const text = String(data).trim();
-  if (!text) return;
-  try {
-    state.envelopes.push(JSON.parse(text));
-  } catch (e) {
-    state.parseErrors.push({ line: text.slice(0, 120), error: String(e) });
+  for (const line of String(data).split("\n")) {
+    const text = line.trim();
+    if (!text) continue;
+    try {
+      state.messages.push(JSON.parse(text));
+    } catch (e) {
+      state.parseErrors.push({ line: text.slice(0, 120), error: String(e) });
+    }
   }
 }
 
-function hasKey(envelopes, key) {
-  return envelopes.some((e) => e && typeof e === "object" && key in e);
-}
+const hasHello = (state) => state.messages.some((m) => m?.method === "server/hello");
+const listResponse = (state) => state.messages.find((m) => m?.id === LIST_ID && ("result" in m || "error" in m));
 
-function runScenario(name, { sendAuth = true, sendListSessions = false } = {}) {
+function runScenario(name, { callList = false } = {}) {
   return new Promise((resolve) => {
-    const state = { buf: "", envelopes: [], parseErrors: [], closed: null, opened: false };
+    const state = { messages: [], parseErrors: [], closed: null, opened: false, listSent: false };
     const url = wsUrl();
     const ws = new WebSocket(url);
+    const started = Date.now();
     let done = false;
 
     const timer = setTimeout(() => {
-      if (!done) {
-        done = true;
-        ws.close();
-        finish("timeout");
-      }
+      ws.close();
+      finish("timeout");
     }, timeoutMs);
 
     function finish(reason) {
-      if (done && reason !== "timeout") return;
-      if (!done) done = true;
+      if (done) return;
+      done = true;
       clearTimeout(timer);
+      const list = listResponse(state);
       resolve({
         name,
         reason,
         url,
-        token,
         opened: state.opened,
         closed: state.closed,
-        envelopes: state.envelopes,
+        hasServerHello: hasHello(state),
+        sessionListOk: Boolean(list && Array.isArray(list.result?.sessions)),
+        sessionListError: list?.error ?? null,
+        messageCount: state.messages.length,
         parseErrors: state.parseErrors,
-        hasServerHello: hasKey(state.envelopes, "server_hello"),
-        hasSessionSnapshot: hasKey(state.envelopes, "session_snapshot"),
-        hasSessionList: hasKey(state.envelopes, "session_list"),
         elapsedMs: Date.now() - started,
       });
     }
 
-    const started = Date.now();
-
     ws.addEventListener("open", () => {
       state.opened = true;
-      if (sendAuth) {
-        ws.send(JSON.stringify({ auth: { token } }));
-      }
-      if (sendListSessions) {
-        setTimeout(() => ws.send(JSON.stringify({ list_sessions: null })), 50);
-      }
     });
 
     ws.addEventListener("message", (ev) => {
       ingestFrame(ev.data, state);
-      if (sendListSessions && hasKey(state.envelopes, "session_list")) {
+      if (!hasHello(state)) return;
+      if (!callList) {
         ws.close();
-        finish("session_list");
+        finish("server/hello");
         return;
       }
-      if (
-        !sendListSessions &&
-        hasKey(state.envelopes, "server_hello") &&
-        hasKey(state.envelopes, "session_snapshot")
-      ) {
+      if (!state.listSent) {
+        state.listSent = true;
+        ws.send(JSON.stringify({ jsonrpc: "2.0", id: LIST_ID, method: "session/list", params: {} }));
+        return;
+      }
+      if (listResponse(state)) {
         ws.close();
-        finish("handshake");
+        finish("session/list");
       }
     });
 
@@ -117,24 +113,14 @@ function runScenario(name, { sendAuth = true, sendListSessions = false } = {}) {
 
 let result;
 if (mode === "bad-handshake") {
-  result = await runScenario("bad-token-handshake", { sendAuth: true });
+  result = await runScenario("bad-token-handshake");
 } else if (mode === "list") {
-  result = await runScenario("list_sessions", { sendAuth: true, sendListSessions: true });
+  result = await runScenario("session_list", { callList: true });
 } else {
-  result = await runScenario("handshake", { sendAuth: true });
+  result = await runScenario("handshake");
 }
 
 console.log(JSON.stringify(result, null, 2));
-process.exit(
-  mode === "bad-handshake"
-    ? result.hasServerHello || result.hasSessionSnapshot
-      ? 1
-      : 0
-    : mode === "list"
-      ? result.hasSessionList
-        ? 0
-        : 1
-      : result.hasServerHello && result.hasSessionSnapshot
-        ? 0
-        : 1,
-);
+const pass =
+  mode === "bad-handshake" ? !result.hasServerHello : mode === "list" ? result.sessionListOk : result.hasServerHello;
+process.exit(pass ? 0 : 1);

@@ -5,6 +5,7 @@ import { LITECODE_PATHS_MIME, LITECODE_SPAN_MIME } from "./dropPayload";
 import { fileMentionSource, symbolMentionSource } from "./knowledge/markers";
 import { mentionTextForDrop } from "./mentionDrop";
 import { fakeTransfer } from "../test/fakeTransfer";
+import { stubDesktopBridge } from "../test/desktopBridge";
 
 vi.mock("../api/workspace", () => ({
   fetchSymbolAt: vi.fn(),
@@ -48,7 +49,7 @@ describe("mentionTextForDrop", () => {
   it("uses the desktop path for an OS file and a URI when there is no file", async () => {
     const file = new File(["x"], "a.ts", { type: "text/plain" });
     const files = fakeTransfer({ files: [file] });
-    window.litecode = { getPathForFile: () => "E:\\ws\\src\\a.ts" };
+    window.litecode = stubDesktopBridge({ getPathForFile: () => "E:\\ws\\src\\a.ts" });
     await expect(mentionTextForDrop(files, "E:/ws")).resolves.toBe(
       fileMentionSource("src/a.ts"),
     );

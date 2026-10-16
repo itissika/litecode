@@ -91,7 +91,13 @@ fn workspace_override(cli: &Cli) -> Option<&Path> {
 }
 
 fn load_runtime_bundle_from_cli(cli: &Cli) -> anyhow::Result<ResolvedConfig> {
-    ConfigManager::load_runtime_bundle(workspace_override(cli)).map_err(Into::into)
+    // WP-166: serve warms the snapshot repo in the background after bind.
+    let warm = if matches!(cli.command, Some(Commands::Serve { .. })) {
+        crate::config::workspace::WarmSnapshot::Deferred
+    } else {
+        crate::config::workspace::WarmSnapshot::Now
+    };
+    ConfigManager::load_runtime_bundle_with(workspace_override(cli), warm).map_err(Into::into)
 }
 
 /// Key of the provider the default agent's model belongs to, else the first
@@ -735,6 +741,14 @@ pub fn run() -> anyhow::Result<()> {
     let db_path = workspace.paths.sessions_db.clone();
 
     let _log_guard = setup_logging(&workspace.paths.logs_dir)?;
+    // WP-188 observe-only: process panic → diagnostics/_process or session crash-*.log
+    let panic_fallback = workspace
+        .paths
+        .logs_dir
+        .parent()
+        .unwrap_or(workspace.paths.logs_dir.as_path())
+        .to_path_buf();
+    crate::runtime::diagnostics::install_panic_hook(panic_fallback);
     tracing::info!(
         workspace = %workspace.workspace_root.display(),
         session_db = %db_path.display(),

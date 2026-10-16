@@ -1,0 +1,3 @@
+step	seconds	start_memavail_kb	min_memavail_kb	peak_used_kb	rc
+npm_ci_web	14	3471220	3065272	405948	0
+npm_ci_desktop	6	3538700	3388488	150212	0

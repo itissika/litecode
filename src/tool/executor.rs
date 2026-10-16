@@ -15,6 +15,7 @@ use crate::permission::{PermissionEngine, PermissionSink};
 use crate::session::media::resolve_media_artifact_url;
 use crate::session::store::Session;
 use crate::tool::authorize::{AuthResult, authorize};
+use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::tool::output;
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments, unknown_top_level_properties,
@@ -277,6 +278,24 @@ impl Drop for WriteLockGuard {
     }
 }
 
+
+fn audit_truncate(s: &str) -> String {
+    s.chars().take(200).collect()
+}
+
+fn emit_audit(
+    data_root: &std::path::Path,
+    phase: &str,
+    session_id: &str,
+    tool: &str,
+    call_id: &str,
+    tweak: impl FnOnce(&mut AuditEvent),
+) {
+    let mut event = AuditEvent::new(phase, session_id, tool, call_id);
+    tweak(&mut event);
+    emit_tool_audit(data_root, &event);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool(
     tool_use: &FunctionToolCall,
@@ -318,6 +337,10 @@ pub async fn run_tool(
         return wire_result(ToolCallResult::error(invalid_input_for(&tu_name, msg)));
     }
 
+    // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
+    emit_audit(data_root, "start", session_id, &tu_name, &tu_id, |_| {});
+    emit_audit(data_root, "auth_ask", session_id, &tu_name, &tu_id, |_| {});
+
     let auth = authorize(
         tool_use,
         tool.as_ref(),
@@ -329,20 +352,49 @@ pub async fn run_tool(
     )
     .await;
 
+    let auth_outcome = match &auth {
+        AuthResult::Proceed { .. } => "proceed",
+        AuthResult::Denied(_) => "deny",
+        AuthResult::Aborted => "abort",
+    };
+    emit_audit(data_root, "auth_done", session_id, &tu_name, &tu_id, |e| {
+        e.auth_outcome = Some(auth_outcome.to_string());
+    });
+
     if matches!(auth, AuthResult::Aborted) {
         cancel.cancel();
+        emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+            e.ok = Some(false);
+            e.error_kind = Some("canceled".into());
+            e.error = Some("aborted".into());
+        });
         return cancelled_tool_result(&tu_name);
     }
 
     if cancel.is_cancelled() {
+        emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+            e.ok = Some(false);
+            e.error_kind = Some("canceled".into());
+        });
         return cancelled_tool_result(&tu_name);
     }
 
     let effective_input = match auth {
         AuthResult::Denied(msg) => {
+            emit_audit(data_root, "exec_done", session_id, &tu_name, &tu_id, |e| {
+                e.ok = Some(false);
+                e.error_kind = Some("denied".into());
+                e.error = Some(audit_truncate(&msg));
+            });
             return wire_result(ToolCallResult::error(msg));
         }
-        AuthResult::Aborted => return cancelled_tool_result(&tu_name),
+        AuthResult::Aborted => {
+            emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+                e.ok = Some(false);
+                e.error_kind = Some("canceled".into());
+            });
+            return cancelled_tool_result(&tu_name);
+        }
         AuthResult::Proceed { effective_input } => effective_input,
     };
 
@@ -358,9 +410,15 @@ pub async fn run_tool(
                 session_id: session_id.to_string(),
             }),
             Err(holder) => {
-                return wire_result(ToolCallResult::error(format!(
+                let msg = format!(
                     "resource busy: held by session {holder}. Retry after the other session finishes writing"
-                )));
+                );
+                emit_audit(data_root, "exec_done", session_id, &tu_name, &tu_id, |e| {
+                    e.ok = Some(false);
+                    e.error_kind = Some("other".into());
+                    e.error = Some(audit_truncate(&msg));
+                });
+                return wire_result(ToolCallResult::error(msg));
             }
         }
     } else {
@@ -368,6 +426,10 @@ pub async fn run_tool(
     };
 
     if cancel.is_cancelled() {
+        emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+            e.ok = Some(false);
+            e.error_kind = Some("canceled".into());
+        });
         return cancelled_tool_result(&tu_name);
     }
 
@@ -402,11 +464,18 @@ pub async fn run_tool(
     // cancellation token may have fired while a mutating tool was finishing
     // post-write sync/feedback; replacing that result would hide committed
     // side effects and invite an unsafe retry.
+    let mut panicked = false;
     let mut output = match raw_result {
         Ok(r) => r,
         Err(panic_payload) => {
             let msg = panic_payload_to_string(panic_payload);
             tracing::error!(tool = %name, "tool panicked: {}", msg);
+            panicked = true;
+            emit_audit(data_root, "panic", session_id, &name, &tu_id, |e| {
+                e.ok = Some(false);
+                e.error_kind = Some("panic".into());
+                e.error = Some(audit_truncate(&msg));
+            });
             ToolCallResult::error(format!("tool '{name}' panicked: {msg}"))
         }
     };
@@ -433,6 +502,25 @@ pub async fn run_tool(
         output_len = output.content.len(),
         "tool executed"
     );
+
+    // WP-188 observe-only: exec_done (skip if panic already recorded).
+    if !panicked {
+        let ok = output.level != crate::types::ToolSignalLevel::Error;
+        let err_kind = if ok {
+            None
+        } else if output.content.contains("timed out") {
+            Some("timeout".into())
+        } else {
+            Some("output".into())
+        };
+        emit_audit(data_root, "exec_done", session_id, &tu_name, &tu_id, |e| {
+            e.ok = Some(ok);
+            e.error_kind = err_kind;
+            if !ok {
+                e.error = Some(audit_truncate(&output.content));
+            }
+        });
+    }
 
     output
 }

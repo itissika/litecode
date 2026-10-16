@@ -4,7 +4,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type MouseEvent,
 } from "react";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 
@@ -28,6 +27,7 @@ import type {
 } from "../../components/SearchResults";
 import { openKnownSessionPanel } from "../../lib/sessionPanelNav";
 import { useSessionStore } from "../../stores/sessionStore";
+import { useVerticalSplit } from "../../lib/useVerticalSplit";
 
 const TEXT_DEBOUNCE_MS = 280;
 const SEMANTIC_DEBOUNCE_MS = 3000;
@@ -35,12 +35,6 @@ const WARM_POLL_MS = 5000;
 
 const SPLIT_KEY = "litecode-search-split";
 const SPLIT_DEFAULT = 0.5;
-
-function readSplit(): number {
-  const raw = Number(localStorage.getItem(SPLIT_KEY));
-  if (!Number.isFinite(raw)) return SPLIT_DEFAULT;
-  return Math.min(0.8, Math.max(0.2, raw));
-}
 
 type SearchTarget = "workspace" | "sessions";
 
@@ -198,10 +192,10 @@ export function SearchPanel(_props: IDockviewPanelProps) {
   const textGenRef = useRef(0);
   const semGenRef = useRef(0);
   const sessionGenRef = useRef(0);
-  const [split, setSplit] = useState(readSplit);
-  const splitRef = useRef(split);
-  splitRef.current = split;
-  const paneRef = useRef<HTMLDivElement>(null);
+  const { split, paneRef, onSplitterDown } = useVerticalSplit(
+    SPLIT_KEY,
+    SPLIT_DEFAULT,
+  );
 
   // Search results carry no identity: route through the fail-closed classifier
   // against the CURRENT session list (a child or an unknown id opens the
@@ -455,32 +449,6 @@ export function SearchPanel(_props: IDockviewPanelProps) {
 
   const onOpenFile = (hit: RetrievalSearchHit) => {
     void openFileAt(hit.path, hit.start_line);
-  };
-
-  /** Drag the divider between the Semantic and Text sections. Mirrors GitPanel. */
-  const onSplitterDown = (e: MouseEvent) => {
-    e.preventDefault();
-    const pane = paneRef.current;
-    if (!pane) return;
-    const startY = e.clientY;
-    const start = splitRef.current;
-    const height = pane.getBoundingClientRect().height;
-    const onMove = (ev: globalThis.MouseEvent) => {
-      if (height <= 0) return;
-      const next = Math.min(
-        0.8,
-        Math.max(0.2, start + (ev.clientY - startY) / height),
-      );
-      splitRef.current = next;
-      setSplit(next);
-    };
-    const onUp = () => {
-      localStorage.setItem(SPLIT_KEY, String(splitRef.current));
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
   };
 
   const showSemanticSection = target === "workspace" && retrievalReady;

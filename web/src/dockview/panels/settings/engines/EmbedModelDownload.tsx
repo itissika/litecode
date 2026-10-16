@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CloudArrowDown, WarningCircle } from "@phosphor-icons/react";
 
-import type { DesktopComponentProgress } from "../../../../api/auth";
+import type { ComponentProgressEvent } from "../../../../api/auth";
 import { glassFill } from "../../../../components/composerCard";
 
 /**
@@ -12,9 +12,9 @@ import { glassFill } from "../../../../components/composerCard";
  * "not found" line.
  */
 
-export type EmbedDownloadState =
+type EmbedDownloadState =
   | { phase: "idle" }
-  | { phase: "running"; message: string; received?: number; total?: number }
+  | { phase: "running"; message: string; percent: number }
   | { phase: "error"; error: string }
   | { phase: "done" };
 
@@ -49,7 +49,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
   useEffect(() => {
     if (!available) return;
     const bridge = window.litecode!;
-    const stop = bridge.onComponentProgress?.((event: DesktopComponentProgress) => {
+    const stop = bridge.onComponentProgress?.((event: ComponentProgressEvent) => {
       if (event.id !== COMPONENT || !mounted.current) return;
       // Settle from events too: the download may have been started by another
       // view (Start button, Open Remote) whose ensure() this hook never sees.
@@ -61,13 +61,13 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
         setState({ phase: "error", error: event.error || event.message || "Download failed" });
         return;
       }
-      setState({ phase: "running", message: event.message, received: event.received, total: event.total });
+      setState({ phase: "running", message: event.message, percent: event.percent });
     });
     // A download started elsewhere (e.g. before this view mounted) keeps running in the host.
     void bridge.getComponentStatus?.(COMPONENT).then((status) => {
       if (!mounted.current) return;
       if (status.downloading) {
-        setState((s) => (s.phase === "idle" ? { phase: "running", message: "Downloading embedding model…" } : s));
+        setState((s) => (s.phase === "idle" ? { phase: "running", message: "Downloading embedding model…", percent: 0 } : s));
       } else if (status.error) {
         setState((s) => (s.phase === "idle" ? { phase: "error", error: status.error! } : s));
       }
@@ -78,7 +78,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
   const start = useCallback(async () => {
     const bridge = window.litecode;
     if (!bridge?.ensureComponent) return;
-    setState({ phase: "running", message: "Looking up embedding model…" });
+    setState({ phase: "running", message: "Looking up embedding model…", percent: 0 });
     try {
       await bridge.ensureComponent(COMPONENT);
       if (!mounted.current) return;
@@ -92,11 +92,6 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
   return { available, state, start };
 }
 
-function percent(received?: number, total?: number): number | null {
-  if (!total || total <= 0 || received === undefined) return null;
-  return Math.min(100, Math.round((received * 100) / total));
-}
-
 export function EmbedModelDownloadCard({
   state,
   onStart,
@@ -105,7 +100,8 @@ export function EmbedModelDownloadCard({
   onStart: () => void;
 }) {
   const running = state.phase === "running";
-  const pct = running ? percent(state.received, state.total) : null;
+  // Contract: percent is always present; 0 means not started or size unknown.
+  const pct = running && state.percent > 0 ? state.percent : null;
   const subtitle =
     state.phase === "running"
       ? state.message

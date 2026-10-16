@@ -37,7 +37,7 @@ type TodoItem = { id: string; content: string; status: TodoItemStatus };
 const CAPSULE_BASE_PX = 36;
 
 /** The four session-mount status families the line surfaces. */
-export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
+type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
 
 /** Drag floor (px); a content-sized panel shorter than this keeps its own
  *  height as the floor. */
@@ -69,7 +69,7 @@ export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
  * writes "") and the legacy heading-only stub `# Plan` are still planning —
  * bounce the capsule, do not auto-open the panel.
  */
-export function isPlanBodyReady(md: string): boolean {
+function isPlanBodyReady(md: string): boolean {
   const t = md.trim();
   if (!t) return false;
   if (/^#\s*Plan\s*$/i.test(t)) return false;

@@ -197,10 +197,10 @@ const nodeTypes = {
 const edgeTypes = { knowledgeRelation: KnowledgeRelationEdge };
 
 // Manual z-index ladder (bottom → top): canvas bg, folder frames, edges, cards.
-export const KNOWLEDGE_FOLDER_Z = 0;
-export const KNOWLEDGE_EDGE_Z = 5;
+const KNOWLEDGE_FOLDER_Z = 0;
+const KNOWLEDGE_EDGE_Z = 5;
 /** Citation edges inside the focus spotlight sit above the scrim. */
-export const KNOWLEDGE_EDGE_ABOVE_SCRIM_Z = 36;
+const KNOWLEDGE_EDGE_ABOVE_SCRIM_Z = 36;
 /** Full-canvas focus scrim in ViewportPortal; focused cards must sit above this. */
 export const KNOWLEDGE_FOCUS_SCRIM_Z = 35;
 const CARD_Z = 10;

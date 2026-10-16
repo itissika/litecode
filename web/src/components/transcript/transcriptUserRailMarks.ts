@@ -1,5 +1,3 @@
-import type { HumanRow } from "../../api/types";
-
 /** `py-4` + dot `mt-[7px]` + half of `h-1.5`, matching ItemBubble. */
 export const USER_DOT_CENTER_Y = 16 + 7 + 3;
 
@@ -43,7 +41,7 @@ const TICK_WIDTH_MIN = 6;
 const TICK_OPACITY_MAX = 1;
 const TICK_OPACITY_MIN = 0.18;
 
-export interface TickAppearance {
+interface TickAppearance {
   width: number;
   opacity: number;
 }
@@ -66,7 +64,7 @@ export function tickAppearance(
   };
 }
 
-export interface RailTick {
+interface RailTick {
   seq: number;
   /** Y in the tick band, 0 at the top. */
   railY: number;
@@ -128,14 +126,4 @@ export function nearestUserMark(
     }
   }
   return best;
-}
-
-/** Highest sealed `item/user` seq. */
-export function newestUserSeq(rows: readonly HumanRow[]): number | null {
-  let newest: number | null = null;
-  for (const row of rows) {
-    if (row.kind !== "item/user" || row.seq < 0) continue;
-    if (newest == null || row.seq > newest) newest = row.seq;
-  }
-  return newest;
 }

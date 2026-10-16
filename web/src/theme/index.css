@@ -180,37 +180,6 @@ body.lc-resizing * {
   }
 }
 
-/* Scrollbars: thin, low-contrast (Linear-like) */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--_dk-line) transparent;
-}
-
-*::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-*::-webkit-scrollbar-track {
-  background: transparent;
-  border: 0 none;
-}
-
-*::-webkit-scrollbar-thumb {
-  background: var(--_dk-line);
-  border-radius: 4px;
-  border: 0 none;
-  outline: 0 none;
-}
-
-*::-webkit-scrollbar-thumb:hover {
-  background: var(--_dk-text-disabled);
-}
-
-*::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
 /* Shiki dual-theme toggle — switches syntax highlighting colors via CSS variables. */
 :root[data-dv-theme="dark"] .shiki-host .shiki,
 :root[data-dv-theme="dark"] .shiki-host .shiki span {

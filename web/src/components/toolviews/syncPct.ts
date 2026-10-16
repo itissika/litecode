@@ -12,7 +12,7 @@
  * stays in the body; we never invent a value). No v1 compatibility path.
  */
 
-export type SyncWord = "scanning" | "failed" | "unknown";
+type SyncWord = "scanning" | "failed" | "unknown";
 
 export type SyncPct =
   | {
@@ -24,7 +24,7 @@ export type SyncPct =
     }
   | { kind: SyncWord; label?: string };
 
-export interface SyncPctSplit {
+interface SyncPctSplit {
   sync: SyncPct | null;
   /** Output with the sync first line removed when recognised; otherwise raw. */
   rest: string;

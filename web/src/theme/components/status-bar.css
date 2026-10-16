@@ -105,3 +105,13 @@
 .status-log-debug .status-log-level {
   color: var(--_dk-text-disabled);
 }
+
+/* A2: desktop reported the remote server as disconnected (remote-disconnected).
+   Style only, no text; cleared by the full-window reload after reconnect. */
+.status-bar-root[data-disconnected] {
+  border-top-color: var(--_dk-red-500);
+}
+
+.status-bar-root[data-disconnected] .status-bar-strip {
+  color: var(--_dk-text-muted);
+}

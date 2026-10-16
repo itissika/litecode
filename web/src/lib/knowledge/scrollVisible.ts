@@ -1,4 +1,4 @@
-export type ScrollBox = {
+type ScrollBox = {
   top: number;
   bottom: number;
   height: number;

@@ -1,0 +1,6 @@
+step	seconds	min_memavail_kb	rc
+npm_ci_web	10	5807088	0
+npm_ci_desktop	9	6130160	0
+cargo_build	573	3944356	0
+ops_tests	26	5588664	0
+cargo_test	259	3287368	101

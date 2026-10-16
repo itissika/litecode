@@ -69,7 +69,7 @@ function luminance([r, g, b]: [number, number, number]): number {
  * clashed. Colors are emitted as concrete `rgb()`/`rgba()` strings because
  * mermaid's parser rejects `color-mix()` and `var()`.
  */
-export function buildMermaidThemeVariables(
+function buildMermaidThemeVariables(
   tokens: DkTokens,
   darkMode: boolean,
 ): Record<string, string | boolean> {
@@ -214,7 +214,7 @@ export function buildMermaidThemeVariables(
   };
 }
 
-export const LITECODE_MERMAID_INIT = {
+const LITECODE_MERMAID_INIT = {
   startOnLoad: false,
   securityLevel: "strict" as const,
   flowchart: {

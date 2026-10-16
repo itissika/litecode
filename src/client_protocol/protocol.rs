@@ -99,6 +99,9 @@ pub enum WireTurnPhase {
     CallingLlm,
     Streaming,
     ExecutingTools,
+    /// Wire name is `waiting_for_user` (WP-186). Rust variant kept for internal continuity.
+    /// Reads legacy `awaiting_permission` once for older clients.
+    #[serde(rename = "waiting_for_user", alias = "awaiting_permission")]
     AwaitingPermission {
         tool: String,
         rule_id: String,
@@ -360,6 +363,8 @@ pub struct TurnSnapshot {
     pub step: u64,
     pub step_max: u32,
     pub started_at_ms: i64,
+    /// Derived: prefer `pending_permissions.len() > 0` / phase == waiting_for_user.
+    /// Kept one release for older clients; UI cards must use the list.
     #[serde(default)]
     pub awaiting_permission: bool,
 }
@@ -431,6 +436,12 @@ pub struct SessionSnapshot {
     /// turn, or a finish that was not a transport failure.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_reconnect: Option<crate::llm::reconnect::LlmReconnect>,
+    /// Pending user-gate asks (ask_user | permission | approval). WP-186.
+    /// **Always present on the wire** (even `[]`) so FE "only overwrite when
+    /// present" hydrate works. Do not add `skip_serializing_if`.
+    /// Shape 1:1 with `agent/permission_request`; `kind` must be set on write.
+    #[serde(default)]
+    pub pending_permissions: Vec<PermissionRequest>,
 }
 
 fn default_thinking_tier() -> String {

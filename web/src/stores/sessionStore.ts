@@ -23,6 +23,7 @@ import { useTurnStore } from "./turnStore";
 import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
+import { noteSessionListSettled } from "../lib/centreSettle";
 
 let listInFlight = false;
 /** A request arrived while one was in flight → re-pull once after it settles. */
@@ -65,7 +66,7 @@ function sessionControlsLocked(sessionId: string): boolean {
   );
 }
 
-export interface SessionSlice {
+interface SessionSlice {
   /** Sticky primary agent id — hydrated from snapshot.agent_id. */
   activePrimary: string;
   pendingPrimaryId: string | null;
@@ -690,7 +691,10 @@ export const useSessionStore = create<SessionStore>((set, get) => {
               err instanceof Error ? err.message : "Failed to load sessions",
           });
         })
-        .finally(settle);
+        .finally(() => {
+          noteSessionListSettled();
+          settle();
+        });
     },
 
     setPrimary: (sessionId, agentId) => {

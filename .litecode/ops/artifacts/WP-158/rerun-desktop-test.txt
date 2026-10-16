@@ -1,0 +1,1200 @@
+
+> litecode-desktop@0.2.4 test
+> tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node --test dist/*.test.js --test-concurrency=1
+
+copied /workspace/litecode/web/src/theme/tokens.css -> /workspace/litecode/desktop/dist/theme-tokens.css
+TAP version 13
+# Subtest: boot sequence (WP-169 S1/S1b/S2)
+    # Subtest: creates the skeleton before the sidecar is ready, loads after READY/health, records recents once after load
+    ok 1 - creates the skeleton before the sidecar is ready, loads after READY/health, records recents once after load
+      ---
+      duration_ms: 5.850102
+      type: 'test'
+      ...
+    # Subtest: closes the skeleton and rethrows the original error when the sidecar fails to start
+    ok 2 - closes the skeleton and rethrows the original error when the sidecar fails to start
+      ---
+      duration_ms: 1.200208
+      type: 'test'
+      ...
+    # Subtest: closes the skeleton and rethrows when the attach/health check fails
+    ok 3 - closes the skeleton and rethrows when the attach/health check fails
+      ---
+      duration_ms: 0.277509
+      type: 'test'
+      ...
+    # Subtest: remote branch: health gates loadURL(handshake) into the same window
+    ok 4 - remote branch: health gates loadURL(handshake) into the same window
+      ---
+      duration_ms: 0.635607
+      type: 'test'
+      ...
+    # Subtest: remote branch: health failure closes the skeleton and rethrows
+    ok 5 - remote branch: health failure closes the skeleton and rethrows
+      ---
+      duration_ms: 0.264901
+      type: 'test'
+      ...
+    # Subtest: user closes the skeleton while the sidecar is still starting: aborts via the signal, child killed at once
+    ok 6 - user closes the skeleton while the sidecar is still starting: aborts via the signal, child killed at once
+      ---
+      duration_ms: 1.585915
+      type: 'test'
+      ...
+    # Subtest: user closes the skeleton after READY (during health): stops the running sidecar
+    ok 7 - user closes the skeleton after READY (during health): stops the running sidecar
+      ---
+      duration_ms: 0.910305
+      type: 'test'
+      ...
+    # Subtest: successful boot never aborts the backend signal
+    ok 8 - successful boot never aborts the backend signal
+      ---
+      duration_ms: 0.220054
+      type: 'test'
+      ...
+    1..8
+ok 1 - boot sequence (WP-169 S1/S1b/S2)
+  ---
+  duration_ms: 11.889169
+  type: 'suite'
+  ...
+# Subtest: BrowserHost
+    # Subtest: rejects a non-http url and an invalid panel id
+    ok 1 - rejects a non-http url and an invalid panel id
+      ---
+      duration_ms: 1.519454
+      type: 'test'
+      ...
+    # Subtest: creates one view for a repeated id and opens https
+    ok 2 - creates one view for a repeated id and opens https
+      ---
+      duration_ms: 0.691442
+      type: 'test'
+      ...
+    # Subtest: falls back when the background color is not a color
+    ok 3 - falls back when the background color is not a color
+      ---
+      duration_ms: 1.130058
+      type: 'test'
+      ...
+    # Subtest: does not place a rectangle while obscured
+    ok 4 - does not place a rectangle while obscured
+      ---
+      duration_ms: 0.404018
+      type: 'test'
+      ...
+    # Subtest: hides a zero-area rectangle and destroys once
+    ok 5 - hides a zero-area rectangle and destroys once
+      ---
+      duration_ms: 0.229385
+      type: 'test'
+      ...
+    # Subtest: opens an http popup in the same page and ignores other schemes
+    ok 6 - opens an http popup in the same page and ignores other schemes
+      ---
+      duration_ms: 0.223522
+      type: 'test'
+      ...
+    # Subtest: moves history only when that direction is available
+    ok 7 - moves history only when that direction is available
+      ---
+      duration_ms: 0.140054
+      type: 'test'
+      ...
+    # Subtest: reloads in place and stops the pending load
+    ok 8 - reloads in place and stops the pending load
+      ---
+      duration_ms: 0.195023
+      type: 'test'
+      ...
+    # Subtest: applies a rectangle only for the window the view is hanging on
+    ok 9 - applies a rectangle only for the window the view is hanging on
+      ---
+      duration_ms: 0.546048
+      type: 'test'
+      ...
+    # Subtest: parks a popout view back on the main window without a rectangle
+    ok 10 - parks a popout view back on the main window without a rectangle
+      ---
+      duration_ms: 0.390499
+      type: 'test'
+      ...
+    1..10
+ok 2 - BrowserHost
+  ---
+  duration_ms: 6.451682
+  type: 'suite'
+  ...
+# Subtest: bundle-paths
+    # Subtest: detects a ready HF model directory
+    ok 1 - detects a ready HF model directory
+      ---
+      duration_ms: 1.933835
+      type: 'test'
+      ...
+    # Subtest: fingerprints a ready model directory stably
+    ok 2 - fingerprints a ready model directory stably
+      ---
+      duration_ms: 2.494608
+      type: 'test'
+      ...
+    1..2
+ok 3 - bundle-paths
+  ---
+  duration_ms: 5.741405
+  type: 'suite'
+  ...
+# Subtest: model resolve order env → bundles → sidecar → repo
+    # Subtest: locks the full precedence when every source is present
+    ok 1 - locks the full precedence when every source is present
+      ---
+      duration_ms: 3.627473
+      type: 'test'
+      ...
+    # Subtest: earlier model sources win pairwise over later ones
+    ok 2 - earlier model sources win pairwise over later ones
+      ---
+      duration_ms: 2.709776
+      type: 'test'
+      ...
+    1..2
+ok 4 - model resolve order env → bundles → sidecar → repo
+  ---
+  duration_ms: 6.535699
+  type: 'suite'
+  ...
+# Subtest: linux resolve order packaged → env → bundles → repo
+    # Subtest: earlier linux candidates win when several complete pairs exist
+    ok 1 - earlier linux candidates win when several complete pairs exist
+      ---
+      duration_ms: 1.765317
+      type: 'test'
+      ...
+    1..1
+ok 5 - linux resolve order packaged → env → bundles → repo
+  ---
+  duration_ms: 1.919477
+  type: 'suite'
+  ...
+# Subtest: dev-only repo fallbacks
+    # Subtest: resolve to the checkout in dev and to nothing in a packaged app
+    ok 1 - resolve to the checkout in dev and to nothing in a packaged app
+      ---
+      duration_ms: 0.276043
+      type: 'test'
+      ...
+    # Subtest: a packaged app never picks a model or Linux tar out of a source tree
+    ok 2 - a packaged app never picks a model or Linux tar out of a source tree
+      ---
+      duration_ms: 1.003221
+      type: 'test'
+      ...
+    1..2
+ok 6 - dev-only repo fallbacks
+  ---
+  duration_ms: 1.482334
+  type: 'suite'
+  ...
+# Subtest: versions
+    # Subtest: compares and checks inclusive ranges
+    ok 1 - compares and checks inclusive ranges
+      ---
+      duration_ms: 2.015597
+      type: 'test'
+      ...
+    1..1
+ok 7 - versions
+  ---
+  duration_ms: 2.600379
+  type: 'suite'
+  ...
+# Subtest: component source
+    # Subtest: defaults to this version's GitHub Release
+    ok 1 - defaults to this version's GitHub Release
+      ---
+      duration_ms: 0.240583
+      type: 'test'
+      ...
+    # Subtest: honours LITECODE_COMPONENTS_BASE as URL or directory
+    ok 2 - honours LITECODE_COMPONENTS_BASE as URL or directory
+      ---
+      duration_ms: 0.725626
+      type: 'test'
+      ...
+    # Subtest: refuses non-GitHub-Release URLs from the default manifest
+    ok 3 - refuses non-GitHub-Release URLs from the default manifest
+      ---
+      duration_ms: 0.627041
+      type: 'test'
+      ...
+    1..3
+ok 8 - component source
+  ---
+  duration_ms: 1.903442
+  type: 'suite'
+  ...
+# Subtest: manifest
+    # Subtest: rejects malformed entries
+    ok 1 - rejects malformed entries
+      ---
+      duration_ms: 0.541501
+      type: 'test'
+      ...
+    # Subtest: is produced by build_components.mjs with GitHub Release URLs
+    ok 2 - is produced by build_components.mjs with GitHub Release URLs
+      ---
+      duration_ms: 46.447015
+      type: 'test'
+      ...
+    1..2
+ok 9 - manifest
+  ---
+  duration_ms: 47.251801
+  type: 'suite'
+  ...
+# Subtest: extractTarGz
+    # Subtest: accepts a ./ root entry (bsdtar -C dir .) and nested files
+    ok 1 - accepts a ./ root entry (bsdtar -C dir .) and nested files
+      ---
+      duration_ms: 10.503958
+      type: 'test'
+      ...
+    # Subtest: rejects path traversal and links
+    ok 2 - rejects path traversal and links
+      ---
+      duration_ms: 4.361781
+      type: 'test'
+      ...
+    1..2
+ok 10 - extractTarGz
+  ---
+  duration_ms: 15.117796
+  type: 'suite'
+  ...
+# Subtest: ComponentManager
+    # Subtest: installs both components from a local LITECODE_COMPONENTS_BASE folder
+    ok 1 - installs both components from a local LITECODE_COMPONENTS_BASE folder
+      ---
+      duration_ms: 53.363693
+      type: 'test'
+      ...
+    # Subtest: downloads from GitHub via fetch, shares concurrent requests, and rejects bad hashes
+    ok 2 - downloads from GitHub via fetch, shares concurrent requests, and rejects bad hashes
+      ---
+      duration_ms: 61.836955
+      type: 'test'
+      ...
+    # Subtest: refreshes a managed Linux tar left over from another app version, keeps hand-placed ones
+    ok 3 - refreshes a managed Linux tar left over from another app version, keeps hand-placed ones
+      ---
+      duration_ms: 74.896454
+      type: 'test'
+      ...
+    # Subtest: reports a missing offline manifest as a readable, retryable error
+    ok 4 - reports a missing offline manifest as a readable, retryable error
+      ---
+      duration_ms: 0.758304
+      type: 'test'
+      ...
+    # Subtest: clears the error state once the component is usable (retry, offline recovery, installed elsewhere)
+    ok 5 - clears the error state once the component is usable (retry, offline recovery, installed elsewhere)
+      ---
+      duration_ms: 52.836861
+      type: 'test'
+      ...
+    1..5
+ok 11 - ComponentManager
+  ---
+  duration_ms: 244.002019
+  type: 'suite'
+  ...
+# Subtest: download UX helpers (D6/D7)
+    # Subtest: tracks sliding-window speed and percent
+    ok 1 - tracks sliding-window speed and percent
+      ---
+      duration_ms: 0.129304
+      type: 'test'
+      ...
+    # Subtest: cleans stale .part and staging under bundles/.tmp
+    ok 2 - cleans stale .part and staging under bundles/.tmp
+      ---
+      duration_ms: 0.439219
+      type: 'test'
+      ...
+    1..2
+ok 12 - download UX helpers (D6/D7)
+  ---
+  duration_ms: 0.643118
+  type: 'suite'
+  ...
+# Subtest: ComponentManager abort + Range resume (D7)
+    # Subtest: emits status, percent, and bytesPerSecond while downloading
+    ok 1 - emits status, percent, and bytesPerSecond while downloading
+      ---
+      duration_ms: 47.45049
+      type: 'test'
+      ...
+    # Subtest: abortAll keeps .part and the next ensure Range-resumes
+    ok 2 - abortAll keeps .part and the next ensure Range-resumes
+      ---
+      duration_ms: 57.896882
+      type: 'test'
+      ...
+# [litecode] Range resume unsupported for https://github.com/itissika/litecode/releases/download/v1.2.3/litecode-server-linux-x64.tar.gz (HTTP 200); re-downloading from scratch
+    # Subtest: falls back to full re-download when server ignores Range
+    ok 3 - falls back to full re-download when server ignores Range
+      ---
+      duration_ms: 45.314868
+      type: 'test'
+      ...
+    # Subtest: abortAll pauses in-flight downloads (before-quit path)
+    ok 4 - abortAll pauses in-flight downloads (before-quit path)
+      ---
+      duration_ms: 52.998834
+      type: 'test'
+      ...
+    1..4
+ok 13 - ComponentManager abort + Range resume (D7)
+  ---
+  duration_ms: 203.935279
+  type: 'suite'
+  ...
+# Subtest: devUiDocumentUrl
+    # Subtest: is unset when the env is blank
+    ok 1 - is unset when the env is blank
+      ---
+      duration_ms: 0.692491
+      type: 'test'
+      ...
+    # Subtest: normalizes a loopback origin
+    ok 2 - normalizes a loopback origin
+      ---
+      duration_ms: 0.331945
+      type: 'test'
+      ...
+    # Subtest: rejects anything that is not a bare loopback origin
+    ok 3 - rejects anything that is not a bare loopback origin
+      ---
+      duration_ms: 0.734274
+      type: 'test'
+      ...
+    1..3
+ok 14 - devUiDocumentUrl
+  ---
+  duration_ms: 3.043392
+  type: 'suite'
+  ...
+# Subtest: assertDevUiConfigured
+    # Subtest: requires the upstream file whenever the dev document is set
+    ok 1 - requires the upstream file whenever the dev document is set
+      ---
+      duration_ms: 0.350209
+      type: 'test'
+      ...
+    1..1
+ok 15 - assertDevUiConfigured
+  ---
+  duration_ms: 0.469505
+  type: 'suite'
+  ...
+# Subtest: syncDevUpstream
+    # Subtest: writes the sidecar origin and clears it
+    ok 1 - writes the sidecar origin and clears it
+      ---
+      duration_ms: 1.133606
+      type: 'test'
+      ...
+    # Subtest: does nothing when the dev loop did not set a file
+    ok 2 - does nothing when the dev loop did not set a file
+      ---
+      duration_ms: 0.184766
+      type: 'test'
+      ...
+    # Subtest: refuses a non-loopback sidecar URL
+    ok 3 - refuses a non-loopback sidecar URL
+      ---
+      duration_ms: 0.496325
+      type: 'test'
+      ...
+    1..3
+ok 16 - syncDevUpstream
+  ---
+  duration_ms: 2.091004
+  type: 'suite'
+  ...
+# Subtest: sameWorkbenchDocument
+    # Subtest: matches origin and path, ignoring query
+    ok 1 - matches origin and path, ignoring query
+      ---
+      duration_ms: 0.283387
+      type: 'test'
+      ...
+    1..1
+ok 17 - sameWorkbenchDocument
+  ---
+  duration_ms: 0.371751
+  type: 'suite'
+  ...
+# Subtest: handshakeUrl
+    # Subtest: appends token query and trailing slash base
+    ok 1 - appends token query and trailing slash base
+      ---
+      duration_ms: 0.553316
+      type: 'test'
+      ...
+    # Subtest: preserves existing path
+    ok 2 - preserves existing path
+      ---
+      duration_ms: 0.119041
+      type: 'test'
+      ...
+    1..2
+ok 18 - handshakeUrl
+  ---
+  duration_ms: 1.386572
+  type: 'suite'
+  ...
+# Subtest: Electron IPC trust classification
+    # Subtest: accepts only the exact hub file URL
+    ok 1 - accepts only the exact hub file URL
+      ---
+      duration_ms: 0.95862
+      type: 'test'
+      ...
+    # Subtest: accepts workbench paths only at the registered exact origin
+    ok 2 - accepts workbench paths only at the registered exact origin
+      ---
+      duration_ms: 0.240239
+      type: 'test'
+      ...
+    # Subtest: rejects foreign senders, subframes, inactive surfaces, and wrong capabilities
+    ok 3 - rejects foreign senders, subframes, inactive surfaces, and wrong capabilities
+      ---
+      duration_ms: 0.388506
+      type: 'test'
+      ...
+    1..3
+ok 19 - Electron IPC trust classification
+  ---
+  duration_ms: 2.31906
+  type: 'suite'
+  ...
+# Subtest: navigation and origin policy
+    # Subtest: normalizes only credential-free HTTP(S) origins
+    ok 1 - normalizes only credential-free HTTP(S) origins
+      ---
+      duration_ms: 0.349298
+      type: 'test'
+      ...
+    # Subtest: keeps hub navigation exact and workbench navigation on its registered origin
+    ok 2 - keeps hub navigation exact and workbench navigation on its registered origin
+      ---
+      duration_ms: 0.206679
+      type: 'test'
+      ...
+    1..2
+ok 20 - navigation and origin policy
+  ---
+  duration_ms: 1.801066
+  type: 'suite'
+  ...
+# Subtest: popout window policy
+    # Subtest: allows only a workbench popout page with one dock id
+    ok 1 - allows only a workbench popout page with one dock id
+      ---
+      duration_ms: 0.652725
+      type: 'test'
+      ...
+    # Subtest: rejects IPC from the popout document
+    ok 2 - rejects IPC from the popout document
+      ---
+      duration_ms: 0.34877
+      type: 'test'
+      ...
+    1..2
+ok 21 - popout window policy
+  ---
+  duration_ms: 1.219163
+  type: 'suite'
+  ...
+# Subtest: stripVerbatimLap
+    # Subtest: strips drive verbatim and uppercases drive
+    ok 1 - strips drive verbatim and uppercases drive
+      ---
+      duration_ms: 0.468691
+      type: 'test'
+      ...
+    # Subtest: strips UNC verbatim to \\\\host\\share form
+    ok 2 - strips UNC verbatim to \\\\host\\share form
+      ---
+      duration_ms: 0.089951
+      type: 'test'
+      ...
+    1..2
+ok 22 - stripVerbatimLap
+  ---
+  duration_ms: 1.160167
+  type: 'suite'
+  ...
+# Subtest: normalizeWorkspace
+    # Subtest: resolves relative paths
+    ok 1 - resolves relative paths
+      ---
+      duration_ms: 0.181713
+      type: 'test'
+      ...
+    # Subtest: realpaths an existing directory without verbatim prefix
+    ok 2 - realpaths an existing directory without verbatim prefix
+      ---
+      duration_ms: 0.569844
+      type: 'test'
+      ...
+    1..2
+ok 23 - normalizeWorkspace
+  ---
+  duration_ms: 0.932033
+  type: 'suite'
+  ...
+# Subtest: workspace layout file
+    # Subtest: round-trips a snapshot per workspace
+    ok 1 - round-trips a snapshot per workspace
+      ---
+      duration_ms: 1.692521
+      type: 'test'
+      ...
+    # Subtest: reads null without a workspace or a saved file
+    ok 2 - reads null without a workspace or a saved file
+      ---
+      duration_ms: 0.510627
+      type: 'test'
+      ...
+    # Subtest: ignores non-string and oversized payloads
+    ok 3 - ignores non-string and oversized payloads
+      ---
+      duration_ms: 0.25251
+      type: 'test'
+      ...
+    # Subtest: ignores writes without a workspace
+    ok 4 - ignores writes without a workspace
+      ---
+      duration_ms: 0.130384
+      type: 'test'
+      ...
+    1..4
+ok 24 - workspace layout file
+  ---
+  duration_ms: 4.436381
+  type: 'suite'
+  ...
+# Subtest: LifecycleMutex
+    # Subtest: runs jobs strictly in order
+    ok 1 - runs jobs strictly in order
+      ---
+      duration_ms: 31.952681
+      type: 'test'
+      ...
+    # Subtest: queues the next job even when the previous one rejects
+    ok 2 - queues the next job even when the previous one rejects
+      ---
+      duration_ms: 0.54181
+      type: 'test'
+      ...
+    1..2
+ok 25 - LifecycleMutex
+  ---
+  duration_ms: 33.18754
+  type: 'suite'
+  ...
+# Subtest: SingleFlight
+    # Subtest: rejects a concurrent caller by default
+    ok 1 - rejects a concurrent caller by default
+      ---
+      duration_ms: 0.384151
+      type: 'test'
+      ...
+    # Subtest: reuses the in-flight promise when mode is reuse
+    ok 2 - reuses the in-flight promise when mode is reuse
+      ---
+      duration_ms: 0.149273
+      type: 'test'
+      ...
+    1..2
+ok 26 - SingleFlight
+  ---
+  duration_ms: 0.695593
+  type: 'suite'
+  ...
+# Subtest: parseUserAtHost accepts user@host
+ok 27 - parseUserAtHost accepts user@host
+  ---
+  duration_ms: 1.123092
+  type: 'test'
+  ...
+# Subtest: parseUserAtHost accepts user@host:port
+ok 28 - parseUserAtHost accepts user@host:port
+  ---
+  duration_ms: 0.157213
+  type: 'test'
+  ...
+# Subtest: formatUserAtHost roundtrips label
+ok 29 - formatUserAtHost roundtrips label
+  ---
+  duration_ms: 0.12675
+  type: 'test'
+  ...
+# Subtest: popoutBoundsFromFeatures
+    # Subtest: reads the screen rectangle dockview passes to window.open
+    ok 1 - reads the screen rectangle dockview passes to window.open
+      ---
+      duration_ms: 0.910139
+      type: 'test'
+      ...
+    # Subtest: keeps a window on a monitor to the left of the origin
+    ok 2 - keeps a window on a monitor to the left of the origin
+      ---
+      duration_ms: 0.130138
+      type: 'test'
+      ...
+    # Subtest: ignores a feature string that does not name a full rectangle
+    ok 3 - ignores a feature string that does not name a full rectangle
+      ---
+      duration_ms: 0.175339
+      type: 'test'
+      ...
+    1..3
+ok 30 - popoutBoundsFromFeatures
+  ---
+  duration_ms: 1.959221
+  type: 'suite'
+  ...
+# Subtest: boundsOnDisplay
+    # Subtest: leaves a window that already meets a display where it is
+    ok 1 - leaves a window that already meets a display where it is
+      ---
+      duration_ms: 0.18909
+      type: 'test'
+      ...
+    # Subtest: keeps a window on a monitor whose origin is left of zero
+    ok 2 - keeps a window on a monitor whose origin is left of zero
+      ---
+      duration_ms: 0.828245
+      type: 'test'
+      ...
+    # Subtest: pulls a window opened at a minimized opener back onto the display under the pointer
+    ok 3 - pulls a window opened at a minimized opener back onto the display under the pointer
+      ---
+      duration_ms: 0.186906
+      type: 'test'
+      ...
+    1..3
+ok 31 - boundsOnDisplay
+  ---
+  duration_ms: 1.384041
+  type: 'suite'
+  ...
+# Subtest: process-recovery
+    # Subtest: never recovers intentional stops
+    ok 1 - never recovers intentional stops
+      ---
+      duration_ms: 0.577567
+      type: 'test'
+      ...
+    # Subtest: allows limited unexpected recoveries
+    ok 2 - allows limited unexpected recoveries
+      ---
+      duration_ms: 0.123279
+      type: 'test'
+      ...
+    # Subtest: picks backoff delays by attempt
+    ok 3 - picks backoff delays by attempt
+      ---
+      duration_ms: 0.16567
+      type: 'test'
+      ...
+    # Subtest: counts unexpected exits until the policy is exhausted
+    ok 4 - counts unexpected exits until the policy is exhausted
+      ---
+      duration_ms: 0.134312
+      type: 'test'
+      ...
+    1..4
+ok 32 - process-recovery
+  ---
+  duration_ms: 1.892148
+  type: 'suite'
+  ...
+# Subtest: RecentWorkspaces
+    # Subtest: retains pins while moving opened workspaces to the front
+    ok 1 - retains pins while moving opened workspaces to the front
+      ---
+      duration_ms: 2.814292
+      type: 'test'
+      ...
+    # Subtest: recovers from malformed persisted data
+    ok 2 - recovers from malformed persisted data
+      ---
+      duration_ms: 0.758687
+      type: 'test'
+      ...
+    1..2
+ok 33 - RecentWorkspaces
+  ---
+  duration_ms: 4.218782
+  type: 'suite'
+  ...
+# Subtest: remoteDownloadRatio
+    # Subtest: maps 0 received to low bound
+    ok 1 - maps 0 received to low bound
+      ---
+      duration_ms: 0.585158
+      type: 'test'
+      ...
+    # Subtest: maps midpoint into range
+    ok 2 - maps midpoint into range
+      ---
+      duration_ms: 0.088819
+      type: 'test'
+      ...
+    # Subtest: maps full received to high bound
+    ok 3 - maps full received to high bound
+      ---
+      duration_ms: 0.068906
+      type: 'test'
+      ...
+    # Subtest: clamps overshoot to high bound
+    ok 4 - clamps overshoot to high bound
+      ---
+      duration_ms: 0.892873
+      type: 'test'
+      ...
+    # Subtest: missing total uses low bound
+    ok 5 - missing total uses low bound
+      ---
+      duration_ms: 0.087031
+      type: 'test'
+      ...
+    # Subtest: zero total uses low bound
+    ok 6 - zero total uses low bound
+      ---
+      duration_ms: 0.056359
+      type: 'test'
+      ...
+    # Subtest: missing received uses low bound
+    ok 7 - missing received uses low bound
+      ---
+      duration_ms: 0.057344
+      type: 'test'
+      ...
+    1..7
+ok 34 - remoteDownloadRatio
+  ---
+  duration_ms: 2.67293
+  type: 'suite'
+  ...
+# Subtest: mapComponentProgressToRemote
+    # Subtest: emits download stage with mapped ratio for matching non-error events
+    ok 1 - emits download stage with mapped ratio for matching non-error events
+      ---
+      duration_ms: 0.595226
+      type: 'test'
+      ...
+    # Subtest: skips wrong id and error phases so failures stay on the ensure path
+    ok 2 - skips wrong id and error phases so failures stay on the ensure path
+      ---
+      duration_ms: 0.196059
+      type: 'test'
+      ...
+    1..2
+ok 35 - mapComponentProgressToRemote
+  ---
+  duration_ms: 1.065893
+  type: 'suite'
+  ...
+# Subtest: ensureComponentForRemote
+    # Subtest: mirrors progress callbacks into the remote bar within the range
+    ok 1 - mirrors progress callbacks into the remote bar within the range
+      ---
+      duration_ms: 0.294298
+      type: 'test'
+      ...
+    # Subtest: propagates ensure failures and still removes the listener
+    ok 2 - propagates ensure failures and still removes the listener
+      ---
+      duration_ms: 0.401538
+      type: 'test'
+      ...
+    1..2
+ok 36 - ensureComponentForRemote
+  ---
+  duration_ms: 0.780463
+  type: 'suite'
+  ...
+# Subtest: clearManagedRemoteIfSession (D8)
+    # Subtest: nulls when the handle still points at the failed session
+    ok 1 - nulls when the handle still points at the failed session
+      ---
+      duration_ms: 0.598433
+      type: 'test'
+      ...
+    1..1
+ok 37 - clearManagedRemoteIfSession (D8)
+  ---
+  duration_ms: 1.659754
+  type: 'suite'
+  ...
+# Downloading Electron binary...
+# Subtest: formatSidecarBootFailure
+    # Subtest: includes key fields code, bin, and log
+    ok 1 - includes key fields code, bin, and log
+      ---
+      duration_ms: 0.762486
+      type: 'test'
+      ...
+    # Subtest: notes when sidecar printed nothing
+    ok 2 - notes when sidecar printed nothing
+      ---
+      duration_ms: 0.164351
+      type: 'test'
+      ...
+    1..2
+ok 38 - formatSidecarBootFailure
+  ---
+  duration_ms: 1.707401
+  type: 'suite'
+  ...
+# Subtest: stopSidecar (DESK-04 sidecar cleanup)
+    # Subtest: terminates a running sidecar child
+    ok 1 - terminates a running sidecar child
+      ---
+      duration_ms: 6.557629
+      type: 'test'
+      ...
+    # Subtest: is a no-op for a null handle
+    ok 2 - is a no-op for a null handle
+      ---
+      duration_ms: 0.460682
+      type: 'test'
+      ...
+    1..2
+ok 39 - stopSidecar (DESK-04 sidecar cleanup)
+  ---
+  duration_ms: 7.224464
+  type: 'suite'
+  ...
+# Subtest: stopSidecar intentional stop (D2)
+    # Subtest: marks intentionalStop before killing
+    ok 1 - marks intentionalStop before killing
+      ---
+      duration_ms: 2.125517
+      type: 'test'
+      ...
+    1..1
+ok 40 - stopSidecar intentional stop (D2)
+  ---
+  duration_ms: 2.315578
+  type: 'suite'
+  ...
+# Subtest: startSidecar abort signal (WP-169)
+    # Subtest: abort before READY kills the child and rejects with signal.reason
+    ok 1 - abort before READY kills the child and rejects with signal.reason
+      ---
+      duration_ms: 55.809695
+      type: 'test'
+      ...
+    # Subtest: an already-aborted signal kills the child at once
+    ok 2 - an already-aborted signal kills the child at once
+      ---
+      duration_ms: 2.212323
+      type: 'test'
+      ...
+    # Subtest: without a signal: unchanged, resolves on LITECODE_READY
+    ok 3 - without a signal: unchanged, resolves on LITECODE_READY
+      ---
+      duration_ms: 22.852746
+      type: 'test'
+      ...
+    # Subtest: READY settles first: a later abort does nothing (listener removed)
+    ok 4 - READY settles first: a later abort does nothing (listener removed)
+      ---
+      duration_ms: 71.216532
+      type: 'test'
+      ...
+    1..4
+ok 41 - startSidecar abort signal (WP-169)
+  ---
+  duration_ms: 152.747031
+  type: 'suite'
+  ...
+# Subtest: slim packaging hygiene
+    # Subtest: desktop package.json extraResources excludes models and has no linux asset by default
+    ok 1 - desktop package.json extraResources excludes models and has no linux asset by default
+      ---
+      duration_ms: 0.697145
+      type: 'test'
+      ...
+    # Subtest: package_win.ps1 throws if models/linux leak into the unpacked installer
+    ok 2 - package_win.ps1 throws if models/linux leak into the unpacked installer
+      ---
+      duration_ms: 1.042135
+      type: 'test'
+      ...
+    # Subtest: assemble_product.ps1 gates model copy on -WithModel
+    ok 3 - assemble_product.ps1 gates model copy on -WithModel
+      ---
+      duration_ms: 0.28173
+      type: 'test'
+      ...
+    # Subtest: sh/ps1 script pairs cross-reference each other and keep the release remap in sync
+    ok 4 - sh/ps1 script pairs cross-reference each other and keep the release remap in sync
+      ---
+      duration_ms: 1.100812
+      type: 'test'
+      ...
+    1..4
+ok 42 - slim packaging hygiene
+  ---
+  duration_ms: 5.809348
+  type: 'suite'
+  ...
+# Subtest: materializePasswordAskPass
+    # Subtest: writes a plaintext password file and an askpass helper in a temp dir
+    ok 1 - writes a plaintext password file and an askpass helper in a temp dir
+      ---
+      duration_ms: 1.257019
+      type: 'test'
+      ...
+    1..1
+ok 43 - materializePasswordAskPass
+  ---
+  duration_ms: 1.868527
+  type: 'suite'
+  ...
+# Subtest: materializePrivateKeyFile
+    # Subtest: writes the key material into a temp identity file
+    ok 1 - writes the key material into a temp identity file
+      ---
+      duration_ms: 1.140365
+      type: 'test'
+      ...
+    1..1
+ok 44 - materializePrivateKeyFile
+  ---
+  duration_ms: 1.251579
+  type: 'suite'
+  ...
+# Subtest: removeMaterializedKey
+    # Subtest: is a no-op for an empty key directory
+    ok 1 - is a no-op for an empty key directory
+      ---
+      duration_ms: 0.227298
+      type: 'test'
+      ...
+    1..1
+ok 45 - removeMaterializedKey
+  ---
+  duration_ms: 0.325772
+  type: 'suite'
+  ...
+# Subtest: withMaterializedKeyDirectory (DESK-03 finally cleanup)
+    # Subtest: removes the temp dir even when the body throws
+    ok 1 - removes the temp dir even when the body throws
+      ---
+      duration_ms: 0.863305
+      type: 'test'
+      ...
+    # Subtest: removes the temp dir on a normal return
+    ok 2 - removes the temp dir on a normal return
+      ---
+      duration_ms: 0.377446
+      type: 'test'
+      ...
+    1..2
+ok 46 - withMaterializedKeyDirectory (DESK-03 finally cleanup)
+  ---
+  duration_ms: 1.536768
+  type: 'suite'
+  ...
+# Subtest: readPrivateKeyFile (DESK-02 path control)
+    # Subtest: reads a regular private key file
+    ok 1 - reads a regular private key file
+      ---
+      duration_ms: 0.758249
+      type: 'test'
+      ...
+    # Subtest: rejects a directory path
+    ok 2 - rejects a directory path
+      ---
+      duration_ms: 0.394626
+      type: 'test'
+      ...
+    # Subtest: rejects a missing path
+    ok 3 - rejects a missing path
+      ---
+      duration_ms: 0.17426
+      type: 'test'
+      ...
+    # Subtest: rejects empty or newline-containing paths
+    ok 4 - rejects empty or newline-containing paths
+      ---
+      duration_ms: 0.190796
+      type: 'test'
+      ...
+    1..4
+ok 47 - readPrivateKeyFile (DESK-02 path control)
+  ---
+  duration_ms: 1.895671
+  type: 'suite'
+  ...
+# Subtest: ssh-session safety helpers
+    # Subtest: constructs SSH arguments without a shell
+    ok 1 - constructs SSH arguments without a shell
+      ---
+      duration_ms: 2.47439
+      type: 'test'
+      ...
+    # Subtest: formats SCP remote destinations without shell quotes
+    ok 2 - formats SCP remote destinations without shell quotes
+      ---
+      duration_ms: 0.318187
+      type: 'test'
+      ...
+    # Subtest: escapes spaces in SCP remote paths
+    ok 3 - escapes spaces in SCP remote paths
+      ---
+      duration_ms: 0.172402
+      type: 'test'
+      ...
+    # Subtest: adds -r for recursive directory uploads
+    ok 4 - adds -r for recursive directory uploads
+      ---
+      duration_ms: 0.130075
+      type: 'test'
+      ...
+    # Subtest: rejects ambiguous targets and paths
+    ok 5 - rejects ambiguous targets and paths
+      ---
+      duration_ms: 0.37511
+      type: 'test'
+      ...
+    # Subtest: uses POSIX-safe single-quote escaping
+    ok 6 - uses POSIX-safe single-quote escaping
+      ---
+      duration_ms: 0.109439
+      type: 'test'
+      ...
+    1..6
+ok 48 - ssh-session safety helpers
+  ---
+  duration_ms: 4.46281
+  type: 'suite'
+  ...
+# Subtest: SSH tunnel args (D1)
+    # Subtest: includes ServerAlive and ExitOnForwardFailure
+    ok 1 - includes ServerAlive and ExitOnForwardFailure
+      ---
+      duration_ms: 0.265897
+      type: 'test'
+      ...
+    # Subtest: rejects invalid tunnel ports
+    ok 2 - rejects invalid tunnel ports
+      ---
+      duration_ms: 0.222182
+      type: 'test'
+      ...
+    1..2
+ok 49 - SSH tunnel args (D1)
+  ---
+  duration_ms: 0.67584
+  type: 'suite'
+  ...
+# Subtest: isAllowedExternalUrl (openExternal whitelist)
+    # Subtest: allows http and https links
+    ok 1 - allows http and https links
+      ---
+      duration_ms: 0.549044
+      type: 'test'
+      ...
+    # Subtest: allows mailto links
+    ok 2 - allows mailto links
+      ---
+      duration_ms: 0.117279
+      type: 'test'
+      ...
+    # Subtest: rejects non-whitelisted schemes
+    ok 3 - rejects non-whitelisted schemes
+      ---
+      duration_ms: 0.175064
+      type: 'test'
+      ...
+    # Subtest: rejects unparseable input
+    ok 4 - rejects unparseable input
+      ---
+      duration_ms: 0.170239
+      type: 'test'
+      ...
+    1..4
+ok 50 - isAllowedExternalUrl (openExternal whitelist)
+  ---
+  duration_ms: 1.723765
+  type: 'suite'
+  ...
+# Subtest: isAllowedLoadUrl (loadURL whitelist)
+    # Subtest: allows http and https
+    ok 1 - allows http and https
+      ---
+      duration_ms: 1.123264
+      type: 'test'
+      ...
+    # Subtest: rejects non-http(s) schemes including file
+    ok 2 - rejects non-http(s) schemes including file
+      ---
+      duration_ms: 0.134901
+      type: 'test'
+      ...
+    1..2
+ok 51 - isAllowedLoadUrl (loadURL whitelist)
+  ---
+  duration_ms: 1.428165
+  type: 'suite'
+  ...
+# Subtest: senderOwnedWindow (DESK-01 targetWindow ownership)
+    # Subtest: returns the sender's live window
+    ok 1 - returns the sender's live window
+      ---
+      duration_ms: 0.46654
+      type: 'test'
+      ...
+    # Subtest: refuses when the sender's webContents resolves to a destroyed window
+    ok 2 - refuses when the sender's webContents resolves to a destroyed window
+      ---
+      duration_ms: 0.135033
+      type: 'test'
+      ...
+    # Subtest: refuses when the sender's webContents resolves to no window (no global fallback)
+    ok 3 - refuses when the sender's webContents resolves to no window (no global fallback)
+      ---
+      duration_ms: 0.13712
+      type: 'test'
+      ...
+    # Subtest: refuses when there is no sender webContents
+    ok 4 - refuses when there is no sender webContents
+      ---
+      duration_ms: 0.073697
+      type: 'test'
+      ...
+    1..4
+ok 52 - senderOwnedWindow (DESK-01 targetWindow ownership)
+  ---
+  duration_ms: 1.584551
+  type: 'suite'
+  ...
+1..52
+# tests 140
+# suites 49
+# pass 140
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 5554.416656

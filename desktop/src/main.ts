@@ -50,7 +50,6 @@ import { RecentWorkspaces, type RecentWorkspace } from "./recents";
 import { deleteSecret, getSecret, setSecret } from "./secure-store";
 import { RemoteTargets, type SavedRemoteTarget } from "./remote-targets";
 import {
-  REMOTE_PROGRESS_CHANNEL,
   ensureComponentForRemote as ensureComponentForRemoteCore,
   type RemoteProgressEvent,
 } from "./remote-progress";
@@ -62,6 +61,7 @@ import {
   RecoveryCounter,
   recoveryDelayMs,
 } from "./process-recovery";
+import { isBootAborted, runBootSequence } from "./boot-sequence";
 import { startSidecar, stopSidecar, watchSidecarExit, type SidecarHandle } from "./sidecar";
 import {
   BUNDLED_MODEL_REL,
@@ -74,6 +74,10 @@ import {
 import { sidecarRoot } from "./paths";
 import {
   COMPONENT_PROGRESS_CHANNEL,
+  REMOTE_DISCONNECTED_CHANNEL,
+  REMOTE_PROGRESS_CHANNEL,
+} from "./bridge-contract";
+import {
   ComponentManager,
   isComponentId,
   type ComponentId,
@@ -121,8 +125,6 @@ let registry: InstanceRegistry | null = null;
 let recents: RecentWorkspaces | null = null;
 let remoteTargets: RemoteTargets | null = null;
 let sshTargets: SshTargets | null = null;
-/** Desktop-only: tunnel died unexpectedly (must match preload literal). */
-const REMOTE_DISCONNECTED_CHANNEL = "litecode:remote-disconnected";
 
 type ManagedRemote = {
   session: SshSession;
@@ -160,7 +162,19 @@ function createToken(): string {
   return crypto.randomBytes(32).toString("base64url");
 }
 
-type BootContent = { kind: "url"; url: string } | { kind: "hub" };
+type BootContent = { kind: "hub" } | { kind: "skeleton" };
+
+/**
+ * WP-169 skeleton: theme background only, whole page draggable (frameless
+ * window), no text, no script. A data: URL is never a trusted IPC surface
+ * (ipc-trust only trusts the hub file URL and the workbench origin).
+ */
+const SKELETON_URL =
+  "data:text/html;charset=utf-8," +
+  encodeURIComponent(
+    '<!doctype html><html><head><meta charset="utf-8"></head>' +
+      '<body style="margin:0;width:100vw;height:100vh;background:#0a0a0a;-webkit-app-region:drag"></body></html>',
+  );
 
 function hubPagePath(): string {
   return path.join(app.getPath("userData"), "hub-index.html");
@@ -386,7 +400,10 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
   if (content.kind === "hub") {
     await loadHub(win);
   } else {
-    await safeLoadURL(win, content.url);
+    // Skeleton: no trusted surface while the backend is starting. The
+    // workbench later goes through safeLoadURL into this same window.
+    trustContext = null;
+    await win.loadURL(SKELETON_URL);
   }
   return win;
 }
@@ -395,7 +412,7 @@ async function createWindow(content: BootContent): Promise<BrowserWindow> {
 function resolveBootWorkspace(): string | null {
   const fromEnv =
     process.env.LITECODE_WORKSPACE?.trim() ||
-    process.argv.find((a, i, arr) => arr[i - 1] === "--workspace") ||
+    process.argv.find((_a, i, arr) => arr[i - 1] === "--workspace") ||
     null;
   return fromEnv ? normalizeWorkspace(fromEnv) : null;
 }
@@ -700,7 +717,7 @@ async function stopManagedRemote(): Promise<void> {
   removeMaterializedKey(active.keyDirectory);
 }
 
-function scheduleTunnelReconnect(targetId: string, workspace: string, attempt: number): void {
+function scheduleTunnelReconnect(targetId: string, attempt: number): void {
   cancelTunnelReconnect();
   const delay = recoveryDelayMs(attempt, DEFAULT_TUNNEL_RECOVERY);
   tunnelReconnectTimer = setTimeout(() => {
@@ -738,7 +755,7 @@ function onTunnelUnexpectedExit(info: TunnelExitInfo, binding: ManagedRemote): v
     console.warn("[litecode] tunnel auto-reconnect exhausted");
     return;
   }
-  scheduleTunnelReconnect(targetId, workspace, tunnelRecovery.count);
+  scheduleTunnelReconnect(targetId, tunnelRecovery.count);
 }
 
 function attachTunnelWatch(binding: ManagedRemote): void {
@@ -773,7 +790,7 @@ function attachSidecarWatch(handle: SidecarHandle): void {
         void dialog.showMessageBox(mainWindow, {
           type: "error",
           title: "Litecode sidecar crashed",
-          message: "The local server exited unexpectedly and could not be restarted.",
+          message: "The local server stopped and could not restart.",
           detail: `code=${info.code ?? "null"} signal=${info.signal ?? "null"}`,
         });
       }
@@ -824,7 +841,7 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
       emitRemoteProgress({
         stage: "download",
         ratio: 0.12,
-        message: "Embed model unavailable — remote code search will be off. Continuing…",
+        message: "Code search unavailable on remote (no embed model).",
       });
     }
   }
@@ -1035,7 +1052,7 @@ async function startRemoteSessionBody(input: StartRemoteInput): Promise<{
       ...(credentialMaterial ? { credentialMaterial } : {}),
     };
     setPendingRemote(pending);
-    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: "Choose a workspace folder." });
+    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: "Connected." });
     // Ownership of the temp key dir now lives in the pending session (cleaned
     // on cancel/complete/stale-clear); clear it so finally does not remove it.
     keyDirectory = undefined;
@@ -1071,7 +1088,7 @@ async function completeRemoteSessionBody(
   const pending = getPendingRemote(sessionId);
   const relative = String(workspace ?? "").trim() || ".";
   if (relative === ".") {
-    throw new Error("Choose a workspace folder below the remote home (not home itself).");
+    throw new Error("Pick a folder inside your home directory.");
   }
 
   // Idempotent: a double-complete reuses the already-started serve (D4).
@@ -1102,7 +1119,8 @@ async function completeRemoteSessionBody(
   emitRemoteProgress({
     stage: "ready",
     ratio: 0.96,
-    message: "Remote session ready. Review the token, then enter the workspace.",
+    // A4: transient — the hub enters the workspace right after this.
+    message: "Session ready.",
   });
 
   return {
@@ -1341,8 +1359,6 @@ async function boot(): Promise<void> {
   if (!remoteUrl) {
     assertDevUiConfigured(devUi, devUpstreamFilePath());
   }
-  let content: BootContent;
-
   if (remoteUrl) {
     const token = process.env.LITECODE_TOKEN?.trim();
     if (!token) {
@@ -1353,44 +1369,103 @@ async function boot(): Promise<void> {
     sessionMode = "remote";
     authToken = token;
     const expected = process.env.LITECODE_WORKSPACE?.trim();
-    await waitForWorkspaceHealth(
-      healthUrlFromBase(remoteUrl),
-      expected ? normalizeWorkspace(expected) : undefined,
-    );
-    content = { kind: "url", url: handshakeUrl(remoteUrl, authToken) };
-    if (expected) {
-      currentWorkspace = normalizeWorkspace(expected);
-    }
-  } else {
-    sessionMode = "local";
-    authToken = createToken();
-    const workspace = resolveBootWorkspace();
-    if (workspace) {
-      sidecar = await startSidecar({
+    const expectedWorkspace = expected ? normalizeWorkspace(expected) : null;
+    // S1b: skeleton first; /health only gates loadURL(handshakeUrl).
+    await runBootSequence<BrowserWindow, null>({
+      startBackend: async () => {
+        await waitForWorkspaceHealth(healthUrlFromBase(remoteUrl), expectedWorkspace ?? undefined);
+        return null;
+      },
+      createSkeleton: () => createBootSkeleton(expectedWorkspace),
+      prepare: async () => {
+        if (expectedWorkspace) currentWorkspace = expectedWorkspace;
+        return handshakeUrl(remoteUrl, authToken);
+      },
+      loadWorkbench: (win, url) => safeLoadURL(win, url),
+      stopBackend: async () => undefined,
+      closeSkeleton: closeFailedBootSkeleton,
+      // No local process to stop; quit must not wait for the health poll.
+    });
+    return;
+  }
+
+  sessionMode = "local";
+  authToken = createToken();
+  const workspace = resolveBootWorkspace();
+  if (!workspace) {
+    const hubWindow = await createWindow({ kind: "hub" });
+    mainWindow = hubWindow;
+    hubWindow.on("closed", () => {
+      if (mainWindow === hubWindow) mainWindow = null;
+    });
+    await startRegistry(hubWindow, null);
+    return;
+  }
+  // S1: skeleton window in parallel with the sidecar; READY + attach check +
+  // /health only gate the workbench loadURL into the same window.
+  await runBootSequence<BrowserWindow, SidecarHandle>({
+    startBackend: (signal) =>
+      startSidecar({
         token: authToken,
         parentPid: process.pid,
         workspace,
-      });
-      await verifySidecarAttached(sidecar);
-      attachSidecarWatch(sidecar);
+        // Window closed during the skeleton: kill the child now, not at READY.
+        signal,
+      }),
+    createSkeleton: () => createBootSkeleton(workspace),
+    onBackend: (handle) => {
+      sidecar = handle;
+    },
+    prepare: async (handle) => {
+      await verifySidecarAttached(handle);
+      attachSidecarWatch(handle);
       currentWorkspace = workspace;
-      recordRecent(workspace);
-      content = { kind: "url", url: await localWorkbenchUrl(sidecar.readyUrl) };
-    } else {
-      content = { kind: "hub" };
-    }
-  }
-
-  mainWindow = await createWindow(content);
-  registry = new InstanceRegistry();
-  await registry.start(mainWindow);
-  if (currentWorkspace) {
-    registry.setWorkspace(currentWorkspace);
-  }
-
-  mainWindow.on("closed", () => {
-    mainWindow = null;
+      return localWorkbenchUrl(handle.readyUrl);
+    },
+    loadWorkbench: (win, url) => safeLoadURL(win, url),
+    stopBackend: async (handle) => {
+      await stopSidecar(handle);
+      if (sidecar === handle) {
+        sidecar = null;
+        syncDevUpstream(null);
+      }
+    },
+    closeSkeleton: closeFailedBootSkeleton,
+    // S2: boot-time recents write only after the workbench loaded.
+    recordRecent: () => recordRecent(workspace),
+    onAbort: (cleanup) => {
+      bootAbortCleanup = cleanup;
+    },
   });
+}
+
+/** Set while a failed boot closes its skeleton, so that close does not quit the app. */
+let closingFailedBoot = false;
+/** Abort cleanup (sidecar stop) when the user closed the skeleton; awaited before exit. */
+let bootAbortCleanup: Promise<void> | null = null;
+
+async function startRegistry(win: BrowserWindow, workspace: string | null): Promise<void> {
+  registry = new InstanceRegistry();
+  await registry.start(win);
+  if (workspace) {
+    registry.setWorkspace(workspace);
+  }
+}
+
+/** Skeleton window + registry as soon as the workspace is known (second open focuses it). */
+async function createBootSkeleton(workspace: string | null): Promise<BrowserWindow> {
+  const win = await createWindow({ kind: "skeleton" });
+  mainWindow = win;
+  win.on("closed", () => {
+    if (mainWindow === win) mainWindow = null;
+  });
+  await startRegistry(win, workspace);
+  return win;
+}
+
+function closeFailedBootSkeleton(win: BrowserWindow): void {
+  closingFailedBoot = true;
+  win.destroy();
 }
 
 function targetWindow(
@@ -1532,22 +1607,6 @@ function registerIpc(): void {
       throw new Error("Remote workspaces use the embed model on the remote host.");
     }
     const result = await componentManager().ensure(id);
-    return { id: result.id, path: result.path, downloaded: result.downloaded };
-  });
-
-  handleTrusted("litecode:component-pause", "both", (_e, id: unknown) => {
-    if (!isComponentId(id)) throw new Error("Unknown component");
-    return { ok: componentManager().pause(id) };
-  });
-
-  handleTrusted("litecode:component-stop", "both", (_e, id: unknown) => {
-    if (!isComponentId(id)) throw new Error("Unknown component");
-    return { ok: componentManager().stop(id) };
-  });
-
-  handleTrusted("litecode:component-retry", "both", async (_e, id: unknown) => {
-    if (!isComponentId(id)) throw new Error("Unknown component");
-    const result = await componentManager().retry(id);
     return { id: result.id, path: result.path, downloaded: result.downloaded };
   });
 
@@ -1703,10 +1762,6 @@ function registerIpc(): void {
     return connectManagedSsh(targetId, workspace);
   });
 
-  handleTrusted("litecode:focus-workspace", "workbench", async (_e, workspacePath: string) => {
-    return InstanceRegistry.tryFocusWorkspace(String(workspacePath));
-  });
-
   handleTrusted("litecode:notify-workspace", "workbench", async (_e, workspacePath: string | null) => {
     currentWorkspace = workspacePath ? normalizeWorkspace(String(workspacePath)) : null;
     registry?.setWorkspace(currentWorkspace);
@@ -1830,6 +1885,8 @@ app.whenReady().then(async () => {
   try {
     await boot();
   } catch (err) {
+    // WP-169: the user closed the skeleton; the normal quit path cleans up.
+    if (isBootAborted(err)) return;
     const message = err instanceof Error ? err.message : String(err);
     // DESK-04: if boot fails after the sidecar was spawned (e.g. health
     // never verifies), stop it so we never leave an orphan server process.
@@ -1842,6 +1899,8 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
+  // A failed boot shows its error dialog and exits itself.
+  if (closingFailedBoot) return;
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -1860,6 +1919,8 @@ app.on("before-quit", (e) => {
       /* ignore */
     }
     registry?.stop();
+    // WP-169: skeleton closed while the sidecar was still starting.
+    await bootAbortCleanup?.catch(() => undefined);
     await sidecarLifecycle.run(async () => {
       await stopSidecar(sidecar);
       await stopManagedRemote();

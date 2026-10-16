@@ -1,4 +1,5 @@
 # Windows browser/Vite transition loop (HMR). Not the Electron end-state shell.
+# Paired with scripts/serve.sh: change one, keep the other in sync (WP-164 R6).
 #
 # Starts host cargo `litecode serve` + Vite, generates a session-local auth token,
 # and prints a handshake URL you can open in a normal browser.
@@ -64,6 +65,7 @@ for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
   }
 }
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\common.ps1")
 $WebDir = Join-Path $Root "web"
 $WebIndex = Join-Path $WebDir "dist\index.html"
 # CUDA builds live beside the CPU cache (same dir as dev_win.ps1 -Cuda) so
@@ -75,10 +77,6 @@ if ($ApiOnly -and $WebOnly) {
 }
 if ($Cuda -and $WebOnly) {
   Write-Warning "-Cuda only affects the API process; ignored with -WebOnly"
-}
-
-function Test-Command([string]$Name) {
-  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
 function New-DevToken {

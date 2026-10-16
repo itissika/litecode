@@ -9,9 +9,9 @@ import type {
  * `retrieval.{total,code,session}` (WP-132). No estimates, no fixed widths,
  * no legacy index progress / percentage / chunk-count fields.
  */
-export type BarTone = "ok" | "pending" | "busy" | "failed" | "empty";
+type BarTone = "ok" | "pending" | "busy" | "failed" | "empty";
 
-export interface RetrievalBar {
+interface RetrievalBar {
   tone: BarTone;
   pulse: boolean;
   /** 0–100, or null when unknown (scanning / no total). */
@@ -20,7 +20,7 @@ export interface RetrievalBar {
 }
 
 /** done/total over the whole index; null when total unknown or 0. */
-export function corpusPct(c: RetrievalCorpusStatus): number | null {
+function corpusPct(c: RetrievalCorpusStatus): number | null {
   if (c.chunks_total === null || c.chunks_total <= 0) return null;
   const pct = Math.floor((c.chunks_done * 100) / c.chunks_total);
   return Math.max(0, Math.min(100, pct));
@@ -66,7 +66,7 @@ const REASON_TEXT: Record<RetrievalCorpusError["reason"], string> = {
   index_failed: "索引失败",
 };
 
-export function reasonText(reason: RetrievalCorpusError["reason"]): string {
+function reasonText(reason: RetrievalCorpusError["reason"]): string {
   return REASON_TEXT[reason] ?? reason;
 }
 

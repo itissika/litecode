@@ -5,14 +5,14 @@
 
 ## 当前版本
 
-- `tools_version`: **17**
+- `tools_version`: **21**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-14T03:07:36.256Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-16T00:30:23.177Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -166,12 +166,55 @@
 | WP-149 | 　└ Runtime：主 agent 默认绑定 code_search（seed+只补缺行迁移） | done | runtime | backend_mid |
 | WP-147 | └ 前端：设置页 bind 只显示 desire | done | frontend_mid | gm |
 | WP-150 | 　└ WP-147 web：code_search bind 开关只显示库存期望 | done | frontend | frontend_mid |
+| WP-151 | 前端瘦身调研（只读，为多语言与介绍文档铺路） | done | frontend_mid | gm |
+| WP-152 | └ WP-151 web：前端瘦身只读调研 | done | frontend | frontend_mid |
+| WP-153 | └ WP-151 desktop：前端瘦身只读调研 | done | frontend_desktop | frontend_mid |
+| WP-154 | 打开工作区延迟调研（只读） | done | backend_mid | gm |
+| WP-155 | └ WP-154A 后端工作区打开链路耗时（只读） | done | ide | backend_mid |
+| WP-156 | └ WP-154B serve 握手与会话加载耗时（只读） | done | session | backend_mid |
+| WP-157 | └ WP-154C 前端握手到可交互耗时（只读） | done | frontend_mid | backend_mid |
+| WP-158 | 前端瘦身（按 WP-151 清单与 GM 裁定） | done | frontend_mid | gm |
+| WP-159 | └ WP-158 B1 web：低风险删改与依赖声明 | done | frontend | frontend_mid |
+| WP-160 | └ WP-158 B1 desktop：低风险删改 | done | frontend_desktop | frontend_mid |
+| WP-161 | └ WP-158 B2 desktop：跨端桥接契约 | done | frontend_desktop | frontend_mid |
+| WP-162 | └ WP-158 B2 web：改用契约与样式收拢 | done | frontend | frontend_mid |
+| WP-163 | └ WP-158 B3 web：重复组件合并与断开态 | done | frontend | frontend_mid |
+| WP-164 | └ WP-158 B3 desktop：重复实现合并与跳过令牌 | done | frontend_desktop | frontend_mid |
+| WP-165 | 打开工作区启动排位整改 | done | backend_mid | gm |
+| WP-166 | └ 启动排位整改·Session 域 | done | session | backend_mid |
+| WP-167 | └ 启动排位整改·IDE 域 | done | ide | backend_mid |
+| WP-168 | └ 启动排位整改·壳与前端 | done | frontend_mid | backend_mid |
+| WP-169 | 　└ 启动排位整改·desktop 壳 | done | frontend_desktop | frontend_mid |
+| WP-170 | 　└ 启动排位整改·web 前端 | done | frontend | frontend_mid |
+| WP-171 | 新电脑 litecode 环境初始化 | done | tools_steward | gm |
+| WP-172 | 重型校验迁到 GitHub Actions | done | tools_steward | gm |
+| WP-173 | wp_watch 开机自启常驻（事件提醒） | done | tools_steward | gm |
+| WP-174 | wp_watch：禁止回放已关闭包的历史事件 | done | tools_steward | gm |
+| WP-175 | 修 ISSUE-064：Command Code / Luna 输出不崩 agent loop | done | backend_mid | gm |
+| WP-178 | └ WP-175-a：provider 诊断 H1（Responses SSE / wire+fixture） | done | provider | backend_mid |
+| WP-176 | 修 ISSUE-065：ask_user 卡不得未操作即跳过 | done | frontend_mid | gm |
+| WP-177 | └ WP-176 web：ask_user 残卡守卫与测试 | done | frontend | frontend_mid |
+| WP-179 | 方案：ask_user/权限类调用的会话等待态持久化（不实现） | done | backend_mid | gm |
+| WP-180 | 方案：Luna/工具管线崩溃的健壮性与可观测性（不实现） | done | backend_mid | gm |
+| WP-181 | 实现：waiting_for_user + 权限类落盘（自 WP-179） | done | backend_mid | gm |
+| WP-186 | └ WP-181-a：session 等待态落盘 + pending_permissions + 断线≠Deny | done | session | backend_mid |
+| WP-187 | └ WP-181-b：runtime PhasePermissionSink / waiting_for_user phase 对齐 | done | runtime | backend_mid |
+| WP-182 | 实现：FE 消费 pending_permissions / waiting_for_user（自 WP-179） | done | frontend_mid | gm |
+| WP-184 | └ WP-182 web：pending_permissions hydrate 与出卡 | done | frontend | frontend_mid |
+| WP-185 | └ WP-182 desktop：同契约无分叉 | done | frontend_desktop | frontend_mid |
+| WP-183 | 实现：崩溃/回合失败可观测性 Obs（自 WP-180） | done | backend_mid | gm |
+| WP-188 | └ WP-183-a：runtime Obs-1/2 可观测性落地 | done | runtime | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-15 | v22（WP-174）：wp_watch 冷启动/接管跳过已关闭或状态已变的 approval/acceptance/timeout outbox 重放（eventStillDeliverable + skipped 记入 state）；ops_harden 组 11 回归（工具集管家）|
+| 2026-10-15 | v21（WP-173）：wp_watch 开机自启常驻。新增 ops.wp_watch_service（install/prove/test-callback）；systemd user unit（Restart=always）优先，无 systemctl 时 fallback svc + ~/.profile 钩子；webhook 只写仓库外 `~/.config/litecode/wp-watch.env`（0600），永不打印/入库；去掉「靠定时 tick 提醒」——停滞/升级事件只由常驻 watcher 发出；按 bot 分发回调仅留 resolveWebhook 设计口（工具集管家）|
+| 2026-10-15 | v21：合并 gm/wp165-local 与 ops/team-framework 两条各自的「v20」（一条是 WP-171/172：LC_ROOT/init_env/test_failures；一条是 registry_verify --quick/g++ 用户态/cargo_locked 自动校验），tools_version 取 21；registry 保留两边条目（cargo_env v2 含 LC_ROOT 说明）（工具集管家，合并）|
+| 2026-10-15 | v20：registry_verify 加 --quick 与 g++ 检查（debs 离线重建用户态 g++）；cargo_locked 取锁前自动 quick verify/自修；cargo_env 自动用 gxx-bin、set -u 安全；文档：g++ 两条路径、重启清单、registry 丢 target/build 目录的取证（工具集管家）|
+| 2026-10-15 | v19：watcher 韧性（事故：快照回滚后 watcher 消失 7 小时，tick 无人驱动）。wp_watch v4：ensure / test-callback / watchdog-start|stop，start 等新心跳；ops.wp v6：写操作顺带 softEnsureWatcher；测试 ops_harden 组 10（工具集管家）|
 | 2026-10-13 | v17：validate_board v9 新规则「每个 WP.domain 必须在 board.domains」；ops.wp v5 已封包可 `set --field domain` 重新归类（其他字段仍拒）；WP-070/071→ide-substrate、WP-082/083/089/093/097→client-ux；wp.test 组 7 / ops_harden 组 9 老包数改为从 board 动态计算（>0）并逐包校验（工具集管家）|
 | 2026-10-13 | v16：ops.wp v4 `set --field domain`（owner/approver；须为 board.domains 已有 id；history+log+trace；校验失败回滚）；新增 `reassign --owner`（包 approver 或父包 owner；新 owner 须已注册；只改 owner；history+log；回滚）；用它们把 WP-103 domain ide-base→ide-substrate；新 agent provider（model-config 域 provider/模型部分，bot id 记 agents_cold/bot_ids.json）（工具集管家）|
 | 2026-10-12 | v15（WP-032）：超时按父子链合并、只叫离卡点最近真正要动手的人（有未封子包的 in_progress 父包不算卡点），matter 去重，已 ack 60 分钟内不重发（老 WP 同）；tick 在 watcher 健康时只报告、watcher 挂了自动拉起并记 team_ops.watcher_restarted；事件加锁 + fsync 原子写，先落 inbox+events/outbox.jsonl 再发，重启排空 outbox，所有告警类型都走 webhook（payload 带 target/type/actor/merged/matter_key）；新增 ops.issue_new（加锁分配 issue 号，独占创建）、issues/.reserved.json（031/006 作废）、validate_all 查 issue 名实/重复；新增 ops.toolchain_check；ops.wp v3 加 set；~/.cargo/bin 换 wrapper、~/.rustup 指向 ops toolchain（备份在 ~/.litecode-toolchain-backup-20261012-184910）（工具集管家）|
@@ -195,8 +238,8 @@
 1. 调用前感知版本：读输出首行或跑 `tools_version.mjs`
 2. 推进 WP：`wp_gate.mjs --id WP-xxx --to <status>`（通过即写回 board.json 并记 log；只检查加 `--dry-run`）；done 需产物 + tool_traces
 3. 审计：`append_log.mjs --kind --source --summary [--wp]`
-4. 每轮：`tick.mjs`（刷新「WP 状态」表；v9 起工作时段扫描 WP 超时并发 team_ops.wp_timeout，GM 例行只消费未 ack 超时事件；`--force-timeout-scan` 可绕过工作时段做联调）
-5. WP 超时回调（v11）：`wp_watch.mjs start` 起常驻 watcher（崩溃自动拉起），`status` 看心跳，`stop` 停；tick 发现心跳过期会发 `team_ops.watcher_down`，收到后先 `start` 再 ack。详见下方「ops.wp_watch 用法」
+4. 看板刷新（可选）：`tick.mjs` 仍可刷新「WP 状态」表并报告超时扫描结果；**v21 起不再把 tick 当定时提醒**——停滞/升级事件由常驻 `wp_watch` 服务发出。watcher 健康时 tick 只报告不 emit。
+5. WP 停滞回调（v21）：安装一次 `node .litecode/ops/tools/wp_watch_service.mjs install --wp WP-xxx`（systemd 或 fallback 开机自启 + 崩溃拉起）。日常用 `status` / `prove` / `test-callback`。详见「ops.wp_watch / wp_watch_service 用法」
 6. 热更：改完 `tools_version++`，并在本表追加一行；破坏性变更用新 tool id
 7. 知识导航 / 脚手架（v12）：摸引用链用 `kb_nav.mjs --key <key>`，列孤儿加 `--orphans`；起草新节点用 `kb_scaffold.mjs --key --domain`（默认只打印，加 `--write` 才落盘且不覆盖）。详见下方用法
 8. 知识库自查（v7）：改/建知识节点后跑 `kb_check.mjs`（只看一个节点加 `--node <key>`），error 必须清零；`validate_all` 会同样拦截。详见下方「ops.kb_check 用法」
@@ -216,7 +259,8 @@
 | ops.kb_check | `node .litecode/ops/tools/kb_check.mjs [--node <key>] [--json] [--wp WP-xxx] [--stock-ref <rev>] [--selftest]` |
 | ops.kb_nav | `node .litecode/ops/tools/kb_nav.mjs --key <key> [--json] [--wp WP-xxx]` · `--orphans` · `--selftest` |
 | ops.kb_scaffold | `node .litecode/ops/tools/kb_scaffold.mjs --key <key> --domain <id> [--parent <key>] [--dir knowledge/...] [--write] [--json] [--wp WP-xxx]` |
-| ops.wp_watch | `node .litecode/ops/tools/wp_watch.mjs start\|stop\|status\|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]` |
+| ops.wp_watch | `node .litecode/ops/tools/wp_watch.mjs start\|stop\|status\|once\|ensure\|test-callback\|watchdog-start\|watchdog-stop [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]` |
+| ops.wp_watch_service | `node .litecode/ops/tools/wp_watch_service.mjs install\|refresh-env\|uninstall\|start\|stop\|boot\|status\|prove\|test-callback [--wp WP-xxx]` |
 | ops.wp | `node .litecode/ops/tools/wp.mjs <new\|fill\|submit\|approve\|start\|deliver\|reject\|close\|set\|reassign\|tree\|summary\|history> --as <agent_id\|andy> ...`（v14，见「ops.wp 用法」；`--as` 自报无鉴权） |
 | ops.wp.test | `node .litecode/ops/tools/wp.test.mjs [--json] [--keep]` |
 | ops.issue_new | `node .litecode/ops/tools/issue_new.mjs --as <agent_id> --title T --domain D [--grade G] [--layer L] [--owner O] [--wp WP-x] [--json-file F] [--dry-run]` |
@@ -265,9 +309,35 @@
 
 接入：`validate_all` 每次都跑全库，error > 0 即失败；`wp_gate --to review|done` 对知识类 WP（domain=knowledge，或 WP 文本里写了 `knowledge/…md` / `[@ key="…"]` / `node:<key>`，或有节点 `domain :` 等于该 WP 的域，或传 `--kb-nodes`）要求涉及节点无 error，`--dry-run` 同样检查。基线结果：`.litecode/ops/artifacts/kb_check-baseline.md`。
 
-## ops.wp_watch 用法（v11）
+## ops.wp_watch / wp_watch_service 用法（v11；v19 韧性；v21 开机自启）
 
-常驻 watcher，把 WP 超时从「GM 主动扫」改成「回调触发」。纯 Node，无依赖，不依赖 systemd。
+### 中层怎么跑（WP-173）
+
+```bash
+# 在带有 LITECODE_WP_WEBHOOK_URL/KEY 的 shell 里（云电脑已注入；切勿 echo/打印）
+cd /workspace/litecode
+node .litecode/ops/tools/wp_watch_service.mjs install --wp WP-173
+node .litecode/ops/tools/wp_watch_service.mjs status
+node .litecode/ops/tools/wp_watch_service.mjs prove          # 实测：杀进程拉起 + 冷启动
+node .litecode/ops/tools/wp_watch_service.mjs test-callback  # 向 GM 发一条测试事件
+```
+
+- **systemd 优先**：有 `systemctl` 时装 user unit `litecode-wp-watch.service`（`Restart=always`，`EnvironmentFile=~/.config/litecode/wp-watch.env`）。
+- **无 systemd 的 box**（本云电脑为 tini/pod）：写同名 unit 文件备查，并启用 fallback svc（30s ensure 循环）+ `~/.profile` 登录钩子调用 `boot`。
+- **密钥**：只写在 `~/.config/litecode/wp-watch.env`（0600，仓库外）。`refresh-env` 从当前 shell 重写；`uninstall --purge-env` 才删。绝不进 git。
+- **提醒口径**：无 tick 定时提醒。只有 WP 停滞/升级（及 approval/acceptance、watcher_down/restarted）才发事件；空闲安静。
+- **按 bot 分发**：`resolveWebhook(target)` 已留口，本次仍统一走 GM 回调；不做多 bot 注册实现。
+
+### 进程命令（底层）
+
+v19（2026-10-15 事故：快照回滚/VM fork 后 watcher 进程消失，无人调 tick，7 小时无超时告警）：
+- `wp_watch.mjs ensure`：幂等。没跑/陈旧 pid → 起；进程在但心跳 >10 分钟（`--stale-min N`）→ 杀掉重起；健康 → 不动。
+- `wp_watch.mjs test-callback`：向真实回调发一条 `team_ops.watcher_test`（target=gm）测试，只打印 http 码，写 wp_watch.log，不进 inbox。
+- `wp_watch.mjs watchdog-start|watchdog-stop`：独立保活循环（每 `--watchdog-sec 60` 跑 ensure），pid 在 .tmp/wp_watchdog.pid；`status` 里有 watchdog 字段。
+- 任何 `ops.wp` 写操作会顺带检查（watcher 死或心跳 >10 分钟 → detached ensure，5 分钟限频，记 `team_ops.watcher_restarted` source=ops.wp；`LITECODE_WP_NO_AUTOENSURE=1` 关闭）。
+- v21：优先用 `wp_watch_service install`；机器重启后 fallback 靠登录钩子 / systemd；也可用 `wp_watch_service boot`。
+
+常驻 watcher，把 WP 超时从「GM 主动扫」改成「回调触发」。纯 Node；服务层可选 systemd。
 
 | 命令（在仓库根 `/workspace/litecode` 下） | 作用 |
 |---|---|
@@ -302,7 +372,7 @@
 | `wp_watch.state.json` | `{delivered:{event_id:{at,http_status,wp,attempts}}, retry:{event_id:{attempts,last_error,next_at}}}` |
 | `wp_watch.pid` | supervisor pid（防双开） |
 
-**稳定性**：worker 捕获 `unhandledRejection` / `uncaughtException` → 记日志、写 last_error、非零退出；supervisor 自动重启（1s 起指数退避，上限 60s，稳定运行 >60s 后复位）。**tick** 每轮查心跳：缺失或超过 15 分钟（`--watcher-stale-min` 可调）→ emit 一条 `team_ops.watcher_down`（同一次掉线、未 ack 期间不重发），tick JSON 里的 `watcher` 字段给出心跳年龄。机器重启后 watcher 不会自己回来，靠 tick 的 watcher_down 提醒后 `start`。
+**稳定性**：worker 捕获 `unhandledRejection` / `uncaughtException` → 记日志、写 last_error、非零退出；supervisor 自动重启（1s 起指数退避，上限 60s，稳定运行 >60s 后复位）。服务层 `Restart=always`（systemd）或 fallback svc 30s ensure。**tick** 可查心跳作诊断，但 v21 起不是定时提醒主路径；机器重启后由 systemd / profile `boot` 拉起。
 
 
 ## ops.kb_nav 用法（v12）
@@ -401,6 +471,18 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 - 事件写入：`events/.inbox.lock` 加锁，写 tmp，fsync，rename，再 fsync 目录。可投递类型（超时、approval/acceptance_requested、watcher_down/restarted）同时追加到 `events/outbox.jsonl`（fsync）。**落盘之后才可能被 POST。**
 - wp_watch 启动时和每个周期都会排空 outbox 里「没送达、没 ack」的条目。delivered/retry 状态以 fsync 方式写入。按 `x-litecode-event-id` 幂等。
 
+**编译环境与共享 target 锁（v18）**
+- 一律 `source .litecode/ops/tools/cargo_env.sh` 或直接用 `.litecode/ops/tools/cargo_locked.sh [-t SECS] <cargo args>`。
+- HOME 必须是绝对路径：`/workspace/litecode/.tmp/home`（cargo 1.99 遇到相对 HOME 会 panic）。
+- 先 unset 旧的 RUSTUP_HOME/CARGO_HOME/RUSTUP_TOOLCHAIN，再设为 `/workspace/litecode/.litecode/ops/.toolchain/rustup` 和 `.../cargo`（绝对路径）。不要自己装工具链。
+- CARGO_TARGET_DIR：默认共享主 target `/workspace/litecode/target`；独立实验（release/bench）用 `.tmp/<wp>/target-*`。
+- 锁：**只用 `/workspace/litecode/.tmp/cargo-target.lock`**（flock，包住整个 cargo 调用；用独立 target 也要拿，作内存护栏）。`.tmp/target.lock` 没有任何脚本/文档引用，是冗余空文件，不要用。重型任务仍需 backend_mid 排队许可。
+- 磁盘回滚或编译报 crate 文件缺失（如 E0583）时：`.litecode/ops/tools/registry_verify.sh`（只读）→ `--fix` 从 cache 重解压。不编译。`--quick` 只做 stat 比对（按 tarball 文件清单 manifest，健康约 0.2s）。
+- v20：`cargo_locked.sh` 取锁前自动跑 `--quick`，有损坏才 `--fix` 并只打印一行；`LC_SKIP_VERIFY=1` 跳过。
+- **反复丢文件的原因（2026-10-15 取证）**：快照/回滚后，registry/src 里**所有名为 `target` 或 `build` 的目录**整体消失（cc 的 src/target、thiserror/rustversion 的 build/、cxx 的 book/src/build、ort-sys 的 build/download、zstd-sys 的 zstd/build 共 12 个 crate），其它文件都在，cache/*.crate 完好；全 registry 里已找不到任何同名目录。仓库 .gitignore 第 2 行 `target` 会匹配任意层级，`build` 不在其中，所以更像快照/恢复工具按「常见构建产物目录名」过滤。结论是推断（没法看到恢复工具本身）。对策：verify 按 tarball 文件清单比对（不是只看目录在不在），cargo_locked 自动修。
+- **g++（v20）**：两条路径互不冲突。① 系统 g++：`sudo apt-get install g++`（backend_mid 本次开机装的 14.2，重启即丢）。② 用户态兜底：`.toolchain/debs`（缓存的 .deb）→ `.toolchain/gxx-root`（dpkg -x）→ `.toolchain/gxx-bin/{g++,c++}`（wrapper，自带 -B/-isystem/-L）。`cargo_env.sh` 在**没有系统 g++ 或 LC_FORCE_USERSPACE_GXX=1** 时自动把 gxx-bin 放进 PATH 并设 CXX；有系统 g++ 时静默不动。`registry_verify.sh --fix` 会离线从 debs 重建 gxx-root/gxx-bin。
+- **重启/快照恢复后清单**：`.litecode/ops/tools/registry_verify.sh --fix`；`node .litecode/ops/tools/wp_watch.mjs ensure && node .litecode/ops/tools/wp_watch.mjs watchdog-start`（需 shell 有 webhook env，v19）。
+
 **Issue 编号**
 - 新建 issue 一律用 `ops.issue_new`：加锁，取 max(文件, git HEAD, `issues/.reserved.json`)+1，独占创建，绝不覆盖。禁止手写编号。
 - validate_all 会查文件名和 id 是否一致、id 是否重复、是否用了保留号。
@@ -413,10 +495,28 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 
 - kb_check：Go / C / C++ / Java / C# / JSX / TSX 的符号解析是近似实现（仓库目前没有此类符号引用；Rust/TS/JS/Python 已与 litecode 的 tree-sitter 结果逐文件核对一致）
 - kb_check：漂移（symbol_drift）用 git CLI 读 HEAD，litecode 用 git2；快照仓库判定（git_dir_is_snapshot）未复刻
-- wp_watch：机器重启后不会自启（无 systemd）；目前靠 tick 的 watcher_down 提醒 + 手动/GM `start`
+- wp_watch：按 bot 分发回调尚未实现（WP-173 只留 resolveWebhook 口）；多 webhook 注册另立包
 - wp_watch 与 tick 都会写 events/inbox.json，未加文件锁（写入很短，冲突概率低）
 - 使用中发现的其它缺项记在这里，由工具集管家热更
 
 ## 边界
 
 - 仅 team-ops 维护；产品 bot / 群对本启动无感知，直至 Andy 群内统一启动
+## tools_version 20（WP-171，2026-10-15）
+- 新增 `ops.init_env`：`bash .litecode/ops/tools/init_env.sh`，新电脑一键初始化，流程与证据见 `.litecode/ops/artifacts/WP-171/init-flow.md`。
+- `cargo_env.sh` 的 LC_ROOT 可覆盖（默认取脚本所在仓库）；仓库加 `rust-toolchain.toml` pin。
+- `toolchain_check` v2：env -i 行先 source cargo_env.sh，必须解析到 ops .toolchain 的 cargo，且版本等于 pin。
+- 需求官撤销：`demand/` 已删除，tick 和 validate_all 不再读取；需求改由各 bot 的直属领导审批。
+- 全局内存规则（云电脑兜底，2026-10-15）：`LC_MIN_MEM_GIB` 默认 **2**（启动门槛/余量），`LC_KILL_MEM_GIB` 默认 **1**（看门狗杀线）。Andy「留 2GiB」指开跑前余量，不是杀线；run5 曾把两条都设成 2 误杀正常编译峰值（谷底 1.96GiB）。仍可用环境变量覆盖。
+- init_env v2：测试阶段改为 4 步全部执行（cargo test 加 --no-fail-fast），任一失败则 exit 6，并生成 `test_failures.txt`（由 ops.test_failures 产出，每条为 测试名 @ 文件:行 — 消息）；前面各步仍 fail-fast。
+- **WP-172（进行中）重型默认改走 GitHub Actions**：`.github/workflows/ci-linux.yml`（cargo + web + desktop）与 `ci-init-env.yml`（干净 init_env）均为 **仅 `workflow_dispatch`**，禁止 push/PR 自动全量；现有 tag→release 自动保持。中层用法见 `.litecode/ops/artifacts/WP-172/gh-workflow-run.md`。云电脑门禁保留作兜底，不删。
+
+## tools_version 21（WP-173，2026-10-15）
+- 新增 `ops.wp_watch_service`：把 wp_watch 装成开机自启常驻服务（systemd user 或 fallback）。
+- webhook 环境文件：`~/.config/litecode/wp-watch.env`（0600，仓库外）；unit 模板在 `tools/systemd/litecode-wp-watch.service`。
+- 提醒：去掉 tick 定时提醒依赖；仅停滞/升级等事件由常驻 watcher 发出。
+- 按 bot 分发回调：设计口 `resolveWebhook`，本次不做实现。
+
+## tools_version 22（WP-174，2026-10-15）
+- `eventStillDeliverable`：approval 仅 awaiting_approval；acceptance 仅 review；timeout 仅 open clock；closed/缺失跳过。
+- 冷启动 cycle 对 obsolete outbox 记 `delivered.skipped`，不 POST，避免冲垮 GM webhook。

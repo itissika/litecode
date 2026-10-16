@@ -16,7 +16,7 @@ import {
   type UserRailLayoutMark,
 } from "./transcriptUserRailMarks";
 
-export interface UserMessageRailProps {
+interface UserMessageRailProps {
   sessionId: string;
   scrollRef: RefObject<HTMLDivElement | null>;
   /** Dot centers written by the transcript. The rail does not subscribe to rows. */

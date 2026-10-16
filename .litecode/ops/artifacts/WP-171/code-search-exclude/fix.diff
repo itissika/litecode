@@ -1,0 +1,75 @@
+diff --git a/tests/code_search_ipc.rs b/tests/code_search_ipc.rs
+index 35ac8d5..2d294aa 100644
+--- a/tests/code_search_ipc.rs
++++ b/tests/code_search_ipc.rs
+@@ -331,6 +331,10 @@ fn protocol_search_hit_roundtrip_serde() {
+     assert_eq!(hit, back);
+ }
+ 
++/// Since 3ddc643 the code semantic corpus follows `code_index_extensions`
++/// (+ `files_exclude` / `git_ignore`), not `search_exclude` (see
++/// `FilterPreset::CodeIndex` and `config/guides/excludes.md`). Warmup and
++/// refresh must both read those lists from disk.
+ #[test]
+ fn warmup_and_refresh_follow_disk_excludes() {
+     force_hash_embedder();
+@@ -338,10 +342,12 @@ fn warmup_and_refresh_follow_disk_excludes() {
+     let root = dir.path();
+     init_workspace_index(root).unwrap();
+     std::fs::write(root.join("keep.rs"), "pub fn keep_unique_symbol() {}\n").unwrap();
+-    std::fs::write(root.join("secret.rs"), "pub fn secret_unique_symbol() {}\n").unwrap();
++    std::fs::write(root.join("other.rs"), "pub fn other_unique_symbol() {}\n").unwrap();
++    std::fs::write(root.join("secret.py"), "def secret_unique_symbol():\n    pass\n").unwrap();
+ 
+     let mut lists = litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+-    lists.search_exclude.push("secret.rs".into());
++    lists.search_exclude.push("other.rs".into());
++    lists.code_index_extensions.retain(|e| e != "py");
+     litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+ 
+     let mut client = spawn_warmed(root);
+@@ -350,29 +356,34 @@ fn warmup_and_refresh_follow_disk_excludes() {
+         keep.iter().any(|h| h.path.contains("keep.rs")),
+         "keep.rs must stay searchable: {keep:?}"
+     );
++    let other = client.search("other_unique_symbol", None, 8).unwrap();
++    assert!(
++        other.iter().any(|h| h.path.contains("other.rs")),
++        "search_exclude must not change the code corpus: {other:?}"
++    );
+     let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+     assert!(
+-        secret.iter().all(|h| !h.path.contains("secret.rs")),
+-        "excluded secret.rs must not be in the corpus: {secret:?}"
++        secret.iter().all(|h| !h.path.contains("secret.py")),
++        "suffix outside code_index_extensions must not be in the corpus: {secret:?}"
+     );
+ 
+-    lists.search_exclude.retain(|g| g != "secret.rs");
++    lists.code_index_extensions.push("py".into());
+     litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+-    let incremental = client.refresh().expect("refresh after widening excludes");
++    let incremental = client.refresh().expect("refresh after widening extensions");
+     assert_eq!(incremental.mode, RefreshMode::Incremental);
+     let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+     assert!(
+-        secret.iter().any(|h| h.path.contains("secret.rs")),
+-        "widened excludes must admit secret.rs: {secret:?}"
++        secret.iter().any(|h| h.path.contains("secret.py")),
++        "widened extensions must admit secret.py: {secret:?}"
+     );
+ 
+-    lists.search_exclude.push("secret.rs".into());
++    lists.code_index_extensions.retain(|e| e != "py");
+     litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
+-    client.refresh().expect("refresh after tightening excludes");
++    client.refresh().expect("refresh after narrowing extensions");
+     let secret = client.search("secret_unique_symbol", None, 8).unwrap();
+     assert!(
+-        secret.iter().all(|h| !h.path.contains("secret.rs")),
+-        "tightened excludes must drop secret.rs: {secret:?}"
++        secret.iter().all(|h| !h.path.contains("secret.py")),
++        "narrowed extensions must drop secret.py: {secret:?}"
+     );
+ 
+     shutdown(client);

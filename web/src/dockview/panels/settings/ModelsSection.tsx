@@ -11,6 +11,7 @@ import { FoldCard } from "../../../components/FoldCard";
 import { ModalityIcons } from "../../../components/ModalityIcons";
 import { ProviderLogo } from "../../../components/ProviderLogos";
 import { SettingsPageShell, useSettingsSaveBlocked } from "./shared";
+import { NO_MODELS_HINT } from "../../../lib/uiCopy";
 
 /**
  * Binary On/Off picker in the same segmented style as the chat input's
@@ -229,8 +230,7 @@ export function ModelsSection() {
       <div className="settings-content-indent space-y-2">
         {providers.length === 0 ? (
           <p className="text-sm text-(--_dk-text-disabled)">
-            No provider holds a key yet. Add one on the Providers page — its
-            models show up here.
+            {NO_MODELS_HINT}
           </p>
         ) : (
           providers.map((provider) => (

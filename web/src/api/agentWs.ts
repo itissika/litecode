@@ -11,7 +11,7 @@ export interface WireEnvelope {
   [key: string]: unknown;
 }
 
-export interface AgentWsOptions {
+interface AgentWsOptions {
   url?: string;
   authToken?: string;
   onEnvelope: (env: WireEnvelope) => void;
@@ -71,7 +71,6 @@ export class AgentWsClient {
   private connectStartedAt = 0;
   private lastInboundAt = 0;
   private lineBuffer = "";
-  private needsAuth: boolean;
 
   /** In-flight JSON-RPC 2.0 promises keyed by request id. */
   private pendingRpc = new Map<
@@ -86,7 +85,6 @@ export class AgentWsClient {
     this.reconnectEnabled = options.reconnect ?? true;
     this.reconnectBaseMs = options.reconnectBaseMs ?? 500;
     this.reconnectMaxMs = options.reconnectMaxMs ?? 8000;
-    this.needsAuth = Boolean(options.authToken);
   }
 
   connect(): void {
@@ -137,9 +135,6 @@ export class AgentWsClient {
       this.socketOpened = true;
       this.reconnectAttempt = 0;
       this.setConnectionState("connected");
-      if (this.needsAuth && this.options.authToken) {
-        this.send("auth", { token: this.options.authToken });
-      }
     };
 
     ws.onmessage = (ev) => {

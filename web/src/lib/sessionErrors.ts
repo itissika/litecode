@@ -22,7 +22,7 @@ function runningSessionIds(err: unknown): string[] {
 }
 
 export const DELETE_FAILED_MESSAGE = "删除失败，请稍后重试";
-export const READONLY_MESSAGE = "子会话是只读的，消息只能由父会话发送";
+const READONLY_MESSAGE = "子会话是只读的，消息只能由父会话发送";
 
 /** User-facing text for a rejected `session/delete`. Unknown → generic. */
 export function deleteRejectedMessage(err: unknown): string {

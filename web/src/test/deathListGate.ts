@@ -9,9 +9,9 @@ import { join, relative } from "node:path";
 export const WEB_SRC = join(__dirname, "..");
 
 /** Exact gate filenames only (e.g. `r5-death-list.test.ts`). */
-export const DEATH_LIST_GATE_RE = /^[\w-]+-death-list\.test\.ts$/;
+const DEATH_LIST_GATE_RE = /^[\w-]+-death-list\.test\.ts$/;
 
-export type CollectOptions = {
+type CollectOptions = {
   /**
    * When false (default), skip `*.test.ts(x)` — product-only gates.
    * When true, still skip exact death-list gate files via DEATH_LIST_GATE_RE.

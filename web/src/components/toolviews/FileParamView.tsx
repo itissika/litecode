@@ -1,6 +1,6 @@
 import { FileTextIcon } from "@phosphor-icons/react";
 
-import { ToolInfoIcon } from "./InfoIcon";
+import { FilePathHeader } from "./FilePathHeader";
 import { collectMetaFields, TOOL_PARAM_META } from "./paramMeta";
 import type { ToolViewProps } from "./registry";
 
@@ -30,15 +30,13 @@ export function FileParamView({ name, status, input }: ToolViewProps) {
 
   return (
     <div className="flex flex-col gap-1">
-      <div
-        className={`flex items-center gap-1.5 text-dk-xs font-medium ${headerColor}`}
-      >
-        <FileTextIcon size={12} aria-hidden />
-        <span className="min-w-0 flex-1 truncate font-mono">
-          {filePath ?? "(no file_path)"}
-        </span>
-        <ToolInfoIcon fields={meta} />
-      </div>
+      <FilePathHeader
+        icon={<FileTextIcon size={12} aria-hidden />}
+        path={filePath}
+        fallback="(no file_path)"
+        colorClass={headerColor}
+        meta={meta}
+      />
       {content !== undefined && (
         <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--_dk-line-visible) bg-(--_dk-surface-raised) px-2 py-1.5 font-mono text-dk-sm leading-relaxed text-(--_dk-text-secondary)">
           {content}

@@ -1,4 +1,10 @@
 /* ============================================
+   SHARED WITH DESKTOP — read by desktop/scripts/copy-theme-tokens.mjs and
+   desktop/src/hub.ts (inlined into the Home hub page). This file is the single
+   source; do not move or rename it. Anything added here also styles the hub.
+   ============================================ */
+
+/* ============================================
    tokens.css — single source of truth for design tokens
 
    This is the ONLY definition for all --_dk-* tokens.
@@ -357,4 +363,36 @@
   --_dk-ix-danger-border-pressed:var(--_dk-red-500);
   --_dk-ix-danger-border-selected:var(--_dk-red-500);
   --_dk-ix-danger-border-disabled:transparent;
+}
+
+/* Scrollbars: thin, low-contrast. Shared by the workbench and the desktop hub
+   (single source; the hub has no copy). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--_dk-line) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border: 0 none;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--_dk-line);
+  border-radius: 4px;
+  border: 0 none;
+  outline: 0 none;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--_dk-text-disabled);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }

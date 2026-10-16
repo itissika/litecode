@@ -31,7 +31,7 @@ export type ShaderSuggestKind =
   | "file"
   | "semantic";
 
-export type ShaderSuggest = {
+type ShaderSuggest = {
   label: string;
   kind: ShaderSuggestKind;
   detail?: string;

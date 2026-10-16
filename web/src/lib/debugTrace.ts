@@ -9,8 +9,8 @@
 
 export const DEBUG_STORAGE_KEY = "litecode.debug";
 
-export const DEBUG_CHANNELS = ["turn", "buffer"] as const;
-export type DebugChannel = (typeof DEBUG_CHANNELS)[number];
+const DEBUG_CHANNELS = ["turn", "buffer"] as const;
+type DebugChannel = (typeof DEBUG_CHANNELS)[number];
 
 export function parseDebugSpec(
   raw: string | null | undefined,

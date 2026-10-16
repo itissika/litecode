@@ -408,69 +408,7 @@ impl SessionController {
     }
 
     pub async fn list_sessions(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
-        let sessions_mgr = self.sessions.clone();
-        let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
-        let mut result = Vec::with_capacity(db_sessions.len());
-        for row in db_sessions {
-            // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
-            // child must be visible after reconnect).
-            if row.parent_session_id.is_none() && sessions_mgr.is_session_empty(&row.id).await {
-                continue;
-            }
-            let running = sessions_mgr.is_turn_running(&row.id).await;
-            let status = sessions_mgr
-                .session_status(&row.id)
-                .unwrap_or(crate::session::manager::SessionStatus::Idle)
-                .as_str()
-                .to_string();
-            let turn = if running {
-                sessions_mgr
-                    .get_cached_progress(&row.id)
-                    .map(|p| project::turn_progress_to_snapshot(&p))
-            } else {
-                None
-            };
-            let binding = project::list_binding_projection(
-                &sessions_mgr,
-                &row.id,
-                &self.runtime.resolved,
-                row.agent_id,
-                row.model_id,
-            );
-            // WP-099 P1: reason and cancelled_by come from the same durable
-            // turn/end record, under the same visibility rule.
-            let (last_turn_reason, last_turn_cancelled_by) = if running
-                || row.parent_session_id.is_none()
-            {
-                (String::new(), None)
-            } else {
-                match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id)
-                {
-                    Some(end) => (end.reason, end.cancelled_by),
-                    None => (String::new(), None),
-                }
-            };
-            result.push(SessionInfo {
-                id: row.id,
-                project: row.project,
-                updated_at: row.updated_at,
-                preview: row.preview,
-                assistant_preview: row.assistant_preview,
-                running,
-                status,
-                turn,
-                agent_id: binding.agent_id,
-                model_id: binding.model_id,
-                api_model_id: binding.api_model_id,
-                label: binding.label,
-                parent_session_id: row.parent_session_id,
-                parent_call_id: row.parent_call_id,
-                responsibility: row.responsibility,
-                last_turn_reason,
-                last_turn_cancelled_by,
-            });
-        }
-        Ok(result)
+        build_session_list(&self.sessions, &self.runtime.resolved).await
     }
 
     // ── per-session operations ──
@@ -703,4 +641,77 @@ impl crate::session::delete::RemovedSessionCleanup for crate::tools::subagent::S
         self.purge_parent(session_id);
         self.forget_child(session_id);
     }
+}
+
+/// WP-166: the `session/list` result, independent of any connection's
+/// controller state. `ws.rs` answers `session/list` with this directly so the
+/// reply is not queued behind a subscribe/replay on the serial session loop;
+/// [`SessionController::list_sessions`] delegates here, so both paths return
+/// the same rows.
+pub(crate) async fn build_session_list(
+    sessions_mgr: &crate::session::manager::SessionManager,
+    resolved: &crate::config::ResolvedConfig,
+) -> anyhow::Result<Vec<SessionInfo>> {
+    let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
+    let mut result = Vec::with_capacity(db_sessions.len());
+    for row in db_sessions {
+        // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
+        // child must be visible after reconnect).
+        if row.parent_session_id.is_none() && sessions_mgr.is_session_empty(&row.id).await {
+            continue;
+        }
+        let running = sessions_mgr.is_turn_running(&row.id).await;
+        let status = sessions_mgr
+            .session_status(&row.id)
+            .unwrap_or(crate::session::manager::SessionStatus::Idle)
+            .as_str()
+            .to_string();
+        let turn = if running {
+            sessions_mgr
+                .get_cached_progress(&row.id)
+                .map(|p| project::turn_progress_to_snapshot(&p))
+        } else {
+            None
+        };
+        let binding = project::list_binding_projection(
+            &sessions_mgr,
+            &row.id,
+            resolved,
+            row.agent_id,
+            row.model_id,
+        );
+        // WP-099 P1: reason and cancelled_by come from the same durable
+        // turn/end record, under the same visibility rule.
+        let (last_turn_reason, last_turn_cancelled_by) = if running
+            || row.parent_session_id.is_none()
+        {
+            (String::new(), None)
+        } else {
+            match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id)
+            {
+                Some(end) => (end.reason, end.cancelled_by),
+                None => (String::new(), None),
+            }
+        };
+        result.push(SessionInfo {
+            id: row.id,
+            project: row.project,
+            updated_at: row.updated_at,
+            preview: row.preview,
+            assistant_preview: row.assistant_preview,
+            running,
+            status,
+            turn,
+            agent_id: binding.agent_id,
+            model_id: binding.model_id,
+            api_model_id: binding.api_model_id,
+            label: binding.label,
+            parent_session_id: row.parent_session_id,
+            parent_call_id: row.parent_call_id,
+            responsibility: row.responsibility,
+            last_turn_reason,
+            last_turn_cancelled_by,
+        });
+    }
+    Ok(result)
 }

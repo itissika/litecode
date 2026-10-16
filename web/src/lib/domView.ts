@@ -44,7 +44,7 @@ function hostNode(target: EventTarget | null, scope: Node | null | undefined): N
 }
 
 /** Element in `scope`'s document. Moved-in nodes are included. */
-export function isHostElement(
+function isHostElement(
   target: EventTarget | null,
   scope: Node | null | undefined,
 ): target is Element {

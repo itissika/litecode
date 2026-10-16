@@ -4,7 +4,7 @@ import { hasPanel } from "../dockview/workbench/queries";
 import { onPanelRemoved } from "../dockview/workbench/events";
 import { openPanel } from "../dockview/workbench/commands";
 
-export interface PendingSeqReveal {
+interface PendingSeqReveal {
   sessionId: string;
   seq: number;
   gen: number;
@@ -142,12 +142,12 @@ export function openSubagentPanel(childId: string, revealSeq?: number): void {
 }
 
 /** Minimal session metadata the classifier needs. */
-export interface SessionMeta {
+interface SessionMeta {
   id: string;
   parent_session_id?: string | null;
 }
 
-export type SessionKind = "root" | "child" | "unknown";
+type SessionKind = "root" | "child" | "unknown";
 
 /**
  * Classify a session id against the known session list. FAIL-CLOSED: a session

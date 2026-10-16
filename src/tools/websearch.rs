@@ -12,6 +12,8 @@ const MAX_RESULTS: u32 = 5;
 pub struct WebSearchTool {
     client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
     endpoint: Arc<RwLock<Option<String>>>,
+    /// WP-167: builds the client on first use (startup no longer does).
+    warm: Option<crate::optional::WarmHook>,
 }
 
 impl WebSearchTool {
@@ -19,10 +21,27 @@ impl WebSearchTool {
         client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
         endpoint: Arc<RwLock<Option<String>>>,
     ) -> Self {
-        Self { client, endpoint }
+        Self {
+            client,
+            endpoint,
+            warm: None,
+        }
+    }
+
+    pub fn with_warm_hook(mut self, warm: crate::optional::WarmHook) -> Self {
+        self.warm = Some(warm);
+        self
     }
 
     fn search(&self, query: &str) -> Result<String, String> {
+        // WP-167: one ensure_warm per call (builds on first use, reuses after,
+        // retries after a failed build). Runs on the blocking pool (see
+        // `call_async`). A failed build is returned as is.
+        if let Some(warm) = &self.warm
+            && let Err(e) = warm()
+        {
+            return Err(format!("websearch engine failed to start: {e}"));
+        }
         let client = self
             .client
             .read()
@@ -47,6 +66,27 @@ impl WebSearchTool {
 impl Tool for WebSearchTool {
     fn name(&self) -> &str {
         "websearch"
+    }
+
+    fn call_async(
+        &self,
+        input: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        // WP-167: the client build (first call) and the search are blocking;
+        // run them in `spawn_blocking`, as webfetch does. `call` keeps the
+        // default path's `finalize_signals`.
+        let tool = WebSearchTool {
+            client: Arc::clone(&self.client),
+            endpoint: Arc::clone(&self.endpoint),
+            warm: self.warm.clone(),
+        };
+        Box::pin(async move {
+            let join = tokio::task::spawn_blocking(move || tool.call(input));
+            match join.await {
+                Ok(result) => result,
+                Err(e) => ToolCallResult::error(format!("websearch task join failed: {e}")),
+            }
+        })
     }
 
     fn schema(&self) -> Value {
@@ -99,6 +139,31 @@ mod tests {
 
     fn cold_tool() -> WebSearchTool {
         WebSearchTool::new(Arc::new(RwLock::new(None)), Arc::new(RwLock::new(None)))
+    }
+
+    #[test]
+    fn failed_warmup_returns_the_real_error() {
+        // A manager with no websearch endpoint: the first-use build fails.
+        let mgr = crate::optional::EngineManager::new();
+        let tool = WebSearchTool::new(mgr.websearch_client(), mgr.websearch_endpoint())
+            .with_warm_hook(mgr.warm_hook("websearch"));
+        let result = tool.call_inner(serde_json::json!({ "query": "rust" }));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result
+                .content
+                .contains("websearch engine failed to start: ")
+                && result.content.contains("not configured"),
+            "real build error expected: {}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn call_async_runs_on_the_blocking_pool() {
+        let tool = cold_tool();
+        let result = tool.call_async(serde_json::json!({ "query": "   " })).await;
+        assert_eq!(result.level, ToolSignalLevel::Error);
     }
 
     #[test]

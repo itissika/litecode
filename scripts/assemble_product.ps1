@@ -1,4 +1,5 @@
 # Assemble a cwd-independent product tree for smoke / Electron extraResources.
+# Paired with scripts/assemble_product.sh: change one, keep the other in sync (WP-164 R6).
 # Does not build Electron.
 param(
   [string]$OutDir = "",
@@ -17,6 +18,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\common.ps1")
 if (-not $OutDir) { $OutDir = Join-Path $Root "dist\product" }
 
 $ProfileDir = if ($Profile -eq "debug") { "debug" } else { "release" }
@@ -105,7 +107,7 @@ $ErrorActionPreference = "Continue"
 try {
   $cargoOut = & cargo @CargoArgs 2>&1
   $cargoOut | ForEach-Object { Write-Host "$_" }
-  if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+  Assert-LastExitCode "cargo build"
 } finally {
   $ErrorActionPreference = $prevEa
   Pop-Location

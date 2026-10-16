@@ -1,9 +1,10 @@
 import type { IDockviewPanelProps } from "dockview-react";
 
+import { LazyEditorPanel } from "./lazyEditorPanel";
+
 import { FileTreePanel } from "../panels/FileTreePanel";
 import { SearchPanel } from "../panels/SearchPanel";
 import { GitPanelHost as GitPanel } from "../panels/GitPanel";
-import { EditorPanel } from "../panels/EditorPanel";
 import { AgentPanel } from "../panels/AgentPanel";
 import { SubagentReadOnlyPanel } from "../panels/SubagentReadOnlyPanel";
 import { AboutPanel } from "../panels/AboutPanel";
@@ -26,7 +27,7 @@ export const panelComponents: Record<
   filetree: FileTreePanel,
   search: SearchPanel,
   git: GitPanel,
-  editor: EditorPanel,
+  editor: LazyEditorPanel,
   agent: AgentPanel,
   subagent: SubagentReadOnlyPanel,
   about: AboutPanel, // registered; not in the default layout, kept for a future standalone panel

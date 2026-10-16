@@ -116,6 +116,22 @@ components/   AppShell, AgentSidebar, SettingsPanel, FileTree, EditorPane, …
 
 `adapter.ts` maps the RS wire protocol to UI message parts. **Do not use the AI SDK as the wire format.**
 
+## WS smoke script
+
+`scripts/ws-smoke.mjs` is a manual WebSocket probe against `litecode serve`
+(JSON-RPC 2.0; Node 22+, no dependencies). It is not part of `npm test`.
+The token goes in the handshake URL (`?token=`); no auth frame is sent.
+
+```bash
+node web/scripts/ws-smoke.mjs handshake [--token secret]   # pass: server/hello received
+node web/scripts/ws-smoke.mjs list [--token secret]        # pass: session/list returns { sessions: [...] }
+node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]  # pass: wrong token gets no server/hello
+```
+
+Environment: `WS_URL` (default `ws://127.0.0.1:7483/ws`), `WS_TOKEN`,
+`WS_TIMEOUT_MS` (default 2500). The script prints a JSON result and exits 0 on
+pass, 1 on fail.
+
 ## Build
 
 ```bash

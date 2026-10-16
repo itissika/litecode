@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-062",
+  "grade": "5",
+  "layer": null,
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "会话引用不存在的外部文件时 sparse 维护每 30s 重复报错",
+  "history": [
+    {
+      "ts": "2026-10-14T17:01:57.599Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-154）"
+    }
+  ]
+}

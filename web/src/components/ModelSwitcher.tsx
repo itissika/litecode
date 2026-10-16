@@ -19,10 +19,12 @@ import {
   dropdownItemClass,
   dropdownItemActiveClass,
 } from "./ui/Dropdown";
+import { SELECT_TRIGGER_CLASS, SelectChevron } from "./ui/Select";
 import { motion, useReducedMotion } from "motion/react";
 import { glassFill } from "./composerCard";
 import { ModalityIcons } from "./ModalityIcons";
 import { ProviderLogo } from "./ProviderLogos";
+import { NO_MODELS_HINT } from "../lib/uiCopy";
 
 const CTRL_H = "h-7";
 const CTRL_TEXT = "text-[11px]";
@@ -38,27 +40,7 @@ function triggerBase(open: boolean, compact = false): string {
 }
 
 /** Settings form control: same underline as `Select`, not the composer chip. */
-const FIELD_TRIGGER =
-  "flex w-full min-w-0 items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:cursor-not-allowed disabled:opacity-40";
-
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 10 10"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="shrink-0 text-(--_dk-text-disabled) transition-transform duration-150"
-      style={{ transform: open ? "rotate(180deg)" : "rotate(0deg)" }}
-    >
-      <path d="M3 1.5l4 3.5-4 3.5" />
-    </svg>
-  );
-}
+const FIELD_TRIGGER = `${SELECT_TRIGGER_CLASS} min-w-0 disabled:cursor-not-allowed`;
 
 interface ProviderModelGroup {
   providerId: string;
@@ -352,7 +334,7 @@ export function ModelSwitcher({
           <span className="truncate text-(--_dk-text-disabled)">
             Select model
           </span>
-          <Chevron open={false} />
+          <SelectChevron open={false} />
         </button>
       );
     }
@@ -361,7 +343,7 @@ export function ModelSwitcher({
         type="button"
         disabled
         className={`${triggerBase(false)} min-w-3.5 max-w-[220px] shrink text-(--_dk-text-disabled)`}
-        title="Configure a provider API key in Settings → Providers"
+        title={NO_MODELS_HINT}
       >
         Configure a provider API key
       </button>
@@ -405,7 +387,7 @@ export function ModelSwitcher({
               <span className="truncate">{triggerText || "Select model"}</span>
               <ModalityIcons modalities={currentModelInfo?.modalities} />
             </span>
-            <Chevron open={open} />
+            <SelectChevron open={open} />
           </button>
         ) : (
           <button
@@ -591,7 +573,7 @@ export function ModelSwitcher({
           ) : null}
           {availableModels.length === 0 ? (
             <p className="px-3 py-2 text-[11px] text-(--_dk-text-disabled)">
-              No active models — configure a provider API key in Settings.
+              {NO_MODELS_HINT}
             </p>
           ) : null}
         </motion.div>

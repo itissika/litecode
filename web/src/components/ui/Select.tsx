@@ -23,7 +23,11 @@ interface SelectProps {
   className?: string;
 }
 
-function Chevron({ open }: { open: boolean }) {
+/** Underlined form-field trigger shared by `Select` and the settings model picker. */
+export const SELECT_TRIGGER_CLASS =
+  "flex w-full items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:opacity-40";
+
+export function SelectChevron({ open }: { open: boolean }) {
   return (
     <svg
       width="10"
@@ -65,7 +69,7 @@ export function Select({
           type="button"
           disabled={disabled}
           onClick={() => !disabled && toggle()}
-          className="flex w-full items-center justify-between gap-1 border-0 border-b border-(--_dk-line) bg-transparent px-1 py-[0.375rem] text-left text-[0.875rem] text-(--_dk-text-muted) hover:brightness-110 focus-visible:border-(--_dk-line-visible) disabled:opacity-40"
+          className={SELECT_TRIGGER_CLASS}
         >
           <span
             className={
@@ -76,7 +80,7 @@ export function Select({
           >
             {display}
           </span>
-          <Chevron open={open} />
+          <SelectChevron open={open} />
         </button>
       )}
     >

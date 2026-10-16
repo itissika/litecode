@@ -20,6 +20,7 @@ import {
   AskCard,
   type Grant,
 } from "./AskCard";
+import { compactMarkdownComponents } from "./compactMarkdown";
 import { glyphFor } from "./ToolIcon";
 
 /** One wheel notch moves on by exactly one question. The lock absorbs trackpad
@@ -47,6 +48,7 @@ function AskProse({ text }: { text: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
+        ...compactMarkdownComponents,
         p: ({ children }: { children?: ReactNode }) => (
           <p className="m-0 leading-snug [&+p]:mt-1.5">{children}</p>
         ),
@@ -61,33 +63,10 @@ function AskProse({ text }: { text: string }) {
             {children}
           </li>
         ),
-        strong: ({ children }: { children?: ReactNode }) => (
-          <strong className="font-semibold text-(--_dk-text-primary)">
-            {children}
-          </strong>
-        ),
-        em: ({ children }: { children?: ReactNode }) => (
-          <em className="italic">{children}</em>
-        ),
-        code: ({ children }: { children?: ReactNode }) => (
-          <code className="rounded-sm bg-(--_dk-side) px-1 py-px font-mono text-[12px] text-(--_dk-text-primary)">
-            {children}
-          </code>
-        ),
         pre: ({ children }: { children?: ReactNode }) => (
           <pre className="m-0 mt-1.5 overflow-x-auto rounded-sm bg-(--_dk-side) p-2 font-mono text-[12px] leading-snug first:mt-0 [&>code]:bg-transparent [&>code]:p-0">
             {children}
           </pre>
-        ),
-        a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-          <a
-            href={href}
-            className="text-(--_dk-accent-hover) underline"
-            target="_blank"
-            rel="noreferrer"
-          >
-            {children}
-          </a>
         ),
       }}
     >

@@ -2,6 +2,10 @@ import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetFirstRunForTests } from "../lib/firstRun";
+import {
+  resetCentreSettleForTests,
+  settleCentre,
+} from "../lib/centreSettle";
 import { useSettingsStore } from "./settingsStore";
 import { useToastStore } from "./toastStore";
 import { registerSettingsFlush } from "../lib/settingsPersist";
@@ -448,12 +452,35 @@ describe("provider credential actions", () => {
 describe("workspace ready", () => {
   beforeEach(() => {
     resetFirstRunForTests();
+    // Startup order (WP-170): the summary waits for the centre to settle.
+    resetCentreSettleForTests();
+    settleCentre();
     useToastStore.setState({ toasts: [] });
     mockedLlm.mockResolvedValue(llmDoc);
   });
 
   afterEach(() => {
     resetFirstRunForTests();
+    resetCentreSettleForTests();
+  });
+
+  it("holds the summary until the centre settles, then still opens the Provider page", async () => {
+    resetCentreSettleForTests();
+    mockedSummary.mockClear();
+    mockedSummary.mockResolvedValue(summary(5));
+
+    const ready = useSettingsStore.getState().noteWorkspaceReady();
+    await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSummary).not.toHaveBeenCalled();
+
+    settleCentre();
+    await ready;
+    // Opening the Provider page may load the summary again; at least the
+    // startup fetch went out after the settle.
+    expect(mockedSummary).toHaveBeenCalled();
+    expect(useSettingsStore.getState().open).toBe(true);
+    expect(useSettingsStore.getState().section).toBe("connection");
   });
 
   it("opens the Provider page and notes it once when no key is configured", async () => {

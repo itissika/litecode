@@ -1,0 +1,967 @@
+# WP-162-web
+# 来源: git show 05ab3c4 -- <14 web + desktop/src/hub.ts>
+# 注意: 这是按文件范围从合并提交切出的 diff；共享文件里含其他包的 hunk，详见 WP-158-file-map.md
+diff --git a/desktop/src/hub.ts b/desktop/src/hub.ts
+index e156eb0..85b02c7 100644
+--- a/desktop/src/hub.ts
++++ b/desktop/src/hub.ts
+@@ -4,7 +4,7 @@ import path from "node:path";
+ import { dvThemeAttr, readUiTheme, type UiThemeName } from "./ui-theme";
+ 
+ /** Resolve the product's tokens.css (single source of --_dk-* definitions). */
+-export function loadThemeTokensCss(): string {
++function loadThemeTokensCss(): string {
+   const candidates = [
+     path.join(__dirname, "theme-tokens.css"),
+     path.resolve(__dirname, "../../web/src/theme/tokens.css"),
+@@ -103,15 +103,6 @@ function hubLayoutCss(logoFontSrc: string): string {
+ ${fontFace}
+ ${logoStyles}
+ *{box-sizing:border-box}
+-/* Scrollbars: thin, low-contrast — matches web/src/theme/index.css (agent
+-   panel message list). Applied app-wide so the home list's vertical scrollbar
+-   uses the same theme styling. */
+-*{scrollbar-width:thin;scrollbar-color:var(--_dk-line) transparent}
+-*::-webkit-scrollbar{width:8px;height:8px}
+-*::-webkit-scrollbar-track{background:transparent;border:0 none}
+-*::-webkit-scrollbar-thumb{background:var(--_dk-line);border-radius:4px;border:0 none;outline:0 none}
+-*::-webkit-scrollbar-thumb:hover{background:var(--_dk-text-disabled)}
+-*::-webkit-scrollbar-corner{background:transparent}
+ html,body{height:100%;margin:0;overflow:hidden}
+ body{
+   background:var(--_dk-root);
+@@ -412,7 +403,7 @@ function hubScript(): string {
+       selectedDir = null;
+       await refreshDirs();
+       setStep("step-path");
+-      message("Connected. Choose a workspace folder.");
++      message("Connected.");
+     } catch (error) {
+       setStep("step-auth");
+       message(error instanceof Error ? error.message : String(error), true);
+@@ -458,7 +449,7 @@ function hubScript(): string {
+   };
+ 
+   $("dir-open").onclick = async () => {
+-    if (!selectedDir) { message("Select a folder, or double-click to enter it.", true); return; }
++    if (!selectedDir) { message("Select a folder first.", true); return; }
+     remotePath = remotePath === "." ? selectedDir : remotePath + "/" + selectedDir;
+     selectedDir = null;
+     await refreshDirs();
+@@ -469,7 +460,7 @@ function hubScript(): string {
+       ? (remotePath === "." ? selectedDir : remotePath + "/" + selectedDir)
+       : remotePath;
+     if (!workspace || workspace === ".") {
+-      message("Choose a workspace folder below the remote home.", true);
++      message("Pick a folder inside your home directory.", true);
+       return;
+     }
+     bindProgress();
+@@ -477,8 +468,19 @@ function hubScript(): string {
+       message("Starting remote server…");
+       const done = await bridge.completeRemoteSession(sessionId, workspace);
+       tokenBox.textContent = done.token;
+-      setStep("step-token");
+-      message("Token generated automatically. Copy if needed, then enter the workspace.");
++      // A4: token is filled in automatically, so go straight into the workspace.
++      // Step 4 is only the fallback when that automatic entry fails.
++      if (!done.token) {
++        setStep("step-token");
++        message("Session token missing. Try again or cancel.", true);
++        return;
++      }
++      try {
++        await bridge.enterRemoteWorkbench(sessionId);
++      } catch (error) {
++        setStep("step-token");
++        message(error instanceof Error ? error.message : String(error), true);
++      }
+     } catch (error) {
+       message(error instanceof Error ? error.message : String(error), true);
+     }
+@@ -495,7 +497,6 @@ function hubScript(): string {
+ 
+   $("token-enter").onclick = async () => {
+     try {
+-      message("Opening workspace…");
+       await bridge.enterRemoteWorkbench(sessionId);
+     } catch (error) {
+       message(error instanceof Error ? error.message : String(error), true);
+@@ -565,7 +566,7 @@ function hubScript(): string {
+       if (!localRows.length && !remoteRows.length) {
+         const empty = document.createElement("div");
+         empty.className = "empty";
+-        empty.textContent = "No workspaces yet. Open a local folder, or connect a remote machine over SSH.";
++        empty.textContent = "No workspaces yet.";
+         list.append(empty);
+         return;
+       }
+@@ -631,7 +632,7 @@ function hubScript(): string {
+  * `loadFile`s it so the Electron preload bridge is available — `data:`
+  * pages do not reliably receive `window.litecode`.
+  */
+-export function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
++function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
+   const tokens = loadThemeTokensCss();
+   const dvTheme = dvThemeAttr(theme);
+   const logoFontB64 = loadLogoFontBase64();
+@@ -674,7 +675,6 @@ ${hubLayoutCss(logoFontSrc)}
+ 
+ <section id="remote-view" class="hidden">
+   <h1>Open remote</h1>
+-  <p class="lead">Connect with user@host, deploy Litecode automatically, then choose a workspace.</p>
+   <div class="panel" id="step-auth">
+     <h2>1. Connect</h2>
+     <label class="field">user@host
+@@ -706,7 +706,7 @@ ${hubLayoutCss(logoFontSrc)}
+     <h2>2. Deploy</h2>
+     <div class="progress">
+       <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+-      <div class="progress-msg" id="progress-msg">Preparing…</div>
++      <div class="progress-msg" id="progress-msg"></div>
+     </div>
+     <div class="panel-actions">
+       <button type="button" class="btn-ghost" id="remote-cancel">Cancel</button>
+@@ -728,7 +728,7 @@ ${hubLayoutCss(logoFontSrc)}
+ 
+   <div class="panel hidden" id="step-token">
+     <h2>4. Session token</h2>
+-    <p class="lead">Generated automatically for this session. You do not need to type it.</p>
++    <p class="lead">Could not open the workspace automatically. Copy the token or try again.</p>
+     <div class="token-box" id="token-box"></div>
+     <div class="panel-actions">
+       <button type="button" class="btn" id="token-copy">Copy token</button>
+diff --git a/web/src/api/auth.ts b/web/src/api/auth.ts
+index 41ef841..cc43ca7 100644
+--- a/web/src/api/auth.ts
++++ b/web/src/api/auth.ts
+@@ -1,189 +1,12 @@
+ /** Host-injected or dev-only auth token for local serve. Never a user settings field. */
+ 
+-import type { BrowserBounds, BrowserPanelState } from "../lib/browserPanel";
++// Single source: desktop/src/bridge-contract.ts (type-only; no runtime import).
++import type {
++  ComponentProgressEvent,
++  LitecodeDesktopBridge,
++} from "../../../desktop/src/bridge-contract";
+ 
+-/** Slim installer: on-demand runtime components fetched by the Electron host. */
+-export type DesktopComponentId = "embed-model";
+-
+-export interface DesktopComponentProgress {
+-  id: string;
+-  phase: "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
+-  received?: number;
+-  total?: number;
+-  message: string;
+-  error?: string;
+-}
+-
+-export interface DesktopComponentStatus {
+-  id: string;
+-  installed: boolean;
+-  path: string | null;
+-  downloading: boolean;
+-  error: string | null;
+-}
+-
+-export interface LitecodeDesktopBridge {
+-  getAuthToken?: () => string | undefined;
+-  /** Real filesystem path for a file dropped onto the desktop window. */
+-  getPathForFile?: (file: File) => string;
+-  /** Electron session: local sidecar vs remote attach. */
+-  getSessionMode?: () => "local" | "remote";
+-  pickFolder?: () => Promise<string | null>;
+-  listRecents?: () => Promise<
+-    Array<{ path: string; pinned: boolean; lastOpenedAt: number }>
+-  >;
+-  setRecentPinned?: (
+-    workspacePath: string,
+-    pinned: boolean,
+-  ) => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
+-  removeRecent?: (
+-    workspacePath: string,
+-  ) => Promise<Array<{ path: string; pinned: boolean; lastOpenedAt: number }>>;
+-  listSshTargets?: () => Promise<
+-    Array<{
+-      id: string;
+-      label: string;
+-      host: string;
+-      user?: string;
+-      port?: number;
+-      identityFile?: string;
+-      lastWorkspace?: string;
+-      lastConnectedAt?: number;
+-    }>
+-  >;
+-  saveSshTarget?: (target: {
+-    id?: string;
+-    label: string;
+-    host: string;
+-    user?: string;
+-    port?: number;
+-    identityFile?: string;
+-  }) => Promise<{ id: string; label: string; host: string }>;
+-  removeSshTarget?: (id: string) => Promise<void>;
+-  listSshDirectory?: (
+-    targetId: string,
+-    remotePath?: string,
+-  ) => Promise<{ path: string; entries: Array<{ name: string }> }>;
+-  connectSshWorkspace?: (
+-    targetId: string,
+-    workspace: string,
+-  ) => Promise<{ ok: boolean; mode: "remote" }>;
+-  /** Ask another live instance that owns this workspace to focus; returns true if focused. */
+-  focusWorkspace?: (workspacePath: string) => Promise<boolean>;
+-  /** Advertise the workspace this window currently owns (for multi-instance focus). */
+-  notifyWorkspace?: (workspacePath: string | null) => Promise<void>;
+-  /**
+-   * Open a folder: focus existing instance, or relaunch this window's sidecar
+-   * with `--workspace` (real process restart). Not an in-process HTTP switch.
+-   * Rejected in remote mode.
+-   */
+-  openWorkspace?: (
+-    workspacePath: string,
+-  ) => Promise<{ ok: boolean; focused?: boolean; project: string }>;
+-  /** Attach to a remote serve (no local sidecar). */
+-  connectRemote?: (
+-    baseUrl: string,
+-    token: string,
+-  ) => Promise<{ ok: boolean; mode: "remote" }>;
+-  /** Leave remote and spawn a local sidecar for the given workspace. */
+-  returnToLocal?: (
+-    workspacePath: string,
+-  ) => Promise<{ ok: boolean; focused?: boolean; project: string }>;
+-  /** Stop the active local session, if any, and return to the startup hub. */
+-  returnToHub?: () => Promise<void>;
+-  /** Shared UI theme (hub + workbench); persisted in Electron userData. */
+-  getUiTheme?: () => "default" | "light";
+-  setUiTheme?: (theme: "default" | "light") => Promise<void>;
+-  /**
+-   * Dockview snapshot store. The host owns one file per local workspace, because
+-   * a local workbench's browser storage is keyed by the sidecar's ephemeral
+-   * port. Remote workbenches fall back to browser storage.
+-   */
+-  loadLayout?: () => string | null;
+-  saveLayout?: (payload: string) => void;
+-  /** Home remote wizard (managed SSH). */
+-  listRemoteHistory?: () => Promise<
+-    Array<{
+-      id: string;
+-      label: string;
+-      host: string;
+-      user?: string;
+-      port?: number;
+-      lastWorkspace?: string;
+-      pinned?: boolean;
+-    }>
+-  >;
+-  startRemoteSession?: (input: {
+-    userAtHost: string;
+-    password?: string;
+-    authMode?: "password" | "private_key" | "agent";
+-    identityFile?: string;
+-    label?: string;
+-  }) => Promise<{ sessionId: string; home: string; label: string }>;
+-  listPendingRemoteDirs?: (
+-    sessionId: string,
+-    remotePath?: string,
+-  ) => Promise<{
+-    path: string;
+-    home: string;
+-    entries: Array<{ name: string }>;
+-  }>;
+-  completeRemoteSession?: (
+-    sessionId: string,
+-    workspace: string,
+-  ) => Promise<{
+-    token: string;
+-    baseUrl: string;
+-    workspace: string;
+-    label: string;
+-  }>;
+-  enterRemoteWorkbench?: (
+-    sessionId: string,
+-  ) => Promise<{ ok: boolean; mode: "remote" }>;
+-  cancelRemoteSession?: (sessionId: string) => Promise<void>;
+-  reconnectRemote?: (id: string) => Promise<{ ok: boolean; mode: "remote" }>;
+-  onRemoteProgress?: (
+-    handler: (event: { stage: string; ratio: number; message: string }) => void,
+-  ) => () => void;
+-  /** Electron frameless chrome (no-ops in browser). */
+-  windowMinimize?: () => Promise<void>;
+-  windowMaximizeToggle?: () => Promise<boolean>;
+-  windowIsMaximized?: () => Promise<boolean>;
+-  windowClose?: () => Promise<void>;
+-  /** Pin one popout window above ordinary windows. The main window is unchanged. */
+-  popoutSetAlwaysOnTop?: (dockId: string, onTop: boolean) => Promise<boolean>;
+-  /** Embedded browser pages. Present only in the Electron host. */
+-  browserCreate?: (input: {
+-    id: string;
+-    backgroundColor: string;
+-  }) => Promise<BrowserPanelState>;
+-  browserNavigate?: (input: { id: string; url: string }) => Promise<BrowserPanelState>;
+-  browserGoBack?: (id: string) => Promise<BrowserPanelState>;
+-  browserGoForward?: (id: string) => Promise<BrowserPanelState>;
+-  browserReload?: (id: string) => Promise<BrowserPanelState>;
+-  browserStop?: (id: string) => Promise<BrowserPanelState>;
+-  browserSetBounds?: (input: {
+-    id: string;
+-    bounds: BrowserBounds;
+-    place?: string;
+-  }) => void;
+-  browserSetVisible?: (input: { id: string; visible: boolean }) => void;
+-  browserDestroy?: (id: string) => void;
+-  /** Attach the native page to a popout window, or back to the main window. */
+-  browserSetHost?: (input: { id: string; popoutId: string | null }) => boolean;
+-  /** Synchronous so a menu can hide guest pages before the next paint. */
+-  browserSetObscured?: (obscured: boolean) => void;
+-  onBrowserState?: (handler: (state: BrowserPanelState) => void) => () => void;
+-  /** On-demand components (embed model). Present only in the Electron host. */
+-  getComponentStatus?: (id: DesktopComponentId) => Promise<DesktopComponentStatus>;
+-  /** Download + verify + install if missing; resolves with the local path. */
+-  ensureComponent?: (
+-    id: DesktopComponentId,
+-  ) => Promise<{ id: string; path: string; downloaded: boolean }>;
+-  onComponentProgress?: (
+-    handler: (event: DesktopComponentProgress) => void,
+-  ) => () => void;
+-}
++export type { ComponentProgressEvent, LitecodeDesktopBridge };
+ 
+ declare global {
+   interface Window {
+@@ -227,7 +50,7 @@ export function getAuthToken(): string | undefined {
+ }
+ 
+ /** Merge Authorization: Bearer when a token is available. */
+-export function withAuthHeaders(init?: HeadersInit): Headers {
++function withAuthHeaders(init?: HeadersInit): Headers {
+   const headers = new Headers(init);
+   const token = getAuthToken();
+   if (token && !headers.has("Authorization")) {
+diff --git a/web/src/dockview/panels/BrowserPanel.test.tsx b/web/src/dockview/panels/BrowserPanel.test.tsx
+index dea060d..5ed8a02 100644
+--- a/web/src/dockview/panels/BrowserPanel.test.tsx
++++ b/web/src/dockview/panels/BrowserPanel.test.tsx
+@@ -3,6 +3,7 @@ import type { IDockviewPanelProps } from "dockview-react";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ 
+ import { BrowserPanel } from "./BrowserPanel";
++import { stubDesktopBridge } from "../../test/desktopBridge";
+ 
+ const PANEL_ID = "browser-11111111-1111-4111-8111-111111111111";
+ 
+@@ -62,11 +63,11 @@ describe("BrowserPanel page actions", () => {
+   it("stops a pending load and reloads once it settles", async () => {
+     const stop = vi.fn(async () => state({ loading: false }));
+     const reload = vi.fn(async () => state({ loading: true }));
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserCreate: async () => state({ loading: true }),
+       browserStop: stop,
+       browserReload: reload,
+-    };
++    });
+ 
+     render(<BrowserPanel {...panelProps()} />);
+ 
+@@ -79,10 +80,10 @@ describe("BrowserPanel page actions", () => {
+   });
+ 
+   it("keeps reload off until the page has an address", async () => {
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserCreate: async () => state({ url: "about:blank" }),
+       browserReload: vi.fn(),
+-    };
++    });
+ 
+     render(<BrowserPanel {...panelProps()} />);
+ 
+diff --git a/web/src/dockview/panels/settings/engines/EmbedModelDownload.test.tsx b/web/src/dockview/panels/settings/engines/EmbedModelDownload.test.tsx
+index d0c17c9..a05a285 100644
+--- a/web/src/dockview/panels/settings/engines/EmbedModelDownload.test.tsx
++++ b/web/src/dockview/panels/settings/engines/EmbedModelDownload.test.tsx
+@@ -1,13 +1,14 @@
+ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+ import { afterEach, describe, expect, it, vi } from "vitest";
+ 
+-import type { DesktopComponentProgress, LitecodeDesktopBridge } from "../../../../api/auth";
++import type { ComponentProgressEvent, LitecodeDesktopBridge } from "../../../../api/auth";
+ import {
+   EmbedModelDownloadCard,
+   cleanIpcError,
+   embedDownloadAvailable,
+   useEmbedModelDownload,
+ } from "./EmbedModelDownload";
++import { stubDesktopBridge } from "../../../../test/desktopBridge";
+ 
+ function Harness({ onInstalled }: { onInstalled: () => void }) {
+   const { available, state, start } = useEmbedModelDownload(onInstalled);
+@@ -16,15 +17,16 @@ function Harness({ onInstalled }: { onInstalled: () => void }) {
+ }
+ 
+ function installBridge(overrides: Partial<LitecodeDesktopBridge>) {
+-  let progress: ((event: DesktopComponentProgress) => void) | null = null;
+-  window.litecode = {
++  let progress: ((event: ComponentProgressEvent) => void) | null = null;
++  window.litecode = stubDesktopBridge({
+     getSessionMode: () => "local",
+     getComponentStatus: vi.fn(async () => ({
+-      id: "embed-model",
++      id: "embed-model" as const,
+       installed: false,
+       path: null,
+       downloading: false,
+       error: null,
++      status: "idle" as const,
+     })),
+     onComponentProgress: (handler) => {
+       progress = handler;
+@@ -33,8 +35,8 @@ function installBridge(overrides: Partial<LitecodeDesktopBridge>) {
+       };
+     },
+     ...overrides,
+-  };
+-  return { emit: (event: DesktopComponentProgress) => progress?.(event) };
++  });
++  return { emit: (event: ComponentProgressEvent) => progress?.(event) };
+ }
+ 
+ afterEach(() => {
+@@ -45,7 +47,7 @@ afterEach(() => {
+ describe("EmbedModelDownload", () => {
+   it("is hidden without the desktop bridge or in remote sessions", () => {
+     expect(embedDownloadAvailable()).toBe(false);
+-    window.litecode = { ensureComponent: vi.fn(), getSessionMode: () => "remote" };
++    window.litecode = stubDesktopBridge({ ensureComponent: vi.fn(), getSessionMode: () => "remote" });
+     expect(embedDownloadAvailable()).toBe(false);
+   });
+ 
+@@ -53,8 +55,8 @@ describe("EmbedModelDownload", () => {
+     let resolve!: () => void;
+     const ensureComponent = vi.fn(
+       () =>
+-        new Promise<{ id: string; path: string; downloaded: boolean }>((r) => {
+-          resolve = () => r({ id: "embed-model", path: "C:/m", downloaded: true });
++        new Promise<{ id: "embed-model"; path: string; downloaded: boolean }>((r) => {
++          resolve = () => r({ id: "embed-model" as const, path: "C:/m", downloaded: true });
+         }),
+     );
+     const { emit } = installBridge({ ensureComponent });
+@@ -64,7 +66,7 @@ describe("EmbedModelDownload", () => {
+     fireEvent.click(screen.getByRole("button", { name: "Download" }));
+     expect(ensureComponent).toHaveBeenCalledWith("embed-model");
+     act(() =>
+-      emit({ id: "embed-model", phase: "downloading", received: 50, total: 200, message: "Downloading — 50 B" }),
++      emit({ id: "embed-model", phase: "downloading", received: 50, total: 200, percent: 25, message: "Downloading — 50 B" }),
+     );
+     expect(screen.getByText("25%")).toBeTruthy();
+     expect(screen.queryByRole("button")).toBeNull();
+@@ -79,7 +81,7 @@ describe("EmbedModelDownload", () => {
+       .mockRejectedValueOnce(
+         new Error("Error invoking remote method 'litecode:ensure-component': Error: sha256 mismatch"),
+       )
+-      .mockResolvedValueOnce({ id: "embed-model", path: "C:/m", downloaded: true });
++      .mockResolvedValueOnce({ id: "embed-model" as const, path: "C:/m", downloaded: true });
+     installBridge({ ensureComponent });
+     const onInstalled = vi.fn();
+     render(<Harness onInstalled={onInstalled} />);
+@@ -101,16 +103,16 @@ describe("EmbedModelDownload", () => {
+     render(<Harness onInstalled={onInstalled} />);
+     await act(async () => undefined);
+ 
+-    act(() => emit({ id: "embed-model", phase: "downloading", received: 1, total: 4, message: "Downloading" }));
++    act(() => emit({ id: "embed-model", phase: "downloading", received: 1, total: 4, percent: 25, message: "Downloading" }));
+     expect(screen.getByText("25%")).toBeTruthy();
+-    act(() => emit({ id: "embed-model", phase: "error", message: "failed", error: "offline" }));
++    act(() => emit({ id: "embed-model", phase: "error", percent: 0, message: "failed", error: "offline" }));
+     expect(screen.getByText("offline")).toBeTruthy();
+     expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+ 
+     // Retried from another view and finished: no error line, no progress bar left behind.
+-    act(() => emit({ id: "embed-model", phase: "resolving", message: "Looking up" }));
++    act(() => emit({ id: "embed-model", phase: "resolving", percent: 0, message: "Looking up" }));
+     expect(screen.queryByText("offline")).toBeNull();
+-    act(() => emit({ id: "embed-model", phase: "done", message: "ready" }));
++    act(() => emit({ id: "embed-model", phase: "done", percent: 0, message: "ready" }));
+     const card = screen.getByRole("group", { name: "Embedding model download" });
+     expect(card.getAttribute("data-phase")).toBe("done");
+     expect(screen.queryByText("offline")).toBeNull();
+@@ -123,11 +125,12 @@ describe("EmbedModelDownload", () => {
+     installBridge({
+       ensureComponent: vi.fn(),
+       getComponentStatus: vi.fn(async () => ({
+-        id: "embed-model",
++        id: "embed-model" as const,
+         installed: false,
+         path: null,
+         downloading: false,
+         error: "Cannot read litecode-components.json",
++        status: "error" as const,
+       })),
+     });
+     render(<Harness onInstalled={vi.fn()} />);
+diff --git a/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx b/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
+index 0d6e985..e3b3c7e 100644
+--- a/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
++++ b/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
+@@ -1,7 +1,7 @@
+ import { useCallback, useEffect, useRef, useState } from "react";
+ import { CloudArrowDown, WarningCircle } from "@phosphor-icons/react";
+ 
+-import type { DesktopComponentProgress } from "../../../../api/auth";
++import type { ComponentProgressEvent } from "../../../../api/auth";
+ import { glassFill } from "../../../../components/composerCard";
+ 
+ /**
+@@ -12,9 +12,9 @@ import { glassFill } from "../../../../components/composerCard";
+  * "not found" line.
+  */
+ 
+-export type EmbedDownloadState =
++type EmbedDownloadState =
+   | { phase: "idle" }
+-  | { phase: "running"; message: string; received?: number; total?: number }
++  | { phase: "running"; message: string; percent: number }
+   | { phase: "error"; error: string }
+   | { phase: "done" };
+ 
+@@ -49,7 +49,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
+   useEffect(() => {
+     if (!available) return;
+     const bridge = window.litecode!;
+-    const stop = bridge.onComponentProgress?.((event: DesktopComponentProgress) => {
++    const stop = bridge.onComponentProgress?.((event: ComponentProgressEvent) => {
+       if (event.id !== COMPONENT || !mounted.current) return;
+       // Settle from events too: the download may have been started by another
+       // view (Start button, Open Remote) whose ensure() this hook never sees.
+@@ -61,13 +61,13 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
+         setState({ phase: "error", error: event.error || event.message || "Download failed" });
+         return;
+       }
+-      setState({ phase: "running", message: event.message, received: event.received, total: event.total });
++      setState({ phase: "running", message: event.message, percent: event.percent });
+     });
+     // A download started elsewhere (e.g. before this view mounted) keeps running in the host.
+     void bridge.getComponentStatus?.(COMPONENT).then((status) => {
+       if (!mounted.current) return;
+       if (status.downloading) {
+-        setState((s) => (s.phase === "idle" ? { phase: "running", message: "Downloading embedding model…" } : s));
++        setState((s) => (s.phase === "idle" ? { phase: "running", message: "Downloading embedding model…", percent: 0 } : s));
+       } else if (status.error) {
+         setState((s) => (s.phase === "idle" ? { phase: "error", error: status.error! } : s));
+       }
+@@ -78,7 +78,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
+   const start = useCallback(async () => {
+     const bridge = window.litecode;
+     if (!bridge?.ensureComponent) return;
+-    setState({ phase: "running", message: "Looking up embedding model…" });
++    setState({ phase: "running", message: "Looking up embedding model…", percent: 0 });
+     try {
+       await bridge.ensureComponent(COMPONENT);
+       if (!mounted.current) return;
+@@ -92,11 +92,6 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
+   return { available, state, start };
+ }
+ 
+-function percent(received?: number, total?: number): number | null {
+-  if (!total || total <= 0 || received === undefined) return null;
+-  return Math.min(100, Math.round((received * 100) / total));
+-}
+-
+ export function EmbedModelDownloadCard({
+   state,
+   onStart,
+@@ -105,7 +100,8 @@ export function EmbedModelDownloadCard({
+   onStart: () => void;
+ }) {
+   const running = state.phase === "running";
+-  const pct = running ? percent(state.received, state.total) : null;
++  // Contract: percent is always present; 0 means not started or size unknown.
++  const pct = running && state.percent > 0 ? state.percent : null;
+   const subtitle =
+     state.phase === "running"
+       ? state.message
+diff --git a/web/src/dockview/panels/settings/engines/EngineView.test.tsx b/web/src/dockview/panels/settings/engines/EngineView.test.tsx
+index 46509eb..5dc10ef 100644
+--- a/web/src/dockview/panels/settings/engines/EngineView.test.tsx
++++ b/web/src/dockview/panels/settings/engines/EngineView.test.tsx
+@@ -14,6 +14,7 @@ import type { EnginesDetail } from "../../../../api/workspace";
+ import type { WorkspaceEnginesDoc } from "../../../../api/settings";
+ import * as workspace from "../../../../api/workspace";
+ import { useSettingsStore } from "../../../../stores/settingsStore";
++import { stubDesktopBridge } from "../../../../test/desktopBridge";
+ 
+ const installServer = vi.spyOn(workspace, "installServer");
+ const getInstallStatus = vi.spyOn(workspace, "getInstallStatus");
+@@ -332,18 +333,19 @@ describe("EngineView embed model (slim installer)", () => {
+   }
+ 
+   it("lets the download card own the missing-model state, then goes fully green", () => {
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       getSessionMode: () => "local",
+       ensureComponent: vi.fn(),
+       getComponentStatus: vi.fn(async () => ({
+-        id: "embed-model",
++        id: "embed-model" as const,
+         installed: false,
+         path: null,
+         downloading: false,
+         error: null,
++        status: "idle" as const,
+       })),
+       onComponentProgress: () => () => undefined,
+-    };
++    });
+     const { rerender } = render(<EngineView detail={missingModel()} onChanged={() => {}} />);
+     const retrieval = within(section());
+     expect(retrieval.getByRole("group", { name: "Embedding model download" })).toBeTruthy();
+@@ -374,18 +376,19 @@ describe("EngineView embed model (slim installer)", () => {
+   it("after a successful download restarts the failed engine and refetches detail", async () => {
+     const refresh = vi.spyOn(workspace, "refreshRetrieval").mockResolvedValue({ desired: true, mode: "full" } as never);
+     const detailSpy = vi.spyOn(workspace, "getEnginesDetail").mockResolvedValue(missingModel());
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       getSessionMode: () => "local",
+-      ensureComponent: vi.fn(async () => ({ id: "embed-model", path: "C:/m", downloaded: true })),
++      ensureComponent: vi.fn(async () => ({ id: "embed-model" as const, path: "C:/m", downloaded: true })),
+       getComponentStatus: vi.fn(async () => ({
+-        id: "embed-model",
++        id: "embed-model" as const,
+         installed: false,
+         path: null,
+         downloading: false,
+         error: null,
++        status: "idle" as const,
+       })),
+       onComponentProgress: () => () => undefined,
+-    };
++    });
+     const onChanged = vi.fn();
+     render(<EngineView detail={missingModel()} onChanged={onChanged} />);
+     fireEvent.click(within(section()).getByRole("button", { name: "Download" }));
+diff --git a/web/src/dockview/panels/settings/engines/embedInstall.test.ts b/web/src/dockview/panels/settings/engines/embedInstall.test.ts
+index c4dbed5..2995722 100644
+--- a/web/src/dockview/panels/settings/engines/embedInstall.test.ts
++++ b/web/src/dockview/panels/settings/engines/embedInstall.test.ts
+@@ -1,6 +1,6 @@
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+-import type { DesktopComponentProgress } from "../../../../api/auth";
++import type { ComponentProgressEvent } from "../../../../api/auth";
+ import type { EnginesDetail } from "../../../../api/workspace";
+ import * as workspace from "../../../../api/workspace";
+ import {
+@@ -8,6 +8,7 @@ import {
+   installEmbedInstallWatcher,
+   restartRetrievalAfterEmbedInstall,
+ } from "./embedInstall";
++import { stubDesktopBridge } from "../../../../test/desktopBridge";
+ 
+ const getEnginesDetail = vi.spyOn(workspace, "getEnginesDetail");
+ const refreshRetrieval = vi.spyOn(workspace, "refreshRetrieval");
+@@ -71,8 +72,8 @@ describe("restartRetrievalAfterEmbedInstall", () => {
+ 
+ describe("installEmbedInstallWatcher", () => {
+   function bridge(mode: "local" | "remote") {
+-    let handler: ((event: DesktopComponentProgress) => void) | null = null;
+-    window.litecode = {
++    let handler: ((event: ComponentProgressEvent) => void) | null = null;
++    window.litecode = stubDesktopBridge({
+       getSessionMode: () => mode,
+       onComponentProgress: (h) => {
+         handler = h;
+@@ -80,18 +81,18 @@ describe("installEmbedInstallWatcher", () => {
+           handler = null;
+         };
+       },
+-    };
+-    return { emit: (event: DesktopComponentProgress) => handler?.(event), attached: () => handler !== null };
++    });
++    return { emit: (event: ComponentProgressEvent) => handler?.(event), attached: () => handler !== null };
+   }
+ 
+   it("restarts retrieval on embed-model done only", async () => {
+     getEnginesDetail.mockResolvedValue(detail("unavailable"));
+     const host = bridge("local");
+     const stop = installEmbedInstallWatcher();
+-    host.emit({ id: "embed-model", phase: "downloading", message: "…" });
+-    host.emit({ id: "linux-server", phase: "done", message: "ready" });
++    host.emit({ id: "embed-model", phase: "downloading", percent: 0, message: "…" });
++    host.emit({ id: "linux-server", phase: "done", percent: 0, message: "ready" });
+     expect(getEnginesDetail).not.toHaveBeenCalled();
+-    host.emit({ id: "embed-model", phase: "done", message: "ready" });
++    host.emit({ id: "embed-model", phase: "done", percent: 0, message: "ready" });
+     await vi.waitFor(() => expect(refreshRetrieval).toHaveBeenCalledTimes(1));
+     stop();
+     expect(host.attached()).toBe(false);
+diff --git a/web/src/dockview/shell/BrowserHeaderAction.test.tsx b/web/src/dockview/shell/BrowserHeaderAction.test.tsx
+index be2b6c4..58b002e 100644
+--- a/web/src/dockview/shell/BrowserHeaderAction.test.tsx
++++ b/web/src/dockview/shell/BrowserHeaderAction.test.tsx
+@@ -3,6 +3,7 @@ import type { IDockviewHeaderActionsProps } from "dockview-react";
+ import { afterEach, describe, expect, it } from "vitest";
+ 
+ import { BrowserHeaderAction } from "./BrowserHeaderAction";
++import { stubDesktopBridge } from "../../test/desktopBridge";
+ 
+ afterEach(() => {
+   cleanup();
+@@ -23,13 +24,13 @@ function headerProps(type: "grid" | "edge"): IDockviewHeaderActionsProps {
+ 
+ describe("BrowserHeaderAction", () => {
+   it("offers a new browser on a desktop grid tab bar", () => {
+-    window.litecode = { browserCreate: async () => ({}) as never };
++    window.litecode = stubDesktopBridge({ browserCreate: async () => ({}) as never });
+     render(<BrowserHeaderAction {...headerProps("grid")} />);
+     expect(screen.getByRole("button", { name: "New Browser" })).toBeTruthy();
+   });
+ 
+   it("stays off edge rails and off a browser workbench", () => {
+-    window.litecode = { browserCreate: async () => ({}) as never };
++    window.litecode = stubDesktopBridge({ browserCreate: async () => ({}) as never });
+     const { rerender } = render(<BrowserHeaderAction {...headerProps("edge")} />);
+     expect(screen.queryByRole("button", { name: "New Browser" })).toBeNull();
+     delete window.litecode;
+diff --git a/web/src/lib/browserObscure.test.ts b/web/src/lib/browserObscure.test.ts
+index 60fb166..2442eb0 100644
+--- a/web/src/lib/browserObscure.test.ts
++++ b/web/src/lib/browserObscure.test.ts
+@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ import { installBrowserChromeObscure, pushBrowserObscure } from "./browserObscure";
+ import { bindWindowRegistry, resetWindowsForTests } from "../dockview/workbench/windows";
++import { stubDesktopBridge } from "../test/desktopBridge";
+ 
+ const quietApi = {
+   onDidAddPopoutGroup: () => ({ dispose() {} }),
+@@ -22,9 +23,9 @@ afterEach(() => {
+ describe("pushBrowserObscure", () => {
+   it("stays hidden until every lease is released", () => {
+     const calls: boolean[] = [];
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserSetObscured: (obscured) => calls.push(obscured),
+-    };
++    });
+     const first = pushBrowserObscure();
+     const second = pushBrowserObscure();
+     expect(calls.at(-1)).toBe(true);
+@@ -40,9 +41,9 @@ describe("installBrowserChromeObscure", () => {
+   it("hides pages while a context menu is open", () => {
+     vi.useFakeTimers();
+     const calls: boolean[] = [];
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserSetObscured: (obscured) => calls.push(obscured),
+-    };
++    });
+     const stop = installBrowserChromeObscure();
+     window.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));
+     expect(calls.at(-1)).toBe(true);
+@@ -54,9 +55,9 @@ describe("installBrowserChromeObscure", () => {
+ 
+   it("hides pages once a tab drag actually moves", () => {
+     const calls: boolean[] = [];
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserSetObscured: (obscured) => calls.push(obscured),
+-    };
++    });
+     const stop = installBrowserChromeObscure();
+     const tab = document.createElement("div");
+     tab.className = "dv-tab";
+@@ -78,9 +79,9 @@ describe("installBrowserChromeObscure", () => {
+   it("hides pages for a popout context menu and ignores it after unregister", () => {
+     vi.useFakeTimers();
+     const calls: boolean[] = [];
+-    window.litecode = {
++    window.litecode = stubDesktopBridge({
+       browserSetObscured: (obscured) => calls.push(obscured),
+-    };
++    });
+     const target = new EventTarget();
+     const child = {
+       closed: false,
+diff --git a/web/src/lib/browserPanel.ts b/web/src/lib/browserPanel.ts
+index f4d0339..941a245 100644
+--- a/web/src/lib/browserPanel.ts
++++ b/web/src/lib/browserPanel.ts
+@@ -2,21 +2,11 @@ import { onPanelRemoved } from "../dockview/workbench/events";
+ import { openPanel } from "../dockview/workbench/commands";
+ import type { GroupRole } from "../dockview/workbench/model";
+ 
+-export type BrowserBounds = {
+-  x: number;
+-  y: number;
+-  width: number;
+-  height: number;
+-};
+-
+-export type BrowserPanelState = {
+-  id: string;
+-  url: string;
+-  title: string;
+-  canGoBack: boolean;
+-  canGoForward: boolean;
+-  loading: boolean;
+-};
++// Single source: desktop/src/bridge-contract.ts (type-only).
++export type {
++  BrowserBounds,
++  BrowserState as BrowserPanelState,
++} from "../../../desktop/src/bridge-contract";
+ 
+ const SCHEME = /^[a-zA-Z][a-zA-Z+\-.]*:/;
+ const MAX_URL_LENGTH = 8000;
+diff --git a/web/src/lib/externalDrop.test.ts b/web/src/lib/externalDrop.test.ts
+index 557a4bd..cd33375 100644
+--- a/web/src/lib/externalDrop.test.ts
++++ b/web/src/lib/externalDrop.test.ts
+@@ -5,6 +5,7 @@ import { useSessionStore } from "../stores/sessionStore";
+ import { useToastStore } from "../stores/toastStore";
+ import { foreignDropIntent, previewForeignDrop } from "./externalDrop";
+ import { fakeTransfer } from "../test/fakeTransfer";
++import { stubDesktopBridge } from "../test/desktopBridge";
+ 
+ afterEach(() => {
+   document.body.replaceChildren();
+@@ -44,7 +45,7 @@ describe("foreign drop routing", () => {
+   it("opens a temporary preview for a dropped file and a workspace file for a path", async () => {
+     const file = new File(["hello"], "notes.ts", { type: "text/plain" });
+     const files = fakeTransfer({ files: [file] });
+-    window.litecode = { getPathForFile: () => "C:\\outside\\notes.ts" };
++    window.litecode = stubDesktopBridge({ getPathForFile: () => "C:\\outside\\notes.ts" });
+     await previewForeignDrop(files);
+     const tab = useEditorStore.getState().tabs[0];
+     expect(tab?.external).toBe(true);
+diff --git a/web/src/lib/mentionDrop.test.ts b/web/src/lib/mentionDrop.test.ts
+index 9bada69..8b1bae1 100644
+--- a/web/src/lib/mentionDrop.test.ts
++++ b/web/src/lib/mentionDrop.test.ts
+@@ -5,6 +5,7 @@ import { LITECODE_PATHS_MIME, LITECODE_SPAN_MIME } from "./dropPayload";
+ import { fileMentionSource, symbolMentionSource } from "./knowledge/markers";
+ import { mentionTextForDrop } from "./mentionDrop";
+ import { fakeTransfer } from "../test/fakeTransfer";
++import { stubDesktopBridge } from "../test/desktopBridge";
+ 
+ vi.mock("../api/workspace", () => ({
+   fetchSymbolAt: vi.fn(),
+@@ -48,7 +49,7 @@ describe("mentionTextForDrop", () => {
+   it("uses the desktop path for an OS file and a URI when there is no file", async () => {
+     const file = new File(["x"], "a.ts", { type: "text/plain" });
+     const files = fakeTransfer({ files: [file] });
+-    window.litecode = { getPathForFile: () => "E:\\ws\\src\\a.ts" };
++    window.litecode = stubDesktopBridge({ getPathForFile: () => "E:\\ws\\src\\a.ts" });
+     await expect(mentionTextForDrop(files, "E:/ws")).resolves.toBe(
+       fileMentionSource("src/a.ts"),
+     );
+diff --git a/web/src/test/desktopBridge.ts b/web/src/test/desktopBridge.ts
+new file mode 100644
+index 0000000..5288217
+--- /dev/null
++++ b/web/src/test/desktopBridge.ts
+@@ -0,0 +1,8 @@
++import type { LitecodeDesktopBridge } from "../api/auth";
++
++/** Tests stub only the bridge methods they exercise; the contract type is complete. */
++export function stubDesktopBridge(
++  methods: Partial<LitecodeDesktopBridge>,
++): LitecodeDesktopBridge {
++  return methods as LitecodeDesktopBridge;
++}
+diff --git a/web/src/theme/index.css b/web/src/theme/index.css
+index 43e6127..7d1e7c6 100644
+--- a/web/src/theme/index.css
++++ b/web/src/theme/index.css
+@@ -180,37 +180,6 @@ body.lc-resizing * {
+   }
+ }
+ 
+-/* Scrollbars: thin, low-contrast (Linear-like) */
+-* {
+-  scrollbar-width: thin;
+-  scrollbar-color: var(--_dk-line) transparent;
+-}
+-
+-*::-webkit-scrollbar {
+-  width: 8px;
+-  height: 8px;
+-}
+-
+-*::-webkit-scrollbar-track {
+-  background: transparent;
+-  border: 0 none;
+-}
+-
+-*::-webkit-scrollbar-thumb {
+-  background: var(--_dk-line);
+-  border-radius: 4px;
+-  border: 0 none;
+-  outline: 0 none;
+-}
+-
+-*::-webkit-scrollbar-thumb:hover {
+-  background: var(--_dk-text-disabled);
+-}
+-
+-*::-webkit-scrollbar-corner {
+-  background: transparent;
+-}
+-
+ /* Shiki dual-theme toggle — switches syntax highlighting colors via CSS variables. */
+ :root[data-dv-theme="dark"] .shiki-host .shiki,
+ :root[data-dv-theme="dark"] .shiki-host .shiki span {
+diff --git a/web/src/theme/tokens.css b/web/src/theme/tokens.css
+index 64a4f4e..3c563c3 100644
+--- a/web/src/theme/tokens.css
++++ b/web/src/theme/tokens.css
+@@ -1,3 +1,9 @@
++/* ============================================
++   SHARED WITH DESKTOP — read by desktop/scripts/copy-theme-tokens.mjs and
++   desktop/src/hub.ts (inlined into the Home hub page). This file is the single
++   source; do not move or rename it. Anything added here also styles the hub.
++   ============================================ */
++
+ /* ============================================
+    tokens.css — single source of truth for design tokens
+ 
+@@ -358,3 +364,35 @@
+   --_dk-ix-danger-border-selected:var(--_dk-red-500);
+   --_dk-ix-danger-border-disabled:transparent;
+ }
++
++/* Scrollbars: thin, low-contrast. Shared by the workbench and the desktop hub
++   (single source; the hub has no copy). */
++* {
++  scrollbar-width: thin;
++  scrollbar-color: var(--_dk-line) transparent;
++}
++
++*::-webkit-scrollbar {
++  width: 8px;
++  height: 8px;
++}
++
++*::-webkit-scrollbar-track {
++  background: transparent;
++  border: 0 none;
++}
++
++*::-webkit-scrollbar-thumb {
++  background: var(--_dk-line);
++  border-radius: 4px;
++  border: 0 none;
++  outline: 0 none;
++}
++
++*::-webkit-scrollbar-thumb:hover {
++  background: var(--_dk-text-disabled);
++}
++
++*::-webkit-scrollbar-corner {
++  background: transparent;
++}

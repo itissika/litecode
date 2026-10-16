@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "tools_version": 17,
-  "updated_at": "2026-10-13T12:10:00.000Z",
+  "tools_version": 21,
+  "updated_at": "2026-10-15T08:00:00.000Z",
   "hot_reload": true,
   "tools": [
     {
       "id": "ops.validate_board",
       "version": 9,
-      "purpose": "校验 board.json / demand board 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id",
+      "purpose": "校验 board.json 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id；v20 不再读取 demand board（已撤销）",
       "invoke": "node .litecode/ops/tools/validate_all.mjs",
       "required_for": [
         "WP done",
@@ -100,9 +100,9 @@
     },
     {
       "id": "ops.wp_watch",
-      "version": 3,
-      "purpose": "常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起；v13 回调体增加 level/parent/path/target/escalated（旧字段不变）；v15 事件先 fsync 落盘（inbox+events/outbox.jsonl）再发，启动/每轮排空 outbox，重启不丢；所有告警类型（超时、方案待批、待验收、watcher_down/restarted）都走 webhook，payload 带 target/type/actor/merged/matter_key；state/心跳/日志 fsync",
-      "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
+      "version": 4,
+      "purpose": "v19（tools_version 19）：新增 ensure（幂等：没跑→起；心跳>10 分钟→杀掉重起）、test-callback（发一条标注 team_ops.watcher_test→tools_steward 的测试 POST，只打印 http 码，不进 inbox）、watchdog-start/stop（独立保活循环，每 60 秒 ensure）；start 等到心跳晚于 spawn 才算成功；任何 ops.wp 写操作发现 watcher 死/心跳>10 分钟会自动 ensure（5 分钟限频，记 watcher_restarted）。 常驻 watcher：每 5 分钟复用 tick 的超时判定，把新的未 ack team_ops.wp_timeout 向 GM 回调 POST 一次（env LITECODE_WP_WEBHOOK_URL/KEY，Bearer+HMAC，2xx 才记已送达，跨重启不重发，失败退避重试）；心跳/日志/状态在 .litecode/ops/.tmp；supervisor 崩溃自动拉起；v13 回调体增加 level/parent/path/target/escalated（旧字段不变）；v15 事件先 fsync 落盘（inbox+events/outbox.jsonl）再发，启动/每轮排空 outbox，重启不丢；所有告警类型（超时、方案待批、待验收、watcher_down/restarted）都走 webhook，payload 带 target/type/actor/merged/matter_key；state/心跳/日志 fsync",
+      "invoke": "node .litecode/ops/tools/wp_watch.mjs start|stop|status|once|ensure|test-callback|watchdog-start|watchdog-stop [--interval-sec N] [--heartbeat-sec N] [--force-timeout-scan] [--wp WP-xxx]",
       "required_for": [
         "WP 超时回调触发",
         "watcher 稳定性（tick 查心跳）"
@@ -134,8 +134,8 @@
     },
     {
       "id": "ops.wp",
-      "version": 5,
-      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类",
+      "version": 6,
+      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类；v6（tools_version 19）每次写操作顺带 softEnsureWatcher（watcher 死/心跳>10 分钟则 detached ensure）",
       "invoke": "node .litecode/ops/tools/wp.mjs <new|fill|submit|approve|start|deliver|reject|close|set|reassign|tree|summary|history> --as <agent_id|andy> [...]",
       "required_for": [
         "新模型 WP 填写→请审→批准→执行→封包",
@@ -165,8 +165,8 @@
     },
     {
       "id": "ops.toolchain_check",
-      "version": 1,
-      "purpose": "rust 工具链体检：继承 env / bash -c / bash -lc / env -i 四种 shell 下 cargo -V + rustup active-toolchain，任一失败 exit 1",
+      "version": 2,
+      "purpose": "rust 工具链体检：继承 env / bash -c / bash -lc / env -i 四种 shell 下 cargo -V + rustup active-toolchain，任一失败 exit 1；v2(tools_version 20) env -i 行先 source cargo_env.sh，须解析到仓库 .litecode/ops/.toolchain 的 cargo 且版本=rust-toolchain.toml pin，系统 cargo 判 FAIL",
       "invoke": "node .litecode/ops/tools/toolchain_check.mjs [--json] [--wp WP-x]",
       "required_for": [
         "cargo 报 no default toolchain 时自查",
@@ -183,9 +183,60 @@
         "ops 加固回归"
       ],
       "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.cargo_env",
+      "version": 2,
+      "purpose": "v20：无系统 g++（或 LC_FORCE_USERSPACE_GXX=1）时自动把 .toolchain/gxx-bin 放进 PATH 并设 CXX；set -u 安全（可选变量用 ${VAR:-}）。 source 后得到正确编译环境：HOME=/workspace/litecode/.tmp/home（绝对路径）、清掉旧值后设 RUSTUP_HOME/CARGO_HOME 为 ops toolchain、CARGO_TARGET_DIR 默认 /workspace/litecode/target、LC_CARGO_LOCK；LC_ROOT 可由环境覆盖（默认由脚本位置推断，WP-171/172）",
+      "invoke": "source .litecode/ops/tools/cargo_env.sh",
+      "required_for": [
+        "任何 cargo 调用"
+      ],
+      "stdout_header": "(none, sourced)"
+    },
+    {
+      "id": "ops.cargo_locked",
+      "version": 2,
+      "purpose": "v20：取锁前先 registry_verify.sh --quick（只 stat，健康约 0.2s）；发现损坏自动 --fix 并只打印一行；LC_SKIP_VERIFY=1 跳过。 cargo_env + flock .tmp/cargo-target.lock + timeout + </dev/null；共享 target 的唯一约定入口",
+      "invoke": ".litecode/ops/tools/cargo_locked.sh [-t SECS] <cargo args>",
+      "required_for": [
+        "cargo build/test/check（重型任务仍需 backend_mid 排队许可）"
+      ],
+      "stdout_header": "(cargo output)"
+    },
+    {
+      "id": "ops.registry_verify",
+      "version": 2,
+      "purpose": "v20：新增 --quick（按 tarball 文件清单的 manifest 做存在+大小比对，输出损坏 crate 名）；检测会发现缺 build/、target/ 目录名的整目录丢失；新增 g++ 检查（系统 g++ 在则 ok；否则 --fix 用 .toolchain/debs 离线重解压到 gxx-root/gxx-bin 并编译 std::string 自测）。 核对 ops cargo registry：src 每个 crate 与 cache/.crate 逐文件比对（存在/大小/sha256）+ .cargo-ok；cache .crate 对 Cargo.lock sha256；--fix 重解压损坏 crate。不编译",
+      "invoke": ".litecode/ops/tools/registry_verify.sh [--fix] [--quick] [--lock <Cargo.lock>]",
+      "required_for": [
+        "磁盘回滚/工具链异常后"
+      ],
+      "stdout_header": "LITECODE_OPS tools_version=..."
+    },
+    {
+      "id": "ops.init_env",
+      "version": 2,
+      "purpose": "WP-171：全新 Linux 机器从零初始化 litecode（apt→clone→rustup 装到 .litecode/ops/.toolchain 并 pin rust-toolchain.toml→fnm Node 22→npm ci web/desktop→cargo build --locked→validate_all+toolchain_check→测试）；幂等；重型步骤内存门槛 LC_MIN_MEM_GIB(默认2，启动门槛)/看门狗 LC_KILL_MEM_GIB(默认1)/CARGO_BUILD_JOBS(默认2)，被杀不重试；heavy_stats.tsv 记时长与最低 MemAvailable；v2 测试阶段：cargo test --no-fail-fast，ops/cargo/web/desktop 四步全部跑完；任一失败则 exit 6，并生成 test_failures.txt（逐条列出 测试名 @ 文件:行）。安装/构建/validate/toolchain_check 阶段仍 fail-fast；日志默认 $DIR/.tmp/init-logs（可用 LC_INIT_LOG_DIR 覆盖，避免 HOME 被重置丢日志）；heavy_stats 记 start/min/peak_used MemAvailable",
+      "invoke": "bash .litecode/ops/tools/init_env.sh [--repo URL] [--branch B] [--dir DIR] [--skip-heavy]",
+      "required_for": [
+        "新电脑/新账号环境初始化（重型步骤需 backend_mid 排队许可）"
+      ],
+      "stdout_header": "=== [time] step ..."
+    },
+    {
+      "id": "ops.test_failures",
+      "version": 1,
+      "purpose": "WP-171：把测试日志（cargo test / vitest / node --test TAP / tsc）解析成可直接转发给负责人的失败清单，每条格式为 step: 测试名 @ 文件:行 — 首行消息；init_env 测试阶段失败时会调用",
+      "invoke": "node .litecode/ops/tools/test_failures.mjs <step>=<log> ...",
+      "required_for": [
+        "init_env 测试汇总",
+        "任何测试失败转发"
+      ],
+      "stdout_header": "TEST FAILURES: N item(s)"
     }
   ],
   "board": ".litecode/ops/tools/board.md",
   "owner": "tools_steward",
-  "gm_policy": "GM must not edit tool scripts; request changes via demand board / events; GM may run tick as fallback"
+  "gm_policy": "GM must not edit tool scripts; request changes from tools_steward via events/WP (demand board removed v20; requirements approved by each bot's direct leader); GM may run tick as fallback"
 }

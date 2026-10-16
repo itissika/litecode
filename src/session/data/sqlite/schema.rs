@@ -248,6 +248,8 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     )?;
 
     migrate_optional_columns(conn)?;
+    // WP-186 P1 sidecar for pending user-gate asks.
+    crate::session::data::sqlite::pending::ensure_pending_permissions_table(conn)?;
     if table_exists(conn, "session_context_meter")? {
         migrate_meter_table(conn)?;
     }

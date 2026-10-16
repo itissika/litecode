@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { knowledgeFixture, knowledgeFolderFixture } from "../../lib/knowledge/fixture";
+import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
 import { fileMentionSource, mentionSource } from "../../lib/knowledge/markers";
 import { useEditorStore } from "../../stores/editorStore";
 import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";

@@ -67,7 +67,7 @@ export type KnowledgeIssueCode =
   | "symbol_drift"
   | "line_out_of_range";
 
-export type KnowledgeIssueSeverity = "error" | "warning";
+type KnowledgeIssueSeverity = "error" | "warning";
 
 /** Structured issue arguments: `key`, `path`, `symbol`, `lines`, `target_status`, `reason`, `line_count`, ... */
 export type KnowledgeIssueArgs = Readonly<Record<string, unknown>>;
@@ -85,7 +85,7 @@ export interface KnowledgeIssue {
   args?: KnowledgeIssueArgs;
 }
 
-export type KnowledgeRefKind = "node" | "file" | "symbol" | "range";
+type KnowledgeRefKind = "node" | "file" | "symbol" | "range";
 
 /** `ok`, `checking`, or one of the citation issue codes. */
 export type KnowledgeRefStatus = "ok" | "checking" | KnowledgeIssueCode;

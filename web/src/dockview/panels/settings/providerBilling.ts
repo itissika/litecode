@@ -8,7 +8,7 @@ import type { CatalogProviderDto } from "../../../api/settings";
  * placeholders with moonshot-coding / moonshot / minimax-token / minimax;
  * opencode-go → Plan; opencode + commandcode → API.
  */
-export const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
+const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "ark-coding",
   "ark-agent",
   "tencent-token",
@@ -18,19 +18,9 @@ export const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
   "opencode-go", // monthly subscription
 ]);
 
-/** Explicit API ids for tests / docs; unknown ids also land here. */
-export const API_PROVIDER_IDS: ReadonlySet<string> = new Set([
-  "openai",
-  "deepseek",
-  "mimo",
-  "zhipu",
-  "moonshot",
-  "minimax",
-  "opencode",
-  "commandcode",
-]);
-
-export type ProviderBillingGroup = "plan" | "api";
+// Everything not in PLAN_PROVIDER_IDS is API (openai, deepseek, mimo, zhipu,
+// moonshot, minimax, opencode, commandcode, and any unknown id).
+type ProviderBillingGroup = "plan" | "api";
 
 export function providerBillingGroup(id: string): ProviderBillingGroup {
   return PLAN_PROVIDER_IDS.has(id) ? "plan" : "api";

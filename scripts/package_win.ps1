@@ -14,23 +14,14 @@ param(
   [switch]$LinuxBundleWarnOnly,
   [switch]$SkipLinuxFreshness,
   [string]$Profile = "release",
-  [string]$ArtifactInfix = "",
-  # Deprecated no-ops kept so older callers keep working (slim is the default now).
-  [switch]$SkipModel,
-  [switch]$SkipLinuxBundle,
-  [switch]$SkipPortable
+  [string]$ArtifactInfix = ""
 )
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\common.ps1")
 . (Join-Path $PSScriptRoot "product_version.ps1")
 $Version = Get-LitecodeProductVersion -Root $Root
-
-function Assert-LastExitCode([string]$What) {
-  if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
-    throw "$What failed with exit code $LASTEXITCODE"
-  }
-}
 
 function Invoke-ElectronBuilder {
   param([string[]]$BuilderArgs)
@@ -53,9 +44,6 @@ function Invoke-ElectronBuilder {
   }
 }
 
-if ($SkipModel -or $SkipLinuxBundle -or $SkipPortable) {
-  Write-Host "==> note: -SkipModel / -SkipLinuxBundle / -SkipPortable are no-ops (slim NSIS is the default)"
-}
 $sku = if ($Full) { "full (embeds model + Linux tar; local only)" } else { "slim (model + Linux tar download on demand)" }
 Write-Host "==> Windows NSIS, $sku, v$Version"
 

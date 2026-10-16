@@ -127,14 +127,17 @@ fn instantiate_tool(
     }
 
     if tool_id == "webfetch" {
-        return vec![Arc::new(WebFetchTool::new(engines.webfetch_client()))];
+        return vec![Arc::new(
+            WebFetchTool::new(engines.webfetch_client())
+                .with_warm_hook(engines.warm_hook("webfetch")),
+        )];
     }
 
     if tool_id == "websearch" {
-        return vec![Arc::new(WebSearchTool::new(
-            engines.websearch_client(),
-            engines.websearch_endpoint(),
-        ))];
+        return vec![Arc::new(
+            WebSearchTool::new(engines.websearch_client(), engines.websearch_endpoint())
+                .with_warm_hook(engines.warm_hook("websearch")),
+        )];
     }
 
     if tool_id == "code_search" {
@@ -407,7 +410,15 @@ mod tests {
         assert!(names.contains(&"subagent_wait"));
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
-        assert!(names.contains(&"session_search"));
+        // WP-057 gate (tool/availability.rs: is_session_search_gated /
+        // session_search_visible): session_search is bound but hidden until
+        // code_search is desired + Warm. This fixture's WorkspaceEngines is never
+        // warmed, so it must be absent. Visible-after-warm is covered by
+        // tool::availability::tests::retrieval_visible_when_desired_and_warm.
+        assert!(
+            !names.contains(&"session_search"),
+            "session_search must stay hidden while code_search is not Warm (WP-057)"
+        );
         assert!(names.contains(&"litecode_workspace"));
     }
 

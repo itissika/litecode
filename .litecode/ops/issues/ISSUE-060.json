@@ -1,0 +1,20 @@
+{
+  "id": "ISSUE-060",
+  "grade": "5",
+  "layer": null,
+  "domain": "harness-core",
+  "core": false,
+  "core_nodes": [],
+  "reporter": "backend_mid",
+  "owner": "backend_mid",
+  "status": "open",
+  "blocks": false,
+  "title": "client_protocol 遗留无引用的 LspNotification struct（protocol.rs:253）",
+  "history": [
+    {
+      "ts": "2026-10-14T15:08:27.166Z",
+      "by": "backend_mid",
+      "change": "ops.issue_new 分配（WP-154）"
+    }
+  ]
+}

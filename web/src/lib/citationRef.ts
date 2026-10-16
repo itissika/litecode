@@ -86,7 +86,7 @@ function readFragment(fragment: string): { line?: number; symbol?: string } {
 }
 
 /** Where a file-ish markdown link in assistant prose goes. */
-export type WorkspaceLink =
+type WorkspaceLink =
   | { action: "chip"; path: string; line: number | null; symbol: string | null }
   | { action: "text" }
   | { action: "link" };

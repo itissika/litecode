@@ -11,7 +11,7 @@ import { XiaomiLogo } from "./providerLogos/XiaomiLogo";
 import { ZhipuLogo } from "./providerLogos/ZhipuLogo";
 
 /** Catalog provider id → brand mark. */
-export const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
+const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
   openai: OpenAILogo,
   deepseek: DeepSeekLogo,
   mimo: XiaomiLogo,

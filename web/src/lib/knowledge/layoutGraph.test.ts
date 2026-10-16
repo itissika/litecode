@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { knowledgeFixture, knowledgeFolderFixture } from "./fixture";
+import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
 import { layoutKnowledgeGraph, snapKnowledgeCoord, KNOWLEDGE_GRID } from "./layoutGraph";
 import type { KnowledgeNode } from "./types";
-import { knowledgeFixtureIssues as fixtureIssues } from "./fixture";
+import { knowledgeFixtureIssues as fixtureIssues } from "../../test/fixtures/knowledge";
 
 function node(
   partial: Partial<KnowledgeNode> & Pick<KnowledgeNode, "id" | "key">,

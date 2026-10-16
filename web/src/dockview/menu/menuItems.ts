@@ -3,7 +3,7 @@ export interface MenuItem {
   items: MenuEntry[];
 }
 
-export type MenuEntry = string | "separator";
+type MenuEntry = string | "separator";
 
 export function buildMenuItems(_sessionMode: "local" | "remote"): MenuItem[] {
   // Workspace open / remote attach live on the Electron Home hub only.
@@ -22,6 +22,3 @@ export function buildMenuItems(_sessionMode: "local" | "remote"): MenuItem[] {
     },
   ];
 }
-
-/** Default menu (local) for static imports / tests. */
-export const menuItems: MenuItem[] = buildMenuItems("local");

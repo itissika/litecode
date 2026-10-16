@@ -1,4 +1,4 @@
-export type ProcessToolBucket = "bash" | "edit" | "tool";
+type ProcessToolBucket = "bash" | "edit" | "tool";
 
 /** Classify a tool call for ProcessGroup header bucketing. */
 export function processToolBucket(name: string): ProcessToolBucket | null {

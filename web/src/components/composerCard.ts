@@ -5,7 +5,7 @@
  *  which defaults to the base (--_dk-composer-shadow) and is overridden to the
  *  focused variant (--_dk-composer-focus-shadow) by the dock container while
  *  its panel is active — so the shadow follows the panel focus state. */
-export const composerShadow = "shadow-(--_dk-composer-card-shadow)";
+const composerShadow = "shadow-(--_dk-composer-card-shadow)";
 
 /** Floating action-button glass: 66% editor fill + backdrop blur. Draft text
  *  scrolling under the buttons gets softly obscured (not hidden) — same glass

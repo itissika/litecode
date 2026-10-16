@@ -43,9 +43,9 @@ export interface RemoteDirectoryEntry {
   name: string;
 }
 
-export type InstallTarProgressStage = "upload" | "verify" | "extract" | "ready";
+type InstallTarProgressStage = "upload" | "verify" | "extract" | "ready";
 
-export interface InstallTarProgress {
+interface InstallTarProgress {
   stage: InstallTarProgressStage;
   /** 0..1 within the install pipeline. */
   ratio: number;
@@ -139,7 +139,7 @@ export function buildTunnelArgs(
   ];
 }
 
-export class SshCommandError extends Error {
+class SshCommandError extends Error {
   constructor(
     message: string,
     readonly command: string,
@@ -240,7 +240,7 @@ function scpHost(target: SshTarget): string {
  * Remote path for scp destination URIs. Unlike ssh `sh -lc` commands, scp must
  * not wrap the path in shell quotes — quotes become part of the filename.
  */
-export function scpRemoteDest(remotePath: string): string {
+function scpRemoteDest(remotePath: string): string {
   if (!remotePath || /[\0\r\n]/.test(remotePath)) {
     throw new Error("SCP remote path cannot be empty or contain NUL/newlines.");
   }
@@ -491,7 +491,7 @@ export class SshSession {
       'printf "%s\\n" "$expected" > "$stamp"',
     ].join("; ");
     try {
-      report({ stage: "extract", ratio: 0.7, message: "Extracting server under remote home…" });
+      report({ stage: "extract", ratio: 0.7, message: "Extracting…" });
       await this.exec(script);
       report({ stage: "ready", ratio: 1, message: "Remote server binary is ready." });
     } catch (error) {

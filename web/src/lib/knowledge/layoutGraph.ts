@@ -20,11 +20,11 @@ export function snapKnowledgeCoord(value: number): number {
   return Math.round(value / KNOWLEDGE_GRID) * KNOWLEDGE_GRID;
 }
 
-export function knowledgeFolderFlowId(folderId: string): string {
+function knowledgeFolderFlowId(folderId: string): string {
   return `folder:${folderId}`;
 }
 
-export interface LaidOutNode {
+interface LaidOutNode {
   id: string;
   nodeId: string;
   /** React Flow parent id. `null` when the node sits on the canvas root. */
@@ -34,7 +34,7 @@ export interface LaidOutNode {
   y: number;
 }
 
-export interface LaidOutFolder {
+interface LaidOutFolder {
   id: string;
   folderId: string;
   parentId: string | null;

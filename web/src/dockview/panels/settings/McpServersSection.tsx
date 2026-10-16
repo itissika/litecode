@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash } from "@phosphor-icons/react";
 
 import { type McpProbeResult, type ToolScope } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import type { McpDefItem } from "../../../stores/settingsDocuments";
 import { mergeLayeredMcp } from "../../../stores/settingsDocuments";
-import { FoldCard } from "../../../components/FoldCard";
-import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
 import {
   FieldLabel,
   TextArea,
-  SettingsPageShell,
   useSettingsSaveBlocked,
 } from "./shared";
 import { parseMcpJson } from "./jsonDefinitions";
+import { ScopeHint, ScopedDefinitionEditor } from "./ScopedDefinitionEditor";
 import {
   flushRegisteredSettings,
   isPersistBusy,
@@ -246,8 +243,7 @@ export function McpServersSection() {
           {busy === "stop" ? "Stopping…" : "Stop"}
         </button>
         <span className="text-xs text-(--_dk-text-muted)">
-          Keeps a stdio process running. Save JSON, then Start. Config changes
-          need Restart.
+          Save, then Start. Restart after config changes.
         </span>
       </div>
       {probe ? (
@@ -271,166 +267,37 @@ export function McpServersSection() {
   );
 
   return (
-    <SettingsPageShell
+    <ScopedDefinitionEditor
       title="MCP"
-      actions={
-        <>
-          {isNew ? (
-            <button
-              type="button"
-              className="btn-primary btn-sm"
-              disabled={saveBlocked || isPersistBusy(persistStatus)}
-              onClick={onCreate}
-            >
-              Create
-            </button>
-          ) : null}
-          <Dropdown
-            variant="menu"
-            align="right"
-            panelClassName="rounded-md"
-            trigger={({ open, toggle }) => (
-              <button
-                type="button"
-                className="btn btn-icon"
-                disabled={saveBlocked || isPersistBusy(persistStatus)}
-                aria-label="New MCP server"
-                aria-haspopup="menu"
-                aria-expanded={open}
-                title="New MCP server"
-                onClick={toggle}
-              >
-                <Plus size={16} />
-              </button>
-            )}
-          >
-            <button
-              type="button"
-              className={dropdownItemClass}
-              onClick={() => startCreate("global")}
-            >
-              Global
-            </button>
-            <button
-              type="button"
-              className={dropdownItemClass}
-              onClick={() => startCreate("workspace")}
-            >
-              Workspace
-            </button>
-          </Dropdown>
-        </>
+      newLabel="New MCP server"
+      hint={<ScopeHint bindName="mcp_<id>" />}
+      global={globalServers}
+      workspace={workspaceServers}
+      itemId={(server) => server.id}
+      itemSummary={(server) =>
+        `${server.status ?? "stopped"}${server.command ? ` · ${server.command}` : ""}`
       }
-    >
-      <div className="space-y-4">
-        <p className="text-xs text-(--_dk-text-muted)">
-          Register stdio MCP servers. Same id: workspace overrides global. Bind{" "}
-          <span className="font-mono">mcp_&lt;id&gt;</span> on Agents.
-        </p>
-        <div className="space-y-3">
-          {(
-            [
-              ["global", globalServers, "Global"],
-              ["workspace", workspaceServers, "Workspace"],
-            ] as const
-          ).map(([scope, list, title]) => (
-            <FoldCard
-              key={scope}
-              defaultOpen
-              label={<span className="settings-section-title">{title}</span>}
-              className="settings-foldcard"
-            >
-              <div className="space-y-2">
-                {list.length === 0 && !(isNew && createScope === scope) ? (
-                  <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">
-                    None.
-                  </p>
-                ) : null}
-                {list.map((server) => (
-                  <FoldCard
-                    key={`${scope}:${server.id}`}
-                    open={
-                      !isNew &&
-                      selectedScope === scope &&
-                      selectedId === server.id
-                    }
-                    onToggle={(o) => {
-                      if (o) {
-                        void flushRegisteredSettings().then(() => {
-                          setIsNew(false);
-                          setSelectedScope(scope);
-                          setSelectedId(server.id);
-                          setProbe(null);
-                        });
-                      } else if (
-                        selectedScope === scope &&
-                        selectedId === server.id
-                      ) {
-                        void flushRegisteredSettings().then(() =>
-                          setSelectedId(null),
-                        );
-                      }
-                    }}
-                    label={
-                      <span className="flex flex-1 items-center justify-between gap-2">
-                        <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                          {server.id}
-                        </span>
-                        <span className="flex items-center gap-2">
-                          <span className="truncate text-xs text-(--_dk-text-muted)">
-                            {server.status ?? "stopped"}
-                            {server.command ? ` · ${server.command}` : ""}
-                          </span>
-                          <button
-                            type="button"
-                            className="btn-danger btn-icon"
-                            disabled={
-                              saveBlocked || isPersistBusy(persistStatus)
-                            }
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onDelete(server.id, scope);
-                            }}
-                            onKeyDown={(e) => e.stopPropagation()}
-                            aria-label={`Delete ${server.id}`}
-                            title={`Delete ${server.id}`}
-                          >
-                            <Trash size={16} />
-                          </button>
-                        </span>
-                      </span>
-                    }
-                    className="settings-foldcard"
-                  >
-                    {!isNew &&
-                    selectedScope === scope &&
-                    selectedId === server.id
-                      ? editorForm
-                      : null}
-                  </FoldCard>
-                ))}
-                {isNew && createScope === scope ? (
-                  <FoldCard
-                    key="__new"
-                    open
-                    onToggle={(o) => {
-                      if (!o) setIsNew(false);
-                    }}
-                    label={
-                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                        (new)
-                      </span>
-                    }
-                    className="settings-foldcard"
-                  >
-                    {editorForm}
-                  </FoldCard>
-                ) : null}
-              </div>
-            </FoldCard>
-          ))}
-        </div>
-      </div>
-    </SettingsPageShell>
+      actionsDisabled={saveBlocked || isPersistBusy(persistStatus)}
+      isNew={isNew}
+      createScope={createScope}
+      selectedScope={selectedScope}
+      selectedId={selectedId}
+      onCreate={onCreate}
+      onStartCreate={startCreate}
+      onCancelNew={() => setIsNew(false)}
+      onOpen={(scope, id) => {
+        void flushRegisteredSettings().then(() => {
+          setIsNew(false);
+          setSelectedScope(scope);
+          setSelectedId(id);
+          setProbe(null);
+        });
+      }}
+      onClose={() => {
+        void flushRegisteredSettings().then(() => setSelectedId(null));
+      }}
+      onDelete={onDelete}
+      editorForm={editorForm}
+    />
   );
 }

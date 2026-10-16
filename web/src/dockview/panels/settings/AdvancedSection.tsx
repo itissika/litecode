@@ -67,9 +67,8 @@ export function AdvancedSection() {
         <div className="settings-card space-y-3 p-4">
           <SectionHeader title="Web search" />
           <p className="text-xs text-(--_dk-text-muted)">
-            Uses Exa hosted search. Paste an Exa API key for higher limits;
-            leave empty for the anonymous free tier, or set{" "}
-            <code className="font-mono">EXA_API_KEY</code> in the environment.
+            Optional Exa API key (or{" "}
+            <code className="font-mono">EXA_API_KEY</code>) for higher limits.
           </p>
           <FieldLabel>Exa API key</FieldLabel>
           <TextInput

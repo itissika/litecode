@@ -1,6 +1,11 @@
 import { bindDockview } from "../dockview/workbench/host";
 import { mainCenterHasPanel } from "../dockview/workbench/queries";
 import { useSessionStore } from "../stores/sessionStore";
+import {
+  noteRestoredCentre,
+  resetCentreSettleForTests,
+  settleCentre,
+} from "./centreSettle";
 
 /**
  * When the restored centre grid contains no panels at all, open a chat.
@@ -19,12 +24,30 @@ let ready = false;
 let transportReady = false;
 /** Already decided for this page load, whether or not a panel was created. */
 let considered = false;
+let stopWatchingNew: (() => void) | null = null;
 
 function ensureCentreChat(): void {
   if (!transportReady || !ready || considered) return;
   considered = true;
-  if (mainCenterHasPanel()) return;
-  useSessionStore.getState().newSession();
+  if (mainCenterHasPanel()) {
+    noteRestoredCentre();
+    return;
+  }
+  const sessions = useSessionStore;
+  sessions.getState().newSession();
+  if (sessions.getState().pendingSessionOp !== "new_session") {
+    // Another session op held the lock (or newSession is stubbed): nothing
+    // of ours is in flight.
+    settleCentre();
+    return;
+  }
+  stopWatchingNew = sessions.subscribe((state) => {
+    if (state.pendingSessionOp !== "new_session") {
+      stopWatchingNew?.();
+      stopWatchingNew = null;
+      settleCentre();
+    }
+  });
 }
 
 /** The dockview layout finished restoring (or was built from scratch). */
@@ -48,5 +71,8 @@ export function resetCentreChatForTests(): void {
   ready = false;
   transportReady = false;
   considered = false;
+  stopWatchingNew?.();
+  stopWatchingNew = null;
+  resetCentreSettleForTests();
   bindDockview(null);
 }

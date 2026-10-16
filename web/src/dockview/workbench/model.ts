@@ -50,7 +50,3 @@ export function isUsableCenter(facts: GroupFacts): boolean {
   if (facts.width == null && facts.height == null) return true;
   return (facts.width ?? 0) > 0 || (facts.height ?? 0) > 0;
 }
-
-export function groupHasComponent(facts: GroupFacts, component: string): boolean {
-  return facts.panels.some((panel) => panel.component === component);
-}

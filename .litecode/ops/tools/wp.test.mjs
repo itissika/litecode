@@ -31,7 +31,7 @@ function fresh() {
   fs.mkdirSync(ops, { recursive: true });
   for (const f of ["board.json", "board.schema.json", "validate.mjs", "log.jsonl", "tool_traces.jsonl"]) fs.copyFileSync(path.join(realOps, f), path.join(ops, f));
   fs.mkdirSync(path.join(ops, "events")); fs.writeFileSync(path.join(ops, "events", "inbox.json"), JSON.stringify({ inbox: [], updated_at: null }, null, 2));
-  fs.mkdirSync(path.join(ops, "demand")); fs.copyFileSync(path.join(realOps, "demand", "board.json"), path.join(ops, "demand", "board.json"));
+ 
   fs.cpSync(here, path.join(ops, "tools"), { recursive: true, filter: (s) => !s.includes(".kb_nav_tmp") });
   return ops;
 }

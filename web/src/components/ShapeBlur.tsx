@@ -16,7 +16,7 @@ import type { CSSProperties } from "react";
  *     <ShapeBlur shape="radial" size={40} inset={{ left: 8, top: 8 }} strength={6} />
  *   </div>
  */
-export interface ShapeBlurProps {
+interface ShapeBlurProps {
   /** Uniform blur radius in px (applied via backdrop-filter). */
   strength?: number;
   /** Mask shape controlling how/where the blur fades.

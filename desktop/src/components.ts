@@ -21,25 +21,30 @@ import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream";
 import zlib from "node:zlib";
 
+import type {
+  ComponentDownloadStatus,
+  ComponentId,
+  ComponentPhase,
+  ComponentProgressEvent,
+} from "./bridge-contract";
 import { BUNDLED_MODEL_REL, LINUX_TAR_NAME, isModelDirReady, litecodeBundlesDir } from "./bundle-paths";
 
 export const COMPONENTS_MANIFEST_NAME = "litecode-components.json";
-export const COMPONENTS_RELEASE_REPO = "itissika/litecode";
-export const COMPONENTS_BASE_ENV = "LITECODE_COMPONENTS_BASE";
-export const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
+const COMPONENTS_RELEASE_REPO = "itissika/litecode";
+const COMPONENTS_BASE_ENV = "LITECODE_COMPONENTS_BASE";
 const INSTALL_RECORD = "components.json";
 const IDLE_TIMEOUT_MS = 45_000;
 const MANIFEST_TIMEOUT_MS = 20_000;
 const NETWORK_ATTEMPTS = 3;
 
-export type ComponentId = "embed-model" | "linux-server";
-export const COMPONENT_IDS: readonly ComponentId[] = ["embed-model", "linux-server"];
+export type { ComponentDownloadStatus, ComponentId, ComponentPhase, ComponentProgressEvent };
+const COMPONENT_IDS: readonly ComponentId[] = ["embed-model", "linux-server"];
 
 export function isComponentId(value: unknown): value is ComponentId {
   return typeof value === "string" && (COMPONENT_IDS as readonly string[]).includes(value);
 }
 
-export type ComponentFormat = "file" | "tar.gz";
+type ComponentFormat = "file" | "tar.gz";
 
 export type ManifestComponent = {
   id: string;
@@ -63,34 +68,6 @@ export type ComponentsManifest = {
   repo: string;
   generated_at?: string;
   components: ManifestComponent[];
-};
-
-export type ComponentPhase = "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
-
-/** Rich download lifecycle for pause/stop/retry UI (口径 #7). */
-export type ComponentDownloadStatus =
-  | "idle"
-  | "downloading"
-  | "paused"
-  | "stopped"
-  | "error"
-  | "done";
-
-export type ComponentProgressEvent = {
-  id: ComponentId;
-  phase: ComponentPhase;
-  /** Richer status mirror (defaults derived from phase when omitted by older callers). */
-  status?: ComponentDownloadStatus;
-  /** Bytes received (downloading/verifying). */
-  received?: number;
-  /** Expected bytes. */
-  total?: number;
-  /** 0..100 */
-  percent?: number;
-  /** Sliding-window throughput while downloading. */
-  bytesPerSecond?: number;
-  message: string;
-  error?: string;
 };
 
 export type ComponentSource =
@@ -136,7 +113,7 @@ export function versionInRange(version: string, range: { min: string; max?: stri
 /* Source + manifest                                                   */
 /* ------------------------------------------------------------------ */
 
-export function releaseDownloadPrefix(repo = COMPONENTS_RELEASE_REPO): string {
+function releaseDownloadPrefix(repo = COMPONENTS_RELEASE_REPO): string {
   return `https://github.com/${repo}/releases/download/`;
 }
 
@@ -276,7 +253,7 @@ export function componentPayloadLocation(
 /* Install record                                                      */
 /* ------------------------------------------------------------------ */
 
-export type InstallRecordEntry = {
+type InstallRecordEntry = {
   version: string;
   sha256: string;
   app_version: string;
@@ -326,10 +303,10 @@ type TransferProgress = (received: number, total: number, bytesPerSecond: number
 
 class VerificationError extends Error {}
 
-/** User/control aborts — pause keeps `.part`, stop deletes it. */
+/** Control abort (abortAll on quit) — keeps `.part` for Range resume. */
 export class DownloadControlError extends Error {
-  constructor(readonly kind: "pause" | "stop") {
-    super(kind === "pause" ? "Download paused" : "Download stopped");
+  constructor(readonly kind: "pause") {
+    super("Download paused");
     this.name = "DownloadControlError";
   }
 }
@@ -338,12 +315,12 @@ export function isDownloadControlError(error: unknown): error is DownloadControl
   return error instanceof DownloadControlError;
 }
 
-function controlKindFromAbort(signal: AbortSignal): "pause" | "stop" | null {
+function controlKindFromAbort(signal: AbortSignal): "pause" | null {
   const reason = (signal as AbortSignal & { reason?: unknown }).reason;
   if (reason instanceof DownloadControlError) return reason.kind;
   if (reason && typeof reason === "object" && "kind" in reason) {
     const kind = (reason as { kind?: unknown }).kind;
-    if (kind === "pause" || kind === "stop") return kind;
+    if (kind === "pause") return kind;
   }
   return null;
 }
@@ -633,7 +610,6 @@ async function transferPayload(
         ? error.kind
         : controlKindFromAbort(ctrl.signal);
       if (kind) {
-        if (kind === "stop") fs.rmSync(dest, { force: true });
         throw new DownloadControlError(kind);
       }
       if (error instanceof VerificationError || attempt === NETWORK_ATTEMPTS) {
@@ -792,7 +768,7 @@ export async function extractTarGz(archive: string, destDir: string): Promise<st
 /* Manager                                                             */
 /* ------------------------------------------------------------------ */
 
-export type ComponentLocate = () => string | null;
+type ComponentLocate = () => string | null;
 
 export type ComponentManagerOptions = {
   appVersion: string;
@@ -811,7 +787,6 @@ export class ComponentManager {
   private readonly lastError = new Map<ComponentId, string>();
   private readonly controllers = new Map<ComponentId, AbortController>();
   private readonly statuses = new Map<ComponentId, ComponentDownloadStatus>();
-  private readonly activeParts = new Map<ComponentId, string>();
   private tmpCleaned = false;
 
   constructor(private readonly opts: ComponentManagerOptions) {
@@ -903,46 +878,6 @@ export class ComponentManager {
     };
   }
 
-  /** Pause in-flight download; keeps `.part` for Range resume. */
-  pause(id: ComponentId): boolean {
-    const ctrl = this.controllers.get(id);
-    if (!ctrl) return false;
-    ctrl.abort(new DownloadControlError("pause"));
-    return true;
-  }
-
-  /** Stop in-flight download and delete `.part` / staging. */
-  stop(id: ComponentId): boolean {
-    const ctrl = this.controllers.get(id);
-    const part = this.activeParts.get(id);
-    if (ctrl) ctrl.abort(new DownloadControlError("stop"));
-    if (part) {
-      fs.rmSync(part, { force: true });
-      const staging = part.replace(/\.part$/, "");
-      // staging dirs use embed-model-<nonce> naming; best-effort wipe siblings for this id.
-      try {
-        const dir = path.dirname(part);
-        for (const name of fs.readdirSync(dir)) {
-          if (name.startsWith(`${id}-`) && !name.endsWith(".part")) {
-            fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-      void staging;
-    }
-    this.setStatus(id, "stopped");
-    return Boolean(ctrl || part);
-  }
-
-  /** Re-run ensure (resumes from `.part` when present). */
-  retry(id: ComponentId): Promise<EnsureResult> {
-    this.lastError.delete(id);
-    this.setStatus(id, "idle");
-    return this.ensure(id);
-  }
-
   /** Abort every in-flight download (before-quit). Keeps `.part` like pause. */
   abortAll(): void {
     for (const [id, ctrl] of this.controllers) {
@@ -974,11 +909,12 @@ export class ComponentManager {
       })
       .catch((error: unknown) => {
         if (isDownloadControlError(error)) {
-          this.setStatus(id, error.kind === "pause" ? "paused" : "stopped");
+          this.setStatus(id, "paused");
           this.opts.emit({
             id,
             phase: "error",
-            status: error.kind === "pause" ? "paused" : "stopped",
+            status: "paused",
+            percent: 0,
             message: error.message,
             error: error.message,
           });
@@ -991,6 +927,7 @@ export class ComponentManager {
           id,
           phase: "error",
           status: "error",
+          percent: 0,
           message: `${COMPONENT_LABEL[id]} download failed`,
           error: message,
         });
@@ -1022,7 +959,6 @@ export class ComponentManager {
     const tmpDir = this.tmpDir();
     fs.mkdirSync(tmpDir, { recursive: true });
     const payload = componentPartPath(tmpDir, id, component.sha256);
-    this.activeParts.set(id, payload);
     const ctrl = new AbortController();
     this.controllers.set(id, ctrl);
     const totalMb = (component.size / 1024 / 1024).toFixed(1);
@@ -1072,7 +1008,6 @@ export class ComponentManager {
       });
       return { id, path: installed, downloaded: true };
     } finally {
-      this.activeParts.delete(id);
       // Pause keeps `.part` for Range resume; everything else removes leftovers.
       // (linux install renames the part away on success — rm is then a no-op.)
       const kind = controlKindFromAbort(ctrl.signal);

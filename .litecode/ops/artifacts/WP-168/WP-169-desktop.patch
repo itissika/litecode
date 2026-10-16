@@ -1,0 +1,707 @@
+--- a/desktop/src/main.ts
++++ b/desktop/src/main.ts
+@@ -61,6 +61,7 @@
+   RecoveryCounter,
+   recoveryDelayMs,
+ } from "./process-recovery";
++import { isBootAborted, runBootSequence } from "./boot-sequence";
+ import { startSidecar, stopSidecar, watchSidecarExit, type SidecarHandle } from "./sidecar";
+ import {
+   BUNDLED_MODEL_REL,
+@@ -161,7 +162,19 @@
+   return crypto.randomBytes(32).toString("base64url");
+ }
+ 
+-type BootContent = { kind: "url"; url: string } | { kind: "hub" };
++type BootContent = { kind: "hub" } | { kind: "skeleton" };
++
++/**
++ * WP-169 skeleton: theme background only, whole page draggable (frameless
++ * window), no text, no script. A data: URL is never a trusted IPC surface
++ * (ipc-trust only trusts the hub file URL and the workbench origin).
++ */
++const SKELETON_URL =
++  "data:text/html;charset=utf-8," +
++  encodeURIComponent(
++    '<!doctype html><html><head><meta charset="utf-8"></head>' +
++      '<body style="margin:0;width:100vw;height:100vh;background:#0a0a0a;-webkit-app-region:drag"></body></html>',
++  );
+ 
+ function hubPagePath(): string {
+   return path.join(app.getPath("userData"), "hub-index.html");
+@@ -387,7 +400,10 @@
+   if (content.kind === "hub") {
+     await loadHub(win);
+   } else {
+-    await safeLoadURL(win, content.url);
++    // Skeleton: no trusted surface while the backend is starting. The
++    // workbench later goes through safeLoadURL into this same window.
++    trustContext = null;
++    await win.loadURL(SKELETON_URL);
+   }
+   return win;
+ }
+@@ -1343,8 +1359,6 @@
+   if (!remoteUrl) {
+     assertDevUiConfigured(devUi, devUpstreamFilePath());
+   }
+-  let content: BootContent;
+-
+   if (remoteUrl) {
+     const token = process.env.LITECODE_TOKEN?.trim();
+     if (!token) {
+@@ -1355,44 +1369,103 @@
+     sessionMode = "remote";
+     authToken = token;
+     const expected = process.env.LITECODE_WORKSPACE?.trim();
+-    await waitForWorkspaceHealth(
+-      healthUrlFromBase(remoteUrl),
+-      expected ? normalizeWorkspace(expected) : undefined,
+-    );
+-    content = { kind: "url", url: handshakeUrl(remoteUrl, authToken) };
+-    if (expected) {
+-      currentWorkspace = normalizeWorkspace(expected);
+-    }
+-  } else {
+-    sessionMode = "local";
+-    authToken = createToken();
+-    const workspace = resolveBootWorkspace();
+-    if (workspace) {
+-      sidecar = await startSidecar({
++    const expectedWorkspace = expected ? normalizeWorkspace(expected) : null;
++    // S1b: skeleton first; /health only gates loadURL(handshakeUrl).
++    await runBootSequence<BrowserWindow, null>({
++      startBackend: async () => {
++        await waitForWorkspaceHealth(healthUrlFromBase(remoteUrl), expectedWorkspace ?? undefined);
++        return null;
++      },
++      createSkeleton: () => createBootSkeleton(expectedWorkspace),
++      prepare: async () => {
++        if (expectedWorkspace) currentWorkspace = expectedWorkspace;
++        return handshakeUrl(remoteUrl, authToken);
++      },
++      loadWorkbench: (win, url) => safeLoadURL(win, url),
++      stopBackend: async () => undefined,
++      closeSkeleton: closeFailedBootSkeleton,
++      // No local process to stop; quit must not wait for the health poll.
++    });
++    return;
++  }
++
++  sessionMode = "local";
++  authToken = createToken();
++  const workspace = resolveBootWorkspace();
++  if (!workspace) {
++    const hubWindow = await createWindow({ kind: "hub" });
++    mainWindow = hubWindow;
++    hubWindow.on("closed", () => {
++      if (mainWindow === hubWindow) mainWindow = null;
++    });
++    await startRegistry(hubWindow, null);
++    return;
++  }
++  // S1: skeleton window in parallel with the sidecar; READY + attach check +
++  // /health only gate the workbench loadURL into the same window.
++  await runBootSequence<BrowserWindow, SidecarHandle>({
++    startBackend: (signal) =>
++      startSidecar({
+         token: authToken,
+         parentPid: process.pid,
+         workspace,
+-      });
+-      await verifySidecarAttached(sidecar);
+-      attachSidecarWatch(sidecar);
++        // Window closed during the skeleton: kill the child now, not at READY.
++        signal,
++      }),
++    createSkeleton: () => createBootSkeleton(workspace),
++    onBackend: (handle) => {
++      sidecar = handle;
++    },
++    prepare: async (handle) => {
++      await verifySidecarAttached(handle);
++      attachSidecarWatch(handle);
+       currentWorkspace = workspace;
+-      recordRecent(workspace);
+-      content = { kind: "url", url: await localWorkbenchUrl(sidecar.readyUrl) };
+-    } else {
+-      content = { kind: "hub" };
+-    }
+-  }
++      return localWorkbenchUrl(handle.readyUrl);
++    },
++    loadWorkbench: (win, url) => safeLoadURL(win, url),
++    stopBackend: async (handle) => {
++      await stopSidecar(handle);
++      if (sidecar === handle) {
++        sidecar = null;
++        syncDevUpstream(null);
++      }
++    },
++    closeSkeleton: closeFailedBootSkeleton,
++    // S2: boot-time recents write only after the workbench loaded.
++    recordRecent: () => recordRecent(workspace),
++    onAbort: (cleanup) => {
++      bootAbortCleanup = cleanup;
++    },
++  });
++}
+ 
+-  mainWindow = await createWindow(content);
++/** Set while a failed boot closes its skeleton, so that close does not quit the app. */
++let closingFailedBoot = false;
++/** Abort cleanup (sidecar stop) when the user closed the skeleton; awaited before exit. */
++let bootAbortCleanup: Promise<void> | null = null;
++
++async function startRegistry(win: BrowserWindow, workspace: string | null): Promise<void> {
+   registry = new InstanceRegistry();
+-  await registry.start(mainWindow);
+-  if (currentWorkspace) {
+-    registry.setWorkspace(currentWorkspace);
++  await registry.start(win);
++  if (workspace) {
++    registry.setWorkspace(workspace);
+   }
++}
+ 
+-  mainWindow.on("closed", () => {
+-    mainWindow = null;
++/** Skeleton window + registry as soon as the workspace is known (second open focuses it). */
++async function createBootSkeleton(workspace: string | null): Promise<BrowserWindow> {
++  const win = await createWindow({ kind: "skeleton" });
++  mainWindow = win;
++  win.on("closed", () => {
++    if (mainWindow === win) mainWindow = null;
+   });
++  await startRegistry(win, workspace);
++  return win;
++}
++
++function closeFailedBootSkeleton(win: BrowserWindow): void {
++  closingFailedBoot = true;
++  win.destroy();
+ }
+ 
+ function targetWindow(
+@@ -1812,6 +1885,8 @@
+   try {
+     await boot();
+   } catch (err) {
++    // WP-169: the user closed the skeleton; the normal quit path cleans up.
++    if (isBootAborted(err)) return;
+     const message = err instanceof Error ? err.message : String(err);
+     // DESK-04: if boot fails after the sidecar was spawned (e.g. health
+     // never verifies), stop it so we never leave an orphan server process.
+@@ -1824,6 +1899,8 @@
+ });
+ 
+ app.on("window-all-closed", () => {
++  // A failed boot shows its error dialog and exits itself.
++  if (closingFailedBoot) return;
+   if (process.platform !== "darwin") {
+     app.quit();
+   }
+@@ -1842,6 +1919,8 @@
+       /* ignore */
+     }
+     registry?.stop();
++    // WP-169: skeleton closed while the sidecar was still starting.
++    await bootAbortCleanup?.catch(() => undefined);
+     await sidecarLifecycle.run(async () => {
+       await stopSidecar(sidecar);
+       await stopManagedRemote();
+--- a/desktop/src/sidecar.ts
++++ b/desktop/src/sidecar.ts
+@@ -78,7 +78,13 @@
+   /** Required: one sidecar process = one workspace. */
+   workspace: string;
+   timeoutMs?: number;
++  /**
++   * WP-169: abort the boot (e.g. window closed during the skeleton). Kills the
++   * child immediately and rejects with `signal.reason`. Omitted = unchanged.
++   */
++  signal?: AbortSignal;
+ }): Promise<SidecarHandle> {
++  if (opts.signal?.aborted) throw opts.signal.reason;
+   const workspace = normalizeWorkspace(opts.workspace);
+   const productRoot = sidecarRoot();
+   const bin = litecodeBinary(productRoot);
+@@ -113,7 +119,7 @@
+   });
+ 
+   const timeoutMs = opts.timeoutMs ?? 90_000;
+-  const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace });
++  const readyUrl = await waitForReady(child, timeoutMs, { bin, workspace }, opts.signal);
+   const handle: SidecarHandle = {
+     process: child,
+     readyUrl,
+@@ -127,10 +133,12 @@
+   return handle;
+ }
+ 
+-function waitForReady(
++/** Exported for tests. `signal` aborts: kill the child, reject with its reason. */
++export function waitForReady(
+   child: ChildProcess,
+   timeoutMs: number,
+   ctx: { bin: string; workspace: string },
++  signal?: AbortSignal,
+ ): Promise<string> {
+   return new Promise((resolve, reject) => {
+     let settled = false;
+@@ -138,10 +146,24 @@
+     let stderrBuf = "";
+     const captured: string[] = [];
+ 
++    const onAbort = () => {
++      if (settled) return;
++      settled = true;
++      clearTimeout(timer);
++      try {
++        child.kill();
++      } catch {
++        /* ignore */
++      }
++      reject(signal?.reason);
++    };
++    const detachAbort = () => signal?.removeEventListener("abort", onAbort);
++
+     const fail = (err: Error) => {
+       if (settled) return;
+       settled = true;
+       clearTimeout(timer);
++      detachAbort();
+       console.error(err.message);
+       reject(err);
+     };
+@@ -185,12 +207,21 @@
+         if (!m || settled) continue;
+         settled = true;
+         clearTimeout(timer);
++        detachAbort();
+         const url = m[1].endsWith("/") ? m[1] : `${m[1]}/`;
+         resolve(url);
+         return;
+       }
+     };
+ 
++    if (signal) {
++      if (signal.aborted) {
++        onAbort();
++        return;
++      }
++      signal.addEventListener("abort", onAbort, { once: true });
++    }
++
+     if (!child.stdout || !child.stderr) {
+       fail(new Error("sidecar stdio pipes missing"));
+       return;
+--- a/desktop/src/sidecar.test.ts
++++ b/desktop/src/sidecar.test.ts
+@@ -3,7 +3,7 @@
+ import { describe, it } from "node:test";
+ import type { SidecarHandle } from "./sidecar";
+ 
+-import { formatSidecarBootFailure, stopSidecar } from "./sidecar";
++import { formatSidecarBootFailure, stopSidecar, waitForReady } from "./sidecar";
+ 
+ function longRunningChild(): SidecarHandle {
+   const child = spawn(
+@@ -69,3 +69,62 @@
+     assert.equal(handle.intentionalStop, true);
+   });
+ });
++
++function pipedChild(script: string) {
++  return spawn(process.execPath, ["-e", script], {
++    stdio: ["ignore", "pipe", "pipe"],
++    windowsHide: true,
++  });
++}
++
++const CTX = { bin: "fake-litecode", workspace: "/tmp/ws" };
++
++describe("startSidecar abort signal (WP-169)", () => {
++  it("abort before READY kills the child and rejects with signal.reason", async () => {
++    const child = pipedChild("setInterval(() => {}, 1000)"); // never prints READY
++    const controller = new AbortController();
++    const reason = new Error("boot aborted: window closed");
++    const ready = waitForReady(child, 90_000, CTX, controller.signal);
++    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
++    setTimeout(() => controller.abort(reason), 50);
++    await assert.rejects(ready, (err) => err === reason);
++    await exited;
++    assert.ok(child.exitCode !== null || child.signalCode !== null, "child must be killed");
++  });
++
++  it("an already-aborted signal kills the child at once", async () => {
++    const child = pipedChild("setInterval(() => {}, 1000)");
++    const controller = new AbortController();
++    const reason = new Error("already aborted");
++    controller.abort(reason);
++    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
++    await assert.rejects(waitForReady(child, 90_000, CTX, controller.signal), (err) => err === reason);
++    await exited;
++  });
++
++  it("without a signal: unchanged, resolves on LITECODE_READY", async () => {
++    const child = pipedChild(
++      "console.log('booting'); console.log('LITECODE_READY http://127.0.0.1:4567'); setInterval(() => {}, 1000)",
++    );
++    try {
++      const url = await waitForReady(child, 10_000, CTX);
++      assert.equal(url, "http://127.0.0.1:4567/");
++    } finally {
++      child.kill();
++    }
++  });
++
++  it("READY settles first: a later abort does nothing (listener removed)", async () => {
++    const child = pipedChild("console.log('LITECODE_READY http://127.0.0.1:4568/'); setInterval(() => {}, 1000)");
++    const controller = new AbortController();
++    try {
++      const url = await waitForReady(child, 10_000, CTX, controller.signal);
++      assert.equal(url, "http://127.0.0.1:4568/");
++      controller.abort(new Error("late"));
++      await new Promise((r) => setTimeout(r, 50));
++      assert.equal(child.exitCode, null, "a late abort must not kill a ready sidecar");
++    } finally {
++      child.kill();
++    }
++  });
++});
+--- /dev/null
++++ b/desktop/src/boot-sequence.ts
+@@ -0,0 +1,113 @@
++/**
++ * WP-169 boot ordering (S1/S1b/S2), kept free of Electron so it can be tested.
++ *
++ * 1. The backend (local sidecar / remote health wait) starts and, in parallel,
++ *    a skeleton window is created and shown.
++ * 2. Only the workbench `loadURL` waits for the backend (READY + attach check
++ *    + /health), and it goes into the SAME window.
++ * 3. Boot-time `recordRecent` runs once, after that load succeeds.
++ * 4. Backend failure: close the skeleton and rethrow the original error.
++ * 5. User closes the skeleton: abort the backend start through the AbortSignal
++ *    (the sidecar child is killed immediately, no wait for READY), stop a
++ *    backend that is already up, and reject with BootAbortedError so the
++ *    caller shows no error dialog.
++ */
++
++export type SkeletonWindow = {
++  isDestroyed(): boolean;
++  once(event: "closed", listener: () => void): unknown;
++};
++
++export class BootAbortedError extends Error {
++  constructor() {
++    super("Boot aborted: window closed during startup");
++    this.name = "BootAbortedError";
++  }
++}
++
++export function isBootAborted(error: unknown): error is BootAbortedError {
++  return error instanceof BootAbortedError;
++}
++
++export type BootSequenceDeps<W extends SkeletonWindow, H> = {
++  /**
++   * Start the backend. Called before the skeleton is awaited (parallel).
++   * `signal` aborts when the user closes the skeleton; the start must then
++   * kill what it spawned and reject.
++   */
++  startBackend(signal: AbortSignal): Promise<H>;
++  /** Create + show the skeleton window (and register it, e.g. instance registry). */
++  createSkeleton(): Promise<W>;
++  /** Backend handle is available (e.g. publish it for quit-time cleanup). */
++  onBackend?(handle: H): void;
++  /** Post-start checks (attach verify, /health, watchers) → workbench URL. */
++  prepare(handle: H): Promise<string>;
++  /** Navigate the skeleton window to the workbench. */
++  loadWorkbench(win: W, url: string): Promise<void>;
++  /** Stop a backend handle (abort path). */
++  stopBackend(handle: H): Promise<void>;
++  /** Close the skeleton on a failed boot (must not count as a user close). */
++  closeSkeleton(win: W): void;
++  /** Boot-time recents write (S2). Only called after loadWorkbench succeeds. */
++  recordRecent?(): void;
++  /** Receives the abort cleanup promise as soon as the user closes the window. */
++  onAbort?(cleanup: Promise<void>): void;
++};
++
++export async function runBootSequence<W extends SkeletonWindow, H>(
++  deps: BootSequenceDeps<W, H>,
++): Promise<W> {
++  const controller = new AbortController();
++  const backend = deps.startBackend(controller.signal);
++  // Observed below; avoid an unhandled rejection while the skeleton is created.
++  backend.catch(() => undefined);
++
++  let win: W;
++  try {
++    win = await deps.createSkeleton();
++  } catch (error) {
++    await backend.then((h) => deps.stopBackend(h)).catch(() => undefined);
++    throw error;
++  }
++
++  let failing = false;
++  let aborted = false;
++  let rejectClosed: (error: Error) => void = () => undefined;
++  const closed = new Promise<never>((_resolve, reject) => {
++    rejectClosed = reject;
++  });
++  closed.catch(() => undefined);
++
++  const onClosed = () => {
++    if (failing) return;
++    aborted = true;
++    const abortError = new BootAbortedError();
++    // A start still in flight kills its child and rejects right away; a
++    // backend that is already up is stopped.
++    controller.abort(abortError);
++    const cleanup = backend.then(
++      (h) => deps.stopBackend(h).catch(() => undefined),
++      () => undefined,
++    );
++    deps.onAbort?.(cleanup);
++    rejectClosed(abortError);
++  };
++  if (win.isDestroyed()) onClosed();
++  else win.once("closed", onClosed);
++
++  const untilClosed = <T>(work: Promise<T>): Promise<T> => Promise.race([work, closed]);
++
++  try {
++    const handle = await untilClosed(backend);
++    deps.onBackend?.(handle);
++    const url = await untilClosed(deps.prepare(handle));
++    await untilClosed(deps.loadWorkbench(win, url));
++  } catch (error) {
++    if (aborted) throw new BootAbortedError();
++    failing = true;
++    if (!win.isDestroyed()) deps.closeSkeleton(win);
++    throw error;
++  }
++  deps.recordRecent?.();
++  return win;
++}
+--- /dev/null
++++ b/desktop/src/boot-sequence.test.ts
+@@ -0,0 +1,216 @@
++import assert from "node:assert/strict";
++import { describe, it } from "node:test";
++
++import { BootAbortedError, isBootAborted, runBootSequence, type BootSequenceDeps } from "./boot-sequence";
++
++class FakeWindow {
++  destroyed = false;
++  private listeners: Array<() => void> = [];
++  isDestroyed(): boolean {
++    return this.destroyed;
++  }
++  once(_event: "closed", listener: () => void): void {
++    this.listeners.push(listener);
++  }
++  /** User close (Alt+F4) or programmatic destroy: both emit "closed". */
++  close(): void {
++    if (this.destroyed) return;
++    this.destroyed = true;
++    const pending = this.listeners;
++    this.listeners = [];
++    for (const l of pending) l();
++  }
++}
++
++type Handle = { id: string; stopped: boolean };
++
++function deferred<T>() {
++  let resolve!: (value: T) => void;
++  let reject!: (error: unknown) => void;
++  const promise = new Promise<T>((res, rej) => {
++    resolve = res;
++    reject = rej;
++  });
++  return { promise, resolve, reject };
++}
++
++const tick = () => new Promise((r) => setImmediate(r));
++
++function harness(opts: { prepareError?: Error } = {}) {
++  const log: string[] = [];
++  const ready = deferred<Handle>();
++  const win = new FakeWindow();
++  const handle: Handle = { id: "sidecar", stopped: false };
++  let abortCleanup: Promise<void> | null = null;
++  const killed = { value: false };
++  const deps: BootSequenceDeps<FakeWindow, Handle> = {
++    // Mirrors startSidecar({ signal }): abort kills the child and rejects with the reason.
++    startBackend: (signal) => {
++      log.push("startBackend");
++      signal.addEventListener("abort", () => {
++        killed.value = true;
++        log.push("killChild");
++        ready.reject(signal.reason);
++      });
++      return ready.promise;
++    },
++    createSkeleton: async () => {
++      log.push("createSkeleton");
++      return win;
++    },
++    onBackend: () => log.push("onBackend"),
++    prepare: async (h) => {
++      log.push(`prepare:${h.id}`);
++      if (opts.prepareError) throw opts.prepareError;
++      return "http://127.0.0.1:1234/";
++    },
++    loadWorkbench: async (w, url) => {
++      assert.equal(w, win, "workbench loads into the skeleton window");
++      log.push(`load:${url}`);
++    },
++    stopBackend: async (h) => {
++      h.stopped = true;
++      log.push("stopBackend");
++    },
++    closeSkeleton: (w) => {
++      log.push("closeSkeleton");
++      w.close();
++    },
++    recordRecent: () => log.push("recordRecent"),
++    onAbort: (cleanup) => {
++      abortCleanup = cleanup;
++    },
++  };
++  return { log, ready, win, handle, deps, killed, abortCleanup: () => abortCleanup };
++}
++
++describe("boot sequence (WP-169 S1/S1b/S2)", () => {
++  it("creates the skeleton before the sidecar is ready, loads after READY/health, records recents once after load", async () => {
++    const h = harness();
++    const run = runBootSequence(h.deps);
++    await tick();
++    assert.deepEqual(h.log, ["startBackend", "createSkeleton"], "skeleton exists while READY is pending");
++    h.ready.resolve(h.handle);
++    const win = await run;
++    assert.equal(win, h.win);
++    assert.deepEqual(h.log, [
++      "startBackend",
++      "createSkeleton",
++      "onBackend",
++      "prepare:sidecar",
++      "load:http://127.0.0.1:1234/",
++      "recordRecent",
++    ]);
++    assert.equal(h.log.filter((e) => e === "recordRecent").length, 1);
++  });
++
++  it("closes the skeleton and rethrows the original error when the sidecar fails to start", async () => {
++    const h = harness();
++    const run = runBootSequence(h.deps);
++    await tick();
++    const boom = new Error("sidecar timed out waiting for LITECODE_READY (90000ms)");
++    h.ready.reject(boom);
++    await assert.rejects(run, (err) => err === boom);
++    assert.ok(h.win.destroyed);
++    assert.ok(h.log.includes("closeSkeleton"));
++    assert.ok(!h.log.includes("recordRecent"));
++    assert.ok(!h.log.some((e) => e.startsWith("load:")));
++    assert.equal(h.abortCleanup(), null, "a failed boot is not treated as a user close");
++  });
++
++  it("closes the skeleton and rethrows when the attach/health check fails", async () => {
++    const mismatch = new Error("Sidecar health reports a different workspace");
++    const h = harness({ prepareError: mismatch });
++    const run = runBootSequence(h.deps);
++    h.ready.resolve(h.handle);
++    await assert.rejects(run, (err) => err === mismatch);
++    assert.ok(h.win.destroyed);
++    assert.ok(!h.log.includes("recordRecent"));
++  });
++
++  it("remote branch: health gates loadURL(handshake) into the same window", async () => {
++    const log: string[] = [];
++    const health = deferred<null>();
++    const win = new FakeWindow();
++    const run = runBootSequence<FakeWindow, null>({
++      startBackend: () => {
++        log.push("health");
++        return health.promise;
++      },
++      createSkeleton: async () => {
++        log.push("createSkeleton");
++        return win;
++      },
++      prepare: async () => "https://remote.example/#token",
++      loadWorkbench: async (w, url) => {
++        assert.equal(w, win);
++        log.push(`load:${url}`);
++      },
++      stopBackend: async () => undefined,
++      closeSkeleton: (w) => w.close(),
++    });
++    await tick();
++    assert.deepEqual(log, ["health", "createSkeleton"]);
++    health.resolve(null);
++    await run;
++    assert.deepEqual(log, ["health", "createSkeleton", "load:https://remote.example/#token"]);
++  });
++
++  it("remote branch: health failure closes the skeleton and rethrows", async () => {
++    const win = new FakeWindow();
++    const boom = new Error("health timed out");
++    const run = runBootSequence<FakeWindow, null>({
++      startBackend: async () => {
++        throw boom;
++      },
++      createSkeleton: async () => win,
++      prepare: async () => "x",
++      loadWorkbench: async () => undefined,
++      stopBackend: async () => undefined,
++      closeSkeleton: (w) => w.close(),
++    });
++    await assert.rejects(run, (err) => err === boom);
++    assert.ok(win.destroyed);
++  });
++
++  it("user closes the skeleton while the sidecar is still starting: aborts via the signal, child killed at once", async () => {
++    const h = harness();
++    const run = runBootSequence(h.deps);
++    await tick();
++    h.win.close(); // Alt+F4 / taskbar close
++    await assert.rejects(run, (err) => isBootAborted(err) && err instanceof BootAbortedError);
++    assert.equal(h.killed.value, true, "child killed immediately, no wait for READY");
++    const cleanup = h.abortCleanup();
++    assert.ok(cleanup, "abort cleanup is handed to the quit path");
++    await cleanup; // settles without READY ever arriving
++    assert.ok(!h.log.includes("stopBackend"), "nothing left to stop");
++    assert.ok(!h.log.includes("closeSkeleton"), "no failure handling");
++    assert.ok(!h.log.some((e) => e.startsWith("load:")));
++    assert.ok(!h.log.includes("recordRecent"));
++  });
++
++  it("user closes the skeleton after READY (during health): stops the running sidecar", async () => {
++    const h = harness();
++    const gate = deferred<string>();
++    h.deps.prepare = async () => gate.promise;
++    const run = runBootSequence(h.deps);
++    h.ready.resolve(h.handle);
++    await tick();
++    h.win.close();
++    await assert.rejects(run, isBootAborted);
++    await h.abortCleanup();
++    assert.equal(h.handle.stopped, true);
++    gate.resolve("http://127.0.0.1:1/");
++    await tick();
++    assert.ok(!h.log.some((e) => e.startsWith("load:")));
++  });
++
++  it("successful boot never aborts the backend signal", async () => {
++    const h = harness();
++    const run = runBootSequence(h.deps);
++    h.ready.resolve(h.handle);
++    await run;
++    assert.equal(h.killed.value, false);
++    assert.equal(h.handle.stopped, false);
++  });
++});

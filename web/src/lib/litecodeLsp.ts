@@ -36,7 +36,7 @@ const pendingContentChangesByUri = new Map<string, LspTextEdit[]>();
 const applyInFlight = new Map<string, Promise<SyncAck | null>>();
 const changeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-export type LspTextEdit = {
+type LspTextEdit = {
   range: {
     start: { line: number; character: number };
     end: { line: number; character: number };
@@ -100,14 +100,14 @@ export function isLspServerReady(): boolean {
   return Array.isArray(servers) && servers.some((s) => s.state === "running");
 }
 
-export type DiagnosticsSnapshot = {
+type DiagnosticsSnapshot = {
   rev: number | null;
   fresh: boolean;
   serverReady: boolean;
   diagnostics: unknown;
 };
 
-export type SyncAck = {
+type SyncAck = {
   rev: number | null;
   version: number | null;
   serverReady: boolean;
@@ -181,7 +181,7 @@ export function monacoChangeToLsp(change: {
   };
 }
 
-export function handleLspWireEnvelope(env: WireEnvelope): boolean {
+function handleLspWireEnvelope(env: WireEnvelope): boolean {
   if (env.method === "lsp/diagnostics") {
     handleLspDiagnosticsNotification(env.params ?? {});
     return true;
@@ -363,7 +363,7 @@ export function toFileUri(projectRoot: string, relPath: string): string {
 }
 
 /** Relative workspace path for a Monaco model (matches Editor `path` prop). */
-export function relPathFromModel(
+function relPathFromModel(
   model: Monaco.editor.ITextModel,
   projectRoot: string,
 ): string {
@@ -387,7 +387,7 @@ export function relPathFromModel(
 }
 
 /** Monaco URI for a workspace-relative path (same as @monaco-editor/react `path` prop). */
-export function monacoUriForRelPath(
+function monacoUriForRelPath(
   monaco: typeof import("monaco-editor"),
   relPath: string,
 ): Monaco.Uri {
@@ -554,7 +554,7 @@ function applyRawDiagnostics(
   monaco.editor.setModelMarkers(model, "litecode-lsp", markers);
 }
 
-export function handleLspDiagnosticsNotification(params: {
+function handleLspDiagnosticsNotification(params: {
   uri?: unknown;
   version?: unknown;
   diagnostics?: unknown;
@@ -1089,7 +1089,7 @@ const DEFAULT_TOKEN_MODIFIERS = [
   "defaultLibrary",
 ];
 
-export type WorkspaceLspHandle = Monaco.IDisposable & {
+type WorkspaceLspHandle = Monaco.IDisposable & {
   ensureSemantic: (fileUri: string) => Promise<void>;
 };
 
@@ -1106,7 +1106,7 @@ let workspaceLsp: WorkspaceLspLive | null = null;
  * Register workspace-wide LSP providers on the **editor's** Monaco instance.
  * Must use the same `monaco` object passed to `Editor.onMount` — not `loader.init()`.
  */
-export function registerWorkspaceLsp(
+function registerWorkspaceLsp(
   monaco: typeof import("monaco-editor"),
   getProjectRoot: () => string,
 ): WorkspaceLspHandle {
@@ -1636,48 +1636,6 @@ export function bindEditorLsp(
       for (const d of disposables) d.dispose();
     },
   };
-}
-
-export async function refreshDiagnostics(
-  monaco: typeof import("monaco-editor"),
-  projectRoot: string,
-  relPath: string,
-  fileUri?: string,
-): Promise<void> {
-  if (!isLspWarm() || !projectRoot) {
-    return;
-  }
-  const uri = fileUri ?? toFileUri(projectRoot, relPath);
-  let res: LspResult;
-  try {
-    res = await sendLsp(
-      "litecode/getDiagnostics",
-      { uri },
-      { timeoutMs: DOCUMENT_SYNC_TIMEOUT_MS },
-    );
-  } catch (e) {
-    warnLsp("diagnostics", e);
-    return;
-  }
-  if (res.error) {
-    warnLsp("diagnostics", res.error.message);
-    return;
-  }
-
-  const model = monaco.editor
-    .getModels()
-    .find(
-      (m) =>
-        relPathFromModel(m, projectRoot) === relPath ||
-        m.uri.path.replace(/^\//, "") === relPath,
-    );
-  if (!model) return;
-  const snap = parseDiagnosticsSnapshot(res.result);
-  if (typeof snap.rev === "number") lastHubRevByUri.set(uri, snap.rev);
-  noteDocServerReady(uri, snap.serverReady);
-  if (snap.fresh && snap.serverReady) {
-    applyRawDiagnostics(monaco, model, snap.diagnostics);
-  }
 }
 
 export function getProjectRootFromStore(): string {

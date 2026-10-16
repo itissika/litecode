@@ -1,4 +1,5 @@
 mod session_lifecycle;
+pub(crate) use session_lifecycle::build_session_list;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -289,6 +290,15 @@ impl Projection {
         // Memory-only queue, but still part of the snapshot: a rebuilt panel
         // (subscribed while idle after a cancel) must see it.
         snap.pending_messages = self.sessions.pending_messages_snapshot(&self.session_id);
+        // WP-186: always present list (may be empty). Authority for FE cards.
+        let pending = self.sessions.pending_permissions_snapshot(&self.session_id);
+        snap.pending_permissions = project::pending_records_to_wire(&pending);
+        if let Some(turn) = snap.turn.as_mut() {
+            turn.awaiting_permission = !snap.pending_permissions.is_empty();
+        }
+        if let Some(live) = snap.live.as_mut() {
+            live.awaiting_permission = !snap.pending_permissions.is_empty();
+        }
         snap.llm_reconnect = self.sessions.llm_reconnect(&self.session_id);
         if let Ok(meta) = self.sessions.data().meta_blocking(&self.session_id) {
             snap.meta = crate::client_protocol::protocol::SessionMetaWire {
@@ -1046,6 +1056,15 @@ impl SessionController {
         // (Re)subscribe is the client's sync point for transient bash state.
         snapshot.bash = Some(self.runtime.ide.terminal.jobs.wire_snapshot(session_id));
         snapshot.pending_messages = self.sessions.pending_messages_snapshot(session_id);
+        // WP-186: re-assert after bash overlay (snapshot() already filled; keep explicit).
+        let pending = self.sessions.pending_permissions_snapshot(session_id);
+        snapshot.pending_permissions = project::pending_records_to_wire(&pending);
+        if let Some(turn) = snapshot.turn.as_mut() {
+            turn.awaiting_permission = !snapshot.pending_permissions.is_empty();
+        }
+        if let Some(live) = snapshot.live.as_mut() {
+            live.awaiting_permission = !snapshot.pending_permissions.is_empty();
+        }
         proj.push_outgoing(session_snapshot(snapshot));
 
         let sid_owned = session_id.to_string();

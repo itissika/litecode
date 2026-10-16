@@ -1,12 +1,12 @@
 import { GitDiffIcon } from "@phosphor-icons/react";
 
-import { ToolInfoIcon } from "./InfoIcon";
+import { FilePathHeader } from "./FilePathHeader";
 import { collectMetaFields, TOOL_PARAM_META } from "./paramMeta";
 import { DiffView } from "./DiffView";
 import { ToolResultBlock } from "./LspNote";
 import type { ToolViewProps } from "./registry";
 
-export interface EditBlockPreview {
+interface EditBlockPreview {
   oldString: string;
   newString: string;
   replaceAll: boolean;
@@ -86,16 +86,15 @@ export function EditToolView({ name, input, status, output }: ToolViewProps) {
 
   return (
     <div className="flex flex-col gap-1">
-      <div
-        className={`flex items-center gap-1.5 text-dk-xs font-medium ${headerColor}`}
+      <FilePathHeader
+        icon={<GitDiffIcon size={12} aria-hidden />}
+        path={filePath}
+        fallback="(unknown file)"
+        colorClass={headerColor}
+        meta={meta}
       >
-        <GitDiffIcon size={12} aria-hidden />
-        <span className="min-w-0 flex-1 truncate font-mono">
-          {filePath ?? "(unknown file)"}
-        </span>
         <span className="shrink-0 text-(--_dk-text-muted)">{countLabel}</span>
-        <ToolInfoIcon fields={meta} />
-      </div>
+      </FilePathHeader>
       {blocks.length === 0 ? (
         <div className="text-dk-xs text-(--_dk-text-muted)">
           No edit preview

@@ -128,7 +128,7 @@ export function linuxBundleCandidateTars(opts: {
   return candidates;
 }
 
-export function missingLinuxBundleMessage(candidates: string[]): string {
+function missingLinuxBundleMessage(candidates: string[]): string {
   const listed = candidates.map((p) => `  ${p}`).join("\n");
   return [
     "Linux server bundle (tar + .sha256) was not found.",

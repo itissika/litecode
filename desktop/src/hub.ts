@@ -4,7 +4,7 @@ import path from "node:path";
 import { dvThemeAttr, readUiTheme, type UiThemeName } from "./ui-theme";
 
 /** Resolve the product's tokens.css (single source of --_dk-* definitions). */
-export function loadThemeTokensCss(): string {
+function loadThemeTokensCss(): string {
   const candidates = [
     path.join(__dirname, "theme-tokens.css"),
     path.resolve(__dirname, "../../web/src/theme/tokens.css"),
@@ -103,15 +103,6 @@ function hubLayoutCss(logoFontSrc: string): string {
 ${fontFace}
 ${logoStyles}
 *{box-sizing:border-box}
-/* Scrollbars: thin, low-contrast — matches web/src/theme/index.css (agent
-   panel message list). Applied app-wide so the home list's vertical scrollbar
-   uses the same theme styling. */
-*{scrollbar-width:thin;scrollbar-color:var(--_dk-line) transparent}
-*::-webkit-scrollbar{width:8px;height:8px}
-*::-webkit-scrollbar-track{background:transparent;border:0 none}
-*::-webkit-scrollbar-thumb{background:var(--_dk-line);border-radius:4px;border:0 none;outline:0 none}
-*::-webkit-scrollbar-thumb:hover{background:var(--_dk-text-disabled)}
-*::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%;margin:0;overflow:hidden}
 body{
   background:var(--_dk-root);
@@ -412,7 +403,7 @@ function hubScript(): string {
       selectedDir = null;
       await refreshDirs();
       setStep("step-path");
-      message("Connected. Choose a workspace folder.");
+      message("Connected.");
     } catch (error) {
       setStep("step-auth");
       message(error instanceof Error ? error.message : String(error), true);
@@ -458,7 +449,7 @@ function hubScript(): string {
   };
 
   $("dir-open").onclick = async () => {
-    if (!selectedDir) { message("Select a folder, or double-click to enter it.", true); return; }
+    if (!selectedDir) { message("Select a folder first.", true); return; }
     remotePath = remotePath === "." ? selectedDir : remotePath + "/" + selectedDir;
     selectedDir = null;
     await refreshDirs();
@@ -469,7 +460,7 @@ function hubScript(): string {
       ? (remotePath === "." ? selectedDir : remotePath + "/" + selectedDir)
       : remotePath;
     if (!workspace || workspace === ".") {
-      message("Choose a workspace folder below the remote home.", true);
+      message("Pick a folder inside your home directory.", true);
       return;
     }
     bindProgress();
@@ -477,8 +468,19 @@ function hubScript(): string {
       message("Starting remote server…");
       const done = await bridge.completeRemoteSession(sessionId, workspace);
       tokenBox.textContent = done.token;
-      setStep("step-token");
-      message("Token generated automatically. Copy if needed, then enter the workspace.");
+      // A4: token is filled in automatically, so go straight into the workspace.
+      // Step 4 is only the fallback when that automatic entry fails.
+      if (!done.token) {
+        setStep("step-token");
+        message("Session token missing. Try again or cancel.", true);
+        return;
+      }
+      try {
+        await bridge.enterRemoteWorkbench(sessionId);
+      } catch (error) {
+        setStep("step-token");
+        message(error instanceof Error ? error.message : String(error), true);
+      }
     } catch (error) {
       message(error instanceof Error ? error.message : String(error), true);
     }
@@ -495,7 +497,6 @@ function hubScript(): string {
 
   $("token-enter").onclick = async () => {
     try {
-      message("Opening workspace…");
       await bridge.enterRemoteWorkbench(sessionId);
     } catch (error) {
       message(error instanceof Error ? error.message : String(error), true);
@@ -565,7 +566,7 @@ function hubScript(): string {
       if (!localRows.length && !remoteRows.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = "No workspaces yet. Open a local folder, or connect a remote machine over SSH.";
+        empty.textContent = "No workspaces yet.";
         list.append(empty);
         return;
       }
@@ -631,7 +632,7 @@ function hubScript(): string {
  * `loadFile`s it so the Electron preload bridge is available — `data:`
  * pages do not reliably receive `window.litecode`.
  */
-export function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
+function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
   const tokens = loadThemeTokensCss();
   const dvTheme = dvThemeAttr(theme);
   const logoFontB64 = loadLogoFontBase64();
@@ -674,7 +675,6 @@ ${hubLayoutCss(logoFontSrc)}
 
 <section id="remote-view" class="hidden">
   <h1>Open remote</h1>
-  <p class="lead">Connect with user@host, deploy Litecode automatically, then choose a workspace.</p>
   <div class="panel" id="step-auth">
     <h2>1. Connect</h2>
     <label class="field">user@host
@@ -706,7 +706,7 @@ ${hubLayoutCss(logoFontSrc)}
     <h2>2. Deploy</h2>
     <div class="progress">
       <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
-      <div class="progress-msg" id="progress-msg">Preparing…</div>
+      <div class="progress-msg" id="progress-msg"></div>
     </div>
     <div class="panel-actions">
       <button type="button" class="btn-ghost" id="remote-cancel">Cancel</button>
@@ -728,7 +728,7 @@ ${hubLayoutCss(logoFontSrc)}
 
   <div class="panel hidden" id="step-token">
     <h2>4. Session token</h2>
-    <p class="lead">Generated automatically for this session. You do not need to type it.</p>
+    <p class="lead">Could not open the workspace automatically. Copy the token or try again.</p>
     <div class="token-box" id="token-box"></div>
     <div class="panel-actions">
       <button type="button" class="btn" id="token-copy">Copy token</button>

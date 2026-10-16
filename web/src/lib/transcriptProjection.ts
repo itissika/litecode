@@ -251,7 +251,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
   return nodes;
 }
 
-export type NodeGroup = {
+type NodeGroup = {
   type: "process" | "output" | "cut";
   nodes: RenderNode[];
 };
@@ -354,7 +354,7 @@ export function canRevertFiles(
 }
 
 /** User message or transcript mark: a row that starts a new bubble by itself. */
-export function isBarrierRow(row: HumanRow): boolean {
+function isBarrierRow(row: HumanRow): boolean {
   return isHumanUserRow(row) || isTranscriptMarkRow(row);
 }
 

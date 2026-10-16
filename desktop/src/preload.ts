@@ -1,78 +1,34 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
-/**
- * Sandboxed preload may only `require` Electron/Node builtins — not local files.
- * Keep this string identical to `REMOTE_PROGRESS_CHANNEL` in `./remote-progress`.
+import type {
+  BROWSER_STATE_CHANNEL as BrowserStateChannel,
+  COMPONENT_PROGRESS_CHANNEL as ComponentProgressChannel,
+  REMOTE_DISCONNECTED_CHANNEL as RemoteDisconnectedChannel,
+  REMOTE_PROGRESS_CHANNEL as RemoteProgressChannel,
+  BrowserBounds,
+  BrowserState,
+  ComponentProgressEvent,
+  ComponentStatus,
+  EnsureComponentResult,
+  LitecodeDesktopBridge,
+  RecentWorkspace,
+  RemoteDisconnectedEvent,
+  RemoteHistoryItem,
+  RemoteProgressEvent,
+  StartRemoteSessionInput,
+} from "./bridge-contract";
+
+/*
+ * Sandboxed preload may only `require` Electron/Node builtins, not local files,
+ * so channel names stay literal here but are typed against the contract
+ * constants: any drift fails to compile.
  */
-const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
-/** Keep identical to REMOTE_DISCONNECTED_CHANNEL in main.ts (D1). */
-const REMOTE_DISCONNECTED_CHANNEL = "litecode:remote-disconnected";
-/** Keep identical to `COMPONENT_PROGRESS_CHANNEL` in `./components`. */
-const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
-/** Keep identical to `BROWSER_STATE_CHANNEL` in `./browser-host`. */
-const BROWSER_STATE_CHANNEL = "litecode:browser-state";
+const REMOTE_PROGRESS_CHANNEL: typeof RemoteProgressChannel = "litecode:remote-progress";
+const REMOTE_DISCONNECTED_CHANNEL: typeof RemoteDisconnectedChannel = "litecode:remote-disconnected";
+const COMPONENT_PROGRESS_CHANNEL: typeof ComponentProgressChannel = "litecode:component-progress";
+const BROWSER_STATE_CHANNEL: typeof BrowserStateChannel = "litecode:browser-state";
 
-type RemoteProgressEvent = {
-  stage: string;
-  ratio: number;
-  message: string;
-};
-
-type ComponentProgressEvent = {
-  id: string;
-  phase: "resolving" | "downloading" | "verifying" | "installing" | "done" | "error";
-  status?: "idle" | "downloading" | "paused" | "stopped" | "error" | "done";
-  received?: number;
-  total?: number;
-  percent?: number;
-  bytesPerSecond?: number;
-  message: string;
-  error?: string;
-};
-
-type ComponentStatus = {
-  id: string;
-  installed: boolean;
-  path: string | null;
-  downloading: boolean;
-  status?: "idle" | "downloading" | "paused" | "stopped" | "error" | "done";
-  error: string | null;
-};
-
-type RecentWorkspace = {
-  path: string;
-  pinned: boolean;
-  lastOpenedAt: number;
-};
-
-type BrowserBounds = {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-};
-
-type BrowserState = {
-  id: string;
-  url: string;
-  title: string;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  loading: boolean;
-};
-
-type RemoteHistoryItem = {
-  id: string;
-  label: string;
-  host: string;
-  user?: string;
-  port?: number;
-  lastWorkspace?: string;
-  lastConnectedAt?: number;
-  pinned?: boolean;
-};
-
-contextBridge.exposeInMainWorld("litecode", {
+const bridge = {
   getAuthToken: (): string | undefined => {
     return ipcRenderer.sendSync("litecode:get-auth-token") as string | undefined;
   },
@@ -122,13 +78,7 @@ contextBridge.exposeInMainWorld("litecode", {
   removeSshTarget: async (id: string): Promise<void> => {
     await ipcRenderer.invoke("litecode:remove-ssh-target", id);
   },
-  startRemoteSession: async (input: {
-    userAtHost: string;
-    password?: string;
-    authMode?: "password" | "private_key" | "agent";
-    identityFile?: string;
-    label?: string;
-  }): Promise<{ sessionId: string; home: string; label: string }> => {
+  startRemoteSession: async (input: StartRemoteSessionInput): Promise<{ sessionId: string; home: string; label: string }> => {
     return (await ipcRenderer.invoke("litecode:start-remote-session", input)) as {
       sessionId: string;
       home: string;
@@ -175,8 +125,8 @@ contextBridge.exposeInMainWorld("litecode", {
     ipcRenderer.on(REMOTE_PROGRESS_CHANNEL, listener);
     return () => ipcRenderer.removeListener(REMOTE_PROGRESS_CHANNEL, listener);
   },
-  onRemoteDisconnected: (handler: (event: { reason: string }) => void): (() => void) => {
-    const listener = (_event: Electron.IpcRendererEvent, payload: { reason: string }) => {
+  onRemoteDisconnected: (handler: (event: RemoteDisconnectedEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: RemoteDisconnectedEvent) => {
       handler(payload);
     };
     ipcRenderer.on(REMOTE_DISCONNECTED_CHANNEL, listener);
@@ -187,27 +137,8 @@ contextBridge.exposeInMainWorld("litecode", {
   },
   ensureComponent: async (
     id: string,
-  ): Promise<{ id: string; path: string; downloaded: boolean }> => {
-    return (await ipcRenderer.invoke("litecode:ensure-component", id)) as {
-      id: string;
-      path: string;
-      downloaded: boolean;
-    };
-  },
-  pauseComponent: async (id: string): Promise<{ ok: boolean }> => {
-    return (await ipcRenderer.invoke("litecode:component-pause", id)) as { ok: boolean };
-  },
-  stopComponent: async (id: string): Promise<{ ok: boolean }> => {
-    return (await ipcRenderer.invoke("litecode:component-stop", id)) as { ok: boolean };
-  },
-  retryComponent: async (
-    id: string,
-  ): Promise<{ id: string; path: string; downloaded: boolean }> => {
-    return (await ipcRenderer.invoke("litecode:component-retry", id)) as {
-      id: string;
-      path: string;
-      downloaded: boolean;
-    };
+  ): Promise<EnsureComponentResult> => {
+    return (await ipcRenderer.invoke("litecode:ensure-component", id)) as EnsureComponentResult;
   },
   onComponentProgress: (handler: (event: ComponentProgressEvent) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: ComponentProgressEvent) => {
@@ -215,9 +146,6 @@ contextBridge.exposeInMainWorld("litecode", {
     };
     ipcRenderer.on(COMPONENT_PROGRESS_CHANNEL, listener);
     return () => ipcRenderer.removeListener(COMPONENT_PROGRESS_CHANNEL, listener);
-  },
-  focusWorkspace: async (workspacePath: string): Promise<boolean> => {
-    return (await ipcRenderer.invoke("litecode:focus-workspace", workspacePath)) as boolean;
   },
   notifyWorkspace: async (workspacePath: string | null): Promise<void> => {
     await ipcRenderer.invoke("litecode:notify-workspace", workspacePath);
@@ -303,4 +231,6 @@ contextBridge.exposeInMainWorld("litecode", {
     ipcRenderer.on(BROWSER_STATE_CHANNEL, listener);
     return () => ipcRenderer.removeListener(BROWSER_STATE_CHANNEL, listener);
   },
-});
+} satisfies LitecodeDesktopBridge;
+
+contextBridge.exposeInMainWorld("litecode", bridge);

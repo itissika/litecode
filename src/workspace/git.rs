@@ -762,22 +762,28 @@ mod tests {
         find_git_exe().is_some()
     }
 
-    fn init_repo(dir: &Path) {
+    /// Raw git for fixtures. Clears inherited `GIT_*` the same way production
+    /// does — parallel tests may leave `GIT_DIR` pointing at a bare snapshot.
+    fn git_cmd(dir: &Path) -> StdCommand {
         let git = find_git_exe().expect("git");
-        let status = StdCommand::new(&git)
+        let mut cmd = StdCommand::new(&git);
+        cmd.current_dir(dir);
+        sanitize_git_env(&mut cmd);
+        cmd
+    }
+
+    fn init_repo(dir: &Path) {
+        let status = git_cmd(dir)
             .args(["-c", "init.defaultBranch=main", "init"])
-            .current_dir(dir)
             .status()
             .expect("git init");
         assert!(status.success());
-        let _ = StdCommand::new(&git)
+        let _ = git_cmd(dir)
             .args(["symbolic-ref", "HEAD", "refs/heads/main"])
-            .current_dir(dir)
             .status();
         let cfg = |key: &str, val: &str| {
-            let ok = StdCommand::new(&git)
+            let ok = git_cmd(dir)
                 .args(["config", key, val])
-                .current_dir(dir)
                 .status()
                 .unwrap()
                 .success();
@@ -892,15 +898,13 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         init_repo(dir.path());
-        let git = find_git_exe().expect("git");
         let run = |args: &[&str]| {
-            let ok = StdCommand::new(&git)
-                .args(args)
-                .current_dir(dir.path())
-                .status()
-                .unwrap()
-                .success();
-            assert!(ok, "{args:?}");
+            let out = git_cmd(dir.path()).args(args).output().unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         };
         fs::write(dir.path().join("a.txt"), "one\n").unwrap();
         run(&["add", "a.txt"]);

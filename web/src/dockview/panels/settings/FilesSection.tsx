@@ -128,11 +128,8 @@ export function FilesSection() {
     >
       <div className="space-y-3">
         <p className="text-dk-sm text-(--_dk-text-secondary)">
-          These lists live in this workspace (
-          <code>.litecode/excludes.json</code>). New workspaces start with the
-          built-in defaults. Settings edits and direct changes to that file
-          apply to the tree and to search immediately. Code semantic search
-          uses the suffix list below, not Search exclude.
+          Saved in <code>.litecode/excludes.json</code>; changes apply
+          immediately. Semantic search uses the suffix list below.
         </p>
 
         <div className="settings-card space-y-3 p-4">
@@ -185,8 +182,7 @@ export function FilesSection() {
           className="settings-foldcard"
         >
           <FieldLabel>
-            Additional hides for search and glob (on top of files exclude).
-            Does not change the code semantic index.
+            Extra hides for search and glob.
           </FieldLabel>
           <TextArea
             rows={6}
@@ -207,8 +203,7 @@ export function FilesSection() {
           className="settings-foldcard"
         >
           <FieldLabel>
-            Suffixes the code semantic index includes. One per line. A missing
-            suffix is left out; an empty list indexes no source files.
+            File suffixes to index, one per line.
           </FieldLabel>
           <TextArea
             rows={6}

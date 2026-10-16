@@ -1,23 +1,16 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useRef } from "react";
 
-import {
-  clearPendingReveal,
-  getPendingReveal,
-  subscribePendingReveal,
-} from "../lib/sessionPanelNav";
-import { displayMessages, useMessageStore } from "../stores/messageStore";
-import { useTurnStore } from "../stores/turnStore";
 import { AgentChatInput } from "./AgentChatInput";
 import { LlmReconnectBubble } from "./LlmReconnectBubble";
 import { MessageList } from "./MessageList";
 import type { RevealSeq } from "./transcript/transcriptScrollGlide";
-import { ProgressiveBlur } from "./ProgressiveBlur";
+import {
+  TranscriptTopBlur,
+  TranscriptVeil,
+  usePendingRevealScroll,
+  useTopBlur,
+  useTranscriptFeed,
+} from "./transcript/TranscriptBody";
 import { SessionStatusLine } from "./SessionStatusLine";
 
 /**
@@ -47,77 +40,15 @@ export function SubagentReadOnlyContent({
   sessionId: string;
   isActive?: boolean;
 }) {
-  const messages = useMessageStore((s) =>
-    displayMessages(s.bySession.get(sessionId)),
-  );
-  const loadingHistory = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.loadingHistory ?? false,
-  );
-  const fromSeq = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.fromSeq ?? 0,
-  );
-  const hydrated = useMessageStore(
-    (s) => s.bySession.get(sessionId)?.hydrated ?? false,
-  );
-  const runState = useTurnStore(
-    (s) => s.byId.get(sessionId)?.runState ?? "idle",
-  );
-  const loadMoreHistoryAction = useMessageStore((s) => s.loadMoreHistory);
-  const loadMoreHistory = useCallback(() => {
-    loadMoreHistoryAction(sessionId);
-  }, [loadMoreHistoryAction, sessionId]);
-
+  const { messages, loadingHistory, canLoadMore, isRunning, loadMoreHistory } =
+    useTranscriptFeed(sessionId);
   const listRef = useRef<HTMLDivElement>(null);
   const revealSeqRef = useRef<RevealSeq | null>(null);
-  const [blurOpacity, setBlurOpacity] = useState(0);
-  const pendingReveal = useSyncExternalStore(
-    subscribePendingReveal,
-    getPendingReveal,
-  );
+  const { blurOpacity, onScroll } = useTopBlur(listRef);
 
   // Same reveal contract as the writable shell (Search hit → load the seq, then
   // scroll it into view) so a read-only panel can locate a search result.
-  useEffect(() => {
-    if (!pendingReveal || pendingReveal.sessionId !== sessionId) return;
-    if (!hydrated) return;
-    const gen = pendingReveal.gen;
-    const seq = pendingReveal.seq;
-    let cancelled = false;
-    void (async () => {
-      const ok = await useMessageStore
-        .getState()
-        .ensureSeqLoaded(
-          sessionId,
-          seq,
-          () => !cancelled && getPendingReveal()?.gen === gen,
-        );
-      if (cancelled) return;
-      if (!ok) {
-        clearPendingReveal(gen);
-        return;
-      }
-      revealSeqRef.current?.(seq);
-      clearPendingReveal(gen);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    sessionId,
-    hydrated,
-    pendingReveal?.sessionId,
-    pendingReveal?.seq,
-    pendingReveal?.gen,
-  ]);
-
-  const canLoadMore = fromSeq > 0;
-  const isRunning = runState === "running" || runState === "cancelling";
-
-  const onScroll = () => {
-    const el = listRef.current;
-    if (!el) return;
-    setBlurOpacity(Math.min(el.scrollTop / 72, 1));
-  };
+  usePendingRevealScroll(sessionId, revealSeqRef);
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -146,23 +77,8 @@ export function SubagentReadOnlyContent({
           </div>
         </div>
       </div>
-      <div
-        aria-hidden
-        className={`pointer-events-none absolute inset-0 transition-opacity duration-200 ease-out ${
-          isActive ? "opacity-0" : "opacity-[0.33]"
-        }`}
-        style={{ background: "var(--_dk-editor)" }}
-      />
-      <ProgressiveBlur
-        side="top"
-        opacity={blurOpacity}
-        tintColor="var(--_dk-editor)"
-        tint={1}
-        height={56}
-        strength={5}
-        tintCurve={1}
-        offset={16}
-      />
+      <TranscriptVeil isActive={isActive} />
+      <TranscriptTopBlur opacity={blurOpacity} />
 
       {/* Derived subagent controls — floats over the transcript exactly like the
           writable `ComposerDock`, with every human-composition surface removed.

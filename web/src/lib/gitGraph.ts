@@ -2,14 +2,14 @@ export const GIT_GRAPH_LANE_WIDTH = 12;
 export const GIT_GRAPH_PAD_X = 8;
 export const GIT_GRAPH_ROW_HEIGHT = 24;
 /** Leave room for short SHA + a slice of the subject. */
-export const GIT_GRAPH_RESERVED_TEXT = 88;
+const GIT_GRAPH_RESERVED_TEXT = 88;
 
-export type GraphCommit = {
+type GraphCommit = {
   sha: string;
   parents: string[];
 };
 
-export type GraphMerge = {
+type GraphMerge = {
   from: number;
   to: number;
 };

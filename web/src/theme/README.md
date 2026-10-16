@@ -69,9 +69,8 @@ it legible; all values come from the tokens above.
 
 ## JS consumers (no dual source)
 
-`theme/tokens.ts` exposes `readDkTokens()` (current theme) and
-`readDkTokensForTheme("dark" | "light")` (specific theme, used to define both
-Monaco themes up front). Both read `getComputedStyle` — no second copy.
+`theme/tokens.ts` exposes `readDkTokensForTheme("dark" | "light")` (used to
+define both Monaco themes up front). It reads `getComputedStyle` — no second copy.
 
 - **Monaco** (`theme/monaco.ts`): both editor themes are derived from the live
   tokens via `readDkTokensForTheme`.

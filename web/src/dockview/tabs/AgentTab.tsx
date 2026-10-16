@@ -1,11 +1,13 @@
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { useSessionStore } from "../../stores/sessionStore";
+import { useTurnStore } from "../../stores/turnStore";
 import { fallbackSessionTitle } from "../../lib/sessionPanelNav";
 import {
   SessionStatusDot,
   deriveSessionStatus,
 } from "../../components/SessionStatusDot";
+import { BaseTab, TabTitle } from "./BaseTab";
 
 /**
  * Tab for an open agent (session) panel. The panel header was removed because
@@ -20,7 +22,12 @@ export function AgentTab(
   const session = useSessionStore((s) =>
     s.sessions.find((x) => x.id === sessionId),
   );
-  const status = deriveSessionStatus(session);
+  const pendingCount = useTurnStore(
+    (s) => s.byId.get(sessionId)?.permissionQueue.length ?? 0,
+  );
+  const status = deriveSessionStatus(session, {
+    pendingPermissionCount: pendingCount,
+  });
   // Subscribe to the preview directly so the tab shows the live summary instead
   // of relying on setTitle() propagating to api.title.
   const preview = (session?.preview ?? "").trim();
@@ -32,31 +39,12 @@ export function AgentTab(
     (session !== undefined || props.params.sessionKind === "root");
 
   return (
-    <div className="flex items-center gap-1.5 px-1.5 h-full w-full group transition-colors duration-120 hover:brightness-125 active:brightness-75">
+    <BaseTab onClose={() => props.api.close()}>
       <SessionStatusDot status={status}>
-        <span className="text-xs truncate flex-1 min-w-0 select-none">
+        <TabTitle>
           {preview || fallbackSessionTitle(sessionId, rootPanel)}
-        </span>
+        </TabTitle>
       </SessionStatusDot>
-      <button
-        className="rounded p-0.5 opacity-50 hover:opacity-100 hover:bg-(--_dk-ix-danger-bg-hover) hover:text-(--_dk-ix-danger-fg-hover) transition-colors flex-shrink-0"
-        title="Close"
-        onPointerDown={(e) => {
-          // Prevent the tab strip's pointerdown activation from switching to
-          // this panel before the click closes it (dockview's default tab
-          // does the same). Without this, closing a non-active tab flashes it.
-          e.preventDefault();
-          e.stopPropagation();
-        }}
-        onClick={(e) => {
-          e.stopPropagation();
-          props.api.close();
-        }}
-      >
-        <svg width="10" height="10" viewBox="0 0 15 15" fill="currentColor">
-          <path d="M11.78 3.22a.75.75 0 0 1 0 1.06L8.06 8l3.72 3.72a.75.75 0 1 1-1.06 1.06L7 9.06l-3.72 3.72a.75.75 0 0 1-1.06-1.06L5.94 8 2.22 4.28a.75.75 0 0 1 1.06-1.06L7 6.94l3.72-3.72a.75.75 0 0 1 1.06 0Z" />
-        </svg>
-      </button>
-    </div>
+    </BaseTab>
   );
 }

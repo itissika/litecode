@@ -1,0 +1,16 @@
+diff --git a/tests/startup_order_death_list.rs b/tests/startup_order_death_list.rs
+index d7f96b3..2b4309f 100644
+--- a/tests/startup_order_death_list.rs
++++ b/tests/startup_order_death_list.rs
+@@ -7,8 +7,9 @@
+ //! - Every language-server spawn waits for the sweep gate.
+ //! - The new code has no language-specific branch.
+ //!
+-//! The two `serve_run_*` tests depend on the cross-domain session.diff
+-//! (src/serve/run.rs) and stay red until it lands.
++//! The two `serve_run_*` tests scan `src/serve/run.rs` as changed by WP-167
++//! (sweep through the gate, `defer_reconcile`); WP-166's snapshot warm lives
++//! in `cli.rs`/`router.rs`/`state.rs` and does not touch these checks.
+ 
+ fn fn_body<'a>(src: &'a str, sig: &str) -> &'a str {
+     let start = src.find(sig).unwrap_or_else(|| panic!("missing {sig}"));

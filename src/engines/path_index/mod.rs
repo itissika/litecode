@@ -95,7 +95,6 @@ impl PathIndex {
             }
         }
         self.detach();
-        remove_legacy_text_index(&root);
         {
             let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
             gate.root = Some(root.clone());
@@ -238,6 +237,10 @@ impl PathIndex {
         if self.stop.load(Ordering::SeqCst) {
             return;
         }
+        // WP-167: one-time migration cleanup, off the startup path. `.litecode`
+        // is excluded from the explorer corpus, so running it after the first
+        // fill does not change the index.
+        remove_legacy_text_index(&root);
         self.flush_pending();
         while !self.stop.load(Ordering::SeqCst) {
             let updates = self.wait_updates();
@@ -623,14 +626,16 @@ mod tests {
 
         with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
             let engine = Attached::new(root);
-            assert!(
-                !legacy.exists(),
-                "legacy text-index directory must be removed"
-            );
             let deadline = Instant::now() + Duration::from_secs(2);
-            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+            while (engine.mention_paths("app.rs").is_empty() || legacy.exists())
+                && Instant::now() < deadline
+            {
                 thread::sleep(Duration::from_millis(10));
             }
+            assert!(
+                !legacy.exists(),
+                "legacy text-index directory must be removed by the worker"
+            );
             let hits = engine.mention_paths("app.rs");
             assert_eq!(hits.len(), 1, "got {hits:?}");
             assert!(hits[0].file);
@@ -651,6 +656,37 @@ mod tests {
             engine.attach(root);
             assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 1);
             assert_eq!(engine.mention_paths("app.rs").len(), 1);
+        });
+    }
+
+    #[test]
+    fn legacy_text_index_removed_by_worker_after_fill() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.rs"), "").unwrap();
+        let legacy = root.join(".litecode").join("text-index");
+        std::fs::create_dir_all(legacy.join("seg")).unwrap();
+        std::fs::write(legacy.join("seg/0.bin"), "x").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while legacy.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!legacy.exists(), "worker must remove the legacy text-index");
+            assert!(
+                root.join(".litecode").is_dir(),
+                "only text-index is removed, not .litecode"
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("main.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("main.rs").len(), 1);
+            assert!(
+                engine.mention_paths("0.bin").is_empty(),
+                "the legacy files never enter the explorer corpus"
+            );
         });
     }
 

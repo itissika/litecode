@@ -1,12 +1,15 @@
 {
-  "demand_officer": "387360fa-bdaf-4eee-b105-c259d2fee2d4",
-  "tools_steward": "b8de09ec-71bf-4745-9f8c-431d487d34c8",
-  "runtime": "0638948b-bd13-4213-980c-c9573cf54509",
-  "context": "6f0b9b1e-d8c1-4ebd-ad7d-118e74cb7a94",
-  "ide": "bbb02721-d5b0-4d4c-83a5-9b116c3a7add",
-  "session": "7d4a7810-8648-4849-a0f1-f333cdf9ab3a",
-  "frontend": "b487ebe9-1927-40a2-8248-85309179143b",
-  "tools": "c82b45df-eede-4fae-abc7-62613f268dae",
-  "provider": "e310cad5-aff8-488e-837b-1c950e26305c",
-  "note": "product bots activated 2026-10-11 after Andy group launch; provider added 2026-10-13"
+  "gm": "9bf14c94-a705-42c4-8e47-acf4a7ae2364",
+  "tools_steward": "b199e3b6-cbe3-4f3c-9e69-08cc2acac06e",
+  "backend_mid": "15207f15-e37a-4016-90d4-966dee420486",
+  "frontend_mid": "b9d34334-f307-443e-bd2a-d3204015389f",
+  "session": "c4264fa8-94b0-441b-a3d3-66f502f9019a",
+  "tools": "eefd95ea-c17e-4894-b4b4-d76d804498e9",
+  "runtime": "27d20858-7637-412f-832f-2083966beaa0",
+  "context": "c1d5d2dd-4a9e-448d-8437-92a4553948e0",
+  "ide": "302c3166-2bf0-4d93-8297-f81dc66536f5",
+  "provider": "de129d86-045b-4f1e-ad80-06fa7ea4cac2",
+  "frontend": "56c7a51c-b375-41c3-be32-9b4f37632663",
+  "frontend_desktop": "e0ad40ff-7dbd-4a80-b2e2-c2a736619a90",
+  "note": "新电脑新账号 2026-10-15 全员重建；旧账号 id 全部作废；需求官已撤销，需求由各 bot 的直属领导审批"
 }

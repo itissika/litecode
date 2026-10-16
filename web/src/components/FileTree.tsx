@@ -45,6 +45,7 @@ import { isSelfOrDescendant, parentPath } from "../utils/path";
 import { useToastStore } from "../stores/toastStore";
 import { LITECODE_PATHS_MIME, parsePathPayload } from "../lib/dropPayload";
 import { flattenVisibleRows, visibleEntryPaths } from "../lib/fileTreeVisible";
+import { whenCentreSettled } from "../lib/centreSettle";
 
 export { LITECODE_PATHS_MIME };
 
@@ -465,8 +466,16 @@ export function FileTree() {
     paddingEnd: 80,
   });
 
+  // The root listing waits for the centre to settle (first chat, restored
+  // list, or a failed socket) so it does not compete with session/new.
   useEffect(() => {
-    void loadRoot();
+    let alive = true;
+    void whenCentreSettled().then(() => {
+      if (alive) void loadRoot();
+    });
+    return () => {
+      alive = false;
+    };
   }, [loadRoot]);
 
   // Follow the active editor file: expand its ancestor dirs, then scroll the

@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { compactMarkdownComponents } from "./compactMarkdown";
+
 /**
  * Compact markdown for corner toasts.
  *
@@ -14,31 +16,9 @@ export function ToastMarkdown({ text }: { text: string }) {
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       components={{
+        ...compactMarkdownComponents,
         p: ({ children }: { children?: ReactNode }) => (
           <p className="m-0 leading-snug [&+p]:mt-1">{children}</p>
-        ),
-        strong: ({ children }: { children?: ReactNode }) => (
-          <strong className="font-semibold text-(--_dk-text-primary)">
-            {children}
-          </strong>
-        ),
-        em: ({ children }: { children?: ReactNode }) => (
-          <em className="italic">{children}</em>
-        ),
-        code: ({ children }: { children?: ReactNode }) => (
-          <code className="rounded-sm bg-(--_dk-side) px-1 py-px font-mono text-[12px] text-(--_dk-text-primary)">
-            {children}
-          </code>
-        ),
-        a: ({ href, children }: { href?: string; children?: ReactNode }) => (
-          <a
-            href={href}
-            className="text-(--_dk-accent-hover) underline"
-            target="_blank"
-            rel="noreferrer"
-          >
-            {children}
-          </a>
         ),
       }}
     >

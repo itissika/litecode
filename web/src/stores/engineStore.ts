@@ -77,7 +77,7 @@ function scheduleCatalogPoll(error?: unknown): void {
   }, delay);
 }
 
-export function enginesFromDetail(
+function enginesFromDetail(
   detail: EnginesDetail,
 ): Record<string, EngineStatus> {
   return {

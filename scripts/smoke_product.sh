@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test a product tree from a non-repo cwd.
+# Paired with scripts/smoke_product.ps1: change one, keep the other in sync (WP-164 R6).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

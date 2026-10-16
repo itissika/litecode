@@ -9,8 +9,9 @@ import {
 import { createPortal } from "react-dom";
 
 import { viewOf } from "../../lib/domView";
+import { useFloatingLayer } from "./useFloatingLayer";
 
-export interface PopoverApi {
+interface PopoverApi {
   open: boolean;
   toggle: () => void;
   close: () => void;
@@ -196,42 +197,23 @@ export function Popover({
   // Never leave pending hover timers behind on unmount.
   useEffect(() => () => clearTimers(), [clearTimers]);
 
-  useEffect(() => {
-    if (!open) return;
+  useFloatingLayer({
+    open,
+    rootRef,
+    panelRef,
+    onDismiss: close,
     // Hover panels are transient: scrolling moves the trigger out from under
     // the pointer (mouseleave is unreliable there), so scroll simply closes.
-    const onScroll = () => {
+    onScroll: () => {
       if (hover) {
         clearTimers();
         setOpen(false);
         return;
       }
       update();
-    };
-    const onResize = () => update();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onDown = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (rootRef.current?.contains(t)) return;
-      if (panelRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    const root = rootRef.current;
-    const view = viewOf(root);
-    const doc = root?.ownerDocument ?? document;
-    view.addEventListener("scroll", onScroll, true);
-    view.addEventListener("resize", onResize);
-    view.addEventListener("keydown", onKey);
-    doc.addEventListener("mousedown", onDown);
-    return () => {
-      view.removeEventListener("scroll", onScroll, true);
-      view.removeEventListener("resize", onResize);
-      view.removeEventListener("keydown", onKey);
-      doc.removeEventListener("mousedown", onDown);
-    };
-  }, [open, hover, update, clearTimers]);
+    },
+    onResize: update,
+  });
 
   // Hover intent: entering the trigger or the panel cancels a pending close;
   // leaving both schedules one. The open side uses a delay so sweeping the

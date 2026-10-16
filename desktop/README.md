@@ -190,7 +190,7 @@ release workflow refuses mismatched tags.
 - Desktop `normalizeWorkspace` (registry + sidecar spawn) matches LAP: realpath + strip verbatim + uppercase drive; `hello.project` is the authoritative root after connect
 - Frameless window: Litecode `TitleBar` owns minimize / maximize / close via preload IPC
 - Embed model lives under `sidecar/models/` (tens of MB on disk; ORT Session only loads when `code_search` warms)
-- `pickFolder` / `focusWorkspace` / `notifyWorkspace` / `openWorkspace` (sidecar relaunch + window reload)
+- `pickFolder` / `notifyWorkspace` / `openWorkspace` (sidecar relaunch + window reload)
 - Home remote: `startRemoteSession` / `completeRemoteSession` / `enterRemoteWorkbench` / `reconnectRemote`
 - Multiple app instances allowed; same workspace focuses existing window when possible
 - Changing folder relaunches the sidecar (no in-process hot switch)

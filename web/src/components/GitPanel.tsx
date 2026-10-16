@@ -47,6 +47,7 @@ import {
 import { fileNameFromPath } from "../utils/language";
 import { FolderIcon, getFileIcon } from "../utils/fileIcon";
 import { gitStatusColor, gitStatusLabel } from "../lib/gitStatus";
+import { useVerticalSplit } from "../lib/useVerticalSplit";
 
 const SPLIT_KEY = "litecode-git-split";
 const SPLIT_DEFAULT = 0.55;
@@ -492,12 +493,6 @@ function CommitsPane({
   );
 }
 
-function readSplit(): number {
-  const raw = Number(localStorage.getItem(SPLIT_KEY));
-  if (!Number.isFinite(raw)) return SPLIT_DEFAULT;
-  return Math.min(0.8, Math.max(0.2, raw));
-}
-
 export function GitPanel() {
   const status = useGitStore((s) => s.status);
   const commits = useGitStore((s) => s.commits);
@@ -514,10 +509,10 @@ export function GitPanel() {
   const push = useGitStore((s) => s.push);
 
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [split, setSplit] = useState(readSplit);
-  const splitRef = useRef(split);
-  splitRef.current = split;
-  const paneRef = useRef<HTMLDivElement>(null);
+  const { split, paneRef, onSplitterDown } = useVerticalSplit(
+    SPLIT_KEY,
+    SPLIT_DEFAULT,
+  );
 
   const toggleCollapsed = useCallback((path: string) => {
     setCollapsed((prev) => {
@@ -531,31 +526,6 @@ export function GitPanel() {
   useEffect(() => {
     void refresh({ silent: false });
   }, [refresh]);
-
-  const onSplitterDown = (e: MouseEvent) => {
-    e.preventDefault();
-    const pane = paneRef.current;
-    if (!pane) return;
-    const startY = e.clientY;
-    const start = splitRef.current;
-    const height = pane.getBoundingClientRect().height;
-    const onMove = (ev: globalThis.MouseEvent) => {
-      if (height <= 0) return;
-      const next = Math.min(
-        0.8,
-        Math.max(0.2, start + (ev.clientY - startY) / height),
-      );
-      splitRef.current = next;
-      setSplit(next);
-    };
-    const onUp = () => {
-      localStorage.setItem(SPLIT_KEY, String(splitRef.current));
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  };
 
   const busy = mutating;
   const hasChanges = status.staged.length > 0 || status.changes.length > 0;

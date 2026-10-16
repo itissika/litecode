@@ -40,14 +40,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "lib\common.ps1")
 $Product = Join-Path $Root "dist\product"
 $WebIndex = Join-Path $Root "web\dist\index.html"
 $Desktop = Join-Path $Root "desktop"
 $SidecarExe = Join-Path $Product "litecode.exe"
-
-function Test-Command([string]$Name) {
-  return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
-}
 
 function Restore-EnvValue([string]$Name, $Value) {
   if ($null -eq $Value -or "$Value" -eq "") {

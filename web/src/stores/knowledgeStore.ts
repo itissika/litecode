@@ -99,7 +99,7 @@ function localRefKeys(value: string): Set<string> {
  * a citation that is no longer in the body loses its issue at once; nothing
  * new is judged locally (new citations stay "checking" until the snapshot).
  */
-export function pruneEditedIssues(
+function pruneEditedIssues(
   issues: KnowledgeIssue[],
   node: KnowledgeNode,
   statusPatched: boolean,
@@ -134,16 +134,16 @@ export function projectListedNodes(
   };
 }
 
-export type KnowledgeNodePatch = Partial<
+type KnowledgeNodePatch = Partial<
   Pick<
     KnowledgeNode,
     "summary" | "value" | "relations" | "status" | "x" | "y" | "w" | "h"
   >
 >;
 
-export type KnowledgeRenameResult = "ok" | "invalid" | "duplicate";
+type KnowledgeRenameResult = "ok" | "invalid" | "duplicate";
 
-export type KnowledgeCreateResult = KnowledgeRenameResult | "error";
+type KnowledgeCreateResult = KnowledgeRenameResult | "error";
 
 function sameNode(a: KnowledgeNode, b: KnowledgeNode): boolean {
   return (

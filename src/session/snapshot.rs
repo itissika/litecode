@@ -1255,17 +1255,28 @@ pub fn delete_session_snapshots(snapshots_dir: &Path, session_id: &str) -> Resul
 }
 
 /// Remove orphan (dead session) and stale (untouched N days) snapshot refs.
+///
+/// WP-166: runs in the background (P1) while turns may already be live, so it
+/// holds `workspace_snapshot_lock` for the whole pass and reads the active ids
+/// only after taking it. `snapshot_track` needs the same lock, so no session
+/// can gain refs between the id read and the ref walk; a session created
+/// earlier already has its sessions.db row (written by `session/new`), so it is
+/// in the active set and its refs are never treated as orphans.
 pub fn maintain_snapshots(
+    workspace: &Path,
     snapshots_dir: &Path,
-    active_session_ids: &[String],
+    active_session_ids: impl FnOnce() -> Vec<String>,
 ) -> Result<SnapshotMaintenanceReport> {
+    let snapshot_lock = workspace_snapshot_lock(workspace);
+    let _lock = snapshot_lock.lock().expect("snapshot lock poisoned");
+
     let Ok(repo) =
         Repository::open_bare(snapshots_dir).or_else(|_| Repository::open(snapshots_dir))
     else {
         return Ok(SnapshotMaintenanceReport::default());
     };
 
-    let active: HashSet<_> = active_session_ids.iter().cloned().collect();
+    let active: HashSet<_> = active_session_ids().into_iter().collect();
     let snapshot_sessions = all_session_ids(&repo).unwrap_or_default();
     let cutoff = snapshot_cutoff_time(SNAPSHOT_RETENTION_DAYS);
 
@@ -1415,6 +1426,112 @@ mod tests {
                 "nested .git must not yield invalid path 'docs/': {r:?}"
             );
             assert!(snapshot_exists(&snaps, "sess", 0));
+        });
+    }
+
+    /// WP-166 T2-1: background maintenance serialises with every other
+    /// snapshot operation through workspace_snapshot_lock.
+    #[test]
+    fn maintain_snapshots_waits_for_workspace_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_root = tempfile::tempdir().unwrap();
+        with_snapshots_root(snap_root.path(), || {
+            let ws = dir.path().to_path_buf();
+            std::fs::write(ws.join("a.txt"), "v0").unwrap();
+            let snaps = snapshots_dir_for_workspace(&ws);
+            snapshot_track(&ws, &snaps, "s1", 0).unwrap();
+
+            let lock = workspace_snapshot_lock(&ws);
+            let held = lock.lock().unwrap();
+            let done = StdArc::new(std::sync::atomic::AtomicBool::new(false));
+            let worker = {
+                let (ws, snaps, done) = (ws.clone(), snaps.clone(), done.clone());
+                std::thread::spawn(move || {
+                    let r = maintain_snapshots(&ws, &snaps, || vec!["s1".to_string()]);
+                    done.store(true, std::sync::atomic::Ordering::SeqCst);
+                    r
+                })
+            };
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            assert!(
+                !done.load(std::sync::atomic::Ordering::SeqCst),
+                "maintenance must wait while another snapshot op holds the lock"
+            );
+            drop(held);
+            let report = worker.join().unwrap().unwrap();
+            assert_eq!(report, SnapshotMaintenanceReport::default());
+            assert!(snapshot_exists(&snaps, "s1", 0));
+        });
+    }
+
+    /// WP-166 T2-2: active ids are read with the lock held, so a session that
+    /// tracks concurrently can never be classified as an orphan; orphan /
+    /// active classification itself is unchanged.
+    #[test]
+    fn maintain_reads_active_ids_under_lock_no_false_orphan() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap_root = tempfile::tempdir().unwrap();
+        with_snapshots_root(snap_root.path(), || {
+            let ws = dir.path().to_path_buf();
+            std::fs::write(ws.join("a.txt"), "v0").unwrap();
+            let snaps = snapshots_dir_for_workspace(&ws);
+            snapshot_track(&ws, &snaps, "live", 0).unwrap();
+            snapshot_track(&ws, &snaps, "dead", 0).unwrap();
+
+            let report = maintain_snapshots(&ws, &snaps, || {
+                assert!(
+                    workspace_snapshot_lock(&ws).try_lock().is_err(),
+                    "active ids must be read while holding workspace_snapshot_lock"
+                );
+                vec!["live".to_string()]
+            })
+            .unwrap();
+            assert_eq!(report.orphans_removed, 1);
+            assert_eq!(report.stale_removed, 0);
+            assert!(snapshot_exists(&snaps, "live", 0), "active session kept");
+            assert!(!snapshot_exists(&snaps, "dead", 0), "orphan removed");
+        });
+    }
+
+    /// WP-166 T2-4: serve warms in the background now, so a first turn can
+    /// track before the warm. Track is self-sufficient: it inits the repo and
+    /// clears a stale index.lock itself (snapshot_write_tree), giving the same
+    /// tree as warm-then-track.
+    #[test]
+    fn track_before_warm_matches_warm_then_track() {
+        let snap_root = tempfile::tempdir().unwrap();
+        with_snapshots_root(snap_root.path(), || {
+            let cold = tempfile::tempdir().unwrap();
+            let warm = tempfile::tempdir().unwrap();
+            for d in [cold.path(), warm.path()] {
+                std::fs::write(d.join("a.txt"), "same").unwrap();
+            }
+            let cold_snaps = snapshots_dir_for_workspace(cold.path());
+            init_snapshot_repo(cold.path(), &cold_snaps).unwrap();
+            let stale = cold_snaps.join("index.lock");
+            std::fs::write(&stale, b"stale").unwrap();
+            let old = std::time::SystemTime::now()
+                - std::time::Duration::from_secs(STALE_INDEX_LOCK_SECS + 60);
+            std::fs::File::options()
+                .write(true)
+                .open(&stale)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+            snapshot_track(cold.path(), &cold_snaps, "s", 0).unwrap();
+            assert!(!stale.exists(), "track cleared the stale index.lock");
+
+            let warm_snaps = snapshots_dir_for_workspace(warm.path());
+            warm_snapshot_repo(warm.path(), &warm_snaps).unwrap();
+            snapshot_track(warm.path(), &warm_snaps, "s", 0).unwrap();
+
+            let tree = |snaps: &Path| {
+                git2::Repository::open_bare(snaps)
+                    .unwrap()
+                    .refname_to_id(&snapshot_ref("s", 0))
+                    .unwrap()
+            };
+            assert_eq!(tree(&cold_snaps), tree(&warm_snaps), "same tree either order");
         });
     }
 

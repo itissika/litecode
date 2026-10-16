@@ -7,7 +7,7 @@ import type {
 } from "../../../api/settings";
 import type { SerializeResult } from "./persist";
 
-export const TOOL_ID_RE = /^[a-z][a-z0-9_]*$/;
+const TOOL_ID_RE = /^[a-z][a-z0-9_]*$/;
 
 export function parseCustomToolJson(
   text: string,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { knowledgeFixture, knowledgeFixtureIssues } from "./fixture";
+import { knowledgeFixture, knowledgeFixtureIssues } from "../../test/fixtures/knowledge";
 import type { KnowledgeIssue } from "./types";
 import {
   groupIssues,

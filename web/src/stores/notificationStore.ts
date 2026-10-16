@@ -1,8 +1,8 @@
 import { create } from "zustand";
 
-export type NotificationKind = "info" | "error" | "success";
+type NotificationKind = "info" | "error" | "success";
 
-export interface NotificationItem {
+interface NotificationItem {
   id: string;
   message: string;
   kind: NotificationKind;

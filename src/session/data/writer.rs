@@ -873,6 +873,28 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::MetaUpdated,
             )
         }
+        SessionMutation::SavePendingPermissions {
+            session_id,
+            expected_revision,
+            operation_id,
+            pending,
+        } => {
+            {
+                let _session = ensure_live(state, &session_id)?;
+                let conn = state.db.conn();
+                crate::session::data::sqlite::pending::clear_pending(conn, &session_id)?;
+                for rec in &pending {
+                    crate::session::data::sqlite::pending::upsert_pending(conn, rec)?;
+                }
+            }
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::MetaUpdated,
+            )
+        }
         SessionMutation::SetAgent {
             session_id,
             expected_revision,

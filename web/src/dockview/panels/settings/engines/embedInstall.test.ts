@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopComponentProgress } from "../../../../api/auth";
+import type { ComponentProgressEvent } from "../../../../api/auth";
 import type { EnginesDetail } from "../../../../api/workspace";
 import * as workspace from "../../../../api/workspace";
 import {
@@ -8,6 +8,7 @@ import {
   installEmbedInstallWatcher,
   restartRetrievalAfterEmbedInstall,
 } from "./embedInstall";
+import { stubDesktopBridge } from "../../../../test/desktopBridge";
 
 const getEnginesDetail = vi.spyOn(workspace, "getEnginesDetail");
 const refreshRetrieval = vi.spyOn(workspace, "refreshRetrieval");
@@ -71,8 +72,8 @@ describe("restartRetrievalAfterEmbedInstall", () => {
 
 describe("installEmbedInstallWatcher", () => {
   function bridge(mode: "local" | "remote") {
-    let handler: ((event: DesktopComponentProgress) => void) | null = null;
-    window.litecode = {
+    let handler: ((event: ComponentProgressEvent) => void) | null = null;
+    window.litecode = stubDesktopBridge({
       getSessionMode: () => mode,
       onComponentProgress: (h) => {
         handler = h;
@@ -80,18 +81,18 @@ describe("installEmbedInstallWatcher", () => {
           handler = null;
         };
       },
-    };
-    return { emit: (event: DesktopComponentProgress) => handler?.(event), attached: () => handler !== null };
+    });
+    return { emit: (event: ComponentProgressEvent) => handler?.(event), attached: () => handler !== null };
   }
 
   it("restarts retrieval on embed-model done only", async () => {
     getEnginesDetail.mockResolvedValue(detail("unavailable"));
     const host = bridge("local");
     const stop = installEmbedInstallWatcher();
-    host.emit({ id: "embed-model", phase: "downloading", message: "…" });
-    host.emit({ id: "linux-server", phase: "done", message: "ready" });
+    host.emit({ id: "embed-model", phase: "downloading", percent: 0, message: "…" });
+    host.emit({ id: "linux-server", phase: "done", percent: 0, message: "ready" });
     expect(getEnginesDetail).not.toHaveBeenCalled();
-    host.emit({ id: "embed-model", phase: "done", message: "ready" });
+    host.emit({ id: "embed-model", phase: "done", percent: 0, message: "ready" });
     await vi.waitFor(() => expect(refreshRetrieval).toHaveBeenCalledTimes(1));
     stop();
     expect(host.attached()).toBe(false);

@@ -20,6 +20,9 @@ pub fn execute(
 ) -> Result<ReadValue> {
     match query {
         SessionRead::Meta { session_id } => Ok(ReadValue::Meta(load_meta(conn, &session_id)?)),
+        SessionRead::PendingPermissions { session_id } => Ok(ReadValue::PendingPermissions(
+            super::pending::list_pending(conn, &session_id)?,
+        )),
         SessionRead::Transcript { session_id } => Ok(ReadValue::Transcript(load_transcript(
             conn,
             &session_id,

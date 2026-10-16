@@ -11,16 +11,30 @@ const MAX_OUTPUT_BYTES: usize = 50_000;
 
 pub struct WebFetchTool {
     client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
+    /// WP-167: builds the client on first use (startup no longer does).
+    warm: Option<crate::optional::WarmHook>,
 }
 
 impl WebFetchTool {
     pub fn new(client: Arc<RwLock<Option<reqwest::blocking::Client>>>) -> Self {
-        Self { client }
+        Self { client, warm: None }
+    }
+
+    pub fn with_warm_hook(mut self, warm: crate::optional::WarmHook) -> Self {
+        self.warm = Some(warm);
+        self
     }
 
     fn fetch(&self, url: &str) -> Result<String, String> {
         // Verify the engine is warmed before fetching (gives the "not warmed"
         // hint); the actual request uses a redirect-disabled client for SSRF.
+        // WP-167: one ensure_warm per call (builds on first use, reuses after,
+        // retries after a failed build). A failed build is returned as is.
+        if let Some(warm) = &self.warm
+            && let Err(e) = warm()
+        {
+            return Err(format!("webfetch engine failed to start: {e}"));
+        }
         let _warmed = self
             .client
             .read()
@@ -226,7 +240,10 @@ impl Tool for WebFetchTool {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         // 2.6: the network fetch is blocking; run it in `spawn_blocking` so a slow
         // webfetch cannot stall the async executor and its timeout stays effective.
-        let tool = WebFetchTool::new(Arc::clone(&self.client));
+        let tool = WebFetchTool {
+            client: Arc::clone(&self.client),
+            warm: self.warm.clone(),
+        };
         Box::pin(async move {
             let join = tokio::task::spawn_blocking(move || tool.call_inner(input));
             match join.await {

@@ -23,7 +23,7 @@ import { useToastStore } from "./toastStore";
 
 const HISTORY_PAGE = 40;
 
-export interface PendingUser {
+interface PendingUser {
   clientId: string;
   item: Item;
 }
@@ -45,7 +45,7 @@ export interface PendingQueueBubble {
   images: string[];
 }
 
-export interface MessageSlice {
+interface MessageSlice {
   /** Seq → row. Sorted projection is `messages`. */
   bySeq: Map<number, HumanRow>;
   messages: HumanRow[];
@@ -84,7 +84,7 @@ export interface TurnEndNotice {
   message: string;
 }
 
-export const EMPTY_DISPLAY: HumanRow[] = [];
+const EMPTY_DISPLAY: HumanRow[] = [];
 
 export const EMPTY_SLICE: MessageSlice = {
   bySeq: new Map(),

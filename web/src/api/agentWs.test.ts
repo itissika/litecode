@@ -75,6 +75,26 @@ describe("AgentWsClient buildConnectUrl (G3)", () => {
   });
 });
 
+describe("AgentWsClient auth (WP-159)", () => {
+  it("does not send an auth frame after the socket opens; the token rides the handshake URL", () => {
+    const client = new AgentWsClient({
+      url: "ws://127.0.0.1:7483/ws",
+      authToken: "tok-123",
+      onEnvelope: () => {},
+    });
+    client.connect();
+    const ws = (client as unknown as { ws: MockWebSocket }).ws;
+    const sent: string[] = [];
+    ws.send = (payload: string) => {
+      sent.push(payload);
+    };
+    ws.readyState = MockWebSocket.OPEN;
+    ws.onopen?.();
+    expect(new URL(wsUrl!).searchParams.get("token")).toBe("tok-123");
+    expect(sent.some((p) => JSON.parse(p).method === "auth")).toBe(false);
+  });
+});
+
 describe("AgentWsClient send error surfacing (FE-10)", () => {
   it("reports an explicit error when the socket is not open", () => {
     const onError = vi.fn();
@@ -84,7 +104,7 @@ describe("AgentWsClient send error surfacing (FE-10)", () => {
       onError,
     });
     // No connect() → ws is null → not open.
-    client.send("auth", { token: "x" });
+    client.send("session/list", {});
     expect(onError).toHaveBeenCalledWith("WebSocket not connected");
   });
 
@@ -103,7 +123,7 @@ describe("AgentWsClient send error surfacing (FE-10)", () => {
       throw new Error("socket closing");
     });
 
-    client.send("auth", { token: "x" });
+    client.send("session/list", {});
     expect(onError).toHaveBeenCalledWith(
       "WebSocket send failed: socket closing",
     );

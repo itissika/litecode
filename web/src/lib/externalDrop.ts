@@ -10,11 +10,11 @@ import {
   readLoosePaths,
 } from "./dropPayload";
 
-export type ForeignZone = "tree" | "mention" | "editor" | "terminal" | "other";
+type ForeignZone = "tree" | "mention" | "editor" | "terminal" | "other";
 
-export type ForeignIntent = "ignore" | "swallow" | "preview";
+type ForeignIntent = "ignore" | "swallow" | "preview";
 
-export function foreignZone(target: EventTarget | null): ForeignZone {
+function foreignZone(target: EventTarget | null): ForeignZone {
   const el = target instanceof Element ? target : null;
   if (!el) return "other";
   if (el.closest("[data-drop-zone='tree']")) return "tree";

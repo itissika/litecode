@@ -10,7 +10,7 @@
  */
 const L_PATH = "M19.01 22.5 L5 22.5 L5 1.5 L9.5 1.5 L9.5 18.45 L19.01 18.45 Z";
 
-export interface LitecodeMarkProps {
+interface LitecodeMarkProps {
   size?: number;
   /** Accepted for parity with the Phosphor glyphs; the mark is always solid. */
   weight?: string;

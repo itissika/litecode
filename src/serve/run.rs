@@ -71,8 +71,12 @@ pub fn run(
     tracing::info!("web dist: {}", web_dist.display());
 
     // Reap language servers leaked by earlier instances that died without
-    // graceful shutdown (pre job-object builds, crashes, taskkill).
-    crate::proc_lifetime::sweep_orphan_lsp_processes();
+    // graceful shutdown (pre job-object builds, crashes, taskkill). WP-167:
+    // runs in the background; every language-server spawn waits for it
+    // (crate::lsp::sweep_gate), so it still finishes before the first one.
+    // Must arm before ServeState / LspHub construction (WorkspaceEngines::new).
+    crate::lsp::sweep_gate::global()
+        .start_background(crate::proc_lifetime::sweep_orphan_lsp_processes);
 
     let turn_guard = Arc::new(TurnGuard::new());
     let mut settings_writer = SettingsWriter::new(turn_guard.clone());
@@ -81,7 +85,8 @@ pub fn run(
     settings_writer.set_engine_manager(Arc::clone(&engine_manager));
     let settings_writer = Arc::new(settings_writer);
 
-    engine_manager.reconcile(&resolved);
+    // WP-167: web clients are built on first use (P2), not before READY.
+    engine_manager.defer_reconcile(&resolved);
     workspace_engines.reconcile(&resolved);
     workspace_engines
         .path_index()

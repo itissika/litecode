@@ -106,6 +106,10 @@ impl LspTool {
         workspace_root: &Path,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<(), ToolCallResult> {
+        // WP-167: the availability probe runs on first need. A failure flips
+        // the engine to Failed with the original error, so the branches below
+        // return the same text the eager probe produced.
+        let _ = self.engines.ensure_lsp_probed().await;
         if self.is_ready() {
             return Ok(());
         }

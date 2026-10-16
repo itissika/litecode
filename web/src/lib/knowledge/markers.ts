@@ -1,4 +1,4 @@
-export type KnowledgeSegment =
+type KnowledgeSegment =
   | { type: "text"; value: string }
   | { type: "ref"; id: string; label: string };
 
@@ -7,7 +7,7 @@ export type KnowledgeSegment =
  * `seq`, `knowledge 概念概述`. Quotes and brackets stay out so the key can be
  * a path segment and a Mention shortcode attribute.
  */
-export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
+const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
 
 /** Node citation. Only `key` is recognized. */
 const SHORTCODE_SOURCE = String.raw`\[@ key="([^"]*)"\]`;
@@ -312,27 +312,6 @@ export function splitBodyRefs(text: string): BodySegment[] {
   return out;
 }
 
-export interface CitedSymbol {
-  path: string;
-  symbol: string;
-}
-
-/** Symbol citations in prose, first chain per file wins. Range-only citations are not included. */
-export function extractSymbolRefs(markdown: string): CitedSymbol[] {
-  const out: CitedSymbol[] = [];
-  const seen = new Set<string>();
-  for (const line of scanProse(markdown).prose) {
-    for (const segment of splitBodyRefs(line)) {
-      if (segment.type !== "symbol" || !segment.symbol) continue;
-      const key = `${segment.path}\0${segment.symbol}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ path: segment.path, symbol: segment.symbol });
-    }
-  }
-  return out;
-}
-
 /** File paths cited in prose. Fenced blocks and inline code are not citations. */
 export function extractFileRefs(markdown: string): string[] {
   const paths: string[] = [];
@@ -349,12 +328,12 @@ export function extractFileRefs(markdown: string): string[] {
 }
 
 /** Path part of a `ref_key` (KR-KEY-1): trimmed, `\\` as `/`, nothing else. */
-export function normalizeRefPath(path: string): string {
+function normalizeRefPath(path: string): string {
   return path.trim().replaceAll("\\", "/");
 }
 
 /** One citation as the reference identity needs it. `lines` is the raw attribute. */
-export type RefKeyInput =
+type RefKeyInput =
   | { kind: "node"; key: string }
   | { kind: "file"; path: string; symbol?: string | null; lines?: string | null };
 
@@ -378,7 +357,7 @@ export function knowledgeRefKey(ref: RefKeyInput): string {
   return `file:${path}`;
 }
 
-export interface ExtractedRef {
+interface ExtractedRef {
   kind: "node" | "file" | "symbol" | "range";
   key?: string;
   path?: string;
@@ -435,7 +414,7 @@ export function extractRefs(markdown: string): ExtractedRef[] {
   return out;
 }
 
-export interface KnowledgeMention {
+interface KnowledgeMention {
   id: string;
   label: string;
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
 export function opsRoot(fromMetaUrl) {
   return path.join(path.dirname(fileURLToPath(fromMetaUrl)), "..");
 }
@@ -274,6 +274,32 @@ export function webhookPayloadOf(ev) {
     level: m.level ?? 0, parent: m.parent ?? null, path: m.path ?? (ev.wp ? [ev.wp] : []), target: m.target ?? m.approver ?? m.reviewer ?? "gm", escalated: !!m.escalated,
     type: ev.type, actor: m.actor ?? null, merged: m.merged ?? [], matter_key: m.matter_key ?? null,
   };
+}
+
+/** v19 liveness driver without cron/systemd: any ops.wp write calls this. If a watcher was ever set up here (heartbeat file exists) and it is
+ *  dead or its heartbeat is >10 min old, spawn detached `wp_watch.mjs ensure` (rate-limited 5 min via .tmp/wp_watch.ensure.stamp) and
+ *  record team_ops.watcher_restarted(source ops.wp). Never throws; no-op in test copies without .tmp/heartbeat. */
+export function softEnsureWatcher(ops, { now = new Date(), staleMs = 10 * 60000 } = {}) {
+  try {
+    if (process.env.LITECODE_WP_NO_AUTOENSURE === "1") return { action: "disabled" };
+    const wpth = watchPaths(ops);
+    const hb = readJsonOr(wpth.heartbeat, null);
+    if (!hb) return { action: "none", reason: "no heartbeat file" };
+    const age = now.getTime() - Date.parse(hb.ts);
+    const pidf = readJsonOr(wpth.pid, null);
+    const alive = !!pidf && isWatchPidAlive(pidf.pid);
+    if (alive && age <= staleMs) return { action: "none", reason: "healthy" };
+    const stamp = path.join(wpth.tmp, "wp_watch.ensure.stamp");
+    try { if (now.getTime() - fs.statSync(stamp).mtimeMs < 5 * 60000) return { action: "none", reason: "rate-limited" }; } catch {}
+    fs.writeFileSync(stamp, now.toISOString());
+    const c = spawn(process.execPath, [path.join(ops, "tools", "wp_watch.mjs"), "ensure"], { detached: true, stdio: "ignore", env: process.env, cwd: path.join(ops, "..", "..") });
+    c.unref();
+    mutateInbox(ops, (box) => {
+      box.inbox.push({ id: newEventId("watcher-restarted", now.getTime()), ts: now.toISOString(), type: "team_ops.watcher_restarted", source: "ops.wp", wp: null, acked: [],
+        summary: `wp_watch ${alive ? "heartbeat " + Math.round(age / 60000) + "m old" : "not running"} (last heartbeat ${hb.ts}); ops.wp triggered ensure/restart`, meta: { target: "gm", ok: null, last_heartbeat_at: hb.ts, age_sec: Math.round(age / 1000), old_pid: hb.pid ?? null, via: "ops.wp softEnsure" } });
+    });
+    return { action: "ensure_spawned", age_sec: Math.round(age / 1000) };
+  } catch (e) { return { action: "error", error: String(e.message || e) }; }
 }
 
 /** Write board, run validate.mjs, roll back on failure. Returns { ok, stderr }. */

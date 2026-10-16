@@ -44,7 +44,7 @@ export function readableCompactSummary(raw: string): string {
 /** Cut mark between transcript items — not a divider bubble, not summary text.
  *  With a summary the whole line is clickable and opens a floating markdown
  *  panel; without one it stays a plain static cut. */
-export function CompactCutMark({ summary }: { summary?: string }) {
+function CompactCutMark({ summary }: { summary?: string }) {
   const hasSummary = typeof summary === "string" && summary.trim().length > 0;
   if (!hasSummary) {
     return (
@@ -98,7 +98,7 @@ export function CompactCutMark({ summary }: { summary?: string }) {
   );
 }
 
-export function JobExitMark({ detail }: { detail?: string }) {
+function JobExitMark({ detail }: { detail?: string }) {
   return (
     <MarkLine role="status" label="Background terminal exited">
       <span className="text-dk-2xs text-(--_dk-text-disabled)">
@@ -133,7 +133,7 @@ export function PlanExecuteMark({ planPath }: { planPath?: string | null }) {
  * One-line subagent completion mark. The report body stays in the log for the
  * agent; humans see a compact cut-style line, optionally opening the child.
  */
-export function SubagentExitMark({
+function SubagentExitMark({
   detail,
   childId,
 }: {

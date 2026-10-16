@@ -2,7 +2,7 @@ import { create } from "zustand";
 
 import type { BashJob, BashJobsSnapshot, BashWait } from "../api/types";
 
-export interface SessionBash {
+interface SessionBash {
   jobs: BashJob[];
   waits: BashWait[];
 }

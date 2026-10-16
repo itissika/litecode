@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import type { SessionInfo } from "../api/types";
+import { isWaitingForUserPhase } from "../api/types";
 
 export type SessionStatus = "idle" | "running" | "pending";
 
@@ -55,11 +56,38 @@ export function SessionStatusDot({
   );
 }
 
+/**
+ * WP-184 / WP-179 §5.2: trust BE `awaiting_permission` bool when present; if
+ * the field is absent, derive from local pending_permissions / permissionQueue
+ * length. Explicit `false` wins over a non-empty local queue.
+ */
+export function isAwaitingPermission(
+  awaiting: boolean | undefined,
+  pendingPermissionCount = 0,
+): boolean {
+  if (awaiting === true) return true;
+  if (awaiting === undefined) return pendingPermissionCount > 0;
+  return false;
+}
+
 /** Derive the display status from a session payload. */
 export function deriveSessionStatus(
   session: Pick<SessionInfo, "running" | "turn" | "status"> | undefined,
+  opts?: { pendingPermissionCount?: number },
 ): SessionStatus {
-  if (session?.turn?.awaiting_permission) return "pending";
+  // WP-184 Phase B: WireTurnPhase waiting_for_user (or legacy
+  // awaiting_permission object) means the turn is gated on the user.
+  if (isWaitingForUserPhase(session?.turn?.phase)) {
+    return "pending";
+  }
+  if (
+    isAwaitingPermission(
+      session?.turn?.awaiting_permission,
+      opts?.pendingPermissionCount ?? 0,
+    )
+  ) {
+    return "pending";
+  }
   if (
     session?.running ||
     session?.status === "running_with_subagent" ||

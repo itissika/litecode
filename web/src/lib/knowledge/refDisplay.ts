@@ -9,9 +9,9 @@ import {
 } from "./markers";
 import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
 
-export type RefChipTone = "normal" | "disabled" | "warning" | "error";
+type RefChipTone = "normal" | "disabled" | "warning" | "error";
 
-export interface RefChipModel {
+interface RefChipModel {
   key: string;
   label: string;
   targetId: string | null;
@@ -84,7 +84,7 @@ export function citationRefKey(citation: Citation): string {
   });
 }
 
-export type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
+type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
 
 /**
  * How a backend status draws on a chip. A status missing here (a code added
@@ -133,7 +133,7 @@ export interface CitationChipModel {
   symbol: boolean;
 }
 
-export interface CitationResolveInput {
+interface CitationResolveInput {
   source: KnowledgeNode | null;
   /** Node looked up by key. Null when the key is not in the corpus. */
   target: KnowledgeNode | null;

@@ -169,20 +169,18 @@ pub async fn listen(
             }
         });
     }
-    tokio::spawn(async move {
-        session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
-            session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
-        }
-    });
+    drop(spawn_empty_session_gc(session_gc));
     // Idle maintenance of both session indexes. Never on the search path: a search
     // only reads whatever the index already holds (stale is fine, wrong is not —
     // `build_agent_view` re-checks each hit against the store).
     {
         let engines = state.workspace_engines.clone();
         let turn_guard = state.turn_guard.clone();
+        let settled = state.sessions.clone();
         tokio::spawn(async move {
+            // WP-166 (P2): start the maintenance cadence only after the first
+            // session/list or session/new reply. The loop body is unchanged.
+            settled.wait_startup_settled().await;
             let mut tick = tokio::time::interval(SESSION_INDEX_TICK);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -249,8 +247,12 @@ pub async fn listen(
             }
         });
     }
+    let snapshot_upkeep_state = state.clone();
     let app = router(state, web_dist);
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    // WP-166 (P1): snapshot-repo warm, then snapshot maintenance, in the
+    // background right after bind. Both hold workspace_snapshot_lock.
+    drop(spawn_snapshot_upkeep(&snapshot_upkeep_state));
     let local_addr = listener.local_addr()?;
     let ready_line = format!("LITECODE_READY http://{local_addr}/");
     writeln!(std::io::stdout(), "{ready_line}")?;
@@ -266,4 +268,55 @@ pub async fn listen(
         })
         .await?;
     Ok(())
+}
+
+/// WP-166 (P1): warm the shadow snapshot repo and then prune orphan/stale
+/// snapshot refs, off the startup path. Same order as before WP-166 (warm ran
+/// in `load_workspace_state`, maintenance in `ServeState::with_project`); both
+/// take `workspace_snapshot_lock`, so they serialise with turn snapshots.
+pub(crate) fn spawn_snapshot_upkeep(state: &ServeState) -> tokio::task::JoinHandle<()> {
+    let (workspace_root, snapshots_dir) = {
+        let runtime = state.runtime.read().expect("runtime lock");
+        (
+            runtime.workspace.workspace_root.clone(),
+            runtime.workspace.paths.snapshots_dir.clone(),
+        )
+    };
+    let sessions = state.sessions.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) =
+            crate::session::snapshot::warm_snapshot_repo(&workspace_root, &snapshots_dir)
+        {
+            tracing::warn!(error = %e, "snapshot warm failed");
+        }
+        match crate::session::snapshot::maintain_snapshots(&workspace_root, &snapshots_dir, || {
+            sessions.data().list_session_ids_blocking().unwrap_or_default()
+        }) {
+            Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {
+                tracing::info!(
+                    orphans = report.orphans_removed,
+                    stale = report.stale_removed,
+                    "snapshot maintenance"
+                );
+            }
+            Err(e) => tracing::warn!(error = %e, "snapshot maintenance failed"),
+            _ => {}
+        }
+    })
+}
+
+/// Empty-session GC: hourly, TTL `EMPTY_SESSION_TTL`. WP-166 (P2): the first
+/// pass waits until the first session/list or session/new reply has gone out;
+/// cadence and TTL are unchanged.
+pub(crate) fn spawn_empty_session_gc(
+    session_gc: std::sync::Arc<crate::session::manager::SessionManager>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        session_gc.wait_startup_settled().await;
+        session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
+            session_gc.gc_stale_empty_sessions(EMPTY_SESSION_TTL).await;
+        }
+    })
 }

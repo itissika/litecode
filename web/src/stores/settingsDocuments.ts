@@ -61,7 +61,7 @@ export type McpDefItem = McpServerDefinition & {
   origin?: ToolOrigin;
 };
 
-export type McpRuntimeItem = {
+type McpRuntimeItem = {
   status?: McpRunState;
   tools?: McpToolInfo[];
   error?: string | null;
@@ -79,7 +79,7 @@ export type PersistDocKey = Exclude<
 
 export type SettingsDocClock = Partial<Record<SettingsDocument, number>>;
 
-export const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
+const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
   // One LLM document id: catalog + providers + credentials + models.
   llm: ["llm"],
   agents: ["agents"],
@@ -126,7 +126,7 @@ export interface SettingsDataProbe {
   docClock: SettingsDocClock;
 }
 
-export function documentHasData(
+function documentHasData(
   doc: SettingsDocument,
   state: SettingsDataProbe,
 ): boolean {
@@ -163,10 +163,6 @@ export function sectionNeedsSkeleton(
     if (doc === "summary") return false;
     return !documentHasData(doc, state);
   });
-}
-
-export function isRevisionedDocument(doc: SettingsDocument): boolean {
-  return doc !== "excludes";
 }
 
 export function documentIsFresh(

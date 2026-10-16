@@ -216,6 +216,11 @@ pub(super) async fn on_broken_stream(
 ) -> Result<EmptyStreamAction> {
     if produced_items {
         note_terminal_transport_failure(budget);
+        // WP-188 observe-only: no control-flow change — log GiveUp for turn/wire correlation.
+        tracing::warn!(
+            produced_items = true,
+            "broken stream → GiveUp (items already produced; not retrying)"
+        );
         return Ok(EmptyStreamAction::GiveUp);
     }
     on_empty_stream_loss(budget, cancel).await

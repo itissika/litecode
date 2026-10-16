@@ -281,6 +281,26 @@ impl WorkspaceEngines {
             }
         }));
 
+        // WP-167: the LSP availability probe runs on first need. Its failure
+        // records the same `Failed` + error text the eager warmup produced.
+        let state_ref = Arc::clone(&states);
+        let error_ref = Arc::clone(&last_errors);
+        lsp.hub()
+            .set_probe_failure_sink(Arc::new(move |error: String| {
+                if let Ok(mut guard) = state_ref.write() {
+                    if matches!(guard.get("lsp"), Some(EngineState::Stopped) | None) {
+                        return;
+                    }
+                    guard.insert("lsp".into(), EngineState::Failed);
+                }
+                if let Ok(mut guard) = error_ref.write() {
+                    guard.insert(
+                        "lsp".into(),
+                        crate::types::LitecodeError::Config(error).to_string(),
+                    );
+                }
+            }));
+
         Self {
             states,
             last_errors,
@@ -589,6 +609,24 @@ impl WorkspaceEngines {
 
     pub fn lsp_hub(&self) -> crate::lsp::SharedLspHub {
         self.lsp.hub()
+    }
+
+    /// WP-167: run the deferred LSP availability probe if it has not run for
+    /// this activation. A failure flips `state("lsp")` to `Failed` with the
+    /// original error. No-op unless the engine is `Warm`.
+    pub async fn ensure_lsp_probed(&self) -> std::result::Result<(), String> {
+        if self.state("lsp") != Some(EngineState::Warm) {
+            return Ok(());
+        }
+        self.lsp.hub().ensure_probed().await
+    }
+
+    /// Blocking form of [`Self::ensure_lsp_probed`] (for `spawn_blocking` callers).
+    pub fn ensure_lsp_probed_blocking(&self) -> std::result::Result<(), String> {
+        if self.state("lsp") != Some(EngineState::Warm) {
+            return Ok(());
+        }
+        self.lsp.hub().ensure_probed_blocking()
     }
 
     pub fn memory_sample(&self) -> crate::telemetry::MemorySample {
@@ -1227,6 +1265,98 @@ mod tests {
     use crate::session::{SessionData, WorkspaceWriteLease};
     use crate::types::user_text;
     use tempfile::TempDir;
+
+    // ---- WP-167: deferred LSP availability probe ----
+
+    /// `sh <script>` whose `--version` exits 3 (a broken language server).
+    #[cfg(unix)]
+    fn broken_ls(dir: &std::path::Path) -> String {
+        let script = dir.join("broken-ls.sh");
+        std::fs::write(&script, "#!/bin/sh\nexit 3\n").unwrap();
+        format!("sh {}", script.display())
+    }
+
+    /// The error text the eager warmup recorded before WP-167.
+    #[cfg(unix)]
+    fn eager_error_prefix() -> String {
+        crate::types::LitecodeError::Config("language server 'sh' not runnable: ".into())
+            .to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_first_need_probe_failure_sets_failed_same_error() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Warm);
+
+        let err = engines
+            .ensure_lsp_probed_blocking()
+            .expect_err("broken server");
+        assert!(
+            err.starts_with("language server 'sh' not runnable: "),
+            "{err}"
+        );
+        assert_eq!(engines.state("lsp"), Some(EngineState::Failed));
+        let recorded = engines.last_error("lsp").expect("error recorded");
+        assert!(recorded.starts_with(&eager_error_prefix()), "{recorded}");
+        assert_eq!(
+            recorded,
+            crate::types::LitecodeError::Config(err).to_string()
+        );
+        assert!(
+            !hub.is_active(),
+            "hub left inactive, as after a failed eager probe"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_probe_is_skipped_unless_warm() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Warming);
+        assert_eq!(engines.ensure_lsp_probed_blocking(), Ok(()));
+        assert_eq!(engines.state("lsp"), Some(EngineState::Warming));
+        assert!(hub.is_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_probe_failure_after_stop_does_not_resurrect_state() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Stopped);
+        // Probe through the hub directly (as a request racing a stop would).
+        assert!(hub.ensure_probed_blocking().is_err());
+        assert_eq!(engines.state("lsp"), Some(EngineState::Stopped));
+        assert_eq!(engines.last_error("lsp"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detail_view_after_deferred_probe_matches_eager() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Warm);
+
+        let detail = engines.engines_detail_view(dir.path());
+        assert_eq!(detail["lsp"]["state"], "failed");
+        let error = detail["lsp"]["error"].as_str().expect("error string");
+        assert!(error.starts_with(&eager_error_prefix()), "{error}");
+    }
 
     #[test]
     fn reconcile_does_not_start_the_path_index() {

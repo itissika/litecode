@@ -5,9 +5,8 @@
  */
 
 export const BROWSER_PARTITION = "persist:litecode-browser";
-export const BROWSER_STATE_CHANNEL = "litecode:browser-state";
 
-export const BROWSER_ID_PATTERN =
+const BROWSER_ID_PATTERN =
   /^browser-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const DEFAULT_BACKGROUND = "#0a0a0a";
@@ -82,7 +81,7 @@ type Entry = {
   place: string;
 };
 
-export function normalizeBrowserBackground(color: unknown): string {
+function normalizeBrowserBackground(color: unknown): string {
   if (typeof color !== "string") return DEFAULT_BACKGROUND;
   const trimmed = color.trim();
   if (trimmed.length === 0 || trimmed.length > 80) return DEFAULT_BACKGROUND;
@@ -95,7 +94,7 @@ export function normalizeBrowserBackground(color: unknown): string {
   return DEFAULT_BACKGROUND;
 }
 
-export function sanitizeBrowserBounds(value: unknown): BrowserBounds | null {
+function sanitizeBrowserBounds(value: unknown): BrowserBounds | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const x = Number(raw.x);

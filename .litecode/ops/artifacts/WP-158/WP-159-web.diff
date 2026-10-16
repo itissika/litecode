@@ -1,0 +1,3497 @@
+diff --git a/web/README.md b/web/README.md
+index f999ede..be94c82 100644
+--- a/web/README.md
++++ b/web/README.md
+@@ -116,6 +116,22 @@ components/   AppShell, AgentSidebar, SettingsPanel, FileTree, EditorPane, …
+ 
+ `adapter.ts` maps the RS wire protocol to UI message parts. **Do not use the AI SDK as the wire format.**
+ 
++## WS smoke script
++
++`scripts/ws-smoke.mjs` is a manual WebSocket probe against `litecode serve`
++(JSON-RPC 2.0; Node 22+, no dependencies). It is not part of `npm test`.
++The token goes in the handshake URL (`?token=`); no auth frame is sent.
++
++```bash
++node web/scripts/ws-smoke.mjs handshake [--token secret]   # pass: server/hello received
++node web/scripts/ws-smoke.mjs list [--token secret]        # pass: session/list returns { sessions: [...] }
++node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]  # pass: wrong token gets no server/hello
++```
++
++Environment: `WS_URL` (default `ws://127.0.0.1:7483/ws`), `WS_TOKEN`,
++`WS_TIMEOUT_MS` (default 2500). The script prints a JSON result and exits 0 on
++pass, 1 on fail.
++
+ ## Build
+ 
+ ```bash
+diff --git a/web/scripts/ws-smoke.mjs b/web/scripts/ws-smoke.mjs
+index 1e5b171..9b9eb64 100644
+--- a/web/scripts/ws-smoke.mjs
++++ b/web/scripts/ws-smoke.mjs
+@@ -1,10 +1,11 @@
+ #!/usr/bin/env node
+ /**
+- * Temporary WS smoke probe (Phase 0 manual acceptance automation).
++ * Manual WS smoke probe against `litecode serve` (JSON-RPC 2.0 over WebSocket).
++ * The token rides the handshake URL (`?token=`); no auth frame is sent.
+  * Usage:
+- *   node web/scripts/ws-smoke.mjs handshake [--token secret]
+- *   node web/scripts/ws-smoke.mjs list
+- *   node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]
++ *   node web/scripts/ws-smoke.mjs handshake [--token secret]   # expect server/hello
++ *   node web/scripts/ws-smoke.mjs list [--token secret]        # also call session/list
++ *   node web/scripts/ws-smoke.mjs bad-handshake [--bad-token]  # wrong token: no server/hello
+  */
+ const WebSocket = globalThis.WebSocket;
+ if (!WebSocket) {
+@@ -19,87 +20,82 @@ const token =
+     ? "wrong"
+     : (process.argv.find((_, i, a) => a[i - 1] === "--token") ?? process.env.WS_TOKEN ?? "secret");
+ const timeoutMs = Number(process.env.WS_TIMEOUT_MS ?? 2500);
++const LIST_ID = 1;
+ 
+ function wsUrl() {
+   const sep = BASE.includes("?") ? "&" : "?";
+   return `${BASE}${sep}token=${encodeURIComponent(token)}`;
+ }
+ 
++/** Frames may carry several newline-delimited JSON-RPC messages. */
+ function ingestFrame(data, state) {
+-  const text = String(data).trim();
+-  if (!text) return;
+-  try {
+-    state.envelopes.push(JSON.parse(text));
+-  } catch (e) {
+-    state.parseErrors.push({ line: text.slice(0, 120), error: String(e) });
++  for (const line of String(data).split("\n")) {
++    const text = line.trim();
++    if (!text) continue;
++    try {
++      state.messages.push(JSON.parse(text));
++    } catch (e) {
++      state.parseErrors.push({ line: text.slice(0, 120), error: String(e) });
++    }
+   }
+ }
+ 
+-function hasKey(envelopes, key) {
+-  return envelopes.some((e) => e && typeof e === "object" && key in e);
+-}
++const hasHello = (state) => state.messages.some((m) => m?.method === "server/hello");
++const listResponse = (state) => state.messages.find((m) => m?.id === LIST_ID && ("result" in m || "error" in m));
+ 
+-function runScenario(name, { sendAuth = true, sendListSessions = false } = {}) {
++function runScenario(name, { callList = false } = {}) {
+   return new Promise((resolve) => {
+-    const state = { buf: "", envelopes: [], parseErrors: [], closed: null, opened: false };
++    const state = { messages: [], parseErrors: [], closed: null, opened: false, listSent: false };
+     const url = wsUrl();
+     const ws = new WebSocket(url);
++    const started = Date.now();
+     let done = false;
+ 
+     const timer = setTimeout(() => {
+-      if (!done) {
+-        done = true;
+-        ws.close();
+-        finish("timeout");
+-      }
++      ws.close();
++      finish("timeout");
+     }, timeoutMs);
+ 
+     function finish(reason) {
+-      if (done && reason !== "timeout") return;
+-      if (!done) done = true;
++      if (done) return;
++      done = true;
+       clearTimeout(timer);
++      const list = listResponse(state);
+       resolve({
+         name,
+         reason,
+         url,
+-        token,
+         opened: state.opened,
+         closed: state.closed,
+-        envelopes: state.envelopes,
++        hasServerHello: hasHello(state),
++        sessionListOk: Boolean(list && Array.isArray(list.result?.sessions)),
++        sessionListError: list?.error ?? null,
++        messageCount: state.messages.length,
+         parseErrors: state.parseErrors,
+-        hasServerHello: hasKey(state.envelopes, "server_hello"),
+-        hasSessionSnapshot: hasKey(state.envelopes, "session_snapshot"),
+-        hasSessionList: hasKey(state.envelopes, "session_list"),
+         elapsedMs: Date.now() - started,
+       });
+     }
+ 
+-    const started = Date.now();
+-
+     ws.addEventListener("open", () => {
+       state.opened = true;
+-      if (sendAuth) {
+-        ws.send(JSON.stringify({ auth: { token } }));
+-      }
+-      if (sendListSessions) {
+-        setTimeout(() => ws.send(JSON.stringify({ list_sessions: null })), 50);
+-      }
+     });
+ 
+     ws.addEventListener("message", (ev) => {
+       ingestFrame(ev.data, state);
+-      if (sendListSessions && hasKey(state.envelopes, "session_list")) {
++      if (!hasHello(state)) return;
++      if (!callList) {
+         ws.close();
+-        finish("session_list");
++        finish("server/hello");
++        return;
++      }
++      if (!state.listSent) {
++        state.listSent = true;
++        ws.send(JSON.stringify({ jsonrpc: "2.0", id: LIST_ID, method: "session/list", params: {} }));
+         return;
+       }
+-      if (
+-        !sendListSessions &&
+-        hasKey(state.envelopes, "server_hello") &&
+-        hasKey(state.envelopes, "session_snapshot")
+-      ) {
++      if (listResponse(state)) {
+         ws.close();
+-        finish("handshake");
++        finish("session/list");
+       }
+     });
+ 
+@@ -117,24 +113,14 @@ function runScenario(name, { sendAuth = true, sendListSessions = false } = {}) {
+ 
+ let result;
+ if (mode === "bad-handshake") {
+-  result = await runScenario("bad-token-handshake", { sendAuth: true });
++  result = await runScenario("bad-token-handshake");
+ } else if (mode === "list") {
+-  result = await runScenario("list_sessions", { sendAuth: true, sendListSessions: true });
++  result = await runScenario("session_list", { callList: true });
+ } else {
+-  result = await runScenario("handshake", { sendAuth: true });
++  result = await runScenario("handshake");
+ }
+ 
+ console.log(JSON.stringify(result, null, 2));
+-process.exit(
+-  mode === "bad-handshake"
+-    ? result.hasServerHello || result.hasSessionSnapshot
+-      ? 1
+-      : 0
+-    : mode === "list"
+-      ? result.hasSessionList
+-        ? 0
+-        : 1
+-      : result.hasServerHello && result.hasSessionSnapshot
+-        ? 0
+-        : 1,
+-);
++const pass =
++  mode === "bad-handshake" ? !result.hasServerHello : mode === "list" ? result.sessionListOk : result.hasServerHello;
++process.exit(pass ? 0 : 1);
+diff --git a/web/src/api/adapter.ts b/web/src/api/adapter.ts
+index 30f6548..5fd6a23 100644
+--- a/web/src/api/adapter.ts
++++ b/web/src/api/adapter.ts
+@@ -35,20 +35,20 @@ export function isCompactCutRow(row: HumanRow): boolean {
+ }
+ 
+ /** A durable background job event: visible as a system mark, never a chat bubble. */
+-export function isBashExitReminderRow(
++function isBashExitReminderRow(
+   row: HumanRow,
+ ): row is BashExitReminderLogRow {
+   return row.kind === "reminder/bash_exit";
+ }
+ 
+-export function isSubagentSettledRow(
++function isSubagentSettledRow(
+   row: HumanRow,
+ ): row is SubagentSettledLogRow {
+   return row.kind === "reminder/subagent_settled";
+ }
+ 
+ /** The system-issued plan-execution trigger: a system mark, never a chat bubble. */
+-export function isPlanExecuteRow(row: HumanRow): row is PlanExecuteLogRow {
++function isPlanExecuteRow(row: HumanRow): row is PlanExecuteLogRow {
+   return row.kind === "plan/execute";
+ }
+ 
+@@ -172,7 +172,7 @@ export function isMessageItem(item: Item): item is MessageItem {
+   return item.type === "message" && "role" in item && "content" in item;
+ }
+ 
+-export function isUserMessage(item: Item): item is InputMessageItem {
++function isUserMessage(item: Item): item is InputMessageItem {
+   return isMessageItem(item) && item.role === "user";
+ }
+ 
+@@ -199,7 +199,7 @@ export function isReasoningItem(item: Item): item is ReasoningItem {
+ }
+ 
+ /** Authority id for matching live rows ↔ buffer/item (item.id, else call_id). */
+-export function itemAuthorityId(item: Item): string | undefined {
++function itemAuthorityId(item: Item): string | undefined {
+   if ("id" in item && typeof item.id === "string" && item.id.length > 0) {
+     return item.id;
+   }
+@@ -270,20 +270,6 @@ export function latestAssistantText(rows: HumanRow[]): string {
+   return latest;
+ }
+ 
+-/** True when a live Item shell has no visible/semantic content yet. */
+-export function isEmptyItemShell(item: Item): boolean {
+-  if (isAssistantMessage(item)) {
+-    return !itemPlainText(item);
+-  }
+-  if (isReasoningItem(item)) {
+-    return !itemPlainText(item);
+-  }
+-  if (isFunctionCall(item)) {
+-    return !item.name && !item.arguments;
+-  }
+-  return false;
+-}
+-
+ export function functionCallOutputText(out: FunctionCallOutputItem): string {
+   if (typeof out.output === "string") return out.output;
+   return out.output
+@@ -299,8 +285,6 @@ export function parseFunctionArguments(argumentsJson: string): unknown {
+   }
+ }
+ 
+-const FILE_TOOLS = new Set(["read", "write", "edit"]);
+-
+ export function normalizeToolFilePath(
+   filePath: string,
+   projectRoot?: string | null,
+@@ -308,20 +292,6 @@ export function normalizeToolFilePath(
+   return toWorkspacePath(filePath, projectRoot);
+ }
+ 
+-export function extractToolFilePath(
+-  toolName: string,
+-  input: unknown,
+-  projectRoot?: string | null,
+-): string | null {
+-  if (!FILE_TOOLS.has(toolName)) return null;
+-  if (!input || typeof input !== "object") return null;
+-
+-  const filePath = (input as Record<string, unknown>).file_path;
+-  if (typeof filePath !== "string" || !filePath) return null;
+-
+-  return normalizeToolFilePath(filePath, projectRoot);
+-}
+-
+ /**
+  * Detect unsafe seal mismatches when buffer/item stamps a live Item slot.
+  * Same id space: live Item id/type must not contradict the committed authority Item.
+@@ -339,7 +309,7 @@ export function sealMismatchError(live: Item, committed: Item): string | null {
+ }
+ 
+ /** Visible payload only — status is stamped separately so a seal does not rebuild the tree. */
+-export function itemVisibleContentEqual(a: Item, b: Item): boolean {
++function itemVisibleContentEqual(a: Item, b: Item): boolean {
+   if (a.type !== b.type) return false;
+   if (isUserMessage(a) && isUserMessage(b)) {
+     return itemPlainText(a) === itemPlainText(b);
+diff --git a/web/src/api/agentWs.test.ts b/web/src/api/agentWs.test.ts
+index 4faca35..50b5ea5 100644
+--- a/web/src/api/agentWs.test.ts
++++ b/web/src/api/agentWs.test.ts
+@@ -75,6 +75,26 @@ describe("AgentWsClient buildConnectUrl (G3)", () => {
+   });
+ });
+ 
++describe("AgentWsClient auth (WP-159)", () => {
++  it("does not send an auth frame after the socket opens; the token rides the handshake URL", () => {
++    const client = new AgentWsClient({
++      url: "ws://127.0.0.1:7483/ws",
++      authToken: "tok-123",
++      onEnvelope: () => {},
++    });
++    client.connect();
++    const ws = (client as unknown as { ws: MockWebSocket }).ws;
++    const sent: string[] = [];
++    ws.send = (payload: string) => {
++      sent.push(payload);
++    };
++    ws.readyState = MockWebSocket.OPEN;
++    ws.onopen?.();
++    expect(new URL(wsUrl!).searchParams.get("token")).toBe("tok-123");
++    expect(sent.some((p) => JSON.parse(p).method === "auth")).toBe(false);
++  });
++});
++
+ describe("AgentWsClient send error surfacing (FE-10)", () => {
+   it("reports an explicit error when the socket is not open", () => {
+     const onError = vi.fn();
+@@ -84,7 +104,7 @@ describe("AgentWsClient send error surfacing (FE-10)", () => {
+       onError,
+     });
+     // No connect() → ws is null → not open.
+-    client.send("auth", { token: "x" });
++    client.send("session/list", {});
+     expect(onError).toHaveBeenCalledWith("WebSocket not connected");
+   });
+ 
+@@ -103,7 +123,7 @@ describe("AgentWsClient send error surfacing (FE-10)", () => {
+       throw new Error("socket closing");
+     });
+ 
+-    client.send("auth", { token: "x" });
++    client.send("session/list", {});
+     expect(onError).toHaveBeenCalledWith(
+       "WebSocket send failed: socket closing",
+     );
+diff --git a/web/src/api/agentWs.ts b/web/src/api/agentWs.ts
+index afbe7fc..2cf2871 100644
+--- a/web/src/api/agentWs.ts
++++ b/web/src/api/agentWs.ts
+@@ -11,7 +11,7 @@ export interface WireEnvelope {
+   [key: string]: unknown;
+ }
+ 
+-export interface AgentWsOptions {
++interface AgentWsOptions {
+   url?: string;
+   authToken?: string;
+   onEnvelope: (env: WireEnvelope) => void;
+@@ -71,7 +71,6 @@ export class AgentWsClient {
+   private connectStartedAt = 0;
+   private lastInboundAt = 0;
+   private lineBuffer = "";
+-  private needsAuth: boolean;
+ 
+   /** In-flight JSON-RPC 2.0 promises keyed by request id. */
+   private pendingRpc = new Map<
+@@ -86,7 +85,6 @@ export class AgentWsClient {
+     this.reconnectEnabled = options.reconnect ?? true;
+     this.reconnectBaseMs = options.reconnectBaseMs ?? 500;
+     this.reconnectMaxMs = options.reconnectMaxMs ?? 8000;
+-    this.needsAuth = Boolean(options.authToken);
+   }
+ 
+   connect(): void {
+@@ -137,9 +135,6 @@ export class AgentWsClient {
+       this.socketOpened = true;
+       this.reconnectAttempt = 0;
+       this.setConnectionState("connected");
+-      if (this.needsAuth && this.options.authToken) {
+-        this.send("auth", { token: this.options.authToken });
+-      }
+     };
+ 
+     ws.onmessage = (ev) => {
+diff --git a/web/src/api/auth.ts b/web/src/api/auth.ts
+index 41ef841..8a16632 100644
+--- a/web/src/api/auth.ts
++++ b/web/src/api/auth.ts
+@@ -3,7 +3,7 @@
+ import type { BrowserBounds, BrowserPanelState } from "../lib/browserPanel";
+ 
+ /** Slim installer: on-demand runtime components fetched by the Electron host. */
+-export type DesktopComponentId = "embed-model";
++type DesktopComponentId = "embed-model";
+ 
+ export interface DesktopComponentProgress {
+   id: string;
+@@ -14,7 +14,7 @@ export interface DesktopComponentProgress {
+   error?: string;
+ }
+ 
+-export interface DesktopComponentStatus {
++interface DesktopComponentStatus {
+   id: string;
+   installed: boolean;
+   path: string | null;
+@@ -227,7 +227,7 @@ export function getAuthToken(): string | undefined {
+ }
+ 
+ /** Merge Authorization: Bearer when a token is available. */
+-export function withAuthHeaders(init?: HeadersInit): Headers {
++function withAuthHeaders(init?: HeadersInit): Headers {
+   const headers = new Headers(init);
+   const token = getAuthToken();
+   if (token && !headers.has("Authorization")) {
+diff --git a/web/src/api/json.ts b/web/src/api/json.ts
+deleted file mode 100644
+index 260b9be..0000000
+--- a/web/src/api/json.ts
++++ /dev/null
+@@ -1,7 +0,0 @@
+-export type JsonValue =
+-  | string
+-  | number
+-  | boolean
+-  | null
+-  | JsonValue[]
+-  | { [key: string]: JsonValue };
+diff --git a/web/src/api/knowledge.ts b/web/src/api/knowledge.ts
+index 1cf5f92..080c4ae 100644
+--- a/web/src/api/knowledge.ts
++++ b/web/src/api/knowledge.ts
+@@ -1,9 +1,9 @@
+ import { apiFetch } from "./auth";
+ 
+ /** Wire shapes of `GET /api/workspace/knowledge` (`docs/knowledge-references.md` §10.1). */
+-export type WireSeverity = "error" | "warning";
++type WireSeverity = "error" | "warning";
+ 
+-export interface WireKnowledgeIssue {
++interface WireKnowledgeIssue {
+   severity: WireSeverity;
+   code: string;
+   message: string;
+@@ -11,7 +11,7 @@ export interface WireKnowledgeIssue {
+   args: Record<string, unknown>;
+ }
+ 
+-export interface WireKnowledgeRef {
++interface WireKnowledgeRef {
+   ref_key: string;
+   kind: "node" | "file" | "symbol" | "range";
+   key: string | null;
+diff --git a/web/src/api/media.ts b/web/src/api/media.ts
+index 2bccb1f..425d4d2 100644
+--- a/web/src/api/media.ts
++++ b/web/src/api/media.ts
+@@ -1,6 +1,6 @@
+ import { apiFetch } from "./auth";
+ 
+-export interface UploadedMedia {
++interface UploadedMedia {
+   ref: string;
+   mime: string;
+   width: number;
+diff --git a/web/src/api/types.ts b/web/src/api/types.ts
+index 597efa2..ca623c9 100644
+--- a/web/src/api/types.ts
++++ b/web/src/api/types.ts
+@@ -1,6 +1,6 @@
+ // --- ErrorCode (snake_case) ---
+ 
+-export type ErrorCode =
++type ErrorCode =
+   | "llm_http"
+   | "llm_parse"
+   | "max_steps"
+@@ -18,14 +18,14 @@ export type ErrorCode =
+   | "nothing_to_compact"
+   | "internal";
+ 
+-export interface StructuredError {
++interface StructuredError {
+   code: ErrorCode;
+   message: string;
+   /** Present when the turn can be continued with `agent/retry`. */
+   retryable?: boolean;
+ }
+ 
+-export type LlmReconnectPhase = "waiting" | "connecting" | "cleared" | "failed";
++type LlmReconnectPhase = "waiting" | "connecting" | "cleared" | "failed";
+ 
+ /** Structured LLM reconnect status. English copy is formatted on the client. */
+ export interface LlmReconnectNotice {
+@@ -36,7 +36,7 @@ export interface LlmReconnectNotice {
+   delay_ms?: number;
+ }
+ 
+-export type CompactionKind =
++type CompactionKind =
+   | "first_pass"
+   | "second_pass"
+   | "aggressive_truncate"
+@@ -68,7 +68,7 @@ export type InputContent =
+     }
+   | { type: "input_file"; [key: string]: unknown };
+ 
+-export type OutputContent =
++type OutputContent =
+   | {
+       type: "output_text";
+       text: string;
+@@ -174,14 +174,14 @@ export interface WireServerHello {
+ }
+ 
+ /** Persisted SessionEvent rows. `kind` is the only projection discriminator. */
+-export type ItemLogKind =
++type ItemLogKind =
+   | "item/user"
+   | "item/assistant"
+   | "item/tool_call"
+   | "item/tool_result";
+ 
+ /** A committed row's lifecycle, as the session log itself records it. */
+-export type LogRowState = "in_progress" | "final" | "aborted";
++type LogRowState = "in_progress" | "final" | "aborted";
+ 
+ /** Every committed row carries the log envelope; `seq` is its identity. */
+ interface LogRowEnvelope {
+@@ -199,18 +199,18 @@ interface LogRowEnvelope {
+   hidden?: boolean;
+ }
+ 
+-export interface ItemLogRow extends LogRowEnvelope {
++interface ItemLogRow extends LogRowEnvelope {
+   kind: ItemLogKind;
+   body: Item;
+   child_session_id?: string;
+ }
+ 
+-export interface CompactedLogRow extends LogRowEnvelope {
++interface CompactedLogRow extends LogRowEnvelope {
+   kind: "compacted";
+   body: { summary: string; from: number; to: number };
+ }
+ 
+-export interface BashExitEntry {
++interface BashExitEntry {
+   job_id: string;
+   command: string;
+   exit_code: number;
+@@ -228,7 +228,7 @@ export interface BashExitReminderLogRow extends LogRowEnvelope {
+   };
+ }
+ 
+-export interface SettledChildBody {
++interface SettledChildBody {
+   child_session_id: string;
+   turn_id: string;
+   agent: string;
+@@ -245,7 +245,7 @@ export interface SubagentSettledLogRow extends LogRowEnvelope {
+ }
+ 
+ /** A durable plan-review reminder: a system mark, never a chat bubble. */
+-export interface PlanChangedLogRow extends LogRowEnvelope {
++interface PlanChangedLogRow extends LogRowEnvelope {
+   kind: "reminder/plan_changed";
+   body: {
+     kind: "plan_changed";
+@@ -262,7 +262,7 @@ export interface PlanExecuteLogRow extends LogRowEnvelope {
+   body: Item;
+ }
+ 
+-export interface ControlLogRow extends LogRowEnvelope {
++interface ControlLogRow extends LogRowEnvelope {
+   kind: "turn/start" | "turn/end" | "request/header" | "request/context";
+   body: Record<string, unknown>;
+ }
+@@ -281,7 +281,7 @@ export type WireBufferEvent =
+ export type HumanRow = WireBufferEvent;
+ 
+ /** One `item/user` position from `buffer/user-anchors`. */
+-export interface UserAnchorRef {
++interface UserAnchorRef {
+   seq: number;
+ }
+ 
+@@ -367,7 +367,7 @@ export interface LogLine {
+ }
+ 
+ /** WP-095: initiator of a cancelled turn (stop_and_send internal stop = parent). */
+-export type CancelledBy = "user" | "parent" | null;
++type CancelledBy = "user" | "parent" | null;
+ 
+ export type SessionStatus =
+   | "idle"
+@@ -406,7 +406,7 @@ export interface SessionList {
+   sessions: SessionInfo[];
+ }
+ 
+-export type SessionLifecycleEvent =
++type SessionLifecycleEvent =
+   | "created"
+   | "deleted"
+   | "turn_started"
+@@ -417,7 +417,7 @@ export type SessionLifecycleEvent =
+   /** WP-086: aggregate status change (e.g. parent ↔ running_with_subagent). */
+   | "status_changed";
+ 
+-export type TurnStepKind = "reasoning" | "toolcall" | "text";
++type TurnStepKind = "reasoning" | "toolcall" | "text";
+ 
+ export interface SessionLifecycle {
+   session_id: string;
+@@ -443,17 +443,12 @@ export interface SessionLifecycle {
+   status?: SessionStatus;
+ }
+ 
+-export interface SessionAttached {
+-  session_id: string;
+-  turn: TurnSnapshot;
+-}
+-
+ export interface WorkspaceChanged {
+   paths: string[];
+   kind: string;
+ }
+ 
+-export interface BufferState {
++interface BufferState {
+   last_seq: number;
+   next_seq: number;
+   revision: number;
+@@ -563,7 +558,7 @@ export interface BashTailResult {
+ export type ThinkingTier = "low" | "medium" | "high";
+ export type ContextMode = "standard" | "max";
+ 
+-export type TurnEndReason = "completed" | "cancelled" | "max_steps" | "error";
++type TurnEndReason = "completed" | "cancelled" | "max_steps" | "error";
+ 
+ export interface TurnStarted {
+   session_id: string;
+@@ -582,7 +577,7 @@ export interface TurnEventEnvelope {
+   parent_session_id?: string;
+ }
+ 
+-export interface TurnTokenStats {
++interface TurnTokenStats {
+   prompt_tokens: number;
+   completion_tokens: number;
+   cache_hit_tokens: number;
+@@ -657,14 +652,6 @@ export interface CompactLifecycle {
+   snapshot: SessionSnapshot;
+ }
+ 
+-/** @deprecated Use CompactLifecycle stage=started. Kept for one-release wire compat. */
+-export interface CompactStarted {
+-  session_id: string;
+-  operation_id: string;
+-  snapshot: SessionSnapshot;
+-  trigger?: "manual" | "auto";
+-}
+-
+ export type AskKind = "permission" | "approval" | "ask_user";
+ 
+ export interface AskOption {
+@@ -767,29 +754,7 @@ export type WireEvent =
+     }
+   | { type: "snapshot_notice"; level: string; message: string };
+ 
+-// --- JSON-RPC 2.0 types ---
+-
+-export interface JsonRpcRequest {
+-  jsonrpc: "2.0";
+-  method: string;
+-  params?: Record<string, unknown>;
+-  id: string | number;
+-}
+-
+-export interface JsonRpcResponse {
+-  jsonrpc: "2.0";
+-  result?: unknown;
+-  error?: { code: number; message: string; data?: unknown };
+-  id: string | number | null;
+-}
+-
+-export interface JsonRpcNotification {
+-  jsonrpc: "2.0";
+-  method: string;
+-  params?: Record<string, unknown>;
+-}
+-
+-export interface LspWireError {
++interface LspWireError {
+   code: number;
+   message: string;
+ }
+@@ -800,21 +765,12 @@ export interface LspResult {
+   error?: LspWireError;
+ }
+ 
+-export interface LspNotification {
+-  method: string;
+-  params: Record<string, unknown>;
+-}
+-
+ export type ConnectionState =
+   | "disconnected"
+   | "connecting"
+   | "connected"
+   | "reconnecting";
+ 
+-export type TransportRequest =
+-  | { subscribe_session: { session_id: string } }
+-  | { unsubscribe_session: { session_id: string } };
+-
+ export type AgentRunState = "idle" | "running" | "cancelling";
+ 
+ export interface TurnMeta {
+diff --git a/web/src/components/ContextUsageRing.tsx b/web/src/components/ContextUsageRing.tsx
+index 52d8e66..a572e57 100644
+--- a/web/src/components/ContextUsageRing.tsx
++++ b/web/src/components/ContextUsageRing.tsx
+@@ -53,7 +53,7 @@ const RING_STOPS: { color: string; at: number }[] = [
+ 
+ // Exported for Remotion compositions (c-switch ring replica) so the hit-rate →
+ // hue mapping stays single-sourced with the product component.
+-export function ringColorForHitRate(rate: number): string {
++function ringColorForHitRate(rate: number): string {
+   const clamped = Math.max(0, Math.min(1, rate));
+   let lo = RING_STOPS[0];
+   let hi = RING_STOPS[RING_STOPS.length - 1];
+diff --git a/web/src/components/ImageThumb.tsx b/web/src/components/ImageThumb.tsx
+index 798e272..f0282d2 100644
+--- a/web/src/components/ImageThumb.tsx
++++ b/web/src/components/ImageThumb.tsx
+@@ -7,7 +7,7 @@ const objectUrls = new Map<string, string>();
+ const inflight = new Map<string, Promise<string>>();
+ 
+ /** File name inside a `litecode-media:` ref, or null when it is not one. */
+-export function mediaNameFromRef(mediaRef: string): string | null {
++function mediaNameFromRef(mediaRef: string): string | null {
+   const name = mediaRef.startsWith("litecode-media:")
+     ? mediaRef.slice("litecode-media:".length)
+     : "";
+diff --git a/web/src/components/LitecodeMark.tsx b/web/src/components/LitecodeMark.tsx
+index d4081ad..568dd67 100644
+--- a/web/src/components/LitecodeMark.tsx
++++ b/web/src/components/LitecodeMark.tsx
+@@ -10,7 +10,7 @@
+  */
+ const L_PATH = "M19.01 22.5 L5 22.5 L5 1.5 L9.5 1.5 L9.5 18.45 L19.01 18.45 Z";
+ 
+-export interface LitecodeMarkProps {
++interface LitecodeMarkProps {
+   size?: number;
+   /** Accepted for parity with the Phosphor glyphs; the mark is always solid. */
+   weight?: string;
+diff --git a/web/src/components/Logo.tsx b/web/src/components/Logo.tsx
+index 993450e..5c9844f 100644
+--- a/web/src/components/Logo.tsx
++++ b/web/src/components/Logo.tsx
+@@ -14,11 +14,6 @@ const TEXT = "LiteCode";
+ /** Splash overlay is one-shot per document lifetime (survives React remounts). */
+ let splashConsumed = false;
+ 
+-/** Mark the splash as already shown so it never covers the workbench (Remotion renders). */
+-export function skipSplash() {
+-  splashConsumed = true;
+-}
+-
+ function injectStyles() {
+   const id = "logo-styles";
+   if (document.getElementById(id)) return;
+diff --git a/web/src/components/ModelSwitcher.tsx b/web/src/components/ModelSwitcher.tsx
+index bea28ed..314297c 100644
+--- a/web/src/components/ModelSwitcher.tsx
++++ b/web/src/components/ModelSwitcher.tsx
+@@ -23,6 +23,7 @@ import { motion, useReducedMotion } from "motion/react";
+ import { glassFill } from "./composerCard";
+ import { ModalityIcons } from "./ModalityIcons";
+ import { ProviderLogo } from "./ProviderLogos";
++import { NO_MODELS_HINT } from "../lib/uiCopy";
+ 
+ const CTRL_H = "h-7";
+ const CTRL_TEXT = "text-[11px]";
+@@ -361,7 +362,7 @@ export function ModelSwitcher({
+         type="button"
+         disabled
+         className={`${triggerBase(false)} min-w-3.5 max-w-[220px] shrink text-(--_dk-text-disabled)`}
+-        title="Configure a provider API key in Settings → Providers"
++        title={NO_MODELS_HINT}
+       >
+         Configure a provider API key
+       </button>
+@@ -591,7 +592,7 @@ export function ModelSwitcher({
+           ) : null}
+           {availableModels.length === 0 ? (
+             <p className="px-3 py-2 text-[11px] text-(--_dk-text-disabled)">
+-              No active models — configure a provider API key in Settings.
++              {NO_MODELS_HINT}
+             </p>
+           ) : null}
+         </motion.div>
+diff --git a/web/src/components/PermissionModal.tsx b/web/src/components/PermissionModal.tsx
+index 3e435a6..5e85043 100644
+--- a/web/src/components/PermissionModal.tsx
++++ b/web/src/components/PermissionModal.tsx
+@@ -7,7 +7,6 @@ import { glyphFor } from "./ToolIcon";
+ 
+ /** The receipt of a human Ask lives with the board that shapes it; this module is
+  *  where the ask cards are known from, so it stays reachable from here. */
+-export type { PermissionGrantOpts } from "./AskCard";
+ 
+ interface PermissionCardProps {
+   tool: string;
+diff --git a/web/src/components/ProviderLogos.tsx b/web/src/components/ProviderLogos.tsx
+index 47acd34..27466a1 100644
+--- a/web/src/components/ProviderLogos.tsx
++++ b/web/src/components/ProviderLogos.tsx
+@@ -11,7 +11,7 @@ import { XiaomiLogo } from "./providerLogos/XiaomiLogo";
+ import { ZhipuLogo } from "./providerLogos/ZhipuLogo";
+ 
+ /** Catalog provider id → brand mark. */
+-export const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
++const PROVIDER_LOGOS: Record<string, () => JSX.Element> = {
+   openai: OpenAILogo,
+   deepseek: DeepSeekLogo,
+   mimo: XiaomiLogo,
+diff --git a/web/src/components/SearchResults.tsx b/web/src/components/SearchResults.tsx
+index 8807652..3dc5e9a 100644
+--- a/web/src/components/SearchResults.tsx
++++ b/web/src/components/SearchResults.tsx
+@@ -86,7 +86,7 @@ export interface SearchResultGroup {
+   highlightCaseSensitive?: boolean;
+ }
+ 
+-export function SearchResultLineRow({
++function SearchResultLineRow({
+   line,
+   highlight,
+   caseSensitive,
+diff --git a/web/src/components/SessionItem.tsx b/web/src/components/SessionItem.tsx
+index b5484b6..17ffbf7 100644
+--- a/web/src/components/SessionItem.tsx
++++ b/web/src/components/SessionItem.tsx
+@@ -58,6 +58,9 @@ export const SessionItem = memo(function SessionItem({
+   const subagentBusy =
+     session.status === "running_with_subagent" || session.status === "stopping";
+   const deleteBlocked = session.running || subagentBusy;
++  const deleteLabel = deleteBlocked
++    ? "Cannot delete while this session chain is busy"
++    : "Delete session";
+   const status: SessionStatus = pending
+     ? "pending"
+     : deleteBlocked
+@@ -125,17 +128,9 @@ export const SessionItem = memo(function SessionItem({
+             e.stopPropagation();
+             if (!deleteBlocked) onDelete(session.id);
+           }}
+-          aria-label={
+-            deleteBlocked
+-              ? "Cannot delete while this session chain is busy"
+-              : "Delete session"
+-          }
++          aria-label={deleteLabel}
+           className="pointer-events-none absolute inset-0 flex items-center justify-end text-[11px] text-(--_dk-text-muted) opacity-0 transition-opacity hover:text-(--_dk-ix-danger-fg) group-hover:pointer-events-auto group-hover:opacity-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-0 disabled:group-hover:opacity-40"
+-          title={
+-            deleteBlocked
+-              ? "Cannot delete while this session chain is busy"
+-              : "Delete session"
+-          }
++          title={deleteLabel}
+         >
+           ✕
+         </button>
+diff --git a/web/src/components/SessionStatusLine.tsx b/web/src/components/SessionStatusLine.tsx
+index 5b0a9c6..a158cb0 100644
+--- a/web/src/components/SessionStatusLine.tsx
++++ b/web/src/components/SessionStatusLine.tsx
+@@ -37,7 +37,7 @@ type TodoItem = { id: string; content: string; status: TodoItemStatus };
+ const CAPSULE_BASE_PX = 36;
+ 
+ /** The four session-mount status families the line surfaces. */
+-export type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
++type CapsuleId = "terminal" | "subagent" | "plan" | "todo";
+ 
+ /** Drag floor (px); a content-sized panel shorter than this keeps its own
+  *  height as the floor. */
+@@ -69,7 +69,7 @@ export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
+  * writes "") and the legacy heading-only stub `# Plan` are still planning —
+  * bounce the capsule, do not auto-open the panel.
+  */
+-export function isPlanBodyReady(md: string): boolean {
++function isPlanBodyReady(md: string): boolean {
+   const t = md.trim();
+   if (!t) return false;
+   if (/^#\s*Plan\s*$/i.test(t)) return false;
+diff --git a/web/src/components/ShapeBlur.tsx b/web/src/components/ShapeBlur.tsx
+index 8222e1c..ca6e592 100644
+--- a/web/src/components/ShapeBlur.tsx
++++ b/web/src/components/ShapeBlur.tsx
+@@ -16,7 +16,7 @@ import type { CSSProperties } from "react";
+  *     <ShapeBlur shape="radial" size={40} inset={{ left: 8, top: 8 }} strength={6} />
+  *   </div>
+  */
+-export interface ShapeBlurProps {
++interface ShapeBlurProps {
+   /** Uniform blur radius in px (applied via backdrop-filter). */
+   strength?: number;
+   /** Mask shape controlling how/where the blur fades.
+diff --git a/web/src/components/StatusBar.tsx b/web/src/components/StatusBar.tsx
+index 8f04497..59c516c 100644
+--- a/web/src/components/StatusBar.tsx
++++ b/web/src/components/StatusBar.tsx
+@@ -8,6 +8,7 @@ import {
+   useTelemetryStore,
+ } from "../stores/telemetryStore";
+ import type { LogLine } from "../api/types";
++import { REMOTE_SERVE_HINT } from "../lib/uiCopy";
+ 
+ function formatLogTime(tsMs: number): string {
+   const d = new Date(tsMs);
+@@ -102,7 +103,7 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
+         {sessionMode === "remote" ? (
+           <span
+             className="status-bar-rss"
+-            title="Connected to a remote litecode serve (no local sidecar)"
++            title={REMOTE_SERVE_HINT}
+           >
+             Remote
+           </span>
+diff --git a/web/src/components/ToolContentView.tsx b/web/src/components/ToolContentView.tsx
+index 080c7d1..2855120 100644
+--- a/web/src/components/ToolContentView.tsx
++++ b/web/src/components/ToolContentView.tsx
+@@ -57,8 +57,8 @@ export function ToolContentView({
+       <div className="flex items-start gap-2 rounded-md bg-(--_dk-amber-500)/10 px-2 py-1.5 text-dk-sm leading-relaxed text-(--_dk-amber-500)">
+         <span>
+           {resourceBusy.heldBy
+-            ? `Resource is held by session ${resourceBusy.heldBy.slice(0, 8)}. It will be retried automatically once released — switch sessions or wait.`
+-            : "Resource is held by another session. It will be retried automatically once released."}
++            ? `Held by session ${resourceBusy.heldBy.slice(0, 8)}; will retry when released.`
++            : "Held by another session; will retry when released."}
+         </span>
+       </div>
+     );
+diff --git a/web/src/components/composerCard.ts b/web/src/components/composerCard.ts
+index 1f2ed74..db90319 100644
+--- a/web/src/components/composerCard.ts
++++ b/web/src/components/composerCard.ts
+@@ -5,7 +5,7 @@
+  *  which defaults to the base (--_dk-composer-shadow) and is overridden to the
+  *  focused variant (--_dk-composer-focus-shadow) by the dock container while
+  *  its panel is active — so the shadow follows the panel focus state. */
+-export const composerShadow = "shadow-(--_dk-composer-card-shadow)";
++const composerShadow = "shadow-(--_dk-composer-card-shadow)";
+ 
+ /** Floating action-button glass: 66% editor fill + backdrop blur. Draft text
+  *  scrolling under the buttons gets softly obscured (not hidden) — same glass
+diff --git a/web/src/components/knowledge/KnowledgeBodyEditor.test.tsx b/web/src/components/knowledge/KnowledgeBodyEditor.test.tsx
+index 4a81262..c194922 100644
+--- a/web/src/components/knowledge/KnowledgeBodyEditor.test.tsx
++++ b/web/src/components/knowledge/KnowledgeBodyEditor.test.tsx
+@@ -1,7 +1,7 @@
+ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+-import { knowledgeFixture, knowledgeFolderFixture } from "../../lib/knowledge/fixture";
++import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
+ import { fileMentionSource, mentionSource } from "../../lib/knowledge/markers";
+ import { useEditorStore } from "../../stores/editorStore";
+ import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";
+diff --git a/web/src/components/knowledge/KnowledgeBrowser.test.tsx b/web/src/components/knowledge/KnowledgeBrowser.test.tsx
+index 126e26e..4e7d81d 100644
+--- a/web/src/components/knowledge/KnowledgeBrowser.test.tsx
++++ b/web/src/components/knowledge/KnowledgeBrowser.test.tsx
+@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
+ import {
+   knowledgeFixture,
+   knowledgeFolderFixture,
+-} from "../../lib/knowledge/fixture";
++} from "../../test/fixtures/knowledge";
+ import type { KnowledgeIssue } from "../../lib/knowledge/types";
+ import {
+   knowledgeSnapshot,
+diff --git a/web/src/components/knowledge/KnowledgeGraph.tsx b/web/src/components/knowledge/KnowledgeGraph.tsx
+index 5fb4620..840d2b4 100644
+--- a/web/src/components/knowledge/KnowledgeGraph.tsx
++++ b/web/src/components/knowledge/KnowledgeGraph.tsx
+@@ -197,10 +197,10 @@ const nodeTypes = {
+ const edgeTypes = { knowledgeRelation: KnowledgeRelationEdge };
+ 
+ // Manual z-index ladder (bottom → top): canvas bg, folder frames, edges, cards.
+-export const KNOWLEDGE_FOLDER_Z = 0;
+-export const KNOWLEDGE_EDGE_Z = 5;
++const KNOWLEDGE_FOLDER_Z = 0;
++const KNOWLEDGE_EDGE_Z = 5;
+ /** Citation edges inside the focus spotlight sit above the scrim. */
+-export const KNOWLEDGE_EDGE_ABOVE_SCRIM_Z = 36;
++const KNOWLEDGE_EDGE_ABOVE_SCRIM_Z = 36;
+ /** Full-canvas focus scrim in ViewportPortal; focused cards must sit above this. */
+ export const KNOWLEDGE_FOCUS_SCRIM_Z = 35;
+ const CARD_Z = 10;
+diff --git a/web/src/components/knowledge/KnowledgeMarkdown.test.tsx b/web/src/components/knowledge/KnowledgeMarkdown.test.tsx
+index a2ae32d..0f0bba1 100644
+--- a/web/src/components/knowledge/KnowledgeMarkdown.test.tsx
++++ b/web/src/components/knowledge/KnowledgeMarkdown.test.tsx
+@@ -1,7 +1,7 @@
+ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+-import { knowledgeFixture, knowledgeFolderFixture } from "../../lib/knowledge/fixture";
++import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
+ import { fileMentionSource, mentionSource, symbolMentionSource } from "../../lib/knowledge/markers";
+ import { useEditorStore } from "../../stores/editorStore";
+ import { knowledgeSnapshot, useKnowledgeStore } from "../../stores/knowledgeStore";
+diff --git a/web/src/components/knowledge/KnowledgeMarkdown.tsx b/web/src/components/knowledge/KnowledgeMarkdown.tsx
+index 6278b99..75b6103 100644
+--- a/web/src/components/knowledge/KnowledgeMarkdown.tsx
++++ b/web/src/components/knowledge/KnowledgeMarkdown.tsx
+@@ -5,7 +5,6 @@ import ReactMarkdown, {
+ } from "react-markdown";
+ import remarkGfm from "remark-gfm";
+ 
+-import { knowledgeFirstLineSegments } from "../../lib/knowledge/markers";
+ import {
+   parseKnowledgeRef,
+   parseLocationRef,
+@@ -107,33 +106,6 @@ const components: Components = {
+   },
+ };
+ 
+-/** One prose line with mention chips — for graph card summaries. */
+-export function KnowledgeInlineBody({
+-  sourceId,
+-  text,
+-}: {
+-  sourceId: string;
+-  text: string;
+-}) {
+-  const segments = knowledgeFirstLineSegments(text);
+-  return (
+-    <KnowledgeSourceContext.Provider value={sourceId}>
+-      <div className="knowledge-inline-body">
+-        {segments.map((segment, index) => {
+-          if (segment.type === "text") {
+-            return segment.value ? (
+-              <span key={index} className="knowledge-inline-text">
+-                {segment.value}
+-              </span>
+-            ) : null;
+-          }
+-          return <BodyRefChip key={index} marker={segment.id} label={segment.label} />;
+-        })}
+-      </div>
+-    </KnowledgeSourceContext.Provider>
+-  );
+-}
+-
+ export function KnowledgeMarkdown({
+   sourceId,
+   text,
+@@ -155,23 +127,3 @@ export function KnowledgeMarkdown({
+     </KnowledgeSourceContext.Provider>
+   );
+ }
+-
+-export function knowledgeStatusLabel(
+-  status: "enabled" | "disabled" | "pending",
+-): string {
+-  if (status === "disabled") return "禁用";
+-  if (status === "pending") return "待审阅";
+-  return "启用";
+-}
+-
+-export function KnowledgeStatusBadge({
+-  status,
+-}: {
+-  status: "enabled" | "disabled" | "pending";
+-}) {
+-  return (
+-    <span className={`knowledge-status is-${status}`}>
+-      {knowledgeStatusLabel(status)}
+-    </span>
+-  );
+-}
+diff --git a/web/src/components/knowledge/KnowledgeRelationStrip.tsx b/web/src/components/knowledge/KnowledgeRelationStrip.tsx
+deleted file mode 100644
+index cba350c..0000000
+--- a/web/src/components/knowledge/KnowledgeRelationStrip.tsx
++++ /dev/null
+@@ -1,23 +0,0 @@
+-import { relationStripChips } from "../../lib/knowledge/refDisplay";
+-import type { KnowledgeNode } from "../../lib/knowledge/types";
+-import { useKnowledgeStore } from "../../stores/knowledgeStore";
+-import { CitationChip } from "../CitationChip";
+-
+-export function KnowledgeRelationStrip({ node }: { node: KnowledgeNode }) {
+-  const byId = useKnowledgeStore((state) => state.byId);
+-  const chips = relationStripChips(node, byId);
+-  if (chips.length === 0) return null;
+-
+-  return (
+-    <div className="knowledge-relations-strip" aria-label="Registered relations">
+-      {chips.map((chip) => (
+-        <CitationChip
+-          key={chip.targetId ?? chip.key}
+-          citation={{ kind: "node", key: chip.key }}
+-          sourceId={node.id}
+-          label={chip.label}
+-        />
+-      ))}
+-    </div>
+-  );
+-}
+diff --git a/web/src/components/mention/suggestions.ts b/web/src/components/mention/suggestions.ts
+index 083ef08..51589e1 100644
+--- a/web/src/components/mention/suggestions.ts
++++ b/web/src/components/mention/suggestions.ts
+@@ -10,7 +10,7 @@ export interface LockedFile {
+   name: string;
+ }
+ 
+-export type FilePhase =
++type FilePhase =
+   | { mode: "file"; filter: string }
+   | { mode: "symbol"; filter: string; locked: LockedFile };
+ 
+diff --git a/web/src/components/sessionTeardown.ts b/web/src/components/sessionTeardown.ts
+index 833189c..0eef718 100644
+--- a/web/src/components/sessionTeardown.ts
++++ b/web/src/components/sessionTeardown.ts
+@@ -6,7 +6,7 @@ import { useTurnStore } from "../stores/turnStore";
+ import { clearFoldCardOpen } from "./foldCardState";
+ import { isSubagentRosterHeld } from "./subagentRosterHolds";
+ 
+-export interface TeardownScope {
++interface TeardownScope {
+   /**
+    * Also drop the local projection (message + turn slices). `false` keeps them
+    * so the next expand can catch up INCREMENTALLY instead of cold-starting.
+diff --git a/web/src/components/toolviews/EditToolView.tsx b/web/src/components/toolviews/EditToolView.tsx
+index 5a73a82..5d007fa 100644
+--- a/web/src/components/toolviews/EditToolView.tsx
++++ b/web/src/components/toolviews/EditToolView.tsx
+@@ -6,7 +6,7 @@ import { DiffView } from "./DiffView";
+ import { ToolResultBlock } from "./LspNote";
+ import type { ToolViewProps } from "./registry";
+ 
+-export interface EditBlockPreview {
++interface EditBlockPreview {
+   oldString: string;
+   newString: string;
+   replaceAll: boolean;
+diff --git a/web/src/components/toolviews/paramMeta.ts b/web/src/components/toolviews/paramMeta.ts
+index fa2f311..874a9c8 100644
+--- a/web/src/components/toolviews/paramMeta.ts
++++ b/web/src/components/toolviews/paramMeta.ts
+@@ -6,7 +6,7 @@
+  * default JSON dump in `ToolContentView`. Adding a tool = one entry here + one
+  * registration in `registry.tsx` — no changes to the dispatcher.
+  */
+-export interface ToolParamConfig {
++interface ToolParamConfig {
+   /** Fields rendered inline by the view. Every other field lands in the infoicon. */
+   primary: string[];
+ }
+diff --git a/web/src/components/toolviews/registry.tsx b/web/src/components/toolviews/registry.tsx
+index 0043aa8..a3afcf4 100644
+--- a/web/src/components/toolviews/registry.tsx
++++ b/web/src/components/toolviews/registry.tsx
+@@ -33,7 +33,7 @@ export interface ToolViewProps {
+  * covered tools — add a view here plus an entry in `paramMeta.ts`. Tools without
+  * an entry fall back to the default input/output rendering in `ToolContentView`.
+  */
+-export const TOOL_VIEWS: Record<
++const TOOL_VIEWS: Record<
+   string,
+   (props: ToolViewProps) => ReactElement | null
+ > = {
+diff --git a/web/src/components/toolviews/sessionSearchParse.ts b/web/src/components/toolviews/sessionSearchParse.ts
+index 5b26a5b..75ca7ba 100644
+--- a/web/src/components/toolviews/sessionSearchParse.ts
++++ b/web/src/components/toolviews/sessionSearchParse.ts
+@@ -32,7 +32,7 @@ export interface SessionSearchFooter {
+   more?: string;
+ }
+ 
+-export type SessionSearchView =
++type SessionSearchView =
+   | {
+       kind: "hits";
+       groups: SessionSearchGroup[];
+diff --git a/web/src/components/toolviews/syncPct.ts b/web/src/components/toolviews/syncPct.ts
+index 5e2f873..ca83c67 100644
+--- a/web/src/components/toolviews/syncPct.ts
++++ b/web/src/components/toolviews/syncPct.ts
+@@ -12,7 +12,7 @@
+  * stays in the body; we never invent a value). No v1 compatibility path.
+  */
+ 
+-export type SyncWord = "scanning" | "failed" | "unknown";
++type SyncWord = "scanning" | "failed" | "unknown";
+ 
+ export type SyncPct =
+   | {
+@@ -24,7 +24,7 @@ export type SyncPct =
+     }
+   | { kind: SyncWord; label?: string };
+ 
+-export interface SyncPctSplit {
++interface SyncPctSplit {
+   sync: SyncPct | null;
+   /** Output with the sync first line removed when recognised; otherwise raw. */
+   rest: string;
+diff --git a/web/src/components/toolviews/toolTitle.ts b/web/src/components/toolviews/toolTitle.ts
+index 0aeada0..52816ed 100644
+--- a/web/src/components/toolviews/toolTitle.ts
++++ b/web/src/components/toolviews/toolTitle.ts
+@@ -1,7 +1,7 @@
+ const MAX_TITLE_CHARS = 90;
+ const MAX_TOKEN_CHARS = 24;
+ 
+-export interface ToolTitle {
++interface ToolTitle {
+   summary: string;
+ }
+ 
+diff --git a/web/src/components/transcript/UserMessageRail.tsx b/web/src/components/transcript/UserMessageRail.tsx
+index 183ff2a..1e11ee8 100644
+--- a/web/src/components/transcript/UserMessageRail.tsx
++++ b/web/src/components/transcript/UserMessageRail.tsx
+@@ -16,7 +16,7 @@ import {
+   type UserRailLayoutMark,
+ } from "./transcriptUserRailMarks";
+ 
+-export interface UserMessageRailProps {
++interface UserMessageRailProps {
+   sessionId: string;
+   scrollRef: RefObject<HTMLDivElement | null>;
+   /** Dot centers written by the transcript. The rail does not subscribe to rows. */
+diff --git a/web/src/components/transcript/transcriptUserRailMarks.ts b/web/src/components/transcript/transcriptUserRailMarks.ts
+index f1e21eb..d523a11 100644
+--- a/web/src/components/transcript/transcriptUserRailMarks.ts
++++ b/web/src/components/transcript/transcriptUserRailMarks.ts
+@@ -1,5 +1,3 @@
+-import type { HumanRow } from "../../api/types";
+-
+ /** `py-4` + dot `mt-[7px]` + half of `h-1.5`, matching ItemBubble. */
+ export const USER_DOT_CENTER_Y = 16 + 7 + 3;
+ 
+@@ -43,7 +41,7 @@ const TICK_WIDTH_MIN = 6;
+ const TICK_OPACITY_MAX = 1;
+ const TICK_OPACITY_MIN = 0.18;
+ 
+-export interface TickAppearance {
++interface TickAppearance {
+   width: number;
+   opacity: number;
+ }
+@@ -66,7 +64,7 @@ export function tickAppearance(
+   };
+ }
+ 
+-export interface RailTick {
++interface RailTick {
+   seq: number;
+   /** Y in the tick band, 0 at the top. */
+   railY: number;
+@@ -129,13 +127,3 @@ export function nearestUserMark(
+   }
+   return best;
+ }
+-
+-/** Highest sealed `item/user` seq. */
+-export function newestUserSeq(rows: readonly HumanRow[]): number | null {
+-  let newest: number | null = null;
+-  for (const row of rows) {
+-    if (row.kind !== "item/user" || row.seq < 0) continue;
+-    if (newest == null || row.seq > newest) newest = row.seq;
+-  }
+-  return newest;
+-}
+diff --git a/web/src/components/transcriptMarks.tsx b/web/src/components/transcriptMarks.tsx
+index d54123e..8f1b624 100644
+--- a/web/src/components/transcriptMarks.tsx
++++ b/web/src/components/transcriptMarks.tsx
+@@ -44,7 +44,7 @@ export function readableCompactSummary(raw: string): string {
+ /** Cut mark between transcript items — not a divider bubble, not summary text.
+  *  With a summary the whole line is clickable and opens a floating markdown
+  *  panel; without one it stays a plain static cut. */
+-export function CompactCutMark({ summary }: { summary?: string }) {
++function CompactCutMark({ summary }: { summary?: string }) {
+   const hasSummary = typeof summary === "string" && summary.trim().length > 0;
+   if (!hasSummary) {
+     return (
+@@ -98,7 +98,7 @@ export function CompactCutMark({ summary }: { summary?: string }) {
+   );
+ }
+ 
+-export function JobExitMark({ detail }: { detail?: string }) {
++function JobExitMark({ detail }: { detail?: string }) {
+   return (
+     <MarkLine role="status" label="Background terminal exited">
+       <span className="text-dk-2xs text-(--_dk-text-disabled)">
+@@ -133,7 +133,7 @@ export function PlanExecuteMark({ planPath }: { planPath?: string | null }) {
+  * One-line subagent completion mark. The report body stays in the log for the
+  * agent; humans see a compact cut-style line, optionally opening the child.
+  */
+-export function SubagentExitMark({
++function SubagentExitMark({
+   detail,
+   childId,
+ }: {
+diff --git a/web/src/components/ui/Dropdown.tsx b/web/src/components/ui/Dropdown.tsx
+index 7aebf87..876f57b 100644
+--- a/web/src/components/ui/Dropdown.tsx
++++ b/web/src/components/ui/Dropdown.tsx
+@@ -54,7 +54,7 @@ const BORDER: Record<"up" | "down", string> = {
+   up: "border border-(--_dk-line-visible)",
+ };
+ 
+-export type DropdownVariant = "select" | "menu" | "panel";
++type DropdownVariant = "select" | "menu" | "panel";
+ 
+ /** Shared item classes for select/menu variants — import and apply per item
+  *  so item styling is also defined in one place. */
+diff --git a/web/src/components/ui/Popover.tsx b/web/src/components/ui/Popover.tsx
+index ec5219c..809a5ed 100644
+--- a/web/src/components/ui/Popover.tsx
++++ b/web/src/components/ui/Popover.tsx
+@@ -10,7 +10,7 @@ import { createPortal } from "react-dom";
+ 
+ import { viewOf } from "../../lib/domView";
+ 
+-export interface PopoverApi {
++interface PopoverApi {
+   open: boolean;
+   toggle: () => void;
+   close: () => void;
+diff --git a/web/src/components/ui/Skeleton.tsx b/web/src/components/ui/Skeleton.tsx
+index be0771e..7b01cdf 100644
+--- a/web/src/components/ui/Skeleton.tsx
++++ b/web/src/components/ui/Skeleton.tsx
+@@ -3,7 +3,7 @@ interface SkeletonProps {
+   style?: React.CSSProperties;
+ }
+ 
+-export function Skeleton({ className = "", style }: SkeletonProps) {
++function Skeleton({ className = "", style }: SkeletonProps) {
+   return (
+     <div
+       className={`skeleton-shimmer rounded ${className}`}
+diff --git a/web/src/dockview/config/popoutRestore.ts b/web/src/dockview/config/popoutRestore.ts
+index 15bb183..ece135c 100644
+--- a/web/src/dockview/config/popoutRestore.ts
++++ b/web/src/dockview/config/popoutRestore.ts
+@@ -14,7 +14,7 @@ const DEFAULT_HEIGHT = 640;
+ const MIN_SPAN = 200;
+ const CASCADE = 36;
+ 
+-export type PopoutRect = { x: number; y: number; width: number; height: number };
++type PopoutRect = { x: number; y: number; width: number; height: number };
+ 
+ const staged = new Map<string, PopoutRect>();
+ 
+diff --git a/web/src/dockview/drag/tabDragPolicy.ts b/web/src/dockview/drag/tabDragPolicy.ts
+index a7d5533..8ed3f2a 100644
+--- a/web/src/dockview/drag/tabDragPolicy.ts
++++ b/web/src/dockview/drag/tabDragPolicy.ts
+@@ -1,15 +1,15 @@
+ import { kindForComponent } from "../workbench/kinds";
+ 
+ /** Center tabs live on the main grid or in a popout. Edge tabs are the side rails. */
+-export type TabClass = "center" | "edge";
++type TabClass = "center" | "edge";
+ 
+ /** Where a dock drop is aimed. A missing group is the center grid's own outer split. */
+-export type DockTarget = "center" | "edge" | "root";
++type DockTarget = "center" | "edge" | "root";
+ 
+-export type DockDecision = "allow" | "reject";
++type DockDecision = "allow" | "reject";
+ 
+ /** What a center-tab release does after Dockview has had its chance to accept the drop. */
+-export type ReleaseDecision = "stay" | "join" | "popout";
++type ReleaseDecision = "stay" | "join" | "popout";
+ 
+ export interface WindowBox {
+   screenX: number;
+@@ -42,7 +42,7 @@ export function tabClass(
+ }
+ 
+ /** Edge rails are edge. Grid and popout, including a hidden popout anchor, are center. */
+-export function dockTarget(locationType: string | undefined): DockTarget {
++function dockTarget(locationType: string | undefined): DockTarget {
+   if (locationType === "edge") return "edge";
+   if (locationType === "grid" || locationType === "popout") return "center";
+   return "root";
+@@ -86,7 +86,7 @@ export function decideRelease(
+   return "join";
+ }
+ 
+-export function containsPoint(
++function containsPoint(
+   box: WindowBox,
+   point: { screenX: number; screenY: number },
+ ): boolean {
+diff --git a/web/src/dockview/menu/menuItems.ts b/web/src/dockview/menu/menuItems.ts
+index 57bc3d0..9015459 100644
+--- a/web/src/dockview/menu/menuItems.ts
++++ b/web/src/dockview/menu/menuItems.ts
+@@ -3,7 +3,7 @@ export interface MenuItem {
+   items: MenuEntry[];
+ }
+ 
+-export type MenuEntry = string | "separator";
++type MenuEntry = string | "separator";
+ 
+ export function buildMenuItems(_sessionMode: "local" | "remote"): MenuItem[] {
+   // Workspace open / remote attach live on the Electron Home hub only.
+@@ -22,6 +22,3 @@ export function buildMenuItems(_sessionMode: "local" | "remote"): MenuItem[] {
+     },
+   ];
+ }
+-
+-/** Default menu (local) for static imports / tests. */
+-export const menuItems: MenuItem[] = buildMenuItems("local");
+diff --git a/web/src/dockview/panels/SettingsDialog.test.tsx b/web/src/dockview/panels/SettingsDialog.test.tsx
+index 13498c3..0f95498 100644
+--- a/web/src/dockview/panels/SettingsDialog.test.tsx
++++ b/web/src/dockview/panels/SettingsDialog.test.tsx
+@@ -90,7 +90,7 @@ describe("SettingsDialog", () => {
+ 
+   it("shows a turn banner when a session is running and keeps navigation clickable", () => {
+     render(<SettingsDialog />);
+-    expect(screen.queryByText(/settings saves are disabled/i)).toBeNull();
++    expect(screen.queryByText(/saving is paused/i)).toBeNull();
+ 
+     act(() => {
+       useTurnStore.setState({
+@@ -98,7 +98,7 @@ describe("SettingsDialog", () => {
+       });
+     });
+ 
+-    expect(screen.getByText(/settings saves are disabled/i)).toBeTruthy();
++    expect(screen.getByText(/saving is paused/i)).toBeTruthy();
+     const provider = screen.getByRole("button", { name: /Provider/ });
+     expect(provider.hasAttribute("disabled")).toBe(false);
+     fireEvent.click(provider);
+diff --git a/web/src/dockview/panels/SettingsDialog.tsx b/web/src/dockview/panels/SettingsDialog.tsx
+index e39d172..5959dd0 100644
+--- a/web/src/dockview/panels/SettingsDialog.tsx
++++ b/web/src/dockview/panels/SettingsDialog.tsx
+@@ -64,7 +64,7 @@ function TurnBlockedBanner() {
+   if (!blocked) return null;
+   return (
+     <div className="border-b border-(--_dk-amber-900\/20) bg-(--_dk-amber-900\/20) px-4 py-2 text-sm text-(--_dk-amber-500)">
+-      Agent is busy - settings saves are disabled until the chat view is stable.
++      Agent is busy — saving is paused.
+     </div>
+   );
+ }
+diff --git a/web/src/dockview/panels/settings/AdvancedSection.tsx b/web/src/dockview/panels/settings/AdvancedSection.tsx
+index c4fb347..4b6afa9 100644
+--- a/web/src/dockview/panels/settings/AdvancedSection.tsx
++++ b/web/src/dockview/panels/settings/AdvancedSection.tsx
+@@ -67,9 +67,8 @@ export function AdvancedSection() {
+         <div className="settings-card space-y-3 p-4">
+           <SectionHeader title="Web search" />
+           <p className="text-xs text-(--_dk-text-muted)">
+-            Uses Exa hosted search. Paste an Exa API key for higher limits;
+-            leave empty for the anonymous free tier, or set{" "}
+-            <code className="font-mono">EXA_API_KEY</code> in the environment.
++            Optional Exa API key (or{" "}
++            <code className="font-mono">EXA_API_KEY</code>) for higher limits.
+           </p>
+           <FieldLabel>Exa API key</FieldLabel>
+           <TextInput
+diff --git a/web/src/dockview/panels/settings/AgentsSection.test.tsx b/web/src/dockview/panels/settings/AgentsSection.test.tsx
+index b152e0b..cd5e4cd 100644
+--- a/web/src/dockview/panels/settings/AgentsSection.test.tsx
++++ b/web/src/dockview/panels/settings/AgentsSection.test.tsx
+@@ -161,7 +161,7 @@ describe("AgentsSection persist UX", () => {
+     expect(screen.queryByText("Max steps")).toBeNull();
+     expect(
+       screen.getByText(
+-        "Compaction only assigns a model. Prompt, tools, and max steps are built in.",
++        "Only the model is configurable.",
+       ),
+     ).toBeTruthy();
+   });
+diff --git a/web/src/dockview/panels/settings/AgentsSection.tsx b/web/src/dockview/panels/settings/AgentsSection.tsx
+index 26cbb85..05948e7 100644
+--- a/web/src/dockview/panels/settings/AgentsSection.tsx
++++ b/web/src/dockview/panels/settings/AgentsSection.tsx
+@@ -235,9 +235,7 @@ function AgentProfileFields({
+           disabled={saveBlocked}
+         />
+         <p className="mt-1 text-[11px] text-(--_dk-text-muted)">
+-          Replaces identity, work, and voice. A <code>builtin:</code> value
+-          uses the built-in text. System, tool, and citation sections are
+-          always added.
++          Replaces the built-in persona (<code>builtin:</code> keeps default).
+         </p>
+       </div>
+       <div
+@@ -263,7 +261,7 @@ function AgentProfileFields({
+         />
+         {flashMaxSteps ? (
+           <p className="mt-1 text-[11px] text-(--_dk-amber-500)">
+-            Default 50 runs out on long tasks — 200 is a saner default.
++            Long tasks may need ~200.
+           </p>
+         ) : null}
+       </div>
+@@ -338,8 +336,7 @@ function AllowedSubagentsSelect({
+       <h3 className="settings-section-title">Allowed subagents</h3>
+       {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
+         <p className="text-xs text-(--_dk-amber-500)">
+-          subagent_launch is enabled but no subagents are allowed — launches
+-          will fail until you select at least one.
++          Select at least one subagent, or launches will fail.
+         </p>
+       ) : null}
+       {subagentIds.length === 0 ? (
+@@ -378,7 +375,7 @@ function AllowedSubagentsSelect({
+   );
+ }
+ 
+-export function AgentToolsGrid({
++function AgentToolsGrid({
+   draft,
+   bindableTools,
+   mcpServers,
+@@ -457,7 +454,7 @@ export function AgentToolsGrid({
+                 type="button"
+                 disabled={saveBlocked}
+                 aria-pressed={enabled}
+-                aria-label={`${entry.id} tool binding, ${enabled ? "enabled" : "disabled"}. Click the card to toggle.`}
++                aria-label={`${entry.id} tool binding, ${enabled ? "enabled" : "disabled"}`}
+                 className="tool-binding-toggle"
+                 onClick={toggleEnabled}
+               />
+@@ -996,8 +993,7 @@ export function AgentsSection() {
+           />
+         ) : isHiddenAgent ? (
+           <p className="text-xs text-(--_dk-text-disabled)">
+-            Compaction only assigns a model. Prompt, tools, and max steps are
+-            built in.
++            Only the model is configurable.
+           </p>
+         ) : null}
+       </div>
+diff --git a/web/src/dockview/panels/settings/CustomToolsSection.tsx b/web/src/dockview/panels/settings/CustomToolsSection.tsx
+index 0a69aed..bc51990 100644
+--- a/web/src/dockview/panels/settings/CustomToolsSection.tsx
++++ b/web/src/dockview/panels/settings/CustomToolsSection.tsx
+@@ -219,8 +219,7 @@ export function CustomToolsSection() {
+     >
+       <div className="space-y-4">
+         <p className="text-xs text-(--_dk-text-muted)">
+-          Definitions only. Bind on Agents. Same name: workspace overrides
+-          global.
++          Bind on Agents. Workspace overrides global.
+         </p>
+         <div className="space-y-3">
+           {(
+diff --git a/web/src/dockview/panels/settings/FilesSection.tsx b/web/src/dockview/panels/settings/FilesSection.tsx
+index 5f5b857..761cdc9 100644
+--- a/web/src/dockview/panels/settings/FilesSection.tsx
++++ b/web/src/dockview/panels/settings/FilesSection.tsx
+@@ -128,11 +128,8 @@ export function FilesSection() {
+     >
+       <div className="space-y-3">
+         <p className="text-dk-sm text-(--_dk-text-secondary)">
+-          These lists live in this workspace (
+-          <code>.litecode/excludes.json</code>). New workspaces start with the
+-          built-in defaults. Settings edits and direct changes to that file
+-          apply to the tree and to search immediately. Code semantic search
+-          uses the suffix list below, not Search exclude.
++          Saved in <code>.litecode/excludes.json</code>; changes apply
++          immediately. Semantic search uses the suffix list below.
+         </p>
+ 
+         <div className="settings-card space-y-3 p-4">
+@@ -185,8 +182,7 @@ export function FilesSection() {
+           className="settings-foldcard"
+         >
+           <FieldLabel>
+-            Additional hides for search and glob (on top of files exclude).
+-            Does not change the code semantic index.
++            Extra hides for search and glob.
+           </FieldLabel>
+           <TextArea
+             rows={6}
+@@ -207,8 +203,7 @@ export function FilesSection() {
+           className="settings-foldcard"
+         >
+           <FieldLabel>
+-            Suffixes the code semantic index includes. One per line. A missing
+-            suffix is left out; an empty list indexes no source files.
++            File suffixes to index, one per line.
+           </FieldLabel>
+           <TextArea
+             rows={6}
+diff --git a/web/src/dockview/panels/settings/McpServersSection.tsx b/web/src/dockview/panels/settings/McpServersSection.tsx
+index 218413c..e86b6c1 100644
+--- a/web/src/dockview/panels/settings/McpServersSection.tsx
++++ b/web/src/dockview/panels/settings/McpServersSection.tsx
+@@ -246,8 +246,7 @@ export function McpServersSection() {
+           {busy === "stop" ? "Stopping…" : "Stop"}
+         </button>
+         <span className="text-xs text-(--_dk-text-muted)">
+-          Keeps a stdio process running. Save JSON, then Start. Config changes
+-          need Restart.
++          Save, then Start. Restart after config changes.
+         </span>
+       </div>
+       {probe ? (
+@@ -324,7 +323,7 @@ export function McpServersSection() {
+     >
+       <div className="space-y-4">
+         <p className="text-xs text-(--_dk-text-muted)">
+-          Register stdio MCP servers. Same id: workspace overrides global. Bind{" "}
++          Workspace overrides global. Bind{" "}
+           <span className="font-mono">mcp_&lt;id&gt;</span> on Agents.
+         </p>
+         <div className="space-y-3">
+diff --git a/web/src/dockview/panels/settings/ModelsSection.tsx b/web/src/dockview/panels/settings/ModelsSection.tsx
+index 14b0fd5..4e80b1a 100644
+--- a/web/src/dockview/panels/settings/ModelsSection.tsx
++++ b/web/src/dockview/panels/settings/ModelsSection.tsx
+@@ -11,6 +11,7 @@ import { FoldCard } from "../../../components/FoldCard";
+ import { ModalityIcons } from "../../../components/ModalityIcons";
+ import { ProviderLogo } from "../../../components/ProviderLogos";
+ import { SettingsPageShell, useSettingsSaveBlocked } from "./shared";
++import { NO_MODELS_HINT } from "../../../lib/uiCopy";
+ 
+ /**
+  * Binary On/Off picker in the same segmented style as the chat input's
+@@ -229,8 +230,7 @@ export function ModelsSection() {
+       <div className="settings-content-indent space-y-2">
+         {providers.length === 0 ? (
+           <p className="text-sm text-(--_dk-text-disabled)">
+-            No provider holds a key yet. Add one on the Providers page — its
+-            models show up here.
++            {NO_MODELS_HINT}
+           </p>
+         ) : (
+           providers.map((provider) => (
+diff --git a/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx b/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
+index 0d6e985..17e74f0 100644
+--- a/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
++++ b/web/src/dockview/panels/settings/engines/EmbedModelDownload.tsx
+@@ -12,7 +12,7 @@ import { glassFill } from "../../../../components/composerCard";
+  * "not found" line.
+  */
+ 
+-export type EmbedDownloadState =
++type EmbedDownloadState =
+   | { phase: "idle" }
+   | { phase: "running"; message: string; received?: number; total?: number }
+   | { phase: "error"; error: string }
+diff --git a/web/src/dockview/panels/settings/engines/EngineView.tsx b/web/src/dockview/panels/settings/engines/EngineView.tsx
+index 2bed2d2..244abf1 100644
+--- a/web/src/dockview/panels/settings/engines/EngineView.tsx
++++ b/web/src/dockview/panels/settings/engines/EngineView.tsx
+@@ -413,7 +413,7 @@ function LspServerCard({
+         aria-pressed={checked}
+         disabled={!ready && !checked}
+         onClick={onToggle}
+-        aria-label={`${probe.id} server, ${checked ? "enabled" : "disabled"}. Click the card to toggle.`}
++        aria-label={`${probe.id} server, ${checked ? "enabled" : "disabled"}`}
+         className="tool-binding-toggle"
+       />
+       <div className="tool-binding-content flex flex-col">
+diff --git a/web/src/dockview/panels/settings/engines/retrievalBar.ts b/web/src/dockview/panels/settings/engines/retrievalBar.ts
+index cfda472..ea754df 100644
+--- a/web/src/dockview/panels/settings/engines/retrievalBar.ts
++++ b/web/src/dockview/panels/settings/engines/retrievalBar.ts
+@@ -9,9 +9,9 @@ import type {
+  * `retrieval.{total,code,session}` (WP-132). No estimates, no fixed widths,
+  * no legacy index progress / percentage / chunk-count fields.
+  */
+-export type BarTone = "ok" | "pending" | "busy" | "failed" | "empty";
++type BarTone = "ok" | "pending" | "busy" | "failed" | "empty";
+ 
+-export interface RetrievalBar {
++interface RetrievalBar {
+   tone: BarTone;
+   pulse: boolean;
+   /** 0–100, or null when unknown (scanning / no total). */
+@@ -20,7 +20,7 @@ export interface RetrievalBar {
+ }
+ 
+ /** done/total over the whole index; null when total unknown or 0. */
+-export function corpusPct(c: RetrievalCorpusStatus): number | null {
++function corpusPct(c: RetrievalCorpusStatus): number | null {
+   if (c.chunks_total === null || c.chunks_total <= 0) return null;
+   const pct = Math.floor((c.chunks_done * 100) / c.chunks_total);
+   return Math.max(0, Math.min(100, pct));
+@@ -66,7 +66,7 @@ const REASON_TEXT: Record<RetrievalCorpusError["reason"], string> = {
+   index_failed: "索引失败",
+ };
+ 
+-export function reasonText(reason: RetrievalCorpusError["reason"]): string {
++function reasonText(reason: RetrievalCorpusError["reason"]): string {
+   return REASON_TEXT[reason] ?? reason;
+ }
+ 
+diff --git a/web/src/dockview/panels/settings/jsonDefinitions.ts b/web/src/dockview/panels/settings/jsonDefinitions.ts
+index 22a908b..225187b 100644
+--- a/web/src/dockview/panels/settings/jsonDefinitions.ts
++++ b/web/src/dockview/panels/settings/jsonDefinitions.ts
+@@ -7,7 +7,7 @@ import type {
+ } from "../../../api/settings";
+ import type { SerializeResult } from "./persist";
+ 
+-export const TOOL_ID_RE = /^[a-z][a-z0-9_]*$/;
++const TOOL_ID_RE = /^[a-z][a-z0-9_]*$/;
+ 
+ export function parseCustomToolJson(
+   text: string,
+diff --git a/web/src/dockview/panels/settings/providerBilling.ts b/web/src/dockview/panels/settings/providerBilling.ts
+index 0babc43..bcd999b 100644
+--- a/web/src/dockview/panels/settings/providerBilling.ts
++++ b/web/src/dockview/panels/settings/providerBilling.ts
+@@ -8,7 +8,7 @@ import type { CatalogProviderDto } from "../../../api/settings";
+  * placeholders with moonshot-coding / moonshot / minimax-token / minimax;
+  * opencode-go → Plan; opencode + commandcode → API.
+  */
+-export const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
++const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
+   "ark-coding",
+   "ark-agent",
+   "tencent-token",
+@@ -18,19 +18,9 @@ export const PLAN_PROVIDER_IDS: ReadonlySet<string> = new Set([
+   "opencode-go", // monthly subscription
+ ]);
+ 
+-/** Explicit API ids for tests / docs; unknown ids also land here. */
+-export const API_PROVIDER_IDS: ReadonlySet<string> = new Set([
+-  "openai",
+-  "deepseek",
+-  "mimo",
+-  "zhipu",
+-  "moonshot",
+-  "minimax",
+-  "opencode",
+-  "commandcode",
+-]);
+-
+-export type ProviderBillingGroup = "plan" | "api";
++// Everything not in PLAN_PROVIDER_IDS is API (openai, deepseek, mimo, zhipu,
++// moonshot, minimax, opencode, commandcode, and any unknown id).
++type ProviderBillingGroup = "plan" | "api";
+ 
+ export function providerBillingGroup(id: string): ProviderBillingGroup {
+   return PLAN_PROVIDER_IDS.has(id) ? "plan" : "api";
+diff --git a/web/src/dockview/panels/settings/shared.tsx b/web/src/dockview/panels/settings/shared.tsx
+index 3f83436..946ff16 100644
+--- a/web/src/dockview/panels/settings/shared.tsx
++++ b/web/src/dockview/panels/settings/shared.tsx
+@@ -74,7 +74,7 @@ const RANK: PersistStatus[] = [
+   "saved",
+ ];
+ 
+-export function PersistStatusLabel() {
++function PersistStatusLabel() {
+   const section = useSettingsStore((s) => s.section);
+   const persistByDoc = useSettingsStore((s) => s.persistByDoc);
+   const statuses = SECTION_PERSIST_DOCS[section].map(
+diff --git a/web/src/dockview/popout/popoutChrome.tsx b/web/src/dockview/popout/popoutChrome.tsx
+index e926135..b595831 100644
+--- a/web/src/dockview/popout/popoutChrome.tsx
++++ b/web/src/dockview/popout/popoutChrome.tsx
+@@ -6,7 +6,7 @@ import { bindPopoutPin } from "./popoutPin";
+ const LAYOUT_WATCH_MS = 100;
+ 
+ /** Marks a popout document so its tab-bar void stays a window drag handle. */
+-export const POPOUT_DOCUMENT_CLASS = "litecode-popout";
++const POPOUT_DOCUMENT_CLASS = "litecode-popout";
+ 
+ /** Copy the main document's dockview theme onto a popout document. */
+ export function preparePopoutDocument(doc: Document, dvTheme: string): void {
+diff --git a/web/src/dockview/shell/TitleBar.tsx b/web/src/dockview/shell/TitleBar.tsx
+index 9ecb5b7..ed33326 100644
+--- a/web/src/dockview/shell/TitleBar.tsx
++++ b/web/src/dockview/shell/TitleBar.tsx
+@@ -6,6 +6,7 @@ import {
+   useServerVersionTags,
+   VersionTags,
+ } from "../../components/VersionTags";
++import { REMOTE_SERVE_HINT } from "../../lib/uiCopy";
+ 
+ interface TitleBarProps {
+   onMenuAction?: (item: string) => void;
+@@ -65,7 +66,7 @@ export function TitleBar({
+               borderRadius: 2,
+               lineHeight: "16px",
+             }}
+-            title="Connected to a remote litecode serve (no local sidecar)"
++            title={REMOTE_SERVE_HINT}
+           >
+             Remote
+           </span>
+diff --git a/web/src/dockview/workbench/index.ts b/web/src/dockview/workbench/index.ts
+index 00f24cd..90f7f23 100644
+--- a/web/src/dockview/workbench/index.ts
++++ b/web/src/dockview/workbench/index.ts
+@@ -16,54 +16,13 @@
+  *   when the anchor still exists. Otherwise the group is reattached on the
+  *   main grid.
+  *
+- * Features open, reveal, move, and pop panels through the functions below.
++ * Features open, reveal, move, and pop panels through this directory (commands.ts, edges.ts).
+  * They do not receive Dockview's add, move, or popout methods.
+  *
+  * A panel component's own props.api may set its title, close itself, and
+  * listen for visibility. Cross-panel actions go through this module.
+  */
+ 
+-export type {
+-  CenterPlacement,
+-  EdgeRail,
+-  PanelKindSpec,
+-  Zone,
+-} from "./kinds";
+-export { PANEL_KINDS, edgeKinds, kindForComponent } from "./kinds";
+-export type { GroupFacts, GroupRole, PanelWhere, PanelWindow } from "./model";
+-export { groupRole, isUsableCenter } from "./model";
+-export type { CenterGroupQuery, PopoutWindowInfo } from "./queries";
+-export {
+-  activePanelComponent,
+-  activePanelId,
+-  centerGroups,
+-  hasPanel,
+-  isInMainWindow,
+-  mainCenterHasPanel,
+-  panelVisible,
+-  popoutWindows,
+-  roleOfGroup,
+-  whereIs,
+-} from "./queries";
+-export { bindDockview, onDockviewAttached } from "./host";
+-export type { PanelRemoved } from "./events";
+-export { onPanelRemoved } from "./events";
+-export type { OpenPanelRequest } from "./commands";
+-export {
+-  closePanel,
+-  joinPopoutWindow,
+-  movePanelToMain,
+-  openPanel,
+-  popoutPanel,
+-  revealPanel,
+-} from "./commands";
+-export {
+-  ensureDefaultEdges,
+-  ensureEdgePanel,
+-  recoverDefaultLayout,
+-  revealEdgePanel,
+-} from "./edges";
+-export type { LayoutStore } from "./lifecycle";
+-export { isLayoutRestoring } from "./restoreGate";
+-export { LAYOUT_SCHEMA_VERSION, layoutStore, startWorkbench, stopWorkbench } from "./lifecycle";
+-export { ensureMainCenterGroup, placementFor, resetPlacementForTests } from "./placement";
++// Only re-exports that have a consumer outside workbench/ (WP-159 / U3).
++// Other modules import workbench submodules directly.
++export { groupRole } from "./model";
+diff --git a/web/src/dockview/workbench/model.ts b/web/src/dockview/workbench/model.ts
+index 262984e..9b0426d 100644
+--- a/web/src/dockview/workbench/model.ts
++++ b/web/src/dockview/workbench/model.ts
+@@ -50,7 +50,3 @@ export function isUsableCenter(facts: GroupFacts): boolean {
+   if (facts.width == null && facts.height == null) return true;
+   return (facts.width ?? 0) > 0 || (facts.height ?? 0) > 0;
+ }
+-
+-export function groupHasComponent(facts: GroupFacts, component: string): boolean {
+-  return facts.panels.some((panel) => panel.component === component);
+-}
+diff --git a/web/src/dockview/workbench/popoutBox.ts b/web/src/dockview/workbench/popoutBox.ts
+index ab51722..71c5f9b 100644
+--- a/web/src/dockview/workbench/popoutBox.ts
++++ b/web/src/dockview/workbench/popoutBox.ts
+@@ -12,7 +12,7 @@
+ const DEFAULT_WIDTH = 960;
+ const DEFAULT_HEIGHT = 640;
+ 
+-export interface PopoutScreenBox {
++interface PopoutScreenBox {
+   left: number;
+   top: number;
+   width: number;
+diff --git a/web/src/dockview/workbench/queries.ts b/web/src/dockview/workbench/queries.ts
+index 7f06231..7676644 100644
+--- a/web/src/dockview/workbench/queries.ts
++++ b/web/src/dockview/workbench/queries.ts
+@@ -1,4 +1,4 @@
+-import type { DockviewApi, DockviewPanel } from "dockview-react";
++import type { DockviewApi } from "dockview-react";
+ 
+ import { dockIdFromPopoutUrl } from "../config/popoutUrl";
+ import { dockview, onDockviewAttached } from "./host";
+@@ -201,5 +201,3 @@ export function mainCenterHasPanel(api?: DockviewApi | null): boolean {
+ export function roleOfGroup(group: GroupLike): GroupRole | null {
+   return groupRole(readGroup(group));
+ }
+-
+-export type LivePanel = DockviewPanel;
+diff --git a/web/src/dockview/workbench/windows.ts b/web/src/dockview/workbench/windows.ts
+index 4f6ad2f..5445778 100644
+--- a/web/src/dockview/workbench/windows.ts
++++ b/web/src/dockview/workbench/windows.ts
+@@ -10,7 +10,7 @@ import type { GroupLike } from "./readGroup";
+  * A handle may exist on the other side before this record does. Callers that
+  * need the OS window fail closed; they do not wait.
+  */
+-export interface WorkbenchWindow {
++interface WorkbenchWindow {
+   dockId: string | null;
+   window: Window;
+   groupId: string | null;
+@@ -75,7 +75,7 @@ export function onDidRegisterWindow(
+   };
+ }
+ 
+-export function onDidUnregisterWindow(
++function onDidUnregisterWindow(
+   listener: (entry: WorkbenchWindow) => void,
+ ): () => void {
+   unregisterListeners.add(listener);
+diff --git a/web/src/lib/citationRef.ts b/web/src/lib/citationRef.ts
+index 76de2c5..248d6e0 100644
+--- a/web/src/lib/citationRef.ts
++++ b/web/src/lib/citationRef.ts
+@@ -86,7 +86,7 @@ function readFragment(fragment: string): { line?: number; symbol?: string } {
+ }
+ 
+ /** Where a file-ish markdown link in assistant prose goes. */
+-export type WorkspaceLink =
++type WorkspaceLink =
+   | { action: "chip"; path: string; line: number | null; symbol: string | null }
+   | { action: "text" }
+   | { action: "link" };
+diff --git a/web/src/lib/citationResolve.ts b/web/src/lib/citationResolve.ts
+index 9a73baa..fbb9c46 100644
+--- a/web/src/lib/citationResolve.ts
++++ b/web/src/lib/citationResolve.ts
+@@ -2,13 +2,13 @@ import { resolveCitations, type CitationRefHit } from "../api/workspace";
+ import { citationCacheKey, type CitationTarget } from "./citationRef";
+ 
+ /** Positive hits stay cached. Misses do not, so a later retry can see a new file. */
+-export interface CitationHit {
++interface CitationHit {
+   exists: true;
+   path: string;
+   line?: number;
+ }
+ 
+-export type CitationLookup = CitationHit | { exists: false } | null;
++type CitationLookup = CitationHit | { exists: false } | null;
+ 
+ const CHUNK = 32;
+ 
+@@ -25,13 +25,6 @@ const inflight = new Map<string, Promise<CitationLookup>>();
+ let queue: Queued[] = [];
+ let flushScheduled = false;
+ 
+-export function peekCitation(
+-  workspace: string,
+-  target: CitationTarget,
+-): CitationHit | undefined {
+-  return hits.get(citationCacheKey(workspace, target));
+-}
+-
+ export function requestCitation(
+   workspace: string,
+   target: CitationTarget,
+diff --git a/web/src/lib/debugTrace.ts b/web/src/lib/debugTrace.ts
+index 0c30391..0b35fdf 100644
+--- a/web/src/lib/debugTrace.ts
++++ b/web/src/lib/debugTrace.ts
+@@ -9,8 +9,8 @@
+ 
+ export const DEBUG_STORAGE_KEY = "litecode.debug";
+ 
+-export const DEBUG_CHANNELS = ["turn", "buffer"] as const;
+-export type DebugChannel = (typeof DEBUG_CHANNELS)[number];
++const DEBUG_CHANNELS = ["turn", "buffer"] as const;
++type DebugChannel = (typeof DEBUG_CHANNELS)[number];
+ 
+ export function parseDebugSpec(
+   raw: string | null | undefined,
+diff --git a/web/src/lib/domView.ts b/web/src/lib/domView.ts
+index 890d53c..a2de4f7 100644
+--- a/web/src/lib/domView.ts
++++ b/web/src/lib/domView.ts
+@@ -44,7 +44,7 @@ function hostNode(target: EventTarget | null, scope: Node | null | undefined): N
+ }
+ 
+ /** Element in `scope`'s document. Moved-in nodes are included. */
+-export function isHostElement(
++function isHostElement(
+   target: EventTarget | null,
+   scope: Node | null | undefined,
+ ): target is Element {
+diff --git a/web/src/lib/dropPayload.ts b/web/src/lib/dropPayload.ts
+index 04ed779..eab5e0a 100644
+--- a/web/src/lib/dropPayload.ts
++++ b/web/src/lib/dropPayload.ts
+@@ -6,13 +6,13 @@ export const LITECODE_PATHS_MIME = "application/x-litecode-paths";
+ /** Monaco selection: path plus 1-based line span. The plain-text payload stays the code. */
+ export const LITECODE_SPAN_MIME = "application/x-litecode-span";
+ 
+-export interface CodeSpan {
++interface CodeSpan {
+   path: string;
+   start: number;
+   end: number;
+ }
+ 
+-export interface LineSelection {
++interface LineSelection {
+   isEmpty(): boolean;
+   startLineNumber: number;
+   endLineNumber: number;
+diff --git a/web/src/lib/editorRoot.ts b/web/src/lib/editorRoot.ts
+index c6f5957..3b0238f 100644
+--- a/web/src/lib/editorRoot.ts
++++ b/web/src/lib/editorRoot.ts
+@@ -25,7 +25,7 @@ function selectionObserver(view: EditorView): SelectionObserver {
+  * stays on the opener until the view is told to follow that document.
+  * `updateRoot` only clears the cache; the selection listener stays behind.
+  */
+-export function rebindEditorView(view: EditorView): void {
++function rebindEditorView(view: EditorView): void {
+   if (view.isDestroyed) return;
+   const dom = view.dom;
+   if (!dom.isConnected) return;
+diff --git a/web/src/lib/externalDrop.ts b/web/src/lib/externalDrop.ts
+index dead5bf..f600495 100644
+--- a/web/src/lib/externalDrop.ts
++++ b/web/src/lib/externalDrop.ts
+@@ -10,11 +10,11 @@ import {
+   readLoosePaths,
+ } from "./dropPayload";
+ 
+-export type ForeignZone = "tree" | "mention" | "editor" | "terminal" | "other";
++type ForeignZone = "tree" | "mention" | "editor" | "terminal" | "other";
+ 
+-export type ForeignIntent = "ignore" | "swallow" | "preview";
++type ForeignIntent = "ignore" | "swallow" | "preview";
+ 
+-export function foreignZone(target: EventTarget | null): ForeignZone {
++function foreignZone(target: EventTarget | null): ForeignZone {
+   const el = target instanceof Element ? target : null;
+   if (!el) return "other";
+   if (el.closest("[data-drop-zone='tree']")) return "tree";
+diff --git a/web/src/lib/fileKind.ts b/web/src/lib/fileKind.ts
+index 26ba407..61fdb04 100644
+--- a/web/src/lib/fileKind.ts
++++ b/web/src/lib/fileKind.ts
+@@ -77,7 +77,7 @@ const BINARY_EXT = new Set([
+   "blend",
+ ]);
+ 
+-export function extensionOf(path: string): string {
++function extensionOf(path: string): string {
+   const base = path.split(/[/\\]/).pop() ?? path;
+   const dot = base.lastIndexOf(".");
+   if (dot <= 0) return "";
+diff --git a/web/src/lib/fileTreeNames.ts b/web/src/lib/fileTreeNames.ts
+index 11f12a8..bac4a6a 100644
+--- a/web/src/lib/fileTreeNames.ts
++++ b/web/src/lib/fileTreeNames.ts
+@@ -8,7 +8,7 @@ export function validateFileName(name: string): string | null {
+   return null;
+ }
+ 
+-export function splitFileName(name: string): { stem: string; ext: string } {
++function splitFileName(name: string): { stem: string; ext: string } {
+   const dot = name.lastIndexOf(".");
+   if (dot <= 0) return { stem: name, ext: "" };
+   return { stem: name.slice(0, dot), ext: name.slice(dot) };
+diff --git a/web/src/lib/fileTreeVisible.ts b/web/src/lib/fileTreeVisible.ts
+index 462dfd6..403f757 100644
+--- a/web/src/lib/fileTreeVisible.ts
++++ b/web/src/lib/fileTreeVisible.ts
+@@ -1,8 +1,8 @@
+ import type { TreeEntry } from "../api/workspace";
+ 
+-export type FileTreeGhostKind = "newFile" | "newFolder";
++type FileTreeGhostKind = "newFile" | "newFolder";
+ 
+-export type VisibleTreeRow =
++type VisibleTreeRow =
+   | { type: "entry"; entry: TreeEntry; depth: number }
+   | {
+       type: "ghost";
+@@ -11,7 +11,7 @@ export type VisibleTreeRow =
+       kind: FileTreeGhostKind;
+     };
+ 
+-export type FileTreeGhost = {
++type FileTreeGhost = {
+   parent: string;
+   kind: FileTreeGhostKind;
+ };
+diff --git a/web/src/lib/firstRun.ts b/web/src/lib/firstRun.ts
+index 6a4d2cb..b57fe48 100644
+--- a/web/src/lib/firstRun.ts
++++ b/web/src/lib/firstRun.ts
+@@ -27,7 +27,7 @@ import { useToastStore } from "../stores/toastStore";
+  */
+ 
+ /** One feature worth a single line of guidance once the workspace is usable. */
+-export interface ExploreStep {
++interface ExploreStep {
+   id: string;
+   emoji: string;
+   /** Markdown, one or two short sentences at most. */
+@@ -42,11 +42,11 @@ export interface ExploreStep {
+  * The explore list. v1 consumes only the max-steps step; the shape is here so
+  * later steps are data, not UI.
+  */
+-export const EXPLORE_STEPS: ExploreStep[] = [
++const EXPLORE_STEPS: ExploreStep[] = [
+   {
+     id: "max-steps",
+     emoji: "🧗",
+-    md: "Default **Max steps** is 50 — long tasks stop early. 200 is a saner default.",
++    md: "Long tasks may need ~200.",
+     section: "agents",
+     anchor: "max-steps",
+   },
+diff --git a/web/src/lib/gitGraph.ts b/web/src/lib/gitGraph.ts
+index 0b5bb5b..bdc4a6d 100644
+--- a/web/src/lib/gitGraph.ts
++++ b/web/src/lib/gitGraph.ts
+@@ -2,14 +2,14 @@ export const GIT_GRAPH_LANE_WIDTH = 12;
+ export const GIT_GRAPH_PAD_X = 8;
+ export const GIT_GRAPH_ROW_HEIGHT = 24;
+ /** Leave room for short SHA + a slice of the subject. */
+-export const GIT_GRAPH_RESERVED_TEXT = 88;
++const GIT_GRAPH_RESERVED_TEXT = 88;
+ 
+-export type GraphCommit = {
++type GraphCommit = {
+   sha: string;
+   parents: string[];
+ };
+ 
+-export type GraphMerge = {
++type GraphMerge = {
+   from: number;
+   to: number;
+ };
+diff --git a/web/src/lib/gitTree.ts b/web/src/lib/gitTree.ts
+index 70e8721..ff8612e 100644
+--- a/web/src/lib/gitTree.ts
++++ b/web/src/lib/gitTree.ts
+@@ -1,13 +1,13 @@
+ import type { GitFile } from "../api/workspace";
+ 
+-export type GitTreeDir = {
++type GitTreeDir = {
+   kind: "dir";
+   name: string;
+   path: string;
+   children: GitTreeNode[];
+ };
+ 
+-export type GitTreeFile = {
++type GitTreeFile = {
+   kind: "file";
+   name: string;
+   file: GitFile;
+diff --git a/web/src/lib/imageNormalize.ts b/web/src/lib/imageNormalize.ts
+index 67b815a..6dfd59d 100644
+--- a/web/src/lib/imageNormalize.ts
++++ b/web/src/lib/imageNormalize.ts
+@@ -2,7 +2,7 @@
+ export const IMAGE_LONG_SIDE = 1568;
+ 
+ /** JPEG quality for the stored asset. */
+-export const JPEG_QUALITY = 0.85;
++const JPEG_QUALITY = 0.85;
+ 
+ /** How many images one composer message may hold. Matches the server cap. */
+ export const MAX_COMPOSER_IMAGES = 16;
+diff --git a/web/src/lib/knowledge/document.ts b/web/src/lib/knowledge/document.ts
+index e0c890b..f730bcd 100644
+--- a/web/src/lib/knowledge/document.ts
++++ b/web/src/lib/knowledge/document.ts
+@@ -20,7 +20,7 @@ export interface KnowledgeSourceFile {
+   markdown: string;
+ }
+ 
+-export interface ParsedKnowledgeFile {
++interface ParsedKnowledgeFile {
+   path: string;
+   key: string;
+   status: KnowledgeStatus;
+diff --git a/web/src/lib/knowledge/issueText.ts b/web/src/lib/knowledge/issueText.ts
+index 1813203..7bd3f19 100644
+--- a/web/src/lib/knowledge/issueText.ts
++++ b/web/src/lib/knowledge/issueText.ts
+@@ -6,7 +6,7 @@ import type {
+ } from "./types";
+ 
+ /** `args.reason` of `invalid_lines` on a symbol citation written with `lines` (KR-SYM-6). */
+-export const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
++const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
+ 
+ type Template = (args: KnowledgeIssueArgs) => string | null;
+ 
+@@ -121,7 +121,7 @@ export function isKnowledgeIssueCode(code: string): code is KnowledgeIssueCode {
+ }
+ 
+ /** Text for one code. Unknown code or missing args → the backend message. */
+-export function knowledgeProblemText(
++function knowledgeProblemText(
+   code: string,
+   args: KnowledgeIssueArgs | undefined,
+   message: string,
+diff --git a/web/src/lib/knowledge/layoutGraph.ts b/web/src/lib/knowledge/layoutGraph.ts
+index 71e49b7..edbeb68 100644
+--- a/web/src/lib/knowledge/layoutGraph.ts
++++ b/web/src/lib/knowledge/layoutGraph.ts
+@@ -20,11 +20,11 @@ export function snapKnowledgeCoord(value: number): number {
+   return Math.round(value / KNOWLEDGE_GRID) * KNOWLEDGE_GRID;
+ }
+ 
+-export function knowledgeFolderFlowId(folderId: string): string {
++function knowledgeFolderFlowId(folderId: string): string {
+   return `folder:${folderId}`;
+ }
+ 
+-export interface LaidOutNode {
++interface LaidOutNode {
+   id: string;
+   nodeId: string;
+   /** React Flow parent id. `null` when the node sits on the canvas root. */
+@@ -34,7 +34,7 @@ export interface LaidOutNode {
+   y: number;
+ }
+ 
+-export interface LaidOutFolder {
++interface LaidOutFolder {
+   id: string;
+   folderId: string;
+   parentId: string | null;
+diff --git a/web/src/lib/knowledge/markers.ts b/web/src/lib/knowledge/markers.ts
+index 9188378..beee9eb 100644
+--- a/web/src/lib/knowledge/markers.ts
++++ b/web/src/lib/knowledge/markers.ts
+@@ -1,4 +1,4 @@
+-export type KnowledgeSegment =
++type KnowledgeSegment =
+   | { type: "text"; value: string }
+   | { type: "ref"; id: string; label: string };
+ 
+@@ -7,7 +7,7 @@ export type KnowledgeSegment =
+  * `seq`, `knowledge 概念概述`. Quotes and brackets stay out so the key can be
+  * a path segment and a Mention shortcode attribute.
+  */
+-export const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
++const KNOWLEDGE_KEY = /^[\p{L}\p{N}_][\p{L}\p{N}_-]*(?: [\p{L}\p{N}_-]+)*$/u;
+ 
+ /** Node citation. Only `key` is recognized. */
+ const SHORTCODE_SOURCE = String.raw`\[@ key="([^"]*)"\]`;
+@@ -312,27 +312,6 @@ export function splitBodyRefs(text: string): BodySegment[] {
+   return out;
+ }
+ 
+-export interface CitedSymbol {
+-  path: string;
+-  symbol: string;
+-}
+-
+-/** Symbol citations in prose, first chain per file wins. Range-only citations are not included. */
+-export function extractSymbolRefs(markdown: string): CitedSymbol[] {
+-  const out: CitedSymbol[] = [];
+-  const seen = new Set<string>();
+-  for (const line of scanProse(markdown).prose) {
+-    for (const segment of splitBodyRefs(line)) {
+-      if (segment.type !== "symbol" || !segment.symbol) continue;
+-      const key = `${segment.path}\0${segment.symbol}`;
+-      if (seen.has(key)) continue;
+-      seen.add(key);
+-      out.push({ path: segment.path, symbol: segment.symbol });
+-    }
+-  }
+-  return out;
+-}
+-
+ /** File paths cited in prose. Fenced blocks and inline code are not citations. */
+ export function extractFileRefs(markdown: string): string[] {
+   const paths: string[] = [];
+@@ -349,12 +328,12 @@ export function extractFileRefs(markdown: string): string[] {
+ }
+ 
+ /** Path part of a `ref_key` (KR-KEY-1): trimmed, `\\` as `/`, nothing else. */
+-export function normalizeRefPath(path: string): string {
++function normalizeRefPath(path: string): string {
+   return path.trim().replaceAll("\\", "/");
+ }
+ 
+ /** One citation as the reference identity needs it. `lines` is the raw attribute. */
+-export type RefKeyInput =
++type RefKeyInput =
+   | { kind: "node"; key: string }
+   | { kind: "file"; path: string; symbol?: string | null; lines?: string | null };
+ 
+@@ -378,7 +357,7 @@ export function knowledgeRefKey(ref: RefKeyInput): string {
+   return `file:${path}`;
+ }
+ 
+-export interface ExtractedRef {
++interface ExtractedRef {
+   kind: "node" | "file" | "symbol" | "range";
+   key?: string;
+   path?: string;
+@@ -435,7 +414,7 @@ export function extractRefs(markdown: string): ExtractedRef[] {
+   return out;
+ }
+ 
+-export interface KnowledgeMention {
++interface KnowledgeMention {
+   id: string;
+   label: string;
+ }
+diff --git a/web/src/lib/knowledge/panel.ts b/web/src/lib/knowledge/panel.ts
+index 0c22f93..1f1be29 100644
+--- a/web/src/lib/knowledge/panel.ts
++++ b/web/src/lib/knowledge/panel.ts
+@@ -5,7 +5,7 @@ import { citationRefKey, resolveCitation, type Citation } from "./refDisplay";
+ import { externalPreviewId, useEditorStore } from "../../stores/editorStore";
+ import { knowledgeRefState, useKnowledgeStore } from "../../stores/knowledgeStore";
+ 
+-export const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
++const KNOWLEDGE_GRAPH_PANEL_ID = "knowledge-graph";
+ 
+ /** Show the knowledge graph on the main center. */
+ export function openKnowledgeGraphPanel(): void {
+diff --git a/web/src/lib/knowledge/refDisplay.ts b/web/src/lib/knowledge/refDisplay.ts
+index 95c7a72..246c569 100644
+--- a/web/src/lib/knowledge/refDisplay.ts
++++ b/web/src/lib/knowledge/refDisplay.ts
+@@ -9,9 +9,9 @@ import {
+ } from "./markers";
+ import type { KnowledgeNode, KnowledgeRefState, KnowledgeRefStatus } from "./types";
+ 
+-export type RefChipTone = "normal" | "disabled" | "warning" | "error";
++type RefChipTone = "normal" | "disabled" | "warning" | "error";
+ 
+-export interface RefChipModel {
++interface RefChipModel {
+   key: string;
+   label: string;
+   targetId: string | null;
+@@ -84,7 +84,7 @@ export function citationRefKey(citation: Citation): string {
+   });
+ }
+ 
+-export type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
++type CitationTone = "normal" | "disabled" | "warning" | "drift" | "error";
+ 
+ /**
+  * How a backend status draws on a chip. A status missing here (a code added
+@@ -133,7 +133,7 @@ export interface CitationChipModel {
+   symbol: boolean;
+ }
+ 
+-export interface CitationResolveInput {
++interface CitationResolveInput {
+   source: KnowledgeNode | null;
+   /** Node looked up by key. Null when the key is not in the corpus. */
+   target: KnowledgeNode | null;
+diff --git a/web/src/lib/knowledge/remarkKnowledgeRef.ts b/web/src/lib/knowledge/remarkKnowledgeRef.ts
+index 3fd2ceb..fc5a434 100644
+--- a/web/src/lib/knowledge/remarkKnowledgeRef.ts
++++ b/web/src/lib/knowledge/remarkKnowledgeRef.ts
+@@ -9,7 +9,7 @@ import {
+ const KNOWLEDGE_SCHEME = "knowledge:";
+ const LOC_SCHEME = "loc:";
+ 
+-export function knowledgeRefHref(key: string): string {
++function knowledgeRefHref(key: string): string {
+   return `${KNOWLEDGE_SCHEME}${encodeURIComponent(key)}`;
+ }
+ 
+@@ -28,7 +28,7 @@ export function parseKnowledgeRef(href: string | undefined): string | null {
+  * present. `lines` is the raw range attribute, carried only so the chip can find
+  * its `ref_key`; a symbol citation carries neither.
+  */
+-export function locationHref(
++function locationHref(
+   path: string,
+   line?: number | null,
+   symbol?: string | null,
+diff --git a/web/src/lib/knowledge/scrollVisible.ts b/web/src/lib/knowledge/scrollVisible.ts
+index 4bb34f5..3dc750d 100644
+--- a/web/src/lib/knowledge/scrollVisible.ts
++++ b/web/src/lib/knowledge/scrollVisible.ts
+@@ -1,4 +1,4 @@
+-export type ScrollBox = {
++type ScrollBox = {
+   top: number;
+   bottom: number;
+   height: number;
+diff --git a/web/src/lib/knowledge/types.ts b/web/src/lib/knowledge/types.ts
+index d73c1e0..d4ee762 100644
+--- a/web/src/lib/knowledge/types.ts
++++ b/web/src/lib/knowledge/types.ts
+@@ -67,7 +67,7 @@ export type KnowledgeIssueCode =
+   | "symbol_drift"
+   | "line_out_of_range";
+ 
+-export type KnowledgeIssueSeverity = "error" | "warning";
++type KnowledgeIssueSeverity = "error" | "warning";
+ 
+ /** Structured issue arguments: `key`, `path`, `symbol`, `lines`, `target_status`, `reason`, `line_count`, ... */
+ export type KnowledgeIssueArgs = Readonly<Record<string, unknown>>;
+@@ -85,7 +85,7 @@ export interface KnowledgeIssue {
+   args?: KnowledgeIssueArgs;
+ }
+ 
+-export type KnowledgeRefKind = "node" | "file" | "symbol" | "range";
++type KnowledgeRefKind = "node" | "file" | "symbol" | "range";
+ 
+ /** `ok`, `checking`, or one of the citation issue codes. */
+ export type KnowledgeRefStatus = "ok" | "checking" | KnowledgeIssueCode;
+diff --git a/web/src/lib/knowledge/world.ts b/web/src/lib/knowledge/world.ts
+index ea35f60..1a38d33 100644
+--- a/web/src/lib/knowledge/world.ts
++++ b/web/src/lib/knowledge/world.ts
+@@ -11,7 +11,7 @@ export interface FlowPointNode {
+   position: WorldPoint;
+ }
+ 
+-export interface PositionWrite {
++interface PositionWrite {
+   id: string;
+   x: number;
+   y: number;
+diff --git a/web/src/lib/litecodeLsp.ts b/web/src/lib/litecodeLsp.ts
+index ae5f12e..0bd4d88 100644
+--- a/web/src/lib/litecodeLsp.ts
++++ b/web/src/lib/litecodeLsp.ts
+@@ -36,7 +36,7 @@ const pendingContentChangesByUri = new Map<string, LspTextEdit[]>();
+ const applyInFlight = new Map<string, Promise<SyncAck | null>>();
+ const changeDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+ 
+-export type LspTextEdit = {
++type LspTextEdit = {
+   range: {
+     start: { line: number; character: number };
+     end: { line: number; character: number };
+@@ -100,14 +100,14 @@ export function isLspServerReady(): boolean {
+   return Array.isArray(servers) && servers.some((s) => s.state === "running");
+ }
+ 
+-export type DiagnosticsSnapshot = {
++type DiagnosticsSnapshot = {
+   rev: number | null;
+   fresh: boolean;
+   serverReady: boolean;
+   diagnostics: unknown;
+ };
+ 
+-export type SyncAck = {
++type SyncAck = {
+   rev: number | null;
+   version: number | null;
+   serverReady: boolean;
+@@ -181,7 +181,7 @@ export function monacoChangeToLsp(change: {
+   };
+ }
+ 
+-export function handleLspWireEnvelope(env: WireEnvelope): boolean {
++function handleLspWireEnvelope(env: WireEnvelope): boolean {
+   if (env.method === "lsp/diagnostics") {
+     handleLspDiagnosticsNotification(env.params ?? {});
+     return true;
+@@ -363,7 +363,7 @@ export function toFileUri(projectRoot: string, relPath: string): string {
+ }
+ 
+ /** Relative workspace path for a Monaco model (matches Editor `path` prop). */
+-export function relPathFromModel(
++function relPathFromModel(
+   model: Monaco.editor.ITextModel,
+   projectRoot: string,
+ ): string {
+@@ -387,7 +387,7 @@ export function relPathFromModel(
+ }
+ 
+ /** Monaco URI for a workspace-relative path (same as @monaco-editor/react `path` prop). */
+-export function monacoUriForRelPath(
++function monacoUriForRelPath(
+   monaco: typeof import("monaco-editor"),
+   relPath: string,
+ ): Monaco.Uri {
+@@ -554,7 +554,7 @@ function applyRawDiagnostics(
+   monaco.editor.setModelMarkers(model, "litecode-lsp", markers);
+ }
+ 
+-export function handleLspDiagnosticsNotification(params: {
++function handleLspDiagnosticsNotification(params: {
+   uri?: unknown;
+   version?: unknown;
+   diagnostics?: unknown;
+@@ -1089,7 +1089,7 @@ const DEFAULT_TOKEN_MODIFIERS = [
+   "defaultLibrary",
+ ];
+ 
+-export type WorkspaceLspHandle = Monaco.IDisposable & {
++type WorkspaceLspHandle = Monaco.IDisposable & {
+   ensureSemantic: (fileUri: string) => Promise<void>;
+ };
+ 
+@@ -1106,7 +1106,7 @@ let workspaceLsp: WorkspaceLspLive | null = null;
+  * Register workspace-wide LSP providers on the **editor's** Monaco instance.
+  * Must use the same `monaco` object passed to `Editor.onMount` — not `loader.init()`.
+  */
+-export function registerWorkspaceLsp(
++function registerWorkspaceLsp(
+   monaco: typeof import("monaco-editor"),
+   getProjectRoot: () => string,
+ ): WorkspaceLspHandle {
+@@ -1638,48 +1638,6 @@ export function bindEditorLsp(
+   };
+ }
+ 
+-export async function refreshDiagnostics(
+-  monaco: typeof import("monaco-editor"),
+-  projectRoot: string,
+-  relPath: string,
+-  fileUri?: string,
+-): Promise<void> {
+-  if (!isLspWarm() || !projectRoot) {
+-    return;
+-  }
+-  const uri = fileUri ?? toFileUri(projectRoot, relPath);
+-  let res: LspResult;
+-  try {
+-    res = await sendLsp(
+-      "litecode/getDiagnostics",
+-      { uri },
+-      { timeoutMs: DOCUMENT_SYNC_TIMEOUT_MS },
+-    );
+-  } catch (e) {
+-    warnLsp("diagnostics", e);
+-    return;
+-  }
+-  if (res.error) {
+-    warnLsp("diagnostics", res.error.message);
+-    return;
+-  }
+-
+-  const model = monaco.editor
+-    .getModels()
+-    .find(
+-      (m) =>
+-        relPathFromModel(m, projectRoot) === relPath ||
+-        m.uri.path.replace(/^\//, "") === relPath,
+-    );
+-  if (!model) return;
+-  const snap = parseDiagnosticsSnapshot(res.result);
+-  if (typeof snap.rev === "number") lastHubRevByUri.set(uri, snap.rev);
+-  noteDocServerReady(uri, snap.serverReady);
+-  if (snap.fresh && snap.serverReady) {
+-    applyRawDiagnostics(monaco, model, snap.diagnostics);
+-  }
+-}
+-
+ export function getProjectRootFromStore(): string {
+   return useConnectionStore.getState().project;
+ }
+diff --git a/web/src/lib/llmReconnect.ts b/web/src/lib/llmReconnect.ts
+index c9362f7..3166424 100644
+--- a/web/src/lib/llmReconnect.ts
++++ b/web/src/lib/llmReconnect.ts
+@@ -1,7 +1,7 @@
+ import type { LlmReconnectNotice } from "../api/types";
+ 
+ /** `500` → `0.5s`, `1000` and above → whole seconds. */
+-export function formatReconnectDelay(delayMs: number): string {
++function formatReconnectDelay(delayMs: number): string {
+   if (delayMs >= 1000) return `${Math.round(delayMs / 1000)}s`;
+   return `${Math.round(delayMs / 100) / 10}s`;
+ }
+diff --git a/web/src/lib/monacoShaders.ts b/web/src/lib/monacoShaders.ts
+index 508e8d3..135cfe6 100644
+--- a/web/src/lib/monacoShaders.ts
++++ b/web/src/lib/monacoShaders.ts
+@@ -5,7 +5,7 @@ import { INITIAL, type StateStack } from "shiki/textmate";
+ import { getMarkdownHighlighter } from "./shiki";
+ import { shaderSuggests, type ShaderSuggestKind } from "./shader/completions";
+ 
+-export const SHADER_LANGUAGE_IDS = ["hlsl", "shaderlab"] as const;
++const SHADER_LANGUAGE_IDS = ["hlsl", "shaderlab"] as const;
+ 
+ const C_LIKE: Monaco.languages.LanguageConfiguration = {
+   comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+diff --git a/web/src/lib/scrollStick.ts b/web/src/lib/scrollStick.ts
+index bf8edc4..36f16ac 100644
+--- a/web/src/lib/scrollStick.ts
++++ b/web/src/lib/scrollStick.ts
+@@ -24,7 +24,7 @@ export const SCROLL_INTENT_KEYS = new Set([
+  * (other than `root`). The message list and FoldCards use this so scrolling an
+  * inner scroller (a FoldCard, a bash output pre) never unpins the outer one.
+  */
+-export function wheelTargetIsNestedScroller(
++function wheelTargetIsNestedScroller(
+   target: EventTarget | null,
+   root: HTMLElement,
+ ): boolean {
+diff --git a/web/src/lib/sessionErrors.ts b/web/src/lib/sessionErrors.ts
+index bdd27c4..b333560 100644
+--- a/web/src/lib/sessionErrors.ts
++++ b/web/src/lib/sessionErrors.ts
+@@ -22,7 +22,7 @@ function runningSessionIds(err: unknown): string[] {
+ }
+ 
+ export const DELETE_FAILED_MESSAGE = "删除失败，请稍后重试";
+-export const READONLY_MESSAGE = "子会话是只读的，消息只能由父会话发送";
++const READONLY_MESSAGE = "子会话是只读的，消息只能由父会话发送";
+ 
+ /** User-facing text for a rejected `session/delete`. Unknown → generic. */
+ export function deleteRejectedMessage(err: unknown): string {
+diff --git a/web/src/lib/sessionPanelNav.ts b/web/src/lib/sessionPanelNav.ts
+index 261ad82..d7f0795 100644
+--- a/web/src/lib/sessionPanelNav.ts
++++ b/web/src/lib/sessionPanelNav.ts
+@@ -4,7 +4,7 @@ import { hasPanel } from "../dockview/workbench/queries";
+ import { onPanelRemoved } from "../dockview/workbench/events";
+ import { openPanel } from "../dockview/workbench/commands";
+ 
+-export interface PendingSeqReveal {
++interface PendingSeqReveal {
+   sessionId: string;
+   seq: number;
+   gen: number;
+@@ -142,12 +142,12 @@ export function openSubagentPanel(childId: string, revealSeq?: number): void {
+ }
+ 
+ /** Minimal session metadata the classifier needs. */
+-export interface SessionMeta {
++interface SessionMeta {
+   id: string;
+   parent_session_id?: string | null;
+ }
+ 
+-export type SessionKind = "root" | "child" | "unknown";
++type SessionKind = "root" | "child" | "unknown";
+ 
+ /**
+  * Classify a session id against the known session list. FAIL-CLOSED: a session
+diff --git a/web/src/lib/shader/completions.ts b/web/src/lib/shader/completions.ts
+index c2116b6..1bac424 100644
+--- a/web/src/lib/shader/completions.ts
++++ b/web/src/lib/shader/completions.ts
+@@ -31,7 +31,7 @@ export type ShaderSuggestKind =
+   | "file"
+   | "semantic";
+ 
+-export type ShaderSuggest = {
++type ShaderSuggest = {
+   label: string;
+   kind: ShaderSuggestKind;
+   detail?: string;
+diff --git a/web/src/lib/shader/hlslGlobals.ts b/web/src/lib/shader/hlslGlobals.ts
+index 02eaf39..1847422 100644
+--- a/web/src/lib/shader/hlslGlobals.ts
++++ b/web/src/lib/shader/hlslGlobals.ts
+@@ -5,7 +5,7 @@
+  * and Microsoft HLSL documentation.
+  */
+ 
+-export interface IParam {
++interface IParam {
+   label: string;
+   documentation?: string;
+ }
+@@ -16,7 +16,7 @@ export class IEntry {
+ }
+ 
+ //TODO: support multiple entry per name
+-export interface IEntries {
++interface IEntries {
+   [name: string]: IEntry;
+ }
+ 
+diff --git a/web/src/lib/shader/unityGlobals.ts b/web/src/lib/shader/unityGlobals.ts
+index 7971515..bf685a9 100644
+--- a/web/src/lib/shader/unityGlobals.ts
++++ b/web/src/lib/shader/unityGlobals.ts
+@@ -10,7 +10,7 @@
+ // Unity 内置变量定义
+ // ============================================================================
+ 
+-export interface UnityVariable {
++interface UnityVariable {
+   name: string;
+   type: string;
+   description: string;
+@@ -368,7 +368,7 @@ export const unityBuiltinVariables: UnityVariable[] = [
+ // Unity 内置函数定义
+ // ============================================================================
+ 
+-export interface UnityFunction {
++interface UnityFunction {
+   name: string;
+   signature: string;
+   description: string;
+@@ -718,7 +718,7 @@ export const unityBuiltinFunctions: UnityFunction[] = [
+ // Unity 常用宏定义
+ // ============================================================================
+ 
+-export interface UnityMacro {
++interface UnityMacro {
+   name: string;
+   description: string;
+   usage?: string;
+@@ -903,7 +903,7 @@ export const unityBuiltinMacros: UnityMacro[] = [
+ // ShaderLab 关键字定义
+ // ============================================================================
+ 
+-export interface ShaderLabKeyword {
++interface ShaderLabKeyword {
+   name: string;
+   description: string;
+   snippet?: string;
+@@ -1063,7 +1063,7 @@ export const shaderLabKeywords: ShaderLabKeyword[] = [
+ // ShaderLab 属性类型
+ // ============================================================================
+ 
+-export interface ShaderLabPropertyType {
++interface ShaderLabPropertyType {
+   name: string;
+   description: string;
+   defaultValue: string;
+@@ -1143,7 +1143,7 @@ export const shaderLabPropertyTypes: ShaderLabPropertyType[] = [
+ // Pragma 指令
+ // ============================================================================
+ 
+-export interface PragmaDirective {
++interface PragmaDirective {
+   name: string;
+   description: string;
+   example: string;
+diff --git a/web/src/lib/shader/urpGlobals.ts b/web/src/lib/shader/urpGlobals.ts
+index b35e73c..0826452 100644
+--- a/web/src/lib/shader/urpGlobals.ts
++++ b/web/src/lib/shader/urpGlobals.ts
+@@ -10,7 +10,7 @@
+ // URP 内置变量定义
+ // ============================================================================
+ 
+-export interface URPVariable {
++interface URPVariable {
+   name: string;
+   type: string;
+   description: string;
+@@ -177,7 +177,7 @@ export const urpBuiltinVariables: URPVariable[] = [
+ // URP 内置函数定义
+ // ============================================================================
+ 
+-export interface URPFunction {
++interface URPFunction {
+   name: string;
+   signature: string;
+   description: string;
+@@ -557,7 +557,7 @@ export const urpBuiltinFunctions: URPFunction[] = [
+ // URP 常用宏定义
+ // ============================================================================
+ 
+-export interface URPMacro {
++interface URPMacro {
+   name: string;
+   description: string;
+   usage?: string;
+diff --git a/web/src/lib/subagentUi.ts b/web/src/lib/subagentUi.ts
+index 0614928..19a5b4d 100644
+--- a/web/src/lib/subagentUi.ts
++++ b/web/src/lib/subagentUi.ts
+@@ -8,13 +8,13 @@ export function inputString(input: unknown, key: string): string | undefined {
+   return typeof value === "string" && value.length > 0 ? value : undefined;
+ }
+ 
+-export function outputField(text: string, key: string): string | undefined {
++function outputField(text: string, key: string): string | undefined {
+   const match = new RegExp(`^${key}:\\s*(.+)$`, "m").exec(text);
+   const value = match?.[1]?.trim();
+   return value ? value : undefined;
+ }
+ 
+-export function countWaitIds(input: unknown): number | undefined {
++function countWaitIds(input: unknown): number | undefined {
+   if (!input || typeof input !== "object" || Array.isArray(input))
+     return undefined;
+   const ids = (input as Record<string, unknown>).ids;
+diff --git a/web/src/lib/theme.ts b/web/src/lib/theme.ts
+index 03f942c..a40d5d7 100644
+--- a/web/src/lib/theme.ts
++++ b/web/src/lib/theme.ts
+@@ -47,10 +47,3 @@ function syncDockviewTheme(name: ThemeName) {
+   const dvTheme = name === "light" ? "light" : "dark";
+   document.documentElement.setAttribute("data-dv-theme", dvTheme);
+ }
+-
+-/** Toggle between light and default themes. */
+-export function toggleTheme(): ThemeName {
+-  const next = getTheme() === "light" ? "default" : "light";
+-  setTheme(next);
+-  return next;
+-}
+diff --git a/web/src/lib/toolCategory.ts b/web/src/lib/toolCategory.ts
+index d36865e..4e9345d 100644
+--- a/web/src/lib/toolCategory.ts
++++ b/web/src/lib/toolCategory.ts
+@@ -1,4 +1,4 @@
+-export type ProcessToolBucket = "bash" | "edit" | "tool";
++type ProcessToolBucket = "bash" | "edit" | "tool";
+ 
+ /** Classify a tool call for ProcessGroup header bucketing. */
+ export function processToolBucket(name: string): ProcessToolBucket | null {
+diff --git a/web/src/lib/transcriptProjection.ts b/web/src/lib/transcriptProjection.ts
+index 2117553..90dd982 100644
+--- a/web/src/lib/transcriptProjection.ts
++++ b/web/src/lib/transcriptProjection.ts
+@@ -251,7 +251,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
+   return nodes;
+ }
+ 
+-export type NodeGroup = {
++type NodeGroup = {
+   type: "process" | "output" | "cut";
+   nodes: RenderNode[];
+ };
+@@ -354,7 +354,7 @@ export function canRevertFiles(
+ }
+ 
+ /** User message or transcript mark: a row that starts a new bubble by itself. */
+-export function isBarrierRow(row: HumanRow): boolean {
++function isBarrierRow(row: HumanRow): boolean {
+   return isHumanUserRow(row) || isTranscriptMarkRow(row);
+ }
+ 
+diff --git a/web/src/lib/uiCopy.ts b/web/src/lib/uiCopy.ts
+new file mode 100644
+index 0000000..b3990c9
+--- /dev/null
++++ b/web/src/lib/uiCopy.ts
+@@ -0,0 +1,5 @@
++/** Shared UI copy used in more than one place (WP-159 §3). */
++export const NO_MODELS_HINT =
++  "No models yet — add a provider key in Settings › Provider.";
++export const REMOTE_SERVE_HINT =
++  "Connected to a remote litecode serve (no local sidecar)";
+diff --git a/web/src/stores/bashStore.ts b/web/src/stores/bashStore.ts
+index 2dcea7a..f0a2f39 100644
+--- a/web/src/stores/bashStore.ts
++++ b/web/src/stores/bashStore.ts
+@@ -2,7 +2,7 @@ import { create } from "zustand";
+ 
+ import type { BashJob, BashJobsSnapshot, BashWait } from "../api/types";
+ 
+-export interface SessionBash {
++interface SessionBash {
+   jobs: BashJob[];
+   waits: BashWait[];
+ }
+diff --git a/web/src/stores/connectionStore.ts b/web/src/stores/connectionStore.ts
+index 9844c41..3d9d346 100644
+--- a/web/src/stores/connectionStore.ts
++++ b/web/src/stores/connectionStore.ts
+@@ -385,17 +385,6 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
+             return;
+           }
+ 
+-          case "session/compact_started": {
+-            const started = params as unknown as CompactLifecycle;
+-            session?.applySnapshot(started.snapshot);
+-            turn?.onCompactLifecycle?.({
+-              ...started,
+-              trigger: started.trigger ?? "manual",
+-              stage: "started",
+-            });
+-            return;
+-          }
+-
+           case "agent/operation_result": {
+             session?.onOperationResult(params as unknown as OperationResult);
+             return;
+diff --git a/web/src/stores/engineStore.ts b/web/src/stores/engineStore.ts
+index 6b88efd..ae9e7ea 100644
+--- a/web/src/stores/engineStore.ts
++++ b/web/src/stores/engineStore.ts
+@@ -77,7 +77,7 @@ function scheduleCatalogPoll(error?: unknown): void {
+   }, delay);
+ }
+ 
+-export function enginesFromDetail(
++function enginesFromDetail(
+   detail: EnginesDetail,
+ ): Record<string, EngineStatus> {
+   return {
+diff --git a/web/src/stores/explorerStore.ts b/web/src/stores/explorerStore.ts
+index b5c77a8..6943a3e 100644
+--- a/web/src/stores/explorerStore.ts
++++ b/web/src/stores/explorerStore.ts
+@@ -2,17 +2,17 @@ import { create } from "zustand";
+ 
+ import { remapPathPrefix } from "../utils/path";
+ 
+-export type ExplorerClipboard = {
++type ExplorerClipboard = {
+   mode: "cut" | "copy";
+   paths: string[];
+ };
+ 
+-export type InlineEdit =
++type InlineEdit =
+   | { kind: "rename"; path: string }
+   | { kind: "newFile"; parent: string }
+   | { kind: "newFolder"; parent: string };
+ 
+-export type ExplorerMenu = {
++type ExplorerMenu = {
+   x: number;
+   y: number;
+   /** Workspace path, or `null` for blank/root area. */
+diff --git a/web/src/stores/knowledgeStore.ts b/web/src/stores/knowledgeStore.ts
+index 8870bd6..0c8ffee 100644
+--- a/web/src/stores/knowledgeStore.ts
++++ b/web/src/stores/knowledgeStore.ts
+@@ -99,7 +99,7 @@ function localRefKeys(value: string): Set<string> {
+  * a citation that is no longer in the body loses its issue at once; nothing
+  * new is judged locally (new citations stay "checking" until the snapshot).
+  */
+-export function pruneEditedIssues(
++function pruneEditedIssues(
+   issues: KnowledgeIssue[],
+   node: KnowledgeNode,
+   statusPatched: boolean,
+@@ -134,16 +134,16 @@ export function projectListedNodes(
+   };
+ }
+ 
+-export type KnowledgeNodePatch = Partial<
++type KnowledgeNodePatch = Partial<
+   Pick<
+     KnowledgeNode,
+     "summary" | "value" | "relations" | "status" | "x" | "y" | "w" | "h"
+   >
+ >;
+ 
+-export type KnowledgeRenameResult = "ok" | "invalid" | "duplicate";
++type KnowledgeRenameResult = "ok" | "invalid" | "duplicate";
+ 
+-export type KnowledgeCreateResult = KnowledgeRenameResult | "error";
++type KnowledgeCreateResult = KnowledgeRenameResult | "error";
+ 
+ function sameNode(a: KnowledgeNode, b: KnowledgeNode): boolean {
+   return (
+diff --git a/web/src/stores/messageStore.ts b/web/src/stores/messageStore.ts
+index 08f5888..316de69 100644
+--- a/web/src/stores/messageStore.ts
++++ b/web/src/stores/messageStore.ts
+@@ -23,7 +23,7 @@ import { useToastStore } from "./toastStore";
+ 
+ const HISTORY_PAGE = 40;
+ 
+-export interface PendingUser {
++interface PendingUser {
+   clientId: string;
+   item: Item;
+ }
+@@ -45,7 +45,7 @@ export interface PendingQueueBubble {
+   images: string[];
+ }
+ 
+-export interface MessageSlice {
++interface MessageSlice {
+   /** Seq → row. Sorted projection is `messages`. */
+   bySeq: Map<number, HumanRow>;
+   messages: HumanRow[];
+@@ -84,7 +84,7 @@ export interface TurnEndNotice {
+   message: string;
+ }
+ 
+-export const EMPTY_DISPLAY: HumanRow[] = [];
++const EMPTY_DISPLAY: HumanRow[] = [];
+ 
+ export const EMPTY_SLICE: MessageSlice = {
+   bySeq: new Map(),
+diff --git a/web/src/stores/notificationStore.ts b/web/src/stores/notificationStore.ts
+index 798695e..b383e79 100644
+--- a/web/src/stores/notificationStore.ts
++++ b/web/src/stores/notificationStore.ts
+@@ -1,8 +1,8 @@
+ import { create } from "zustand";
+ 
+-export type NotificationKind = "info" | "error" | "success";
++type NotificationKind = "info" | "error" | "success";
+ 
+-export interface NotificationItem {
++interface NotificationItem {
+   id: string;
+   message: string;
+   kind: NotificationKind;
+diff --git a/web/src/stores/sessionStore.ts b/web/src/stores/sessionStore.ts
+index 81efe4c..0048013 100644
+--- a/web/src/stores/sessionStore.ts
++++ b/web/src/stores/sessionStore.ts
+@@ -65,7 +65,7 @@ function sessionControlsLocked(sessionId: string): boolean {
+   );
+ }
+ 
+-export interface SessionSlice {
++interface SessionSlice {
+   /** Sticky primary agent id — hydrated from snapshot.agent_id. */
+   activePrimary: string;
+   pendingPrimaryId: string | null;
+diff --git a/web/src/stores/settingsDocuments.ts b/web/src/stores/settingsDocuments.ts
+index fbeb92e..dab7933 100644
+--- a/web/src/stores/settingsDocuments.ts
++++ b/web/src/stores/settingsDocuments.ts
+@@ -61,7 +61,7 @@ export type McpDefItem = McpServerDefinition & {
+   origin?: ToolOrigin;
+ };
+ 
+-export type McpRuntimeItem = {
++type McpRuntimeItem = {
+   status?: McpRunState;
+   tools?: McpToolInfo[];
+   error?: string | null;
+@@ -79,7 +79,7 @@ export type PersistDocKey = Exclude<
+ 
+ export type SettingsDocClock = Partial<Record<SettingsDocument, number>>;
+ 
+-export const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
++const EVENT_DOC_TO_SETTINGS: Record<string, SettingsDocument[]> = {
+   // One LLM document id: catalog + providers + credentials + models.
+   llm: ["llm"],
+   agents: ["agents"],
+@@ -126,7 +126,7 @@ export interface SettingsDataProbe {
+   docClock: SettingsDocClock;
+ }
+ 
+-export function documentHasData(
++function documentHasData(
+   doc: SettingsDocument,
+   state: SettingsDataProbe,
+ ): boolean {
+@@ -165,10 +165,6 @@ export function sectionNeedsSkeleton(
+   });
+ }
+ 
+-export function isRevisionedDocument(doc: SettingsDocument): boolean {
+-  return doc !== "excludes";
+-}
+-
+ export function documentIsFresh(
+   doc: SettingsDocument,
+   state: { revision: number; docClock: SettingsDocClock },
+diff --git a/web/src/stores/settingsStore.ts b/web/src/stores/settingsStore.ts
+index 49c1210..90c85ab 100644
+--- a/web/src/stores/settingsStore.ts
++++ b/web/src/stores/settingsStore.ts
+@@ -63,7 +63,6 @@ import {
+ import {
+   documentIsFresh,
+   EXCLUDES_CLOCK,
+-  mergeLayeredMcp,
+   SECTION_DOCUMENTS,
+   sectionNeedsSkeleton,
+   settingsDocsForEvent,
+@@ -80,7 +79,7 @@ export type { PersistStatus, SettingsSection };
+ export { sectionNeedsSkeleton };
+ 
+ /** Deep-link extras for `openSettings` / `setSection`. */
+-export interface SettingsOpenOpts {
++interface SettingsOpenOpts {
+   /** Row id a section should centre and highlight once its data is loaded. */
+   anchor?: string;
+ }
+@@ -694,10 +693,3 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
+ });
+ 
+ attachSiblingStores({ settings: useSettingsStore });
+-
+-export function mcpServersFromStore(state: {
+-  mcpDefs: LayeredList<McpDefItem> | null;
+-  mcpRuntime: LayeredMcpRuntime | null;
+-}): LayeredList<McpServerItem> {
+-  return mergeLayeredMcp(state.mcpDefs, state.mcpRuntime);
+-}
+diff --git a/web/src/stores/telemetryStore.ts b/web/src/stores/telemetryStore.ts
+index e8b7deb..f812780 100644
+--- a/web/src/stores/telemetryStore.ts
++++ b/web/src/stores/telemetryStore.ts
+@@ -13,7 +13,7 @@ export function formatRssMb(rssKb: number): string {
+   return `${mb.toFixed(1)}M`;
+ }
+ 
+-export interface MemoryBreakdown {
++interface MemoryBreakdown {
+   totalKb: number | null;
+   coreKb: number | null;
+   embedKb: number | null;
+diff --git a/web/src/stores/toastStore.ts b/web/src/stores/toastStore.ts
+index 3d81429..7504254 100644
+--- a/web/src/stores/toastStore.ts
++++ b/web/src/stores/toastStore.ts
+@@ -2,7 +2,7 @@ import { create } from "zustand";
+ 
+ export type ToastVariant = "error" | "success" | "info";
+ 
+-export interface Toast {
++interface Toast {
+   id: string;
+   message: string;
+   variant: ToastVariant;
+diff --git a/web/src/stores/turnStore.ts b/web/src/stores/turnStore.ts
+index ebd919c..a7dea22 100644
+--- a/web/src/stores/turnStore.ts
++++ b/web/src/stores/turnStore.ts
+@@ -35,7 +35,7 @@ import { useMessageStore, type TurnEndNotice } from "./messageStore";
+ import { useNotificationStore } from "./notificationStore";
+ import { useToastStore } from "./toastStore";
+ 
+-export interface PendingPermission {
++interface PendingPermission {
+   turn_id: string;
+   request_id: string;
+   tool: string;
+@@ -101,15 +101,6 @@ export function emptySlice(): TurnSlice {
+   return { ...EMPTY_SLICE };
+ }
+ 
+-/** UI / callers: current ask is the FIFO head, or null when the queue is empty. */
+-export function headPermission(
+-  slice: TurnSlice | undefined | null,
+-): PendingPermission | null {
+-  const q = slice?.permissionQueue;
+-  return q && q.length > 0 ? q[0]! : null;
+-}
+-
+-
+ export const EMPTY_SLICE: TurnSlice = {
+   runState: "idle",
+   replaying: false,
+@@ -165,7 +156,7 @@ function todoPatchFromItems(
+   };
+ }
+ 
+-export interface ReplaySettings {
++interface ReplaySettings {
+   primaryId: string;
+   modelId: string;
+   thinkingTier: ThinkingTier;
+diff --git a/web/src/stores/workspaceChangeStore.ts b/web/src/stores/workspaceChangeStore.ts
+index a1d7941..c7a195a 100644
+--- a/web/src/stores/workspaceChangeStore.ts
++++ b/web/src/stores/workspaceChangeStore.ts
+@@ -3,7 +3,7 @@ import { create } from "zustand";
+ import type { WorkspaceChangeKind } from "../api/workspace";
+ 
+ /** Latest workspace change tick, for panels that must re-read a file. */
+-export interface WorkspaceChangeTick {
++interface WorkspaceChangeTick {
+   seq: number;
+   paths: string[];
+   kind: WorkspaceChangeKind;
+diff --git a/web/src/test/deathListGate.ts b/web/src/test/deathListGate.ts
+index 4664b8a..9c9619c 100644
+--- a/web/src/test/deathListGate.ts
++++ b/web/src/test/deathListGate.ts
+@@ -9,9 +9,9 @@ import { join, relative } from "node:path";
+ export const WEB_SRC = join(__dirname, "..");
+ 
+ /** Exact gate filenames only (e.g. `r5-death-list.test.ts`). */
+-export const DEATH_LIST_GATE_RE = /^[\w-]+-death-list\.test\.ts$/;
++const DEATH_LIST_GATE_RE = /^[\w-]+-death-list\.test\.ts$/;
+ 
+-export type CollectOptions = {
++type CollectOptions = {
+   /**
+    * When false (default), skip `*.test.ts(x)` — product-only gates.
+    * When true, still skip exact death-list gate files via DEATH_LIST_GATE_RE.
+diff --git a/web/src/lib/knowledge/fixture.ts b/web/src/test/fixtures/knowledge.ts
+similarity index 84%
+rename from web/src/lib/knowledge/fixture.ts
+rename to web/src/test/fixtures/knowledge.ts
+index c7e5513..9cc4a30 100644
+--- a/web/src/lib/knowledge/fixture.ts
++++ b/web/src/test/fixtures/knowledge.ts
+@@ -1,6 +1,6 @@
+-import { knowledgeFromFiles } from "./document";
+-import type { KnowledgeIssue } from "./types";
+-import { knowledgeCorpusFiles } from "./corpus";
++import { knowledgeFromFiles } from "../../lib/knowledge/document";
++import type { KnowledgeIssue } from "../../lib/knowledge/types";
++import { knowledgeCorpusFiles } from "../../lib/knowledge/corpus";
+ 
+ const indexed = knowledgeFromFiles(knowledgeCorpusFiles);
+ 
+diff --git a/web/src/theme/README.md b/web/src/theme/README.md
+index 146b342..610ddd5 100644
+--- a/web/src/theme/README.md
++++ b/web/src/theme/README.md
+@@ -69,9 +69,8 @@ it legible; all values come from the tokens above.
+ 
+ ## JS consumers (no dual source)
+ 
+-`theme/tokens.ts` exposes `readDkTokens()` (current theme) and
+-`readDkTokensForTheme("dark" | "light")` (specific theme, used to define both
+-Monaco themes up front). Both read `getComputedStyle` — no second copy.
++`theme/tokens.ts` exposes `readDkTokensForTheme("dark" | "light")` (used to
++define both Monaco themes up front). It reads `getComputedStyle` — no second copy.
+ 
+ - **Monaco** (`theme/monaco.ts`): both editor themes are derived from the live
+   tokens via `readDkTokensForTheme`.
+diff --git a/web/src/theme/dockview.css b/web/src/theme/dockview.css
+deleted file mode 100644
+index d10576f..0000000
+--- a/web/src/theme/dockview.css
++++ /dev/null
+@@ -1,133 +0,0 @@
+-/* ============================================
+-   dockview.css — dockview-react adapter
+-
+-   Maps --_dk-* design tokens to dockview's --dv-*
+-   CSS variables. Sources tokens from tokens.css.
+-   ============================================ */
+-
+-/* ═══ SURFACE MAPPING ═══ */
+-.litecode-dv-base {
+-  --dv-background-color:                              var(--_dk-root);
+-  --dv-group-view-background-color:                   var(--_dk-editor);
+-  --dv-tabs-and-actions-container-background-color:   var(--_dk-root);
+-
+-  --dv-activegroup-visiblepanel-tab-background-color:   var(--_dk-editor);
+-  --dv-activegroup-hiddenpanel-tab-background-color:    var(--_dk-root);
+-  --dv-inactivegroup-visiblepanel-tab-background-color: var(--_dk-editor);
+-  --dv-inactivegroup-hiddenpanel-tab-background-color:  var(--_dk-root);
+-
+-  /* ═══ TEXT ═══ */
+-  --dv-activegroup-visiblepanel-tab-color:      var(--_dk-text-primary);
+-  --dv-activegroup-hiddenpanel-tab-color:       var(--_dk-text-muted);
+-  --dv-inactivegroup-visiblepanel-tab-color:    var(--_dk-text-secondary);
+-  --dv-inactivegroup-hiddenpanel-tab-color:     var(--_dk-text-disabled);
+-
+-  /* ═══ LINES ═══ */
+-  --dv-separator-border:             var(--_dk-line);
+-  --dv-tab-divider-color:            transparent;
+-  --dv-paneview-header-border-color: transparent;
+-  --dv-floating-border:              none;
+-  --dv-floating-group-border:        none;
+-  --dv-floating-titlebar-border-bottom: 1px solid var(--_dk-line);
+-  --dv-drag-over-border:             1px solid var(--_dk-accent);
+-
+-  /* ═══ INTERACTIVE ═══ */
+-  --dv-tab-close-icon:              var(--_dk-text-muted);
+-  --dv-icon-hover-background-color: var(--_dk-line);
+-  --dv-active-sash-color:           var(--_dk-accent);
+-  --dv-sash-color:                  transparent;
+-  --dv-paneview-active-outline-color: var(--_dk-accent);
+-  --dv-drag-over-background-color:  var(--_dk-accent-glow);
+-  --dv-drag-over-border-color:      var(--_dk-accent);
+-  --dv-tab-close-icon-size:         10px;
+-
+-  /* ═══ SHAPES ═══ */
+-  --dv-border-radius:                 0px;
+-  --dv-tab-border-radius:             3px;
+-  --dv-sash-border-radius:            3px;
+-  --dv-dropdown-border-radius:        10px;
+-  --dv-tab-group-chip-border-radius:  9999px;
+-
+-  /* ═══ SPACING ═══ */
+-  --dv-tabs-and-actions-container-height:       34px;
+-  --dv-tabs-and-actions-container-font-size:    12px;
+-  --dv-tab-font-size:                           12px;
+-  --dv-tab-margin:                              0;
+-  --dv-spacing-padding:                         8px;
+-  --dv-tab-group-chip-padding:                  2px 6px;
+-  --dv-tab-group-chip-font-size:                10px;
+-  --dv-tab-group-line-height:                   1.0;
+-  --dv-tab-group-line-opacity:                  0.35;
+-
+-  /* ═══ ELEVATION ═══ */
+-  --dv-floating-box-shadow:               var(--_dk-elevation);
+-  --dv-floating-group-dragging-opacity:   0.9;
+-  --dv-floating-titlebar-background-color: var(--_dk-float);
+-  --dv-floating-titlebar-height:          34px;
+-
+-  /* ═══ CONTEXT MENU ═══ */
+-  --dv-context-menu-background-color: var(--_dk-overlay);
+-  --dv-context-menu-color:            var(--_dk-text-primary);
+-
+-  /* ═══ TAB GROUP CHIPS ═══ */
+-  --dv-tab-group-color:        var(--_dk-accent);
+-  --dv-tab-group-color-blue:   #1a85ff;
+-  --dv-tab-group-color-cyan:   #06b6d4;
+-  --dv-tab-group-color-green:  #22c55e;
+-  --dv-tab-group-color-grey:   var(--_dk-text-muted);
+-  --dv-tab-group-color-orange: #f97316;
+-  --dv-tab-group-color-pink:   #ec4899;
+-  --dv-tab-group-color-purple: #a855f7;
+-  --dv-tab-group-color-red:    #ef4444;
+-  --dv-tab-group-color-yellow: #eab308;
+-
+-  /* ═══ SCROLLBAR ═══ */
+-  --dv-scrollbar-background-color:       transparent;
+-  --dv-tabs-container-scrollbar-color:   var(--_dk-text-disabled);
+-
+-  /* ═══ MISC ═══ */
+-  --dv-overlay-z-index:                   999;
+-  --dv-transition-duration:               120ms;
+-  --dv-active-sash-transition-duration:   200ms;
+-  --dv-active-sash-transition-delay:      0ms;
+-}
+-
+-/* ═══ EDGE GROUPS ═══ */
+-.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container {
+-  background-color: var(--_dk-side);
+-}
+-.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-content-container {
+-  background-color: var(--_dk-sidepanel);
+-}
+-.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-active-tab {
+-  background-color: var(--_dk-sidepanel);
+-}
+-.litecode-dv-base .dv-groupview.dv-groupview-edge > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab.dv-inactive-tab {
+-  background-color: var(--_dk-side);
+-}
+-
+-.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed,
+-.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-tabs-and-actions-container {
+-  background-color: var(--_dk-side);
+-}
+-.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-content-container {
+-  display: none;
+-}
+-.litecode-dv-base .dv-groupview.dv-groupview-edge.dv-edge-collapsed > .dv-tabs-and-actions-container .dv-tabs-container > .dv-tab {
+-  background-color: var(--_dk-side);
+-}
+-
+-/* ═══ SASH ═══ */
+-.litecode-dv-base .dv-sash:hover,
+-.litecode-dv-base .dv-sash.dv-sash-hover {
+-  background-color: var(--_dk-line-visible);
+-}
+-
+-/* ═══ TITLEBAR CLOSE ═══ */
+-.lc-titlebar-close {
+-  color: inherit;
+-}
+-.lc-titlebar-close:hover {
+-  color: var(--_dk-close-hover-color);
+-  background: var(--_dk-close-hover-bg);
+-}
+diff --git a/web/src/theme/dockview.ts b/web/src/theme/dockview.ts
+deleted file mode 100644
+index 6b1faff..0000000
+--- a/web/src/theme/dockview.ts
++++ /dev/null
+@@ -1,5 +0,0 @@
+-export {
+-  DOCKVIEW_CLASS,
+-  LITECODE_THEME,
+-  dockviewThemeForApp,
+-} from "./dockview/adapter";
+diff --git a/web/src/theme/mermaid.ts b/web/src/theme/mermaid.ts
+index d87d48e..bb5f4e1 100644
+--- a/web/src/theme/mermaid.ts
++++ b/web/src/theme/mermaid.ts
+@@ -69,7 +69,7 @@ function luminance([r, g, b]: [number, number, number]): number {
+  * clashed. Colors are emitted as concrete `rgb()`/`rgba()` strings because
+  * mermaid's parser rejects `color-mix()` and `var()`.
+  */
+-export function buildMermaidThemeVariables(
++function buildMermaidThemeVariables(
+   tokens: DkTokens,
+   darkMode: boolean,
+ ): Record<string, string | boolean> {
+@@ -214,7 +214,7 @@ export function buildMermaidThemeVariables(
+   };
+ }
+ 
+-export const LITECODE_MERMAID_INIT = {
++const LITECODE_MERMAID_INIT = {
+   startOnLoad: false,
+   securityLevel: "strict" as const,
+   flowchart: {
+diff --git a/web/src/theme/monaco.ts b/web/src/theme/monaco.ts
+index 6c54493..3690424 100644
+--- a/web/src/theme/monaco.ts
++++ b/web/src/theme/monaco.ts
+@@ -174,7 +174,7 @@ function semanticTokenRules(
+  * Monaco editor colors — derived from the live dark theme tokens:
+  *   background: t.editor   widget bg: t.overlay
+  */
+-export function defineMonacoThemeDark(monaco: Monaco): void {
++function defineMonacoThemeDark(monaco: Monaco): void {
+   const t = readDkTokensForTheme("dark");
+   monaco.editor.defineTheme(LITECODE_MONACO_THEME_DARK, {
+     base: "vs-dark",
+@@ -188,7 +188,7 @@ export function defineMonacoThemeDark(monaco: Monaco): void {
+  * Light Monaco theme — derived from the live light theme tokens.
+  * Colors are normalized to hex so setTheme does not blank the editor.
+  */
+-export function defineMonacoThemeLight(monaco: Monaco): void {
++function defineMonacoThemeLight(monaco: Monaco): void {
+   const t = readDkTokensForTheme("light");
+   monaco.editor.defineTheme(LITECODE_MONACO_THEME_LIGHT, {
+     base: "vs",
+diff --git a/web/src/theme/tokens.ts b/web/src/theme/tokens.ts
+index f2c90a2..46eae31 100644
+--- a/web/src/theme/tokens.ts
++++ b/web/src/theme/tokens.ts
+@@ -85,13 +85,6 @@ function resolveFont(raw: string, cs: CSSStyleDeclaration): string {
+   return raw;
+ }
+ 
+-/** Read tokens for the currently active theme from the live document. */
+-export function readDkTokens(
+-  root: HTMLElement = document.documentElement,
+-): DkTokens {
+-  return readVars(root);
+-}
+-
+ /**
+  * Read tokens for a specific theme even if it is not currently active.
+  * Temporarily flips the document theme attribute and restores it within the
+diff --git a/web/src/utils/turnPhase.ts b/web/src/utils/turnPhase.ts
+deleted file mode 100644
+index f72d67c..0000000
+--- a/web/src/utils/turnPhase.ts
++++ /dev/null
+@@ -1,40 +0,0 @@
+-import type { TurnPhase } from "../api/types";
+-
+-export function formatTurnPhase(phase: TurnPhase): string {
+-  if (phase === "idle") return "Idle";
+-  if (phase === "starting") return "Starting";
+-  if (phase === "compacting") return "Compacting";
+-  if (phase === "calling_llm") return "Calling LLM";
+-  if (phase === "streaming") return "Streaming";
+-  if (phase === "executing_tools") return "Executing tools";
+-  if (phase === "cancelling") return "Cancelling";
+-  if (phase === "finalizing") return "Finalizing";
+-  if (
+-    typeof phase === "object" &&
+-    phase !== null &&
+-    "awaiting_permission" in phase
+-  ) {
+-    return `Awaiting permission: ${phase.awaiting_permission.tool}`;
+-  }
+-  if (typeof phase === "object" && phase !== null && "failed" in phase) {
+-    return `Failed (${phase.failed.code})`;
+-  }
+-  return "Unknown";
+-}
+-
+-export function turnPhaseTone(
+-  phase: TurnPhase,
+-): "neutral" | "active" | "warning" | "danger" {
+-  if (phase === "cancelling") return "warning";
+-  if (typeof phase === "object" && phase !== null && "failed" in phase)
+-    return "danger";
+-  if (
+-    typeof phase === "object" &&
+-    phase !== null &&
+-    "awaiting_permission" in phase
+-  ) {
+-    return "warning";
+-  }
+-  if (phase === "idle") return "neutral";
+-  return "active";
+-}

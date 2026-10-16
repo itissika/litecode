@@ -54,6 +54,8 @@ import type { WorkspaceChangeKind } from "../api/workspace";
 import { anyTurnRunning } from "./turnStore";
 import { useToastStore } from "./toastStore";
 import { noteTransportReady } from "../lib/centreChat";
+import { whenCentreSettled } from "../lib/centreSettle";
+import { whenIdle } from "../lib/idle";
 import { noteHello } from "../lib/firstRun";
 import {
   flushRegisteredSettings,
@@ -63,7 +65,6 @@ import {
 import {
   documentIsFresh,
   EXCLUDES_CLOCK,
-  mergeLayeredMcp,
   SECTION_DOCUMENTS,
   sectionNeedsSkeleton,
   settingsDocsForEvent,
@@ -80,7 +81,7 @@ export type { PersistStatus, SettingsSection };
 export { sectionNeedsSkeleton };
 
 /** Deep-link extras for `openSettings` / `setSection`. */
-export interface SettingsOpenOpts {
+interface SettingsOpenOpts {
   /** Row id a section should centre and highlight once its data is loaded. */
   anchor?: string;
 }
@@ -421,6 +422,10 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       // Socket is up. An empty centre opens a chat without waiting on the
       // summary — a failed fetch must not leave the grid blank.
       noteTransportReady();
+      // The summary (first-run → Provider page) waits until the centre has
+      // settled and the browser is idle; it is not first-screen work.
+      await whenCentreSettled();
+      await whenIdle();
       try {
         const summary = await getSettingsSummary();
         set({
@@ -694,10 +699,3 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
 });
 
 attachSiblingStores({ settings: useSettingsStore });
-
-export function mcpServersFromStore(state: {
-  mcpDefs: LayeredList<McpDefItem> | null;
-  mcpRuntime: LayeredMcpRuntime | null;
-}): LayeredList<McpServerItem> {
-  return mergeLayeredMcp(state.mcpDefs, state.mcpRuntime);
-}

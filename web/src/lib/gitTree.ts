@@ -1,13 +1,13 @@
 import type { GitFile } from "../api/workspace";
 
-export type GitTreeDir = {
+type GitTreeDir = {
   kind: "dir";
   name: string;
   path: string;
   children: GitTreeNode[];
 };
 
-export type GitTreeFile = {
+type GitTreeFile = {
   kind: "file";
   name: string;
   file: GitFile;

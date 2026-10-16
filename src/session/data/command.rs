@@ -200,6 +200,13 @@ pub enum SessionMutation {
         operation_id: MutationId,
         meter: SessionContextMeter,
     },
+    /// Replace the durable pending-permissions list for a session (WP-186).
+    SavePendingPermissions {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        pending: Vec<crate::session::pending::PendingPermissionRecord>,
+    },
     SetAgent {
         session_id: String,
         expected_revision: u64,
@@ -248,6 +255,7 @@ impl SessionMutation {
             | Self::Compact { operation_id, .. }
             | Self::SaveTaskState { operation_id, .. }
             | Self::SaveContextMeter { operation_id, .. }
+            | Self::SavePendingPermissions { operation_id, .. }
             | Self::SetAgent { operation_id, .. }
             | Self::SetModel { operation_id, .. }
             | Self::SetThinkingTier { operation_id, .. }
@@ -272,6 +280,7 @@ impl SessionMutation {
             | Self::Compact { session_id, .. }
             | Self::SaveTaskState { session_id, .. }
             | Self::SaveContextMeter { session_id, .. }
+            | Self::SavePendingPermissions { session_id, .. }
             | Self::SetAgent { session_id, .. }
             | Self::SetModel { session_id, .. }
             | Self::SetThinkingTier { session_id, .. }
@@ -322,6 +331,9 @@ impl SessionMutation {
             | Self::SaveContextMeter {
                 expected_revision, ..
             }
+            | Self::SavePendingPermissions {
+                expected_revision, ..
+            }
             | Self::SetAgent {
                 expected_revision, ..
             }
@@ -344,6 +356,10 @@ impl SessionMutation {
 #[derive(Debug, Clone)]
 pub enum SessionRead {
     Meta {
+        session_id: String,
+    },
+    /// WP-186 durable pending user-gate asks.
+    PendingPermissions {
         session_id: String,
     },
     Transcript {
@@ -500,5 +516,7 @@ pub enum ReadValue {
     RequestOrigins(Vec<(i64, serde_json::Value)>),
     SpineReminders(crate::reminder::SpineReminderView),
     Changes(Vec<SessionChange>),
+    /// WP-186 durable pending user-gate asks.
+    PendingPermissions(Vec<crate::session::pending::PendingPermissionRecord>),
     Empty,
 }

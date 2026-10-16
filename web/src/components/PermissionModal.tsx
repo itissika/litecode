@@ -7,7 +7,6 @@ import { glyphFor } from "./ToolIcon";
 
 /** The receipt of a human Ask lives with the board that shapes it; this module is
  *  where the ask cards are known from, so it stays reachable from here. */
-export type { PermissionGrantOpts } from "./AskCard";
 
 interface PermissionCardProps {
   tool: string;
