@@ -1531,7 +1531,11 @@ mod tests {
                     .refname_to_id(&snapshot_ref("s", 0))
                     .unwrap()
             };
-            assert_eq!(tree(&cold_snaps), tree(&warm_snaps), "same tree either order");
+            assert_eq!(
+                tree(&cold_snaps),
+                tree(&warm_snaps),
+                "same tree either order"
+            );
         });
     }
 

@@ -1556,9 +1556,7 @@ fn apply_permission_grant(
 }
 
 /// Cancel / Stop: resolve outstanding Asks as Aborted (WP-186; not user Skip).
-fn abort_all_pending_asks(
-    pending_asks: &mut HashMap<String, PendingAsk>,
-) -> Vec<(String, String)> {
+fn abort_all_pending_asks(pending_asks: &mut HashMap<String, PendingAsk>) -> Vec<(String, String)> {
     pending_asks
         .drain()
         .map(|(_, pending)| {
@@ -2113,7 +2111,10 @@ mod compact_error_tests {
 
 #[cfg(test)]
 mod pending_ask_tests {
-    use super::{GrantApply, PendingAsk, abort_all_pending_asks, apply_permission_grant, retain_pending_on_disconnect};
+    use super::{
+        GrantApply, PendingAsk, abort_all_pending_asks, apply_permission_grant,
+        retain_pending_on_disconnect,
+    };
     use crate::permission::{AskOutcome, AskReply};
     use std::collections::HashMap;
     use tokio::sync::oneshot;

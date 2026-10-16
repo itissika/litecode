@@ -819,7 +819,10 @@ mod tests {
         let state = load_workspace_state(Some(dir.path())).unwrap();
         let repo = git2::Repository::open_bare(&state.paths.snapshots_dir)
             .expect("default load warms the snapshot repo");
-        assert!(!repo.index().unwrap().is_empty(), "warm populated the index");
+        assert!(
+            !repo.index().unwrap().is_empty(),
+            "warm populated the index"
+        );
     }
 
     #[test]

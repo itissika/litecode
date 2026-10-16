@@ -290,7 +290,10 @@ pub(crate) fn spawn_snapshot_upkeep(state: &ServeState) -> tokio::task::JoinHand
             tracing::warn!(error = %e, "snapshot warm failed");
         }
         match crate::session::snapshot::maintain_snapshots(&workspace_root, &snapshots_dir, || {
-            sessions.data().list_session_ids_blocking().unwrap_or_default()
+            sessions
+                .data()
+                .list_session_ids_blocking()
+                .unwrap_or_default()
         }) {
             Ok(report) if report.orphans_removed > 0 || report.stale_removed > 0 => {
                 tracing::info!(

@@ -687,8 +687,7 @@ pub(crate) async fn build_session_list(
         {
             (String::new(), None)
         } else {
-            match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id)
-            {
+            match crate::client_protocol::status_track::latest_turn_end(&sessions_mgr, &row.id) {
                 Some(end) => (end.reason, end.cancelled_by),
                 None => (String::new(), None),
             }

@@ -86,9 +86,7 @@ fn serve_run_does_not_sweep_inline() {
     let engines = body
         .find("WorkspaceEngines::new")
         .expect("WorkspaceEngines::new creates LspHub");
-    let state = body
-        .find("ServeState::new")
-        .expect("ServeState::new");
+    let state = body.find("ServeState::new").expect("ServeState::new");
     assert!(
         start < engines && start < state,
         "start_background must precede ServeState and LspHub construction"

@@ -179,7 +179,6 @@ impl SessionData {
         }
     }
 
-
     /// WP-186: load durable pending permissions for a session.
     pub fn pending_permissions_blocking(
         &self,

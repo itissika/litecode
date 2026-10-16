@@ -343,7 +343,11 @@ fn warmup_and_refresh_follow_disk_excludes() {
     init_workspace_index(root).unwrap();
     std::fs::write(root.join("keep.rs"), "pub fn keep_unique_symbol() {}\n").unwrap();
     std::fs::write(root.join("other.rs"), "pub fn other_unique_symbol() {}\n").unwrap();
-    std::fs::write(root.join("secret.py"), "def secret_unique_symbol():\n    pass\n").unwrap();
+    std::fs::write(
+        root.join("secret.py"),
+        "def secret_unique_symbol():\n    pass\n",
+    )
+    .unwrap();
 
     let mut lists = litecode::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
     lists.search_exclude.push("other.rs".into());
@@ -379,7 +383,9 @@ fn warmup_and_refresh_follow_disk_excludes() {
 
     lists.code_index_extensions.retain(|e| e != "py");
     litecode::workspace::filter::persist_workspace_excludes(root, &lists).unwrap();
-    client.refresh().expect("refresh after narrowing extensions");
+    client
+        .refresh()
+        .expect("refresh after narrowing extensions");
     let secret = client.search("secret_unique_symbol", None, 8).unwrap();
     assert!(
         secret.iter().all(|h| !h.path.contains("secret.py")),

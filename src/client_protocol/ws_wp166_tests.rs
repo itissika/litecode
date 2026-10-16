@@ -99,7 +99,10 @@ fn seeded_session(state: &ServeState, text: &str) -> String {
 }
 
 async fn connect(url: &str) -> Socket {
-    tokio_tungstenite::connect_async(url).await.expect("connect").0
+    tokio_tungstenite::connect_async(url)
+        .await
+        .expect("connect")
+        .0
 }
 
 async fn send(ws: &mut Socket, id: u64, method: &str, params: Value) {
@@ -187,13 +190,23 @@ async fn session_list_not_blocked_by_inflight_subscribe() {
         before_list.iter().all(|f| reply_id(f) != Some(1)),
         "subscribe reply must not precede the list reply while replay is parked"
     );
-    assert!(listed_ids(&list).contains(&sid), "list must include the session");
-    assert!(env.state.sessions.is_startup_settled(), "list reply marks startup settled");
+    assert!(
+        listed_ids(&list).contains(&sid),
+        "list must include the session"
+    );
+    assert!(
+        env.state.sessions.is_startup_settled(),
+        "list reply marks startup settled"
+    );
 
     gate.release.add_permits(1);
     let (sub, before_sub) = until_reply(&mut ws, 1).await;
     assert!(sub.get("error").is_none(), "subscribe ok: {sub}");
-    assert_eq!(snapshot_for(&before_sub, &sid).len(), 1, "one Snapshot before the reply");
+    assert_eq!(
+        snapshot_for(&before_sub, &sid).len(),
+        1,
+        "one Snapshot before the reply"
+    );
 }
 
 /// T1-2: the fast-path list equals the controller's list row for row, including
@@ -211,9 +224,10 @@ async fn session_list_fastlane_matches_controller_list() {
     let (reply, _) = until_reply(&mut ws, 1).await;
 
     let resolved = env.state.runtime.read().unwrap().resolved.clone();
-    let direct = crate::client_protocol::controller::build_session_list(&env.state.sessions, &resolved)
-        .await
-        .expect("direct list");
+    let direct =
+        crate::client_protocol::controller::build_session_list(&env.state.sessions, &resolved)
+            .await
+            .expect("direct list");
     assert_eq!(
         reply.pointer("/result/sessions").cloned().unwrap(),
         serde_json::to_value(&direct).unwrap(),
@@ -252,9 +266,16 @@ async fn subscribe_replay_frames_unchanged_with_concurrent_list() {
     let b_snap = snapshot_for(&b_frames, &sid);
     assert_eq!(a_snap.len(), 1);
     assert_eq!(b_snap.len(), 1);
-    assert_eq!(a_snap[0], b_snap[0], "Snapshot content (incl. seq cursor) unchanged");
+    assert_eq!(
+        a_snap[0], b_snap[0],
+        "Snapshot content (incl. seq cursor) unchanged"
+    );
     let next_seq = b_snap[0].pointer("/params/buffer/next_seq");
-    assert!(next_seq.is_some(), "Snapshot exposes the seq cursor: {}", b_snap[0]);
+    assert!(
+        next_seq.is_some(),
+        "Snapshot exposes the seq cursor: {}",
+        b_snap[0]
+    );
 }
 
 /// T1-5: nothing a subscribe produced is held back by the fast list: after the
@@ -297,7 +318,13 @@ async fn subscribe_unsubscribe_order_preserved_with_list() {
     let sid = seeded_session(&env.state, "order");
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/subscribe", json!({"session_id": sid})).await;
-    send(&mut ws, 2, "session/unsubscribe", json!({"session_id": sid})).await;
+    send(
+        &mut ws,
+        2,
+        "session/unsubscribe",
+        json!({"session_id": sid}),
+    )
+    .await;
     send(&mut ws, 3, "session/list", json!({})).await;
     send(&mut ws, 4, "session/subscribe", json!({"session_id": sid})).await;
     let mut frames = Vec::new();
@@ -305,7 +332,10 @@ async fn subscribe_unsubscribe_order_preserved_with_list() {
         frames.push(next_frame(&mut ws).await);
     }
     let pos = |id| frames.iter().position(|f| reply_id(f) == Some(id)).unwrap();
-    assert!(pos(1) < pos(2) && pos(2) < pos(4), "loop order kept: {frames:?}");
+    assert!(
+        pos(1) < pos(2) && pos(2) < pos(4),
+        "loop order kept: {frames:?}"
+    );
     let snaps: Vec<usize> = frames
         .iter()
         .enumerate()
@@ -330,19 +360,17 @@ async fn session_list_error_emits_operation_error_and_rpc_error() {
         .paths
         .sessions_db
         .clone();
-    crate::session::data::sqlite::test_support::rename_sessions_table(
-        &db,
-        "sessions_wp166_gone",
-    );
+    crate::session::data::sqlite::test_support::rename_sessions_table(&db, "sessions_wp166_gone");
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/list", json!({})).await;
     let (reply, before) = until_reply(&mut ws, 1).await;
-    assert_eq!(reply.pointer("/error/code").and_then(Value::as_i64), Some(-32000));
+    assert_eq!(
+        reply.pointer("/error/code").and_then(Value::as_i64),
+        Some(-32000)
+    );
     assert!(
-        before
-            .iter()
-            .any(|f| f.pointer("/params/op").is_some()
-                && f.pointer("/params/ok") == Some(&Value::Bool(false))),
+        before.iter().any(|f| f.pointer("/params/op").is_some()
+            && f.pointer("/params/ok") == Some(&Value::Bool(false))),
         "operation error frame precedes the rpc error: {before:?}"
     );
 }
@@ -355,13 +383,20 @@ async fn serve_state_does_not_run_snapshot_maintenance_inline() {
     let env = env().await;
     let (root, snaps) = {
         let rt = env.state.runtime.read().unwrap();
-        (rt.workspace.workspace_root.clone(), rt.workspace.paths.snapshots_dir.clone())
+        (
+            rt.workspace.workspace_root.clone(),
+            rt.workspace.paths.snapshots_dir.clone(),
+        )
     };
     std::fs::write(root.join("a.txt"), "v0").unwrap();
     crate::session::snapshot::snapshot_track(&root, &snaps, "orphan-wp166", 0).unwrap();
     // A second ServeState over the same workspace would have pruned inline
     // before WP-166; construction alone must now leave the orphan alone.
-    assert!(crate::session::snapshot::snapshot_exists(&snaps, "orphan-wp166", 0));
+    assert!(crate::session::snapshot::snapshot_exists(
+        &snaps,
+        "orphan-wp166",
+        0
+    ));
 
     crate::serve::router::spawn_snapshot_upkeep(&env.state)
         .await
@@ -381,12 +416,18 @@ async fn startup_settled_fires_on_first_new_reply_only() {
     let sessions = env.state.sessions.clone();
     let waiter = tokio::spawn(async move { sessions.wait_startup_settled().await });
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(!waiter.is_finished(), "nothing settles startup before a list/new reply");
+    assert!(
+        !waiter.is_finished(),
+        "nothing settles startup before a list/new reply"
+    );
 
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/new", json!({})).await;
     let (reply, _) = until_reply(&mut ws, 1).await;
-    assert!(reply.pointer("/result/session_id").is_some(), "new ok: {reply}");
+    assert!(
+        reply.pointer("/result/session_id").is_some(),
+        "new ok: {reply}"
+    );
     tokio::time::timeout(Duration::from_secs(5), waiter)
         .await
         .expect("settled after new reply")
@@ -405,7 +446,15 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
         .create_session("/proj", "default", None)
         .expect("stale empty");
     let kept = seeded_session(&env.state, "has rows");
-    let db = env.state.runtime.read().unwrap().workspace.paths.sessions_db.clone();
+    let db = env
+        .state
+        .runtime
+        .read()
+        .unwrap()
+        .workspace
+        .paths
+        .sessions_db
+        .clone();
     crate::session::data::sqlite::test_support::set_sessions_updated_at(
         &db,
         &[&stale_empty, &kept],
@@ -414,7 +463,10 @@ async fn gc_stale_empty_sessions_deferred_until_settled() {
 
     let gc = crate::serve::router::spawn_empty_session_gc(env.state.sessions.clone());
     tokio::time::sleep(Duration::from_millis(500)).await;
-    assert!(data.meta_blocking(&stale_empty).is_ok(), "no GC before settled");
+    assert!(
+        data.meta_blocking(&stale_empty).is_ok(),
+        "no GC before settled"
+    );
 
     let mut ws = connect(&env.url).await;
     send(&mut ws, 1, "session/list", json!({})).await;
@@ -441,14 +493,26 @@ async fn startup_settled_fires_without_list_or_new() {
     let url = format!("{}&session={sid}", env1.url);
     let mut ws = connect(&url).await;
     assert!(!env1.state.sessions.is_startup_settled());
-    send(&mut ws, 1, "agent/run", json!({"session_id": sid, "input": ""})).await;
+    send(
+        &mut ws,
+        1,
+        "agent/run",
+        json!({"session_id": sid, "input": ""}),
+    )
+    .await;
     let _ = until_reply(&mut ws, 1).await;
-    assert!(env1.state.sessions.is_startup_settled(), "first agent/run settles startup");
+    assert!(
+        env1.state.sessions.is_startup_settled(),
+        "first agent/run settles startup"
+    );
 
     // HTTP-only retrieval search, no WS at all.
     let env = env().await;
     assert!(!env.state.sessions.is_startup_settled());
-    let http = env.url.replace("ws://", "http://").replace("/ws?token=", "/api/workspace/retrieval/search?token=");
+    let http = env
+        .url
+        .replace("ws://", "http://")
+        .replace("/ws?token=", "/api/workspace/retrieval/search?token=");
     let _ = reqwest::Client::new()
         .post(&http)
         .bearer_auth(TOKEN)
@@ -456,5 +520,8 @@ async fn startup_settled_fires_without_list_or_new() {
         .send()
         .await
         .expect("http search");
-    assert!(env.state.sessions.is_startup_settled(), "first retrieval search settles startup");
+    assert!(
+        env.state.sessions.is_startup_settled(),
+        "first retrieval search settles startup"
+    );
 }

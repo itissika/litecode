@@ -126,9 +126,16 @@ impl ToolPipeline {
                     if is_cancelled() || cancel.is_cancelled() {
                         // Signal is already set. Join remaining tasks so cancellable
                         // tools can kill their process trees; do not abort-and-forget.
-                        self.join_tool_handle(handle, &captured_id, &mut results_by_id, invocations).await;
+                        self.join_tool_handle(
+                            handle,
+                            &captured_id,
+                            &mut results_by_id,
+                            invocations,
+                        )
+                        .await;
                         for (id, remaining) in iter {
-                            self.join_tool_handle(remaining, &id, &mut results_by_id, invocations).await;
+                            self.join_tool_handle(remaining, &id, &mut results_by_id, invocations)
+                                .await;
                         }
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
                         return Err(crate::types::LitecodeError::Canceled);
@@ -139,8 +146,13 @@ impl ToolPipeline {
                             results_by_id.insert(tool_use_id, result);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
-                                    self.join_tool_handle(remaining, &id, &mut results_by_id, invocations)
-                                        .await;
+                                    self.join_tool_handle(
+                                        remaining,
+                                        &id,
+                                        &mut results_by_id,
+                                        invocations,
+                                    )
+                                    .await;
                                 }
                                 self.append_cancelled_outputs(
                                     invocations,
@@ -161,12 +173,8 @@ impl ToolPipeline {
                                 .find(|c| c.call_id == captured_id)
                                 .map(|c| c.name.as_str())
                                 .unwrap_or("unknown");
-                            let mut event = AuditEvent::new(
-                                "panic",
-                                &self.session_id,
-                                tool_name,
-                                &captured_id,
-                            );
+                            let mut event =
+                                AuditEvent::new("panic", &self.session_id, tool_name, &captured_id);
                             event.ok = Some(false);
                             event.error_kind = Some("panic".into());
                             let msg = format!("tool execution task panicked: {join_err}");
@@ -286,12 +294,7 @@ impl ToolPipeline {
                     .find(|c| c.call_id == captured_id)
                     .map(|c| c.name.as_str())
                     .unwrap_or("unknown");
-                let mut event = AuditEvent::new(
-                    "panic",
-                    &self.session_id,
-                    tool_name,
-                    captured_id,
-                );
+                let mut event = AuditEvent::new("panic", &self.session_id, tool_name, captured_id);
                 event.ok = Some(false);
                 event.error_kind = Some("panic".into());
                 let msg = format!("tool execution task panicked: {join_err}");

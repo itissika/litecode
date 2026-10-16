@@ -1569,10 +1569,7 @@ impl SessionManager {
     }
 
     /// WP-186: upsert one pending ask in memory + durable sidecar.
-    pub fn upsert_pending_permission(
-        &self,
-        rec: crate::session::pending::PendingPermissionRecord,
-    ) {
+    pub fn upsert_pending_permission(&self, rec: crate::session::pending::PendingPermissionRecord) {
         let session_id = rec.session_id.clone();
         let mut records = self.records.lock().unwrap();
         let Some(record) = records.get_mut(&session_id) else {
@@ -1647,11 +1644,10 @@ impl SessionManager {
         record.pending_permissions.clear();
         let expected = record.revision;
         drop(records);
-        if let Err(e) = self.data.save_pending_permissions_blocking(
-            session_id,
-            expected,
-            Vec::new(),
-        ) {
+        if let Err(e) =
+            self.data
+                .save_pending_permissions_blocking(session_id, expected, Vec::new())
+        {
             tracing::warn!(error = %e, session_id, "persist clear pending_permissions failed");
         } else if let Ok(rev) = self.data.revision_blocking(session_id) {
             if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
@@ -1659,7 +1655,6 @@ impl SessionManager {
             }
         }
     }
-
 
     pub fn has_pending_messages(&self, session_id: &str) -> bool {
         self.records

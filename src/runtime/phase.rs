@@ -297,8 +297,10 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         // Production order: Phase outer, Cancelling inner (mod.rs wrap chain).
-        let cancelling: Arc<dyn PermissionSink> =
-            Arc::new(CancellingPermissionSink::new(allow_inner.clone(), cancel.clone()));
+        let cancelling: Arc<dyn PermissionSink> = Arc::new(CancellingPermissionSink::new(
+            allow_inner.clone(),
+            cancel.clone(),
+        ));
         let sink = wrap_with(cancelling, observer.clone(), 5);
 
         let reply = sink.ask(&prompt(), &cancel);

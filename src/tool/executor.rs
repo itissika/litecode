@@ -12,10 +12,10 @@ use crate::authority::responses::{
 };
 use crate::context_pipeline::Context;
 use crate::permission::{PermissionEngine, PermissionSink};
+use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::session::media::resolve_media_artifact_url;
 use crate::session::store::Session;
 use crate::tool::authorize::{AuthResult, authorize};
-use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::tool::output;
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments, unknown_top_level_properties,
@@ -277,7 +277,6 @@ impl Drop for WriteLockGuard {
         self.lock.release_all(&self.session_id);
     }
 }
-
 
 fn audit_truncate(s: &str) -> String {
     s.chars().take(200).collect()

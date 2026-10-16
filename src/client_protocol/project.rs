@@ -1149,7 +1149,6 @@ pub fn as_turn_finished(msg: &serde_json::Value) -> Option<serde_json::Value> {
     }
 }
 
-
 /// WP-186: project a durable pending row onto the wire `PermissionRequest` shape.
 /// `kind` is always copied explicitly (required on snapshot write).
 pub fn pending_record_to_wire(
@@ -1286,7 +1285,6 @@ mod wp025_turn_error_tests {
     }
 }
 
-
 #[cfg(test)]
 mod wp186_pending_permissions_tests {
     use super::*;
@@ -1385,8 +1383,14 @@ mod wp186_pending_permissions_tests {
                 id: "q_env".into(),
                 prompt: "Which environment?".into(),
                 options: vec![
-                    AskOption { id: "staging".into(), label: "Staging".into() },
-                    AskOption { id: "prod".into(), label: "Production".into() },
+                    AskOption {
+                        id: "staging".into(),
+                        label: "Staging".into(),
+                    },
+                    AskOption {
+                        id: "prod".into(),
+                        label: "Production".into(),
+                    },
                 ],
                 multi_select: false,
                 free_text: true,
@@ -1397,7 +1401,13 @@ mod wp186_pending_permissions_tests {
         let v = serde_json::to_value(&snap).unwrap();
         let item = &v["pending_permissions"][0];
         for key in [
-            "session_id", "turn_id", "request_id", "tool", "rule_id", "summary", "kind",
+            "session_id",
+            "turn_id",
+            "request_id",
+            "tool",
+            "rule_id",
+            "summary",
+            "kind",
         ] {
             assert!(item.get(key).is_some(), "missing {key}");
         }
