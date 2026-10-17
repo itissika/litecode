@@ -117,6 +117,20 @@ describe("AgentMarkdown raw HTML boundary", () => {
     ).not.toBeNull();
     expect(screen.getByRole("table")).toBeTruthy();
   });
+
+  it("renders a long paragraph and a tall fence instead of an empty slot", () => {
+    const paragraph = `alpha ${"word ".repeat(600)}omega`;
+    const fence = `\`\`\`\n${"line\n".repeat(80)}\`\`\``;
+    const { container } = render(
+      <AgentMarkdown text={`${paragraph}\n\n${fence}\n\nafter`} />,
+    );
+
+    expect(container.textContent).toContain("alpha");
+    expect(container.textContent).toContain("omega");
+    expect(container.textContent).toContain("line");
+    expect(container.textContent).toContain("after");
+    expect(container.querySelector("[style*='height']")).toBeNull();
+  });
 });
 
 describe("AgentMarkdown citations", () => {

@@ -1,109 +1,101 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  MARKDOWN_BLOCK_MAX_CHARS,
-  MARKDOWN_BLOCK_MIN_CHARS,
-  estimateBlockHeight,
-  splitMarkdownBlocks,
-} from "./markdownBlocks";
+import { splitMarkdownBlocks } from "./markdownBlocks";
+
+function expectSplit(text: string, blocks: string[]) {
+  const actual = splitMarkdownBlocks(text);
+  expect(actual).toEqual(blocks);
+  expect(actual.join("")).toBe(text);
+}
 
 describe("splitMarkdownBlocks", () => {
-  it("keeps a short run as one block", () => {
-    const text = "one\n\ntwo\n\nthree";
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.text).toBe(text);
+  it("keeps an empty document as one block", () => {
+    expect(splitMarkdownBlocks("")).toEqual([""]);
   });
 
-  it("cuts at a blank line once the block is long enough", () => {
-    const text = `${"a".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\n${"b".repeat(40)}`;
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks.map((block) => block.text)).toEqual([
-      `${"a".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\n`,
-      "b".repeat(40),
-    ]);
+  it("keeps a paragraph with no blank line as one block", () => {
+    const text = `word ${"z".repeat(8_000)}`;
+    expectSplit(text, [text]);
   });
 
-  it("merges paragraphs that are still under the minimum", () => {
-    const text = `${"a".repeat(400)}\n\n${"b".repeat(300)}\n\nend`;
-    expect(splitMarkdownBlocks(text)).toHaveLength(1);
+  it("cuts at a blank line between paragraphs", () => {
+    expectSplit("one\n\ntwo", ["one\n\n", "two"]);
+  });
+
+  it("cuts a short document the same way as a long one", () => {
+    expectSplit("one\n\ntwo\n\nthree", ["one\n\n", "two\n\n", "three"]);
   });
 
   it("does not cut a blank line inside an open fence", () => {
-    const text = `\`\`\`\n${"x".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\ny\n\`\`\``;
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks).toHaveLength(1);
-    expect(blocks[0]?.text).toBe(text);
+    const text = "```\ncode\n\nstill\n```";
+    expectSplit(text, [text]);
   });
 
-  it("cuts after a closed fence when the block is long enough", () => {
-    const text = `\`\`\`\n${"x".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\`\`\`\n\nafter`;
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks).toHaveLength(2);
-    expect(blocks[0]?.text.startsWith("```")).toBe(true);
-    expect(blocks[0]?.text.endsWith("```\n\n")).toBe(true);
-    expect(blocks[1]?.text).toBe("after");
+  it("cuts after a closed fence", () => {
+    expectSplit("```\ncode\n\nstill\n```\n\nafter", [
+      "```\ncode\n\nstill\n```\n\n",
+      "after",
+    ]);
   });
 
   it("treats a tilde fence like a backtick fence", () => {
-    const text = `~~~\n${"x".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\ny\n~~~`;
-    expect(splitMarkdownBlocks(text)).toHaveLength(1);
+    const text = "~~~\ncode\n\nstill\n~~~";
+    expectSplit(text, [text]);
   });
 
-  it("force-cuts a long run at the previous newline", () => {
-    const unit = `${"y".repeat(80)}\n`;
-    const text = unit.repeat(
-      Math.ceil((MARKDOWN_BLOCK_MAX_CHARS + 100) / unit.length),
-    );
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks.length).toBeGreaterThan(1);
-    expect(blocks.slice(0, -1).every((block) => block.text.endsWith("\n"))).toBe(
-      true,
-    );
-    expect(
-      blocks.slice(0, -1).every((block) => block.text.length <= MARKDOWN_BLOCK_MAX_CHARS),
-    ).toBe(true);
-    expect(blocks.map((block) => block.text).join("")).toBe(text);
+  it("keeps a loose list together", () => {
+    expectSplit("- a\n\n- b\n\nnext", ["- a\n\n- b\n\n", "next"]);
   });
 
-  it("force-cuts a run with no newline on a character boundary", () => {
-    const text = "z".repeat(MARKDOWN_BLOCK_MAX_CHARS + 10);
-    const blocks = splitMarkdownBlocks(text);
-    expect(blocks[0]?.text).toHaveLength(MARKDOWN_BLOCK_MAX_CHARS);
-    expect(blocks.map((block) => block.text).join("")).toBe(text);
+  it("keeps a list continuation that arrives after the blank line", () => {
+    expectSplit("- a\n\n", ["- a\n\n"]);
+    expectSplit("- a\n\n  more", ["- a\n\n  more"]);
+  });
+
+  it("keeps a block quote together across a blank line", () => {
+    expectSplit("> one\n>\n> two\n\nafter", ["> one\n>\n> two\n\n", "after"]);
+  });
+
+  it("keeps a table together", () => {
+    const table = "| a | b |\n| --- | --- |\n| 1 | 2 |";
+    expectSplit(`${table}\n\nafter`, [`${table}\n\n`, "after"]);
+  });
+
+  it("keeps a setext heading with its text", () => {
+    expectSplit("Title\n---\n\nbody", ["Title\n---\n\n", "body"]);
+  });
+
+  it("splits a heading from the following paragraph", () => {
+    expectSplit("# Title\n\nbody", ["# Title\n\n", "body"]);
+  });
+
+  it("keeps a link definition in the same block as its reference", () => {
+    const text = "see [a][1]\n\n[1]: https://example.com";
+    expectSplit(text, [text]);
+  });
+
+  it("keeps a footnote reference and definition together", () => {
+    const text = "note[^1]\n\n[^1]: detail";
+    expectSplit(text, [text]);
   });
 
   it("keeps earlier blocks when text is appended", () => {
-    const base = `${"a".repeat(MARKDOWN_BLOCK_MIN_CHARS)}\n\ntail`;
+    const base = "one\n\ntail";
     const more = `${base} grows`;
     const first = splitMarkdownBlocks(base);
     const second = splitMarkdownBlocks(more);
-    expect(first.length).toBeGreaterThan(1);
-    expect(second[0]).toEqual(first[0]);
-    expect(second).toHaveLength(first.length);
-    expect(second.at(-1)?.text.startsWith(first.at(-1)?.text ?? "")).toBe(true);
+    expect(second[0]).toBe(first[0]);
+    expect(second[0]).toBe("one\n\n");
+    expect(second[1]?.startsWith("tail")).toBe(true);
+    expect(second.join("")).toBe(more);
   });
 
-  it("keeps closed blocks when a long tail grows", () => {
-    const unit = `${"y".repeat(80)}\n`;
-    const base = unit.repeat(
-      Math.ceil((MARKDOWN_BLOCK_MAX_CHARS + 400) / unit.length),
-    );
+  it("keeps a closed fence when the following paragraph grows", () => {
+    const base = "```\ncode\n```\n\ntail";
     const first = splitMarkdownBlocks(base);
-    const second = splitMarkdownBlocks(`${base}END`);
-    expect(first.length).toBeGreaterThan(1);
-    for (let i = 0; i < first.length - 1; i += 1) {
-      expect(second[i]).toEqual(first[i]);
-    }
-    expect(second.map((block) => block.text).join("")).toBe(`${base}END`);
-  });
-});
-
-describe("estimateBlockHeight", () => {
-  it("counts wrapped lines at the transcript measure", () => {
-    expect(estimateBlockHeight("")).toBe(25);
-    expect(estimateBlockHeight("a".repeat(72))).toBe(25);
-    expect(estimateBlockHeight("a".repeat(73))).toBe(50);
-    expect(estimateBlockHeight("a\n")).toBe(50);
+    const second = splitMarkdownBlocks(`${base} grows`);
+    expect(second[0]).toBe(first[0]);
+    expect(second[0]).toBe("```\ncode\n```\n\n");
+    expect(second.map((block) => block).join("")).toBe(`${base} grows`);
   });
 });
