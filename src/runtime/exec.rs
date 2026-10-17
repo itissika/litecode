@@ -40,7 +40,7 @@ impl AgentDeps for AgentRuntime {
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
-        let request = self.build_model_request(
+        let (request, origin_seq) = self.build_model_request(
             &instructions,
             view.items,
             view.item_seqs,
@@ -61,7 +61,8 @@ impl AgentDeps for AgentRuntime {
         // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
         // The Chat Completions codec emits projected ResponseStreamEvents with
         // turn-stable ids; preferred path remains Responses SSE (R2).
-        self.call_model_complete(&request, token_count).await
+        self.call_model_complete(&request, token_count, origin_seq)
+            .await
     }
 
     async fn execute_tools(
@@ -682,7 +683,7 @@ impl AgentRuntime {
         item_seqs: Vec<Option<crate::session::event::Seq>>,
         rebased: &[bool],
         token_count: usize,
-    ) -> Result<ModelRequest> {
+    ) -> Result<(ModelRequest, crate::session::event::Seq)> {
         let tool_schemas = self.rctx().tool_defs();
 
         let tool_names: Vec<&str> = tool_schemas.iter().map(|t| t.name.as_str()).collect();
@@ -789,7 +790,7 @@ impl AgentRuntime {
             session_id: Some(self.session_id.clone()),
         };
         self.emit_llm_request_built(&request, token_count, &health);
-        Ok(request)
+        Ok((request, origin_seq))
     }
 
     /// The provider that produced each input item, through its durable seq and the
@@ -855,6 +856,7 @@ impl AgentRuntime {
         &mut self,
         request: &ModelRequest,
         token_count: usize,
+        origin_seq: crate::session::event::Seq,
     ) -> Result<Vec<Item>> {
         // LlmRequestBuilt (+ toast SnapshotNotice) already emitted in build_model_request.
         // Split borrows so the stream closure can mutate token meters while the
@@ -869,6 +871,8 @@ impl AgentRuntime {
         let totals = &mut self.turn_usage_totals;
         let prompt_usage_baseline = &self.prompt_usage_baseline;
         let request_item_count = request.input.len();
+        let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<TurnTokenStats>));
+        let usage_slot_cb = std::sync::Arc::clone(&usage_slot);
         // The stream and the terminal payload describe the same items. This is
         // the only thing that decides which `seq` they share, so an item that
         // streams and then completes stays one row in the log.
@@ -902,12 +906,16 @@ impl AgentRuntime {
                             .saturating_sub(usage.input_tokens_details.cached_tokens)
                             as u64;
                         // Last request only — each LLM call sends the full context.
-                        *stats = TurnTokenStats {
+                        let recorded = TurnTokenStats {
                             prompt_tokens: prompt,
                             completion_tokens: completion,
                             cache_hit_tokens: cache_hit,
                             cache_miss_tokens: cache_miss,
                         };
+                        *stats = recorded.clone();
+                        if let Ok(mut slot) = usage_slot_cb.lock() {
+                            *slot = Some(recorded);
+                        }
                         // Turn-total Σ — every request in this tool loop (session cum_*).
                         totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
                         totals.completion_tokens =
@@ -978,7 +986,28 @@ impl AgentRuntime {
             }
         }
         match outcome {
-            Ok(items) => Ok(items),
+            Ok(items) => {
+                if let Some(usage) = usage_slot.lock().ok().and_then(|mut slot| slot.take()) {
+                    let bill = crate::session::store::ProviderUsage {
+                        prompt_tokens: usage.prompt_tokens,
+                        completion_tokens: usage.completion_tokens,
+                        cache_hit_tokens: usage.cache_hit_tokens,
+                        cache_miss_tokens: usage.cache_miss_tokens,
+                    };
+                    if let Err(error) =
+                        self.sessions
+                            .record_provider_usage(&self.session_id, origin_seq, &bill)
+                    {
+                        tracing::warn!(
+                            session_id = %self.session_id,
+                            origin_seq,
+                            %error,
+                            "provider usage was not stored"
+                        );
+                    }
+                }
+                Ok(items)
+            }
             Err(crate::types::LitecodeError::Canceled) => {
                 Err(crate::types::LitecodeError::Canceled)
             }

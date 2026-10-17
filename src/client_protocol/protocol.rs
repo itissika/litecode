@@ -389,8 +389,8 @@ pub struct SessionSnapshot {
     pub turn: Option<TurnSnapshot>,
     #[serde(default)]
     pub context_window: usize,
-    /// Local estimate of the current model working set. This is the authority
-    /// for occupancy UI and the manual-compaction product gate.
+    /// Local estimate of the current model working set. The ring uses it only
+    /// when no provider prompt is showing. Also the manual-compaction gate.
     #[serde(default)]
     pub context_tokens_estimate: usize,
     /// Item-text buckets aligned with the last prepared request when present.
@@ -408,6 +408,13 @@ pub struct SessionSnapshot {
     /// token-weighted cache hit rate — industry aggregate, e.g. LiteLLM).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cumulative_token_stats: Option<TurnTokenStats>,
+    /// Sum of `(prompt + completion)` over request headers that have a provider
+    /// bill. Absent when none have been recorded — the ring shows "-".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_billed_tokens: Option<u64>,
+    /// How many of those requests. Average round-trip is the sum divided by this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_billed_requests: Option<u64>,
     #[serde(default = "default_thinking_tier")]
     pub thinking_tier: String,
     #[serde(default = "default_context_mode")]

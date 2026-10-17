@@ -92,6 +92,9 @@ pub struct Projection {
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
     pub cumulative_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
+    /// Sum of recorded round-trip bills. `None` until the first stored request.
+    pub provider_billed_tokens: Option<u64>,
+    pub provider_billed_requests: u64,
     /// Cached from snapshot patch files; see [`snapshot::max_file_revert_seq`].
     pub max_file_revert_seq: Option<i64>,
     pub deferred: VecDeque<SessionRequest>,
@@ -206,15 +209,30 @@ impl Projection {
             .data()
             .meter_blocking(&session_id)
             .unwrap_or_default();
-        let last_turn_token_stats = if meter.is_empty() {
+        let rollup = sessions
+            .provider_usage_rollup(&session_id)
+            .unwrap_or_default();
+        let compacted_seq = sessions
+            .data()
+            .meta_blocking(&session_id)
+            .ok()
+            .and_then(|meta| meta.compacted_seq);
+        // A bill newer than the last compact is the occupancy prompt. A compact
+        // after that bill retires it. No bill yet keeps the meter row.
+        let last_turn_token_stats =
+            crate::session::store::occupancy_usage(&rollup, compacted_seq, &meter).map(|usage| {
+                crate::client_protocol::protocol::TurnTokenStats {
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    cache_hit_tokens: usage.cache_hit_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens,
+                }
+            });
+        let provider_billed_requests = rollup.request_count;
+        let provider_billed_tokens = if provider_billed_requests == 0 {
             None
         } else {
-            Some(crate::client_protocol::protocol::TurnTokenStats {
-                prompt_tokens: meter.prompt_tokens,
-                completion_tokens: meter.completion_tokens,
-                cache_hit_tokens: meter.cache_hit_tokens,
-                cache_miss_tokens: meter.cache_miss_tokens,
-            })
+            Some(rollup.billed_tokens)
         };
         // Session-total accumulators ride the same meter row; absent on legacy rows
         // until the next usage-bearing turn writes them (cum starts at 0).
@@ -242,6 +260,8 @@ impl Projection {
             context_token_breakdown,
             last_turn_token_stats,
             cumulative_token_stats,
+            provider_billed_tokens,
+            provider_billed_requests,
             max_file_revert_seq: None,
             deferred: VecDeque::new(),
             forward_task: None,
@@ -280,6 +300,13 @@ impl Projection {
             self.sessions.is_compacting_blocking(&self.session_id),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
+        if self.provider_billed_requests == 0 {
+            snap.provider_billed_tokens = None;
+            snap.provider_billed_requests = None;
+        } else {
+            snap.provider_billed_tokens = Some(self.provider_billed_tokens.unwrap_or(0));
+            snap.provider_billed_requests = Some(self.provider_billed_requests);
+        }
         snap.max_file_revert_seq = self.max_file_revert_seq;
         let task_state = self
             .sessions
@@ -881,6 +908,11 @@ impl Projection {
                 cum.completion_tokens = cum.completion_tokens.saturating_add(*completion_tokens);
                 cum.cache_hit_tokens = cum.cache_hit_tokens.saturating_add(*cache_hit_tokens);
                 cum.cache_miss_tokens = cum.cache_miss_tokens.saturating_add(*cache_miss_tokens);
+                let billed = prompt_tokens.saturating_add(*completion_tokens);
+                self.provider_billed_tokens = Some(
+                    self.provider_billed_tokens.unwrap_or(0).saturating_add(billed),
+                );
+                self.provider_billed_requests = self.provider_billed_requests.saturating_add(1);
             }
             crate::runtime::observer::InternalEvent::TurnCompleted {
                 turn_id: _,
@@ -1535,6 +1567,60 @@ mod compact_item_wire_tests {
             proj.context_tokens_estimate, 999_999,
             "step bump must not full-fold while provider occupancy is showing"
         );
+    }
+
+    #[test]
+    fn reopen_uses_latest_bill_and_compact_retires_it() {
+        let (_proj, sid, sessions) = setup_with_details(&["a"]);
+        let first = sessions
+            .append_request_origin(&sid, &serde_json::json!({"schema": 1, "turn": "t", "step": 1}))
+            .unwrap();
+        let second = sessions
+            .append_request_origin(&sid, &serde_json::json!({"schema": 1, "turn": "t", "step": 2}))
+            .unwrap();
+        let bill = |prompt| crate::session::store::ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 10,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        };
+        sessions
+            .record_provider_usage(&sid, first, &bill(100))
+            .unwrap();
+        sessions
+            .record_provider_usage(&sid, second, &bill(40))
+            .unwrap();
+        let expected = sessions.data().revision_blocking(&sid).unwrap();
+        sessions
+            .mutate_blocking(crate::session::SessionMutation::SaveContextMeter {
+                session_id: sid.clone(),
+                expected_revision: expected,
+                operation_id: crate::session::MutationId::new(),
+                meter: crate::session::SessionContextMeter {
+                    prompt_tokens: 999,
+                    ..crate::session::SessionContextMeter::default()
+                },
+            })
+            .unwrap();
+        let proj = Projection::new(sid.clone(), sessions.clone(), 256_000);
+        assert_eq!(
+            proj.last_turn_token_stats
+                .as_ref()
+                .unwrap()
+                .prompt_tokens,
+            40
+        );
+        assert_eq!(proj.provider_billed_tokens, Some(160));
+        assert_eq!(proj.provider_billed_requests, 2);
+        let snap = proj.snapshot("/p", &binding());
+        assert_eq!(snap.provider_billed_tokens, Some(160));
+        assert_eq!(snap.provider_billed_requests, Some(2));
+
+        apply_compact(&sessions, &sid, "cut");
+        let proj = Projection::new(sid, sessions, 256_000);
+        assert!(proj.last_turn_token_stats.is_none());
+        assert_eq!(proj.provider_billed_tokens, Some(160));
+        assert_eq!(proj.provider_billed_requests, 2);
     }
 
     #[test]

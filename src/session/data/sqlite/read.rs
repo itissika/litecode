@@ -138,6 +138,9 @@ pub fn execute(
         SessionRead::RequestOrigins { session_id } => Ok(ReadValue::RequestOrigins(
             request_origins(conn, &session_id)?,
         )),
+        SessionRead::ProviderUsageRollup { session_id } => Ok(ReadValue::ProviderUsageRollup(
+            provider_usage_rollup(conn, &session_id)?,
+        )),
         SessionRead::LatestChangeId => Ok(ReadValue::Count(latest_change_id(conn)?)),
     }
 }
@@ -180,6 +183,31 @@ fn load_events_range(
 /// `body` is the request's origin record. A row whose body is absent or not JSON
 /// is skipped rather than failing the read: this is a compatibility input, and an
 /// unreadable header must degrade to "origin unknown", never to a broken turn.
+fn provider_usage_rollup(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<session::ProviderUsageRollup> {
+    let mut stmt = conn.prepare(
+        "SELECT seq, provider_usage FROM transcript_items
+         WHERE session_id = ?1
+           AND event_type = 'request/header'
+           AND provider_usage IS NOT NULL
+         ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut parsed = Vec::new();
+    for row in rows {
+        let (seq, raw) = row?;
+        let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
+            continue;
+        };
+        parsed.push((seq, usage));
+    }
+    Ok(session::ProviderUsageRollup::from_rows(parsed))
+}
+
 fn request_origins(conn: &Connection, session_id: &str) -> Result<Vec<(i64, serde_json::Value)>> {
     let mut stmt = conn.prepare(
         "SELECT seq, body FROM transcript_items

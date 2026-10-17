@@ -192,6 +192,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             source_seqs     TEXT,
             cites           TEXT,
             state           TEXT NOT NULL DEFAULT 'final',
+            provider_usage  TEXT,
             PRIMARY KEY (session_id, seq)
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_seq
@@ -368,6 +369,17 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                      (SELECT COALESCE(MAX(seq), -1) + 1
                       FROM transcript_items t WHERE t.session_id = sessions.id)
                  )",
+                [],
+            )?;
+        }
+    }
+    if table_exists(conn, "transcript_items")? {
+        let cols = table_columns(conn, "transcript_items")?;
+        // Side column for a finished request's provider bill. Readers of
+        // body/kind/state do not name it. No USER_VERSION bump.
+        if !cols.iter().any(|c| c == "provider_usage") {
+            conn.execute(
+                "ALTER TABLE transcript_items ADD COLUMN provider_usage TEXT",
                 [],
             )?;
         }

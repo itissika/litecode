@@ -873,6 +873,30 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::MetaUpdated,
             )
         }
+        SessionMutation::RecordProviderUsage {
+            session_id,
+            operation_id: _,
+            seq,
+            usage_json,
+        } => {
+            // Side column only. The header body stays final, and this write
+            // must not append session_change_log or bump sessions.revision.
+            {
+                let session = ensure_live(state, &session_id)?;
+                session.record_provider_usage(seq, &usage_json)?;
+            }
+            let revision = read::load_revision(state.db.conn(), &session_id)?;
+            Ok(CommitReceipt {
+                session_id,
+                operation_id: String::new(),
+                revision,
+                change_id: 0,
+                outcome: CommitKind::Idempotent,
+                preview: None,
+                assistant_preview: None,
+                working_set: None,
+            })
+        }
         SessionMutation::SavePendingPermissions {
             session_id,
             expected_revision,

@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use super::conn::SharedDb;
 
@@ -61,6 +62,83 @@ impl SessionContextMeter {
             && self.completion_tokens == 0
             && self.cache_hit_tokens == 0
             && self.cache_miss_tokens == 0
+    }
+}
+
+/// One provider bill, stored on the `request/header` row that opened the request.
+///
+/// The item body is not this record. Cache hit and miss split `prompt_tokens`;
+/// they are not added again when summing cost.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cache_hit_tokens: u64,
+    pub cache_miss_tokens: u64,
+}
+
+impl ProviderUsage {
+    /// Round-trip tokens billed for this request.
+    pub fn billed(&self) -> u64 {
+        self.prompt_tokens.saturating_add(self.completion_tokens)
+    }
+
+    pub fn from_meter_last(meter: &SessionContextMeter) -> Self {
+        Self {
+            prompt_tokens: meter.prompt_tokens,
+            completion_tokens: meter.completion_tokens,
+            cache_hit_tokens: meter.cache_hit_tokens,
+            cache_miss_tokens: meter.cache_miss_tokens,
+        }
+    }
+}
+
+/// Every recorded request bill for one session, oldest first folded in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderUsageRollup {
+    pub latest_seq: Option<u64>,
+    pub latest: Option<ProviderUsage>,
+    pub billed_tokens: u64,
+    pub request_count: u64,
+}
+
+impl ProviderUsageRollup {
+    pub fn from_rows(rows: impl IntoIterator<Item = (i64, ProviderUsage)>) -> Self {
+        let mut rollup = Self::default();
+        for (seq, usage) in rows {
+            if seq < 0 {
+                continue;
+            }
+            rollup.billed_tokens = rollup.billed_tokens.saturating_add(usage.billed());
+            rollup.request_count = rollup.request_count.saturating_add(1);
+            rollup.latest_seq = Some(seq as u64);
+            rollup.latest = Some(usage);
+        }
+        rollup
+    }
+}
+
+/// Prompt the occupancy ring may show.
+///
+/// A recorded bill is that prompt while the request is still the latest context.
+/// A compact checkpoint with a higher seq retires it, even if the meter row still
+/// holds the pre-compact figures. No bill at all falls back to the meter.
+pub fn occupancy_usage(
+    rollup: &ProviderUsageRollup,
+    compacted_seq: Option<u64>,
+    meter: &SessionContextMeter,
+) -> Option<ProviderUsage> {
+    if let (Some(seq), Some(usage)) = (rollup.latest_seq, rollup.latest.clone()) {
+        let retired = compacted_seq.is_some_and(|compacted| compacted > seq);
+        if retired {
+            return None;
+        }
+        return Some(usage);
+    }
+    if meter.is_empty() {
+        None
+    } else {
+        Some(ProviderUsage::from_meter_last(meter))
     }
 }
 
@@ -1790,6 +1868,21 @@ impl Session {
         Ok(())
     }
 
+    /// Fill `provider_usage` on one `request/header` row. A non-header seq, a
+    /// missing row, or a column that already has a value changes nothing.
+    /// Does not touch body, kind, or state.
+    pub fn record_provider_usage(&self, seq: Seq, usage_json: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE transcript_items
+             SET provider_usage = ?1
+             WHERE session_id = ?2 AND seq = ?3
+               AND event_type = 'request/header'
+               AND provider_usage IS NULL",
+            rusqlite::params![usage_json, self.id, seq as i64],
+        )?;
+        Ok(())
+    }
+
     fn write_task_state(conn: &Connection, session_id: &str, state: &TaskReminders) -> Result<()> {
         let mut state = state.clone();
         state.normalize();
@@ -3409,6 +3502,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn provider_usage_column_migrates_onto_existing_transcript() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transcript_items_legacy AS
+             SELECT session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref,
+                    token_estimate, created_at, event_type, surface_op, source_seqs, cites, state
+             FROM transcript_items;
+             DROP TABLE transcript_items;
+             ALTER TABLE transcript_items_legacy RENAME TO transcript_items;",
+        )
+        .unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let mut stmt = conn.prepare("PRAGMA table_info(transcript_items)").unwrap();
+        let cols: Vec<String> = stmt
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert!(
+            cols.iter().any(|col| col == "provider_usage"),
+            "old transcript tables gain the nullable bill column"
+        );
+    }
+
+    #[test]
+    fn occupancy_uses_latest_bill_and_drops_it_after_compact() {
+        let bill = |prompt| ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        };
+        let meter = SessionContextMeter {
+            prompt_tokens: 999,
+            ..SessionContextMeter::default()
+        };
+        let mut rollup = ProviderUsageRollup::default();
+        assert!(occupancy_usage(&rollup, None, &SessionContextMeter::default()).is_none());
+        assert_eq!(
+            occupancy_usage(&rollup, None, &meter).unwrap().prompt_tokens,
+            999
+        );
+        rollup = ProviderUsageRollup::from_rows([(3, bill(10)), (8, bill(40))]);
+        assert_eq!(rollup.billed_tokens, 52);
+        assert_eq!(rollup.request_count, 2);
+        assert_eq!(
+            occupancy_usage(&rollup, None, &meter).unwrap().prompt_tokens,
+            40
+        );
+        assert!(occupancy_usage(&rollup, Some(9), &meter).is_none());
+        assert_eq!(
+            occupancy_usage(&rollup, Some(8), &meter)
+                .unwrap()
+                .prompt_tokens,
+            40
+        );
     }
 
     #[test]

@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::session::data::sqlite::session::{SessionApply, SessionContextMeter};
+use crate::session::data::sqlite::session::{
+    ProviderUsageRollup, SessionApply, SessionContextMeter,
+};
 use crate::session::event::Seq;
 use crate::session::task_state::TaskReminders;
 use crate::session::working::WorkingRow;
@@ -200,6 +202,13 @@ pub enum SessionMutation {
         operation_id: MutationId,
         meter: SessionContextMeter,
     },
+    /// Fill `provider_usage` on one `request/header` row. Does not bump revision.
+    RecordProviderUsage {
+        session_id: String,
+        operation_id: MutationId,
+        seq: Seq,
+        usage_json: String,
+    },
     /// Replace the durable pending-permissions list for a session (WP-186).
     SavePendingPermissions {
         session_id: String,
@@ -255,6 +264,7 @@ impl SessionMutation {
             | Self::Compact { operation_id, .. }
             | Self::SaveTaskState { operation_id, .. }
             | Self::SaveContextMeter { operation_id, .. }
+            | Self::RecordProviderUsage { operation_id, .. }
             | Self::SavePendingPermissions { operation_id, .. }
             | Self::SetAgent { operation_id, .. }
             | Self::SetModel { operation_id, .. }
@@ -280,6 +290,7 @@ impl SessionMutation {
             | Self::Compact { session_id, .. }
             | Self::SaveTaskState { session_id, .. }
             | Self::SaveContextMeter { session_id, .. }
+            | Self::RecordProviderUsage { session_id, .. }
             | Self::SavePendingPermissions { session_id, .. }
             | Self::SetAgent { session_id, .. }
             | Self::SetModel { session_id, .. }
@@ -291,7 +302,7 @@ impl SessionMutation {
 
     pub fn expected_revision(&self) -> Option<u64> {
         match self {
-            Self::Create { .. } => None,
+            Self::Create { .. } | Self::RecordProviderUsage { .. } => None,
             Self::Apply {
                 expected_revision, ..
             }
@@ -449,6 +460,10 @@ pub enum SessionRead {
     RequestOrigins {
         session_id: String,
     },
+    /// Recorded provider bills on `request/header` rows. Empty when none exist.
+    ProviderUsageRollup {
+        session_id: String,
+    },
     /// Diff/Restore baseline for the reminder engine, folded from the live spine.
     SpineReminderView {
         session_id: String,
@@ -514,6 +529,7 @@ pub enum ReadValue {
     /// each LLM request, used to decide whether a replayed item identity still
     /// belongs to the endpoint being called.
     RequestOrigins(Vec<(i64, serde_json::Value)>),
+    ProviderUsageRollup(ProviderUsageRollup),
     SpineReminders(crate::reminder::SpineReminderView),
     Changes(Vec<SessionChange>),
     /// WP-186 durable pending user-gate asks.

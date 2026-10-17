@@ -16,7 +16,9 @@ use crate::session::data::command::{MutationId, ReadValue, SessionMutation, Sess
 use crate::session::data::{SessionData, SessionDataReader};
 use crate::session::event::{EventDraft, EventType};
 use crate::session::live::{LifecycleEvent, TurnProgress};
-use crate::session::store::{Session, SessionApply, SessionContextMeter};
+use crate::session::store::{
+    ProviderUsage, ProviderUsageRollup, Session, SessionApply, SessionContextMeter,
+};
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
 use crate::types::{LitecodeError, Result};
 
@@ -2940,6 +2942,41 @@ impl SessionManager {
         }
     }
 
+    /// Store one request's provider bill on its header row.
+    ///
+    /// The update names only `provider_usage`. A missing row, a non-header seq,
+    /// or a column that already has a value changes nothing. The session
+    /// revision is left alone.
+    pub fn record_provider_usage(
+        &self,
+        session_id: &str,
+        seq: crate::session::event::Seq,
+        usage: &ProviderUsage,
+    ) -> Result<()> {
+        let usage_json = serde_json::to_string(usage).map_err(|err| {
+            LitecodeError::SessionStorage(format!("provider usage encode: {err}"))
+        })?;
+        self.mutate_blocking(SessionMutation::RecordProviderUsage {
+            session_id: session_id.to_string(),
+            operation_id: MutationId::new(),
+            seq,
+            usage_json,
+        })?;
+        Ok(())
+    }
+
+    /// Bills already stored on this session's request headers, oldest first.
+    pub fn provider_usage_rollup(&self, session_id: &str) -> Result<ProviderUsageRollup> {
+        match self.data.read_blocking(SessionRead::ProviderUsageRollup {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::ProviderUsageRollup(rollup) => Ok(rollup),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected provider usage rollup".into(),
+            )),
+        }
+    }
+
     /// Persist a consumed queue as one ordinary user message.
     ///
     /// The only durable artifact of the memory-only pending queue: it must be
@@ -3043,8 +3080,8 @@ impl SessionManager {
 
     /// Write `reminder/knowledge_status` after a human message.
     ///
-    /// An empty library writes nothing. The same class still on the live surface
-    /// is left as it is. A failed write does not undo the user row.
+    /// A library with no enabled node writes nothing. The same class still on
+    /// the live surface is left as it is. A failed write does not undo the user row.
     pub fn append_knowledge_status_for(&self, session_id: &str, workspace: &std::path::Path) {
         // `build` only reads the resident knowledge snapshot; its parts
         // (lookup / wait_fresh / snapshot_read) are on the
@@ -3401,6 +3438,85 @@ mod request_origin_tests {
             messages.is_empty(),
             "a request origin must never reach the model: {messages:?}"
         );
+    }
+
+    #[test]
+    fn provider_usage_fills_only_an_empty_header_column() {
+        use crate::session::store::ProviderUsage;
+
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        let first = manager
+            .append_request_origin(
+                &session_id,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
+            )
+            .unwrap();
+        let second = manager
+            .append_request_origin(
+                &session_id,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 2}),
+            )
+            .unwrap();
+        manager
+            .insert_detail_rows(&session_id, &[crate::types::user_text("hello")])
+            .unwrap();
+        let item_seq = manager
+            .data()
+            .events_blocking(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type != EventType::RequestHeader)
+            .unwrap()
+            .seq;
+        let body_before = manager.request_origins(&session_id).unwrap();
+        let revision = manager.data().revision_blocking(&session_id).unwrap();
+        let change_id = manager
+            .data()
+            .reader()
+            .latest_change_id_blocking()
+            .unwrap();
+
+        let usage = |prompt| ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 5,
+            cache_hit_tokens: 1,
+            cache_miss_tokens: prompt - 1,
+        };
+        manager
+            .record_provider_usage(&session_id, first, &usage(100))
+            .unwrap();
+        manager
+            .record_provider_usage(&session_id, second, &usage(30))
+            .unwrap();
+        manager
+            .record_provider_usage(&session_id, first, &usage(999))
+            .unwrap();
+        manager
+            .record_provider_usage(&session_id, item_seq, &usage(7))
+            .unwrap();
+
+        assert_eq!(
+            manager.data().revision_blocking(&session_id).unwrap(),
+            revision
+        );
+        assert_eq!(
+            manager
+                .data()
+                .reader()
+                .latest_change_id_blocking()
+                .unwrap(),
+            change_id
+        );
+        assert_eq!(manager.request_origins(&session_id).unwrap(), body_before);
+
+        let rollup = manager.provider_usage_rollup(&session_id).unwrap();
+        assert_eq!(rollup.request_count, 2);
+        assert_eq!(rollup.latest_seq, Some(second));
+        assert_eq!(rollup.latest.unwrap().prompt_tokens, 30);
+        assert_eq!(rollup.billed_tokens, 140);
     }
 
     /// History written before origins were recorded reads as empty, which the
