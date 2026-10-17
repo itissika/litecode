@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "tools_version": 21,
-  "updated_at": "2026-10-15T08:00:00.000Z",
+  "tools_version": 24,
+  "updated_at": "2026-10-16T09:09:41.867Z",
   "hot_reload": true,
   "tools": [
     {
       "id": "ops.validate_board",
-      "version": 9,
-      "purpose": "校验 board.json 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id；v20 不再读取 demand board（已撤销）",
+      "version": 10,
+      "purpose": "校验 board.json 符合 schema 与跨引用规则；v7 起同时跑 ops.kb_check，知识库有 error 即失败；v13 校验 parent 存在/非自指/无环、approver 已知、done 父包子包全封（有 blocked 子包须 approver close 带 note）；v14 history.action 加 start/deliver/return；v15 issues：文件名=id、id 唯一、保留号（issues/.reserved.json）不得出现；v17 每个 WP.domain 必须是 board.domains 已有 id；v20 不再读取 demand board（已撤销）；v10（tools_version 22/WP-189）：org_nodes/ops_config；active agent 须挂 node；superior/subordinates 与 deriveReporting 漂移中文报错；kind=request 须有 requester",
       "invoke": "node .litecode/ops/tools/validate_all.mjs",
       "required_for": [
         "WP done",
@@ -134,9 +134,9 @@
     },
     {
       "id": "ops.wp",
-      "version": 6,
-      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类；v6（tools_version 19）每次写操作顺带 softEnsureWatcher（watcher 死/心跳>10 分钟则 detached ensure）",
-      "invoke": "node .litecode/ops/tools/wp.mjs <new|fill|submit|approve|start|deliver|reject|close|set|reassign|tree|summary|history> --as <agent_id|andy> [...]",
+      "version": 7,
+      "purpose": "嵌套 WP 生命周期（v2 方案审批与完工验收分开）：new / fill / submit(方案→awaiting_approval，split 至少 1 个子包、子包可仍 drafting) / approve(批方案→ready，可执行可下派) / start(→in_progress) / deliver(送验收→review，子包须全 done/blocked) / reject(方案→drafting；验收→in_progress，可 --reopen 子包) / close(done 只能从 review) / tree / summary / history；父包方案未批前子包不能交方案或开工。已知边界：身份靠 --as 自报，无真实鉴权。工具需求指挥链：域 bot → 本域中层，中层批过的直接转工具集管家；中层自己的需求 → GM；GM 自己的需求先问 Andy；工具集管家只接上级转来的需求；v3（tools_version 15）新增 set：owner/approver 改安全字段 artifact_path/handoff_path/progress/result/done_when（路径须在 .litecode/ops/ 下），validate+回滚；事件加锁落盘；v4（tools_version 16）set 支持 --field domain（owner/approver，值须为 board.domains 已有 id，记 history/log/trace，校验失败回滚）；新增 reassign --owner：仅包 approver 或父包 owner，新 owner 须为已注册 agent，只改 owner，记 history/log，校验失败回滚；v5（tools_version 17）已封包仅允许 set --field domain 重新归类；v6（tools_version 19）每次写操作顺带 softEnsureWatcher（watcher 死/心跳>10 分钟则 detached ensure）；v7（tools_version 22–24/WP-189）：org-tree/org-sync/role-charter；request/handle/forward；WP.kind/requester；history handle/forward；team_ops.request_resolved；关键 CLI 错误中文+当前状态。handle：默认审批人自留 owner；--owner 指定；--intake 才用 ops_config.intake_agent（仅 ops/工具类）",
+      "invoke": "node .litecode/ops/tools/wp.mjs <new|fill|submit|approve|start|deliver|reject|close|set|reassign|request|handle|forward|org-tree|org-sync|role-charter|tree|summary|history> --as <agent_id|andy> [...]",
       "required_for": [
         "新模型 WP 填写→请审→批准→执行→封包",
         "WP-019/WP-020"
@@ -145,8 +145,8 @@
     },
     {
       "id": "ops.wp.test",
-      "version": 2,
-      "purpose": "ops.wp 测试：临时副本里跑（跑完清理），剥离 webhook env；覆盖 schema、权限、方案审批、父包门禁、完工验收、超时升级、老 WP 兼容、回滚、三层流程 Andy→GM→中层→域",
+      "version": 3,
+      "purpose": "ops.wp 测试：临时副本里跑（跑完清理），剥离 webhook env；覆盖 schema、权限、方案审批、父包门禁、完工验收、超时升级、老 WP 兼容、回滚、三层流程 Andy→GM→中层→域；v3（WP-189）：org_drift / charter_smoke / request_loop / zh_errors",
       "invoke": "node .litecode/ops/tools/wp.test.mjs [--json] [--keep]",
       "required_for": [
         "ops.wp 改动后回归"

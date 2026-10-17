@@ -31,7 +31,8 @@ function fresh() {
   fs.mkdirSync(ops, { recursive: true });
   for (const f of ["board.json", "board.schema.json", "validate.mjs", "log.jsonl", "tool_traces.jsonl"]) fs.copyFileSync(path.join(realOps, f), path.join(ops, f));
   fs.mkdirSync(path.join(ops, "events")); fs.writeFileSync(path.join(ops, "events", "inbox.json"), JSON.stringify({ inbox: [], updated_at: null }, null, 2));
- 
+  const ctxSrc = path.join(realOps, "context");
+  if (fs.existsSync(ctxSrc)) fs.cpSync(ctxSrc, path.join(ops, "context"), { recursive: true });
   fs.cpSync(here, path.join(ops, "tools"), { recursive: true, filter: (s) => !s.includes(".kb_nav_tmp") });
   return ops;
 }
@@ -78,22 +79,22 @@ group("2 permissions: non-owner new; non-approver approve/close/done rejected", 
   const { top, kid } = twoLayer(ops);
   ok(W(ops, kid)?.approver === "gm" && W(ops, kid).status === "drafting", "child created drafting with approver=parent owner");
   let r = wp(ops, "new", "--as", "tools_steward", "--parent", top, "--title", "x", "--goal", "x", "--owner", "tools_steward");
-  ok(r.status !== 0 && /not parent owner/.test(r.stderr), "non parent-owner new rejected");
+  ok(r.status !== 0 && /不是父包负责人/.test(r.stderr), "non parent-owner new rejected");
   r = wp(ops, "new", "--as", "tools_steward", "--title", "x", "--goal", "x", "--owner", "tools_steward", "--approver", "gm");
   ok(r.status !== 0, "top-level new by non gm/andy rejected");
   r = wp(ops, "new", "--as", "ghost", "--title", "x", "--goal", "x", "--owner", "gm", "--approver", "gm");
-  ok(r.status !== 0 && /unknown agent/.test(r.stderr), "unknown --as rejected");
+  ok(r.status !== 0 && /未知身份/.test(r.stderr), "unknown --as rejected");
   wp(ops, "fill", "--as", "tools_steward", "--id", kid, "--text", "c");
   wp(ops, "submit", "--as", "tools_steward", "--id", kid);
   r = wp(ops, "approve", "--as", "tools_steward", "--id", kid);
-  ok(r.status !== 0 && /not approver/.test(r.stderr), "owner cannot self-approve");
+  ok(r.status !== 0 && /不是审批人/.test(r.stderr), "owner cannot self-approve");
   wp(ops, "approve", "--as", "gm", "--id", kid);
   r = wp(ops, "start", "--as", "gm", "--id", kid);
-  ok(r.status !== 0 && /not owner/.test(r.stderr), "non-owner start rejected");
+  ok(r.status !== 0 && /不是负责人/.test(r.stderr), "non-owner start rejected");
   wp(ops, "start", "--as", "tools_steward", "--id", kid);
   wp(ops, "deliver", "--as", "tools_steward", "--id", kid);
   r = wp(ops, "close", "--as", "tools_steward", "--id", kid, "--to", "done");
-  ok(r.status !== 0 && /not approver/.test(r.stderr), "non-approver close rejected");
+  ok(r.status !== 0 && /不是审批人/.test(r.stderr), "non-approver close rejected");
   fs.mkdirSync(path.join(ops, "artifacts"), { recursive: true });
   patch(ops, (b) => { b.work_packages.find((w) => w.id === kid).artifact_path = ".litecode/ops/artifacts/x.md"; });
   fs.writeFileSync(path.join(ops, "artifacts", "x.md"), "x");
@@ -108,7 +109,7 @@ group("3 plan approval: split submit needs ≥1 child (drafting ok); no approve 
   wp(ops, "new", "--as", "gm", "--title", "lonely", "--goal", "g", "--owner", "gm", "--approver", "gm"); const lone = lastId(ops);
   wp(ops, "fill", "--as", "gm", "--id", lone, "--kind", "split", "--text", "split");
   let r = wp(ops, "submit", "--as", "gm", "--id", lone);
-  ok(r.status !== 0 && /at least one child/.test(r.stderr), "split without child rejected");
+  ok(r.status !== 0 && /至少要有一个子包/.test(r.stderr), "split without child rejected");
   const { top, kid } = twoLayer(ops, { approveTop: false });
   r = wp(ops, "submit", "--as", "gm", "--id", top);
   ok(r.status === 0 && W(ops, top).status === "awaiting_approval" && W(ops, kid).status === "drafting", "split plan submit with drafting child ok");
@@ -119,7 +120,7 @@ group("3 plan approval: split submit needs ≥1 child (drafting ok); no approve 
   r = gate(ops, "--id", top, "--to", "in_progress", "--source", "gm");
   ok(r.status !== 0 && /requires an approve/.test(r.stderr), "gate in_progress before approve rejected");
   r = wp(ops, "reject", "--as", "gm", "--id", top, "--note", "plan weak", "--reopen", kid);
-  ok(r.status !== 0 && /only on acceptance/.test(r.stderr), "--reopen not allowed on plan rejection");
+  ok(r.status !== 0 && /只有验收驳回才能/.test(r.stderr), "--reopen not allowed on plan rejection");
   r = wp(ops, "reject", "--as", "gm", "--id", top, "--note", "plan weak");
   ok(r.status === 0 && W(ops, top).status === "drafting" && W(ops, top).history.slice(-1)[0].action === "reject", "plan reject → drafting");
   wp(ops, "submit", "--as", "gm", "--id", top);
@@ -134,13 +135,13 @@ group("4 parent gate: child cannot submit/start before parent plan approved", ()
   const { top, kid } = twoLayer(ops, { approveTop: false });
   wp(ops, "fill", "--as", "tools_steward", "--id", kid, "--text", "c");
   let r = wp(ops, "submit", "--as", "tools_steward", "--id", kid);
-  ok(r.status !== 0 && /parent .* plan not approved/.test(r.stderr), "child submit blocked while parent drafting");
+  ok(r.status !== 0 && /父包 .* 方案还没批/.test(r.stderr), "child submit blocked while parent drafting");
   wp(ops, "submit", "--as", "gm", "--id", top);
   r = wp(ops, "submit", "--as", "tools_steward", "--id", kid);
   ok(r.status !== 0, "child submit blocked while parent awaiting_approval");
   patch(ops, (b) => { const k = b.work_packages.find((w) => w.id === kid); k.status = "ready"; k.history.push({ ts: "x", actor: "gm", action: "approve", note: "forced" }); });
   r = wp(ops, "start", "--as", "tools_steward", "--id", kid);
-  ok(r.status !== 0 && /parent .* plan not approved/.test(r.stderr), "child start blocked (wp start)");
+  ok(r.status !== 0 && /父包 .* 方案还没批/.test(r.stderr), "child start blocked (wp start)");
   r = gate(ops, "--id", kid, "--to", "in_progress", "--source", "tools_steward");
   ok(r.status !== 0 && /parent .* plan not approved/.test(r.stderr), "child start blocked (wp_gate)");
   wp(ops, "approve", "--as", "gm", "--id", top);
@@ -153,9 +154,9 @@ group("5 acceptance: deliver needs children done/blocked; reject → in_progress
   const { top, kid } = twoLayer(ops);
   wp(ops, "start", "--as", "gm", "--id", top);
   let r = wp(ops, "deliver", "--as", "gm", "--id", top);
-  ok(r.status !== 0 && /children not closed/.test(r.stderr), "deliver with open child rejected");
+  ok(r.status !== 0 && /还有未封子包/.test(r.stderr), "deliver with open child rejected");
   r = wp(ops, "close", "--as", "gm", "--id", top, "--to", "done");
-  ok(r.status !== 0 && /only from review/.test(r.stderr), "close done before deliver rejected");
+  ok(r.status !== 0 && /要先送验收/.test(r.stderr), "close done before deliver rejected");
   r = gate(ops, "--id", top, "--to", "review", "--source", "gm");
   ok(r.status !== 0 && /children not closed/.test(r.stderr), "gate review with open child rejected");
   driveChildDone(ops, kid);
@@ -165,7 +166,7 @@ group("5 acceptance: deliver needs children done/blocked; reject → in_progress
   const inbox = JSON.parse(fs.readFileSync(path.join(ops, "events", "inbox.json"), "utf8"));
   ok(inbox.inbox.some((e) => e.type === "team_ops.acceptance_requested" && e.wp === top), "acceptance_requested emitted");
   r = wp(ops, "reject", "--as", "gm", "--id", top, "--note", "redo", "--reopen", "WP-001");
-  ok(r.status !== 0 && /not a child/.test(r.stderr), "reopen non-child rejected");
+  ok(r.status !== 0 && /不是 .* 的子包/.test(r.stderr), "reopen non-child rejected");
   r = wp(ops, "reject", "--as", "gm", "--id", top, "--note", "child output thin", "--reopen", kid);
   ok(r.status === 0 && W(ops, top).status === "in_progress" && W(ops, kid).status === "drafting", "acceptance reject → parent in_progress, child drafting");
   ok(W(ops, top).history.slice(-1)[0].action === "return" && W(ops, kid).history.slice(-1)[0].action === "reopen", "history return/reopen");
@@ -173,11 +174,11 @@ group("5 acceptance: deliver needs children done/blocked; reject → in_progress
   ok(r.status === 0, "reopened child can re-submit plan (parent plan still approved)");
   wp(ops, "approve", "--as", "gm", "--id", kid);
   r = wp(ops, "close", "--as", "gm", "--id", kid, "--to", "blocked");
-  ok(r.status !== 0 && /--note required/.test(r.stderr), "close blocked without note rejected");
+  ok(r.status !== 0 && /必须写 --note/.test(r.stderr), "close blocked without note rejected");
   wp(ops, "close", "--as", "gm", "--id", kid, "--to", "blocked", "--note", "upstream");
   wp(ops, "deliver", "--as", "gm", "--id", top);
   r = wp(ops, "close", "--as", "gm", "--id", top, "--to", "done");
-  ok(r.status !== 0 && /--note required/.test(r.stderr), "parent close with blocked child needs note");
+  ok(r.status !== 0 && /必须写 --note/.test(r.stderr), "parent close with blocked child needs note");
   r = wp(ops, "close", "--as", "gm", "--id", top, "--to", "done", "--note", "accept child blocked");
   ok(r.status === 0 && W(ops, top).status === "done", "parent close done: " + r.stderr);
 });
@@ -303,7 +304,7 @@ group("8 rollback: validate failure leaves board.json byte-identical", () => {
   patch(ops, (b) => { b.agents.find((a) => a.id === "runtime").place = "/elsewhere"; });
   const before = fs.readFileSync(path.join(ops, "board.json"), "utf8");
   let r = wp(ops, "fill", "--as", "tools_steward", "--id", kid, "--text", "c");
-  ok(r.status !== 0 && /restored/.test(r.stderr), "fill fails with restore message");
+  ok(r.status !== 0 && /已恢复/.test(r.stderr), "fill fails with restore message");
   ok(fs.readFileSync(path.join(ops, "board.json"), "utf8") === before, "board.json unchanged after failed fill");
   r = wp(ops, "new", "--as", "gm", "--title", "x", "--goal", "x", "--owner", "gm", "--approver", "gm");
   ok(r.status !== 0 && fs.readFileSync(path.join(ops, "board.json"), "utf8") === before, "board.json unchanged after failed new");
@@ -319,7 +320,7 @@ group("10 set: owner/approver set safe fields; others/unsafe/closed rejected; ro
   r = wp(ops, "set", "--as", "runtime", "--id", kid, "--field", "progress", "--value", "x");
   ok(r.status !== 0, "non owner/approver rejected");
   r = wp(ops, "set", "--as", "tools_steward", "--id", kid, "--field", "status", "--value", "done");
-  ok(r.status !== 0 && /not allowed/.test(r.stderr), "unsafe field rejected");
+  ok(r.status !== 0 && /不能改/.test(r.stderr), "unsafe field rejected");
   r = wp(ops, "set", "--as", "tools_steward", "--id", kid, "--field", "artifact_path", "--value", "/etc/passwd");
   ok(r.status !== 0, "path outside .litecode/ops/ rejected");
   patch(ops, (b) => { b.agents.find((a) => a.id === "runtime").place = "/elsewhere"; });
@@ -337,7 +338,7 @@ group("11 set domain (v4) + new agent provider usable as owner", () => {
   ok(h.action === "set" && /domain/.test(h.note), "history entry for domain set");
   ok(/set domain/.test(fs.readFileSync(path.join(ops, "log.jsonl"), "utf8")), "log.jsonl records domain set");
   r = wp(ops, "set", "--as", "gm", "--id", kid, "--field", "domain", "--value", "ide-base");
-  ok(r.status !== 0 && /existing domain/.test(r.stderr) && W(ops, kid).domain === "ide-substrate", "unknown domain rejected, unchanged");
+  ok(r.status !== 0 && /已有域/.test(r.stderr) && W(ops, kid).domain === "ide-substrate", "unknown domain rejected, unchanged");
   r = wp(ops, "set", "--as", "gm", "--id", kid, "--field", "domain", "--value", "");
   ok(r.status !== 0, "empty domain rejected");
   patch(ops, (b) => { b.work_packages.find((x) => x.id === kid).domain = "nope"; });
@@ -369,7 +370,7 @@ group("12 reassign (v4): approver or parent owner; registered agent only; histor
   let r = wp(ops, "reassign", "--as", "runtime", "--id", kid, "--owner", "context");
   ok(r.status !== 0 && W(ops, kid).owner === "tools_steward", "stranger cannot reassign");
   r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "nobody");
-  ok(r.status !== 0 && /not a registered agent/.test(r.stderr), "unregistered owner rejected");
+  ok(r.status !== 0 && /不是已登记/.test(r.stderr), "unregistered owner rejected");
   r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "runtime", "--note", "move");
   ok(r.status === 0 && W(ops, kid).owner === "runtime", "approver reassigns");
   ok(snap(kid) === before, "other fields unchanged");
@@ -382,6 +383,104 @@ group("12 reassign (v4): approver or parent owner; registered agent only; histor
   r = wp(ops, "reassign", "--as", "gm", "--id", kid, "--owner", "tools_steward");
   ok(r.status !== 0 && fs.readFileSync(path.join(ops, "board.json"), "utf8") === raw, "validate failure rolls back");
   void top;
+});
+
+
+group("org_drift: validate catches hand-filled superior mismatch; org-sync fixes", () => {
+  const ops = fresh();
+  ok(validate(ops).status === 0, "migrated board validates");
+  const r0 = wp(ops, "org-tree", "--json");
+  const jsonLine = r0.stdout.split("\n").slice(1).join("\n");
+  let tree = null; try { tree = JSON.parse(jsonLine); } catch {}
+  ok(r0.status === 0 && tree?.ok, "org-tree --json ok");
+  ok(tree?.reporting?.session?.superior === "backend_mid", "session←backend_mid");
+  ok(tree?.reporting?.gm?.superior === "andy", "gm←andy");
+  patch(ops, (b) => { b.agents.find((a) => a.id === "session").superior = "gm"; });
+  const v = validate(ops);
+  ok(v.status !== 0 && /角色 session 的 superior 应为 backend_mid，当前是 gm/.test(v.stderr), "drift caught in zh");
+  let r = wp(ops, "org-sync", "--as", "gm");
+  ok(r.status === 0 && board(ops).agents.find((a) => a.id === "session").superior === "backend_mid", "org-sync rewrites session.superior");
+  ok(validate(ops).status === 0, "validates after org-sync");
+  r = wp(ops, "org-sync", "--as", "session");
+  ok(r.status !== 0 && /只有 gm\/andy/.test(r.stderr), "non gm/andy org-sync rejected");
+});
+
+group("charter_smoke: role-charter includes superior and accept/reject", () => {
+  const ops = fresh();
+  for (const id of ["gm", "backend_mid", "session", "tools_steward"]) {
+    const r = wp(ops, "role-charter", "--id", id);
+    ok(r.status === 0 && r.stdout.includes("岗位说明") && r.stdout.includes("上级：") && r.stdout.includes("接受的交付"), `charter ${id}`);
+    ok(r.stdout.includes("不接受的交付"), `charter ${id} reject`);
+  }
+  const r = wp(ops, "role-charter", "--id", "session");
+  ok(/上级：backend_mid/.test(r.stdout), "session superior in charter");
+  const bad = wp(ops, "role-charter", "--id", "nobody");
+  ok(bad.status !== 0 && /没有这个角色/.test(bad.stderr), "unknown role rejected");
+});
+
+group("request_loop: request → approve → handle(keep/owner) → deliver → close → request_resolved", () => {
+  const ops = fresh();
+  let r = wp(ops, "request", "--as", "session", "--title", "need session fix", "--goal", "fix crash", "--domain", "harness-core");
+  ok(r.status === 0, "request ok: " + r.stderr);
+  const id = lastId(ops);
+  const w0 = W(ops, id);
+  ok(w0.kind === "request" && w0.requester === "session" && w0.approver === "backend_mid" && w0.status === "awaiting_approval", "request fields");
+  const inbox0 = JSON.parse(fs.readFileSync(path.join(ops, "events", "inbox.json"), "utf8"));
+  ok(inbox0.inbox.some((e) => e.type === "team_ops.approval_requested" && e.wp === id), "approval_requested on request");
+  // forward branch optional: skip to keep loop short; test forward separately lightly
+  r = wp(ops, "forward", "--as", "backend_mid", "--id", id, "--note", "need gm");
+  ok(r.status === 0 && W(ops, id).approver === "gm", "forward to gm");
+  // cannot forward past gm to andy
+  r = wp(ops, "forward", "--as", "gm", "--id", id);
+  ok(r.status !== 0 && /委托人/.test(r.stderr), "forward to principal blocked");
+  // set approver back to backend_mid for handle demo (re-approve path): reject+re-request would be heavy; patch approver
+  patch(ops, (b) => { const w = b.work_packages.find((x) => x.id === id); w.approver = "backend_mid"; w.reviewer = "backend_mid"; });
+  r = wp(ops, "approve", "--as", "backend_mid", "--id", id);
+  ok(r.status === 0 && W(ops, id).status === "ready", "approve request");
+  // default handle = keep owner as approver
+  r = wp(ops, "handle", "--as", "backend_mid", "--id", id);
+  ok(r.status === 0 && W(ops, id).owner === "backend_mid", "handle default keep: owner=approver");
+  ok(W(ops, id).history.some((h) => h.action === "handle"), "history handle");
+  // reassign via handle --owner session (domain bot) for exec demo — actually use --owner tools for demo path
+  // first need ready again; still ready. handle again? owner already mid. Use --owner session
+  r = wp(ops, "handle", "--as", "backend_mid", "--id", id, "--owner", "session");
+  ok(r.status === 0 && W(ops, id).owner === "session", "handle --owner session");
+  // intake flag
+  r = wp(ops, "handle", "--as", "backend_mid", "--id", id, "--intake");
+  ok(r.status === 0 && W(ops, id).owner === "tools_steward", "handle --intake → tools_steward");
+  // put back to session for deliver loop
+  r = wp(ops, "handle", "--as", "backend_mid", "--id", id, "--owner", "session");
+  wp(ops, "start", "--as", "session", "--id", id);
+  wp(ops, "deliver", "--as", "session", "--id", id);
+  r = wp(ops, "close", "--as", "backend_mid", "--id", id, "--to", "done", "--note", "fixed");
+  ok(r.status === 0 && W(ops, id).status === "done", "close done: " + r.stderr);
+  const inbox = JSON.parse(fs.readFileSync(path.join(ops, "events", "inbox.json"), "utf8"));
+  const resolved = inbox.inbox.filter((e) => e.type === "team_ops.request_resolved" && e.wp === id);
+  ok(resolved.length === 1 && resolved[0].meta.requester === "session", "request_resolved to requester");
+  const outbox = fs.readFileSync(path.join(ops, "events", "outbox.jsonl"), "utf8");
+  ok(outbox.includes("team_ops.request_resolved"), "outbox has request_resolved");
+});
+
+group("zh_errors: key CLI failures are Chinese with 当前 status", () => {
+  const ops = fresh();
+  const { top, kid } = twoLayer(ops);
+  let r = wp(ops, "fill", "--as", "gm", "--id", top, "--text", "late"); // top is ready after twoLayer approve
+  // top is ready; fill should fail
+  ok(r.status !== 0 && /只有起草中才能填方案/.test(r.stderr) && /当前 ready/.test(r.stderr), "fill non-drafting zh: " + r.stderr.trim());
+  r = wp(ops, "submit", "--as", "tools_steward", "--id", kid);
+  // kid drafting without content
+  ok(r.status !== 0 && /要先填方案/.test(r.stderr) && /当前 drafting/.test(r.stderr), "submit no content zh");
+  r = wp(ops, "new", "--as", "ghost", "--title", "x", "--goal", "x", "--owner", "gm", "--approver", "gm");
+  ok(r.status !== 0 && /未知身份 ghost/.test(r.stderr), "unknown as zh");
+  wp(ops, "fill", "--as", "tools_steward", "--id", kid, "--text", "c");
+  wp(ops, "submit", "--as", "tools_steward", "--id", kid);
+  r = wp(ops, "approve", "--as", "tools_steward", "--id", kid);
+  ok(r.status !== 0 && /不是审批人/.test(r.stderr) && /当前 awaiting_approval/.test(r.stderr), "approve wrong actor zh");
+  r = wp(ops, "start", "--as", "gm", "--id", kid);
+  // still awaiting
+  ok(r.status !== 0 && (/不是负责人/.test(r.stderr) || /只有就绪才能开工/.test(r.stderr)), "start wrong zh");
+  r = wp(ops, "request", "--as", "andy", "--title", "x", "--goal", "y");
+  ok(r.status !== 0 && /委托人没有上级/.test(r.stderr), "principal cannot request");
 });
 
 if (!keep) for (const r of tmpRoots) fs.rmSync(r, { recursive: true, force: true });

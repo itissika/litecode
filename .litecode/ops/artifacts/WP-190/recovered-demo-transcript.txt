@@ -1,0 +1,72 @@
+=== WP-189 live demo 2026-10-16T17:09:50+08:00 ===
+--- org-tree ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+litecode [LiteCode] lead=gm members=gm
+  └ backend [后端] lead=backend_mid members=backend_mid,context,demand_officer,ide,provider,runtime,session,tools
+  └ frontend [前端] lead=frontend_mid members=frontend,frontend_desktop,frontend_mid
+  └ ops [工具集] lead=tools_steward members=tools_steward
+--- reporting ---
+gm: superior=andy subordinates=backend_mid,frontend_mid,tools_steward
+session: superior=backend_mid subordinates=-
+tools: superior=backend_mid subordinates=-
+frontend: superior=frontend_mid subordinates=-
+runtime: superior=backend_mid subordinates=-
+context: superior=backend_mid subordinates=-
+ide: superior=backend_mid subordinates=-
+demand_officer: superior=backend_mid subordinates=-
+tools_steward: superior=gm subordinates=-
+frontend_desktop: superior=frontend_mid subordinates=-
+backend_mid: superior=gm subordinates=context,demand_officer,ide,provider,runtime,session,tools
+frontend_mid: superior=gm subordinates=frontend,frontend_desktop
+provider: superior=backend_mid subordinates=-
+--- request as session ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"request","id":"WP-190","as":"session","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24,"event":"E-1792141790896-20370-WP190-approval_requested","approver":"backend_mid","status":"awaiting_approval","kind":"request"}
+DEMO_ID=WP-190
+--- approve as backend_mid ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"approve","id":"WP-190","as":"backend_mid","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24}
+--- handle default keep ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"handle","id":"WP-190","as":"backend_mid","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24,"from":"session","to":"backend_mid","mode":"keep"}
+--- handle --owner session ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"handle","id":"WP-190","as":"backend_mid","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24,"from":"backend_mid","to":"session","mode":"owner"}
+--- start/deliver as session ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"start","id":"WP-190","as":"session","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24}
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"deliver","id":"WP-190","as":"session","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24,"event":"E-1792141791629-21240-WP190-acceptance_requested"}
+--- close done ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+{"ok":true,"cmd":"close","id":"WP-190","as":"backend_mid","written":true,"validated":true,"board_md_wp_table":190,"tools_version":24,"event":"E-1792141791770-21380-WP190-request_resolved"}
+--- history ---
+LITECODE_OPS tools_version=24 tool=ops.wp tool_version=7 updated_at=2026-10-16T09:09:41.867Z
+2026-10-16T09:09:50.895Z session create  向上请求: 演示 handle 自留与 --owner
+2026-10-16T09:09:50.895Z session submit  向上请求
+2026-10-16T09:09:51.076Z backend_mid approve  demo approve
+2026-10-16T09:09:51.220Z backend_mid handle→backend_mid  上级自己处理
+2026-10-16T09:09:51.354Z backend_mid handle→session  指定 owner session
+2026-10-16T09:09:51.496Z session start  demo start
+2026-10-16T09:09:51.629Z session deliver  demo deliver
+2026-10-16T09:09:51.770Z backend_mid close→done  WP-189 演示闭环完成
+--- inbox request_resolved ---
+[
+  {
+    "type": "team_ops.approval_requested",
+    "summary": "WP-190 向上请求，等待 backend_mid 审批（请求人 session）",
+    "target": "backend_mid",
+    "requester": "session"
+  },
+  {
+    "type": "team_ops.acceptance_requested",
+    "summary": "WP-190 awaiting acceptance by backend_mid (owner session)",
+    "target": "backend_mid"
+  },
+  {
+    "type": "team_ops.request_resolved",
+    "summary": "WP-190 已完成：WP-189 演示闭环完成（通知请求人 session）",
+    "target": "session",
+    "requester": "session"
+  }
+]

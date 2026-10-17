@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-15T02:33:36.164Z",
+  "updated_at": "2026-10-17T15:15:06.125Z",
   "domains": [
     {
       "id": "team-ops",
@@ -88,7 +88,14 @@
         "擅自改 enabled 知识节点",
         "无证据结论"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "litecode",
+      "superior": "andy",
+      "subordinates": [
+        "backend_mid",
+        "frontend_mid",
+        "tools_steward"
+      ]
     },
     {
       "id": "session",
@@ -113,7 +120,10 @@
         "改 web/desktop 大块 UI",
         "改 enabled 知识节点"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "tools",
@@ -140,7 +150,10 @@
         "改 engines/lsp",
         "改 enabled 知识节点"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "frontend",
@@ -165,7 +178,10 @@
         "改 Rust 内核大块",
         "擅自改 enabled 知识节点"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "frontend",
+      "superior": "frontend_mid",
+      "subordinates": []
     },
     {
       "id": "runtime",
@@ -188,7 +204,10 @@
         "改前端 UI",
         "改 tools 合约未经 handoff"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "context",
@@ -209,7 +228,10 @@
       "reject_tests": [
         "改 session 存储 schema 未经 handoff"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "ide",
@@ -233,7 +255,10 @@
         "改 web 布局大块",
         "改 session 协议"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "demand_officer",
@@ -257,7 +282,10 @@
         "直接改产品代码",
         "跳过验收进管线"
       ],
-      "status": "fired"
+      "status": "fired",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     },
     {
       "id": "tools_steward",
@@ -281,7 +309,10 @@
         "破坏性原地改工具契约",
         "去掉 done 门禁"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "ops",
+      "superior": "gm",
+      "subordinates": []
     },
     {
       "id": "frontend_desktop",
@@ -307,7 +338,10 @@
         "改 Rust 内核大块",
         "擅自改 enabled 知识节点"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "frontend",
+      "superior": "frontend_mid",
+      "subordinates": []
     },
     {
       "id": "backend_mid",
@@ -329,7 +363,18 @@
         "擅自解冻引擎/symlink",
         "直接找 Andy"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "gm",
+      "subordinates": [
+        "context",
+        "demand_officer",
+        "ide",
+        "provider",
+        "runtime",
+        "session",
+        "tools"
+      ]
     },
     {
       "id": "frontend_mid",
@@ -350,7 +395,13 @@
         "改 Rust 内核",
         "直接找 Andy"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "frontend",
+      "superior": "gm",
+      "subordinates": [
+        "frontend",
+        "frontend_desktop"
+      ]
     },
     {
       "id": "provider",
@@ -375,7 +426,10 @@
         "改 tools/permission",
         "改 enabled 知识节点"
       ],
-      "status": "active"
+      "status": "active",
+      "node": "backend",
+      "superior": "backend_mid",
+      "subordinates": []
     }
   ],
   "work_packages": [
@@ -14257,6 +14311,154 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-189",
+      "domain": "team-ops",
+      "title": "分析：同 session 切 codec 稳定性（含 session/ctx）",
+      "result": "分析报告+可复现清单+方案",
+      "done_when": [
+        "有端到端数据流/不变式说明",
+        "≥1 条确定性复现（或证明当前 main 无法复现并写清已修点）",
+        "怀疑点分级列表含 session/ctx/codec",
+        "每条有方案选项与验收口径",
+        "明确现状稳或不稳及条件",
+        "方案经 GM 批准"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-189/",
+      "progress": "closed done by gm: 分析验收通过：有条件稳；数据流/不变式 I1–I12；复现 A+缺口 B；怀疑 15 条分级+方案；建议实现包 a–e。禁改产品码已遵守。report.md 齐。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "分析-only，不落实现。背景：同 session 切换不同 codec/模型时，agent loop 与模型能力反复出问题，已修过一轮仍不踏实；高度怀疑不只是 codec，session 与 context 也有结构性问题。目标：(1) 基于当前 main 厘清 codec×session×ctx 在切模型时的真实数据流与不变式；(2) 找出确定性可复现缺陷（步骤+期望+实际）；(3) 列出有证据支撑的架构怀疑点（按：未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角）；(4) 对每条给出修复方向/方案选项与验收口径；(5) 明确「现状是否已稳」的结论与仍 defer 项。禁止改产品代码；禁止借机做大重构实现。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-189 分析方案（backend_mid）— 同 session 切 codec/模型稳定性\n\n**口径：** 分析-only，**禁止改 `src/` / web / desktop**。产物在 `.litecode/ops/artifacts/WP-189/`。实现另立包，须本方案经 GM 批准且 `report.md` 结论落地后再开。\n\n**基线：** `main` @ `838b6ed`（与 origin/main 对齐）。轻量只读调研为主；重型 cargo 互斥 `LC_MIN_MEM_GIB=2`，本包默认不跑全量构建。\n\n---\n\n## 0. 交付物与验收映射\n\n| done_when | 产物位置 |\n|-----------|----------|\n| 端到端数据流/不变式 | `report.md` §数据流与不变式；附图可选 `flow.md` |\n| ≥1 条确定性复现（或「已无法复现+缺口」） | `report.md` §复现清单 + `repro/` 步骤与证据指针 |\n| 怀疑点分级（含 session/ctx/codec） | `report.md` §怀疑分级 |\n| 每条方案选项+验收口径 | 同上表内 |\n| 现状稳/不稳/有条件稳 | `report.md` §结论 |\n| 方案经 GM 批准 | 本 `plan.md` → submit → approve |\n\n---\n\n## 1. 问题框定\n\n**现象（Andy）：** 同一 session 切换不同 codec / 模型时，agent loop 与模型能力反复异常，修一轮仍不踏实。\n\n**工作假说（待证伪）：** 根因不只在 llm codec，也可能在 **session 绑定/落盘**、**context 视图与压缩**、以及 **runtime 切模型后的 turn 入口**（provider 解析/回放兼容）。\n\n**非目标：** 不改产品码；不塞 Obs/权限桥；不要求 FE 先改（仅记展示依赖）。\n\n---\n\n## 2. 已修线索核验（先做，再下结论）\n\n在 `838b6ed` 上只读核验以下提交的**覆盖面与缺口**（勿当已稳）：\n\n| Commit | 标题 | 分析要回答 |\n|--------|------|------------|\n| `eff191a` | fix(llm): 只丢掉仍对着旧前缀的 Messages 思考签名 | 覆盖哪些前缀/签名场景？同 session 切模型后旧签名是否仍泄漏？ |\n| `e0bb00f` | fix(llm): 前缀被改写后不再回放 Messages 思考签名 | 与 compact/media_budget/runtime 的耦合？切模型是否触发「前缀改写」路径？ |\n| `d46a8c6` | fix(context): 压缩只送纯文本并限制在压缩模型窗口内 | 压缩模型 ≠ 会话模型时的窗口/纯文本约束；切模型后 compact 是否用错窗口？ |\n\n产出：`coverage-notes.md`（中层汇总，可含子域只读 dig 摘录）→ 并入 `report.md`。\n\n现有测试锚点（只读对照，不强制本包重跑全量）：`tests/turn_prefix_stability.rs`、`tests/compact_failure_calibers.rs`、`tests/stage_a_ctx_consistency.rs`、`src/llm/replay_compat.rs`、`src/llm/codec/messages_synth.rs`；WP-178 H1 证据仅作「同族历史」参考，**不修 H1 codec**。\n\n---\n\n## 3. 域拆分（中层统筹；子域只读调研，不正式开实现子包）\n\n本包 **kind=direct**：调查由中层派读、汇总；**不**为分析再开大量子 WP。若报告建议实现，再另立修复包并按域拆。\n\n| 域 |  dig 焦点（切模型瞬间） | 主要路径线索 |\n|----|-------------------------|--------------|\n| **session** | session 上模型/codec/provider 绑定如何持久与切换；transcript 是否携带「产生方」元数据；切换是否清/不清 in-flight turn | `src/session/**`、`client_protocol` 切模型 RPC |\n| **context** | view / keep_recent / compact 是否假设「全程同一模型窗口」；切模型后前缀、摘要、媒体预算是否失效 | `src/context_pipeline/**`（含 `d46a8c6`） |\n| **provider / llm codec** | codec 选择、reasoning 回放兼容、wire model id；切 codec 后旧块如何编码 | `src/llm/**`、`replay_compat`、catalog（`eff191a`/`e0bb00f`） |\n| **runtime** | turn 入口 `llm_resolve`、前缀稳定性、loop 在切模型后是否仍握旧 resolve | `src/runtime/exec.rs`、`llm_resolve.rs` |\n| **FE（只记依赖）** | ModelSwitcher 是否只改本地展示、是否打到后端权威切换 | 不派前端改码；报告记依赖 |\n\n并行顺序：中层先出覆盖面笔记 → 同步派 session / context / provider / runtime **只读 dig**（各一份短笔记到 `WP-189/dig-<domain>.md`）→ 中层交叉审合成 `report.md`。\n\n---\n\n## 4. 分析步骤（批准后执行）\n\n1. **冻结基线：** 保持 `main` @ `838b6ed`；共享树切分支仍由中层串行；本包禁产品码改动。\n2. **覆盖面：** 完成 `coverage-notes.md`（§2 三 commit + 测试触达）。\n3. **数据流与不变式：** 画出「用户切模型 → session 写绑定 → 下一 turn llm_resolve → context view/compact → codec encode → provider」；列出必须保持的不变式（例：思考签名只属于产生它的前缀/provider；compact 窗口跟压缩模型；transcript 块可按产生方回放等）——待 dig 证实后写入报告。\n4. **复现：** 优先用现有单测/合成 fixture 找**确定性**失败；其次最小真机步骤（同 session：模型 A 产生 reasoning/tool → 切 B → 续聊/压缩）。若 main 已无法复现：写清已修点 + **仍无法证明稳定的缺口**（缺测、缺场景、缺观测）。\n5. **怀疑分级：** 未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角；每条含证据指针、涉及域、方案选项（≥1）、验收口径。\n6. **结论：** **稳 / 不稳 / 有条件稳** + 建议实现包切分（仍不实现）+ defer 项。\n7. **交付：** `deliver` 交 GM；附件 `report.md`（+ coverage/dig/repro）。\n\n---\n\n## 5. 复现口径（报告必须满足其一）\n\n**路径 A — 可复现：**  \n步骤、前置（模型对、是否已 compact、是否有 reasoning/tool）、期望、实际、证据（测试名 / 日志路径 / fixture）。\n\n**路径 B — 当前不可复现：**  \n列已修点（映射到三 commit + 测试）+ 缺口清单（未测组合：如 Responses↔Messages、compact 后切模型、子 agent 继承模型等）+ 建议补测/观测，**不得**据此写「已稳」除非缺口可接受并写明条件。\n\n---\n\n## 6. 风险与约束\n\n- 内存紧张：禁止本包独占重型全量 cargo；子域 dig 以读代码/既有测试输出为主。\n- 与 WP-175/178 H1：可引用证据，**本包不修 codec SSE**。\n- 与 WP-181/186–188：无关则不掺；若发现切模型与 waiting_for_user 同根，仅记依赖。\n\n---\n\n## 7. 时间盒（建议）\n\n批准后：覆盖面+数据流 0.5d → 四域 dig 并行 0.5–1d → 交叉审+报告 0.5d。阻塞只报「未决产品行为」级问题给 GM。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:05:44.184Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 分析-only，不落实现。背景：同 session 切换不同 codec/模型时，agent loop 与模型能力反复出问题，已修过一轮仍不踏实；高度怀疑不只是 codec，session 与 context 也有结构性问题。目标：(1) 基于当前 main 厘清 codec×session×ctx 在切模型时的真实数据流与不变式；(2) 找出确定性可复现缺陷（步骤+期望+实际）；(3) 列出有证据支撑的架构怀疑点（按：未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角）；(4) 对每条给出修复方向/方案选项与验收口径；(5) 明确「现状是否已稳」的结论与仍 defer 项。禁止改产品代码；禁止借机做大重构实现。"
+        },
+        {
+          "ts": "2026-10-17T15:05:59.688Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-189/\""
+        },
+        {
+          "ts": "2026-10-17T15:07:07.333Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-189 分析方案（backend_mid）— 同 session 切 codec/模型稳定性\n\n**口径：** 分析-only，**禁止改 `src/"
+        },
+        {
+          "ts": "2026-10-17T15:07:07.538Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "分析方案已填：direct；先核三 commit 覆盖面，再派 session/ctx/provider/runtime 只读 dig，中层合成 report；禁改产品码"
+        },
+        {
+          "ts": "2026-10-17T15:07:17.613Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "分析方案批：direct 中层统筹；先核三 commit 覆盖面；四域只读 dig 再合成 report；复现路径 A/B 二选一；结论须稳/不稳/有条件稳；禁改产品码。可 dig。"
+        },
+        {
+          "ts": "2026-10-17T15:07:22.936Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "覆盖面+四域只读 dig → report"
+        },
+        {
+          "ts": "2026-10-17T15:13:51.693Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "有条件稳。report.md←coverage+四域 dig；Messages 前缀签名与 compact 窗已钉；跨 codec/model 端到端未证；怀疑 15 条；建议后续测优先包。禁改产品码已遵守。"
+        },
+        {
+          "ts": "2026-10-17T15:14:14.192Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "分析验收通过：有条件稳；数据流/不变式 I1–I12；复现 A+缺口 B；怀疑 15 条分级+方案；建议实现包 a–e。禁改产品码已遵守。report.md 齐。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-190",
+      "domain": "team-ops",
+      "title": "拣回：ops 易用度（原 WP-189 org/charter/request/zh）",
+      "result": "独立分支+拣回说明",
+      "done_when": [
+        "独立分支含原易用度实现",
+        "tools_version≥24 且命令可用",
+        "测试/validate 绿",
+        "未污染 WP-189 分析包",
+        "有拣回说明"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "in_progress",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-190/",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-17T15:14:23.414Z",
+      "parent": null,
+      "goal": "将此前已验收但未 commit/push 的 ops 易用度实现（组织树推导、role-charter、request/handle/forward、中文报错；曾 tools_version=24）从 stash/临时提交拣回独立分支并恢复到可合入状态。不覆盖、不改写当前 WP-189（切 codec 分析包）。验收：独立分支上 registry tools_version≥24；org-tree/org-sync/role-charter/request 可用；wp.test 与 validate_all 绿；与 main@838b6ed 可 rebase/merge；产物与说明在本包 artifacts。禁止破坏性 reset/删 objects；禁止动 WP-189 分析产物。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-190 拣回方案（短）\n\n> owner：tools_steward · approver：gm  \n> 基线：`main@838b6ed` · 目标分支：`ops/wp-190-ops-usability`  \n> 原则：只拣回 ops 易用度实现；**不碰**当前 WP-189（切 codec 分析）；**不 drop** stash；不破坏性 reset / 不删 objects；合 main 等 GM/Andy 点头。\n\n## 1. 目标\n\n把原「WP-189 ops 易用度」（曾 done、tools_version=24：org 树 / charter / request·handle·forward / 中文报错）从 stash/临时对象拣到独立分支，恢复到可合入状态。\n\n## 2. 线索（只读，勿 drop）\n\n| 对象 | 用途 |\n|---|---|\n| `stash@{0}` / `b28b6fa` | 主实现：`wp.mjs`/`_lib.mjs`/`wp.test.mjs`/`registry.json`(tv=24)、`board.schema.json`、`validate.mjs` 等 |\n| `102f37f` | 原验收产物 + `context/constitution.md`（迁入 **WP-190** artifacts，不写回 WP-189） |\n| `stash@{1}` | 仅 board/log 碎片；**默认不整包应用**（易污染现看板） |\n\n## 3. 步骤\n\n1. `git fetch` 后从 `838b6ed` 建分支 `ops/wp-190-ops-usability`（不切丢他人工作：若当前脏树，先只读核对；用 `git worktree` 或干净 checkout 该分支，避免覆盖 WP-189 分析产物）。\n2. **工具文件整文件拣回**（来自 `stash@{0}` / `b28b6fa`）：  \n   `.litecode/ops/tools/{wp.mjs,_lib.mjs,wp.test.mjs,registry.json,board.md}`、`board.schema.json`、`validate.mjs`（及同 diff 内必要配套）。\n3. **board.json 手术合并**（禁止 `checkout stash -- board.json`）：  \n   - 保留现看板 WP-189 分析包及后续条目；  \n   - 仅并入 `org_nodes` / `ops_config` / agents 的 `node|superior|subordinates`；  \n   - 不把旧「ops 易用度」伪装成 WP-189；说明写进本包 `recovery.md`。\n4. 从 `102f37f` 拷贝原 acceptance/demo/plan 到 `.litecode/ops/artifacts/WP-190/`（可加前缀 `recovered-`）；补 `constitution.md` 若缺。\n5. 跑：`node --test .litecode/ops/tools/wp.test.mjs`、`node .litecode/ops/tools/validate_all.mjs`；抽查 `org-tree` / `role-charter` / `request` 帮助输出。\n6. 写 `artifacts/WP-190/recovery.md`（命令、来源对象、与 main 差异、未应用的 stash 部分）。\n7. 在独立分支上 **commit**（仅本分支；**不** push main、不自动合入）。deliver 口径：分支可合 + 测试绿 + recovery.md。\n\n## 4. handle 口径（拣回时保持）\n\n无 flag → 审批人自留；`--owner` 指定；`--intake` 才用 `intake_agent`（仅 ops/工具类）。\n\n## 5. 验收（done_when）\n\n- 独立分支含易用度实现且 `tools_version≥24`\n- `org-tree` / `org-sync` / `role-charter` / `request` 可用\n- `wp.test` + `validate_all` 绿\n- WP-189 分析产物未被改写\n- `recovery.md` 齐；合 main 等明示批准\n\n## 6. 不做\n\ndrop stash；破坏性 reset；删 `.git/objects`；覆盖 `.litecode/ops/artifacts/WP-189/`；未批准合 main。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:13:17.496Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 将此前已验收但未 commit/push 的 ops 易用度实现（组织树推导、role-charter、request/handle/forward、中文报错；曾 tools_version=24）从 stash/临时提交拣回独立分支并恢复到可合入状态。不覆盖、不改写当前 WP-189（切 codec 分析包）。验收：独立分支上 registry tools_version≥24；org-tree/org-sync/role-charter/request 可用；wp.test 与 validate_all 绿；与 main@838b6ed 可 rebase/merge；产物与说明在本包 artifacts。禁止破坏性 reset/删 objects；禁止动 WP-189 分析产物。"
+        },
+        {
+          "ts": "2026-10-17T15:13:24.039Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-190/\" -> \".litecode/ops/artifacts/WP-190/\""
+        },
+        {
+          "ts": "2026-10-17T15:13:53.070Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "direct: # WP-190 拣回方案（短）\n\n> owner：tools_steward · approver：gm  \n> 基线：`main@838b6ed` · 目标"
+        },
+        {
+          "ts": "2026-10-17T15:13:53.239Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": "拣回短方案：独立分支从 stash0/b28b6fa 拣工具；board 手术合并；不碰 WP-189；不 drop stash"
+        },
+        {
+          "ts": "2026-10-17T15:14:14.015Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "拣回方案批：独立分支 ops/wp-190-ops-usability；整文件自 b28b6fa；board 手术合并保留分析 WP-189；不 drop stash、不合 main。可执行。"
+        },
+        {
+          "ts": "2026-10-17T15:14:23.414Z",
+          "actor": "tools_steward",
+          "action": "start",
+          "note": "拣回独立分支"
+        }
+      ]
     }
   ],
   "pipelines": [
@@ -14272,5 +14474,40 @@
       ],
       "status": "running"
     }
-  ]
+  ],
+  "org_nodes": [
+    {
+      "id": "litecode",
+      "name": "LiteCode",
+      "parent": null,
+      "lead": "gm",
+      "goal": "产品交付与团队运转"
+    },
+    {
+      "id": "backend",
+      "name": "后端",
+      "parent": "litecode",
+      "lead": "backend_mid",
+      "goal": "后端域统筹"
+    },
+    {
+      "id": "frontend",
+      "name": "前端",
+      "parent": "litecode",
+      "lead": "frontend_mid",
+      "goal": "前端域统筹"
+    },
+    {
+      "id": "ops",
+      "name": "工具集",
+      "parent": "litecode",
+      "lead": "tools_steward",
+      "goal": "强制工具集与热更"
+    }
+  ],
+  "ops_config": {
+    "principal": "andy",
+    "intake_agent": "tools_steward",
+    "escalate_to_principal": false
+  }
 }

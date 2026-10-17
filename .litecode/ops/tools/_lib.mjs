@@ -120,7 +120,7 @@ export function hierarchyMeta(board, w) {
 
 // ── v15 (WP-032): durable event store — lock + fsync + atomic rename; outbox before send ─────────
 export const REALERT_MS_DEFAULT = 60 * 60 * 1000; // acked matter is not re-sent within 60 min (old WPs too)
-export const DELIVER_TYPES = new Set(["team_ops.wp_timeout", "team_ops.approval_requested", "team_ops.acceptance_requested", "team_ops.watcher_down", "team_ops.watcher_restarted"]);
+export const DELIVER_TYPES = new Set(["team_ops.wp_timeout", "team_ops.approval_requested", "team_ops.acceptance_requested", "team_ops.watcher_down", "team_ops.watcher_restarted", "team_ops.request_resolved"]);
 function sleepMs(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); }
 function pidAlive(pid) { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } }
 /** Exclusive lock via O_EXCL lockfile; stale (dead pid or >30s) locks are taken over. */
@@ -400,4 +400,195 @@ export function checkWatcherAndEmit(ops, { now = new Date(), staleMs = WATCH_STA
   if (!ev) return res;
   res.emitted = res.emitted ? { ...res.emitted, down: { id: ev.id, summary } } : { id: ev.id, summary };
   return res;
+}
+// ── WP-189: org tree / reporting / charter ───────────────────────────────────
+export function opsConfigOf(board) {
+  const c = board.ops_config || {};
+  return {
+    principal: c.principal || "andy",
+    intake_agent: c.intake_agent || "tools_steward",
+    escalate_to_principal: c.escalate_to_principal === true,
+  };
+}
+
+export function deriveReporting(board) {
+  const nodes = new Map((board.org_nodes || []).map((n) => [n.id, n]));
+  const cfg = opsConfigOf(board);
+  const superiorMap = new Map();
+  for (const agent of board.agents || []) {
+    if (!agent.node || !nodes.has(agent.node)) continue;
+    const node = nodes.get(agent.node);
+    if (agent.id === node.lead) {
+      if (!node.parent) superiorMap.set(agent.id, cfg.principal);
+      else {
+        const parent = nodes.get(node.parent);
+        superiorMap.set(agent.id, parent ? parent.lead : null);
+      }
+    } else {
+      superiorMap.set(agent.id, node.lead);
+    }
+  }
+  const subMap = new Map();
+  for (const ag of board.agents || []) subMap.set(ag.id, []);
+  for (const [id, superior] of superiorMap) {
+    if (superior && subMap.has(superior)) subMap.get(superior).push(id);
+  }
+  for (const list of subMap.values()) list.sort();
+  return { sup: superiorMap, subs: subMap };
+}
+
+export function applyDerivedReporting(board) {
+  const derived = deriveReporting(board);
+  for (const agent of board.agents || []) {
+    if (!agent.node) continue;
+    agent.superior = derived.sup.get(agent.id) ?? null;
+    agent.subordinates = derived.subs.get(agent.id) ?? [];
+  }
+  return derived;
+}
+
+export function derivedDrift(board) {
+  const derived = deriveReporting(board);
+  const problems = [];
+  for (const agent of board.agents || []) {
+    if (!agent.node) continue;
+    const wantSup = derived.sup.has(agent.id) ? (derived.sup.get(agent.id) ?? null) : null;
+    if (agent.superior !== undefined && (agent.superior ?? null) !== wantSup) {
+      problems.push(`角色 ${agent.id} 的 superior 应为 ${wantSup ?? "空"}，当前是 ${agent.superior ?? "空"}`);
+    }
+    if (agent.subordinates !== undefined) {
+      const wantSubs = derived.subs.get(agent.id) ?? [];
+      const got = [...(agent.subordinates ?? [])].sort();
+      if (JSON.stringify(got) !== JSON.stringify(wantSubs)) {
+        problems.push(`角色 ${agent.id} 的 subordinates 与组织树不一致`);
+      }
+    }
+  }
+  return problems;
+}
+
+export function superiorOfAgent(board, id) {
+  const cfg = opsConfigOf(board);
+  if (!id || id === cfg.principal) return null;
+  return deriveReporting(board).sup.get(id) ?? null;
+}
+
+function nodeChain(nodes, id) {
+  const chain = [];
+  const seen = new Set();
+  let cur = nodes.get(id);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    chain.unshift(cur.id);
+    cur = cur.parent ? nodes.get(cur.parent) : null;
+  }
+  return chain;
+}
+
+export function orgTreeRows(board) {
+  const nodes = new Map((board.org_nodes || []).map((n) => [n.id, n]));
+  const rows = [];
+  const seen = new Set();
+  const walk = (node, depth) => {
+    if (seen.has(node.id)) return;
+    seen.add(node.id);
+    const members = (board.agents || []).filter((a) => a.node === node.id).map((a) => a.id).sort();
+    rows.push({ depth, id: node.id, name: node.name, parent: node.parent ?? null, lead: node.lead, members, chain: nodeChain(nodes, node.id) });
+    const kids = [...nodes.values()].filter((n) => n.parent === node.id).sort((a, b) => (a.id < b.id ? -1 : 1));
+    for (const kid of kids) walk(kid, depth + 1);
+  };
+  for (const node of [...nodes.values()].filter((n) => !n.parent).sort((a, b) => (a.id < b.id ? -1 : 1))) walk(node, 0);
+  for (const node of nodes.values()) if (!seen.has(node.id)) walk(node, 0);
+  return rows;
+}
+
+export function orgProblems(board) {
+  const problems = [];
+  const nodes = board.org_nodes || [];
+  if (!nodes.length) return problems;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const agentIds = new Set((board.agents || []).map((a) => a.id));
+  const cfg = opsConfigOf(board);
+  if (cfg.intake_agent && !agentIds.has(cfg.intake_agent)) {
+    problems.push(`ops_config.intake_agent 指向不存在的角色 ${cfg.intake_agent}`);
+  }
+  const leadOwner = new Map();
+  for (const node of nodes) {
+    if (node.parent) {
+      if (node.parent === node.id) problems.push(`组织节点 ${node.id} 不能以自己为父节点`);
+      else if (!nodeMap.has(node.parent)) problems.push(`组织节点 ${node.id} 的父节点 ${node.parent} 不存在`);
+    }
+    if (!node.lead) problems.push(`组织节点 ${node.id} 缺少 lead`);
+    else {
+      if (leadOwner.has(node.lead)) problems.push(`角色 ${node.lead} 同时是 ${leadOwner.get(node.lead)} 和 ${node.id} 的负责人`);
+      else leadOwner.set(node.lead, node.id);
+      if (!agentIds.has(node.lead)) problems.push(`组织节点 ${node.id} 的负责人 ${node.lead} 没有角色卡`);
+      else {
+        const lead = (board.agents || []).find((a) => a.id === node.lead);
+        if (lead && lead.node && lead.node !== node.id) {
+          problems.push(`负责人 ${node.lead} 的 node 是 ${lead.node}，不是 ${node.id}`);
+        }
+      }
+    }
+  }
+  const seen = new Set();
+  const visit = (id, stack) => {
+    if (stack.has(id)) { problems.push(`组织树成环：${[...stack, id].join(" → ")}`); return; }
+    if (seen.has(id)) return;
+    seen.add(id); stack.add(id);
+    for (const n of nodes) if (n.parent === id) visit(n.id, stack);
+    stack.delete(id);
+  };
+  for (const n of nodes) if (!n.parent) visit(n.id, new Set());
+  for (const n of nodes) if (!seen.has(n.id)) visit(n.id, new Set());
+
+  for (const agent of board.agents || []) {
+    if (agent.status === "fired") continue;
+    if (!agent.node) problems.push(`角色 ${agent.id} 缺少 node（必须挂到组织树）`);
+    else if (!nodeMap.has(agent.node)) problems.push(`角色 ${agent.id} 的节点 ${agent.node} 不存在`);
+  }
+  problems.push(...derivedDrift(board));
+  return problems;
+}
+
+function lineList(arr) {
+  if (!arr || !arr.length) return "（无）";
+  return arr.map((x) => `- ${x}`).join("\n");
+}
+
+/** Render role charter markdown. */
+export function charterOf(board, id, { constitutionText = null } = {}) {
+  const agent = (board.agents || []).find((a) => a.id === id);
+  if (!agent) return null;
+  const node = (board.org_nodes || []).find((n) => n.id === agent.node);
+  const constitution = (constitutionText && String(constitutionText).trim()) || "（还没有总章程）";
+  const superior = agent.superior || "（无）";
+  const markdown = [
+    `# 岗位说明：${agent.name}（${agent.id}）`,
+    "",
+    `状态：${agent.status}`,
+    `所属节点：${node ? node.name : (agent.node || "（未挂）")}（${agent.node || "-"}）`,
+    `上级：${superior}`,
+    `下级：${(agent.subordinates ?? []).join("、") || "（无）"}`,
+    "",
+    "## 职责（scope）",
+    lineList(agent.scope),
+    "",
+    "## 工作地点（place）",
+    agent.place || "（无）",
+    "",
+    "## 工具",
+    lineList(agent.tools),
+    "",
+    "## 接受的交付（accept_tests）",
+    lineList(agent.accept_tests),
+    "",
+    "## 不接受的交付（reject_tests）",
+    lineList(agent.reject_tests),
+    "",
+    "## 总章程",
+    constitution,
+    "",
+  ].join("\n");
+  return { id: agent.id, markdown };
 }

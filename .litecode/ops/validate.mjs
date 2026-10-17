@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { orgProblems } from "./tools/_lib.mjs";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
 const board = JSON.parse(fs.readFileSync(path.join(dir, "board.json"), "utf8"));
@@ -107,6 +108,15 @@ for (const p of board.pipelines) {
   if (!agentIds.has(p.owner)) fail("pipeline " + p.id + " owner");
   if (!agentIds.has(p.reviewer) && !humanIds.has(p.reviewer)) fail("pipeline " + p.id + " reviewer");
   for (const id of p.work_packages) if (!wpIds.has(id)) fail("pipeline " + p.id + " missing WP " + id);
+}
+
+// WP-189: org tree + request kind
+for (const msg of orgProblems(board)) fail(msg);
+for (const w of board.work_packages) {
+  if (w.kind === "request") {
+    if (!w.requester) fail("WP " + w.id + ": kind=request 必须有 requester");
+    else if (!agentIds.has(w.requester) && !humanIds.has(w.requester)) fail("WP " + w.id + " requester unknown");
+  }
 }
 
 console.log("ops board OK", {

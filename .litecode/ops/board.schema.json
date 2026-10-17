@@ -113,6 +113,27 @@
               "standby",
               "fired"
             ]
+          },
+          "node": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "所属组织节点 id（WP-189）"
+          },
+          "superior": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "直接上级 agent id 或 andy；由 org-sync 或手填，validate 抓漂移"
+          },
+          "subordinates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "直接下级 id 列表"
           }
         }
       }
@@ -302,7 +323,9 @@
                     "reopen",
                     "close",
                     "set",
-                    "reassign"
+                    "reassign",
+                    "handle",
+                    "forward"
                   ]
                 },
                 "note": {
@@ -319,6 +342,22 @@
                 }
               }
             }
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "direct",
+              "split",
+              "request"
+            ],
+            "description": "WP 包类型；缺省=普通包。与 content.kind 无关"
+          },
+          "requester": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "kind=request 时发起人"
           }
         }
       }
@@ -363,6 +402,59 @@
               "done"
             ]
           }
+        }
+      }
+    },
+    "org_nodes": {
+      "type": "array",
+      "description": "组织树节点（WP-189）",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "parent",
+          "lead"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]*$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parent": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lead": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ops_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "ops 运行时配置（WP-189）",
+      "properties": {
+        "principal": {
+          "type": "string"
+        },
+        "intake_agent": {
+          "type": "string"
+        },
+        "escalate_to_principal": {
+          "type": "boolean"
         }
       }
     }

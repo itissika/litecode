@@ -5,14 +5,14 @@
 
 ## 当前版本
 
-- `tools_version`: **21**
+- `tools_version`: **24**
 - registry: `.litecode/ops/tools/registry.json`
 - 查询: `node .litecode/ops/tools/tools_version.mjs`
 
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-16T00:30:23.177Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-16T09:12:27.016Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -204,12 +204,17 @@
 | WP-185 | └ WP-182 desktop：同契约无分叉 | done | frontend_desktop | frontend_mid |
 | WP-183 | 实现：崩溃/回合失败可观测性 Obs（自 WP-180） | done | backend_mid | gm |
 | WP-188 | └ WP-183-a：runtime Obs-1/2 可观测性落地 | done | runtime | backend_mid |
+| WP-189 | ops 工具易用度优化（借鉴 agent-org） | done | tools_steward | gm |
+| WP-190 | [demo WP-189] session 向上请求 | done | session | backend_mid |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
 
 | 时间 | 变更 |
 |---|---|
+| 2026-10-16 | v22（WP-189）：board.org_nodes + ops_config；agent.node/superior/subordinates；deriveReporting + validate 漂移中文；org-tree/org-sync；13 agents 挂树（工具集管家）|
+| 2026-10-16 | v23（WP-189）：role-charter + context/constitution.md 占位（工具集管家）|
+| 2026-10-16 | v24（WP-189）：request/handle/forward；kind/requester；team_ops.request_resolved；关键 CLI 中文+当前状态；handle 默认自留/--owner/--intake（工具集管家）|
 | 2026-10-15 | v22（WP-174）：wp_watch 冷启动/接管跳过已关闭或状态已变的 approval/acceptance/timeout outbox 重放（eventStillDeliverable + skipped 记入 state）；ops_harden 组 11 回归（工具集管家）|
 | 2026-10-15 | v21（WP-173）：wp_watch 开机自启常驻。新增 ops.wp_watch_service（install/prove/test-callback）；systemd user unit（Restart=always）优先，无 systemctl 时 fallback svc + ~/.profile 钩子；webhook 只写仓库外 `~/.config/litecode/wp-watch.env`（0600），永不打印/入库；去掉「靠定时 tick 提醒」——停滞/升级事件只由常驻 watcher 发出；按 bot 分发回调仅留 resolveWebhook 设计口（工具集管家）|
 | 2026-10-15 | v21：合并 gm/wp165-local 与 ops/team-framework 两条各自的「v20」（一条是 WP-171/172：LC_ROOT/init_env/test_failures；一条是 registry_verify --quick/g++ 用户态/cargo_locked 自动校验），tools_version 取 21；registry 保留两边条目（cargo_env v2 含 LC_ROOT 说明）（工具集管家，合并）|
@@ -520,3 +525,20 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 ## tools_version 22（WP-174，2026-10-15）
 - `eventStillDeliverable`：approval 仅 awaiting_approval；acceptance 仅 review；timeout 仅 open clock；closed/缺失跳过。
 - 冷启动 cycle 对 obsolete outbox 记 `delivered.skipped`，不 POST，避免冲垮 GM webhook。
+
+
+## tools_version 22（WP-189 step1，2026-10-16）
+- `board.org_nodes` / `ops_config`；agent 可选 `node`/`superior`/`subordinates`。
+- `deriveReporting` + `orgProblems`（validate 漂移中文）。
+- 命令：`org-tree` / `org-sync`（仅 gm/andy）。
+- 首迁：gm→litecode；backend_*→backend；frontend_*→frontend；tools_steward→ops。
+
+## tools_version 23（WP-189 step2，2026-10-16）
+- `role-charter --id` 输出岗位 markdown（含上级/accept/reject）。
+- `.litecode/ops/context/constitution.md` 最小占位。
+
+## tools_version 24（WP-189 step3，2026-10-16）
+- `request` / `handle` / `forward`；WP `kind`/`requester`；history `handle`/`forward`。
+- `handle`：**默认审批人自留 owner**；`--owner AGENT` 指定；`--intake` 才落到 `ops_config.intake_agent`（仅 ops/工具类；覆盖原 plan §3.2）。
+- `DELIVER_TYPES` 追加 `team_ops.request_resolved`（close done 请求包时通知 requester）。
+- 关键 CLI 错误直白中文并带「当前 <status>」。
