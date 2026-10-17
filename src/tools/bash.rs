@@ -4,7 +4,6 @@
 //! Interactive human terminals use the same hub over the `terminal/*` WS API.
 
 use serde_json::Value;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -69,7 +68,6 @@ impl BashTool {
         };
 
         let run_in_background = input["run_in_background"].as_bool().unwrap_or(false);
-        let workdir = input["workdir"].as_str().map(Path::new);
         let foreground_wait = input["timeout"]
             .as_u64()
             .map(Duration::from_secs)
@@ -80,7 +78,7 @@ impl BashTool {
         if run_in_background {
             return match self
                 .hub
-                .spawn_command(command, workdir, &workspace_root, &sid, &call_id)
+                .spawn_command(command, None, &workspace_root, &sid, &call_id)
             {
                 Ok(spawned) => {
                     let jobs = self.hub.jobs.running(&sid);
@@ -95,14 +93,13 @@ impl BashTool {
             };
         }
 
-        let spawned =
-            match self
-                .hub
-                .spawn_command(command, workdir, &workspace_root, &sid, &call_id)
-            {
-                Ok(s) => s,
-                Err(e) => return ToolCallResult::error(e.to_string()),
-            };
+        let spawned = match self
+            .hub
+            .spawn_command(command, None, &workspace_root, &sid, &call_id)
+        {
+            Ok(s) => s,
+            Err(e) => return ToolCallResult::error(e.to_string()),
+        };
 
         match self.hub.jobs.wait(
             &sid,
@@ -171,10 +168,6 @@ impl Tool for BashTool {
                 "command": {
                     "type": "string",
                     "description": "Shell command to run in one shot (not a persistent session). Chain with && when you need cd or env for this call only."
-                },
-                "workdir": {
-                    "type": "string",
-                    "description": "Working directory for this call only (workspace-relative preferred)."
                 },
                 "run_in_background": {
                     "type": "boolean",
@@ -278,13 +271,6 @@ impl Tool for BashTool {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tool::require_nonempty_string_trimmed(input, "command")?;
 
-        if let Some(workdir) = input["workdir"].as_str() {
-            let path = Path::new(workdir);
-            if !path.exists() {
-                return Err(format!("workdir does not exist: {workdir}"));
-            }
-        }
-
         if let Some(v) = input.get("timeout").filter(|v| !v.is_null()) {
             let n = v
                 .as_u64()
@@ -314,6 +300,8 @@ impl Tool for BashTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
+
     use crate::permission::PermissionAction;
     use crate::terminal::TeeCapture;
     use crate::tools::bash_safety::{check_dangerous_command, is_destructive_command};
@@ -464,12 +452,6 @@ mod tests {
     #[test]
     fn test_validate_input_empty_command() {
         let input = serde_json::json!({"command": ""});
-        assert!(test_tool().validate_input(&input).is_err());
-    }
-
-    #[test]
-    fn test_validate_input_bad_workdir() {
-        let input = serde_json::json!({"command": "ls", "workdir": "/no/such/path/ever"});
         assert!(test_tool().validate_input(&input).is_err());
     }
 
