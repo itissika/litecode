@@ -1113,19 +1113,22 @@ pub(crate) struct LlmRequestHealth {
     pub message: String,
 }
 
-/// Rank toast > debug > silent. Stable `code` values match WP-191 plan §3.2 / §4.
+/// Rank debug > silent. Cross-model thinking loss and a sticky-binding
+/// mismatch stay on the request log. They are not this model's own turn
+/// dropping its thinking, so they do not toast. Stable `code` values match
+/// WP-191 plan §3.2 / §4.
 pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRequestHealth {
     let (severity, code, message) = if input.reasoning_dropped > 0
         || input.reasoning_wholly_omitted > 0
     {
         (
-            "toast",
+            "debug",
             "thinking_not_refilled",
             "Prior model thinking was not carried into this request; the model may reason from less context.",
         )
     } else if !input.bind_matches_sticky {
         (
-            "toast",
+            "debug",
             "bind_sticky_mismatch",
             "Turn model binding does not match the session sticky model.",
         )
@@ -1333,7 +1336,7 @@ mod request_health_tests {
         let mut input = base_input();
         input.reasoning_dropped = dropped as u32;
         let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "toast");
+        assert_eq!(health.severity, "debug");
         assert_eq!(health.code, "thinking_not_refilled");
         assert!(!health.message.is_empty());
     }
@@ -1360,7 +1363,7 @@ mod request_health_tests {
         input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
         input.reasoning_wholly_omitted = stats.reasoning_wholly_omitted as u32;
         let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "toast");
+        assert_eq!(health.severity, "debug");
         assert_eq!(health.code, "thinking_not_refilled");
     }
 
@@ -1411,12 +1414,12 @@ mod request_health_tests {
     }
 
     #[test]
-    fn bind_sticky_mismatch_is_toast() {
+    fn bind_sticky_mismatch_is_debug_not_toast() {
         let mut input = base_input();
         input.bind_matches_sticky = false;
         input.sticky_model_id = "other/model".into();
         let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "toast");
+        assert_eq!(health.severity, "debug");
         assert_eq!(health.code, "bind_sticky_mismatch");
     }
 }
