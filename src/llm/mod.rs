@@ -20,8 +20,8 @@ pub use request::{ModelRequest, ToolDef};
 /// minted it, summary replay drops reasoning any other provider produced, and
 /// a rewritten Messages prefix drops the signature minted against that prefix.
 pub(crate) use replay_compat::{
-    ItemProducer, producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
-    strip_rebased_signatures,
+    ItemProducer, StripCiphertextStats, producers_for_seqs, retain_own_reasoning,
+    strip_foreign_ciphertext, strip_rebased_signatures,
 };
 
 /// Folding a provider's stream into canonical `Item`s.

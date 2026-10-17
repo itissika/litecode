@@ -585,7 +585,12 @@ impl AgentRuntime {
         hub.jobs.restore_mailbox(&self.session_id, notices.to_vec());
     }
 
-    fn emit_llm_request_built(&self, request: &ModelRequest, token_count: usize) {
+    fn emit_llm_request_built(
+        &self,
+        request: &ModelRequest,
+        token_count: usize,
+        health: &LlmRequestHealth,
+    ) {
         // `token_estimate` is local budget telemetry only — never meter/ring truth.
         self.emit_internal(InternalEvent::LlmRequestBuilt {
             model: request.model.clone(),
@@ -594,7 +599,30 @@ impl AgentRuntime {
             tools_count: request.tools.len(),
             context_window: self.turn_llm.context_window,
             token_breakdown: request_token_breakdown(request),
+            sticky_model_id: health.sticky_model_id.clone(),
+            turn_model_ref: health.turn_model_ref.clone(),
+            turn_provider_id: health.turn_provider_id.clone(),
+            turn_endpoint_type: health.turn_endpoint_type.clone(),
+            bind_matches_sticky: health.bind_matches_sticky,
+            origin_provider_id: health.origin_provider_id.clone(),
+            origin_endpoint_type: health.origin_endpoint_type.clone(),
+            origin_model_ref: health.origin_model_ref.clone(),
+            ciphertexts_stripped: health.ciphertexts_stripped,
+            rebased_stripped: health.rebased_stripped,
+            reasoning_dropped: health.reasoning_dropped,
+            reasoning_wholly_omitted: health.reasoning_wholly_omitted,
+            rebased_true_count: health.rebased_true_count,
+            projection_rewrote: health.projection_rewrote,
+            severity: health.severity.clone(),
+            code: health.code.clone(),
+            message: health.message.clone(),
         });
+        if health.severity == "toast" {
+            self.emit_internal(InternalEvent::SnapshotNotice {
+                level: "warn".into(),
+                message: health.message.clone(),
+            });
+        }
     }
 
     /// If the agent touched its active plan this turn, record the on-disk
@@ -664,33 +692,40 @@ impl AgentRuntime {
         // replay (Bailian) drops every reasoning item this provider did not mint,
         // because that input schema requires the id on the item.
         let provider_id = self.turn_llm.provider_id.clone();
+        let endpoint_type = self.turn_llm.model.endpoint_type.as_str().to_string();
+        let model_ref = self.turn_llm.model_ref.clone();
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
         // Before summary replay drops items, while `rebased` still lines up.
         let rebased_stripped = crate::llm::strip_rebased_signatures(
             &mut input,
             rebased,
-            self.turn_llm.model.endpoint_type.as_str(),
+            &endpoint_type,
         );
-        let (ciphertexts_stripped, reasoning_dropped) = if self.turn_llm.model.reasoning_replay
-            == crate::provider_catalog::ReasoningReplay::Summary
-        {
-            (
-                0,
-                crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id),
-            )
-        } else {
-            (
-                crate::llm::strip_foreign_ciphertext(
+        let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
+        let (ciphertexts_stripped, reasoning_dropped, reasoning_wholly_omitted) =
+            if self.turn_llm.model.reasoning_replay
+                == crate::provider_catalog::ReasoningReplay::Summary
+            {
+                (
+                    0u32,
+                    crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id) as u32,
+                    0u32,
+                )
+            } else {
+                let stats = crate::llm::strip_foreign_ciphertext(
                     &mut input,
                     &producers,
                     &provider_id,
-                    self.turn_llm.model.endpoint_type.as_str(),
-                    &self.turn_llm.model_ref,
-                ),
-                0,
-            )
-        };
+                    &endpoint_type,
+                    &model_ref,
+                );
+                (
+                    stats.ciphertexts_stripped as u32,
+                    0u32,
+                    stats.reasoning_wholly_omitted as u32,
+                )
+            };
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
         let origin_seq = self.record_request_origin()?;
@@ -705,6 +740,7 @@ impl AgentRuntime {
             ciphertexts_stripped,
             rebased_stripped,
             reasoning_dropped,
+            reasoning_wholly_omitted,
             tools_count = tool_names.len(),
             tools = ?tool_names,
             item_count = input.len(),
@@ -714,7 +750,32 @@ impl AgentRuntime {
             "LLM request built"
         );
 
-        Ok(ModelRequest {
+        let sticky_model_id = self
+            .sessions
+            .session_model_id(&self.session_id)
+            .unwrap_or_default();
+        let bind_matches_sticky = sticky_model_id == model_ref;
+        // Projection rewrite detection is out of scope for this package
+        // (acceptance documents the gap); never invent a true.
+        let projection_rewrote = false;
+        let health = classify_llm_request_health(LlmRequestHealthInput {
+            sticky_model_id,
+            turn_model_ref: model_ref.clone(),
+            turn_provider_id: provider_id.clone(),
+            turn_endpoint_type: endpoint_type.clone(),
+            bind_matches_sticky,
+            origin_provider_id: provider_id.clone(),
+            origin_endpoint_type: endpoint_type.clone(),
+            origin_model_ref: model_ref.clone(),
+            ciphertexts_stripped,
+            rebased_stripped: rebased_stripped as u32,
+            reasoning_dropped,
+            reasoning_wholly_omitted,
+            rebased_true_count,
+            projection_rewrote,
+        });
+
+        let request = ModelRequest {
             model,
             instructions: instructions.to_string(),
             input,
@@ -726,7 +787,9 @@ impl AgentRuntime {
             // codec gates on, not a per-turn instruction.
             json_output: false,
             session_id: Some(self.session_id.clone()),
-        })
+        };
+        self.emit_llm_request_built(&request, token_count, &health);
+        Ok(request)
     }
 
     /// The provider that produced each input item, through its durable seq and the
@@ -793,7 +856,7 @@ impl AgentRuntime {
         request: &ModelRequest,
         token_count: usize,
     ) -> Result<Vec<Item>> {
-        self.emit_llm_request_built(request, token_count);
+        // LlmRequestBuilt (+ toast SnapshotNotice) already emitted in build_model_request.
         // Split borrows so the stream closure can mutate token meters while the
         // provider call borrows the (disjoint) binding fields.
         let step = self.current_step_value();
@@ -1009,6 +1072,106 @@ fn should_stop_after_output(output: &[Item]) -> bool {
     !output.iter().any(|i| matches!(i, Item::FunctionCall(_)))
 }
 
+/// Inputs for WP-191 request-health classification (pure; unit-tested).
+#[derive(Debug, Clone)]
+pub(crate) struct LlmRequestHealthInput {
+    pub sticky_model_id: String,
+    pub turn_model_ref: String,
+    pub turn_provider_id: String,
+    pub turn_endpoint_type: String,
+    pub bind_matches_sticky: bool,
+    pub origin_provider_id: String,
+    pub origin_endpoint_type: String,
+    pub origin_model_ref: String,
+    pub ciphertexts_stripped: u32,
+    pub rebased_stripped: u32,
+    pub reasoning_dropped: u32,
+    pub reasoning_wholly_omitted: u32,
+    pub rebased_true_count: u32,
+    pub projection_rewrote: bool,
+}
+
+/// Classified request-health snapshot carried on `LlmRequestBuilt`.
+#[derive(Debug, Clone)]
+pub(crate) struct LlmRequestHealth {
+    pub sticky_model_id: String,
+    pub turn_model_ref: String,
+    pub turn_provider_id: String,
+    pub turn_endpoint_type: String,
+    pub bind_matches_sticky: bool,
+    pub origin_provider_id: String,
+    pub origin_endpoint_type: String,
+    pub origin_model_ref: String,
+    pub ciphertexts_stripped: u32,
+    pub rebased_stripped: u32,
+    pub reasoning_dropped: u32,
+    pub reasoning_wholly_omitted: u32,
+    pub rebased_true_count: u32,
+    pub projection_rewrote: bool,
+    pub severity: String,
+    pub code: String,
+    pub message: String,
+}
+
+/// Rank toast > debug > silent. Stable `code` values match WP-191 plan §3.2 / §4.
+pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRequestHealth {
+    let (severity, code, message) = if input.reasoning_dropped > 0
+        || input.reasoning_wholly_omitted > 0
+    {
+        (
+            "toast",
+            "thinking_not_refilled",
+            "Prior model thinking was not carried into this request; the model may reason from less context.",
+        )
+    } else if !input.bind_matches_sticky {
+        (
+            "toast",
+            "bind_sticky_mismatch",
+            "Turn model binding does not match the session sticky model.",
+        )
+    } else if input.ciphertexts_stripped > 0 {
+        (
+            "debug",
+            "foreign_strip",
+            "Foreign reasoning ciphertext was stripped; text was retained where applicable.",
+        )
+    } else if input.rebased_stripped > 0 {
+        (
+            "debug",
+            "rebased_sig_strip",
+            "Rebased Messages signatures were stripped (Rule 5).",
+        )
+    } else if input.projection_rewrote {
+        (
+            "debug",
+            "projection_rewrite",
+            "Modality projection rewrote items in this request view.",
+        )
+    } else {
+        ("silent", "", "")
+    };
+
+    LlmRequestHealth {
+        sticky_model_id: input.sticky_model_id,
+        turn_model_ref: input.turn_model_ref,
+        turn_provider_id: input.turn_provider_id,
+        turn_endpoint_type: input.turn_endpoint_type,
+        bind_matches_sticky: input.bind_matches_sticky,
+        origin_provider_id: input.origin_provider_id,
+        origin_endpoint_type: input.origin_endpoint_type,
+        origin_model_ref: input.origin_model_ref,
+        ciphertexts_stripped: input.ciphertexts_stripped,
+        rebased_stripped: input.rebased_stripped,
+        reasoning_dropped: input.reasoning_dropped,
+        reasoning_wholly_omitted: input.reasoning_wholly_omitted,
+        rebased_true_count: input.rebased_true_count,
+        projection_rewrote: input.projection_rewrote,
+        severity: severity.into(),
+        code: code.into(),
+        message: message.into(),
+    }
+}
+
 #[cfg(test)]
 mod should_stop_tests {
     use super::should_stop_after_output;
@@ -1103,4 +1266,157 @@ mod estimate_body_bytes_tests {
 /// WP-090 K5: reason text for a non-waking parent notice in subagent_settled.
 fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String {
     notice.reason_text()
+}
+
+
+#[cfg(test)]
+mod request_health_tests {
+    use super::{LlmRequestHealthInput, classify_llm_request_health};
+    use crate::authority::responses::{ReasoningItem, ReasoningItemContent, ReasoningTextContent};
+    use crate::llm::{ItemProducer, retain_own_reasoning, strip_foreign_ciphertext};
+    use crate::types::Item;
+
+    fn produced(provider: &str, endpoint: &str, model: &str) -> ItemProducer {
+        ItemProducer {
+            provider_id: provider.to_string(),
+            endpoint_type: Some(endpoint.to_string()),
+            model_ref: Some(model.to_string()),
+        }
+    }
+
+    fn reasoning(encrypted: Option<&str>) -> Item {
+        Item::Reasoning(ReasoningItem {
+            id: Some("cc_rs_1".into()),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent {
+                    text: "think".into(),
+                },
+            )]),
+            encrypted_content: encrypted.map(str::to_string),
+            status: None,
+        })
+    }
+
+    fn base_input() -> LlmRequestHealthInput {
+        LlmRequestHealthInput {
+            sticky_model_id: "opencode/claude-sonnet-5-5".into(),
+            turn_model_ref: "opencode/claude-sonnet-5-5".into(),
+            turn_provider_id: "opencode".into(),
+            turn_endpoint_type: "messages".into(),
+            bind_matches_sticky: true,
+            origin_provider_id: "opencode".into(),
+            origin_endpoint_type: "messages".into(),
+            origin_model_ref: "opencode/claude-sonnet-5-5".into(),
+            ciphertexts_stripped: 0,
+            rebased_stripped: 0,
+            reasoning_dropped: 0,
+            reasoning_wholly_omitted: 0,
+            rebased_true_count: 0,
+            projection_rewrote: false,
+        }
+    }
+
+    #[test]
+    fn thinking_not_refilled_when_summary_drops_foreign_reasoning() {
+        let mut items = vec![
+            reasoning(Some("own")),
+            reasoning(Some("foreign")),
+        ];
+        let producers = vec![
+            Some(produced("aliyun-token", "responses", "aliyun-token/qwen")),
+            Some(produced("openai", "responses", "openai/gpt")),
+        ];
+        let dropped = retain_own_reasoning(&mut items, &producers, "aliyun-token");
+        assert_eq!(dropped, 1);
+
+        let mut input = base_input();
+        input.reasoning_dropped = dropped as u32;
+        let health = classify_llm_request_health(input);
+        assert_eq!(health.severity, "toast");
+        assert_eq!(health.code, "thinking_not_refilled");
+        assert!(!health.message.is_empty());
+    }
+
+    #[test]
+    fn thinking_not_refilled_when_messages_wholly_omits_foreign_signature() {
+        let mut items = vec![reasoning(Some("opus-sig"))];
+        let producers = vec![Some(produced(
+            "opencode",
+            "messages",
+            "opencode/claude-opus-5-5",
+        ))];
+        let stats = strip_foreign_ciphertext(
+            &mut items,
+            &producers,
+            "opencode",
+            "messages",
+            "opencode/claude-sonnet-5-5",
+        );
+        assert_eq!(stats.ciphertexts_stripped, 1);
+        assert_eq!(stats.reasoning_wholly_omitted, 1);
+
+        let mut input = base_input();
+        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
+        input.reasoning_wholly_omitted = stats.reasoning_wholly_omitted as u32;
+        let health = classify_llm_request_health(input);
+        assert_eq!(health.severity, "toast");
+        assert_eq!(health.code, "thinking_not_refilled");
+    }
+
+    #[test]
+    fn same_model_continuation_with_own_signature_is_silent() {
+        let mut items = vec![reasoning(Some("own-sig"))];
+        let producers = vec![Some(produced(
+            "opencode",
+            "messages",
+            "opencode/claude-sonnet-5-5",
+        ))];
+        let stats = strip_foreign_ciphertext(
+            &mut items,
+            &producers,
+            "opencode",
+            "messages",
+            "opencode/claude-sonnet-5-5",
+        );
+        assert_eq!(stats.ciphertexts_stripped, 0);
+        assert_eq!(stats.reasoning_wholly_omitted, 0);
+
+        let health = classify_llm_request_health(base_input());
+        assert_eq!(health.severity, "silent");
+        assert_eq!(health.code, "");
+    }
+
+    #[test]
+    fn foreign_strip_with_text_retained_is_debug_not_toast() {
+        let mut items = vec![reasoning(Some("foreign"))];
+        let producers = vec![Some(produced("q", "responses", "q/m"))];
+        let stats = strip_foreign_ciphertext(
+            &mut items,
+            &producers,
+            "p",
+            "responses",
+            "p/m",
+        );
+        assert_eq!(stats.ciphertexts_stripped, 1);
+        assert_eq!(stats.reasoning_wholly_omitted, 0);
+
+        let mut input = base_input();
+        input.turn_endpoint_type = "responses".into();
+        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
+        input.reasoning_wholly_omitted = 0;
+        let health = classify_llm_request_health(input);
+        assert_eq!(health.severity, "debug");
+        assert_eq!(health.code, "foreign_strip");
+    }
+
+    #[test]
+    fn bind_sticky_mismatch_is_toast() {
+        let mut input = base_input();
+        input.bind_matches_sticky = false;
+        input.sticky_model_id = "other/model".into();
+        let health = classify_llm_request_health(input);
+        assert_eq!(health.severity, "toast");
+        assert_eq!(health.code, "bind_sticky_mismatch");
+    }
 }
