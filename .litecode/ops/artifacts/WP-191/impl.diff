@@ -1,0 +1,786 @@
+diff --git a/src/client_protocol/project.rs b/src/client_protocol/project.rs
+index aa26453..9dbba4e 100644
+--- a/src/client_protocol/project.rs
++++ b/src/client_protocol/project.rs
+@@ -315,6 +315,23 @@ fn project_with(
+             tools_count,
+             context_window,
+             token_breakdown,
++            sticky_model_id,
++            turn_model_ref,
++            turn_provider_id,
++            turn_endpoint_type,
++            bind_matches_sticky,
++            origin_provider_id,
++            origin_endpoint_type,
++            origin_model_ref,
++            ciphertexts_stripped,
++            rebased_stripped,
++            reasoning_dropped,
++            reasoning_wholly_omitted,
++            rebased_true_count,
++            projection_rewrote,
++            severity,
++            code,
++            message,
+         } => turn_event_ids(
+             session_id,
+             turn_id,
+@@ -325,6 +342,23 @@ fn project_with(
+                 tools_count: *tools_count,
+                 context_window: *context_window,
+                 token_breakdown: token_breakdown.clone(),
++                sticky_model_id: sticky_model_id.clone(),
++                turn_model_ref: turn_model_ref.clone(),
++                turn_provider_id: turn_provider_id.clone(),
++                turn_endpoint_type: turn_endpoint_type.clone(),
++                bind_matches_sticky: *bind_matches_sticky,
++                origin_provider_id: origin_provider_id.clone(),
++                origin_endpoint_type: origin_endpoint_type.clone(),
++                origin_model_ref: origin_model_ref.clone(),
++                ciphertexts_stripped: *ciphertexts_stripped,
++                rebased_stripped: *rebased_stripped,
++                reasoning_dropped: *reasoning_dropped,
++                reasoning_wholly_omitted: *reasoning_wholly_omitted,
++                rebased_true_count: *rebased_true_count,
++                projection_rewrote: *projection_rewrote,
++                severity: severity.clone(),
++                code: code.clone(),
++                message: message.clone(),
+             },
+         ),
+         InternalEvent::LlmCompleted {
+diff --git a/src/client_protocol/protocol.rs b/src/client_protocol/protocol.rs
+index 15caa69..95003e7 100644
+--- a/src/client_protocol/protocol.rs
++++ b/src/client_protocol/protocol.rs
+@@ -571,6 +571,42 @@ pub enum WireEvent {
+         /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+         #[serde(default)]
+         token_breakdown: crate::session::estimate::ItemTokenBreakdown,
++        // --- WP-191 request health (serde default for older consumers) ---
++        #[serde(default)]
++        sticky_model_id: String,
++        #[serde(default)]
++        turn_model_ref: String,
++        #[serde(default)]
++        turn_provider_id: String,
++        #[serde(default)]
++        turn_endpoint_type: String,
++        #[serde(default)]
++        bind_matches_sticky: bool,
++        #[serde(default)]
++        origin_provider_id: String,
++        #[serde(default)]
++        origin_endpoint_type: String,
++        #[serde(default)]
++        origin_model_ref: String,
++        #[serde(default)]
++        ciphertexts_stripped: u32,
++        #[serde(default)]
++        rebased_stripped: u32,
++        #[serde(default)]
++        reasoning_dropped: u32,
++        #[serde(default)]
++        reasoning_wholly_omitted: u32,
++        #[serde(default)]
++        rebased_true_count: u32,
++        #[serde(default)]
++        projection_rewrote: bool,
++        /// `"silent"` | `"debug"` | `"toast"`.
++        #[serde(default)]
++        severity: String,
++        #[serde(default)]
++        code: String,
++        #[serde(default)]
++        message: String,
+     },
+     LlmCompleted {
+         prompt_tokens: u64,
+diff --git a/src/llm/mod.rs b/src/llm/mod.rs
+index 54313e2..53a6391 100644
+--- a/src/llm/mod.rs
++++ b/src/llm/mod.rs
+@@ -20,8 +20,8 @@ pub use request::{ModelRequest, ToolDef};
+ /// minted it, summary replay drops reasoning any other provider produced, and
+ /// a rewritten Messages prefix drops the signature minted against that prefix.
+ pub(crate) use replay_compat::{
+-    ItemProducer, producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
+-    strip_rebased_signatures,
++    ItemProducer, StripCiphertextStats, producers_for_seqs, retain_own_reasoning,
++    strip_foreign_ciphertext, strip_rebased_signatures,
+ };
+ 
+ /// Folding a provider's stream into canonical `Item`s.
+diff --git a/src/llm/replay_compat.rs b/src/llm/replay_compat.rs
+index 35221ca..ea8a06a 100644
+--- a/src/llm/replay_compat.rs
++++ b/src/llm/replay_compat.rs
+@@ -77,16 +77,45 @@ fn ciphertext_is_own(
+     }
+ }
+ 
++/// Read-only counters from [`strip_foreign_ciphertext`]. Strip behaviour is
++/// unchanged: ciphertext is cleared, text and summary stay on the Item.
++#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
++pub struct StripCiphertextStats {
++    /// How many `encrypted_content` blobs were cleared.
++    pub ciphertexts_stripped: usize,
++    /// How many of those clearings leave no wire-usable thinking for this
++    /// endpoint: Messages needs a signature (encode drops the block without
++    /// one), and any endpoint with neither ciphertext nor retained text has
++    /// nothing left to send. Does not change what strip mutates.
++    pub reasoning_wholly_omitted: usize,
++}
++
++fn reasoning_has_text(reasoning: &crate::authority::responses::ReasoningItem) -> bool {
++    use crate::authority::responses::{ReasoningItemContent, SummaryPart};
++    let from_content = reasoning.content.as_ref().is_some_and(|parts| {
++        parts.iter().any(|part| match part {
++            ReasoningItemContent::ReasoningText(text) => !text.text.trim().is_empty(),
++        })
++    });
++    if from_content {
++        return true;
++    }
++    reasoning.summary.iter().any(|part| match part {
++        SummaryPart::SummaryText(text) => !text.text.trim().is_empty(),
++    })
++}
++
+ /// Rule 2 on the request copy: remove reasoning ciphertext this request cannot
+-/// read. Text and summary stay. Returns how many ciphertexts were removed.
++/// read. Text and summary stay. Returns strip counts only — never changes
++/// keep/drop policy.
+ pub fn strip_foreign_ciphertext(
+     items: &mut [Item],
+     producers: &[Option<ItemProducer>],
+     provider_id: &str,
+     endpoint_type: &str,
+     model_ref: &str,
+-) -> usize {
+-    let mut stripped = 0;
++) -> StripCiphertextStats {
++    let mut stats = StripCiphertextStats::default();
+     for (index, item) in items.iter_mut().enumerate() {
+         let Item::Reasoning(reasoning) = item else {
+             continue;
+@@ -102,10 +131,16 @@ pub fn strip_foreign_ciphertext(
+             });
+         if !own {
+             reasoning.encrypted_content = None;
+-            stripped += 1;
++            stats.ciphertexts_stripped += 1;
++            // Messages encode requires a signature; without it the whole
++            // thinking block is omitted even when text remains on the Item.
++            // Elsewhere, wholly-omitted means no text/summary left either.
++            if endpoint_type == "messages" || !reasoning_has_text(reasoning) {
++                stats.reasoning_wholly_omitted += 1;
++            }
+         }
+     }
+-    stripped
++    stats
+ }
+ 
+ /// Rule 5 on the request copy: on a Messages target, remove the signature from
+@@ -225,7 +260,7 @@ mod tests {
+             None,
+         ];
+         assert_eq!(
+-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m"),
++            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m").ciphertexts_stripped,
+             2
+         );
+         let ciphertexts: Vec<_> = items
+@@ -301,7 +336,7 @@ mod tests {
+                 "opencode",
+                 "messages",
+                 "opencode/claude-sonnet-5-5",
+-            ),
++            ).ciphertexts_stripped,
+             1
+         );
+         assert!(matches!(
+@@ -321,7 +356,7 @@ mod tests {
+                 "opencode",
+                 "responses",
+                 "opencode/gpt-6-luna",
+-            ),
++            ).ciphertexts_stripped,
+             1
+         );
+         assert!(matches!(
+@@ -345,7 +380,7 @@ mod tests {
+                 "opencode",
+                 "messages",
+                 "opencode/claude-sonnet-5-5",
+-            ),
++            ).ciphertexts_stripped,
+             1
+         );
+         assert!(matches!(
+@@ -406,7 +441,7 @@ mod tests {
+                 "opencode",
+                 "responses",
+                 "opencode/grok-4.7",
+-            ),
++            ).ciphertexts_stripped,
+             1
+         );
+         assert!(matches!(
+@@ -425,7 +460,7 @@ mod tests {
+                 "opencode",
+                 "responses",
+                 "opencode/gpt-5.6-sol",
+-            ),
++            ).ciphertexts_stripped,
+             0
+         );
+         assert!(matches!(
+@@ -439,7 +474,7 @@ mod tests {
+         let mut items = vec![reasoning(Some("old"))];
+         let producers = vec![Some(produced("p", Some("responses"), None))];
+         assert_eq!(
+-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other"),
++            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other").ciphertexts_stripped,
+             0
+         );
+         assert!(matches!(
+@@ -453,7 +488,7 @@ mod tests {
+         let mut responses = vec![reasoning(Some("old"))];
+         let producers = vec![Some(produced("p", None, None))];
+         assert_eq!(
+-            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m"),
++            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m").ciphertexts_stripped,
+             0
+         );
+         assert!(matches!(
+@@ -469,8 +504,46 @@ mod tests {
+                 "p",
+                 "messages",
+                 "p/claude-sonnet-5-5",
+-            ),
++            ).ciphertexts_stripped,
+             1
+         );
+     }
++
++    #[test]
++    fn messages_foreign_strip_counts_as_wholly_omitted() {
++        let mut items = vec![reasoning(Some("opus-sig"))];
++        let producers = vec![Some(produced(
++            "opencode",
++            Some("messages"),
++            Some("opencode/claude-opus-5-5"),
++        ))];
++        let stats = strip_foreign_ciphertext(
++            &mut items,
++            &producers,
++            "opencode",
++            "messages",
++            "opencode/claude-sonnet-5-5",
++        );
++        assert_eq!(stats.ciphertexts_stripped, 1);
++        // Signature gone → Messages encode drops the whole thinking block.
++        assert_eq!(stats.reasoning_wholly_omitted, 1);
++        assert_eq!(crate::types::item_text_preview(&items[0]), "think");
++    }
++
++    #[test]
++    fn responses_foreign_strip_keeps_text_not_wholly_omitted() {
++        let mut items = vec![reasoning(Some("foreign"))];
++        let producers = vec![Some(produced("q", Some("responses"), Some("q/m")))];
++        let stats = strip_foreign_ciphertext(
++            &mut items,
++            &producers,
++            "p",
++            "responses",
++            "p/m",
++        );
++        assert_eq!(stats.ciphertexts_stripped, 1);
++        // Text remains on the Item; Responses-with-text-replay can still use it.
++        assert_eq!(stats.reasoning_wholly_omitted, 0);
++        assert_eq!(crate::types::item_text_preview(&items[0]), "think");
++    }
+ }
+diff --git a/src/runtime/exec.rs b/src/runtime/exec.rs
+index d5fb3be..18a5470 100644
+--- a/src/runtime/exec.rs
++++ b/src/runtime/exec.rs
+@@ -585,7 +585,12 @@ impl AgentRuntime {
+         hub.jobs.restore_mailbox(&self.session_id, notices.to_vec());
+     }
+ 
+-    fn emit_llm_request_built(&self, request: &ModelRequest, token_count: usize) {
++    fn emit_llm_request_built(
++        &self,
++        request: &ModelRequest,
++        token_count: usize,
++        health: &LlmRequestHealth,
++    ) {
+         // `token_estimate` is local budget telemetry only — never meter/ring truth.
+         self.emit_internal(InternalEvent::LlmRequestBuilt {
+             model: request.model.clone(),
+@@ -594,7 +599,30 @@ impl AgentRuntime {
+             tools_count: request.tools.len(),
+             context_window: self.turn_llm.context_window,
+             token_breakdown: request_token_breakdown(request),
++            sticky_model_id: health.sticky_model_id.clone(),
++            turn_model_ref: health.turn_model_ref.clone(),
++            turn_provider_id: health.turn_provider_id.clone(),
++            turn_endpoint_type: health.turn_endpoint_type.clone(),
++            bind_matches_sticky: health.bind_matches_sticky,
++            origin_provider_id: health.origin_provider_id.clone(),
++            origin_endpoint_type: health.origin_endpoint_type.clone(),
++            origin_model_ref: health.origin_model_ref.clone(),
++            ciphertexts_stripped: health.ciphertexts_stripped,
++            rebased_stripped: health.rebased_stripped,
++            reasoning_dropped: health.reasoning_dropped,
++            reasoning_wholly_omitted: health.reasoning_wholly_omitted,
++            rebased_true_count: health.rebased_true_count,
++            projection_rewrote: health.projection_rewrote,
++            severity: health.severity.clone(),
++            code: health.code.clone(),
++            message: health.message.clone(),
+         });
++        if health.severity == "toast" {
++            self.emit_internal(InternalEvent::SnapshotNotice {
++                level: "warn".into(),
++                message: health.message.clone(),
++            });
++        }
+     }
+ 
+     /// If the agent touched its active plan this turn, record the on-disk
+@@ -664,33 +692,40 @@ impl AgentRuntime {
+         // replay (Bailian) drops every reasoning item this provider did not mint,
+         // because that input schema requires the id on the item.
+         let provider_id = self.turn_llm.provider_id.clone();
++        let endpoint_type = self.turn_llm.model.endpoint_type.as_str().to_string();
++        let model_ref = self.turn_llm.model_ref.clone();
+         let producers = self.llm_input_producers(&item_seqs);
+         let mut input = input;
+         // Before summary replay drops items, while `rebased` still lines up.
+         let rebased_stripped = crate::llm::strip_rebased_signatures(
+             &mut input,
+             rebased,
+-            self.turn_llm.model.endpoint_type.as_str(),
++            &endpoint_type,
+         );
+-        let (ciphertexts_stripped, reasoning_dropped) = if self.turn_llm.model.reasoning_replay
+-            == crate::provider_catalog::ReasoningReplay::Summary
+-        {
+-            (
+-                0,
+-                crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id),
+-            )
+-        } else {
+-            (
+-                crate::llm::strip_foreign_ciphertext(
++        let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
++        let (ciphertexts_stripped, reasoning_dropped, reasoning_wholly_omitted) =
++            if self.turn_llm.model.reasoning_replay
++                == crate::provider_catalog::ReasoningReplay::Summary
++            {
++                (
++                    0u32,
++                    crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id) as u32,
++                    0u32,
++                )
++            } else {
++                let stats = crate::llm::strip_foreign_ciphertext(
+                     &mut input,
+                     &producers,
+                     &provider_id,
+-                    self.turn_llm.model.endpoint_type.as_str(),
+-                    &self.turn_llm.model_ref,
+-                ),
+-                0,
+-            )
+-        };
++                    &endpoint_type,
++                    &model_ref,
++                );
++                (
++                    stats.ciphertexts_stripped as u32,
++                    0u32,
++                    stats.reasoning_wholly_omitted as u32,
++                )
++            };
+         // Origin is an append-only control-plane row written before the request:
+         // items this request produces inherit its provider.
+         let origin_seq = self.record_request_origin()?;
+@@ -705,6 +740,7 @@ impl AgentRuntime {
+             ciphertexts_stripped,
+             rebased_stripped,
+             reasoning_dropped,
++            reasoning_wholly_omitted,
+             tools_count = tool_names.len(),
+             tools = ?tool_names,
+             item_count = input.len(),
+@@ -714,7 +750,32 @@ impl AgentRuntime {
+             "LLM request built"
+         );
+ 
+-        Ok(ModelRequest {
++        let sticky_model_id = self
++            .sessions
++            .session_model_id(&self.session_id)
++            .unwrap_or_default();
++        let bind_matches_sticky = sticky_model_id == model_ref;
++        // Projection rewrite detection is out of scope for this package
++        // (acceptance documents the gap); never invent a true.
++        let projection_rewrote = false;
++        let health = classify_llm_request_health(LlmRequestHealthInput {
++            sticky_model_id,
++            turn_model_ref: model_ref.clone(),
++            turn_provider_id: provider_id.clone(),
++            turn_endpoint_type: endpoint_type.clone(),
++            bind_matches_sticky,
++            origin_provider_id: provider_id.clone(),
++            origin_endpoint_type: endpoint_type.clone(),
++            origin_model_ref: model_ref.clone(),
++            ciphertexts_stripped,
++            rebased_stripped: rebased_stripped as u32,
++            reasoning_dropped,
++            reasoning_wholly_omitted,
++            rebased_true_count,
++            projection_rewrote,
++        });
++
++        let request = ModelRequest {
+             model,
+             instructions: instructions.to_string(),
+             input,
+@@ -726,7 +787,9 @@ impl AgentRuntime {
+             // codec gates on, not a per-turn instruction.
+             json_output: false,
+             session_id: Some(self.session_id.clone()),
+-        })
++        };
++        self.emit_llm_request_built(&request, token_count, &health);
++        Ok(request)
+     }
+ 
+     /// The provider that produced each input item, through its durable seq and the
+@@ -793,7 +856,7 @@ impl AgentRuntime {
+         request: &ModelRequest,
+         token_count: usize,
+     ) -> Result<Vec<Item>> {
+-        self.emit_llm_request_built(request, token_count);
++        // LlmRequestBuilt (+ toast SnapshotNotice) already emitted in build_model_request.
+         // Split borrows so the stream closure can mutate token meters while the
+         // provider call borrows the (disjoint) binding fields.
+         let step = self.current_step_value();
+@@ -1009,6 +1072,106 @@ fn should_stop_after_output(output: &[Item]) -> bool {
+     !output.iter().any(|i| matches!(i, Item::FunctionCall(_)))
+ }
+ 
++/// Inputs for WP-191 request-health classification (pure; unit-tested).
++#[derive(Debug, Clone)]
++pub(crate) struct LlmRequestHealthInput {
++    pub sticky_model_id: String,
++    pub turn_model_ref: String,
++    pub turn_provider_id: String,
++    pub turn_endpoint_type: String,
++    pub bind_matches_sticky: bool,
++    pub origin_provider_id: String,
++    pub origin_endpoint_type: String,
++    pub origin_model_ref: String,
++    pub ciphertexts_stripped: u32,
++    pub rebased_stripped: u32,
++    pub reasoning_dropped: u32,
++    pub reasoning_wholly_omitted: u32,
++    pub rebased_true_count: u32,
++    pub projection_rewrote: bool,
++}
++
++/// Classified request-health snapshot carried on `LlmRequestBuilt`.
++#[derive(Debug, Clone)]
++pub(crate) struct LlmRequestHealth {
++    pub sticky_model_id: String,
++    pub turn_model_ref: String,
++    pub turn_provider_id: String,
++    pub turn_endpoint_type: String,
++    pub bind_matches_sticky: bool,
++    pub origin_provider_id: String,
++    pub origin_endpoint_type: String,
++    pub origin_model_ref: String,
++    pub ciphertexts_stripped: u32,
++    pub rebased_stripped: u32,
++    pub reasoning_dropped: u32,
++    pub reasoning_wholly_omitted: u32,
++    pub rebased_true_count: u32,
++    pub projection_rewrote: bool,
++    pub severity: String,
++    pub code: String,
++    pub message: String,
++}
++
++/// Rank toast > debug > silent. Stable `code` values match WP-191 plan §3.2 / §4.
++pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRequestHealth {
++    let (severity, code, message) = if input.reasoning_dropped > 0
++        || input.reasoning_wholly_omitted > 0
++    {
++        (
++            "toast",
++            "thinking_not_refilled",
++            "Prior model thinking was not carried into this request; the model may reason from less context.",
++        )
++    } else if !input.bind_matches_sticky {
++        (
++            "toast",
++            "bind_sticky_mismatch",
++            "Turn model binding does not match the session sticky model.",
++        )
++    } else if input.ciphertexts_stripped > 0 {
++        (
++            "debug",
++            "foreign_strip",
++            "Foreign reasoning ciphertext was stripped; text was retained where applicable.",
++        )
++    } else if input.rebased_stripped > 0 {
++        (
++            "debug",
++            "rebased_sig_strip",
++            "Rebased Messages signatures were stripped (Rule 5).",
++        )
++    } else if input.projection_rewrote {
++        (
++            "debug",
++            "projection_rewrite",
++            "Modality projection rewrote items in this request view.",
++        )
++    } else {
++        ("silent", "", "")
++    };
++
++    LlmRequestHealth {
++        sticky_model_id: input.sticky_model_id,
++        turn_model_ref: input.turn_model_ref,
++        turn_provider_id: input.turn_provider_id,
++        turn_endpoint_type: input.turn_endpoint_type,
++        bind_matches_sticky: input.bind_matches_sticky,
++        origin_provider_id: input.origin_provider_id,
++        origin_endpoint_type: input.origin_endpoint_type,
++        origin_model_ref: input.origin_model_ref,
++        ciphertexts_stripped: input.ciphertexts_stripped,
++        rebased_stripped: input.rebased_stripped,
++        reasoning_dropped: input.reasoning_dropped,
++        reasoning_wholly_omitted: input.reasoning_wholly_omitted,
++        rebased_true_count: input.rebased_true_count,
++        projection_rewrote: input.projection_rewrote,
++        severity: severity.into(),
++        code: code.into(),
++        message: message.into(),
++    }
++}
++
+ #[cfg(test)]
+ mod should_stop_tests {
+     use super::should_stop_after_output;
+@@ -1104,3 +1267,156 @@ mod estimate_body_bytes_tests {
+ fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String {
+     notice.reason_text()
+ }
++
++
++#[cfg(test)]
++mod request_health_tests {
++    use super::{LlmRequestHealthInput, classify_llm_request_health};
++    use crate::authority::responses::{ReasoningItem, ReasoningItemContent, ReasoningTextContent};
++    use crate::llm::{ItemProducer, retain_own_reasoning, strip_foreign_ciphertext};
++    use crate::types::Item;
++
++    fn produced(provider: &str, endpoint: &str, model: &str) -> ItemProducer {
++        ItemProducer {
++            provider_id: provider.to_string(),
++            endpoint_type: Some(endpoint.to_string()),
++            model_ref: Some(model.to_string()),
++        }
++    }
++
++    fn reasoning(encrypted: Option<&str>) -> Item {
++        Item::Reasoning(ReasoningItem {
++            id: Some("cc_rs_1".into()),
++            summary: vec![],
++            content: Some(vec![ReasoningItemContent::ReasoningText(
++                ReasoningTextContent {
++                    text: "think".into(),
++                },
++            )]),
++            encrypted_content: encrypted.map(str::to_string),
++            status: None,
++        })
++    }
++
++    fn base_input() -> LlmRequestHealthInput {
++        LlmRequestHealthInput {
++            sticky_model_id: "opencode/claude-sonnet-5-5".into(),
++            turn_model_ref: "opencode/claude-sonnet-5-5".into(),
++            turn_provider_id: "opencode".into(),
++            turn_endpoint_type: "messages".into(),
++            bind_matches_sticky: true,
++            origin_provider_id: "opencode".into(),
++            origin_endpoint_type: "messages".into(),
++            origin_model_ref: "opencode/claude-sonnet-5-5".into(),
++            ciphertexts_stripped: 0,
++            rebased_stripped: 0,
++            reasoning_dropped: 0,
++            reasoning_wholly_omitted: 0,
++            rebased_true_count: 0,
++            projection_rewrote: false,
++        }
++    }
++
++    #[test]
++    fn thinking_not_refilled_when_summary_drops_foreign_reasoning() {
++        let mut items = vec![
++            reasoning(Some("own")),
++            reasoning(Some("foreign")),
++        ];
++        let producers = vec![
++            Some(produced("aliyun-token", "responses", "aliyun-token/qwen")),
++            Some(produced("openai", "responses", "openai/gpt")),
++        ];
++        let dropped = retain_own_reasoning(&mut items, &producers, "aliyun-token");
++        assert_eq!(dropped, 1);
++
++        let mut input = base_input();
++        input.reasoning_dropped = dropped as u32;
++        let health = classify_llm_request_health(input);
++        assert_eq!(health.severity, "toast");
++        assert_eq!(health.code, "thinking_not_refilled");
++        assert!(!health.message.is_empty());
++    }
++
++    #[test]
++    fn thinking_not_refilled_when_messages_wholly_omits_foreign_signature() {
++        let mut items = vec![reasoning(Some("opus-sig"))];
++        let producers = vec![Some(produced(
++            "opencode",
++            "messages",
++            "opencode/claude-opus-5-5",
++        ))];
++        let stats = strip_foreign_ciphertext(
++            &mut items,
++            &producers,
++            "opencode",
++            "messages",
++            "opencode/claude-sonnet-5-5",
++        );
++        assert_eq!(stats.ciphertexts_stripped, 1);
++        assert_eq!(stats.reasoning_wholly_omitted, 1);
++
++        let mut input = base_input();
++        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
++        input.reasoning_wholly_omitted = stats.reasoning_wholly_omitted as u32;
++        let health = classify_llm_request_health(input);
++        assert_eq!(health.severity, "toast");
++        assert_eq!(health.code, "thinking_not_refilled");
++    }
++
++    #[test]
++    fn same_model_continuation_with_own_signature_is_silent() {
++        let mut items = vec![reasoning(Some("own-sig"))];
++        let producers = vec![Some(produced(
++            "opencode",
++            "messages",
++            "opencode/claude-sonnet-5-5",
++        ))];
++        let stats = strip_foreign_ciphertext(
++            &mut items,
++            &producers,
++            "opencode",
++            "messages",
++            "opencode/claude-sonnet-5-5",
++        );
++        assert_eq!(stats.ciphertexts_stripped, 0);
++        assert_eq!(stats.reasoning_wholly_omitted, 0);
++
++        let health = classify_llm_request_health(base_input());
++        assert_eq!(health.severity, "silent");
++        assert_eq!(health.code, "");
++    }
++
++    #[test]
++    fn foreign_strip_with_text_retained_is_debug_not_toast() {
++        let mut items = vec![reasoning(Some("foreign"))];
++        let producers = vec![Some(produced("q", "responses", "q/m"))];
++        let stats = strip_foreign_ciphertext(
++            &mut items,
++            &producers,
++            "p",
++            "responses",
++            "p/m",
++        );
++        assert_eq!(stats.ciphertexts_stripped, 1);
++        assert_eq!(stats.reasoning_wholly_omitted, 0);
++
++        let mut input = base_input();
++        input.turn_endpoint_type = "responses".into();
++        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
++        input.reasoning_wholly_omitted = 0;
++        let health = classify_llm_request_health(input);
++        assert_eq!(health.severity, "debug");
++        assert_eq!(health.code, "foreign_strip");
++    }
++
++    #[test]
++    fn bind_sticky_mismatch_is_toast() {
++        let mut input = base_input();
++        input.bind_matches_sticky = false;
++        input.sticky_model_id = "other/model".into();
++        let health = classify_llm_request_health(input);
++        assert_eq!(health.severity, "toast");
++        assert_eq!(health.code, "bind_sticky_mismatch");
++    }
++}
+diff --git a/src/runtime/observer.rs b/src/runtime/observer.rs
+index 44a8390..a4409ae 100644
+--- a/src/runtime/observer.rs
++++ b/src/runtime/observer.rs
+@@ -178,6 +178,42 @@ pub enum InternalEvent {
+         /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+         #[serde(default)]
+         token_breakdown: crate::session::estimate::ItemTokenBreakdown,
++        // --- WP-191 request health (serde default for older consumers) ---
++        #[serde(default)]
++        sticky_model_id: String,
++        #[serde(default)]
++        turn_model_ref: String,
++        #[serde(default)]
++        turn_provider_id: String,
++        #[serde(default)]
++        turn_endpoint_type: String,
++        #[serde(default)]
++        bind_matches_sticky: bool,
++        #[serde(default)]
++        origin_provider_id: String,
++        #[serde(default)]
++        origin_endpoint_type: String,
++        #[serde(default)]
++        origin_model_ref: String,
++        #[serde(default)]
++        ciphertexts_stripped: u32,
++        #[serde(default)]
++        rebased_stripped: u32,
++        #[serde(default)]
++        reasoning_dropped: u32,
++        #[serde(default)]
++        reasoning_wholly_omitted: u32,
++        #[serde(default)]
++        rebased_true_count: u32,
++        #[serde(default)]
++        projection_rewrote: bool,
++        /// `"silent"` | `"debug"` | `"toast"`.
++        #[serde(default)]
++        severity: String,
++        #[serde(default)]
++        code: String,
++        #[serde(default)]
++        message: String,
+     },
+     LlmCompleted {
+         prompt_tokens: u64,

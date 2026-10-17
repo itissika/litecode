@@ -178,6 +178,42 @@ pub enum InternalEvent {
         /// Local item-text mix for the occupancy bar. Not meter/ring truth.
         #[serde(default)]
         token_breakdown: crate::session::estimate::ItemTokenBreakdown,
+        // --- WP-191 request health (serde default for older consumers) ---
+        #[serde(default)]
+        sticky_model_id: String,
+        #[serde(default)]
+        turn_model_ref: String,
+        #[serde(default)]
+        turn_provider_id: String,
+        #[serde(default)]
+        turn_endpoint_type: String,
+        #[serde(default)]
+        bind_matches_sticky: bool,
+        #[serde(default)]
+        origin_provider_id: String,
+        #[serde(default)]
+        origin_endpoint_type: String,
+        #[serde(default)]
+        origin_model_ref: String,
+        #[serde(default)]
+        ciphertexts_stripped: u32,
+        #[serde(default)]
+        rebased_stripped: u32,
+        #[serde(default)]
+        reasoning_dropped: u32,
+        #[serde(default)]
+        reasoning_wholly_omitted: u32,
+        #[serde(default)]
+        rebased_true_count: u32,
+        #[serde(default)]
+        projection_rewrote: bool,
+        /// `"silent"` | `"debug"` | `"toast"`.
+        #[serde(default)]
+        severity: String,
+        #[serde(default)]
+        code: String,
+        #[serde(default)]
+        message: String,
     },
     LlmCompleted {
         prompt_tokens: u64,

@@ -77,16 +77,45 @@ fn ciphertext_is_own(
     }
 }
 
+/// Read-only counters from [`strip_foreign_ciphertext`]. Strip behaviour is
+/// unchanged: ciphertext is cleared, text and summary stay on the Item.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StripCiphertextStats {
+    /// How many `encrypted_content` blobs were cleared.
+    pub ciphertexts_stripped: usize,
+    /// How many of those clearings leave no wire-usable thinking for this
+    /// endpoint: Messages needs a signature (encode drops the block without
+    /// one), and any endpoint with neither ciphertext nor retained text has
+    /// nothing left to send. Does not change what strip mutates.
+    pub reasoning_wholly_omitted: usize,
+}
+
+fn reasoning_has_text(reasoning: &crate::authority::responses::ReasoningItem) -> bool {
+    use crate::authority::responses::{ReasoningItemContent, SummaryPart};
+    let from_content = reasoning.content.as_ref().is_some_and(|parts| {
+        parts.iter().any(|part| match part {
+            ReasoningItemContent::ReasoningText(text) => !text.text.trim().is_empty(),
+        })
+    });
+    if from_content {
+        return true;
+    }
+    reasoning.summary.iter().any(|part| match part {
+        SummaryPart::SummaryText(text) => !text.text.trim().is_empty(),
+    })
+}
+
 /// Rule 2 on the request copy: remove reasoning ciphertext this request cannot
-/// read. Text and summary stay. Returns how many ciphertexts were removed.
+/// read. Text and summary stay. Returns strip counts only — never changes
+/// keep/drop policy.
 pub fn strip_foreign_ciphertext(
     items: &mut [Item],
     producers: &[Option<ItemProducer>],
     provider_id: &str,
     endpoint_type: &str,
     model_ref: &str,
-) -> usize {
-    let mut stripped = 0;
+) -> StripCiphertextStats {
+    let mut stats = StripCiphertextStats::default();
     for (index, item) in items.iter_mut().enumerate() {
         let Item::Reasoning(reasoning) = item else {
             continue;
@@ -102,10 +131,16 @@ pub fn strip_foreign_ciphertext(
             });
         if !own {
             reasoning.encrypted_content = None;
-            stripped += 1;
+            stats.ciphertexts_stripped += 1;
+            // Messages encode requires a signature; without it the whole
+            // thinking block is omitted even when text remains on the Item.
+            // Elsewhere, wholly-omitted means no text/summary left either.
+            if endpoint_type == "messages" || !reasoning_has_text(reasoning) {
+                stats.reasoning_wholly_omitted += 1;
+            }
         }
     }
-    stripped
+    stats
 }
 
 /// Rule 5 on the request copy: on a Messages target, remove the signature from
@@ -225,7 +260,7 @@ mod tests {
             None,
         ];
         assert_eq!(
-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m"),
+            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m").ciphertexts_stripped,
             2
         );
         let ciphertexts: Vec<_> = items
@@ -301,7 +336,7 @@ mod tests {
                 "opencode",
                 "messages",
                 "opencode/claude-sonnet-5-5",
-            ),
+            ).ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -321,7 +356,7 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/gpt-6-luna",
-            ),
+            ).ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -345,7 +380,7 @@ mod tests {
                 "opencode",
                 "messages",
                 "opencode/claude-sonnet-5-5",
-            ),
+            ).ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -406,7 +441,7 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/grok-4.7",
-            ),
+            ).ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -425,7 +460,7 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/gpt-5.6-sol",
-            ),
+            ).ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -439,7 +474,7 @@ mod tests {
         let mut items = vec![reasoning(Some("old"))];
         let producers = vec![Some(produced("p", Some("responses"), None))];
         assert_eq!(
-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other"),
+            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other").ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -453,7 +488,7 @@ mod tests {
         let mut responses = vec![reasoning(Some("old"))];
         let producers = vec![Some(produced("p", None, None))];
         assert_eq!(
-            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m"),
+            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m").ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -469,8 +504,46 @@ mod tests {
                 "p",
                 "messages",
                 "p/claude-sonnet-5-5",
-            ),
+            ).ciphertexts_stripped,
             1
         );
+    }
+
+    #[test]
+    fn messages_foreign_strip_counts_as_wholly_omitted() {
+        let mut items = vec![reasoning(Some("opus-sig"))];
+        let producers = vec![Some(produced(
+            "opencode",
+            Some("messages"),
+            Some("opencode/claude-opus-5-5"),
+        ))];
+        let stats = strip_foreign_ciphertext(
+            &mut items,
+            &producers,
+            "opencode",
+            "messages",
+            "opencode/claude-sonnet-5-5",
+        );
+        assert_eq!(stats.ciphertexts_stripped, 1);
+        // Signature gone → Messages encode drops the whole thinking block.
+        assert_eq!(stats.reasoning_wholly_omitted, 1);
+        assert_eq!(crate::types::item_text_preview(&items[0]), "think");
+    }
+
+    #[test]
+    fn responses_foreign_strip_keeps_text_not_wholly_omitted() {
+        let mut items = vec![reasoning(Some("foreign"))];
+        let producers = vec![Some(produced("q", Some("responses"), Some("q/m")))];
+        let stats = strip_foreign_ciphertext(
+            &mut items,
+            &producers,
+            "p",
+            "responses",
+            "p/m",
+        );
+        assert_eq!(stats.ciphertexts_stripped, 1);
+        // Text remains on the Item; Responses-with-text-replay can still use it.
+        assert_eq!(stats.reasoning_wholly_omitted, 0);
+        assert_eq!(crate::types::item_text_preview(&items[0]), "think");
     }
 }
