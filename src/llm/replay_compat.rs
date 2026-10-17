@@ -4,21 +4,22 @@
 //!    host's own reasoning id. Codecs omit every other id. `call_id` is a
 //!    pairing key, not an identity, and always survives.
 //! 2. Reasoning ciphertext (`encrypted_content`) is readable only by the producer
-//!    that minted it. Producer identity is the provider plus the protocol. A
-//!    Messages signature is also bound to the model, so a different model on the
-//!    same provider does not receive it. An origin row written before the
-//!    protocol was recorded has no `endpoint_type`; that ciphertext still returns
-//!    to the same provider on Responses and Chat, and is dropped for Messages.
+//!    that minted it. Producer identity is the provider, the protocol, and the
+//!    model when the origin recorded a `model_ref`. A row with no `endpoint_type`,
+//!    or no `model_ref`, keeps the previous rule: it returns to the same provider
+//!    on Responses and Chat, and is dropped for Messages.
 //! 3. Reasoning text is never dropped by the ciphertext strip. Each codec writes
 //!    it in its own dialect; a provider declaring `reasoning_replay` receives it
 //!    on every turn.
 //! 4. Summary replay keeps only reasoning this provider produced. Foreign
 //!    reasoning has no id that host minted, and its input schema requires that
 //!    id, so the item is removed on the request copy.
-//! 5. A Messages signature also covers everything before it. Once compaction or
-//!    a stale-media note rewrites that prefix, the signature is dropped even
-//!    for its own producer. Gateways do not reliably honor `drop_block`, so
-//!    this cannot be left to the API.
+//! 5. A Messages signature stays valid while this request still sends the
+//!    prefix it was signed against. Compaction or a stale-media note marks
+//!    the reasoning item minted while the old content was still in that
+//!    prefix, and only that signature is dropped. Later thinking was signed
+//!    against the rewritten prefix and stays. Gateways do not reliably honor
+//!    `drop_block`, so this cannot be left to the API.
 //!
 //! The session log is never rewritten. Rules 2, 4 and 5 run on the per-request
 //! copy.
@@ -54,10 +55,9 @@ pub fn producers_for_seqs(
         .collect()
 }
 
-/// Ciphertext belongs to this request when the provider and protocol match.
-/// Messages also requires the same model. A missing protocol matches only a
-/// non-Messages target, which is how rows written before this field existed
-/// keep their previous behavior.
+/// Ciphertext belongs to this request when the provider, protocol, and model
+/// match. A missing protocol, or a missing model on a non-Messages row, keeps
+/// the rule from before those fields were recorded.
 fn ciphertext_is_own(
     producer: &ItemProducer,
     provider_id: &str,
@@ -70,8 +70,10 @@ fn ciphertext_is_own(
     match producer.endpoint_type.as_deref() {
         None => endpoint_type != "messages",
         Some(kind) if kind != endpoint_type => false,
-        Some(_) if endpoint_type == "messages" => producer.model_ref.as_deref() == Some(model_ref),
-        Some(_) => true,
+        Some(_) => match producer.model_ref.as_deref() {
+            Some(minted) => minted == model_ref,
+            None => endpoint_type != "messages",
+        },
     }
 }
 
@@ -107,8 +109,9 @@ pub fn strip_foreign_ciphertext(
 }
 
 /// Rule 5 on the request copy: on a Messages target, remove the signature from
-/// reasoning produced on a prefix this request has rewritten. `rebased` is
-/// parallel to `items`. Returns how many signatures were removed.
+/// reasoning this request has marked. A mark means that item was minted while
+/// the old prefix was still present. Later reasoning is left alone. `rebased`
+/// is parallel to `items`. Returns how many signatures were removed.
 pub fn strip_rebased_signatures(
     items: &mut [Item],
     rebased: &[bool],
@@ -119,10 +122,13 @@ pub fn strip_rebased_signatures(
     }
     let mut stripped = 0;
     for (item, rebased) in items.iter_mut().zip(rebased) {
+        if !*rebased {
+            continue;
+        }
         let Item::Reasoning(reasoning) = item else {
             continue;
         };
-        if *rebased && reasoning.encrypted_content.take().is_some() {
+        if reasoning.encrypted_content.take().is_some() {
             stripped += 1;
         }
     }
@@ -365,11 +371,13 @@ mod tests {
             Item::Reasoning(reasoning) if reasoning.encrypted_content.is_none()
         ));
         assert_eq!(crate::types::item_text_preview(&items[0]), "think");
+        // Signed after the rewrite. The flag on the user message does not
+        // take it with the earlier block.
         assert!(matches!(
             &items[2],
-            Item::Reasoning(reasoning)
-                if reasoning.encrypted_content.as_deref() == Some("after-compaction")
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("after-compaction")
         ));
+        assert_eq!(crate::types::item_text_preview(&items[2]), "think");
 
         let mut responses = vec![reasoning(Some("gpt-cipher"))];
         assert_eq!(
@@ -379,6 +387,64 @@ mod tests {
         assert!(matches!(
             &responses[0],
             Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("gpt-cipher")
+        ));
+    }
+
+    #[test]
+    fn same_provider_ciphertext_does_not_cross_models() {
+        let minted = vec![reasoning(Some("gpt-cipher"))];
+        let producers = vec![Some(produced(
+            "opencode",
+            Some("responses"),
+            Some("opencode/gpt-5.6-sol"),
+        ))];
+        let mut to_grok = minted.clone();
+        assert_eq!(
+            strip_foreign_ciphertext(
+                &mut to_grok,
+                &producers,
+                "opencode",
+                "responses",
+                "opencode/grok-4.7",
+            ),
+            1
+        );
+        assert!(matches!(
+            &to_grok[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.is_none()
+        ));
+        assert!(matches!(
+            &minted[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("gpt-cipher")
+        ));
+        let mut back = minted;
+        assert_eq!(
+            strip_foreign_ciphertext(
+                &mut back,
+                &producers,
+                "opencode",
+                "responses",
+                "opencode/gpt-5.6-sol",
+            ),
+            0
+        );
+        assert!(matches!(
+            &back[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("gpt-cipher")
+        ));
+    }
+
+    #[test]
+    fn legacy_origin_without_model_still_replays_to_responses() {
+        let mut items = vec![reasoning(Some("old"))];
+        let producers = vec![Some(produced("p", Some("responses"), None))];
+        assert_eq!(
+            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other"),
+            0
+        );
+        assert!(matches!(
+            &items[0],
+            Item::Reasoning(reasoning) if reasoning.encrypted_content.as_deref() == Some("old")
         ));
     }
 

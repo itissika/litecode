@@ -16,9 +16,9 @@ pub use provider::LlmProvider;
 pub use request::{ModelRequest, ToolDef};
 
 /// Replay rules: ids stay off the wire except a summary-replay host's own
-/// reasoning id, ciphertext only to its producer, summary replay drops
-/// reasoning any other provider produced, and a Messages signature never
-/// survives a rewrite of its prefix.
+/// reasoning id, ciphertext only to the provider, protocol, and model that
+/// minted it, summary replay drops reasoning any other provider produced, and
+/// a rewritten Messages prefix drops the signature minted against that prefix.
 pub(crate) use replay_compat::{
     ItemProducer, producers_for_seqs, retain_own_reasoning, strip_foreign_ciphertext,
     strip_rebased_signatures,

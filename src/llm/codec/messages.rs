@@ -85,7 +85,6 @@ impl MessagesCodec {
     fn encode_body(&self, params: &ModelRequest, stream: bool) -> Result<Value> {
         let (mut messages, calls, results) = fold_items(&self.model, &params.input);
         place_results(&mut messages, calls, results);
-        strip_closed_thinking(&mut messages);
         let mut messages = prune_and_merge(messages);
         // A request that ends on the assistant is prefill, which these models
         // reject. A period is a real text block; an empty one is rejected too.
@@ -142,7 +141,21 @@ impl MessagesCodec {
                     .collect(),
             );
         }
+        let carries_thinking = messages.iter().any(|message| {
+            message
+                .blocks
+                .iter()
+                .any(|block| matches!(block.body, Body::Thinking { .. } | Body::Redacted { .. }))
+        });
         let (thinking, output_config) = self.thinking_fields(params.thinking);
+        // `between_tools` / `disabled` reject `block_binding`, and a request
+        // that still carries a signed block must be able to drop it. Adaptive
+        // is the only shape that accepts the binding.
+        let (thinking, output_config) = if carries_thinking {
+            self.thinking_beside_replayed_blocks(thinking, output_config)
+        } else {
+            (thinking, output_config)
+        };
         if let Some(thinking) = thinking {
             body["thinking"] = thinking;
         }
@@ -186,6 +199,30 @@ impl MessagesCodec {
                 .filter(|display| !display.is_empty()),
         );
         (Some(thinking), Some(serde_json::json!({"effort": effort})))
+    }
+
+    fn thinking_beside_replayed_blocks(
+        &self,
+        thinking: Option<Value>,
+        output_config: Option<Value>,
+    ) -> (Option<Value>, Option<Value>) {
+        let adaptive = thinking
+            .as_ref()
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str)
+            == Some("adaptive");
+        if adaptive {
+            return (thinking, output_config);
+        }
+        (
+            Some(adaptive_thinking(
+                self.model
+                    .reasoning_summary
+                    .as_deref()
+                    .filter(|display| !display.is_empty()),
+            )),
+            None,
+        )
     }
 
     fn request(
@@ -722,35 +759,6 @@ fn place_results(
     }
 }
 
-/// Replay thinking only inside the open turn: assistant messages after the
-/// last user message that carries no tool result. Earlier signatures belong
-/// to a prefix this request is not allowed to change. With no such message
-/// the turn's opener was compacted away, so no signature here can verify.
-fn strip_closed_thinking(messages: &mut [Draft]) {
-    let boundary = messages
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(index, message)| {
-            if message.assistant {
-                return None;
-            }
-            let has_result = message
-                .blocks
-                .iter()
-                .any(|block| matches!(block.body, Body::ToolResult { .. }));
-            if has_result { None } else { Some(index) }
-        });
-    let end = boundary.map_or(messages.len(), |boundary| boundary + 1);
-    for message in messages.iter_mut().take(end) {
-        if message.assistant {
-            message.blocks.retain(|block| {
-                !matches!(block.body, Body::Thinking { .. } | Body::Redacted { .. })
-            });
-        }
-    }
-}
-
 fn prune_and_merge(mut messages: Vec<Draft>) -> Vec<Draft> {
     for message in &mut messages {
         message.blocks.retain(|block| match &block.body {
@@ -773,15 +781,41 @@ fn prune_and_merge(mut messages: Vec<Draft>) -> Vec<Draft> {
     merged
 }
 
+/// Thinking blocks are fences. A signature covers the blocks before it, so a
+/// tool call may move to the end of its own stretch and must not cross a fence.
 fn reorder(messages: &mut [Draft]) {
     for message in messages.iter_mut().filter(|message| message.assistant) {
-        message.blocks.sort_by_key(|block| match &block.body {
-            Body::Thinking { .. } | Body::Redacted { .. } => 0u8,
-            Body::Text(_) | Body::Media(_) => 1,
-            Body::ToolUse { .. } => 2,
-            Body::ToolResult { .. } => 3,
-        });
+        message.blocks = fence_tool_uses(std::mem::take(&mut message.blocks));
     }
+}
+
+fn fence_tool_uses(blocks: Vec<Block>) -> Vec<Block> {
+    let mut out = Vec::with_capacity(blocks.len());
+    let mut segment = Vec::new();
+    for block in blocks {
+        if matches!(block.body, Body::Thinking { .. } | Body::Redacted { .. }) {
+            flush_tool_segment(&mut out, &mut segment);
+            out.push(block);
+        } else {
+            segment.push(block);
+        }
+    }
+    flush_tool_segment(&mut out, &mut segment);
+    out
+}
+
+fn flush_tool_segment(out: &mut Vec<Block>, segment: &mut Vec<Block>) {
+    let mut rest = Vec::new();
+    let mut tools = Vec::new();
+    for block in segment.drain(..) {
+        if matches!(block.body, Body::ToolUse { .. }) {
+            tools.push(block);
+        } else {
+            rest.push(block);
+        }
+    }
+    out.extend(rest);
+    out.extend(tools);
 }
 
 fn mark_cache(messages: &mut [Draft]) {
@@ -1198,6 +1232,79 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         }
     }
 
+    fn without_cache_control(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut next = serde_json::Map::new();
+                for (key, child) in map {
+                    if key == "cache_control" {
+                        continue;
+                    }
+                    next.insert(key.clone(), without_cache_control(child));
+                }
+                Value::Object(next)
+            }
+            Value::Array(items) => Value::Array(items.iter().map(without_cache_control).collect()),
+            other => other.clone(),
+        }
+    }
+
+    /// The trailing "." is a prefill pad, not history. Drop it before comparing
+    /// one turn's messages with the next turn's.
+    fn history_messages(body: &Value) -> Vec<Value> {
+        let mut messages = body["messages"].as_array().cloned().unwrap_or_default();
+        if let Some(last) = messages.last() {
+            let pad = last.get("role").and_then(Value::as_str) == Some("user")
+                && last.pointer("/content/0/text").and_then(Value::as_str) == Some(".")
+                && last
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| blocks.len() == 1);
+            if pad {
+                messages.pop();
+            }
+        }
+        messages
+            .into_iter()
+            .map(|message| without_cache_control(&message))
+            .collect()
+    }
+
+    /// One conversation, two turns. The earlier request's messages are a prefix
+    /// of the later one: history is append-only, including signed thinking.
+    #[test]
+    fn later_turn_extends_the_previous_messages_prefix() {
+        let first = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("q1"),
+                    thinking("old", "sig-old"),
+                    assistant("a1"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let second = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("q1"),
+                    thinking("old", "sig-old"),
+                    assistant("a1"),
+                    user_text("q2"),
+                    thinking("new", "sig-new"),
+                    assistant("a2"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let prev = history_messages(&first);
+        let next = history_messages(&second);
+        assert!(
+            next.starts_with(&prev),
+            "closed-turn thinking left the later request\nprev={prev:?}\nnext={next:?}"
+        );
+    }
+
     #[test]
     fn text_turn_sends_adaptive_thinking_and_no_sampling() {
         let body = codec()
@@ -1303,7 +1410,7 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
     }
 
     #[test]
-    fn thinking_from_a_closed_turn_is_omitted() {
+    fn thinking_from_a_closed_turn_stays() {
         let body = codec()
             .encode_body(
                 &request(vec![
@@ -1318,16 +1425,17 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             )
             .unwrap();
         let rendered = body.to_string();
-        assert!(!rendered.contains("sig-old"));
-        assert!(rendered.contains("sig-new"));
-        assert_eq!(body["messages"][1]["content"][0]["text"], "a1");
+        assert!(rendered.contains("sig-old"), "{rendered}");
+        assert!(rendered.contains("sig-new"), "{rendered}");
+        assert_eq!(body["messages"][1]["content"][0]["signature"], "sig-old");
+        assert_eq!(body["messages"][1]["content"][1]["text"], "a1");
         let last = body["messages"].as_array().unwrap().last().unwrap();
         assert_eq!(last["role"], "user");
         assert_eq!(last["content"][0]["text"], ".");
     }
 
     #[test]
-    fn thinking_is_omitted_once_the_turn_opener_was_compacted_away() {
+    fn signed_thinking_stays_when_the_transcript_opens_on_a_summary() {
         let body = codec()
             .encode_body(
                 &request(vec![
@@ -1345,13 +1453,129 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             )
             .unwrap();
         let rendered = body.to_string();
-        assert!(!rendered.contains("sig-kept"));
-        assert!(!rendered.contains("sig-next"));
-        assert!(!rendered.contains(r#""type":"thinking""#));
+        assert!(rendered.contains("sig-kept"), "{rendered}");
+        assert!(rendered.contains("sig-next"), "{rendered}");
         assert_eq!(
             body["messages"][0]["content"][0]["text"],
             "[Conversation summary]\nearlier work"
         );
+    }
+
+    #[test]
+    fn a_reminder_after_a_tool_turn_keeps_its_thinking() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("do it"),
+                    thinking("Need the file.", "sig-open"),
+                    call("toolu_01", "read", "{}"),
+                    output_text("toolu_01", "ok"),
+                    assistant("running"),
+                    user_text("<system-reminder>\nremember\n</system-reminder>"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains("sig-open"), "{rendered}");
+    }
+
+    #[test]
+    fn off_literal_is_not_sent_beside_a_thinking_block() {
+        let sonnet = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { off = \"between_tools\", low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let mut params = request(vec![
+            user_text("q1"),
+            thinking("old", "sig-old"),
+            assistant("a1"),
+            user_text("q2"),
+        ]);
+        params.thinking = ThinkingSpec::Off;
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert!(body.to_string().contains("sig-old"));
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert!(body.get("output_config").is_none());
+
+        params.input = vec![user_text("compacted")];
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "between_tools");
+        assert!(body["thinking"].get("block_binding").is_none());
+    }
+
+    #[test]
+    fn thinking_blocks_keep_their_order_inside_fences() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("go"),
+                    thinking("first", "sig-1"),
+                    assistant("note"),
+                    thinking("second", "sig-2"),
+                    call("toolu_01", "read", "{}"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let kinds: Vec<&str> = body["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["thinking", "text", "thinking", "tool_use"],
+            "{body}"
+        );
+
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("go"),
+                    thinking("first", "sig-1"),
+                    call("toolu_01", "read", "{}"),
+                    thinking("second", "sig-2"),
+                    call("toolu_02", "read", "{}"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let kinds: Vec<&str> = body["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["thinking", "tool_use", "thinking", "tool_use"],
+            "{body}"
+        );
+
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("go"),
+                    thinking("first", "sig-1"),
+                    call("toolu_01", "read", "{}"),
+                    assistant("note"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let kinds: Vec<&str> = body["messages"][1]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(kinds, vec!["thinking", "text", "tool_use"], "{body}");
     }
 
     #[test]
@@ -2037,5 +2261,196 @@ extra_body = { system = "nope" }
             "{message}"
         );
         assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    fn tool_shot(call_id: &str, url: &str) -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: call_id.into(),
+            output: FunctionCallOutput::Content(vec![
+                InputContent::InputText(InputTextContent {
+                    text: "caption".into(),
+                }),
+                InputContent::InputImage(InputImageContent {
+                    detail: Default::default(),
+                    file_id: None,
+                    image_url: Some(url.into()),
+                }),
+            ]),
+            id: None,
+            status: None,
+        })
+    }
+
+    fn reasoning_text_only(text: &str) -> Item {
+        Item::Reasoning(ReasoningItem {
+            id: Some("rs_ds".into()),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent { text: text.into() },
+            )]),
+            encrypted_content: None,
+            status: Some(OutputStatus::Completed),
+        })
+    }
+
+    /// The request the runtime would send: media notes, compaction flags, then
+    /// signature stripping, then the Messages body. The log itself is untouched.
+    fn wire_signatures(log: &[Item], seqs: &[Option<u64>]) -> Vec<String> {
+        let mut view = log.to_vec();
+        let mut rebased = crate::context_pipeline::media_budget::drop_stale_media(&mut view);
+        for (flag, compacted) in
+            rebased
+                .iter_mut()
+                .zip(crate::context_pipeline::summary::minted_before_summary(
+                    &view, seqs,
+                ))
+        {
+            *flag |= compacted;
+        }
+        crate::llm::strip_rebased_signatures(&mut view, &rebased, "messages");
+        let body = codec().encode_body(&request(view), true).unwrap();
+        let mut signatures = Vec::new();
+        collect_signatures(&body, &mut signatures);
+        signatures
+    }
+
+    fn collect_signatures(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("thinking") {
+                    if let Some(signature) = map.get("signature").and_then(Value::as_str) {
+                        out.push(signature.to_string());
+                    }
+                }
+                for child in map.values() {
+                    collect_signatures(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    collect_signatures(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn seqs_in_order(log: &[Item]) -> Vec<Option<u64>> {
+        (0..log.len()).map(|index| Some(index as u64 + 1)).collect()
+    }
+
+    #[test]
+    fn a_user_image_drops_only_the_turn_that_saw_it() {
+        let mut log = vec![
+            crate::types::user_message("look", &["litecode-media:old.png".into()]),
+            thinking("see", "sig-img"),
+            assistant("saw"),
+            user_text("q1"),
+            thinking("plan", "sig-1"),
+            assistant("a1"),
+            user_text("q2"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+
+        log.extend([thinking("next", "sig-2"), assistant("a2"), user_text("q3")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-2".to_string()), "{sigs:?}");
+
+        log.extend([thinking("third", "sig-3"), assistant("a3")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-2".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-3".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn two_tool_shots_then_a_later_turn_keeps_signatures_after_the_notes() {
+        let mut log = vec![
+            user_text("look"),
+            thinking("before", "sig-a"),
+            call("c1", "shot", "{}"),
+            tool_shot("c1", "https://example.com/old.png"),
+            thinking("answered old", "sig-b"),
+            call("c2", "shot", "{}"),
+            tool_shot("c2", "https://example.com/new.png"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+
+        log.extend([
+            thinking("answered new", "sig-c"),
+            assistant("done"),
+            user_text("next"),
+        ]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-c".to_string()), "{sigs:?}");
+
+        log.extend([thinking("after", "sig-d"), assistant("later")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-c".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-d".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn compaction_keeps_thinking_signed_against_the_summary() {
+        let mut log = vec![
+            crate::context_pipeline::summary::compact_summary_message("prior decisions", false),
+            thinking("old", "sig-old"),
+            assistant("kept"),
+            user_text("go on"),
+        ];
+        let mut seqs = vec![Some(200), Some(10), Some(11), Some(201)];
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+
+        log.extend([
+            thinking("continue", "sig-new"),
+            call("c1", "read", "{}"),
+            output_text("c1", "file"),
+        ]);
+        seqs.extend([Some(202), Some(203), Some(204)]);
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-new".to_string()), "{sigs:?}");
+
+        log.extend([thinking("use the file", "sig-tool"), assistant("done")]);
+        seqs.extend([Some(205), Some(206)]);
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-new".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-tool".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn switching_away_and_back_keeps_each_haiku_signature() {
+        let log = vec![
+            user_text("q"),
+            thinking("haiku", "sig-h1"),
+            assistant("from haiku"),
+            user_text("switch"),
+            reasoning_text_only("deepseek thought"),
+            assistant("from deepseek"),
+            user_text("back"),
+            thinking("haiku again", "sig-h2"),
+            assistant("from haiku again"),
+            user_text("later"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-h1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-h2".to_string()), "{sigs:?}");
+        assert!(
+            !sigs.iter().any(|signature| signature.is_empty()),
+            "{sigs:?}"
+        );
     }
 }

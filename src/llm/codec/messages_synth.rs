@@ -63,6 +63,9 @@ pub(super) struct MessagesSynth {
     usage: MessagesUsage,
     blocks: BTreeMap<u32, OpenBlock>,
     finished: bool,
+    /// Final `thinking_dropped` counts. `message_start.message` sets them.
+    /// A later `message_delta` list replaces them. Warned once at `message_stop`.
+    thinking_dropped: BTreeMap<String, usize>,
 }
 
 impl MessagesSynth {
@@ -75,7 +78,12 @@ impl MessagesSynth {
             usage: MessagesUsage::default(),
             blocks: BTreeMap::new(),
             finished: false,
+            thinking_dropped: BTreeMap::new(),
         }
+    }
+
+    pub(super) fn thinking_dropped(&self, reason: &str) -> usize {
+        self.thinking_dropped.get(reason).copied().unwrap_or(0)
     }
 
     fn bump(&mut self) -> u64 {
@@ -110,6 +118,7 @@ impl MessagesSynth {
                         self.usage.observe(usage);
                     }
                 }
+                self.observe_input_transformations(value, "/message/input_transformations");
                 Ok(Vec::new())
             }
             "content_block_start" => self.on_start(value),
@@ -119,6 +128,7 @@ impl MessagesSynth {
                 if let Some(usage) = value.get("usage") {
                     self.usage.observe(usage);
                 }
+                self.observe_input_transformations(value, "/input_transformations");
                 if let Some(reason) = value
                     .pointer("/delta/stop_reason")
                     .and_then(Value::as_str)
@@ -131,6 +141,40 @@ impl MessagesSynth {
             "message_stop" => self.finish(),
             _ => Ok(Vec::new()),
         }
+    }
+
+    /// `pointer` is `/message/input_transformations` on `message_start`, or
+    /// `/input_transformations` on `message_delta`. A present list replaces
+    /// the previous one. Only `thinking_dropped` counts; other types are ignored.
+    fn observe_input_transformations(&mut self, value: &Value, pointer: &str) {
+        let Some(entries) = value.pointer(pointer).and_then(Value::as_array) else {
+            return;
+        };
+        let mut counts = BTreeMap::new();
+        for entry in entries {
+            if entry.get("type").and_then(Value::as_str) != Some("thinking_dropped") {
+                continue;
+            }
+            let reason = entry
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            *counts.entry(reason.to_string()).or_default() += 1;
+        }
+        self.thinking_dropped = counts;
+    }
+
+    fn warn_dropped_thinking(&self) {
+        if self.thinking_dropped.is_empty() {
+            return;
+        }
+        let dropped: usize = self.thinking_dropped.values().sum();
+        tracing::warn!(
+            target: "litecode.debug.llm_request",
+            dropped,
+            reasons = ?self.thinking_dropped,
+            "anthropic dropped thinking blocks"
+        );
     }
 
     fn on_start(&mut self, value: &Value) -> Result<Vec<ResponseStreamEvent>> {
@@ -409,6 +453,7 @@ impl MessagesSynth {
             return Ok(Vec::new());
         }
         self.finished = true;
+        self.warn_dropped_thinking();
         let mut events = Vec::new();
         let tools: Vec<(u32, String, String, String)> = self
             .blocks
@@ -640,6 +685,106 @@ mod tests {
             _ => None,
         });
         (out, response.expect("message_stop synthesizes a terminal"))
+    }
+
+    #[test]
+    fn message_start_records_dropped_thinking_without_changing_the_stream() {
+        let mut synth = MessagesSynth::new("claude-sonnet-5-5");
+        let events = synth
+            .ingest(&serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_01",
+                    "model": "claude-sonnet-5-5",
+                    "input_transformations": [
+                        {
+                            "path": "messages.1.content.0",
+                            "type": "thinking_dropped",
+                            "reason": "prefix_binding_mismatch"
+                        },
+                        {
+                            "path": "messages.1.content.1",
+                            "type": "other_change",
+                            "reason": "not_thinking"
+                        },
+                        {
+                            "path": "messages.1.content.2",
+                            "type": "thinking_dropped",
+                            "reason": "model_binding_mismatch"
+                        }
+                    ]
+                },
+                "input_transformations": [
+                    {
+                        "path": "messages.0.content.0",
+                        "type": "thinking_dropped",
+                        "reason": "organization_binding_mismatch"
+                    }
+                ]
+            }))
+            .unwrap();
+        assert!(events.is_empty());
+        assert_eq!(synth.message_id(), "msg_01");
+        assert_eq!(synth.thinking_dropped("prefix_binding_mismatch"), 1);
+        assert_eq!(synth.thinking_dropped("model_binding_mismatch"), 1);
+        assert_eq!(synth.thinking_dropped("organization_binding_mismatch"), 0);
+        assert_eq!(synth.thinking_dropped("not_thinking"), 0);
+    }
+
+    #[test]
+    fn message_delta_replaces_the_dropped_thinking_list() {
+        let mut synth = MessagesSynth::new("claude-sonnet-5-5");
+        let started = synth
+            .ingest(&serde_json::json!({
+                "type": "message_start",
+                "message": {
+                    "id": "msg_01",
+                    "model": "claude-sonnet-5-5",
+                    "input_transformations": [
+                        {
+                            "path": "messages.1.content.0",
+                            "type": "thinking_dropped",
+                            "reason": "prefix_binding_mismatch"
+                        }
+                    ]
+                }
+            }))
+            .unwrap();
+        assert!(started.is_empty());
+        let deltas = synth
+            .ingest(&serde_json::json!({
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""}
+            }))
+            .unwrap();
+        assert!(!deltas.is_empty());
+        let replaced = synth
+            .ingest(&serde_json::json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 2},
+                "input_transformations": [
+                    {
+                        "path": "messages.1.content.0",
+                        "type": "thinking_dropped",
+                        "reason": "model_binding_mismatch"
+                    },
+                    {
+                        "path": "messages.1.content.1",
+                        "type": "thinking_dropped",
+                        "reason": "model_binding_mismatch"
+                    }
+                ]
+            }))
+            .unwrap();
+        assert!(replaced.is_empty());
+        assert_eq!(synth.thinking_dropped("prefix_binding_mismatch"), 0);
+        assert_eq!(synth.thinking_dropped("model_binding_mismatch"), 2);
+        synth
+            .ingest(&serde_json::json!({"type": "message_stop"}))
+            .unwrap();
+        assert_eq!(synth.thinking_dropped("model_binding_mismatch"), 2);
     }
 
     fn start_message() -> Value {

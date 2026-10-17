@@ -23,7 +23,8 @@ use crate::types::Item;
 ///
 /// Returns, per item, whether it was produced while a part removed here was
 /// still in its prefix: the model output that answered a stripped tool batch,
-/// and the rest of the turn a stripped user message opened.
+/// and the model output in the turn a stripped user message opened, through
+/// that turn's final answer.
 pub fn drop_stale_media(items: &mut [Item]) -> Vec<bool> {
     let tool_fresh_from = items
         .iter()
@@ -50,7 +51,10 @@ pub fn drop_stale_media(items: &mut [Item]) -> Vec<bool> {
                 next += 1;
             }
         } else {
-            for later in next..user_fresh_from {
+            // The image's own turn, through its final answer. A later turn was
+            // signed against the note, so it is not part of this rewrite.
+            let turn_end = end_of_turn_opened_at(items, index);
+            for later in next..turn_end {
                 if is_model_produced(&items[later]) {
                     rebased[later] = true;
                 }
@@ -72,6 +76,27 @@ fn is_model_produced(item: &Item) -> bool {
         item,
         Item::Message(MessageItem::Output(_)) | Item::Reasoning(_) | Item::FunctionCall(_)
     )
+}
+
+/// Exclusive end of the turn opened by the user message at `opener`: the
+/// index after its final answer. A final answer is an assistant message with
+/// no tool call before the next user message, the same boundary
+/// [`current_turn_start`] uses.
+fn end_of_turn_opened_at(items: &[Item], opener: usize) -> usize {
+    let mut pending_answer: Option<usize> = None;
+    for index in opener + 1..items.len() {
+        match &items[index] {
+            Item::Message(MessageItem::Output(_)) => pending_answer = Some(index),
+            Item::FunctionCall(_) => pending_answer = None,
+            Item::Message(MessageItem::Input(message)) if message.role == InputRole::User => {
+                if let Some(answer) = pending_answer {
+                    return answer + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    items.len()
 }
 
 /// First index after the last final assistant answer: an output message with
@@ -298,6 +323,22 @@ mod tests {
             call("c2"),
         ];
         assert!(drop_stale_media(&mut items).iter().all(|flag| !flag));
+    }
+
+    #[test]
+    fn a_later_turn_signed_after_the_note_is_not_rebased() {
+        let mut items = vec![
+            user_image("litecode-media:old.png"),
+            reasoning(),
+            assistant_text("done"),
+            user_text("second"),
+            reasoning(),
+            assistant_text("ok"),
+            user_text("third"),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert!(!has_media(&items[0]));
+        assert_eq!(rebased, vec![false, true, true, false, false, false, false]);
     }
 
     #[test]
