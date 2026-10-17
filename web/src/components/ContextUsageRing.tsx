@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { ArrowsInSimple, CircleNotch } from "@phosphor-icons/react";
 import { useTurnStore } from "../stores/turnStore";
 import { useConnectionStore } from "../stores/connectionStore";
-import type { ItemTokenBreakdown, ToolTokenRow } from "../api/types";
+import type { ItemTokenBreakdown } from "../api/types";
 import { FoldCard } from "./FoldCard";
 import { Popover } from "./ui/Popover";
 
@@ -81,63 +81,69 @@ type OccupancySegment = {
   color: string;
 };
 
-function occupancySegments(
+type ToolOccupancy = { name: string; tokens: number };
+
+// Local cl100k split, scaled so the three named buckets add up to the
+// occupancy numerator. Tool rows add up to tool definitions plus the tool
+// calls and outputs inside Messages.
+function occupancyMix(
   used: number,
-  bd: ItemTokenBreakdown,
-): OccupancySegment[] {
-  const parts: OccupancySegment[] = [
+  bd: ItemTokenBreakdown | undefined,
+): { tiers: OccupancySegment[]; tools: ToolOccupancy[] } | null {
+  if (!bd || used <= 0) return null;
+  const system = Math.max(0, bd.system ?? 0);
+  const toolDefs = Math.max(0, bd.tool_schema ?? 0);
+  const toolCall = Math.max(0, bd.tool_call ?? 0);
+  const toolOutput = Math.max(0, bd.tool_output ?? 0);
+  const messages = Math.max(0, (bd.conversation ?? 0) + toolCall + toolOutput);
+  const classified = system + toolDefs + messages;
+  if (classified <= 0) return null;
+  const systemTokens = Math.round((system / classified) * used);
+  const toolTokens = Math.round((toolDefs / classified) * used);
+  const messageTokens = Math.max(0, used - systemTokens - toolTokens);
+  const tiers: OccupancySegment[] = [
     {
       key: "system",
       label: "System",
-      tokens: Math.max(0, bd.system ?? 0),
+      tokens: systemTokens,
       color: "var(--_dk-cat-cyan)",
     },
     {
-      key: "schema",
-      label: "Tool schemas",
-      tokens: Math.max(0, bd.tool_schema ?? 0),
+      key: "tools",
+      label: "Tool definitions",
+      tokens: toolTokens,
       color: "var(--_dk-cat-orange)",
     },
     {
-      key: "call",
-      label: "Tool calls",
-      tokens: Math.max(0, bd.tool_call ?? 0),
-      color: "var(--_dk-cat-purple)",
-    },
-    {
-      key: "output",
-      label: "Tool outputs",
-      tokens: Math.max(0, bd.tool_output ?? 0),
-      color: "var(--_dk-cat-blue)",
-    },
-    {
-      key: "conv",
-      label: "Conversation",
-      tokens: Math.max(0, bd.conversation ?? 0),
+      key: "messages",
+      label: "Messages",
+      tokens: messageTokens,
       color: "var(--_dk-cat-pink)",
     },
-  ];
-  let classified = parts.reduce((s, p) => s + p.tokens, 0);
-  let other = Math.max(0, used - classified);
-  if (classified > used && classified > 0) {
-    const scale = used / classified;
-    for (const p of parts) p.tokens = Math.round(p.tokens * scale);
-    classified = parts.reduce((s, p) => s + p.tokens, 0);
-    other = Math.max(0, used - classified);
-  }
-  parts.push({
-    key: "other",
-    label: "Other",
-    tokens: other,
-    color: "var(--_dk-text-disabled)",
-  });
-  return parts.filter((p) => p.tokens > 0);
-}
+  ].filter((row) => row.tokens > 0);
 
-function usedToolRows(bd: ItemTokenBreakdown | undefined): ToolTokenRow[] {
-  return (bd?.per_tool ?? []).filter(
-    (row) => (row.schema ?? 0) + (row.call ?? 0) + (row.output ?? 0) > 0,
-  );
+  const toolClassified = toolDefs + toolCall + toolOutput;
+  const toolTarget = Math.round((toolClassified / classified) * used);
+  const raw = (bd.per_tool ?? [])
+    .map((row) => ({
+      name: row.name,
+      weight: (row.schema ?? 0) + (row.call ?? 0) + (row.output ?? 0),
+    }))
+    .filter((row) => row.weight > 0 && row.name.length > 0);
+  const weightSum = raw.reduce((sum, row) => sum + row.weight, 0);
+  const tools: ToolOccupancy[] = [];
+  if (weightSum > 0 && toolTarget > 0) {
+    let assigned = 0;
+    raw.forEach((row, index) => {
+      const tokens =
+        index === raw.length - 1
+          ? Math.max(0, toolTarget - assigned)
+          : Math.round((row.weight / weightSum) * toolTarget);
+      assigned += tokens;
+      if (tokens > 0) tools.push({ name: row.name, tokens });
+    });
+  }
+  return { tiers, tools };
 }
 
 export function ContextUsageRing({
@@ -174,9 +180,6 @@ export function ContextUsageRing({
   const sessionCacheMiss = useTurnStore(
     (s) => s.byId.get(sessionId)?.sessionCacheMissTokens ?? 0,
   );
-  const turnCompletion = useTurnStore(
-    (s) => s.byId.get(sessionId)?.lastTurnCompletionTokens ?? 0,
-  );
   const compactEligible = useTurnStore(
     (s) => s.byId.get(sessionId)?.compactEligible ?? false,
   );
@@ -190,6 +193,12 @@ export function ContextUsageRing({
   const connected = useConnectionStore((s) => s.state === "connected");
   const breakdown = useTurnStore(
     (s) => s.byId.get(sessionId)?.contextTokenBreakdown,
+  );
+  const sessionBilledTokens = useTurnStore(
+    (s) => s.byId.get(sessionId)?.sessionBilledTokens ?? null,
+  );
+  const billedRequestCount = useTurnStore(
+    (s) => s.byId.get(sessionId)?.billedRequestCount ?? 0,
   );
 
   const hasOccupancy = used > 0;
@@ -224,10 +233,14 @@ export function ContextUsageRing({
   // Occupancy bar uses a neutral light/dark accent pair — deliberately distinct
   // from the cache-hit green→red hue so the two metrics are never confused.
   const occupancyBarWidth = hasOccupancy && total > 0 ? `${pct * 100}%` : "0%";
-  const segments =
-    hasOccupancy && breakdown ? occupancySegments(used, breakdown) : [];
-  const hasMix = segments.some((s) => s.key !== "other");
-  const toolRows = usedToolRows(breakdown);
+  const mix = hasOccupancy ? occupancyMix(used, breakdown) : null;
+  const segments = mix?.tiers ?? [];
+  const toolRows = mix?.tools ?? [];
+  const hasMix = segments.length > 0;
+  const avgRoundTrip =
+    sessionBilledTokens != null && billedRequestCount > 0
+      ? Math.round(sessionBilledTokens / billedRequestCount)
+      : null;
   const compactDisabled =
     !connected || runState !== "idle" || compacting || !compactEligible;
 
@@ -326,7 +339,7 @@ export function ContextUsageRing({
                           width: `${(seg.tokens / used) * 100}%`,
                           backgroundColor: seg.color,
                         }}
-                        title={`${seg.label} ${formatToken(seg.tokens)} (est.)`}
+                        title={`${seg.label} ${formatToken(seg.tokens)}`}
                       />
                     ))}
                   </div>
@@ -370,26 +383,19 @@ export function ContextUsageRing({
                         <span className="mt-1 text-(--_dk-text-disabled)">
                           Per tool
                         </span>
-                        {toolRows.map((row) => {
-                          const usedByTool =
-                            (row.schema ?? 0) +
-                            (row.call ?? 0) +
-                            (row.output ?? 0);
-                          return (
-                            <div
-                              key={row.name}
-                              className="flex items-center justify-between gap-2"
-                              title={`schema ${formatToken(row.schema ?? 0)} · call ${formatToken(row.call ?? 0)} · output ${formatToken(row.output ?? 0)}`}
-                            >
-                              <span className="min-w-0 truncate font-mono text-(--_dk-text-secondary)">
-                                {row.name}
-                              </span>
-                              <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                                {formatToken(usedByTool)}
-                              </span>
-                            </div>
-                          );
-                        })}
+                        {toolRows.map((row) => (
+                          <div
+                            key={row.name}
+                            className="flex items-center justify-between gap-2"
+                          >
+                            <span className="min-w-0 truncate font-mono text-(--_dk-text-secondary)">
+                              {row.name}
+                            </span>
+                            <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+                              {formatToken(row.tokens)}
+                            </span>
+                          </div>
+                        ))}
                       </>
                     )}
                     <span className="text-(--_dk-text-disabled)">
@@ -475,15 +481,22 @@ export function ContextUsageRing({
             </div>
           </div>
 
-          {hasProviderTruth && (
-            <div className="flex items-center justify-between border-t border-(--_dk-line) pt-2.5 text-(--_dk-text-disabled)">
-              <span>Last request</span>
+          <div className="flex flex-col gap-1 border-t border-(--_dk-line) pt-2.5 text-(--_dk-text-secondary)">
+            <div className="flex items-center justify-between gap-2">
+              <span>Billed</span>
               <span className="font-mono tabular-nums">
-                {formatToken(providerPrompt)} prompt +{" "}
-                {formatToken(turnCompletion)} completion
+                {sessionBilledTokens != null
+                  ? formatToken(sessionBilledTokens)
+                  : "-"}
               </span>
             </div>
-          )}
+            <div className="flex items-center justify-between gap-2">
+              <span>Avg round trip</span>
+              <span className="font-mono tabular-nums">
+                {avgRoundTrip != null ? formatToken(avgRoundTrip) : "-"}
+              </span>
+            </div>
+          </div>
         </div>
       )}
     </Popover>

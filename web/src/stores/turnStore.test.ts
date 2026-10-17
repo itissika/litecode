@@ -488,6 +488,57 @@ describe("turnStore convergence", () => {
     expect(slice.runState).toBe("idle");
   });
 
+  it("billed tokens stay absent until a snapshot or completed request provides them", () => {
+    const sessionId = "s2-billed";
+    useTurnStore.getState().applySnapshotMeter(sessionId, snapshot(sessionId));
+    let slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.sessionBilledTokens).toBeNull();
+    expect(slice.billedRequestCount).toBe(0);
+
+    useTurnStore.getState().onTurnStarted({
+      session_id: sessionId,
+      turn_id: "t1",
+      input: "hi",
+      step_max: 2,
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "llm_completed",
+        prompt_tokens: 100,
+        completion_tokens: 20,
+        cache_hit_tokens: 80,
+        cache_miss_tokens: 20,
+        stop_reason: "stop",
+      },
+    });
+    useTurnStore.getState().onTurnEvent({
+      session_id: sessionId,
+      turn_id: "t1",
+      event: {
+        type: "llm_completed",
+        prompt_tokens: 40,
+        completion_tokens: 10,
+        cache_hit_tokens: 30,
+        cache_miss_tokens: 10,
+        stop_reason: "stop",
+      },
+    });
+    slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.sessionBilledTokens).toBe(170);
+    expect(slice.billedRequestCount).toBe(2);
+
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      provider_billed_tokens: 140,
+      provider_billed_requests: 2,
+    });
+    slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.sessionBilledTokens).toBe(140);
+    expect(slice.billedRequestCount).toBe(2);
+  });
+
   it("applySnapshotMeter without stats leaves prompt truth absent", () => {
     const sessionId = "s2-meter-absent";
     useTurnStore.getState().applySnapshotMeter(sessionId, {

@@ -521,6 +521,10 @@ export interface SessionSnapshot {
   last_turn_token_stats?: TurnTokenStats | null;
   /** Session-total provider usage (Σ per-request; whole-session hit rate). */
   cumulative_token_stats?: TurnTokenStats | null;
+  /** Sum of prompt+completion over recorded requests. Absent means "-". */
+  provider_billed_tokens?: number | null;
+  /** Those requests. Average round-trip is the sum divided by this count. */
+  provider_billed_requests?: number | null;
   thinking_tier?: ThinkingTier;
   context_mode?: ContextMode;
   /**
@@ -631,7 +635,7 @@ interface TurnTokenStats {
   cache_miss_tokens: number;
 }
 
-/** Local cl100k buckets for the occupancy mix bar. Residual = used − sum. */
+/** Local cl100k buckets. The ring scales them onto the provider prompt. */
 export interface ToolTokenRow {
   name: string;
   schema?: number;

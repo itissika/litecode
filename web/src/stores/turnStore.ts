@@ -91,7 +91,7 @@ export interface TurnSlice {
   turnStepMax: number | null;
   contextWindow: number;
   contextTokensEstimate: number;
-  /** Local item-text mix; residual against `used` is computed in the ring. */
+  /** Local item-text mix. The ring scales it onto the provider prompt. */
   contextTokenBreakdown: ItemTokenBreakdown;
   compactEligible: boolean;
   compacting: boolean;
@@ -102,6 +102,9 @@ export interface TurnSlice {
   lastTurnCacheMissTokens: number;
   /** Session-total provider usage (Σ every request; whole-session hit rate). */
   sessionPromptTokens: number;
+  /** Recorded round-trip tokens (prompt + completion). Null until a bill exists. */
+  sessionBilledTokens: number | null;
+  billedRequestCount: number;
   sessionCompletionTokens: number;
   sessionCacheHitTokens: number;
   sessionCacheMissTokens: number;
@@ -129,6 +132,20 @@ export function emptySlice(): TurnSlice {
   return { ...EMPTY_SLICE };
 }
 
+function billedFromSnapshot(snap: SessionSnapshot): {
+  sessionBilledTokens: number | null;
+  billedRequestCount: number;
+} {
+  const count = snap.provider_billed_requests ?? 0;
+  if (count <= 0 || snap.provider_billed_tokens == null) {
+    return { sessionBilledTokens: null, billedRequestCount: 0 };
+  }
+  return {
+    sessionBilledTokens: snap.provider_billed_tokens,
+    billedRequestCount: count,
+  };
+}
+
 export const EMPTY_SLICE: TurnSlice = {
   runState: "idle",
   replaying: false,
@@ -148,6 +165,8 @@ export const EMPTY_SLICE: TurnSlice = {
   lastTurnCacheHitTokens: 0,
   lastTurnCacheMissTokens: 0,
   sessionPromptTokens: 0,
+  sessionBilledTokens: null,
+  billedRequestCount: 0,
   sessionCompletionTokens: 0,
   sessionCacheHitTokens: 0,
   sessionCacheMissTokens: 0,
@@ -867,6 +886,16 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         mapped.sessionCacheMissTokens =
           (slice.sessionCacheMissTokens ?? 0) + metaUpdate.cacheMissTokens;
       }
+      if (
+        metaUpdate.promptTokens !== undefined &&
+        metaUpdate.completionTokens !== undefined
+      ) {
+        mapped.sessionBilledTokens =
+          (slice.sessionBilledTokens ?? 0) +
+          metaUpdate.promptTokens +
+          metaUpdate.completionTokens;
+        mapped.billedRequestCount = (slice.billedRequestCount ?? 0) + 1;
+      }
 
       updated.set(sessionId, { ...slice, ...mapped });
       set({ byId: updated });
@@ -1006,6 +1035,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
               sessionCacheMissTokens: cum.cache_miss_tokens ?? 0,
             }
           : {}),
+        ...billedFromSnapshot(snap),
       });
     },
 
@@ -1093,6 +1123,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
               sessionCacheMissTokens: cum.cache_miss_tokens ?? 0,
             }
           : {}),
+        ...billedFromSnapshot(snap),
         ...(snap.todos !== undefined
           ? todoPatchRetaining(getSlice(get().byId, sessionId), snap.todos)
           : {}),
