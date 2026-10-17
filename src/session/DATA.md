@@ -163,7 +163,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `reminder/step_budget` | 每 turn 最多一次 | 隐藏 | 剩余步数不超过 3 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
 | `reminder/mentions` | 附着（非 seam Restore） | 隐藏 | 人键入 user 消息后立即写：展开消息里引用的知识节点/符号快照；压缩后不自动恢复；同快照仍在活面上则不重复写 |
-| `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；空库不写；活面上同 class 不重复写 |
+| `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；没有 enabled 节点不写（pending / disabled 视同空库，它们的问题也不计入）；只统计 enabled 节点上的错误与警告，否则报 enabled 数量；活面上同 class 不重复写 |
 
 隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
 

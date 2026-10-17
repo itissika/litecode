@@ -1,7 +1,7 @@
 //! Knowledge-base class attached after a human message.
 //!
-//! Empty libraries produce nothing. The same class still on the live surface
-//! is not written again.
+//! Libraries with no enabled node produce nothing. The same class still on
+//! the live surface is not written again.
 
 use std::path::Path;
 
@@ -48,6 +48,19 @@ mod tests {
         );
 
         fs::write(
+            workspace.join(".litecode/knowledge/draft.md"),
+            "```node\nnode : draft\nstatus : pending\nsummary : draft\n```\nsee [@ key=\"missing\"]\n",
+        )
+        .unwrap();
+        mgr.append_user_message_with_mentions(&sid, "drafts", &workspace)
+            .unwrap();
+        let kinds = reminder_kinds(&mgr, &sid);
+        assert!(
+            !kinds.contains(&ReminderKind::KnowledgeStatus),
+            "pending nodes alone write nothing"
+        );
+
+        fs::write(
             workspace.join(".litecode/knowledge/seq.md"),
             "```node\nnode : seq\nstatus : enabled\nsummary : seq\n```\n",
         )
@@ -56,6 +69,13 @@ mod tests {
             .unwrap();
         mgr.append_user_message_with_mentions(&sid, "same", &workspace)
             .unwrap();
+        fs::write(
+            workspace.join(".litecode/knowledge/another.md"),
+            "```node\nnode : another\nstatus : pending\nsummary : another\n```\n",
+        )
+        .unwrap();
+        mgr.append_user_message_with_mentions(&sid, "still", &workspace)
+            .unwrap();
         let notes: Vec<_> = reminder_kinds(&mgr, &sid)
             .into_iter()
             .filter(|kind| *kind == ReminderKind::KnowledgeStatus)
@@ -63,8 +83,8 @@ mod tests {
         assert_eq!(notes.len(), 1);
 
         fs::write(
-            workspace.join(".litecode/knowledge/draft.md"),
-            "```node\nnode : draft\nstatus : pending\nsummary : draft\n```\n",
+            workspace.join(".litecode/knowledge/seq.md"),
+            "```node\nnode : seq\nstatus : enabled\nsummary : seq\n```\nsee [@ key=\"missing\"]\n",
         )
         .unwrap();
         mgr.append_user_message_with_mentions(&sid, "changed", &workspace)

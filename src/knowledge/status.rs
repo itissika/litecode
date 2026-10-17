@@ -1,8 +1,8 @@
 //! One class for the knowledge base, attached when a person sends a message.
 //!
-//! An empty knowledge base is not a class. The caller writes nothing.
-//! The class is computed by the resident index when it publishes a snapshot;
-//! a turn only reads it (see [`super::index::turn_note`]).
+//! Only enabled nodes count. A library with no enabled node is not a class,
+//! and the caller writes nothing. The class is computed by the resident index
+//! when it publishes a snapshot; a turn only reads it (see [`super::index::turn_note`]).
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -15,7 +15,6 @@ use super::validate::{Issue, Severity};
 pub enum Class {
     Error,
     Warning,
-    Pending,
     Ok,
 }
 
@@ -24,7 +23,6 @@ impl Class {
         match self {
             Self::Error => "error",
             Self::Warning => "warning",
-            Self::Pending => "pending",
             Self::Ok => "ok",
         }
     }
@@ -36,18 +34,32 @@ pub struct Note {
     pub text: String,
 }
 
-/// `None` when there is no knowledge base, it has no nodes, or the resident
-/// index is not ready yet.
+/// `None` when there is no knowledge base, it has no enabled nodes, or the
+/// resident index is not ready yet.
 pub fn note(workspace: &Path) -> Option<Note> {
     super::index::turn_note(workspace)
 }
 
-/// KR-VAL-1 class of a resolved corpus.
+/// Turn-reminder class of a resolved corpus.
+///
+/// Pending and disabled nodes are ignored, including their issues. No enabled
+/// node means no note.
 pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
-    if corpus.root.is_none() || corpus.nodes.is_empty() {
+    if corpus.root.is_none() {
         return None;
     }
-    let errors = nodes_with(issues, Severity::Error, |_| true);
+    let enabled: HashSet<&str> = corpus
+        .nodes
+        .iter()
+        .filter(|node| node.status == Status::Enabled)
+        .map(|node| node.path.as_str())
+        .collect();
+    if enabled.is_empty() {
+        return None;
+    }
+    let errors = nodes_with(issues, Severity::Error, |issue| {
+        enabled.contains(issue.node_path.as_str())
+    });
     if !errors.is_empty() {
         return Some(Note {
             class: Class::Error,
@@ -55,7 +67,7 @@ pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
         });
     }
     let warnings = nodes_with(issues, Severity::Warning, |issue| {
-        issue.code != "inactive_target"
+        issue.code != "inactive_target" && enabled.contains(issue.node_path.as_str())
     });
     if !warnings.is_empty() {
         return Some(Note {
@@ -63,25 +75,9 @@ pub fn note_from(corpus: &Corpus, issues: &[Issue]) -> Option<Note> {
             text: warning_text(warnings.len()),
         });
     }
-    let pending = corpus
-        .nodes
-        .iter()
-        .filter(|node| node.status == Status::Pending)
-        .count();
-    if pending > 0 {
-        return Some(Note {
-            class: Class::Pending,
-            text: pending_text(pending),
-        });
-    }
-    let enabled = corpus
-        .nodes
-        .iter()
-        .filter(|node| node.status == Status::Enabled)
-        .count();
     Some(Note {
         class: Class::Ok,
-        text: ok_text(enabled),
+        text: ok_text(enabled.len()),
     })
 }
 
@@ -109,14 +105,6 @@ fn warning_text(count: usize) -> String {
     format!(
         "Knowledge base: {count} {nodes} warnings. You can run `knowledge check`, tell the user, and suggest a fix."
     )
-}
-
-fn pending_text(count: usize) -> String {
-    if count == 1 {
-        "Knowledge base: 1 node is pending review.".into()
-    } else {
-        format!("Knowledge base: {count} nodes are pending review.")
-    }
 }
 
 fn ok_text(count: usize) -> String {
@@ -147,8 +135,12 @@ mod tests {
         assert!(note(dir.path()).is_none());
     }
 
+    fn pending(key: &str, body: &str) -> String {
+        format!("```node\nnode : {key}\nstatus : pending\nsummary : {key}\n```\n{body}")
+    }
+
     #[test]
-    fn classes_cover_errors_warnings_pending_and_enabled() {
+    fn classes_cover_errors_warnings_and_enabled() {
         let errors = tempfile::tempdir().unwrap();
         write_node(
             errors.path(),
@@ -179,16 +171,12 @@ mod tests {
             "Knowledge base: 1 node has warnings. You can run `knowledge check`, tell the user, and suggest a fix."
         );
 
-        let pending = tempfile::tempdir().unwrap();
-        write_node(
-            pending.path(),
-            "draft.md",
-            "```node\nnode : draft\nstatus : pending\nsummary : draft\n```\n",
-        );
-        write_node(pending.path(), "live.md", &enabled("live", ""));
-        let held = note(pending.path()).unwrap();
-        assert_eq!(held.class, Class::Pending);
-        assert_eq!(held.text, "Knowledge base: 1 node is pending review.");
+        let mixed = tempfile::tempdir().unwrap();
+        write_node(mixed.path(), "draft.md", &pending("draft", ""));
+        write_node(mixed.path(), "live.md", &enabled("live", ""));
+        let held = note(mixed.path()).unwrap();
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
 
         let sound = tempfile::tempdir().unwrap();
         write_node(sound.path(), "seq.md", &enabled("seq", ""));
@@ -204,20 +192,50 @@ mod tests {
     }
 
     #[test]
-    fn citing_a_pending_node_stays_pending() {
+    fn a_library_with_no_enabled_node_is_not_a_note() {
+        let pending_only = tempfile::tempdir().unwrap();
+        write_node(pending_only.path(), "draft.md", &pending("draft", ""));
+        write_node(
+            pending_only.path(),
+            "broken.md",
+            &pending("broken", "see [@ key=\"missing\"]\n"),
+        );
+        assert!(note(pending_only.path()).is_none());
+
+        let disabled_only = tempfile::tempdir().unwrap();
+        write_node(
+            disabled_only.path(),
+            "old.md",
+            "```node\nnode : old\nstatus : disabled\nsummary : old\n```\nsee [@ key=\"missing\"]\n",
+        );
+        assert!(note(disabled_only.path()).is_none());
+    }
+
+    #[test]
+    fn issues_on_pending_nodes_do_not_change_the_class() {
+        let dir = tempfile::tempdir().unwrap();
+        write_node(dir.path(), "live.md", &enabled("live", ""));
+        write_node(
+            dir.path(),
+            "draft.md",
+            &pending("draft", "see [@ key=\"missing\"]\n"),
+        );
+        let held = note(dir.path()).unwrap();
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
+    }
+
+    #[test]
+    fn citing_a_pending_node_stays_ok() {
         let dir = tempfile::tempdir().unwrap();
         write_node(
             dir.path(),
             "live.md",
             &enabled("live", "see [@ key=\"draft\"]\n"),
         );
-        write_node(
-            dir.path(),
-            "draft.md",
-            "```node\nnode : draft\nstatus : pending\nsummary : draft\n```\n",
-        );
+        write_node(dir.path(), "draft.md", &pending("draft", ""));
         let held = note(dir.path()).unwrap();
-        assert_eq!(held.class, Class::Pending);
-        assert_eq!(held.text, "Knowledge base: 1 node is pending review.");
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
     }
 }

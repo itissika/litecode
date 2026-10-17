@@ -105,7 +105,7 @@
 
 新增状态（v2）：`symlink_escape`、`invalid_lines`、`unreadable_file`、`unsupported_language`、`ambiguous_symbol`（独立码）、`line_out_of_range`。
 
-- **KR-VAL-1** 节点的 `severity`：任一 error → `error`；否则任一非 `inactive_target` 的 warning → `warning`；否则 `null`。turn 提醒类别按 错误 > 警告 > pending > ok。
+- **KR-VAL-1** 节点的 `severity`：任一 error → `error`；否则任一非 `inactive_target` 的 warning → `warning`；否则 `null`。turn 提醒只看 enabled 节点：一个都没有则不写（pending / disabled 视同库不存在，它们的问题也不计入）；否则类别按 错误 > 警告 > ok。
 - **KR-VAL-2** 去重：同一节点内按 `ref_key` 去重，每个 `ref_key` 一条结果；重复时取最差（error > warning > ok）的那一次。
 
 ## 7. 分歧
