@@ -56,18 +56,32 @@ export function fileLabel(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** Blue chip: `.../parent/file`, or just the file when it has no parent. */
-export function humanFileLabel(path: string): string {
-  const parts = pathParts(path);
-  const file = parts[parts.length - 1] || path;
-  const parent = parts.length >= 2 ? parts[parts.length - 2] : "";
-  if (!parent) return file;
-  return `.../${parent}/${file}`;
+/**
+ * Final segment of a symbol chain: `impl Store › fn save` → `fn save`. The same
+ * leaf the backend reports (`leaf_label` in `src/workspace/symbols.rs`), so chip
+ * text and backend messages agree.
+ */
+export function leafSymbol(chain: string): string {
+  const parts = chain.trim().split(" › ");
+  return parts[parts.length - 1] ?? "";
 }
 
-/** Cyan chip: `file : symbol`. Lines stay off the capsule. */
+/** Blue chip: the file name. The full path lives in the chip's title. */
+export function humanFileLabel(path: string): string {
+  return fileLabel(path);
+}
+
+/** Cyan chip: `file : leaf`. Only the final chain segment shows; title keeps the chain. */
 export function humanSymbolLabel(path: string, symbol: string): string {
-  return `${fileLabel(path)} : ${symbol.trim()}`;
+  return `${fileLabel(path)} : ${leafSymbol(symbol) || symbol.trim()}`;
+}
+
+/** Amber chip for a line range: `file : 12-20`. Malformed spans fall back to the file. */
+export function humanRangeLabel(path: string, lines: string): string {
+  const raw = lines.trim();
+  const span = raw ? parseLineSpan(raw) : null;
+  if (!span) return fileLabel(path);
+  return `${fileLabel(path)} : ${formatLineSpan(span.start, span.end)}`;
 }
 
 function pathParts(path: string): string[] {

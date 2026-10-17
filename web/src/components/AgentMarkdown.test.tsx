@@ -162,24 +162,26 @@ describe("AgentMarkdown citations", () => {
       />,
     );
 
-    expect(container.textContent).toContain(".../src/a.rs");
-    expect(container.textContent).not.toContain("src/a.rs : 4-9");
-    expect(container.textContent).toContain(".../auth/validate.ts");
+    expect(container.textContent).toContain("a.rs : 4-9");
+    expect(container.textContent).toContain("validate.ts");
+    expect(container.textContent).not.toContain("src/a.rs");
     expect(container.textContent).not.toContain('[@ file="src/a.rs"]');
     expect(resolveCitations).not.toHaveBeenCalled();
 
-    const files = screen.getAllByRole("button", { name: ".../src/a.rs" });
-    expect(files).toHaveLength(2);
-    expect(files[0]?.parentElement?.className).toContain("knowledge-token");
-    expect(files[0]?.parentElement?.className).toContain("is-file");
-    expect(files[0]?.parentElement?.className).not.toContain("is-symbol");
-    expect(files[1]?.parentElement?.className).not.toContain("is-symbol");
-    fireEvent.click(files[0]!);
+    const file = screen.getByRole("button", { name: "a.rs" });
+    expect(file.parentElement?.className).toContain("knowledge-token");
+    expect(file.parentElement?.className).toContain("is-file");
+    expect(file.parentElement?.className).not.toContain("is-symbol");
+    expect(file.parentElement?.getAttribute("title")).toBe("src/a.rs");
+    fireEvent.click(file);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
-    fireEvent.click(files[1]!);
+    const rangeChip = screen.getByRole("button", { name: "a.rs : 4-9" });
+    expect(rangeChip.parentElement?.className).not.toContain("is-symbol");
+    expect(rangeChip.parentElement?.getAttribute("title")).toBe("src/a.rs : 4-9");
+    fireEvent.click(rangeChip);
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
 
-    fireEvent.click(screen.getByRole("button", { name: ".../auth/validate.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "validate.ts" }));
     expect(openFile).toHaveBeenCalledWith("src/auth/validate.ts");
   });
 
@@ -194,7 +196,7 @@ describe("AgentMarkdown citations", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: ".../auth/validate.ts" }));
+    fireEvent.click(screen.getByRole("button", { name: "validate.ts : 42" }));
     expect(openFileAt).toHaveBeenCalledWith("src/auth/validate.ts", 42);
     fireEvent.click(screen.getByRole("button", { name: "session.rs : Session.user" }));
     expect(openFile).toHaveBeenCalledWith("src/session.rs");
@@ -227,13 +229,17 @@ describe("AgentMarkdown citations", () => {
     const { container } = render(
       <AgentMarkdown citations text={`${symbol} ${ranged}`} />,
     );
-    expect(container.textContent).toContain("a.rs : impl Store › fn save");
+    expect(container.textContent).toContain("a.rs : fn save");
     expect(container.textContent).not.toContain("2148-2165");
+    expect(container.textContent).not.toContain("impl Store › fn save");
     const symbolChips = screen.getAllByRole("button", {
-      name: "a.rs : impl Store › fn save",
+      name: "a.rs : fn save",
     });
     expect(symbolChips).toHaveLength(2);
     expect(symbolChips[0]?.parentElement?.className).toContain("is-symbol");
+    expect(symbolChips[0]?.parentElement?.getAttribute("title")).toBe(
+      "src/a.rs : impl Store › fn save",
+    );
     fireEvent.click(symbolChips[0]!);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     fireEvent.click(symbolChips[1]!);
@@ -255,12 +261,78 @@ describe("AgentMarkdown citations", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "seq" }));
     expect(useKnowledgeStore.getState().focusedId).toBe("seq");
-    expect(screen.getByRole("button", { name: ".../src/a.rs" }).parentElement?.className).toContain(
+    expect(screen.getByRole("button", { name: "a.rs" }).parentElement?.className).toContain(
       "is-file",
     );
     expect(screen.getAllByRole("button")).toHaveLength(3);
     expect(container.textContent).toContain("a.ts");
     expect(container.textContent).not.toContain(fileShortcode);
+  });
+
+  it("takes a chip's state from the source node's snapshot", async () => {
+    useKnowledgeStore.setState({
+      ready: true,
+      refsByNode: new Map([
+        [
+          "session",
+          new Map([
+            [
+              "file:src/a.rs",
+              {
+                refKey: "file:src/a.rs",
+                kind: "file" as const,
+                key: null,
+                path: "src/a.rs",
+                symbol: null,
+                lines: null,
+                raw: '[@ file="src/a.rs"]',
+                status: "missing_file" as const,
+                severity: "error" as const,
+                targetPath: "src/a.rs",
+                args: { path: "src/a.rs" },
+                message: 'File "src/a.rs" does not exist.',
+              },
+            ],
+            [
+              "sym:src/a.rs\u0000impl Store › fn save",
+              {
+                refKey: "sym:src/a.rs\u0000impl Store › fn save",
+                kind: "symbol" as const,
+                key: null,
+                path: "src/a.rs",
+                symbol: "impl Store › fn save",
+                lines: null,
+                raw: '[@ file="src/a.rs" symbol="impl Store › fn save"]',
+                status: "symbol_drift" as const,
+                severity: "warning" as const,
+                targetPath: "src/a.rs",
+                args: { path: "src/a.rs", symbol: "impl Store › fn save" },
+                message: "",
+              },
+            ],
+          ]),
+        ],
+      ]),
+    } as never);
+    render(
+      <AgentMarkdown
+        citations
+        sourceId="session"
+        text={`see ${fileMentionSource("src/a.rs")} and ${symbolMentionSource("src/a.rs", { symbol: "impl Store › fn save" })}`}
+      />,
+    );
+
+    const missing = await screen.findByText("a.rs");
+    const missingChip = missing.closest(".knowledge-token");
+    expect(missingChip?.classList.contains("is-missing")).toBe(true);
+    expect(missingChip?.getAttribute("title")).toContain("does not exist");
+    expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
+
+    const driftChip = screen.getByText("a.rs : fn save").closest(".knowledge-token");
+    expect(driftChip?.classList.contains("is-drift")).toBe(true);
+    expect(driftChip?.getAttribute("title")).toBe(
+      'src/a.rs : impl Store › fn save\nSymbol "impl Store › fn save" in "src/a.rs" differs from HEAD.',
+    );
   });
 
   it("leaves a node shortcode as text when citations are off, and marks an unknown key", () => {
@@ -303,6 +375,6 @@ describe("AgentMarkdown citations", () => {
         text={`\`\`\`\n${fileMentionSource("src/a.rs")}\n\`\`\``}
       />,
     );
-    expect(screen.queryByRole("button", { name: ".../src/a.rs" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
   });
 });

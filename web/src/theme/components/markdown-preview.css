@@ -1,0 +1,32 @@
+/* File-preview shell. Chat `.agent-markdown` rules stay untouched. */
+
+.markdown-file-preview {
+  height: 100%;
+  overflow: auto;
+  background: var(--_dk-editor);
+  padding: 8px 40px 48px;
+}
+
+.markdown-file-preview img {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-file-preview .markdown-preview-figure {
+  display: block;
+  max-width: 100%;
+  margin: 0.5rem 0;
+}
+
+.markdown-file-preview .markdown-preview-figure img {
+  display: block;
+}
+
+.markdown-file-preview .markdown-preview-figure-hit {
+  display: block;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}

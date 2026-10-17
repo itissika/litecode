@@ -1,7 +1,9 @@
 import { refStateText } from "./issueText";
 import {
+  citationFact,
   extractMentions,
   humanFileLabel,
+  humanRangeLabel,
   humanSymbolLabel,
   isWorkspaceFileRef,
   knowledgeRefKey,
@@ -125,6 +127,8 @@ export function refStatusTone(
 
 export interface CitationChipModel {
   label: string;
+  /** Full reference — path, range, or chain — for the chip title. */
+  detail?: string;
   resolvable: boolean;
   tone: CitationTone;
   targetId: string | null;
@@ -174,7 +178,13 @@ function resolveNode(marker: string, input: CitationResolveInput): CitationChipM
     const byKey = new Map<string, KnowledgeNode>();
     if (key && input.target) byKey.set(key, input.target);
     const chip = chipForMarker(input.source, marker, byKey, label);
-    const base = { label: chip.label, targetId: chip.targetId, file: false, symbol: false };
+    const base = {
+      label: chip.label,
+      detail: input.target?.path,
+      targetId: chip.targetId,
+      file: false,
+      symbol: false,
+    };
     const ref = ready ? (input.ref ?? null) : null;
     if (ref && refStatusTone(ref) === "error") {
       return {
@@ -213,6 +223,7 @@ function resolveNode(marker: string, input: CitationResolveInput): CitationChipM
         : "normal";
   return {
     label,
+    detail: input.target.path,
     resolvable: true,
     tone,
     targetId: input.target.id,
@@ -227,11 +238,19 @@ function resolveFile(
 ): CitationChipModel {
   const path = citation.path;
   const symbol = citation.symbol?.trim() || "";
+  // A symbol never shows lines; a range does. `line` alone (a plain `file:…`
+  // link) is a one-line range.
+  const range = symbol ? "" : rangeAttribute(citation);
   const label =
     input.label?.trim() ||
-    (symbol ? humanSymbolLabel(path, symbol) : humanFileLabel(path));
+    (symbol
+      ? humanSymbolLabel(path, symbol)
+      : range
+        ? humanRangeLabel(path, range)
+        : humanFileLabel(path));
   const base = {
     label,
+    detail: citationFact(path, symbol || null, range || null),
     targetId: null,
     file: true,
     symbol: symbol.length > 0,
@@ -255,4 +274,14 @@ function resolveFile(
     };
   }
   return { ...base, resolvable: true, tone: "normal" };
+}
+
+/** Raw `lines` attribute, or the single start line of a `file:` link. */
+function rangeAttribute(citation: {
+  line?: number | null;
+  lines?: string | null;
+}): string {
+  const raw = citation.lines?.trim() ?? "";
+  if (raw) return raw;
+  return citation.line != null && citation.line >= 1 ? String(citation.line) : "";
 }

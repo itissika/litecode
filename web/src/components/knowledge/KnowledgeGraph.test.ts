@@ -7,6 +7,9 @@ import {
 } from "./KnowledgeGraph";
 import {
   KNOWLEDGE_NODE_HEIGHT,
+  KNOWLEDGE_NODE_MAX_HEIGHT,
+  KNOWLEDGE_NODE_MAX_WIDTH,
+  KNOWLEDGE_NODE_OPEN_HEIGHT,
   KNOWLEDGE_NODE_WIDTH,
 } from "../../lib/knowledge/layoutGraph";
 
@@ -25,6 +28,19 @@ describe("knowledgeCardFlowLayout", () => {
     expect(layout.height).toBe(320);
     expect(layout.style.width).toBe(400);
     expect(layout.style.height).toBe(320);
+  });
+
+  it("gives an expanded card a bounded default size instead of growing with content", () => {
+    const layout = knowledgeCardFlowLayout(true, undefined);
+    expect(layout.width).toBe(KNOWLEDGE_NODE_WIDTH);
+    expect(layout.height).toBe(KNOWLEDGE_NODE_OPEN_HEIGHT);
+    expect(layout.style.height).toBe(KNOWLEDGE_NODE_OPEN_HEIGHT);
+  });
+
+  it("clamps an expanded card to the max width and height", () => {
+    const layout = knowledgeCardFlowLayout(true, { w: 900, h: 900 });
+    expect(layout.width).toBe(KNOWLEDGE_NODE_MAX_WIDTH);
+    expect(layout.height).toBe(KNOWLEDGE_NODE_MAX_HEIGHT);
   });
 });
 

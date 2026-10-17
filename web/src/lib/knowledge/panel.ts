@@ -12,7 +12,7 @@ export function openKnowledgeGraphPanel(): void {
   openPanel({
     id: KNOWLEDGE_GRAPH_PANEL_ID,
     component: "knowledgeGraph",
-    title: "Knowledge Graph",
+    title: "Knowledge",
     tabComponent: "knowledgeGraph",
   });
 }

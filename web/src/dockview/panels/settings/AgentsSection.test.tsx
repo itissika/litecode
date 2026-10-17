@@ -140,6 +140,25 @@ describe("AgentsSection persist UX", () => {
     );
   });
 
+  it("uses a multiline description for subagents", () => {
+    useSettingsStore.setState({
+      agentIds: ["helper"],
+      selectedAgentId: "helper",
+      agents: {
+        helper: profile({
+          role: "subagent",
+          description: "Reads the repo and reports back.",
+        }),
+      },
+    });
+    render(<AgentsSection />);
+    const description = screen.getByDisplayValue(
+      "Reads the repo and reports back.",
+    );
+    expect(description.tagName).toBe("TEXTAREA");
+    expect((description as HTMLTextAreaElement).rows).toBe(4);
+  });
+
   it("hides unused fields for the hidden compaction agent", () => {
     useSettingsStore.setState({
       agentIds: ["default", "compaction"],

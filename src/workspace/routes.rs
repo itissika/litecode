@@ -229,6 +229,7 @@ pub fn router() -> Router<ServeState> {
         .route("/symbol-refs", post(post_symbol_refs))
         .route("/knowledge", get(get_knowledge))
         .route("/git/status", get(get_git_status))
+        .route("/git/show", get(get_git_show))
         .route("/git/log", get(get_git_log))
         .route("/git/stage", post(post_git_stage))
         .route("/git/unstage", post(post_git_unstage))
@@ -995,6 +996,17 @@ fn git_error_response(err: GitError) -> Response {
 async fn get_git_status(State(state): State<ServeState>) -> Response {
     let root = state.workspace.sandbox().root().to_path_buf();
     git_blocking(move || git::status(&root)).await
+}
+
+#[derive(Debug, Deserialize)]
+struct GitShowQuery {
+    path: String,
+    rev: String,
+}
+
+async fn get_git_show(State(state): State<ServeState>, Query(query): Query<GitShowQuery>) -> Response {
+    let sandbox = state.workspace.sandbox().clone();
+    git_blocking(move || git::show_blob(&sandbox, &query.rev, &query.path)).await
 }
 
 async fn get_git_log(

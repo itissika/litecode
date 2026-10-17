@@ -11,16 +11,15 @@ import {
   isTextKind,
   type FileKind,
 } from "../lib/fileKind";
-import { flushMarkdownEditor } from "../lib/markdownFlush";
 import {
   WorkspaceRequestError,
   undisplayableStatus,
 } from "../lib/workspaceError";
 import { languageFromPath, fileNameFromPath } from "../utils/language";
 import {
-  isWysiwygMarkdownPath,
+  isPreviewMarkdownPath,
   type MdEditorView,
-} from "../utils/wysiwygMarkdown";
+} from "../utils/markdownView";
 import { remapPathPrefix } from "../utils/path";
 import { closePanel, openPanel, revealPanel } from "../dockview/workbench/commands";
 import { onPanelRemoved } from "../dockview/workbench/events";
@@ -72,7 +71,7 @@ interface EditorStore {
   activePath: string | null;
   saving: boolean;
   pendingReveal: { path: string; line: number; column?: number } | null;
-  /** Per-tab Markdown view. Missing means default (wysiwyg for `.md`). */
+  /** Per-tab Markdown view. Missing means default (preview for `.md`). */
   mdViewByPath: Record<string, MdEditorView>;
   jumpBack: JumpLocation[];
   jumpForward: JumpLocation[];
@@ -362,7 +361,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         line: Math.max(1, Math.floor(line)),
         column: column != null ? Math.max(1, Math.floor(column)) : undefined,
       },
-      mdViewByPath: isWysiwygMarkdownPath(path)
+      mdViewByPath: isPreviewMarkdownPath(path)
         ? { ...s.mdViewByPath, [path]: "source" }
         : s.mdViewByPath,
     }));
@@ -429,11 +428,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   save: async (pathArg) => {
     const path = pathArg ?? get().activePath;
     if (!path) return;
-
-    const flushed = flushMarkdownEditor(path);
-    if (flushed != null) {
-      get().setContent(path, flushed);
-    }
 
     const tab = get().tabs.find((t) => t.path === path);
     if (!tab || tab.external || tab.loading || !isTextKind(tab.kind)) return;

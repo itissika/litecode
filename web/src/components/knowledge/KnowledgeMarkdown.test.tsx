@@ -61,7 +61,7 @@ describe("KnowledgeMarkdown", () => {
         text={`see ${fileMentionSource("src/a.rs")} and ${symbolMentionSource("src/a.rs", { symbol: "fn save" })}`}
       />,
     );
-    const file = screen.getByRole("button", { name: ".../src/a.rs" });
+    const file = screen.getByRole("button", { name: "a.rs" });
     expect(file.parentElement?.className).toContain("knowledge-token");
     expect(file.parentElement?.className).toContain("is-file");
     expect(file.parentElement?.className).not.toContain("is-symbol");

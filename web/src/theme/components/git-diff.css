@@ -1,0 +1,116 @@
+/* Git gutter bars and the inline peek. Colors follow the app theme tokens. */
+
+.monaco-editor .dirty-diff-glyph {
+  position: relative;
+  z-index: 5;
+  margin-left: 4px;
+  width: 6px;
+  box-sizing: border-box;
+}
+
+.monaco-editor .dirty-diff-added,
+.monaco-editor .dirty-diff-modified {
+  border-left-width: 3px;
+  border-left-style: solid;
+}
+
+.monaco-editor .dirty-diff-added.primary {
+  border-left-color: var(--_dk-cat-green);
+}
+
+.monaco-editor .dirty-diff-added.secondary {
+  border-left-color: color-mix(in srgb, var(--_dk-cat-green) 55%, transparent);
+}
+
+.monaco-editor .dirty-diff-modified.primary {
+  border-left-color: var(--_dk-cat-blue);
+}
+
+.monaco-editor .dirty-diff-modified.secondary {
+  border-left-color: color-mix(in srgb, var(--_dk-cat-blue) 55%, transparent);
+}
+
+.monaco-editor .dirty-diff-deleted.primary::after,
+.monaco-editor .dirty-diff-deleted.secondary::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  pointer-events: none;
+}
+
+.monaco-editor .dirty-diff-deleted.primary::after {
+  border-left: 5px solid var(--_dk-red-500);
+}
+
+.monaco-editor .dirty-diff-deleted.secondary::after {
+  border-left: 5px solid color-mix(in srgb, var(--_dk-red-500) 55%, transparent);
+}
+
+.git-quick-diff-peek {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid var(--_dk-line-visible);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: var(--_dk-overlay);
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--_dk-root) 45%, transparent);
+  color: var(--_dk-text-primary);
+}
+
+.git-quick-diff-peek-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  background: var(--_dk-float);
+  border-bottom: 1px solid var(--_dk-line-visible);
+  font-family: var(--_dk-font-ui, inherit);
+  font-size: 12px;
+}
+
+.git-quick-diff-peek-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-quick-diff-peek-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.git-quick-diff-peek-btn {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--_dk-text-muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.git-quick-diff-peek-btn:hover {
+  background: var(--_dk-accent-halo);
+  color: var(--_dk-text-primary);
+}
+
+.git-quick-diff-peek-body {
+  flex: 1;
+  min-height: 0;
+}

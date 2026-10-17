@@ -61,7 +61,7 @@ describe("openKnowledgeGraphPanel", () => {
       expect.objectContaining({
         id: "knowledge-graph",
         component: "knowledgeGraph",
-        title: "Knowledge Graph",
+        title: "Knowledge",
         tabComponent: "knowledgeGraph",
         position: { referenceGroup: "g1" },
       }),

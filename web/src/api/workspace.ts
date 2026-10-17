@@ -632,6 +632,19 @@ export async function gitStatus(): Promise<GitStatus> {
   return gitJson<GitStatus>("/api/workspace/git/status");
 }
 
+export type GitShowRev = "index" | "HEAD";
+
+export interface GitBlob {
+  content: string | null;
+}
+
+/** Text at the index or at HEAD. `null` when the path is missing or binary. */
+export async function gitShow(path: string, rev: GitShowRev): Promise<string | null> {
+  const params = new URLSearchParams({ path, rev });
+  const blob = await gitJson<GitBlob>(`/api/workspace/git/show?${params}`);
+  return blob.content;
+}
+
 export async function gitLog(limit = 50): Promise<GitLog> {
   const params = new URLSearchParams({ limit: String(limit) });
   return gitJson<GitLog>(`/api/workspace/git/log?${params}`);

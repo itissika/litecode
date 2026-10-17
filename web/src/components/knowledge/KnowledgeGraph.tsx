@@ -36,6 +36,11 @@ import {
 import {
   KNOWLEDGE_GRID,
   KNOWLEDGE_NODE_HEIGHT,
+  KNOWLEDGE_NODE_MAX_HEIGHT,
+  KNOWLEDGE_NODE_MAX_WIDTH,
+  KNOWLEDGE_NODE_MIN_HEIGHT,
+  KNOWLEDGE_NODE_MIN_WIDTH,
+  KNOWLEDGE_NODE_OPEN_HEIGHT,
   KNOWLEDGE_NODE_WIDTH,
   knowledgeRelationEdges,
   layoutKnowledgeGraph,
@@ -133,6 +138,10 @@ function cssDimension(
   return fallback;
 }
 
+function clampCardSpan(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
 function cardStyle(
   open: boolean,
   width: number | null | undefined,
@@ -142,8 +151,16 @@ function cardStyle(
     return { width: KNOWLEDGE_NODE_WIDTH, height: KNOWLEDGE_NODE_HEIGHT };
   }
   return {
-    width: width ?? KNOWLEDGE_NODE_WIDTH,
-    height: height ?? undefined,
+    width: clampCardSpan(
+      width ?? KNOWLEDGE_NODE_WIDTH,
+      KNOWLEDGE_NODE_MIN_WIDTH,
+      KNOWLEDGE_NODE_MAX_WIDTH,
+    ),
+    height: clampCardSpan(
+      height ?? KNOWLEDGE_NODE_OPEN_HEIGHT,
+      KNOWLEDGE_NODE_MIN_HEIGHT,
+      KNOWLEDGE_NODE_MAX_HEIGHT,
+    ),
   };
 }
 
@@ -153,13 +170,10 @@ export function knowledgeCardFlowLayout(
   saved: { w: number | null; h: number | null } | undefined,
 ): { style: CSSProperties; width: number; height: number | undefined } {
   const style = cardStyle(open, saved?.w, saved?.h);
-  if (!open) {
-    return { style, width: KNOWLEDGE_NODE_WIDTH, height: KNOWLEDGE_NODE_HEIGHT };
-  }
   return {
     style,
-    width: saved?.w ?? KNOWLEDGE_NODE_WIDTH,
-    height: saved?.h ?? undefined,
+    width: cssDimension(style.width, KNOWLEDGE_NODE_WIDTH),
+    height: cssDimension(style.height, open ? KNOWLEDGE_NODE_OPEN_HEIGHT : KNOWLEDGE_NODE_HEIGHT),
   };
 }
 

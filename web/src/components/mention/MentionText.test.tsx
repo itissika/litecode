@@ -27,7 +27,7 @@ describe("MentionText", () => {
     // A symbol citation opens the file; lines never ride on it (KR-SYM-6).
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     expect(openFileAt).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: ".../src/a.rs" }).className).toContain(
+    expect(screen.getByRole("button", { name: "a.rs" }).className).toContain(
       "knowledge-token-label",
     );
     expect(screen.getByText(/see/)).toBeTruthy();

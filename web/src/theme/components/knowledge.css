@@ -1,9 +1,20 @@
 /* Knowledge browser (side list) and the graph canvas.
    React Flow's stylesheet is imported before this file so these rules win. */
 
+/* Side-list row: the whole card is the target, so the fill spans it — the same
+   wash folder rows get. Focus keeps its own halo at rest and steps up one level
+   while hovered, so the two states stack instead of cancelling out. */
 .knowledge-card {
   position: relative;
-  border-radius: var(--radius-md);
+  transition: background-color 120ms ease;
+}
+
+.knowledge-card:hover {
+  background: var(--_dk-ix-bg-hover);
+}
+
+.knowledge-card:active {
+  background: var(--_dk-ix-bg-pressed);
 }
 
 /* Title tones carry node state. Red reads as unusable (the same strike-through
@@ -36,12 +47,16 @@
   background: var(--_dk-accent-halo);
 }
 
+.knowledge-card.is-focused:hover,
+.knowledge-card.is-focused:active {
+  background: var(--_dk-accent-glow);
+}
+
 .knowledge-flash {
   position: absolute;
   inset: 0;
   z-index: 2;
   pointer-events: none;
-  border-radius: var(--radius-md);
   animation: knowledge-flash 0.9s ease;
 }
 
@@ -52,25 +67,6 @@
   100% {
     background: transparent;
   }
-}
-
-.knowledge-foldcard .foldcard-scroll {
-  max-height: 4.5rem;
-  overflow-x: hidden;
-  overflow-y: auto;
-  overscroll-behavior: auto;
-  padding: 0.15rem 0.4rem 0.45rem var(--_dk-indent-card-body);
-}
-
-.knowledge-side-summary {
-  color: var(--_dk-text-secondary);
-  font-size: var(--_dk-text-xs);
-  line-height: 1.45;
-  cursor: pointer;
-}
-
-.knowledge-foldcard .foldcard-scroll-frame {
-  background: transparent;
 }
 
 .knowledge-status {
@@ -263,6 +259,7 @@
   min-width: 0;
   align-items: center;
   gap: 0.2rem;
+  cursor: inherit;
 }
 
 .knowledge-card-label .knowledge-card-title {
@@ -293,13 +290,6 @@
 .knowledge-folder-line {
   display: flex;
   align-items: center;
-  gap: 0.1rem;
-  border-radius: var(--radius-sm);
-}
-
-.knowledge-folder-line.is-drop,
-.knowledge-browser-list.is-drop {
-  background: var(--_dk-accent-halo);
 }
 
 .knowledge-visibility-bar {
@@ -311,67 +301,17 @@
   padding: 0.35rem 0.5rem;
 }
 
-.knowledge-create-row {
-  display: flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.2rem 0.35rem;
-  color: var(--_dk-text-muted);
-}
-
-.knowledge-create-input {
-  min-width: 0;
-  flex: 1 1 auto;
-  padding: 0 0.2rem;
-  border: none;
-  border-radius: 0.15rem;
-  outline: 1px solid var(--_dk-accent-ring);
-  background: transparent;
-  color: var(--_dk-text-primary);
-  font-family: var(--_dk-font-code);
-  font-size: var(--_dk-text-xs);
-}
-
 .knowledge-create-input[aria-invalid="true"] {
-  outline-color: var(--_dk-red-500);
-}
-
-.knowledge-folder-row {
-  display: flex;
-  width: auto;
-  min-width: 0;
-  flex: 1 1 auto;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.28rem 0.35rem;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--_dk-text-secondary);
-  font-size: var(--_dk-text-xs);
-  text-align: left;
-  cursor: pointer;
+  border-color: var(--_dk-red-500);
 }
 
 .knowledge-folder-row:hover {
-  background: var(--_dk-ix-bg-selected);
+  background: var(--_dk-ix-bg-hover);
   color: var(--_dk-text-primary);
 }
 
-.knowledge-folder-caret {
-  flex-shrink: 0;
-  color: var(--_dk-text-muted);
-  transition: transform 120ms ease;
-}
-
-.knowledge-folder-caret.is-open {
-  transform: rotate(90deg);
-}
-
-.knowledge-folder-children {
-  margin-left: 0.55rem;
-  padding-left: 0.35rem;
-  border-left: 1px solid var(--_dk-line);
+.knowledge-folder-row:active {
+  background: var(--_dk-ix-bg-pressed);
 }
 
 /* The folder frame is decoration; the header label is its drag handle. React
@@ -850,8 +790,85 @@
   flex: 1 1 auto;
   flex-direction: column;
   gap: 0.35rem;
-  padding: 0 0.4rem 0.9rem;
-  overflow: auto;
+  padding: 0 0.4rem 0.45rem;
+  overflow: hidden;
+}
+
+.knowledge-flow-body {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.knowledge-flow-body-bar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+}
+
+.knowledge-flow-body-edit {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  padding: 0;
+  border: none;
+  border-radius: 0.15rem;
+  background: transparent;
+  color: var(--_dk-text-muted);
+  cursor: pointer;
+}
+
+.knowledge-flow-body-edit:hover,
+.knowledge-flow-body-edit[aria-pressed="true"] {
+  background: var(--_dk-ix-bg-selected);
+  color: var(--_dk-text-primary);
+}
+
+.knowledge-flow-body-scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.knowledge-flow-body-preview {
+  min-width: 0;
+  color: var(--_dk-text-body);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+
+.knowledge-flow-body-preview .agent-markdown > p,
+.knowledge-flow-body-preview .agent-markdown > ul,
+.knowledge-flow-body-preview .agent-markdown > ol,
+.knowledge-flow-body-preview .agent-markdown > blockquote {
+  max-width: none;
+  margin-bottom: 0.375rem;
+}
+
+.knowledge-flow-body-preview .agent-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.knowledge-flow-body-preview .agent-markdown > h1,
+.knowledge-flow-body-preview .agent-markdown > h2,
+.knowledge-flow-body-preview .agent-markdown > h3 {
+  max-width: none;
+  margin-bottom: 0.25rem;
+  font-size: var(--_dk-text-sm);
+}
+
+.knowledge-flow-body .knowledge-source-body {
+  overflow: visible;
 }
 
 .knowledge-source-field {
@@ -1017,96 +1034,86 @@
   min-height: 1.6rem;
 }
 
-.knowledge-token.is-invalid {
-  background: transparent;
-  color: var(--_dk-red-500);
+/* One tone variable per chip state: the base rule and the light-theme rule
+   derive both the ring and the ink from it, so a tone is set in one place. */
+.knowledge-token.is-invalid,
+.knowledge-token.is-file.is-missing {
+  --_dk-knowledge-tone: var(--_dk-red-500);
 }
 
 .knowledge-token.is-file {
-  background: color-mix(in srgb, var(--_dk-cat-blue) 14%, transparent);
-  color: var(--_dk-cat-blue);
+  --_dk-knowledge-tone: var(--_dk-cat-blue);
 }
 
 .knowledge-token.is-file.is-symbol {
-  background: color-mix(in srgb, var(--_dk-cat-cyan) 14%, transparent);
-  color: var(--_dk-cat-cyan);
+  --_dk-knowledge-tone: var(--_dk-cat-cyan);
 }
 
-.knowledge-token.is-file.is-drift {
-  background: color-mix(in srgb, var(--_dk-amber-500) 16%, transparent);
-  color: var(--_dk-amber-500);
-}
-
-.knowledge-token.is-file.is-missing {
-  background: transparent;
-  color: var(--_dk-red-500);
+.knowledge-token.is-file.is-drift,
+.knowledge-token.is-warning {
+  --_dk-knowledge-tone: var(--_dk-amber-500);
 }
 
 .knowledge-token.is-disabled {
-  background: color-mix(in srgb, var(--_dk-text-disabled) 14%, transparent);
-  color: var(--_dk-text-disabled);
-}
-
-.knowledge-token.is-warning {
-  background: color-mix(in srgb, var(--_dk-amber-500) 16%, transparent);
-  color: var(--_dk-amber-500);
+  --_dk-knowledge-tone: var(--_dk-text-disabled);
 }
 
 .knowledge-token {
+  --_dk-knowledge-tone: var(--_dk-emerald-500);
   display: inline-flex;
   align-items: center;
   gap: 0.1rem;
   max-width: 100%;
   margin: 0 0.05rem;
-  padding: 0.1rem 0.16rem 0.1rem 0.4rem;
+  /* Symmetric padding: with no fill behind it, the old left-heavy capsule
+     spacing would read as the label sitting off-centre inside the ring. */
+  padding: 0.1rem 0.3rem;
   border-radius: 999px;
-  /* Green tint derives from the theme-bound emerald, so it reads cleanly in
-     both themes (same color-mix pattern as the tag tokens). */
-  background: color-mix(in srgb, var(--_dk-emerald-500) 14%, transparent);
-  color: var(--_dk-emerald-500);
+  /* Ring, not fill: the chip is emphasis the label can still be read through.
+     An inset shadow instead of a border keeps the extra 1px inside the capsule,
+     so an inline chip does not reflow the prose it sits in. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_dk-knowledge-tone) 52%, transparent);
+  background: transparent;
+  /* Step the tone toward the theme ink: a raw 500 is dimmer than the prose
+     around it, which is the opposite of what a chip is for. */
+  color: color-mix(in srgb, var(--_dk-knowledge-tone) 72%, var(--_dk-text-primary));
   font-family: var(--_dk-font-code);
-  font-size: var(--_dk-text-xs);
+  /* Ride the container's size: 0.95em lands just under the 14px message body in
+     agent prose (mono at the same px already reads bigger), so a chip no longer
+     reads smaller than its own paragraph. clamp keeps it between today's 11px
+     floor — compact cards must not shrink further — and the 13.6px body notch,
+     so a chip inside a heading cannot balloon with it. */
+  font-size: clamp(var(--_dk-text-xs), 0.95em, var(--_dk-text-md));
   line-height: 1.35;
   vertical-align: baseline;
   user-select: none;
   transition:
     scale 120ms ease,
-    filter 140ms ease;
+    box-shadow 140ms ease;
 }
 
-/* Light theme's emerald (#00d459) is a display green — as 11px label text on
-   the pale surface it washes out, so step the label toward the theme ink. The
-   14% tinted background reads fine as is; invalid chips stay red. */
-:root[data-dv-theme="light"] .knowledge-token:not(.is-invalid):not(.is-file):not(.is-missing):not(.is-disabled):not(.is-warning) {
-  color: color-mix(in srgb, var(--_dk-emerald-500) 50%, var(--_dk-text-primary));
+/* Light theme: the same tones are display-bright, so the ink has to travel much
+   further toward the near-black primary before it reads as text, and the ring
+   needs that ink too — a pastel outline on white is barely there. */
+:root[data-dv-theme="light"] .knowledge-token {
+  color: color-mix(in srgb, var(--_dk-knowledge-tone) 45%, var(--_dk-text-primary));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_dk-knowledge-tone) 60%, var(--_dk-text-primary));
 }
 
-:root[data-dv-theme="light"] .knowledge-token.is-file {
-  color: var(--_dk-cat-blue);
+:root[data-dv-theme="light"] .knowledge-token.is-disabled {
+  color: var(--_dk-text-disabled);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--_dk-text-disabled) 55%, transparent);
 }
 
-:root[data-dv-theme="light"] .knowledge-token.is-file.is-symbol {
-  color: var(--_dk-cat-cyan);
-}
-
-:root[data-dv-theme="light"] .knowledge-token.is-file.is-drift {
-  color: var(--_dk-amber-500);
-}
-
-:root[data-dv-theme="light"] .knowledge-token.is-file.is-missing {
-  color: var(--_dk-red-500);
-}
-
-/* Brighten + grow on hover, darken + shrink on press (filter, because the
-   colour tokens can't brighten). A transition reads from the state being
-   entered, so press gets its own shorter duration. Invalid chips stay put. */
+/* Grow on hover, shrink on press; the ring goes to the label's own ink — the
+   one colour already tuned for this surface — so hover never costs contrast.
+   Invalid chips stay put. */
 .knowledge-token:not(.is-invalid):not(.is-missing):hover {
-  filter: brightness(1.18);
+  box-shadow: inset 0 0 0 1px currentColor;
   scale: 1.06;
 }
 
 .knowledge-token:not(.is-invalid):not(.is-missing):active {
-  filter: brightness(0.88);
   scale: 0.94;
   transition-duration: 80ms;
 }
@@ -1290,8 +1297,169 @@ button.knowledge-token-label {
   -webkit-line-clamp: 2;
 }
 
+/* Document surface: the default knowledge view. It reads in the same body
+   renderer as chat and keeps the citation chips live, so a node chip swaps the
+   document in place instead of opening another panel. */
+.knowledge-document {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--_dk-editor);
+  color: var(--_dk-text-body);
+}
+
+.knowledge-document-article {
+  width: 100%;
+  max-width: 54rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 2.75rem) clamp(1.25rem, 4vw, 3.25rem) 6rem;
+}
+
+.knowledge-document-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.knowledge-document-title {
+  min-width: 0;
+  margin: 0;
+  color: var(--_dk-text-primary);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-2xl);
+  font-weight: 600;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.knowledge-document-summary {
+  margin-top: 1rem;
+}
+
+.knowledge-document-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+  font-size: var(--_dk-text-xs);
+}
+
+.knowledge-document-summary-input {
+  width: 100%;
+  min-height: 3.4rem;
+  padding: 0.55rem 0.7rem;
+  resize: none;
+  border: 1px solid var(--_dk-line);
+  border-radius: var(--radius-md);
+  background: var(--_dk-surface-raised);
+  color: var(--_dk-text-body);
+  font-family: inherit;
+  font-size: var(--_dk-text-md);
+  line-height: 1.55;
+}
+
+.knowledge-document-summary-input::placeholder {
+  color: var(--_dk-text-muted);
+}
+
+.knowledge-document-summary-input:focus-visible {
+  outline: 1px solid var(--_dk-accent-ring);
+  outline-offset: -1px;
+}
+
+.knowledge-document-body {
+  margin-top: 1.6rem;
+}
+
+.knowledge-document-body-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  margin-bottom: 0.4rem;
+  font-size: var(--_dk-text-xs);
+}
+
+.knowledge-document-body .agent-markdown {
+  color: var(--_dk-text-body);
+  font-size: var(--_dk-text-base);
+}
+
+.knowledge-document-editor .knowledge-source-field {
+  gap: 0.35rem;
+}
+
+/* The bar above already labels the body; keep the editor's label for a11y only. */
+.knowledge-document-editor .knowledge-source-field > .knowledge-source-label {
+  display: none;
+}
+
+.knowledge-document-editor .knowledge-source-input {
+  min-height: 18rem;
+  padding: 0.75rem 0.9rem;
+  border-color: var(--_dk-line);
+  border-radius: var(--radius-md);
+  background: var(--_dk-surface-raised);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-sm);
+  line-height: 1.65;
+}
+
+.knowledge-document-structure {
+  margin-top: 2.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--_dk-line);
+}
+
+.knowledge-document-structure-title {
+  margin: 0 0 0.25rem;
+  color: var(--_dk-text-primary);
+  font-size: var(--_dk-text-xl);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.knowledge-document-relation {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+}
+
+.knowledge-document-relation-label {
+  flex-shrink: 0;
+  min-width: 2rem;
+  color: var(--_dk-text-muted);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.6;
+}
+
+.knowledge-document-relation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.knowledge-document-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 2rem;
+  color: var(--_dk-text-muted);
+  text-align: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .knowledge-token {
+  .knowledge-token,
+  .knowledge-card,
+  .knowledge-folder-row {
     transition: none;
   }
 

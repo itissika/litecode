@@ -106,7 +106,7 @@ export const PANEL_KINDS: readonly PanelKindSpec[] = [
     canPopout: true,
     singletonId: "knowledge-graph",
     placement: "beside",
-    title: "Knowledge Graph",
+    title: "Knowledge",
   },
   {
     component: "browser",

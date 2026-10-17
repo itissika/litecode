@@ -1,5 +1,6 @@
 import {
   humanFileLabel,
+  humanRangeLabel,
   humanSymbolLabel,
   isWorkspaceFileRef,
   parseLineSpan,
@@ -110,6 +111,10 @@ function nodesFromText(value: string): MdastNode[] {
       segment.type === "symbol" && !symbol && segment.lines
         ? (parseLineSpan(segment.lines)?.start ?? null)
         : null;
+    const range =
+      segment.type === "symbol" && !symbol
+        ? (segment.rawLines ?? segment.lines ?? "").trim()
+        : "";
     if (segment.label && isWorkspaceFileRef(segment.path)) {
       nodes.push({
         type: "link",
@@ -117,7 +122,11 @@ function nodesFromText(value: string): MdastNode[] {
         children: [
           {
             type: "text",
-            value: symbol ? humanSymbolLabel(segment.path, symbol) : humanFileLabel(segment.path),
+            value: symbol
+              ? humanSymbolLabel(segment.path, symbol)
+              : range
+                ? humanRangeLabel(segment.path, range)
+                : humanFileLabel(segment.path),
           },
         ],
       });

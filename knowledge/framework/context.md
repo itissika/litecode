@@ -1,12 +1,12 @@
 ```node
 node : context
 status : enabled
-domain : harness-core
 summary : context：请求视图是计算不是第二存储；历史摘要只走 compact，媒体适配不回写日志。
 x : 288
 y : 350
-w : 416
-h : 337
+w : 452
+h : 499
+domain : harness-core
 ```
 
 - 视图不是第二存储：每步从日志派生的工作集计算请求副本，不持久化另一份对话历史。

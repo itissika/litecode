@@ -47,6 +47,8 @@ pub enum GitError {
     NothingToCommit,
     #[error("select at least one path")]
     EmptyPaths,
+    #[error("revision not allowed")]
+    RevNotAllowed,
     #[error(transparent)]
     Io(#[from] io::Error),
 }
@@ -188,6 +190,26 @@ pub fn last_commit_touching(workspace: &Path, rel: &str) -> Result<Option<String
     } else {
         Ok(Some(hash))
     }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct GitBlob {
+    pub content: Option<String>,
+}
+
+/// Text at `index` (`git show :path`) or `HEAD`. Missing and binary blobs are `content: null`.
+pub fn show_blob(sandbox: &Sandbox, rev: &str, requested: &str) -> Result<GitBlob, GitError> {
+    let spec_rev = match rev {
+        "index" => "",
+        "HEAD" => "HEAD",
+        _ => return Err(GitError::RevNotAllowed),
+    };
+    let rel = workspace_rel(sandbox, requested)?;
+    let content = match show_at(sandbox.root(), spec_rev, &rel)? {
+        Some(text) if text.contains('\0') => None,
+        other => other,
+    };
+    Ok(GitBlob { content })
 }
 
 /// File bytes at `rev:rel`. `Ok(None)` when that path is not in the revision.
@@ -741,9 +763,10 @@ pub fn git_error_status(err: &GitError) -> axum::http::StatusCode {
     use axum::http::StatusCode;
     match err {
         GitError::NotARepo | GitError::GitMissing => StatusCode::BAD_REQUEST,
-        GitError::EmptyMessage | GitError::NothingToCommit | GitError::EmptyPaths => {
-            StatusCode::BAD_REQUEST
-        }
+        GitError::EmptyMessage
+        | GitError::NothingToCommit
+        | GitError::EmptyPaths
+        | GitError::RevNotAllowed => StatusCode::BAD_REQUEST,
         GitError::Sandbox(SandboxError::Escape) | GitError::PathNotAllowed(_) => {
             StatusCode::FORBIDDEN
         }

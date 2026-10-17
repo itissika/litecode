@@ -76,7 +76,7 @@ describe("toolTitle", () => {
 
   it("uses the command as the bash title (description is optional)", () => {
     expect(
-      toolTitle("bash", { command: "cargo test --workspace", workdir: "web" })
+      toolTitle("bash", { command: "cargo test --workspace" })
         .summary,
     ).toBe("cargo test --workspace");
     // description is not in the bash schema; the command wins even if present.

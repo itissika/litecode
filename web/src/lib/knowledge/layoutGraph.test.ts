@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { knowledgeFixture, knowledgeFolderFixture } from "../../test/fixtures/knowledge";
-import { layoutKnowledgeGraph, snapKnowledgeCoord, KNOWLEDGE_GRID } from "./layoutGraph";
+import {
+  layoutKnowledgeGraph,
+  snapKnowledgeCoord,
+  KNOWLEDGE_FOLDER_HEADER,
+  KNOWLEDGE_FOLDER_PAD,
+  KNOWLEDGE_GRID,
+  KNOWLEDGE_NODE_HEIGHT,
+  KNOWLEDGE_NODE_WIDTH,
+} from "./layoutGraph";
 import type { KnowledgeNode } from "./types";
 import { knowledgeFixtureIssues as fixtureIssues } from "../../test/fixtures/knowledge";
 
@@ -71,8 +79,8 @@ describe("layoutKnowledgeGraph", () => {
     expect(context).toBeDefined();
     expect(item!.x).toBeGreaterThanOrEqual(context!.x);
     expect(item!.y).toBeGreaterThanOrEqual(context!.y);
-    expect(item!.x + 200).toBeLessThanOrEqual(context!.x + context!.width + 0.5);
-    expect(item!.y + 84).toBeLessThanOrEqual(context!.y + context!.height + 0.5);
+    expect(item!.x + KNOWLEDGE_NODE_WIDTH).toBeLessThanOrEqual(context!.x + context!.width + 0.5);
+    expect(item!.y + KNOWLEDGE_NODE_HEIGHT).toBeLessThanOrEqual(context!.y + context!.height + 0.5);
     expect(dockview?.parentId).toBeNull();
     expect(kernel).toBeDefined();
     expect(kernel!.width).toBeGreaterThan(context!.width);
@@ -94,8 +102,10 @@ describe("layoutKnowledgeGraph", () => {
     expect(beside).toMatchObject({ x: 300, y: 100 });
     expect(frame?.x).toBe(300 - 16);
     expect(frame?.y).toBe(100 - (28 + 16));
-    expect(frame?.width).toBe(500 + 200 - 300 + 32);
-    expect(frame?.height).toBe(28 + (640 + 84 - 100) + 32);
+    expect(frame?.width).toBe(500 + KNOWLEDGE_NODE_WIDTH - 300 + KNOWLEDGE_FOLDER_PAD * 2);
+    expect(frame?.height).toBe(
+      KNOWLEDGE_FOLDER_HEADER + (640 + KNOWLEDGE_NODE_HEIGHT - 100) + KNOWLEDGE_FOLDER_PAD * 2,
+    );
   });
 
   it("places an unsaved node beside saved world coordinates", () => {
@@ -111,7 +121,7 @@ describe("layoutKnowledgeGraph", () => {
     const free = laidWithFree.nodes.find((entry) => entry.id === "free");
     expect(pinned).toMatchObject({ x: 100, y: 80 });
     expect(free).toMatchObject({
-      x: snapKnowledgeCoord(100 + 200 + 28),
+      x: snapKnowledgeCoord(100 + KNOWLEDGE_NODE_WIDTH + 28),
       y: snapKnowledgeCoord(80),
     });
     expect(free!.x % KNOWLEDGE_GRID).toBe(0);

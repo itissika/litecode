@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CaretRight, FilePlus, Folder } from "@phosphor-icons/react";
+import { FileText } from "@phosphor-icons/react";
 
 import { FileTreeContextMenu, type FileTreeMenuItem } from "../FileTreeContextMenu";
-import { FoldCard } from "../FoldCard";
-import { knowledgePreview, normalizeKey } from "../../lib/knowledge/markers";
-import { openKnowledgeGraphPanel, revealKnowledgeNode } from "../../lib/knowledge/panel";
+import { TreeIndentGuides, treeRowPaddingLeft } from "../TreeIndentGuides";
+import { normalizeKey } from "../../lib/knowledge/markers";
+import { revealKnowledgeNode } from "../../lib/knowledge/panel";
 import {
   isVisibleInScrollParent,
   nearestScrollDelta,
@@ -19,6 +19,7 @@ import type {
   KnowledgeUnknownFile,
 } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { getFileIcon, FolderIcon } from "../../utils/fileIcon";
 import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
 
 const NO_ISSUES: KnowledgeIssue[] = [];
@@ -64,19 +65,19 @@ function createError(result: string): string {
 
 function KnowledgeCard({
   node,
+  depth,
   sideFlashPulse,
   onMenu,
   onDragHover,
   onDrop,
 }: {
   node: KnowledgeNode;
+  depth: number;
   sideFlashPulse: number;
   onMenu: (event: React.MouseEvent, target: MenuTarget) => void;
   onDragHover: (folderId: string | null) => void;
   onDrop: (event: React.DragEvent, folderId: string | null) => void;
 }) {
-  const expanded = useKnowledgeStore((s) => s.expanded.has(node.id));
-  const toggle = useKnowledgeStore((s) => s.toggle);
   const focused = useKnowledgeStore((s) => s.focusedId === node.id);
   const flashId = useKnowledgeStore((s) => s.flashId);
   const flashing = flashId === node.id && sideFlashPulse > 0;
@@ -86,17 +87,19 @@ function KnowledgeCard({
   const titleTone = knowledgeTitleTone(issues, node.status);
   const warnings = knowledgeAttentionWarnings(issues);
   const key = normalizeKey(node.key);
-  const summary = node.summary || knowledgePreview(node.value, 1);
 
   return (
     <div
       data-knowledge-id={node.id}
       className={[
-        "knowledge-card",
+        "knowledge-card relative flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm text-(--_dk-text-secondary)",
         focused ? "is-focused" : "",
       ]
         .filter(Boolean)
         .join(" ")}
+      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
+      title={key}
+      onClick={() => revealKnowledgeNode(node.id)}
       draggable
       onDragStart={(event) => {
         event.stopPropagation();
@@ -117,65 +120,63 @@ function KnowledgeCard({
       {flashing ? (
         <span key={sideFlashPulse} className="knowledge-flash" aria-hidden />
       ) : null}
-      <FoldCard
-        open={expanded}
-        onToggle={(next) => {
-          if (next !== expanded) toggle(node.id);
-        }}
-        edgeBlur={false}
-        className="knowledge-foldcard"
-        headerClassName="text-dk-xs"
-        label={
-          <span
-            className="knowledge-card-label"
-            onClick={() => revealKnowledgeNode(node.id)}
-          >
-            <span
-              className={[
-                "knowledge-card-title knowledge-node-title truncate font-mono",
-                titleTone ? `is-${titleTone}` : "text-(--_dk-text-primary)",
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              title={
-                titleTone === "error"
-                  ? "Reference problem"
-                  : titleTone === "pending"
-                    ? "Pending review"
-                    : undefined
-              }
-            >
-              {key}
-            </span>
-            <KnowledgeAttentionIcon warnings={warnings} />
-          </span>
-        }
-      >
-        <div
-          className="knowledge-side-summary"
-          role="button"
-          tabIndex={0}
-          onClick={() => revealKnowledgeNode(node.id)}
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" && event.key !== " ") return;
-            event.preventDefault();
-            revealKnowledgeNode(node.id);
-          }}
+      <TreeIndentGuides depth={depth} />
+      <span className="w-4 shrink-0" aria-hidden />
+      <FileText
+        size={16}
+        weight="regular"
+        aria-hidden
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+      />
+      <span className="knowledge-card-label min-w-0 flex-1">
+        <span
+          className={[
+            "knowledge-card-title knowledge-node-title truncate",
+            titleTone ? `is-${titleTone}` : "text-(--_dk-text-primary)",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          title={
+            titleTone === "error"
+              ? "Reference problem"
+              : titleTone === "pending"
+                ? "Pending review"
+                : undefined
+          }
         >
-          {summary}
-        </div>
-      </FoldCard>
+          {key}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center">
+          <KnowledgeAttentionIcon warnings={warnings} />
+        </span>
+      </span>
     </div>
   );
 }
 
-function KnowledgeUnknownRow({ file }: { file: KnowledgeUnknownFile }) {
+function KnowledgeUnknownRow({
+  file,
+  depth,
+}: {
+  file: KnowledgeUnknownFile;
+  depth: number;
+}) {
+  const Glyph = getFileIcon(file.name);
   return (
     <div
-      className="truncate px-2 py-0.5 font-mono text-dk-xs text-(--_dk-text-muted)"
+      className="relative flex w-full items-center gap-1 truncate px-2 py-0.5 text-sm text-(--_dk-text-muted)"
+      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
       title="Unrecognized"
     >
-      ?{file.name}
+      <TreeIndentGuides depth={depth} />
+      <span className="w-4 shrink-0" aria-hidden />
+      <Glyph
+        size={16}
+        weight="regular"
+        aria-hidden
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+      />
+      <span className="truncate">?{file.name}</span>
     </div>
   );
 }
@@ -192,9 +193,11 @@ function belongsToFolder(
 
 function KnowledgeCreateRow({
   draft,
+  depth,
   onDone,
 }: {
   draft: CreateDraft;
+  depth: number;
   onDone: (source: CreateDraft) => void;
 }) {
   const createFolder = useKnowledgeStore((s) => s.createFolder);
@@ -224,16 +227,24 @@ function KnowledgeCreateRow({
     setError(createError(result));
   }
 
+  const Glyph = draft.kind === "folder" ? FolderIcon : getFileIcon("untitled");
+
   return (
-    <div className="knowledge-create-row">
-      {draft.kind === "folder" ? (
-        <Folder size={14} weight="fill" aria-hidden />
-      ) : (
-        <FilePlus size={14} aria-hidden />
-      )}
+    <div
+      className="knowledge-create-row relative flex w-full items-center gap-1 px-2 py-0.5 text-sm text-(--_dk-text-muted)"
+      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
+    >
+      <TreeIndentGuides depth={depth} />
+      <span className="w-4 shrink-0" aria-hidden />
+      <Glyph
+        size={16}
+        weight="regular"
+        aria-hidden
+        className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
+      />
       <input
         autoFocus
-        className="knowledge-create-input"
+        className="knowledge-create-input min-w-0 flex-1 rounded border border-(--_dk-accent-hover) bg-(--_dk-root) px-1 py-0 text-sm text-(--_dk-text-primary) outline-none"
         aria-label={draft.kind === "folder" ? "Folder name" : "Node key"}
         aria-invalid={error != null}
         title={error ?? undefined}
@@ -263,6 +274,7 @@ function KnowledgeCreateRow({
 
 function KnowledgeFolderBranch({
   parentId,
+  depth,
   flashId,
   sideFlashPulse,
   draft,
@@ -274,6 +286,7 @@ function KnowledgeFolderBranch({
   onDrop,
 }: {
   parentId: string | null;
+  depth: number;
   flashId: string | null;
   sideFlashPulse: number;
   draft: CreateDraft | null;
@@ -306,7 +319,11 @@ function KnowledgeFolderBranch({
   return (
     <>
       {draft?.parentId === parentId ? (
-        <KnowledgeCreateRow draft={draft} onDone={onCancelCreate} />
+        <KnowledgeCreateRow
+          draft={draft}
+          depth={depth}
+          onDone={onCancelCreate}
+        />
       ) : null}
       {childFolders.map((folder) => {
         const open = expandedFolders.has(folder.id);
@@ -315,14 +332,17 @@ function KnowledgeFolderBranch({
             <div
               className={[
                 "knowledge-folder-line",
-                dropId === folder.id ? "is-drop" : "",
+                dropId === folder.id
+                  ? "outline outline-1 outline-(--_dk-accent-hover)"
+                  : "",
               ]
                 .filter(Boolean)
                 .join(" ")}
             >
               <button
                 type="button"
-                className="knowledge-folder-row"
+                className="knowledge-folder-row relative flex w-full min-w-0 flex-1 cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm text-(--_dk-text-secondary) transition-colors"
+                style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
                 aria-expanded={open}
                 draggable
                 onClick={() => toggleFolder(folder.id)}
@@ -346,35 +366,36 @@ function KnowledgeFolderBranch({
                   })
                 }
               >
-                <CaretRight
-                  size={10}
-                  weight="bold"
-                  className={
-                    open
-                      ? "knowledge-folder-caret is-open"
-                      : "knowledge-folder-caret"
-                  }
+                <TreeIndentGuides depth={depth} />
+                <span
+                  className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)"
                   aria-hidden
+                >
+                  {open ? "▼" : "▶"}
+                </span>
+                <FolderIcon
+                  size={16}
+                  weight="regular"
+                  aria-hidden
+                  className="h-4 w-4 shrink-0 select-none text-(--_dk-fg-muted)"
                 />
-                <Folder size={14} weight="fill" aria-hidden />
                 <span className="truncate">{folder.name}</span>
               </button>
             </div>
             {open ? (
-              <div className="knowledge-folder-children">
-                <KnowledgeFolderBranch
-                  parentId={folder.id}
-                  flashId={flashId}
-                  sideFlashPulse={sideFlashPulse}
-                  draft={draft}
-                  dropId={dropId}
-                  onCreate={onCreate}
-                  onCancelCreate={onCancelCreate}
-                  onMenu={onMenu}
-                  onDragHover={onDragHover}
-                  onDrop={onDrop}
-                />
-              </div>
+              <KnowledgeFolderBranch
+                parentId={folder.id}
+                depth={depth + 1}
+                flashId={flashId}
+                sideFlashPulse={sideFlashPulse}
+                draft={draft}
+                dropId={dropId}
+                onCreate={onCreate}
+                onCancelCreate={onCancelCreate}
+                onMenu={onMenu}
+                onDragHover={onDragHover}
+                onDrop={onDrop}
+              />
             ) : null}
           </div>
         );
@@ -383,6 +404,7 @@ function KnowledgeFolderBranch({
         <KnowledgeCard
           key={node.id}
           node={node}
+          depth={depth}
           sideFlashPulse={flashId === node.id ? sideFlashPulse : 0}
           onMenu={onMenu}
           onDragHover={onDragHover}
@@ -390,7 +412,7 @@ function KnowledgeFolderBranch({
         />
       ))}
       {childUnknown.map((file) => (
-        <KnowledgeUnknownRow key={file.path} file={file} />
+        <KnowledgeUnknownRow key={file.path} file={file} depth={depth} />
       ))}
     </>
   );
@@ -476,17 +498,8 @@ export function KnowledgeBrowser() {
     <>
       <div className="flex shrink-0 items-center gap-1 border-b border-(--_dk-line) px-2 py-1.5">
         <span className="min-w-0 flex-1 text-dk-2xs uppercase tracking-wide text-(--_dk-text-muted)">
-          Knowledge Base
+          Knowledge
         </span>
-        <button
-          type="button"
-          onClick={() => {
-            openKnowledgeGraphPanel();
-          }}
-          className="rounded px-1 py-0.5 text-dk-2xs text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-selected) hover:text-(--_dk-text-secondary)"
-        >
-          Open Graph
-        </button>
       </div>
       {error ? (
         <p className="shrink-0 px-2 py-1 text-dk-2xs text-(--_dk-text-muted)">
@@ -501,8 +514,10 @@ export function KnowledgeBrowser() {
       <div
         ref={listRef}
         className={[
-          "knowledge-browser-list min-h-0 flex-1 overflow-y-auto px-1 py-1",
-          dropId === "" ? "is-drop" : "",
+          "knowledge-browser-list min-h-0 flex-1 overflow-y-auto py-1",
+          dropId === ""
+            ? "outline outline-1 outline-(--_dk-accent-hover)"
+            : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -520,6 +535,7 @@ export function KnowledgeBrowser() {
       >
         <KnowledgeFolderBranch
           parentId={null}
+          depth={0}
           flashId={flashId}
           sideFlashPulse={sideFlashPulse}
           draft={draft}

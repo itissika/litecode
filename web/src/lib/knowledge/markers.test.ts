@@ -5,8 +5,10 @@ import {
   extractMarkers,
   fileMentionSource,
   humanFileLabel,
+  humanRangeLabel,
   humanSymbolLabel,
   isWorkspaceFileRef,
+  leafSymbol,
   symbolMentionSource,
   knowledgePreview,
   mentionSource,
@@ -18,16 +20,24 @@ import { remarkKnowledgeRef } from "./remarkKnowledgeRef";
 const seq = mentionSource("seq");
 
 describe("human chip labels", () => {
-  it("keeps a bare file name and compresses a parent", () => {
+  it("keeps the file name and leaves the path to the title", () => {
     expect(humanFileLabel("a.rs")).toBe("a.rs");
-    expect(humanFileLabel("src/a.rs")).toBe(".../src/a.rs");
-    expect(humanFileLabel("src/session/manager.rs")).toBe(".../session/manager.rs");
+    expect(humanFileLabel("src/a.rs")).toBe("a.rs");
+    expect(humanFileLabel("src/session/manager.rs")).toBe("manager.rs");
   });
 
-  it("shows a symbol as the file name and the chain", () => {
+  it("shows a symbol as the file name and the leaf segment", () => {
     expect(humanSymbolLabel("src/session/manager.rs", "impl Store › fn save")).toBe(
-      "manager.rs : impl Store › fn save",
+      "manager.rs : fn save",
     );
+    expect(leafSymbol("impl Store › fn save")).toBe("fn save");
+    expect(leafSymbol("fn save")).toBe("fn save");
+  });
+
+  it("shows a line range as file : span", () => {
+    expect(humanRangeLabel("src/a.rs", "4-9")).toBe("a.rs : 4-9");
+    expect(humanRangeLabel("src/a.rs", "4-4")).toBe("a.rs : 4");
+    expect(humanRangeLabel("src/a.rs", "0-1")).toBe("a.rs");
   });
 });
 
@@ -144,13 +154,13 @@ describe("remarkKnowledgeRef", () => {
       {
         type: "link",
         url: "loc:src%2Fa.rs",
-        children: [{ type: "text", value: ".../src/a.rs" }],
+        children: [{ type: "text", value: "a.rs" }],
       },
       { type: "text", value: " " },
       {
         type: "link",
         url: "loc:src%2Fa.rs?lines=4-9#L4",
-        children: [{ type: "text", value: ".../src/a.rs" }],
+        children: [{ type: "text", value: "a.rs : 4-9" }],
       },
     ]);
   });

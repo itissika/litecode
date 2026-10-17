@@ -543,6 +543,100 @@ async fn workspace_git_stage_commit_and_rejects_escape() {
 }
 
 #[tokio::test]
+async fn workspace_git_show_head_index_and_rejects() {
+    let _guard = WORKSPACE_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if git_exe().is_none() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    init_git_repo(dir.path());
+    let git = git_exe().expect("git");
+    let run = |args: &[&str]| {
+        assert!(
+            std::process::Command::new(&git)
+                .args(args)
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?}"
+        );
+    };
+    std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+    run(&["add", "a.txt"]);
+    run(&["commit", "-m", "add a"]);
+    std::fs::write(dir.path().join("bin.dat"), b"a\0b").unwrap();
+    run(&["add", "bin.dat"]);
+    run(&["commit", "-m", "add bin"]);
+    std::fs::write(dir.path().join("a.txt"), "two\n").unwrap();
+    run(&["add", "a.txt"]);
+
+    let (state, _serve, web_dist) = test_state(dir.path().to_path_buf());
+    let addr = spawn_test_server(state, web_dist).await;
+    let client = test_http_client();
+    let base = format!("http://{addr}/api/workspace/git/show");
+
+    let head: Value = client
+        .get(format!("{base}?path=a.txt&rev=HEAD"))
+        .send()
+        .await
+        .expect("head")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(head["ok"], true);
+    assert_eq!(head["data"]["content"], "one\n");
+
+    let index: Value = client
+        .get(format!("{base}?path=a.txt&rev=index"))
+        .send()
+        .await
+        .expect("index")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(index["data"]["content"], "two\n");
+
+    let missing: Value = client
+        .get(format!("{base}?path=missing.txt&rev=HEAD"))
+        .send()
+        .await
+        .expect("missing")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(missing["ok"], true);
+    assert!(missing["data"]["content"].is_null());
+
+    let binary: Value = client
+        .get(format!("{base}?path=bin.dat&rev=HEAD"))
+        .send()
+        .await
+        .expect("binary")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(binary["ok"], true);
+    assert!(binary["data"]["content"].is_null());
+
+    let rev = client
+        .get(format!("{base}?path=a.txt&rev=main"))
+        .send()
+        .await
+        .expect("rev");
+    assert_eq!(rev.status(), 400);
+
+    let escape = client
+        .get(format!("{base}?path=../secret.txt&rev=HEAD"))
+        .send()
+        .await
+        .expect("escape");
+    assert_eq!(escape.status(), 403);
+}
+
+#[tokio::test]
 async fn workspace_preview_reads_and_open_guards() {
     let _guard = WORKSPACE_TEST_LOCK
         .lock()

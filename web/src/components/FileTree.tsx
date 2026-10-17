@@ -39,6 +39,7 @@ import {
   type FileTreeMenuItem,
 } from "./FileTreeContextMenu";
 import { FileTreeGlobHits, FileTreeGlobInput } from "./FileTreeGlob";
+import { TreeIndentGuides, treeRowPaddingLeft } from "./TreeIndentGuides";
 import { fileNameFromPath } from "../utils/language";
 import { getFileIcon, FolderIcon } from "../utils/fileIcon";
 import { isSelfOrDescendant, parentPath } from "../utils/path";
@@ -202,9 +203,10 @@ function GhostRow({
   const setInline = useExplorerStore((s) => s.setInline);
   return (
     <div
-      className="flex w-full items-center gap-1 px-2 py-0.5 text-sm"
-      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      className="relative flex w-full items-center gap-1 px-2 py-0.5 text-sm"
+      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
     >
+      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0" />
       {kind === "newFolder" ? (
         <FolderIcon
@@ -346,17 +348,18 @@ function TreeNode({
           /* keep until next over */
         }
       }}
-      className={`flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm transition-colors hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
+      className={`relative flex w-full cursor-default items-center gap-1 truncate px-2 py-0.5 text-left text-sm transition-colors hover:bg-(--_dk-ix-bg-hover) ${highlight} ${
         isCut || busy ? "opacity-50" : ""
       } ${isDrop && isDir ? "outline outline-1 outline-(--_dk-accent-hover)" : ""} ${
         focusPath === entry.path
           ? "ring-1 ring-inset ring-(--_dk-line-visible)"
           : ""
       }`}
-      style={{ paddingLeft: `${depth * 12 + 8}px` }}
+      style={{ paddingLeft: `${treeRowPaddingLeft(depth)}px` }}
       data-path={entry.path}
       title={entry.path}
     >
+      <TreeIndentGuides depth={depth} />
       <span className="w-4 shrink-0 text-center text-[10px] text-(--_dk-text-disabled)">
         {isDir ? (expanded ? "▼" : "▶") : ""}
       </span>

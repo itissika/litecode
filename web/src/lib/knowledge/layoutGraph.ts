@@ -3,8 +3,10 @@ import dagre from "@dagrejs/dagre";
 import { normalizeKey } from "./markers";
 import type { KnowledgeFolder, KnowledgeIssue, KnowledgeNode } from "./types";
 
-export const KNOWLEDGE_NODE_WIDTH = 200;
+export const KNOWLEDGE_NODE_WIDTH = 300;
 export const KNOWLEDGE_NODE_HEIGHT = 84;
+/** Expanded card when the node has no saved height. Content scrolls inside. */
+export const KNOWLEDGE_NODE_OPEN_HEIGHT = 320;
 export const KNOWLEDGE_NODE_MIN_WIDTH = 140;
 export const KNOWLEDGE_NODE_MIN_HEIGHT = 64;
 export const KNOWLEDGE_NODE_MAX_WIDTH = 480;

@@ -36,21 +36,18 @@ import {
 } from "../theme/monaco";
 import { getTheme, THEME_CHANGE_EVENT } from "../lib/theme";
 import { BINARY_FILE_MESSAGE } from "../lib/fileKind";
+import { attachGitQuickDiff } from "../lib/gitQuickDiffController";
 import { languageFromPath } from "../utils/language";
 import {
-  isWysiwygMarkdownPath,
+  isPreviewMarkdownPath,
+  PREVIEW_MARKDOWN_MAX_CHARS,
   resolveMdEditorView,
-  WYSIWYG_MARKDOWN_MAX_CHARS,
-} from "../utils/wysiwygMarkdown";
+} from "../utils/markdownView";
+import { AgentMarkdown } from "./AgentMarkdown";
 import { FileFallback } from "./fileview/FileFallback";
 import { ImagePreview } from "./fileview/ImagePreview";
 import { MediaPreview } from "./fileview/MediaPreview";
 import { SqlitePreview } from "./fileview/SqlitePreview";
-
-const MilkdownMarkdownEditor = lazy(async () => {
-  const mod = await import("./MilkdownMarkdownEditor");
-  return { default: mod.MilkdownMarkdownEditor };
-});
 
 const PdfPreview = lazy(async () => {
   const mod = await import("./fileview/PdfPreview");
@@ -121,14 +118,18 @@ export function EditorPane({
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const addToChatRef = useRef<{ dispose: () => void } | null>(null);
   const spanDragCleanup = useRef<(() => void) | null>(null);
+  const quickDiffRef = useRef<{ dispose: () => void; refresh: () => void } | null>(
+    null,
+  );
   const pathRef = useRef(filePath);
   pathRef.current = filePath;
-  const milkdownHostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     return () => {
       addToChatRef.current?.dispose();
       spanDragCleanup.current?.();
+      quickDiffRef.current?.dispose();
+      quickDiffRef.current = null;
     };
   }, []);
 
@@ -167,13 +168,21 @@ export function EditorPane({
     mdViewOverride,
   );
   const showMdToggle =
-    isWysiwygMarkdownPath(filePath) &&
-    (tab?.content.length ?? 0) <= WYSIWYG_MARKDOWN_MAX_CHARS;
-  const useWysiwyg = mdView === "wysiwyg";
+    isPreviewMarkdownPath(filePath) &&
+    (tab?.content.length ?? 0) <= PREVIEW_MARKDOWN_MAX_CHARS;
+  const usePreview = mdView === "preview";
 
   useEffect(() => {
-    if (useWysiwyg) editorRef.current = null;
-  }, [useWysiwyg]);
+    if (usePreview) {
+      editorRef.current = null;
+      quickDiffRef.current?.dispose();
+      quickDiffRef.current = null;
+    }
+  }, [usePreview]);
+
+  useEffect(() => {
+    quickDiffRef.current?.refresh();
+  }, [filePath]);
 
   const bindEditorToLsp = useCallback(
     (
@@ -226,9 +235,6 @@ export function EditorPane({
           // so workbench-level Ctrl+S targets the file the user is looking at.
           useEditorStore.setState({ activePath: filePath });
           editorRef.current?.focus();
-          const prose =
-            milkdownHostRef.current?.querySelector<HTMLElement>(".ProseMirror");
-          prose?.focus();
         }
       }),
     ];
@@ -292,19 +298,19 @@ export function EditorPane({
         <div className="flex h-7 shrink-0 items-center justify-end gap-1 border-b border-(--_dk-line-visible) bg-(--_dk-editor) px-2">
           <button
             type="button"
-            className={`btn-xs inline-flex items-center gap-1 ${useWysiwyg ? "btn-primary" : "btn-ghost"}`}
+            className={`btn-xs inline-flex items-center gap-1 ${usePreview ? "btn-primary" : "btn-ghost"}`}
             title="Markdown"
-            aria-pressed={useWysiwyg}
-            onClick={() => setMdView(filePath, "wysiwyg")}
+            aria-pressed={usePreview}
+            onClick={() => setMdView(filePath, "preview")}
           >
             <MarkdownLogoIcon size={12} />
             Markdown
           </button>
           <button
             type="button"
-            className={`btn-xs inline-flex items-center gap-1 ${!useWysiwyg ? "btn-primary" : "btn-ghost"}`}
+            className={`btn-xs inline-flex items-center gap-1 ${!usePreview ? "btn-primary" : "btn-ghost"}`}
             title="Source"
-            aria-pressed={!useWysiwyg}
+            aria-pressed={!usePreview}
             onClick={() => setMdView(filePath, "source")}
           >
             <CodeIcon size={12} />
@@ -369,24 +375,13 @@ export function EditorPane({
                 path={filePath}
                 message={tab.error ?? BINARY_FILE_MESSAGE}
               />
-            ) : useWysiwyg ? (
+            ) : usePreview ? (
               tab.loading ? null : (
-                <div ref={milkdownHostRef} className="h-full">
-                  <PreviewErrorBoundary resetKey={filePath}>
-                    <Suspense
-                      fallback={
-                        <div className="flex h-full items-center justify-center text-sm text-(--_dk-text-muted)">
-                          Loading editor…
-                        </div>
-                      }
-                    >
-                      <MilkdownMarkdownEditor
-                        filePath={filePath}
-                        content={tab.content ?? ""}
-                        onChange={(markdown) => setContent(filePath, markdown)}
-                      />
-                    </Suspense>
-                  </PreviewErrorBoundary>
+                <div className="markdown-file-preview">
+                  <AgentMarkdown
+                    text={tab.content ?? ""}
+                    preview={{ basePath: filePath }}
+                  />
                 </div>
               )
             ) : (
@@ -401,6 +396,12 @@ export function EditorPane({
                   monacoRef.current = monaco;
                   editorRef.current = _editor;
                   _editor.layout();
+                  quickDiffRef.current?.dispose();
+                  quickDiffRef.current = attachGitQuickDiff(
+                    _editor,
+                    monaco,
+                    () => pathRef.current,
+                  );
                   const model = monaco.editor.getModel(
                     monaco.Uri.parse(filePath),
                   );

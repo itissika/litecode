@@ -1,5 +1,7 @@
-import { cleanup, render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { bindDockview } from "../../dockview/workbench/host";
 
 import {
   knowledgeFixture,
@@ -28,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  bindDockview(null);
   cleanup();
 });
 
@@ -64,5 +67,42 @@ describe("KnowledgeBrowser attention mark", () => {
         '[data-knowledge-id="seq"] .knowledge-attention-icon',
       ),
     ).toBeNull();
+  });
+
+  it("uses the file-tree row scale for node titles", () => {
+    render(<KnowledgeBrowser />);
+    const title = screen.getByText("session");
+    const row = title.closest(".knowledge-card");
+    expect(row?.className).toContain("text-sm");
+    expect(row?.className).toContain("px-2");
+    expect(title.className).not.toContain("font-code");
+  });
+
+  it("lists node keys without a summary", () => {
+    useKnowledgeStore.setState({ expanded: new Set(["session"]) });
+    const { container } = render(<KnowledgeBrowser />);
+    expect(container.querySelector(".knowledge-side-summary")).toBeNull();
+    expect(container.textContent).toContain("session");
+    expect(container.textContent).not.toContain("单调递增");
+  });
+
+  it("opens the graph from a node and has no Open Graph button", () => {
+    const addPanel = vi.fn();
+    bindDockview({
+      getPanel: vi.fn(() => undefined),
+      addPanel,
+      addGroup: vi.fn(() => ({ id: "fresh" })),
+      groups: [],
+    } as never);
+    render(<KnowledgeBrowser />);
+    expect(screen.queryByRole("button", { name: "Open Graph" })).toBeNull();
+    fireEvent.click(screen.getByText("session"));
+    expect(useKnowledgeStore.getState().focusedId).toBe("session");
+    expect(addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "knowledge-graph",
+        component: "knowledgeGraph",
+      }),
+    );
   });
 });

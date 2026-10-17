@@ -218,11 +218,24 @@ function AgentProfileFields({
     <div className="settings-card space-y-2 p-3">
       <div>
         <FieldLabel>Description</FieldLabel>
-        <TextInput
-          value={draft.description}
-          onChange={(e) => onChange({ ...draft, description: e.target.value })}
-          disabled={saveBlocked}
-        />
+        {draft.role === "subagent" ? (
+          <TextArea
+            rows={4}
+            value={draft.description}
+            onChange={(e) =>
+              onChange({ ...draft, description: e.target.value })
+            }
+            disabled={saveBlocked}
+          />
+        ) : (
+          <TextInput
+            value={draft.description}
+            onChange={(e) =>
+              onChange({ ...draft, description: e.target.value })
+            }
+            disabled={saveBlocked}
+          />
+        )}
       </div>
       <div>
         <FieldLabel>System prompt</FieldLabel>

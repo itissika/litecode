@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type AnimationEvent } from "react";
-import { ArrowsOutSimple, CaretDown } from "@phosphor-icons/react";
+import { ArrowsOutSimple, CaretDown, Eye, PencilSimple } from "@phosphor-icons/react";
 import {
   Handle,
   NodeResizeControl,
@@ -26,7 +26,9 @@ import {
 } from "../../lib/knowledge/validate";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
 import { useKnowledgeStore } from "../../stores/knowledgeStore";
+import { AgentMarkdown } from "../AgentMarkdown";
 import { KnowledgeAttentionIcon } from "./KnowledgeAttentionIcon";
+import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
 import {
   KnowledgeSourceField,
   SaveGlyph,
@@ -68,11 +70,15 @@ export function KnowledgeFlowCard({
   const [bodyDraft, setBodyDraft] = useState("");
   const [summaryDirty, setSummaryDirty] = useState(false);
   const [bodyDirty, setBodyDirty] = useState(false);
+  const [editingBody, setEditingBody] = useState(false);
   const [saveMark, setSaveMark] = useState<CardSaveMark | null>(null);
   const summaryDraftRef = useRef("");
   const bodyDraftRef = useRef("");
   const summaryDirtyRef = useRef(false);
   const bodyDirtyRef = useRef(false);
+  const editingBodyRef = useRef(false);
+  const commitBodyRef = useRef<() => Promise<void>>(async () => {});
+  editingBodyRef.current = editingBody;
   const summaryGen = useRef(0);
   const bodyGen = useRef(0);
   const inflight = useRef(0);
@@ -130,6 +136,14 @@ export function KnowledgeFlowCard({
     summaryDraftRef.current = node.summary;
     setSummaryDraft(node.summary);
   }, [node, summaryDirty]);
+
+  useEffect(() => {
+    if (graphOpen) return;
+    if (!editingBodyRef.current) return;
+    editingBodyRef.current = false;
+    setEditingBody(false);
+    void commitBodyRef.current();
+  }, [graphOpen]);
 
   useEffect(() => {
     if (!node || bodyDirty) return;
@@ -304,6 +318,13 @@ export function KnowledgeFlowCard({
     settleMark();
   }
 
+  commitBodyRef.current = commitBody;
+
+  function toggleBodyEdit() {
+    if (editingBodyRef.current) void commitBody();
+    setEditingBody((open) => !open);
+  }
+
   const motionClass = leaving ? "is-leave" : arriving ? "is-arrive" : "";
 
   return (
@@ -429,23 +450,50 @@ export function KnowledgeFlowCard({
                 void commitSummary();
               }}
             />
-            <KnowledgeSourceField
-              label="正文"
-              kind="body"
-              sourceId={node.id}
-              className="is-fill"
-              rows={5}
-              value={bodyDraft}
-              candidates={refCandidates}
-              onChange={(next) => {
-                bodyDraftRef.current = next;
-                setBodyDraft(next);
-                markDirty("body");
-              }}
-              onBlur={() => {
-                void commitBody();
-              }}
-            />
+            <div className="knowledge-flow-body">
+              <div className="knowledge-flow-body-bar">
+                <span className="knowledge-source-label">正文</span>
+                <button
+                  type="button"
+                  className="knowledge-flow-body-edit nodrag nowheel"
+                  aria-pressed={editingBody}
+                  aria-label={editingBody ? "预览正文" : "编辑正文"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    toggleBodyEdit();
+                  }}
+                >
+                  {editingBody ? (
+                    <Eye size={12} />
+                  ) : (
+                    <PencilSimple size={12} />
+                  )}
+                </button>
+              </div>
+              <div className="knowledge-flow-body-scroll nodrag nowheel">
+                {editingBody ? (
+                  <KnowledgeBodyEditor
+                    label="正文"
+                    sourceId={node.id}
+                    value={bodyDraft}
+                    candidates={refCandidates}
+                    rows={5}
+                    onChange={(next) => {
+                      bodyDraftRef.current = next;
+                      setBodyDraft(next);
+                      markDirty("body");
+                    }}
+                    onBlur={() => {
+                      void commitBody();
+                    }}
+                  />
+                ) : (
+                  <div className="knowledge-flow-body-preview">
+                    <AgentMarkdown citations sourceId={node.id} text={bodyDraft} />
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="knowledge-flow-summary">{summary}</div>

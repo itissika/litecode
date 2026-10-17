@@ -5,7 +5,7 @@
 @import "./components/chat.css";
 @import "./components/content.css";
 @import "./components/editor-tab.css";
-@import "./components/milkdown.css";
+@import "./components/markdown-preview.css";
 @import "./components/settings.css";
 @import "./components/skeleton.css";
 @import "./components/status-bar.css";
@@ -14,6 +14,7 @@
 @import "./components/tag.css";
 @import "./components/search.css";
 @import "./components/git.css";
+@import "./components/git-diff.css";
 @import "@xyflow/react/dist/style.css";
 @import "./components/knowledge.css";
 

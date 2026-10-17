@@ -69,7 +69,7 @@ export function composerPlaceholder(input: {
   if (!input.hasModel) return "Add a model in Settings";
   if (input.manualCompacting) return "Compacting context…";
   if (input.queuing) return "Queue a follow-up…";
-  return "Message the agent…";
+  return "/ file · # symbol · @ knowledge";
 }
 
 export function AgentPicker({

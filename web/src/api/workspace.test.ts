@@ -5,6 +5,7 @@ import {
   fetchMentionPaths,
   fetchTreeReveal,
   getEnginesDetail,
+  gitShow,
   gitStatus,
   refreshRetrieval,
 } from "./workspace";
@@ -94,6 +95,19 @@ describe("workspace engine API", () => {
     const status = await gitStatus();
     expect(status.branch).toBe("main");
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/workspace/git/status");
+  });
+
+  it("fetches a git blob from index or HEAD", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, data: { content: "one\n" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await gitShow("src/a.ts", "HEAD")).toBe("one\n");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "/api/workspace/git/show?path=src%2Fa.ts&rev=HEAD",
+    );
   });
 
   it("fetches filename glob hits from the workspace glob endpoint", async () => {

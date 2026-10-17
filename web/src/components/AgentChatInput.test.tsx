@@ -512,7 +512,7 @@ describe("composer placeholder", () => {
         manualCompacting: false,
         queuing: false,
       }),
-    ).toBe("Message the agent…");
+    ).toBe("/ file · # symbol · @ knowledge");
     expect(
       composerPlaceholder({
         connected: true,

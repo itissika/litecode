@@ -257,6 +257,11 @@ interface KnowledgeStore {
   setVisibility: (next: KnowledgeVisibility) => Promise<void>;
   /** Pan the graph to this node; does not expand the side row. */
   focusCanvas: (id: string) => void;
+  /**
+   * Locate a node in the side list: expand its ancestor folders and flash the
+   * row. Document mode calls this as the reader moves between nodes.
+   */
+  revealInList: (id: string) => void;
   /** Graph card click: highlight graph + flash side without expanding or panning. */
   selectFromGraph: (id: string) => void;
   /** Click graph background — drop canvas/side focus highlight. */
@@ -933,6 +938,24 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       return {
         focusedId: id,
         focusNonce: state.focusNonce + 1,
+      };
+    }),
+  revealInList: (id) =>
+    set((state) => {
+      const node = state.byId.get(id);
+      if (!node) return state;
+      const expandedFolders = new Set(state.expandedFolders);
+      const seen = new Set<string>();
+      let folderId = node.folderId;
+      while (folderId != null && !seen.has(folderId)) {
+        seen.add(folderId);
+        expandedFolders.add(folderId);
+        folderId = state.folderById.get(folderId)?.parentId ?? null;
+      }
+      return {
+        expandedFolders,
+        flashId: id,
+        flashNonce: state.flashNonce + 1,
       };
     }),
   selectFromGraph: (id) =>

@@ -75,8 +75,13 @@ export function CitationChip({
     [citation, source, target, ref, ready, externalOpen, label],
   );
 
+  const detail = model.detail && model.detail !== model.label ? model.detail : null;
+  // Full reference first, then the verdict text: a shortened label never hides
+  // where it points, and an issue keeps its own line.
+  const title = [detail, model.title].filter(Boolean).join("\n");
+
   return (
-    <span className={chipClass(model, nodrag)} title={model.title}>
+    <span className={chipClass(model, nodrag)} title={title || undefined}>
       {model.resolvable ? (
         <button
           type="button"

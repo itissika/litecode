@@ -236,7 +236,7 @@ describe("MentionEditor drops", () => {
     const tree = fakeTransfer();
     tree.setData(LITECODE_PATHS_MIME, JSON.stringify(["src/a.rs"]));
     const onChange = await dropOnEditor(tree);
-    const chip = await screen.findByRole("button", { name: ".../src/a.rs" });
+    const chip = await screen.findByRole("button", { name: "a.rs" });
     fireEvent.click(chip);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     await waitFor(() => {
@@ -248,8 +248,8 @@ describe("MentionEditor drops", () => {
     const outside = fakeTransfer();
     outside.setData("text/uri-list", "file:///C:/outside/a.ts");
     await dropOnEditor(outside);
-    expect(await screen.findByText(".../outside/a.ts")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: ".../outside/a.ts" })).toBeNull();
+    expect(await screen.findByText("a.ts")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "a.ts" })).toBeNull();
 
     useEditorStore.setState({ openFile: previous });
   });
