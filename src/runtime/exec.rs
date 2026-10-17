@@ -698,11 +698,8 @@ impl AgentRuntime {
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
         // Before summary replay drops items, while `rebased` still lines up.
-        let rebased_stripped = crate::llm::strip_rebased_signatures(
-            &mut input,
-            rebased,
-            &endpoint_type,
-        );
+        let rebased_stripped =
+            crate::llm::strip_rebased_signatures(&mut input, rebased, &endpoint_type);
         let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
         let (ciphertexts_stripped, reasoning_dropped, reasoning_wholly_omitted) =
             if self.turn_llm.model.reasoning_replay
@@ -870,7 +867,7 @@ impl AgentRuntime {
         let stats = &mut self.turn_token_stats;
         let totals = &mut self.turn_usage_totals;
         let prompt_usage_baseline = &self.prompt_usage_baseline;
-        let request_item_count = request.input.len();
+        let covered_seq = origin_seq;
         let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<TurnTokenStats>));
         let usage_slot_cb = std::sync::Arc::clone(&usage_slot);
         // The stream and the terminal payload describe the same items. This is
@@ -923,9 +920,9 @@ impl AgentRuntime {
                         totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(cache_hit);
                         totals.cache_miss_tokens =
                             totals.cache_miss_tokens.saturating_add(cache_miss);
-                        // Provider truth covers this exact request prefix. The next
-                        // tool-loop step adds a local estimate only for appended Items.
-                        prompt_usage_baseline.record(prompt, request_item_count);
+                        // Provider truth covers items at or before this request header.
+                        // The next step estimates only rows persisted after it.
+                        prompt_usage_baseline.record(prompt, covered_seq);
                         let stop_reason = match &cev.response.incomplete_details {
                             Some(d) => d.reason.clone(),
                             None => format!("{:?}", cev.response.status),
@@ -1300,7 +1297,6 @@ fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String
     notice.reason_text()
 }
 
-
 #[cfg(test)]
 mod request_health_tests {
     use super::{LlmRequestHealthInput, classify_llm_request_health};
@@ -1351,10 +1347,7 @@ mod request_health_tests {
 
     #[test]
     fn thinking_not_refilled_when_summary_drops_foreign_reasoning() {
-        let mut items = vec![
-            reasoning(Some("own")),
-            reasoning(Some("foreign")),
-        ];
+        let mut items = vec![reasoning(Some("own")), reasoning(Some("foreign"))];
         let producers = vec![
             Some(produced("aliyun-token", "responses", "aliyun-token/qwen")),
             Some(produced("openai", "responses", "openai/gpt")),
@@ -1423,13 +1416,7 @@ mod request_health_tests {
     fn foreign_strip_with_text_retained_is_debug_not_toast() {
         let mut items = vec![reasoning(Some("foreign"))];
         let producers = vec![Some(produced("q", "responses", "q/m"))];
-        let stats = strip_foreign_ciphertext(
-            &mut items,
-            &producers,
-            "p",
-            "responses",
-            "p/m",
-        );
+        let stats = strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m");
         assert_eq!(stats.ciphertexts_stripped, 1);
         assert_eq!(stats.reasoning_wholly_omitted, 0);
 

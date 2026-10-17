@@ -4,7 +4,9 @@ use crate::client_protocol::project;
 use crate::client_protocol::protocol::{
     ErrorCode, OperationKind, SessionBindingProjection, SessionInfo,
 };
-use crate::context_pipeline::{BudgetPolicy, CompactPolicy, manual_compact_eligible};
+use crate::context_pipeline::{
+    BudgetPolicy, CompactPolicy, manual_compact_eligible, ring_occupancy,
+};
 use crate::permission::PermissionSink;
 use crate::runtime::{TurnOptions, spawn_turn};
 use crate::session::estimate::compute_token_breakdown;
@@ -13,6 +15,78 @@ use crate::types::{LitecodeError, UserInput};
 use tokio_util::sync::CancellationToken;
 
 use super::{SessionController, StartTurnError};
+
+#[cfg(test)]
+mod occupancy_gate_tests {
+    use super::provider_occupancy_prompt;
+    use crate::context_pipeline::{manual_compact_eligible, ring_occupancy};
+    use crate::session::manager::SessionManager;
+    use crate::session::store::ProviderUsage;
+
+    #[test]
+    fn manual_gate_uses_provider_prompt_when_the_local_estimate_is_under() {
+        let sessions = SessionManager::ephemeral_registry();
+        let sid = sessions
+            .open_session_sync("/p", "default", None)
+            .expect("open");
+        sessions
+            .insert_detail_rows(&sid, &[crate::types::user_text("hi")])
+            .unwrap();
+        let header = sessions
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
+            )
+            .unwrap();
+        let usage = |prompt| ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        };
+        sessions
+            .record_provider_usage(&sid, header, &usage(3_000))
+            .unwrap();
+        let prompt = provider_occupancy_prompt(&sessions, &sid);
+        assert_eq!(prompt, Some(3_000));
+        assert!(manual_compact_eligible(10_000, ring_occupancy(prompt, 100)));
+
+        let low = sessions
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 2}),
+            )
+            .unwrap();
+        sessions
+            .record_provider_usage(&sid, low, &usage(2_000))
+            .unwrap();
+        let prompt = provider_occupancy_prompt(&sessions, &sid);
+        assert!(!manual_compact_eligible(
+            10_000,
+            ring_occupancy(prompt, 9_000)
+        ));
+    }
+}
+
+/// Latest unretired provider prompt, matching the occupancy ring.
+fn provider_occupancy_prompt(
+    sessions: &crate::session::manager::SessionManager,
+    session_id: &str,
+) -> Option<u64> {
+    let compacted_seq = sessions
+        .data()
+        .meta_blocking(session_id)
+        .ok()
+        .and_then(|meta| meta.compacted_seq);
+    let rollup = sessions.provider_usage_rollup(session_id).ok()?;
+    let meter = sessions
+        .data()
+        .meter_blocking(session_id)
+        .unwrap_or_default();
+    crate::session::store::occupancy_usage(&rollup, compacted_seq, &meter)
+        .map(|usage| usage.prompt_tokens)
+        .filter(|tokens| *tokens > 0)
+}
 
 enum TurnLaunch {
     User {
@@ -266,8 +340,12 @@ impl SessionController {
         let mut transcript = self.sessions.data().transcript_blocking(session_id)?;
         Session::snip_stale_results(&mut transcript);
         let budget = BudgetPolicy::new(session_binding.context_window);
-        let token_count = budget.token_count(&transcript, 0);
-        if !manual_compact_eligible(session_binding.context_window, token_count) {
+        let local_count = budget.token_count(&transcript, 0);
+        let occupancy = ring_occupancy(
+            provider_occupancy_prompt(&self.sessions, session_id),
+            local_count,
+        );
+        if !manual_compact_eligible(session_binding.context_window, occupancy) {
             return Err(LitecodeError::NothingToCompact);
         }
         if !CompactPolicy::can_compact(&budget, &transcript) {
@@ -276,7 +354,7 @@ impl SessionController {
 
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = session_binding.context_window;
-            proj.context_tokens_estimate = token_count;
+            proj.context_tokens_estimate = local_count;
             proj.context_token_breakdown = compute_token_breakdown(&transcript);
         }
 

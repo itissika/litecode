@@ -58,7 +58,7 @@ describe("turnStore convergence", () => {
     } as never);
   });
 
-  it("starts manual compact only when the server marks the session eligible", () => {
+  it("starts manual compact from ring occupancy, not the server flag", () => {
     const sessionId = "s-compact";
     const sendRpc = vi.fn(async () => ({
       accepted: true,
@@ -72,8 +72,9 @@ describe("turnStore convergence", () => {
           {
             ...EMPTY_SLICE,
             contextWindow: 1000,
-            contextTokensEstimate: 300,
-            compactEligible: true,
+            contextTokensEstimate: 100,
+            lastTurnPromptTokens: 300,
+            compactEligible: false,
           },
         ],
       ]),
@@ -85,6 +86,34 @@ describe("turnStore convergence", () => {
     expect(sendRpc).toHaveBeenCalledWith("session/compact", {
       session_id: sessionId,
     });
+  });
+
+  it("does not start manual compact when ring occupancy is under 30 percent", () => {
+    const sessionId = "s-compact-low";
+    const sendRpc = vi.fn(async () => ({
+      accepted: true,
+      operation_id: "op-1",
+    }));
+    useConnectionStore.setState({ sendRpc } as never);
+    useTurnStore.setState({
+      byId: new Map([
+        [
+          sessionId,
+          {
+            ...EMPTY_SLICE,
+            contextWindow: 1000,
+            contextTokensEstimate: 900,
+            lastTurnPromptTokens: 299,
+            compactEligible: true,
+          },
+        ],
+      ]),
+    });
+
+    useTurnStore.getState().compact(sessionId);
+
+    expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
+    expect(sendRpc).not.toHaveBeenCalled();
   });
 
   it("serializes replay settings, transcript revert, then replacement run", async () => {

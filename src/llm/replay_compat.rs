@@ -260,7 +260,8 @@ mod tests {
             None,
         ];
         assert_eq!(
-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m").ciphertexts_stripped,
+            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m")
+                .ciphertexts_stripped,
             2
         );
         let ciphertexts: Vec<_> = items
@@ -336,7 +337,8 @@ mod tests {
                 "opencode",
                 "messages",
                 "opencode/claude-sonnet-5-5",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -356,7 +358,8 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/gpt-6-luna",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -380,7 +383,8 @@ mod tests {
                 "opencode",
                 "messages",
                 "opencode/claude-sonnet-5-5",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -441,7 +445,8 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/grok-4.7",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             1
         );
         assert!(matches!(
@@ -460,7 +465,8 @@ mod tests {
                 "opencode",
                 "responses",
                 "opencode/gpt-5.6-sol",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -474,7 +480,8 @@ mod tests {
         let mut items = vec![reasoning(Some("old"))];
         let producers = vec![Some(produced("p", Some("responses"), None))];
         assert_eq!(
-            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other").ciphertexts_stripped,
+            strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/other")
+                .ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -488,7 +495,8 @@ mod tests {
         let mut responses = vec![reasoning(Some("old"))];
         let producers = vec![Some(produced("p", None, None))];
         assert_eq!(
-            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m").ciphertexts_stripped,
+            strip_foreign_ciphertext(&mut responses, &producers, "p", "responses", "p/m")
+                .ciphertexts_stripped,
             0
         );
         assert!(matches!(
@@ -504,7 +512,8 @@ mod tests {
                 "p",
                 "messages",
                 "p/claude-sonnet-5-5",
-            ).ciphertexts_stripped,
+            )
+            .ciphertexts_stripped,
             1
         );
     }
@@ -534,13 +543,7 @@ mod tests {
     fn responses_foreign_strip_keeps_text_not_wholly_omitted() {
         let mut items = vec![reasoning(Some("foreign"))];
         let producers = vec![Some(produced("q", Some("responses"), Some("q/m")))];
-        let stats = strip_foreign_ciphertext(
-            &mut items,
-            &producers,
-            "p",
-            "responses",
-            "p/m",
-        );
+        let stats = strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m");
         assert_eq!(stats.ciphertexts_stripped, 1);
         // Text remains on the Item; Responses-with-text-replay can still use it.
         assert_eq!(stats.reasoning_wholly_omitted, 0);

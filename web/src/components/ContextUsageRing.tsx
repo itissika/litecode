@@ -1,6 +1,6 @@
 import type { CSSProperties } from "react";
 import { ArrowsInSimple, CircleNotch } from "@phosphor-icons/react";
-import { useTurnStore } from "../stores/turnStore";
+import { manualCompactReady, occupancyTokens, useTurnStore } from "../stores/turnStore";
 import { useConnectionStore } from "../stores/connectionStore";
 import type { ItemTokenBreakdown } from "../api/types";
 import { FoldCard } from "./FoldCard";
@@ -164,7 +164,7 @@ export function ContextUsageRing({
   const providerPrompt = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnPromptTokens ?? 0,
   );
-  const used = providerPrompt > 0 ? providerPrompt : estimate;
+  const used = occupancyTokens(providerPrompt, estimate);
   const total = useTurnStore((s) => s.byId.get(sessionId)?.contextWindow ?? 0);
   const cacheHit = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnCacheHitTokens ?? 0,
@@ -180,9 +180,6 @@ export function ContextUsageRing({
   const sessionCacheMiss = useTurnStore(
     (s) => s.byId.get(sessionId)?.sessionCacheMissTokens ?? 0,
   );
-  const compactEligible = useTurnStore(
-    (s) => s.byId.get(sessionId)?.compactEligible ?? false,
-  );
   const compacting = useTurnStore(
     (s) => s.byId.get(sessionId)?.compacting ?? false,
   );
@@ -196,9 +193,6 @@ export function ContextUsageRing({
   );
   const sessionBilledTokens = useTurnStore(
     (s) => s.byId.get(sessionId)?.sessionBilledTokens ?? null,
-  );
-  const billedRequestCount = useTurnStore(
-    (s) => s.byId.get(sessionId)?.billedRequestCount ?? 0,
   );
 
   const hasOccupancy = used > 0;
@@ -237,12 +231,15 @@ export function ContextUsageRing({
   const segments = mix?.tiers ?? [];
   const toolRows = mix?.tools ?? [];
   const hasMix = segments.length > 0;
-  const avgRoundTrip =
-    sessionBilledTokens != null && billedRequestCount > 0
-      ? Math.round(sessionBilledTokens / billedRequestCount)
-      : null;
   const compactDisabled =
-    !connected || runState !== "idle" || compacting || !compactEligible;
+    !connected ||
+    runState !== "idle" ||
+    compacting ||
+    !manualCompactReady({
+      lastTurnPromptTokens: providerPrompt,
+      contextTokensEstimate: estimate,
+      contextWindow: total,
+    });
 
   return (
     <Popover
@@ -488,12 +485,6 @@ export function ContextUsageRing({
                 {sessionBilledTokens != null
                   ? formatToken(sessionBilledTokens)
                   : "-"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <span>Avg round trip</span>
-              <span className="font-mono tabular-nums">
-                {avgRoundTrip != null ? formatToken(avgRoundTrip) : "-"}
               </span>
             </div>
           </div>

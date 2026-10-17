@@ -3545,14 +3545,18 @@ mod tests {
         let mut rollup = ProviderUsageRollup::default();
         assert!(occupancy_usage(&rollup, None, &SessionContextMeter::default()).is_none());
         assert_eq!(
-            occupancy_usage(&rollup, None, &meter).unwrap().prompt_tokens,
+            occupancy_usage(&rollup, None, &meter)
+                .unwrap()
+                .prompt_tokens,
             999
         );
         rollup = ProviderUsageRollup::from_rows([(3, bill(10)), (8, bill(40))]);
         assert_eq!(rollup.billed_tokens, 52);
         assert_eq!(rollup.request_count, 2);
         assert_eq!(
-            occupancy_usage(&rollup, None, &meter).unwrap().prompt_tokens,
+            occupancy_usage(&rollup, None, &meter)
+                .unwrap()
+                .prompt_tokens,
             40
         );
         assert!(occupancy_usage(&rollup, Some(9), &meter).is_none());

@@ -1004,7 +1004,10 @@ struct GitShowQuery {
     rev: String,
 }
 
-async fn get_git_show(State(state): State<ServeState>, Query(query): Query<GitShowQuery>) -> Response {
+async fn get_git_show(
+    State(state): State<ServeState>,
+    Query(query): Query<GitShowQuery>,
+) -> Response {
     let sandbox = state.workspace.sandbox().clone();
     git_blocking(move || git::show_blob(&sandbox, &query.rev, &query.path)).await
 }

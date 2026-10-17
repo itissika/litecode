@@ -159,7 +159,7 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     let provider = ScriptedProvider::with_text("");
     let prompt_baseline = ProviderPromptBaseline::default();
     // Force auto compact threshold (>80% of 10_000).
-    prompt_baseline.record(8_500, turn.len());
+    prompt_baseline.record(8_500, u64::MAX);
 
     let err = pipeline
         .compact_step(

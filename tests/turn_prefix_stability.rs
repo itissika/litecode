@@ -753,7 +753,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let provider = common::ScriptedProvider::with_text("compact summary");
     let cancel = CancellationToken::new();
     let baseline = ProviderPromptBaseline::default();
-    baseline.record(8_500, turn.len());
+    baseline.record(8_500, u64::MAX);
     let compacted = pipeline
         .compact_step(
             &sessions,

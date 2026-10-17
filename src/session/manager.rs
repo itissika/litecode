@@ -3473,11 +3473,7 @@ mod request_origin_tests {
             .seq;
         let body_before = manager.request_origins(&session_id).unwrap();
         let revision = manager.data().revision_blocking(&session_id).unwrap();
-        let change_id = manager
-            .data()
-            .reader()
-            .latest_change_id_blocking()
-            .unwrap();
+        let change_id = manager.data().reader().latest_change_id_blocking().unwrap();
 
         let usage = |prompt| ProviderUsage {
             prompt_tokens: prompt,
@@ -3503,11 +3499,7 @@ mod request_origin_tests {
             revision
         );
         assert_eq!(
-            manager
-                .data()
-                .reader()
-                .latest_change_id_blocking()
-                .unwrap(),
+            manager.data().reader().latest_change_id_blocking().unwrap(),
             change_id
         );
         assert_eq!(manager.request_origins(&session_id).unwrap(), body_before);

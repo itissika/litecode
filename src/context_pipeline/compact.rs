@@ -114,7 +114,7 @@ impl CompactPolicy {
         }
 
         let items = budget_items(rows);
-        let token_count = budget.token_count_with_baseline(&items, prompt_baseline);
+        let token_count = rows_occupancy_count(budget, sessions, session_id, prompt_baseline, rows);
         budget.log_iteration(step, token_count);
 
         if budget.should_compact(token_count) {
@@ -130,7 +130,7 @@ impl CompactPolicy {
                     prefix_len,
                     "keep-recent: entire persisted prefix within keep window, skipping compact"
                 );
-                budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
+                budget.enforce_token_count(token_count)?;
                 return Ok(false);
             }
 
@@ -156,13 +156,14 @@ impl CompactPolicy {
             // Defensive: if compact was skipped (e.g. cut race),
             // still enforce the hard limit so over-budget tokens cannot slip through.
             if !did_compact {
-                let items = budget_items(rows);
-                budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
+                let count =
+                    rows_occupancy_count(budget, sessions, session_id, prompt_baseline, rows);
+                budget.enforce_token_count(count)?;
             }
             return Ok(did_compact);
         }
 
-        budget.enforce_hard_limit_with_baseline(&items, prompt_baseline)?;
+        budget.enforce_token_count(token_count)?;
         Ok(false)
     }
 
@@ -266,7 +267,8 @@ impl CompactPolicy {
             let mut view = transcript.clone();
             view.extend(tail.iter().map(|row| row.item.clone()));
             drop_stale_media(&mut view);
-            budget.token_count_with_baseline(&view, prompt_baseline)
+            // The rewritten transcript is not a suffix of the billed request.
+            budget.occupancy_token_count(&view, &[], None)
         };
         if final_count > limit {
             *rows = snapshot;
@@ -592,9 +594,28 @@ fn emit_compact_failed(
 /// Items as the model view will carry them, so the budget never counts media
 /// that [`drop_stale_media`] removes from the request.
 fn budget_items(rows: &[WorkingRow]) -> Vec<Item> {
+    budget_items_with_seqs(rows).0
+}
+
+fn budget_items_with_seqs(rows: &[WorkingRow]) -> (Vec<Item>, Vec<Option<u64>>) {
+    let seqs = rows.iter().map(|row| row.log_seq).collect();
     let mut items = project_items(rows);
     drop_stale_media(&mut items);
-    items
+    (items, seqs)
+}
+
+/// Provider prompt for the latest unretired bill, plus a local estimate of rows
+/// written after that request. No bill → the whole working set is local.
+fn rows_occupancy_count(
+    budget: &BudgetPolicy,
+    sessions: &SessionManager,
+    session_id: &str,
+    baseline: &ProviderPromptBaseline,
+    rows: &[WorkingRow],
+) -> usize {
+    let (items, seqs) = budget_items_with_seqs(rows);
+    let bill = super::resolve_occupancy_bill(sessions, session_id, baseline);
+    budget.occupancy_token_count(&items, &seqs, bill)
 }
 
 /// Leading rows that already have a `log_seq`. Pending rows sit after them.
@@ -923,5 +944,137 @@ mod tests {
         }
         assert!(saw_succeeded, "must emit Succeeded after Compact persist");
         assert!(!saw_failed, "must not emit Failed after Compact persist");
+    }
+
+    fn long_seed() -> Vec<Item> {
+        (0..30)
+            .map(|i| user_text(format!("seed-{i}-{}", "word ".repeat(400))))
+            .collect()
+    }
+
+    fn open_seeded() -> (Arc<SessionManager>, String, u64) {
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            String::new(),
+        ));
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("test/test-primary-model"))
+            .expect("open session");
+        sessions
+            .insert_detail_rows(&sid, &long_seed())
+            .expect("seed");
+        let header = sessions
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
+            )
+            .expect("header");
+        (sessions, sid, header)
+    }
+
+    fn bill(prompt: u64) -> crate::session::store::ProviderUsage {
+        crate::session::store::ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        }
+    }
+
+    #[tokio::test]
+    async fn low_provider_bill_does_not_compact_a_hot_local_estimate() {
+        let (sessions, sid, header) = open_seeded();
+        sessions
+            .record_provider_usage(&sid, header, &bill(1_000))
+            .unwrap();
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let budget = BudgetPolicy::new(10_000);
+        let baseline = ProviderPromptBaseline::default();
+        let local = crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows));
+        assert!(
+            local > budget.autocompact_threshold(),
+            "local estimate {local} must clear 80%"
+        );
+        assert_eq!(
+            rows_occupancy_count(&budget, &sessions, &sid, &baseline, &rows),
+            1_000
+        );
+        let provider = CountingProvider::new();
+        let did = CompactPolicy
+            .compact_if_needed(
+                &budget,
+                &sessions,
+                &sid,
+                compact_llm(&provider),
+                "system",
+                1024,
+                &baseline,
+                &mut rows,
+                1,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!did);
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_bill_over_threshold_compacts_then_the_bill_stays_retired() {
+        let (sessions, sid, header) = open_seeded();
+        sessions
+            .record_provider_usage(&sid, header, &bill(9_000))
+            .unwrap();
+        let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let budget = BudgetPolicy::new(10_000);
+        let baseline = ProviderPromptBaseline::default();
+        let provider = CountingProvider::new();
+        let did = CompactPolicy
+            .compact_if_needed(
+                &budget,
+                &sessions,
+                &sid,
+                compact_llm(&provider),
+                "system",
+                1024,
+                &baseline,
+                &mut rows,
+                1,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(did, "a provider prompt over 80% must compact");
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let stale = ProviderPromptBaseline::default();
+        stale.record(9_000, header);
+        let rows = sessions.data().working_set_blocking(&sid).unwrap();
+        let count = rows_occupancy_count(&budget, &sessions, &sid, &stale, &rows);
+        let local = crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows));
+        assert_eq!(
+            count, local,
+            "a compact must retire the old provider prompt"
+        );
+        assert!(count < budget.autocompact_threshold(), "count {count}");
+        let provider = CountingProvider::new();
+        let mut rows = rows;
+        let did = CompactPolicy
+            .compact_if_needed(
+                &budget,
+                &sessions,
+                &sid,
+                compact_llm(&provider),
+                "system",
+                1024,
+                &stale,
+                &mut rows,
+                2,
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!did);
+        assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

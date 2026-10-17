@@ -688,7 +688,7 @@ impl AgentRuntime {
 
     /// Test helper: simulate provider-reported prompt token usage from the prior LLM call.
     pub fn set_last_prompt_tokens(&self, tokens: u64) {
-        self.prompt_usage_baseline.record(tokens, 0);
+        self.prompt_usage_baseline.record(tokens, u64::MAX);
     }
 
     /// Current provider-reported prompt token usage (set from real `response.completed`

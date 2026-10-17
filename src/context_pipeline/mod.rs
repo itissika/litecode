@@ -20,7 +20,10 @@ use crate::session::store::Session;
 use crate::session::working::{WorkingRow, project_items};
 use crate::types::{Item, LitecodeError, Result};
 
-pub use budget::{BudgetPolicy, ProviderPromptBaseline, manual_compact_eligible};
+pub use budget::{
+    BudgetPolicy, OccupancyBill, ProviderPromptBaseline, manual_compact_eligible,
+    occupancy_bill_from, ring_occupancy,
+};
 pub use compact::CompactPolicy;
 pub use env::{Context, build_context};
 pub use system::build_system_prompt;
@@ -340,9 +343,10 @@ impl ContextPipeline {
         }
         crate::session::media::resolve_user_media(&mut llm_items, &self.data_root);
 
+        let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
         let token_count = self
             .budget
-            .token_count_with_baseline(&llm_items, prompt_baseline);
+            .occupancy_token_count(&llm_items, &item_seqs, bill);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.hot.replace(turn_view);
         state.prepared = Some(PreparedView {
@@ -482,6 +486,27 @@ mod turn_window_tests {
             vec![Some(10), None, Some(20)]
         );
     }
+}
+
+/// Live in-memory bill, else the persisted occupancy the ring shows.
+pub(crate) fn resolve_occupancy_bill(
+    sessions: &SessionManager,
+    session_id: &str,
+    baseline: &ProviderPromptBaseline,
+) -> Option<OccupancyBill> {
+    let compacted_seq = sessions
+        .data()
+        .meta_blocking(session_id)
+        .ok()
+        .and_then(|meta| meta.compacted_seq);
+    let rollup = sessions
+        .provider_usage_rollup(session_id)
+        .unwrap_or_default();
+    let meter = sessions
+        .data()
+        .meter_blocking(session_id)
+        .unwrap_or_default();
+    occupancy_bill_from(baseline, compacted_seq, &rollup, &meter)
 }
 
 /// A streamed item already owns a row; the commit that follows must find it.

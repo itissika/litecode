@@ -300,6 +300,15 @@ impl Projection {
             self.sessions.is_compacting_blocking(&self.session_id),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
+        snap.compact_eligible = crate::context_pipeline::manual_compact_eligible(
+            binding.context_window,
+            crate::context_pipeline::ring_occupancy(
+                self.last_turn_token_stats
+                    .as_ref()
+                    .map(|stats| stats.prompt_tokens),
+                self.context_tokens_estimate,
+            ),
+        );
         if self.provider_billed_requests == 0 {
             snap.provider_billed_tokens = None;
             snap.provider_billed_requests = None;
@@ -910,7 +919,9 @@ impl Projection {
                 cum.cache_miss_tokens = cum.cache_miss_tokens.saturating_add(*cache_miss_tokens);
                 let billed = prompt_tokens.saturating_add(*completion_tokens);
                 self.provider_billed_tokens = Some(
-                    self.provider_billed_tokens.unwrap_or(0).saturating_add(billed),
+                    self.provider_billed_tokens
+                        .unwrap_or(0)
+                        .saturating_add(billed),
                 );
                 self.provider_billed_requests = self.provider_billed_requests.saturating_add(1);
             }
@@ -1553,6 +1564,25 @@ mod compact_item_wire_tests {
     }
 
     #[test]
+    fn snapshot_compact_eligible_follows_provider_occupancy() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["hi"]);
+        let mut binding = binding();
+        binding.context_window = 10_000;
+        proj.context_tokens_estimate = 100;
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 3_000,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 3_000,
+        });
+        assert!(proj.snapshot("/p", &binding).compact_eligible);
+
+        proj.last_turn_token_stats.as_mut().unwrap().prompt_tokens = 2_000;
+        proj.context_tokens_estimate = 9_000;
+        assert!(!proj.snapshot("/p", &binding).compact_eligible);
+    }
+
+    #[test]
     fn bump_skips_local_estimate_while_provider_usage_is_showing() {
         let (mut proj, _sid, _sessions) = setup_with_details(&["a"]);
         proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
@@ -1573,10 +1603,16 @@ mod compact_item_wire_tests {
     fn reopen_uses_latest_bill_and_compact_retires_it() {
         let (_proj, sid, sessions) = setup_with_details(&["a"]);
         let first = sessions
-            .append_request_origin(&sid, &serde_json::json!({"schema": 1, "turn": "t", "step": 1}))
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
+            )
             .unwrap();
         let second = sessions
-            .append_request_origin(&sid, &serde_json::json!({"schema": 1, "turn": "t", "step": 2}))
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 2}),
+            )
             .unwrap();
         let bill = |prompt| crate::session::store::ProviderUsage {
             prompt_tokens: prompt,
@@ -1604,10 +1640,7 @@ mod compact_item_wire_tests {
             .unwrap();
         let proj = Projection::new(sid.clone(), sessions.clone(), 256_000);
         assert_eq!(
-            proj.last_turn_token_stats
-                .as_ref()
-                .unwrap()
-                .prompt_tokens,
+            proj.last_turn_token_stats.as_ref().unwrap().prompt_tokens,
             40
         );
         assert_eq!(proj.provider_billed_tokens, Some(160));

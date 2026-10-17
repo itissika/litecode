@@ -132,6 +132,27 @@ export function emptySlice(): TurnSlice {
   return { ...EMPTY_SLICE };
 }
 
+/** Ring occupancy: provider prompt when the last request reported one, else the local estimate. */
+export function occupancyTokens(providerPrompt: number, estimate: number): number {
+  return providerPrompt > 0 ? providerPrompt : estimate;
+}
+
+/** Inclusive 30% gate, same inputs as the occupancy ring. */
+export function manualCompactReady(
+  slice: Pick<
+    TurnSlice,
+    "lastTurnPromptTokens" | "contextTokensEstimate" | "contextWindow"
+  >,
+): boolean {
+  const window = slice.contextWindow;
+  if (window <= 0) return false;
+  const used = occupancyTokens(
+    slice.lastTurnPromptTokens,
+    slice.contextTokensEstimate,
+  );
+  return used * 100 >= window * 30;
+}
+
 function billedFromSnapshot(snap: SessionSnapshot): {
   sessionBilledTokens: number | null;
   billedRequestCount: number;
@@ -644,7 +665,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (
         current.runState !== "idle" ||
         current.compacting ||
-        !current.compactEligible
+        !manualCompactReady(current)
       ) {
         return;
       }

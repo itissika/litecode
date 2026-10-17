@@ -21,7 +21,7 @@ use litecode::session::event::spine_agent_item;
 use litecode::session::manager::SessionManager;
 use litecode::session::surface::project_working_pairs;
 use litecode::session::task_state::TaskReminders;
-use litecode::session::{WorkingRow, fold_surface, project_items};
+use litecode::session::{WorkingRow, fold_surface};
 use litecode::types::{
     FunctionToolCall, Item, LitecodeError, Transcript, item_text_preview, user_text,
 };
@@ -91,7 +91,8 @@ async fn prepare(
     let model = test_model();
     pipeline.stage_working(turn.clone());
     let prompt_baseline = ProviderPromptBaseline::default();
-    prompt_baseline.record(last_prompt_tokens, turn.len());
+    // Covers every persisted row. Pending rows stay a local suffix.
+    prompt_baseline.record(last_prompt_tokens, u64::MAX);
     pipeline
         .compact_step(
             sessions,
@@ -444,8 +445,7 @@ async fn keep_recent_skip_under_hard_limit_returns_ok_without_compact() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let items = project_items(&turn);
-    prompt_baseline.record(8_500, items.len());
+    prompt_baseline.record(8_500, u64::MAX);
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -567,8 +567,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let items = project_items(&turn);
-    prompt_baseline.record(8_500, items.len());
+    prompt_baseline.record(8_500, u64::MAX);
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -661,8 +660,7 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let items = project_items(&turn);
-    prompt_baseline.record(8_500, items.len());
+    prompt_baseline.record(8_500, u64::MAX);
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -756,8 +754,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
-    let items = project_items(&turn);
-    prompt_baseline.record(8_500, items.len());
+    prompt_baseline.record(8_500, u64::MAX);
     pipeline
         .compact_step(
             &sessions,
