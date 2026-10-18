@@ -36,10 +36,14 @@ describe("imageChipPath", () => {
     expect(imageChipPath("file", { id: "assets/why/layout.webp" })).toBe(
       "assets/why/layout.webp",
     );
+    expect(imageChipPath("file", { id: "shots/clip.mp4" })).toBe("shots/clip.mp4");
+    expect(imageChipPath("file", { id: "shots/clip.MOV" })).toBe("shots/clip.MOV");
   });
 
   it("leaves text, symbols, line ranges, and outside paths as capsules", () => {
     expect(imageChipPath("file", { id: "src/a.rs" })).toBeNull();
+    expect(imageChipPath("file", { id: "shots/clip.mkv" })).toBeNull();
+    expect(imageChipPath("file", { id: "voice.mp3" })).toBeNull();
     expect(imageChipPath("node", { id: "assets/icon.png" })).toBeNull();
     expect(imageChipPath("file", { id: "assets/icon.png", symbol: "Icon" })).toBeNull();
     expect(imageChipPath("file", { id: "assets/icon.png", lines: "1-2" })).toBeNull();
@@ -49,7 +53,7 @@ describe("imageChipPath", () => {
 });
 
 describe("ImageChipPreview", () => {
-  it("waits for the pointer to rest, then paints a fixed box", async () => {
+  it("opens around the picture as soon as the pointer enters", async () => {
     vi.mocked(readBytes).mockResolvedValue(
       new Blob([Uint8Array.from([1, 2, 3])], { type: "image/png" }),
     );
@@ -60,36 +64,79 @@ describe("ImageChipPreview", () => {
     );
 
     fireEvent.mouseEnter(anchor());
-    expect(readBytes).not.toHaveBeenCalled();
-    expect(document.querySelector(".image-chip-preview")).toBeNull();
+    const panel = document.querySelector(".image-chip-preview") as HTMLElement | null;
+    expect(panel).toBeTruthy();
+    expect(panel?.style.width).toBe("");
+    expect(panel?.style.height).toBe("");
+    expect(document.querySelector("button")?.textContent).toBe("icon.png");
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(0);
     });
 
     expect(readBytes).toHaveBeenCalledWith("assets/icon.png");
-    const panel = document.querySelector(".image-chip-preview") as HTMLElement | null;
-    expect(panel).toBeTruthy();
-    expect(panel?.style.width).toBe("240px");
-    expect(panel?.style.height).toBe("160px");
     expect(panel?.querySelector("img")?.getAttribute("src")).toBe("blob:preview");
-    expect(document.querySelector("button")?.textContent).toBe("icon.png");
   });
 
-  it("does not fetch when the pointer leaves before the delay", async () => {
-    vi.mocked(readBytes).mockResolvedValue(new Blob([Uint8Array.from([1])]));
+  it("opens the full reference in the same panel, with no wait", () => {
     render(
-      <ImageChipPreview path="assets/icon.png">
+      <ImageChipPreview text={"src/a.rs : impl Store › fn save\nmissing"}>
+        <button type="button">a.rs</button>
+      </ImageChipPreview>,
+    );
+
+    expect(document.querySelector(".image-chip-preview")).toBeNull();
+    fireEvent.mouseEnter(anchor());
+    const panel = document.querySelector(".image-chip-preview") as HTMLElement | null;
+    expect(panel?.classList.contains("is-text")).toBe(true);
+    expect(panel?.textContent).toBe("src/a.rs : impl Store › fn save\nmissing");
+    expect(panel?.style.width).toBe("");
+    expect(panel?.style.height).toBe("");
+    fireEvent.mouseLeave(anchor());
+    expect(document.querySelector(".image-chip-preview")).toBeNull();
+  });
+
+  it("puts the picture and the reference in one panel", async () => {
+    vi.mocked(readBytes).mockResolvedValue(
+      new Blob([Uint8Array.from([1])], { type: "image/png" }),
+    );
+    render(
+      <ImageChipPreview path="assets/icon.png" text="assets/icon.png">
         <button type="button">icon.png</button>
       </ImageChipPreview>,
     );
+
     fireEvent.mouseEnter(anchor());
-    fireEvent.mouseLeave(anchor());
+    const panel = document.querySelector(".image-chip-preview") as HTMLElement | null;
+    expect(panel?.classList.contains("has-caption")).toBe(true);
+    expect(panel?.textContent).toBe("assets/icon.png");
+    expect(panel?.style.width).toBe("");
+    expect(panel?.style.height).toBe("");
+
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(0);
     });
-    expect(readBytes).not.toHaveBeenCalled();
-    expect(document.querySelector(".image-chip-preview")).toBeNull();
+    expect(panel?.querySelector("img")?.getAttribute("src")).toBe("blob:preview");
+  });
+
+  it("plays a whole-file video muted in the same panel", async () => {
+    vi.mocked(readBytes).mockResolvedValue(
+      new Blob([Uint8Array.from([1])], { type: "video/mp4" }),
+    );
+    render(
+      <ImageChipPreview path="shots/clip.mp4">
+        <button type="button">clip.mp4</button>
+      </ImageChipPreview>,
+    );
+    fireEvent.mouseEnter(anchor());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const video = document.querySelector("video");
+    expect(video?.getAttribute("src")).toBe("blob:preview");
+    expect(video?.muted).toBe(true);
+    expect(video?.loop).toBe(true);
+    expect(document.querySelector("img")).toBeNull();
   });
 
   it("says it cannot preview when the bytes fail", async () => {
@@ -101,14 +148,14 @@ describe("ImageChipPreview", () => {
     );
     fireEvent.mouseEnter(anchor());
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(document.querySelector(".image-chip-preview-note")?.textContent).toBe(
       "Can't preview",
     );
   });
 
-  it("closes when the pointer leaves", async () => {
+  it("closes when the pointer leaves", () => {
     vi.mocked(readBytes).mockResolvedValue(
       new Blob([Uint8Array.from([1])], { type: "image/gif" }),
     );
@@ -118,9 +165,6 @@ describe("ImageChipPreview", () => {
       </ImageChipPreview>,
     );
     fireEvent.mouseEnter(anchor());
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(180);
-    });
     expect(document.querySelector(".image-chip-preview")).toBeTruthy();
     fireEvent.mouseLeave(anchor());
     expect(document.querySelector(".image-chip-preview")).toBeNull();

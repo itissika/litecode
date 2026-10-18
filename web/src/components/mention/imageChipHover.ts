@@ -2,10 +2,6 @@ import { readBytes } from "../../api/workspace";
 import { fileKindFromPath } from "../../lib/fileKind";
 import { isWorkspaceFileRef } from "../../lib/knowledge/markers";
 
-export const IMAGE_CHIP_PREVIEW_WIDTH = 240;
-export const IMAGE_CHIP_PREVIEW_HEIGHT = 160;
-export const IMAGE_CHIP_PREVIEW_DELAY_MS = 180;
-
 const previewUrls = new Map<string, string>();
 const previewInflight = new Map<string, Promise<string>>();
 
@@ -35,8 +31,8 @@ export function loadImageChipPreview(path: string): Promise<string> {
 }
 
 /**
- * Path of a whole-file image chip, or null when this citation should stay a
- * text capsule. Symbol and line citations are locations, not the picture.
+ * Path of a whole-file image or video chip, or null when this citation should
+ * stay a text capsule. Symbol and line citations are locations, not the media.
  * Outside-workspace paths have no bytes endpoint.
  */
 export function imageChipPath(
@@ -48,6 +44,7 @@ export function imageChipPath(
   if (!path || !isWorkspaceFileRef(path)) return null;
   if (String(attrs.symbol ?? "").trim()) return null;
   if (attrs.lines != null && String(attrs.lines).trim()) return null;
-  if (fileKindFromPath(path) !== "image") return null;
+  const kind = fileKindFromPath(path);
+  if (kind !== "image" && kind !== "video") return null;
   return path;
 }

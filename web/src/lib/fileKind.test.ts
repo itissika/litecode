@@ -15,6 +15,10 @@ describe("fileKindFromPath", () => {
     expect(fileKindFromPath("doc.pdf")).toBe("pdf");
     expect(fileKindFromPath("a/theme.mp3")).toBe("audio");
     expect(fileKindFromPath("clip.mp4")).toBe("video");
+    expect(fileKindFromPath("clip.m4v")).toBe("video");
+    expect(fileKindFromPath("clip.mov")).toBe("video");
+    expect(fileKindFromPath("voice.opus")).toBe("audio");
+    expect(fileKindFromPath("voice.weba")).toBe("audio");
     expect(fileKindFromPath("app.sqlite")).toBe("sqlite");
     expect(fileKindFromPath("pack.zip")).toBe("binary");
     expect(fileKindFromPath("mod.wasm")).toBe("binary");

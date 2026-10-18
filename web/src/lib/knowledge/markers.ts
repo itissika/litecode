@@ -66,12 +66,12 @@ export function leafSymbol(chain: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
-/** Blue chip: the file name. The full path lives in the chip's title. */
+/** Blue chip: the file name. The full path lives on the chip hover. */
 export function humanFileLabel(path: string): string {
   return fileLabel(path);
 }
 
-/** Cyan chip: `file : leaf`. Only the final chain segment shows; title keeps the chain. */
+/** Cyan chip: `file : leaf`. Only the final chain segment shows; the hover keeps the chain. */
 export function humanSymbolLabel(path: string, symbol: string): string {
   return `${fileLabel(path)} : ${leafSymbol(symbol) || symbol.trim()}`;
 }

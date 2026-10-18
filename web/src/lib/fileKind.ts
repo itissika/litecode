@@ -23,9 +23,20 @@ const IMAGE_EXT = new Set([
   "svg",
 ]);
 
-const AUDIO_EXT = new Set(["mp3", "wav", "ogg", "oga", "m4a", "aac", "flac"]);
+const AUDIO_EXT = new Set([
+  "mp3",
+  "wav",
+  "ogg",
+  "oga",
+  "opus",
+  "m4a",
+  "aac",
+  "flac",
+  "weba",
+]);
 
-const VIDEO_EXT = new Set(["mp4", "webm"]);
+/** Containers Chromium plays. mkv, avi, and mpeg are not in that set. */
+const VIDEO_EXT = new Set(["mp4", "m4v", "mov", "webm"]);
 
 const SQLITE_EXT = new Set(["db", "sqlite", "sqlite3"]);
 

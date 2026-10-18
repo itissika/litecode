@@ -79,7 +79,10 @@ fn preview_mime(path: &str) -> &'static str {
         "m4a" => "audio/mp4",
         "aac" => "audio/aac",
         "flac" => "audio/flac",
-        "mp4" => "video/mp4",
+        "opus" => "audio/ogg",
+        "weba" => "audio/webm",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
         "webm" => "video/webm",
         _ => "application/octet-stream",
     }

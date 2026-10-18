@@ -1155,8 +1155,11 @@ button.knowledge-token-label {
   background: var(--_dk-ix-bg-selected);
 }
 
-/* Hover preview sits outside the capsule. The box size is set inline so it
-   matches the placement math in imageChipPreview. */
+/* Hover preview sits outside the capsule. Not a flex item: a flex minimum
+   size keeps the media at its raw pixels, so max-height never gets a vote.
+   width/height auto plus both maxima is the replaced-element rule — if either
+   edge exceeds its max, both edges scale down together. Smaller media stays
+   at its own size. */
 .image-chip-anchor {
   display: inline-flex;
   max-width: 100%;
@@ -1167,9 +1170,9 @@ button.knowledge-token-label {
   position: fixed;
   z-index: 1100;
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: inline-block;
+  width: auto;
+  height: auto;
   padding: 6px;
   overflow: hidden;
   border: 1px solid var(--_dk-line-visible);
@@ -1179,11 +1182,48 @@ button.knowledge-token-label {
   pointer-events: none;
 }
 
-.image-chip-preview img {
+.image-chip-preview img,
+.image-chip-preview video {
   display: block;
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  width: auto;
+  height: auto;
+  max-width: min(240px, calc(100vw - 28px));
+  max-height: min(160px, calc(100vh - 28px));
+}
+
+/* Text-only hover: the same panel, sized to the reference instead of the picture frame. */
+.image-chip-preview.is-text {
+  display: block;
+  width: max-content;
+  max-width: min(36rem, calc(100vw - 16px));
+  height: auto;
+  color: var(--_dk-text-primary);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Picture plus the full reference. The caption sits under the media and wraps inside the same max width. */
+.image-chip-preview.has-caption {
+  max-width: min(240px, calc(100vw - 16px));
+}
+
+.image-chip-preview.has-caption .image-chip-preview-text {
+  display: block;
+  margin-top: 6px;
+}
+
+.image-chip-preview-text {
+  color: var(--_dk-text-primary);
+  font-family: var(--_dk-font-code);
+  font-size: var(--_dk-text-xs);
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .image-chip-preview-note {

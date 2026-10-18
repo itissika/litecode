@@ -6,9 +6,13 @@ import { useEditorStore } from "../stores/editorStore";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { loadImageChipPreview } from "./mention/imageChipHover";
 
-vi.mock("./mention/imageChipHover", () => ({
-  loadImageChipPreview: vi.fn(async (path: string) => `blob:${path}`),
-}));
+vi.mock("./mention/imageChipHover", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./mention/imageChipHover")>();
+  return {
+    ...actual,
+    loadImageChipPreview: vi.fn(async (path: string) => `blob:${path}`),
+  };
+});
 
 afterEach(() => {
   cleanup();

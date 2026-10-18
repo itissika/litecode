@@ -10,6 +10,8 @@ import {
 } from "../lib/knowledge/refDisplay";
 import { externalPreviewId, useEditorStore } from "../stores/editorStore";
 import { knowledgeRefState, useKnowledgeStore } from "../stores/knowledgeStore";
+import { imageChipPath } from "./mention/imageChipHover";
+import { ImageChipPreview } from "./mention/imageChipPreview";
 
 function stopChipEvent(event: MouseEvent) {
   event.preventDefault();
@@ -31,7 +33,8 @@ function chipClass(model: CitationChipModel, nodrag: boolean): string {
   return names.join(" ");
 }
 
-/** The one citation capsule. A resolvable label follows the reference; remove is only for editors. */
+/** The one citation capsule. A resolvable label follows the reference; remove is only for editors.
+ *  Hover is the image preview layer: it opens immediately, and the full reference is its caption. */
 export function CitationChip({
   citation,
   sourceId,
@@ -78,10 +81,20 @@ export function CitationChip({
   const detail = model.detail && model.detail !== model.label ? model.detail : null;
   // Full reference first, then the verdict text: a shortened label never hides
   // where it points, and an issue keeps its own line.
-  const title = [detail, model.title].filter(Boolean).join("\n");
+  const text = [detail, model.title].filter(Boolean).join("\n");
+  const previewPath =
+    citation.kind === "file"
+      ? imageChipPath("file", {
+          id: citation.path,
+          symbol: citation.symbol,
+          lines:
+            citation.lines ??
+            (citation.line != null && citation.line >= 1 ? String(citation.line) : null),
+        })
+      : null;
 
   return (
-    <span className={chipClass(model, nodrag)} title={title || undefined}>
+    <ImageChipPreview className={chipClass(model, nodrag)} path={previewPath} text={text}>
       {model.resolvable ? (
         <button
           type="button"
@@ -112,6 +125,6 @@ export function CitationChip({
           <X size={10} weight="bold" />
         </button>
       ) : null}
-    </span>
+    </ImageChipPreview>
   );
 }

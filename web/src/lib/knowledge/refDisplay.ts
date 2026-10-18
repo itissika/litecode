@@ -127,7 +127,7 @@ export function refStatusTone(
 
 export interface CitationChipModel {
   label: string;
-  /** Full reference — path, range, or chain — for the chip title. */
+  /** Full reference — path, range, or chain — shown on chip hover. */
   detail?: string;
   resolvable: boolean;
   tone: CitationTone;

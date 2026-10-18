@@ -186,12 +186,17 @@ describe("AgentMarkdown citations", () => {
     expect(file.parentElement?.className).toContain("knowledge-token");
     expect(file.parentElement?.className).toContain("is-file");
     expect(file.parentElement?.className).not.toContain("is-symbol");
-    expect(file.parentElement?.getAttribute("title")).toBe("src/a.rs");
+    expect(file.parentElement?.getAttribute("title")).toBeNull();
+    fireEvent.mouseEnter(file.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs");
+    fireEvent.mouseLeave(file.parentElement!);
     fireEvent.click(file);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     const rangeChip = screen.getByRole("button", { name: "a.rs : 4-9" });
     expect(rangeChip.parentElement?.className).not.toContain("is-symbol");
-    expect(rangeChip.parentElement?.getAttribute("title")).toBe("src/a.rs : 4-9");
+    fireEvent.mouseEnter(rangeChip.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("src/a.rs : 4-9");
+    fireEvent.mouseLeave(rangeChip.parentElement!);
     fireEvent.click(rangeChip);
     expect(openFileAt).toHaveBeenCalledWith("src/a.rs", 4);
 
@@ -251,9 +256,11 @@ describe("AgentMarkdown citations", () => {
     });
     expect(symbolChips).toHaveLength(2);
     expect(symbolChips[0]?.parentElement?.className).toContain("is-symbol");
-    expect(symbolChips[0]?.parentElement?.getAttribute("title")).toBe(
+    fireEvent.mouseEnter(symbolChips[0]!.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe(
       "src/a.rs : impl Store › fn save",
     );
+    fireEvent.mouseLeave(symbolChips[0]!.parentElement!);
     fireEvent.click(symbolChips[0]!);
     expect(openFile).toHaveBeenCalledWith("src/a.rs");
     fireEvent.click(symbolChips[1]!);
@@ -339,12 +346,15 @@ describe("AgentMarkdown citations", () => {
     const missing = await screen.findByText("a.rs");
     const missingChip = missing.closest(".knowledge-token");
     expect(missingChip?.classList.contains("is-missing")).toBe(true);
-    expect(missingChip?.getAttribute("title")).toContain("does not exist");
+    fireEvent.mouseEnter(missingChip!);
+    expect(screen.getByRole("tooltip").textContent).toContain("does not exist");
+    fireEvent.mouseLeave(missingChip!);
     expect(screen.queryByRole("button", { name: "a.rs" })).toBeNull();
 
     const driftChip = screen.getByText("a.rs : fn save").closest(".knowledge-token");
     expect(driftChip?.classList.contains("is-drift")).toBe(true);
-    expect(driftChip?.getAttribute("title")).toBe(
+    fireEvent.mouseEnter(driftChip!);
+    expect(screen.getByRole("tooltip").textContent).toBe(
       'src/a.rs : impl Store › fn save\nSymbol "impl Store › fn save" in "src/a.rs" differs from HEAD.',
     );
   });
