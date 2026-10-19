@@ -233,7 +233,6 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     &user,
                     &flags,
                     &faults,
-                    output_limit,
                     &output,
                 )
             }
@@ -502,7 +501,6 @@ struct Shared {
     user: CancellationToken,
     flags: Arc<Flags>,
     faults: Arc<Faults>,
-    output_limit: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -515,7 +513,6 @@ fn install(
     user: &CancellationToken,
     flags: &Arc<Flags>,
     faults: &Arc<Faults>,
-    output_limit: usize,
     output: &Rc<RefCell<OutputLedger>>,
 ) -> Result<(), Failure> {
     install_libs(ctx)?;
@@ -527,7 +524,6 @@ fn install(
         user: user.clone(),
         flags: Arc::clone(flags),
         faults: Arc::clone(faults),
-        output_limit,
     };
     for namespace in namespaces {
         install_namespace(ctx, namespace, &shared)?;
@@ -617,7 +613,6 @@ fn bind_host<'js>(
     let user = shared.user.clone();
     let flags = Arc::clone(&shared.flags);
     let faults = Arc::clone(&shared.faults);
-    let output_limit = shared.output_limit;
     let label = name.clone();
     Function::new(
         ctx.clone(),
@@ -632,7 +627,6 @@ fn bind_host<'js>(
                 user.clone(),
                 Arc::clone(&flags),
                 Arc::clone(&faults),
-                output_limit,
                 namespace.clone(),
                 name.clone(),
             )
@@ -653,23 +647,11 @@ async fn call_host<'js>(
     user: CancellationToken,
     flags: Arc<Flags>,
     faults: Arc<Faults>,
-    output_limit: usize,
     namespace: String,
     name: String,
 ) -> rquickjs::Result<Value<'js>> {
     invoke(
-        ctx,
-        args.0,
-        host,
-        handle,
-        calls,
-        clock,
-        user,
-        flags,
-        faults,
-        output_limit,
-        namespace,
-        name,
+        ctx, args.0, host, handle, calls, clock, user, flags, faults, namespace, name,
     )
     .await
 }
@@ -685,13 +667,12 @@ async fn invoke<'js>(
     user: CancellationToken,
     flags: Arc<Flags>,
     faults: Arc<Faults>,
-    output_limit: usize,
     namespace: String,
     name: String,
 ) -> rquickjs::Result<Value<'js>> {
     let json_args = match args.as_slice() {
         [] => serde_json::Value::Null,
-        [one] => match boundary::from_js(one, output_limit) {
+        [one] => match boundary::from_js(one) {
             Ok(json) => json,
             Err(BoundaryError::Illegal(message)) => {
                 return Err(boundary::throw_type(&ctx, &message));
@@ -744,7 +725,7 @@ async fn invoke<'js>(
         return Err(boundary::uncatchable(&ctx, "stopped"));
     }
     match received {
-        Ok(Ok(value)) => match boundary::to_js(&ctx, &value) {
+        Ok(Ok(value)) => match boundary::to_js(&ctx, value) {
             Ok(js) => Ok(js),
             Err(message) => Err(boundary::throw_type(&ctx, &message)),
         },
@@ -813,13 +794,13 @@ fn accept_value(
     output: &RefCell<OutputLedger>,
     output_limit: usize,
 ) -> ProgramEnd {
-    match boundary::from_js(value, output_limit) {
+    match boundary::from_js(value) {
         Err(BoundaryError::Illegal(message)) => ProgramEnd::Failure(Failure::illegal(message)),
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
         }
-        Ok(json) => match serde_json::to_vec(&json) {
-            Err(error) => ProgramEnd::Failure(Failure::internal(error.to_string())),
+        Ok(json) => match boundary::json_bytes(&json) {
+            Err(error) => ProgramEnd::Failure(Failure::internal(error)),
             Ok(bytes) => {
                 if !output.borrow_mut().try_value(bytes.len()) {
                     return ProgramEnd::Failure(Failure::output(output_limit));

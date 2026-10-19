@@ -756,6 +756,83 @@ fn nested_arrays(depth: usize) -> Value {
     value
 }
 
+fn array_depth(value: &Value) -> usize {
+    let mut depth = 0;
+    let mut cursor = value;
+    while let Some(items) = cursor.as_array() {
+        let Some(child) = items.first() else {
+            break;
+        };
+        if items.len() != 1 {
+            break;
+        }
+        depth += 1;
+        cursor = child;
+    }
+    depth
+}
+
+fn directory_depth(value: &Value) -> usize {
+    let mut depth = 0;
+    let mut cursor = value;
+    while cursor.get("entries").is_some() {
+        let Some(child) = cursor
+            .get("entries")
+            .and_then(Value::as_array)
+            .and_then(|items| items.first())
+        else {
+            break;
+        };
+        depth += 1;
+        cursor = child;
+    }
+    depth
+}
+
+/// Drop a deep JSON tree on the heap. `serde_json::Value`'s derived drop walks
+/// children with recursion and will overflow a thread stack at tens of thousands
+/// of levels.
+fn dismantle(value: Value) {
+    let mut stack = vec![value];
+    while let Some(value) = stack.pop() {
+        match value {
+            Value::Array(items) => stack.extend(items),
+            Value::Object(map) => stack.extend(map.into_values()),
+            _ => {}
+        }
+    }
+}
+
+fn failure_text(outcome: &Outcome) -> String {
+    match &outcome.failure {
+        Some(failure) => format!("{:?} {}", failure.kind, failure.message),
+        None => "none".into(),
+    }
+}
+
+/// Run `test` in a child process so a stack overflow fails the assertion
+/// instead of killing the test runner. Returns true when this process is the
+/// child and should execute the body.
+fn isolated(test: &str) -> bool {
+    if std::env::var_os("PTC_ISOLATED_CHILD").is_some() {
+        return true;
+    }
+    let output = Command::new(std::env::current_exe().expect("test executable"))
+        .arg(test)
+        .arg("--exact")
+        .env("PTC_ISOLATED_CHILD", "1")
+        .output()
+        .expect("spawn isolated child");
+    assert!(
+        output.status.success(),
+        "child status {:?}\nstdout {}\nstderr {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    false
+}
+
 #[tokio::test]
 async fn success_cancels_inflight_calls() {
     let slow = HostFn::new(|_, _, _| async move {
@@ -883,24 +960,121 @@ async fn moderate_nesting_round_trips() {
 }
 
 #[tokio::test]
-async fn deep_nesting_does_not_crash() {
-    if std::env::var_os("PTC_DEEP_NEST_CHILD").is_some() {
-        deep_nest_child().await;
+async fn object_nesting_past_old_depth_cap() {
+    let built = run(
+        r#"
+        let node = "leaf";
+        for (let i = 0; i < 48; i++) node = { name: "d", entries: [node] };
+        return node;
+        "#,
+        Vec::new(),
+    )
+    .await;
+    assert!(built.failure.is_none(), "{}", failure_text(&built));
+    let value = value_of(&built);
+    assert_eq!(directory_depth(value), 48);
+    assert_eq!(value["name"], json!("d"));
+
+    let host = HostFn::new(|_, _, _| async move {
+        let mut node = json!("leaf");
+        for _ in 0..48 {
+            node = json!({ "name": "d", "entries": [node] });
+        }
+        Ok(node)
+    });
+    let injected = run(
+        "return await tools.tree(null);",
+        tools(vec![("tree", host)]),
+    )
+    .await;
+    assert!(injected.failure.is_none(), "{}", failure_text(&injected));
+    assert_eq!(directory_depth(value_of(&injected)), 48);
+    assert_eq!(injected.calls[0].state, CallState::Completed);
+}
+
+#[tokio::test]
+async fn dense_array_within_output_budget() {
+    let mut wide = limits();
+    wide.output_bytes = 1024 * 1024;
+    let outcome = run_with(
+        r#"
+        const values = [];
+        for (let i = 0; i < 40000; i++) values.push(i);
+        return values;
+        "#,
+        Vec::new(),
+        wide,
+        Duration::from_secs(5),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(outcome.failure.is_none(), "{}", failure_text(&outcome));
+    let values = value_of(&outcome).as_array().expect("dense array");
+    assert_eq!(values.len(), 40_000);
+    assert_eq!(values[0], json!(0));
+    assert_eq!(values[39_999], json!(39_999));
+}
+
+#[tokio::test]
+async fn sparse_huge_array_rejected_before_allocation() {
+    if !isolated(concat!(
+        module_path!(),
+        "::sparse_huge_array_rejected_before_allocation"
+    )) {
         return;
     }
-    let output = Command::new(std::env::current_exe().expect("test executable"))
-        .arg(concat!(module_path!(), "::deep_nesting_does_not_crash"))
-        .arg("--exact")
-        .env("PTC_DEEP_NEST_CHILD", "1")
-        .output()
-        .expect("spawn deep-nest child");
-    assert!(
-        output.status.success(),
-        "child status {:?}\nstdout {}\nstderr {}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let mut wide = limits();
+    wide.memory_bytes = 64 * 1024 * 1024;
+    wide.output_bytes = 1024 * 1024;
+    for source in [
+        "const sparse = []; sparse.length = 1e8; return sparse;",
+        "return new Array(1e8);",
+        "const sparse = []; sparse[0] = 1; sparse[3] = 2; sparse.length = 1e8; return sparse;",
+    ] {
+        let started = Instant::now();
+        let outcome = run_with(
+            source,
+            Vec::new(),
+            wide,
+            Duration::from_secs(2),
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{source} took {:?}",
+            started.elapsed()
+        );
+        let failure = outcome
+            .failure
+            .as_ref()
+            .unwrap_or_else(|| panic!("{source} succeeded"));
+        assert_eq!(
+            failure.kind,
+            FailureKind::IllegalOutput,
+            "{source}: {failure:?}"
+        );
+        assert!(
+            failure.message.contains("sparse array"),
+            "{source}: {}",
+            failure.message
+        );
+        assert!(
+            !failure.message.contains("nesting depth"),
+            "{source}: {}",
+            failure.message
+        );
+    }
+}
+
+#[tokio::test]
+async fn deep_nesting_does_not_crash() {
+    if !isolated(concat!(module_path!(), "::deep_nesting_does_not_crash")) {
+        return;
+    }
+    deep_nest_child().await;
 }
 
 async fn deep_nest_child() {
@@ -913,47 +1087,51 @@ async fn deep_nest_child() {
         Vec::new(),
     )
     .await;
-    let failure = returned.failure.expect("deep return");
-    assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
     assert!(
-        failure.message.contains("nesting depth exceeded"),
-        "{}",
-        failure.message
+        returned.failure.is_none(),
+        "deep return: {}",
+        failure_text(&returned)
     );
+    assert_eq!(
+        array_depth(returned.value.as_ref().expect("deep value")),
+        20_000
+    );
+    dismantle(returned.value.expect("deep value"));
 
-    let calls = Arc::new(AtomicUsize::new(0));
-    let calls_host = Arc::clone(&calls);
-    let host = HostFn::new(move |_, _, _| {
-        calls_host.fetch_add(1, Ordering::SeqCst);
-        async move { Ok(json!(null)) }
+    let host = HostFn::new(|value, _, _| async move {
+        let depth = array_depth(&value);
+        dismantle(value);
+        Ok(json!(depth))
     });
     let argument = run(
         r#"
         let value = 0;
         for (let i = 0; i < 20000; i++) value = [value];
-        try { await tools.f(value); return "called"; }
-        catch (e) { return String(e.message); }
+        return await tools.f(value);
         "#,
         tools(vec![("f", host)]),
     )
     .await;
-    let message = value_of(&argument).as_str().unwrap_or("");
-    assert!(message.contains("nesting depth exceeded"), "{message}");
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    assert!(argument.calls.is_empty());
+    assert_eq!(value_of(&argument), &json!(20_000));
+    assert_eq!(argument.calls.len(), 1);
+    assert_eq!(argument.calls[0].state, CallState::Completed);
 
     let injected = HostFn::new(|_, _, _| async move { Ok(nested_arrays(20_000)) });
     let host_to_js = run(
         r#"
-        try { await tools.deep(null); return "called"; }
-        catch (e) { return String(e.name) + ": " + String(e.message); }
+        const value = await tools.deep(null);
+        let depth = 0;
+        let cursor = value;
+        while (Array.isArray(cursor)) {
+          depth += 1;
+          cursor = cursor[0];
+        }
+        return depth;
         "#,
         tools(vec![("deep", injected)]),
     )
     .await;
-    let message = value_of(&host_to_js).as_str().unwrap_or("");
-    assert!(message.contains("TypeError"), "{message}");
-    assert!(message.contains("nesting depth exceeded"), "{message}");
+    assert_eq!(value_of(&host_to_js), &json!(20_000));
     assert_eq!(host_to_js.calls[0].state, CallState::Completed);
 
     let mut wide = limits();
@@ -977,7 +1155,7 @@ async fn deep_nest_child() {
     let failure = sparse.failure.expect("sparse array");
     assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
     assert!(
-        failure.message.contains("array exceeds output limit"),
+        failure.message.contains("sparse array"),
         "{}",
         failure.message
     );
