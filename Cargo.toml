@@ -56,6 +56,10 @@ reqwest = { version = "0.12", default-features = false, features = [
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Code-mode JavaScript. QuickJS-NG via rquickjs, without rust-alloc (so the
+# memory limit stays active) and without a module loader. quickjs-libc is not
+# compiled, so the `std` and `os` modules are absent.
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std", "futures"] }
 # Agent transcript / stream authority: OpenAI Responses types only (no HTTP client).
 # Do not invent parallel Message/ContentBlock shapes — import from async_openai::types::responses.
 async-openai = { version = "=0.41.1", default-features = false, features = ["response-types"] }
