@@ -23,6 +23,7 @@ mod budget;
 mod calls;
 mod engine;
 mod heap;
+mod json;
 mod output;
 
 use std::fmt;
@@ -36,6 +37,7 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 pub use budget::{BudgetPause, BudgetPauseGuard};
+pub use json::Json;
 
 /// Largest integer that is exact in an IEEE-754 number (`2^53 - 1`).
 pub const MAX_SAFE_INTEGER: i64 = (1_i64 << 53) - 1;
@@ -85,17 +87,19 @@ pub type HostFuture = BoxFuture<'static, Result<serde_json::Value, HostError>>;
 
 /// Async host function. It receives one JSON argument, a cancellation token for
 /// this call, and a handle that pauses the program budget.
+///
+/// The argument is a [`Json`] value. Dropping it, even when the host ignores
+/// it, does not walk a deep tree on the thread stack.
 #[derive(Clone)]
 pub struct HostFn {
-    invoke: std::sync::Arc<
-        dyn Fn(serde_json::Value, CancellationToken, BudgetPause) -> HostFuture + Send + Sync,
-    >,
+    invoke:
+        std::sync::Arc<dyn Fn(Json, CancellationToken, BudgetPause) -> HostFuture + Send + Sync>,
 }
 
 impl HostFn {
     pub fn new<F, Fut>(function: F) -> Self
     where
-        F: Fn(serde_json::Value, CancellationToken, BudgetPause) -> Fut + Send + Sync + 'static,
+        F: Fn(Json, CancellationToken, BudgetPause) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, HostError>> + Send + 'static,
     {
         Self {
@@ -107,7 +111,7 @@ impl HostFn {
 
     pub(crate) fn call(
         &self,
-        args: serde_json::Value,
+        args: Json,
         cancel: CancellationToken,
         pause: BudgetPause,
     ) -> HostFuture {
@@ -273,10 +277,13 @@ impl Failure {
 }
 
 /// Result of one program. `value` is set only when `failure` is absent.
+///
+/// `value` is [`Json`], so dropping, cloning, comparing, or debugging an
+/// outcome does not overflow the stack on a deep tree.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub logs: Vec<LogEntry>,
-    pub value: Option<serde_json::Value>,
+    pub value: Option<Json>,
     pub failure: Option<Failure>,
     pub calls: Vec<CallRecord>,
 }

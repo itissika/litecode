@@ -17,10 +17,13 @@
 //! accepted; `2^53` is rejected. Non-integer JSON numbers are injected as
 //! numbers because `serde_json` already stores them as `f64`.
 
+use std::collections::BTreeMap;
+
 use rquickjs::{Array, Atom, Ctx, Error, Exception, Filter, IntoJs, Object, Type, Value};
 use serde_json::{Map, Number};
 
 use super::MAX_SAFE_INTEGER;
+use super::json::Json;
 
 #[derive(Debug)]
 pub(crate) struct Thrown {
@@ -36,13 +39,13 @@ pub(crate) enum BoundaryError {
 
 enum Frame<'js> {
     Array {
-        items: Vec<serde_json::Value>,
+        items: Vec<Json>,
         index: usize,
         len: usize,
         array: Array<'js>,
     },
     Object {
-        map: Map<String, serde_json::Value>,
+        map: BTreeMap<String, Json>,
         keys: Vec<String>,
         index: usize,
         object: Object<'js>,
@@ -51,10 +54,14 @@ enum Frame<'js> {
 
 enum Walk<'js> {
     Down(Value<'js>),
-    Up(serde_json::Value),
+    Up(Json),
 }
 
-pub(crate) fn from_js(value: &Value<'_>) -> Result<serde_json::Value, BoundaryError> {
+fn ready<'js>(value: serde_json::Value) -> Walk<'js> {
+    Walk::Up(Json::new(value))
+}
+
+pub(crate) fn from_js(value: &Value<'_>) -> Result<Json, BoundaryError> {
     let mut cycles = Vec::new();
     let mut frames: Vec<Frame<'_>> = Vec::new();
     let mut focus = value.clone();
@@ -83,21 +90,21 @@ fn open<'js>(
     frames: &mut Vec<Frame<'js>>,
 ) -> Result<Walk<'js>, BoundaryError> {
     if value.is_null() {
-        return Ok(Walk::Up(serde_json::Value::Null));
+        return Ok(ready(serde_json::Value::Null));
     }
     if value.is_undefined() {
         return Err(illegal("undefined"));
     }
     if value.is_bool() {
-        return Ok(Walk::Up(serde_json::Value::Bool(
+        return Ok(ready(serde_json::Value::Bool(
             value.as_bool().unwrap_or(false),
         )));
     }
     if let Some(number) = value.as_number() {
-        return number_from_f64(number).map(Walk::Up);
+        return number_from_f64(number).map(ready);
     }
     if value.is_string() {
-        return Ok(Walk::Up(serde_json::Value::String(rust_string(value)?)));
+        return Ok(ready(serde_json::Value::String(rust_string(value)?)));
     }
     if value.is_big_int() {
         return Err(illegal("bigint"));
@@ -143,7 +150,7 @@ fn open_array<'js>(
     ensure_dense(value, len)?;
     let len = usize::try_from(len).map_err(|_| illegal("array length"))?;
     if len == 0 {
-        return Ok(Walk::Up(serde_json::Value::Array(Vec::new())));
+        return Ok(ready(serde_json::Value::Array(Vec::new())));
     }
     let mut items = Vec::new();
     items
@@ -182,10 +189,10 @@ fn open_object<'js>(
         keys.push(key.map_err(|error| script_error(value, error))?);
     }
     if keys.is_empty() {
-        return Ok(Walk::Up(serde_json::Value::Object(Map::new())));
+        return Ok(ready(serde_json::Value::Object(Map::new())));
     }
     frames.push(Frame::Object {
-        map: Map::new(),
+        map: BTreeMap::new(),
         keys,
         index: 0,
         object,
@@ -226,7 +233,7 @@ fn next_child<'js>(frames: &[Frame<'js>]) -> Result<Value<'js>, BoundaryError> {
 fn finish<'js>(
     frames: &mut Vec<Frame<'js>>,
     cycles: &mut Vec<usize>,
-    json: serde_json::Value,
+    json: Json,
 ) -> Result<Walk<'js>, BoundaryError> {
     let complete = match frames.last_mut() {
         Some(Frame::Array {
@@ -251,8 +258,8 @@ fn finish<'js>(
     }
     cycles.pop();
     let json = match frames.pop() {
-        Some(Frame::Array { items, .. }) => serde_json::Value::Array(items),
-        Some(Frame::Object { map, .. }) => serde_json::Value::Object(map),
+        Some(Frame::Array { items, .. }) => Json::from_array(items),
+        Some(Frame::Object { map, .. }) => Json::from_object(map),
         None => return Err(illegal("unsupported value")),
     };
     Ok(Walk::Up(json))
@@ -419,37 +426,39 @@ pub(crate) fn describe(value: &Value<'_>) -> Thrown {
 /// The JSON tree is dismantled iteratively and reassembled with `Array::new`
 /// and `Object::new`. `serde_json::to_string` and `JSON.parse` are both
 /// recursive, so neither is used.
-pub(crate) fn to_js<'js>(ctx: &Ctx<'js>, value: serde_json::Value) -> Result<Value<'js>, String> {
+pub(crate) fn to_js<'js>(ctx: &Ctx<'js>, value: Json) -> Result<Value<'js>, String> {
     enum Work {
-        Value(serde_json::Value),
+        Node(Json),
         Array(usize),
         Object(Vec<String>),
     }
 
-    let mut work = vec![Work::Value(value)];
+    let mut work = vec![Work::Node(value)];
     let mut built: Vec<Value<'js>> = Vec::new();
     while let Some(item) = work.pop() {
         match item {
-            Work::Value(serde_json::Value::Array(items)) => {
-                let len = items.len();
-                work.push(Work::Array(len));
-                for child in items.into_iter().rev() {
-                    work.push(Work::Value(child));
+            Work::Node(node) => match node.into_value() {
+                serde_json::Value::Array(items) => {
+                    let len = items.len();
+                    work.push(Work::Array(len));
+                    for child in items.into_iter().rev() {
+                        work.push(Work::Node(Json::new(child)));
+                    }
                 }
-            }
-            Work::Value(serde_json::Value::Object(map)) => {
-                let mut keys = Vec::with_capacity(map.len());
-                let mut children = Vec::with_capacity(map.len());
-                for (key, child) in map {
-                    keys.push(key);
-                    children.push(child);
+                serde_json::Value::Object(map) => {
+                    let mut keys = Vec::with_capacity(map.len());
+                    let mut children = Vec::with_capacity(map.len());
+                    for (key, child) in map {
+                        keys.push(key);
+                        children.push(Json::new(child));
+                    }
+                    work.push(Work::Object(keys));
+                    for child in children.into_iter().rev() {
+                        work.push(Work::Node(child));
+                    }
                 }
-                work.push(Work::Object(keys));
-                for child in children.into_iter().rev() {
-                    work.push(Work::Value(child));
-                }
-            }
-            Work::Value(leaf) => built.push(leaf_to_js(ctx, &leaf)?),
+                leaf => built.push(leaf_to_js(ctx, &leaf)?),
+            },
             Work::Array(len) => {
                 let array = Array::new(ctx.clone()).map_err(|error| inject_error(ctx, error))?;
                 let start = built.len().saturating_sub(len);
@@ -619,6 +628,7 @@ pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Json;
     use super::*;
     use serde_json::json;
 
@@ -649,28 +659,17 @@ mod tests {
 
     #[test]
     fn json_bytes_counts_a_deep_array_on_the_heap() {
-        let mut value = json!(0);
+        let mut value = Json::new(json!(0));
         for _ in 0..5_000 {
-            value = serde_json::Value::Array(vec![value]);
+            value = Json::new(serde_json::Value::Array(vec![value.into_value()]));
         }
-        let bytes = json_bytes(&value).expect("encode");
+        let bytes = json_bytes(value.as_value()).expect("encode");
         assert_eq!(bytes.len(), 5_000 * 2 + 1);
         assert_eq!(bytes.iter().filter(|byte| **byte == b'[').count(), 5_000);
         assert_eq!(bytes.iter().filter(|byte| **byte == b']').count(), 5_000);
         assert_eq!(bytes[5_000], b'0');
         assert!(bytes.starts_with(b"[[["));
         assert!(bytes.ends_with(b"]]]"));
-        dismantle(value);
-    }
-
-    fn dismantle(value: serde_json::Value) {
-        let mut stack = vec![value];
-        while let Some(value) = stack.pop() {
-            match value {
-                serde_json::Value::Array(items) => stack.extend(items),
-                serde_json::Value::Object(map) => stack.extend(map.into_values()),
-                _ => {}
-            }
-        }
+        drop(value);
     }
 }

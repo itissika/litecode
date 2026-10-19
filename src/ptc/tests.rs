@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -70,7 +71,11 @@ fn value_of(outcome: &Outcome) -> &Value {
         outcome.failure.is_none(),
         "expected success, got {outcome:?}"
     );
-    outcome.value.as_ref().expect("success carries a value")
+    outcome
+        .value
+        .as_ref()
+        .expect("success carries a value")
+        .as_value()
 }
 
 fn failure_kind(outcome: &Outcome) -> FailureKind {
@@ -693,7 +698,7 @@ async fn unawaited_calls_are_waited_and_recorded() {
         async move {
             tokio::time::sleep(Duration::from_millis(40)).await;
             flag.store(true, Ordering::SeqCst);
-            Ok(args)
+            Ok(args.into_value())
         }
     });
     let outcome = run(
@@ -787,20 +792,6 @@ fn directory_depth(value: &Value) -> usize {
         cursor = child;
     }
     depth
-}
-
-/// Drop a deep JSON tree on the heap. `serde_json::Value`'s derived drop walks
-/// children with recursion and will overflow a thread stack at tens of thousands
-/// of levels.
-fn dismantle(value: Value) {
-    let mut stack = vec![value];
-    while let Some(value) = stack.pop() {
-        match value {
-            Value::Array(items) => stack.extend(items),
-            Value::Object(map) => stack.extend(map.into_values()),
-            _ => {}
-        }
-    }
 }
 
 fn failure_text(outcome: &Outcome) -> String {
@@ -1077,62 +1068,106 @@ async fn deep_nesting_does_not_crash() {
     deep_nest_child().await;
 }
 
+fn exercise_json(value: &super::Json) {
+    let cloned = value.clone();
+    assert_eq!(value, &cloned);
+    let mut sink = Discard;
+    write!(&mut sink, "{value:?}{cloned:?}").expect("debug");
+}
+
+struct Discard;
+
+impl std::fmt::Write for Discard {
+    fn write_str(&mut self, _text: &str) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+fn deep_array_source() -> &'static str {
+    r#"
+    let value = 0;
+    for (let i = 0; i < 20000; i++) value = [value];
+    return value;
+    "#
+}
+
 async fn deep_nest_child() {
-    let returned = run(
-        r#"
-        let value = 0;
-        for (let i = 0; i < 20000; i++) value = [value];
-        return value;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert!(
-        returned.failure.is_none(),
-        "deep return: {}",
-        failure_text(&returned)
-    );
-    assert_eq!(
-        array_depth(returned.value.as_ref().expect("deep value")),
-        20_000
-    );
-    dismantle(returned.value.expect("deep value"));
+    {
+        let returned = run(deep_array_source(), Vec::new()).await;
+        assert!(
+            returned.failure.is_none(),
+            "deep return: {}",
+            failure_text(&returned)
+        );
+        let value = returned.value.as_ref().expect("deep value");
+        assert_eq!(array_depth(value.as_value()), 20_000);
+        exercise_json(value);
+    }
 
-    let host = HostFn::new(|value, _, _| async move {
-        let depth = array_depth(&value);
-        dismantle(value);
-        Ok(json!(depth))
-    });
-    let argument = run(
-        r#"
-        let value = 0;
-        for (let i = 0; i < 20000; i++) value = [value];
-        return await tools.f(value);
-        "#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&argument), &json!(20_000));
-    assert_eq!(argument.calls.len(), 1);
-    assert_eq!(argument.calls[0].state, CallState::Completed);
+    {
+        let ignored = HostFn::new(|_value, _, _| async move { Ok(json!(1)) });
+        let ignored_argument = run(
+            r#"
+            let value = 0;
+            for (let i = 0; i < 20000; i++) value = [value];
+            return await tools.f(value);
+            "#,
+            tools(vec![("f", ignored)]),
+        )
+        .await;
+        assert_eq!(value_of(&ignored_argument), &json!(1));
+        assert_eq!(ignored_argument.calls[0].state, CallState::Completed);
+    }
 
-    let injected = HostFn::new(|_, _, _| async move { Ok(nested_arrays(20_000)) });
-    let host_to_js = run(
-        r#"
-        const value = await tools.deep(null);
-        let depth = 0;
-        let cursor = value;
-        while (Array.isArray(cursor)) {
-          depth += 1;
-          cursor = cursor[0];
-        }
-        return depth;
-        "#,
-        tools(vec![("deep", injected)]),
-    )
-    .await;
-    assert_eq!(value_of(&host_to_js), &json!(20_000));
-    assert_eq!(host_to_js.calls[0].state, CallState::Completed);
+    {
+        let injected = HostFn::new(|_, _, _| async move { Ok(nested_arrays(20_000)) });
+        let host_to_js = run(
+            "return await tools.deep(null);",
+            tools(vec![("deep", injected)]),
+        )
+        .await;
+        assert!(
+            host_to_js.failure.is_none(),
+            "deep host result: {}",
+            failure_text(&host_to_js)
+        );
+        let value = host_to_js.value.as_ref().expect("injected value");
+        assert_eq!(array_depth(value.as_value()), 20_000);
+        exercise_json(value);
+    }
+
+    {
+        let mut tight = limits();
+        tight.output_bytes = 100;
+        let over_budget = run_with(
+            deep_array_source(),
+            Vec::new(),
+            tight,
+            Duration::from_secs(2),
+            Duration::from_millis(50),
+            CancellationToken::new(),
+        )
+        .await;
+        let failure = over_budget.failure.as_ref().expect("output budget");
+        assert_eq!(failure.kind, FailureKind::OutputLimit, "{failure:?}");
+        assert!(over_budget.value.is_none());
+    }
+
+    {
+        let illegal = run(
+            r#"
+            let value = 0;
+            for (let i = 0; i < 20000; i++) value = [value];
+            return [value, undefined];
+            "#,
+            Vec::new(),
+        )
+        .await;
+        let failure = illegal.failure.as_ref().expect("illegal sibling");
+        assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
+        assert!(failure.message.contains("undefined"), "{}", failure.message);
+        assert!(illegal.value.is_none());
+    }
 
     let mut wide = limits();
     wide.memory_bytes = 64 * 1024 * 1024;
@@ -1152,7 +1187,7 @@ async fn deep_nest_child() {
         "sparse array took {:?}",
         started.elapsed()
     );
-    let failure = sparse.failure.expect("sparse array");
+    let failure = sparse.failure.as_ref().expect("sparse array");
     assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
     assert!(
         failure.message.contains("sparse array"),

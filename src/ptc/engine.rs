@@ -30,7 +30,7 @@ use super::budget::BudgetClock;
 use super::calls::Ledger;
 use super::heap::LimitAlloc;
 use super::output::OutputLedger;
-use super::{ExecuteRequest, Failure, FailureKind, HostFn, LogLevel, Outcome, ResourceKind};
+use super::{ExecuteRequest, Failure, FailureKind, HostFn, Json, LogLevel, Outcome, ResourceKind};
 
 /// Jobs executed while draining the queue after the program settles.
 ///
@@ -110,7 +110,7 @@ enum Stop {
 }
 
 enum ProgramEnd {
-    Success(serde_json::Value),
+    Success(Json),
     Failure(Failure),
 }
 
@@ -671,7 +671,7 @@ async fn invoke<'js>(
     name: String,
 ) -> rquickjs::Result<Value<'js>> {
     let json_args = match args.as_slice() {
-        [] => serde_json::Value::Null,
+        [] => Json::new(serde_json::Value::Null),
         [one] => match boundary::from_js(one) {
             Ok(json) => json,
             Err(BoundaryError::Illegal(message)) => {
@@ -703,7 +703,7 @@ async fn invoke<'js>(
             .catch_unwind()
             .await;
         let mapped = match result {
-            Ok(Ok(value)) => Ok(value),
+            Ok(Ok(value)) => Ok(Json::new(value)),
             Ok(Err(error)) => Err(error.message),
             Err(_) => Err("host function panicked".into()),
         };
@@ -799,7 +799,7 @@ fn accept_value(
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
         }
-        Ok(json) => match boundary::json_bytes(&json) {
+        Ok(json) => match boundary::json_bytes(json.as_value()) {
             Err(error) => ProgramEnd::Failure(Failure::internal(error)),
             Ok(bytes) => {
                 if !output.borrow_mut().try_value(bytes.len()) {
