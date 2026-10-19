@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -59,6 +60,31 @@ pub trait Tool: Send + Sync {
     }
 
     fn schema(&self) -> Value;
+
+    /// Historical `file_path` is still an invocation of this tool. The schema
+    /// the model sees only advertises `path`.
+    fn accepts_historical_file_path(&self) -> bool {
+        false
+    }
+
+    /// Copy a historical `file_path` onto `path` (and the reverse) before
+    /// validation, permission, and execution.
+    fn prepare_input(&self, input: &mut Value) {
+        if self.accepts_historical_file_path() {
+            crate::tools::file_path::alias_code_path(input);
+        }
+    }
+
+    /// Arguments checked against [`schema`](Tool::schema). Tools that accept
+    /// historical `file_path` hide that key here so the code-mode schema stays
+    /// `path` only.
+    fn schema_arguments<'a>(&self, input: &'a Value) -> Cow<'a, Value> {
+        if self.accepts_historical_file_path() {
+            Cow::Owned(crate::tools::file_path::without_legacy_file_path(input))
+        } else {
+            Cow::Borrowed(input)
+        }
+    }
 
     /// JSON Schema for [`ToolCallResult::data`]. Direct-call tools may omit it;
     /// tools projected into a code bundle must provide it so the generated

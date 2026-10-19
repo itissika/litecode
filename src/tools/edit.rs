@@ -61,6 +61,12 @@ impl EditTool {
                 "editing",
             );
         }
+        if result.error.is_none() {
+            result = result.with_data(serde_json::json!({
+                "path": path_display,
+                "applied": wrote,
+            }));
+        }
         result
     }
 
@@ -92,12 +98,20 @@ impl Tool for EditTool {
         "edit"
     }
 
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
+    }
+
+    fn accepts_historical_file_path(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "file_path": {
+                "path": {
                     "type": "string",
                     "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
                 },
@@ -129,8 +143,21 @@ impl Tool for EditTool {
                     }
                 }
             },
-            "required": ["file_path", "edits"]
+            "required": ["path", "edits"]
         })
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "description": "File that was edited.",
+            "properties": {
+                "path": { "type": "string", "description": "Path that was edited." },
+                "applied": { "type": "boolean", "description": "Whether the file contents changed." }
+            },
+            "required": ["path", "applied"]
+        }))
     }
 
     fn execute(
@@ -142,7 +169,7 @@ impl Tool for EditTool {
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
-        crate::tool::require_nonempty_string(input, "file_path")?;
+        crate::tools::file_path::require_code_path(input)?;
         parse_edits(input)?;
         Ok(())
     }
@@ -166,8 +193,8 @@ impl Tool for EditTool {
         path_mode: crate::workspace::ToolPathMode,
         workspace_root: &std::path::Path,
     ) -> Vec<ResourceKey> {
-        match input["file_path"].as_str() {
-            Some(path) if !path.is_empty() => {
+        match crate::tools::file_path::code_path(input) {
+            Some(path) => {
                 let key = crate::workspace::resolve_agent(workspace_root, path, path_mode)
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|_| path.to_string());
@@ -198,7 +225,7 @@ impl EditTool {
         input: Value,
         execution: ToolExecutionContext,
     ) -> ToolCallResult {
-        let raw_path = match crate::tool::require_nonempty_string(&input, "file_path") {
+        let raw_path = match crate::tools::file_path::require_code_path(&input) {
             Ok(s) => s.to_string(),
             Err(e) => return ToolCallResult::error(e),
         };

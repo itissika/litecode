@@ -912,21 +912,22 @@ impl SessionManager {
     /// One settled `read` / `write` / `edit` of the active plan file.
     ///
     /// Direct and nested calls both reach this from the shared tool entry.
-    /// `read` names the file `path`; `write` and `edit` name it `file_path`.
+    /// `read` names the file `path`. `write` and `edit` name it `path` now, and
+    /// still accept the historical `file_path` recorded in old transcripts.
     pub fn note_plan_tool_touch(&self, session_id: &str, call: &crate::types::FunctionToolCall) {
-        let key = match call.name.as_str() {
-            "read" => "path",
-            "write" | "edit" => "file_path",
-            _ => return,
-        };
         let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
             return;
         };
-        let Some(raw) = args.get(key).and_then(|value| value.as_str()) else {
+        let raw = match call.name.as_str() {
+            "read" => args.get("path"),
+            "write" | "edit" => args.get("path").or_else(|| args.get("file_path")),
+            _ => return,
+        };
+        let Some(raw) = raw.and_then(|value| value.as_str()) else {
             return;
         };
-        let Ok(Some(plan)) = self
-            .with_entry_task_state(session_id, |state| Ok(state.active_plan.clone()))
+        let Ok(Some(plan)) =
+            self.with_entry_task_state(session_id, |state| Ok(state.active_plan.clone()))
         else {
             return;
         };
@@ -5182,12 +5183,12 @@ mod plan_settle_tests {
         mgr.note_plan_tool_touch(&sid, &tool_call("read", r#"{"path":"notes.md"}"#));
         assert_eq!(seen_revision(&mgr, &sid), None);
 
-        mgr.note_plan_tool_touch(
-            &sid,
-            &tool_call("read", &format!(r#"{{"path":"{plan}"}}"#)),
-        );
+        mgr.note_plan_tool_touch(&sid, &tool_call("read", &format!(r#"{{"path":"{plan}"}}"#)));
         let rev1 = seen_revision(&mgr, &sid).expect("read path records the plan");
-        assert_eq!(rev1, crate::session::task_state::plan_content_revision(b"# v1"));
+        assert_eq!(
+            rev1,
+            crate::session::task_state::plan_content_revision(b"# v1")
+        );
 
         write_plan_file(&mgr, "calm-river", "# v2");
         mgr.note_plan_tool_touch(
@@ -5195,8 +5196,23 @@ mod plan_settle_tests {
             &tool_call("edit", &format!(r#"{{"file_path":"./{plan}"}}"#)),
         );
         let rev2 = seen_revision(&mgr, &sid).expect("edit file_path records the plan");
-        assert_eq!(rev2, crate::session::task_state::plan_content_revision(b"# v2"));
+        assert_eq!(
+            rev2,
+            crate::session::task_state::plan_content_revision(b"# v2")
+        );
         assert_ne!(rev1, rev2);
+
+        write_plan_file(&mgr, "calm-river", "# v3");
+        mgr.note_plan_tool_touch(
+            &sid,
+            &tool_call("write", &format!(r#"{{"path":"{plan}"}}"#)),
+        );
+        let rev3 = seen_revision(&mgr, &sid).expect("write path records the plan");
+        assert_eq!(
+            rev3,
+            crate::session::task_state::plan_content_revision(b"# v3")
+        );
+        assert_ne!(rev2, rev3);
     }
 }
 

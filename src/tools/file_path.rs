@@ -5,6 +5,8 @@
 
 use std::path::Path;
 
+use serde_json::Value;
+
 use crate::permission::sensitive::is_sensitive_system_path;
 use crate::types::ToolCallResult;
 use crate::workspace::is_resolved_outside_workspace;
@@ -69,4 +71,56 @@ pub fn path_risk_warning_text(
     } else {
         Some(parts.join("; "))
     }
+}
+
+/// Code-mode file argument. `path` is the current name; `file_path` is the
+/// historical one still stored in old transcripts and direct unit-test calls.
+pub fn code_path(input: &Value) -> Option<&str> {
+    if let Some(path) = input.get("path").and_then(Value::as_str)
+        && !path.is_empty()
+    {
+        return Some(path);
+    }
+    input
+        .get("file_path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.is_empty())
+}
+
+pub fn require_code_path(input: &Value) -> Result<&str, String> {
+    let path_empty = input
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(str::is_empty);
+    let legacy_empty = input.get("path").is_none()
+        && input
+            .get("file_path")
+            .and_then(Value::as_str)
+            .is_some_and(str::is_empty);
+    if path_empty || legacy_empty {
+        return Err("parameter 'path' must be a non-empty string".to_string());
+    }
+    code_path(input).ok_or_else(|| "parameter 'path' is required".to_string())
+}
+
+/// Make `path` and `file_path` name the same file so schema uses `path` while
+/// the sensitive-path floor and stored `file_path` rules still see their key.
+pub fn alias_code_path(input: &mut Value) {
+    let Some(obj) = input.as_object_mut() else {
+        return;
+    };
+    if let Some(path) = obj.get("path").cloned() {
+        obj.insert("file_path".to_string(), path);
+    } else if let Some(legacy) = obj.get("file_path").cloned() {
+        obj.insert("path".to_string(), legacy);
+    }
+}
+
+/// Schema view of a code-mode file call. The model-facing parameter is `path`.
+pub fn without_legacy_file_path(input: &Value) -> Value {
+    let mut view = input.clone();
+    if let Some(obj) = view.as_object_mut() {
+        obj.remove("file_path");
+    }
+    view
 }

@@ -189,16 +189,16 @@ fn names(tools: &[Arc<dyn Tool>]) -> Vec<&str> {
 }
 
 #[test]
-fn builtin_code_tools_pass_admission_and_edit_write_stay_direct() {
+fn builtin_code_tools_pass_admission_and_edit_write_join_the_code_surface() {
     for tool in [
         Arc::new(ReadTool::default()) as Arc<dyn Tool>,
         Arc::new(GlobTool),
         Arc::new(GrepTool),
+        Arc::new(EditTool::new()),
+        Arc::new(WriteTool::new()),
     ] {
         assert_eq!(tool.surface(), ToolSurface::Code, "{}", tool.name());
     }
-    assert_eq!(EditTool::new().surface(), ToolSurface::Direct);
-    assert_eq!(WriteTool::new().surface(), ToolSurface::Direct);
 
     let projected = project_tools(vec![
         Arc::new(ReadTool::default()),
@@ -208,10 +208,20 @@ fn builtin_code_tools_pass_admission_and_edit_write_stay_direct() {
         Arc::new(WriteTool::new()),
     ]);
     assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-    assert_eq!(names(&projected.code_tools), ["glob", "grep", "read"]);
-    assert_eq!(projected.whitelist, vec!["glob", "grep", "read"]);
-    assert_eq!(names(&projected.direct), ["edit", "write"]);
+    assert_eq!(
+        names(&projected.code_tools),
+        ["edit", "glob", "grep", "read", "write"]
+    );
+    assert_eq!(
+        projected.whitelist,
+        vec!["edit", "glob", "grep", "read", "write"]
+    );
+    assert!(projected.direct.is_empty());
     assert!(projected.sdk.contains("[\"read\"]"));
+    assert!(projected.sdk.contains("[\"edit\"]"));
+    assert!(projected.sdk.contains("[\"write\"]"));
+    assert!(projected.sdk.contains("path:"));
+    assert!(!projected.sdk.contains("file_path"));
     assert!(projected.sdk.contains("type Integer = number;"));
     assert!(!projected.sdk.contains(": unknown"));
 }
@@ -234,11 +244,12 @@ fn fake_code_tool_joins_the_same_projection_as_builtins() {
         Arc::new(EditTool::new()),
     ]);
     assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-    assert_eq!(projected.whitelist, vec!["marker", "read"]);
-    assert!(names(&projected.direct).contains(&"edit"));
+    assert_eq!(projected.whitelist, vec!["edit", "marker", "read"]);
+    assert!(!names(&projected.direct).contains(&"edit"));
     assert!(!names(&projected.direct).contains(&"marker"));
     assert!(projected.sdk.contains("[\"marker\"]"));
     assert!(projected.sdk.contains("[\"read\"]"));
+    assert!(projected.sdk.contains("[\"edit\"]"));
 }
 
 #[test]

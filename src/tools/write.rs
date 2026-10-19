@@ -25,15 +25,17 @@ impl WriteTool {
     async fn finish_ok(
         &self,
         path: &str,
-        msg: String,
+        created: bool,
+        bytes: usize,
         execution: &ToolExecutionContext,
         raw_path: &str,
         resolved: &Path,
     ) -> ToolCallResult {
+        let status = if created { "Created" } else { "Updated" };
         let result = lsp_feedback::maybe_append_local_lsp_errors(
             self.ide.as_ref().map(|ide| ide.engines.as_ref()),
             path,
-            ToolCallResult::ok(msg),
+            ToolCallResult::ok(format!("{status}: {path} ({bytes} bytes)")),
         )
         .await;
         crate::tools::file_path::with_path_risk_warning(
@@ -43,6 +45,11 @@ impl WriteTool {
             resolved,
             "writing",
         )
+        .with_data(serde_json::json!({
+            "path": path,
+            "bytes": bytes,
+            "created": created,
+        }))
     }
 
     fn test_execution_context(&self) -> ToolExecutionContext {
@@ -73,11 +80,20 @@ impl Tool for WriteTool {
         "write"
     }
 
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
+    }
+
+    fn accepts_historical_file_path(&self) -> bool {
+        true
+    }
+
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "file_path": {
+                "path": {
                     "type": "string",
                     "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
                 },
@@ -90,8 +106,22 @@ impl Tool for WriteTool {
                     "description": "If true, refuse to overwrite an existing file (default: false)"
                 }
             },
-            "required": ["file_path", "content"]
+            "required": ["path", "content"]
         })
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "description": "File that was written.",
+            "properties": {
+                "path": { "type": "string", "description": "Path that was written." },
+                "bytes": { "type": "integer", "description": "Bytes written." },
+                "created": { "type": "boolean", "description": "True when the file did not exist before." }
+            },
+            "required": ["path", "bytes", "created"]
+        }))
     }
 
     fn execute(
@@ -117,7 +147,7 @@ impl Tool for WriteTool {
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
-        crate::tool::require_nonempty_string(input, "file_path")?;
+        crate::tools::file_path::require_code_path(input)?;
         crate::tool::require_string(input, "content")?;
         Ok(())
     }
@@ -128,12 +158,9 @@ impl Tool for WriteTool {
         path_mode: crate::workspace::ToolPathMode,
         workspace_root: &std::path::Path,
     ) -> bool {
-        let Some(path) = input["file_path"].as_str() else {
+        let Some(path) = crate::tools::file_path::code_path(input) else {
             return false;
         };
-        if path.is_empty() {
-            return false;
-        }
         crate::workspace::resolve_agent(workspace_root, path, path_mode)
             .map(|resolved| resolved.exists())
             .unwrap_or(false)
@@ -145,14 +172,14 @@ impl Tool for WriteTool {
         path_mode: crate::workspace::ToolPathMode,
         workspace_root: &std::path::Path,
     ) -> Vec<ResourceKey> {
-        match input["file_path"].as_str() {
-            Some(path) if !path.is_empty() => {
+        match crate::tools::file_path::code_path(input) {
+            Some(path) => {
                 let key = crate::workspace::resolve_agent(workspace_root, path, path_mode)
                     .map(|path| path.to_string_lossy().into_owned())
                     .unwrap_or_else(|_| path.to_string());
                 vec![ResourceKey::File(key)]
             }
-            _ => vec![],
+            None => vec![],
         }
     }
 }
@@ -163,7 +190,7 @@ impl WriteTool {
         input: Value,
         execution: ToolExecutionContext,
     ) -> ToolCallResult {
-        let raw_path = match crate::tool::require_nonempty_string(&input, "file_path") {
+        let raw_path = match crate::tools::file_path::require_code_path(&input) {
             Ok(s) => s,
             Err(e) => return ToolCallResult::error(e),
         };
@@ -201,12 +228,8 @@ impl WriteTool {
                     ide.apply_document_if_ready(&resolved, content).await;
                     self.finish_ok(
                         &resolved.to_string_lossy(),
-                        format!(
-                            "{}: {} ({} bytes)",
-                            if existed { "Updated" } else { "Created" },
-                            resolved.display(),
-                            content.len()
-                        ),
+                        !existed,
+                        content.len(),
                         &execution,
                         raw_path,
                         &resolved,
@@ -258,15 +281,8 @@ impl WriteTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         }
 
-        let status = if is_new { "Created" } else { "Updated" };
-        self.finish_ok(
-            &path,
-            format!("{}: {} ({} bytes)", status, path, content.len()),
-            execution,
-            raw_path,
-            file_path,
-        )
-        .await
+        self.finish_ok(&path, is_new, content.len(), execution, raw_path, file_path)
+            .await
     }
 }
 

@@ -358,6 +358,8 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(ReadTool::default()),
         Arc::new(GlobTool),
         Arc::new(GrepTool),
+        Arc::new(EditTool::new()),
+        Arc::new(WriteTool::new()),
     ]
 }
 
@@ -685,6 +687,8 @@ mod tests {
             Arc::new(GlobTool),
             Arc::new(GrepTool),
             Arc::new(ReadTool::default()),
+            Arc::new(crate::tools::edit::EditTool::new()),
+            Arc::new(crate::tools::write::WriteTool::new()),
         ];
 
         let tools = assemble_projected_tools(direct, Some(host));
@@ -709,7 +713,14 @@ mod tests {
         assert!(!description.contains("timeout_ms") || description.contains("ToolCallOptions"));
         let bindings = tools[0].code_bindings().expect("whitelist");
         let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
-        assert_eq!(names, ["glob", "grep", "read"]);
+        assert_eq!(names, ["edit", "glob", "grep", "read", "write"]);
+        assert!(description.contains("[\"edit\"]"));
+        assert!(description.contains("[\"write\"]"));
+        assert!(description.contains("path:"));
+        assert!(
+            !description.contains("file_path"),
+            "code surface advertises path, not historical file_path"
+        );
     }
 
     #[test]
@@ -742,6 +753,8 @@ mod tests {
         assert!(!child_names.contains(&"read"));
         assert!(!child_names.contains(&"glob"));
         assert!(!child_names.contains(&"grep"));
+        assert!(!child_names.contains(&"edit"));
+        assert!(!child_names.contains(&"write"));
         assert!(child_names.contains(&"run_code"));
         assert!(child_names.contains(&"bash"));
         let child_sdk = child
@@ -772,6 +785,8 @@ mod tests {
             .description(&dummy_ctx());
         assert!(narrow_sdk.contains("[\"read\"]"));
         assert!(narrow_sdk.contains("[\"glob\"]"));
+        assert!(narrow_sdk.contains("[\"edit\"]"));
+        assert!(narrow_sdk.contains("[\"write\"]"));
         assert!(!narrow_sdk.contains("[\"grep\"]"));
         assert_ne!(child_sdk, narrow_sdk);
         let whitelist = narrow_tools
@@ -781,7 +796,7 @@ mod tests {
             .code_bindings()
             .unwrap();
         let names: Vec<&str> = whitelist.iter().map(String::as_str).collect();
-        assert_eq!(names, ["glob", "read"]);
+        assert_eq!(names, ["edit", "glob", "read", "write"]);
     }
 
     struct Impostor;

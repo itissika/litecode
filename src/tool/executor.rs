@@ -422,7 +422,7 @@ pub async fn execute_tool_call(
         tracing::debug!(%parent_call_id, tool = %tu_name, "nested code tool call");
     }
 
-    let tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
+    let mut tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
         Ok(value) => value,
         Err(detail) => {
             return wire_result(ToolCallResult::error_with_kind(
@@ -432,8 +432,10 @@ pub async fn execute_tool_call(
             ));
         }
     };
+    tool.prepare_input(&mut tool_use_input);
+    let schema_input = tool.schema_arguments(&tool_use_input);
 
-    if let Err(msg) = check_tool_input(tool.as_ref(), &tool_use_input) {
+    if let Err(msg) = check_tool_input(tool.as_ref(), &schema_input) {
         return wire_result(ToolCallResult::error_with_kind(
             ToolErrorKind::InvalidInput,
             invalid_input_for(&tu_name, msg),

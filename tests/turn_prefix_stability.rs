@@ -262,7 +262,11 @@ async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
     let captured_handle = provider.clone();
     let mut runtime = build_runtime_with_provider(
         dir.path(),
-        test_agent(vec!["read".into(), "todo".into()], "readonly", 10),
+        test_agent(
+            vec!["read".into(), "edit".into(), "write".into(), "todo".into()],
+            "readonly",
+            10,
+        ),
         Arc::new(provider),
     );
 
@@ -284,15 +288,30 @@ async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
         .collect();
     assert!(names.contains(&"run_code"), "{names:?}");
     assert!(!names.contains(&"read"), "{names:?}");
+    assert!(!names.contains(&"edit"), "{names:?}");
+    assert!(!names.contains(&"write"), "{names:?}");
     assert!(names.contains(&"todo"), "{names:?}");
-    let sdk = captured[0]
-        .tools
+    let descriptions: Vec<&str> = captured
         .iter()
-        .find(|tool| tool["name"] == "run_code")
-        .unwrap()["description"]
-        .as_str()
-        .unwrap();
+        .map(|request| {
+            request
+                .tools
+                .iter()
+                .find(|tool| tool["name"] == "run_code")
+                .unwrap()["description"]
+                .as_str()
+                .unwrap()
+        })
+        .collect();
+    let sdk = descriptions[0];
     assert!(sdk.contains("declare const tools"), "{sdk}");
+    assert!(sdk.contains("[\"edit\"]"), "{sdk}");
+    assert!(sdk.contains("[\"write\"]"), "{sdk}");
+    assert!(sdk.contains("[\"read\"]"), "{sdk}");
+    assert!(sdk.contains("path:"), "{sdk}");
+    assert!(!sdk.contains("file_path"), "{sdk}");
+    assert_eq!(descriptions[0], descriptions[1]);
+    assert_eq!(descriptions[1], descriptions[2]);
     assert!(!sdk.contains(&dir.path().display().to_string()), "{sdk}");
 }
 

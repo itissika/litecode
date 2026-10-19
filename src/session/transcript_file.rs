@@ -691,6 +691,62 @@ mod tests {
         assert_eq!(file.tool_name(2), Some("bash"), "a result names its call");
     }
 
+    #[test]
+    fn historical_file_path_calls_load_and_a_nested_write_stays_inside_run_code() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::types::Item;
+
+        let ledger = "1. write path=notes.txt ok\n2. edit path=notes.txt ok";
+        let (data, sid) = seeded(&[
+            Item::FunctionCall(FunctionToolCall {
+                arguments: r#"{"file_path":"notes.txt","content":"old"}"#.into(),
+                call_id: "call_edit".into(),
+                namespace: None,
+                name: "edit".into(),
+                id: None,
+                status: None,
+            }),
+            Item::FunctionCall(FunctionToolCall {
+                arguments: r#"{"code":"tools.write({path:'notes.txt',content:'new'})"}"#.into(),
+                call_id: "call_run".into(),
+                namespace: None,
+                name: "run_code".into(),
+                id: None,
+                status: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "call_run".into(),
+                output: FunctionCallOutput::Text(ledger.into()),
+                id: None,
+                status: None,
+            }),
+        ]);
+        let reader = data.reader();
+        let rows = reader.searchable_rows_blocking(Some(&sid)).unwrap();
+        let file = load_transcript_file(&sid, &rows, reader.data_root()).unwrap();
+        let rendered = file.lines.join("\n");
+        assert!(
+            rendered.contains("file_path"),
+            "old edit card must still load: {rendered}"
+        );
+        assert!(
+            rendered.contains("notes.txt"),
+            "nested write path stays visible in the outer output: {rendered}"
+        );
+        assert_eq!(file.tool_name(0), Some("edit"));
+        assert_eq!(file.tool_name(1), Some("run_code"));
+        assert_eq!(file.tool_name(2), Some("run_code"));
+        assert!(
+            !file.session_read_calls.contains("call_run"),
+            "a nested write is not a session read and is not its own item"
+        );
+        assert!(!ledger_reads_sessions(
+            "1. write path=.litecode/sessions/abc.md ok"
+        ));
+    }
+
     /// The read-time echo check: a hit served from a stale index must not make a
     /// copy searchable again. It is answered from the same parse the renderer did.
     #[test]
