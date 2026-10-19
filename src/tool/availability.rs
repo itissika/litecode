@@ -9,13 +9,17 @@ use crate::config::resolved::ResolvedConfig;
 use serde::Serialize;
 
 use crate::config::schema::{
-    AvailableKind, AvailableTool, PermissionSurface, ToolOrigin, ToolReadiness,
+    AvailableKind, AvailableTool, CallSurface, PermissionSurface, ToolOrigin, ToolReadiness,
 };
 use crate::engines::WorkspaceEngines;
 use crate::optional::EngineManager;
 use crate::permission::permission_surface;
 use crate::tool::project::{RejectedTool, project_tools};
-use crate::tool::trait_::Tool;
+use crate::tool::trait_::{Tool, ToolSurface};
+
+/// Settings switches never list the code transport. Same name as
+/// `crate::tools::code::CODE_TOOL_NAME`.
+const CODE_TRANSPORT_ID: &str = "run_code";
 
 pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
     if core_tool_ids().iter().any(|id| id == tool_id) {
@@ -40,7 +44,7 @@ pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
 
 fn series_for(tool_id: &str) -> (Option<String>, Option<String>) {
     for (series_id, series_label, members) in crate::config::schema::core_tool_enable_series() {
-        if members.iter().any(|m| *m == tool_id) {
+        if members.contains(&tool_id) {
             return (
                 Some((*series_id).to_string()),
                 Some((*series_label).to_string()),
@@ -71,6 +75,7 @@ fn tool_card(
         origin,
         overridden,
         permission_surface,
+        surface: CallSurface::Direct,
         series_id,
         series_label,
     }
@@ -167,9 +172,33 @@ pub fn available_tools_payload(
     resolved: &ResolvedConfig,
     code_candidates: Vec<Arc<dyn Tool>>,
 ) -> AvailableToolsPayload {
+    let mut tools = available_tools(resolved);
+    omit_code_transport(&mut tools);
+    stamp_declared_surfaces(&mut tools, &code_candidates);
     AvailableToolsPayload {
-        tools: available_tools(resolved),
+        tools,
         code_rejections: project_tools(code_candidates).rejected,
+    }
+}
+
+fn omit_code_transport(tools: &mut Vec<AvailableTool>) {
+    tools.retain(|tool| tool.id != CODE_TRANSPORT_ID);
+}
+
+/// Copy each candidate's own [`Tool::surface`] onto the matching catalog card.
+/// A candidate that is not already in the catalog does not add a card.
+fn stamp_declared_surfaces(tools: &mut [AvailableTool], candidates: &[Arc<dyn Tool>]) {
+    for tool in tools {
+        let Some(declared) = candidates
+            .iter()
+            .find(|candidate| candidate.name() == tool.id && !candidate.is_code_transport())
+        else {
+            continue;
+        };
+        tool.surface = match declared.surface() {
+            ToolSurface::Code => CallSurface::Code,
+            ToolSurface::Direct => CallSurface::Direct,
+        };
     }
 }
 
@@ -213,9 +242,7 @@ pub fn should_include_in_llm_list(
     if is_session_search_gated(tool_id) && !session_search_visible(resolved, workspace_engines) {
         return false;
     }
-    if crate::config::schema::SUBAGENT_SERIES_TOOL_IDS
-        .iter()
-        .any(|id| *id == tool_id)
+    if crate::config::schema::SUBAGENT_SERIES_TOOL_IDS.contains(&tool_id)
         || tool_id.starts_with("subagent_")
     {
         return true;
@@ -527,5 +554,152 @@ mod tests {
             &em,
             &engines
         ));
+    }
+
+    struct Declared {
+        name: &'static str,
+        surface: ToolSurface,
+    }
+
+    impl Tool for Declared {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn surface(&self) -> ToolSurface {
+            self.surface
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+
+        fn description(&self, _ctx: &crate::context_pipeline::Context) -> String {
+            String::new()
+        }
+    }
+
+    #[test]
+    fn catalog_payload_exposes_declared_surface_and_omits_the_transport() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+        use crate::tool::registry::builtin_code_surface_tools;
+
+        assert_eq!(
+            CODE_TRANSPORT_ID,
+            crate::tools::code::CODE_TOOL_NAME,
+            "the settings filter must name the code transport"
+        );
+
+        let mut hidden = vec![tool_card(
+            CODE_TRANSPORT_ID.to_string(),
+            AvailableKind::Core,
+            ToolOrigin::Builtin,
+            false,
+            None,
+            None,
+            None,
+        )];
+        omit_code_transport(&mut hidden);
+        assert!(hidden.is_empty(), "run_code is not a settings switch");
+
+        let mut global = GlobalSettings::default();
+        global.custom_tools.push(CustomToolDefinition {
+            name: "demo".into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "demo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        });
+        global.mcp_servers.insert(
+            "echo".into(),
+            McpServerDefinition {
+                command: "echo".into(),
+                args: vec![],
+                env: Default::default(),
+                transport: McpTransport::Stdio,
+                ..Default::default()
+            },
+        );
+        let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let mut candidates = builtin_code_surface_tools();
+        candidates.push(Arc::new(Declared {
+            name: "plan",
+            surface: ToolSurface::Code,
+        }));
+        candidates.push(Arc::new(Declared {
+            name: "bash",
+            surface: ToolSurface::Direct,
+        }));
+        candidates.push(Arc::new(Declared {
+            name: "not_a_catalog_tool",
+            surface: ToolSurface::Code,
+        }));
+        let payload = available_tools_payload(&resolved, candidates);
+        let surface = |id: &str| {
+            payload
+                .tools
+                .iter()
+                .find(|tool| tool.id == id)
+                .unwrap_or_else(|| panic!("missing {id}"))
+                .surface
+        };
+        for id in ["read", "glob", "grep", "edit", "write", "plan"] {
+            assert_eq!(surface(id), CallSurface::Code, "{id}");
+        }
+        for id in [
+            "bash",
+            "webfetch",
+            "todo",
+            "code_search",
+            "demo",
+            "mcp_echo",
+        ] {
+            assert_eq!(surface(id), CallSurface::Direct, "{id}");
+        }
+        assert!(
+            payload
+                .tools
+                .iter()
+                .all(|tool| tool.id != CODE_TRANSPORT_ID)
+        );
+        assert!(
+            payload
+                .tools
+                .iter()
+                .all(|tool| tool.id != "not_a_catalog_tool"),
+            "a declared tool outside the catalog must not add a second list"
+        );
+        assert!(
+            payload
+                .code_rejections
+                .iter()
+                .any(|item| item.name == "plan"),
+            "admission failure stays on the same payload"
+        );
+        assert!(
+            payload
+                .code_rejections
+                .iter()
+                .all(|item| item.name != "read")
+        );
+        let body = serde_json::to_value(&payload).unwrap();
+        let tools = body["tools"].as_array().unwrap();
+        let json_surface = |id: &str| {
+            tools
+                .iter()
+                .find(|tool| tool["id"] == id)
+                .unwrap_or_else(|| panic!("missing {id}"))["surface"]
+                .clone()
+        };
+        assert_eq!(json_surface("edit"), "code");
+        assert_eq!(json_surface("bash"), "direct");
     }
 }

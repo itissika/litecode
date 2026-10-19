@@ -147,6 +147,12 @@ export interface AgentProfile {
 
 export type PermissionSurface = "preset" | "fixed";
 
+/** Declared call surface. `code` is reached through `run_code`, not a user mode. */
+export type CallSurface = "direct" | "code";
+
+/** Code transport. It is not a settings tool switch. */
+export const CODE_TRANSPORT_TOOL_ID = "run_code";
+
 export interface AvailableTool {
   id: string;
   kind: AvailableKind;
@@ -154,9 +160,22 @@ export interface AvailableTool {
   overridden?: boolean;
   /** Backend declaration: `preset` shows ALL/SAFE; `fixed` is bind only. */
   permission_surface?: PermissionSurface;
+  /** Declared call surface from the available-tools payload. */
+  surface?: CallSurface;
   /** Server-declared enable series (Agents one-card). */
   series_id?: string | null;
   series_label?: string | null;
+}
+
+export function isCodeSurface(tool: { surface?: CallSurface | null }): boolean {
+  return tool.surface === "code";
+}
+
+/** Bind cards. The code transport is omitted even if a payload still lists it. */
+export function settingsToolSwitches(
+  tools: readonly AvailableTool[],
+): AvailableTool[] {
+  return tools.filter((tool) => tool.id !== CODE_TRANSPORT_TOOL_ID);
 }
 
 export interface ToolSchema {

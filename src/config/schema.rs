@@ -144,6 +144,15 @@ pub enum PermissionSurface {
     Fixed,
 }
 
+/// Declared call surface copied from the tool. Not a user-selectable mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CallSurface {
+    #[default]
+    Direct,
+    Code,
+}
+
 /// One currently bindable tool card for this workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableTool {
@@ -155,6 +164,9 @@ pub struct AvailableTool {
     /// Backend declaration of whether this tool has an ALL/SAFE dial.
     #[serde(default)]
     pub permission_surface: PermissionSurface,
+    /// `code` tools are reached through `run_code`. The Agents card badges this.
+    #[serde(default)]
+    pub surface: CallSurface,
     /// When set, Agents shows one card for the series (like MCP server cards).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,

@@ -4,8 +4,10 @@ import {
   SettingsApiError,
   SUBAGENT_SERIES_TOOL_IDS,
   isAgentVisible,
+  isCodeSurface,
   isConfigurableTool,
   putLog,
+  settingsToolSwitches,
 } from "./settings";
 import type { AvailableTool, CatalogModelDto } from "./settings";
 
@@ -27,6 +29,18 @@ function catalogModel(patch: Partial<CatalogModelDto> = {}): CatalogModelDto {
 }
 
 describe("settings helpers", () => {
+  it("badges only a declared code surface and drops the transport switch", () => {
+    expect(isCodeSurface({ surface: "code" })).toBe(true);
+    expect(isCodeSurface({ surface: "direct" })).toBe(false);
+    expect(isCodeSurface({})).toBe(false);
+    const tools = settingsToolSwitches([
+      { id: "read", kind: "core", origin: "builtin", surface: "code" },
+      { id: "bash", kind: "core", origin: "builtin", surface: "direct" },
+      { id: "run_code", kind: "core", origin: "builtin" },
+    ]);
+    expect(tools.map((tool) => tool.id)).toEqual(["read", "bash"]);
+  });
+
   it("shows ALL/SAFE only when the backend card says preset", () => {
     expect(isConfigurableTool({ permission_surface: "preset" })).toBe(true);
     expect(isConfigurableTool({ permission_surface: "fixed" })).toBe(false);

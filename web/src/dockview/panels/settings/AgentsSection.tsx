@@ -10,7 +10,9 @@ import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
 
 import {
   isConfigurableTool,
+  isCodeSurface,
   presetToolIds,
+  settingsToolSwitches,
   isHiddenSettingsAgent,
   isProtectedAgent,
   isSubagentBindableTool,
@@ -474,9 +476,16 @@ function AgentToolsGrid({
               <div className="tool-binding-content flex flex-col">
                 <div className="flex w-full items-start justify-between gap-2 p-3">
                   <div className="min-w-0">
-                    <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
-                      {card.title}
-                    </p>
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
+                        {card.title}
+                      </p>
+                      {card.members.some(isCodeSurface) ? (
+                        <span className="tag tag-neutral tag-xs tag-outline shrink-0">
+                          code mode
+                        </span>
+                      ) : null}
+                    </div>
                     <p
                       className="mt-0.5 truncate text-dk-xs text-(--_dk-text-disabled)"
                       title={seriesDetail}
@@ -645,9 +654,13 @@ export function AgentsSection() {
     [agentIds, agents],
   );
 
+  const switchTools = useMemo(
+    () => settingsToolSwitches(availableTools ?? []),
+    [availableTools],
+  );
+
   const bindableToolsPrimary = useMemo(() => {
-    if (!availableTools) return [];
-    return [...availableTools].sort((a, b) => {
+    return [...switchTools].sort((a, b) => {
       const kindOrder = (kind: AvailableTool["kind"]) => {
         if (kind === "core") return 0;
         if (kind === "engine") return 1;
@@ -658,18 +671,17 @@ export function AgentsSection() {
       const byKind = kindOrder(a.kind) - kindOrder(b.kind);
       return byKind !== 0 ? byKind : a.id.localeCompare(b.id);
     });
-  }, [availableTools]);
+  }, [switchTools]);
 
   const bindableToolsSubagent = useMemo(() => {
-    if (!availableTools) return [];
-    return availableTools
+    return switchTools
       .filter(isSubagentBindableTool)
       .sort((a, b) => a.id.localeCompare(b.id));
-  }, [availableTools]);
+  }, [switchTools]);
 
   const presetIds = useMemo(
-    () => presetToolIds(availableTools ?? []),
-    [availableTools],
+    () => presetToolIds(switchTools),
+    [switchTools],
   );
 
   useEffect(() => {
@@ -689,7 +701,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(d, selectedAgentId, presetIds, availableTools ?? []),
+        ok: agentPersistPayload(d, selectedAgentId, presetIds, switchTools),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -744,7 +756,7 @@ export function AgentsSection() {
           toolId,
           patch.enabled,
           presetIds,
-          availableTools ?? [],
+          switchTools,
         ),
       });
       return;
@@ -792,7 +804,7 @@ export function AgentsSection() {
       draft,
       newAgentId.trim(),
       presetIds,
-      availableTools ?? [],
+      switchTools,
     );
     void createAgent(newAgentId.trim(), payload)
       .then(() => {

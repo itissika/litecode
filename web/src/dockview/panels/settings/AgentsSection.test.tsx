@@ -309,6 +309,107 @@ describe("AgentsSection series bind cards", () => {
   });
 });
 
+describe("AgentsSection code-mode badge", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      llm: llmDoc,
+      availableTools: [
+        { ...readTool, surface: "code" },
+        {
+          id: "glob",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          surface: "code",
+        },
+        {
+          id: "grep",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          surface: "code",
+        },
+        {
+          id: "edit",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          surface: "code",
+        },
+        {
+          id: "write",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          surface: "code",
+        },
+        {
+          id: "bash",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+          surface: "direct",
+          series_id: "bash",
+          series_label: "Bash",
+        },
+        {
+          id: "demo",
+          kind: "custom",
+          origin: "global",
+          permission_surface: "fixed",
+          surface: "direct",
+        },
+        { ...mcpDemoTool, surface: "direct" },
+        {
+          id: "run_code",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          surface: "direct",
+        },
+      ],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: { default: profile() },
+      persistByDoc: {},
+      saveAgent: vi.fn(async () => undefined),
+      createAgent: vi.fn(async () => undefined),
+      removeAgent: vi.fn(async () => undefined),
+      refreshAgents: vi.fn(async () => undefined),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("badges code-surface tools and hides the run_code switch", () => {
+    render(<AgentsSection />);
+    for (const id of ["read", "glob", "grep", "edit", "write"]) {
+      const toggle = screen.getByRole("button", {
+        name: new RegExp(`^${id} tool binding`, "i"),
+      });
+      const card = toggle.closest(".tool-binding-card");
+      expect(card).toBeTruthy();
+      expect(within(card as HTMLElement).getByText("code mode")).toBeTruthy();
+    }
+    for (const id of ["bash", "demo", "mcp_demo"]) {
+      const toggle = screen.getByRole("button", {
+        name: new RegExp(`^${id} tool binding`, "i"),
+      });
+      const card = toggle.closest(".tool-binding-card");
+      expect(card).toBeTruthy();
+      expect(within(card as HTMLElement).queryByText("code mode")).toBeNull();
+    }
+    expect(
+      screen.queryByRole("button", { name: /run_code tool binding/i }),
+    ).toBeNull();
+    expect(screen.getAllByText("code mode")).toHaveLength(5);
+  });
+});
+
 describe("AgentsSection subagent tool cards", () => {
   const saveAgent = vi.fn(
     async (_id: string, _next: AgentProfile) => undefined,
