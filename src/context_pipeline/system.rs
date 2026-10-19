@@ -1,10 +1,10 @@
 use crate::config::AgentConfig;
 use crate::config::global_db::{
-    CITATION_PROMPT, HARNESS_SYSTEM, builtin_prompt_for, is_builtin_prompt_marker,
+    CITATION_PROMPT, HARNESS_SYSTEM, HARNESS_TOOLS, builtin_prompt_for, is_builtin_prompt_marker,
 };
 use crate::context_pipeline::env::Context;
 
-/// Unified entry: harness header + editable layers + citations
+/// Unified entry: harness header + editable layers + tool rules + citations
 /// + process-snapshotted `AGENTS.md` then `CLAUDE.md`.
 /// Hidden agents get the editable body only.
 pub fn build_system_prompt(
@@ -26,14 +26,15 @@ pub fn build_system_prompt(
 }
 
 /// Fixed LiteCode layers around the editable block. An empty editable block still
-/// gets the header and citations.
+/// gets the header, tool rules, and citations.
 fn splice_harness(editable: &str) -> String {
-    let mut parts = Vec::with_capacity(3);
+    let mut parts = Vec::with_capacity(4);
     parts.push(HARNESS_SYSTEM.trim());
     let editable = editable.trim();
     if !editable.is_empty() {
         parts.push(editable);
     }
+    parts.push(HARNESS_TOOLS.trim());
     parts.push(CITATION_PROMPT.trim());
     parts.join("\n\n")
 }
@@ -62,7 +63,7 @@ mod tests {
     use crate::config::WorkspacePaths;
     use crate::config::global_db::{
         CITATION_PROMPT, COMPACTION_PROMPT, DEFAULT_PROMPT, GENERAL_PROMPT, HARNESS_SYSTEM,
-        ORCHESTRATOR_PROMPT,
+        HARNESS_TOOLS, ORCHESTRATOR_PROMPT,
     };
 
     fn visible(editable: &str) -> String {
@@ -71,6 +72,7 @@ mod tests {
         if !editable.is_empty() {
             parts.push(editable);
         }
+        parts.push(HARNESS_TOOLS.trim());
         parts.push(CITATION_PROMPT.trim());
         parts.join("\n\n")
     }
@@ -104,7 +106,8 @@ mod tests {
             .find("You are a General Purpose Agent in LiteCode.")
             .unwrap();
         assert!(prompt.find("# System").unwrap() < identity);
-        assert!(identity < prompt.find("# Citations").unwrap());
+        assert!(identity < prompt.find("# Using your tools").unwrap());
+        assert!(prompt.find("# Using your tools").unwrap() < prompt.find("# Citations").unwrap());
         assert!(prompt.contains("[@ key=\"seq\"]"));
         assert!(prompt.contains("knowledge guide"));
         assert!(prompt.contains("[@ file=\"src/a.rs\"]"));
@@ -128,7 +131,8 @@ mod tests {
         assert_eq!(prompt, visible(ORCHESTRATOR_PROMPT));
         let identity = prompt.find("You are LiteCode's Orchestrator.").unwrap();
         assert!(prompt.find("# System").unwrap() < identity);
-        assert!(identity < prompt.find("# Citations").unwrap());
+        assert!(identity < prompt.find("# Using your tools").unwrap());
+        assert!(prompt.find("# Using your tools").unwrap() < prompt.find("# Citations").unwrap());
         assert!(!prompt.contains("file_path:line_number"));
     }
 
@@ -138,7 +142,7 @@ mod tests {
             build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
         assert_eq!(prompt, visible("You are a custom agent."));
         assert!(prompt.contains("# System"));
-        assert!(!prompt.contains("# Using your tools"));
+        assert!(prompt.contains("# Using your tools"));
         assert!(prompt.contains("# Citations"));
         assert!(!prompt.contains("General Purpose Agent"));
     }
@@ -148,7 +152,7 @@ mod tests {
         let prompt = build_system_prompt("default", &cfg("primary", "  "), None);
         assert_eq!(prompt, visible(""));
         assert!(prompt.starts_with("# System"));
-        assert!(!prompt.contains("# Using your tools"));
+        assert!(prompt.contains("# Using your tools"));
         assert!(prompt.contains("# Citations"));
         assert!(!prompt.contains("General Purpose Agent"));
     }
@@ -223,10 +227,15 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_contains_no_tool_usage_guidance() {
+    fn system_prompt_restores_tool_guidance_and_notes_code_mode() {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
-        assert!(!prompt.contains("# Using your tools"));
-        assert!(!prompt.contains("When a dedicated tool exists"));
-        assert!(!prompt.contains("Prefer making multiple tool calls"));
+        assert!(prompt.contains("# Using your tools"));
+        assert!(prompt.contains("When a dedicated tool exists"));
+        assert!(prompt.contains("Prefer making multiple tool calls"));
+        assert!(prompt.contains("run_code"));
+        assert!(prompt.contains("do not call them directly"));
+        let tools = prompt.find("# Using your tools").unwrap();
+        let citations = prompt.find("# Citations").unwrap();
+        assert!(tools < citations);
     }
 }

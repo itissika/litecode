@@ -36,6 +36,7 @@ use futures_util::future::BoxFuture;
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) use boundary::json_bytes;
 pub use budget::{BudgetPause, BudgetPauseGuard};
 pub use json::Json;
 

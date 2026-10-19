@@ -11,11 +11,11 @@ use serde::Serialize;
 use crate::config::schema::{
     AvailableKind, AvailableTool, PermissionSurface, ToolOrigin, ToolReadiness,
 };
-use crate::tool::project::{RejectedTool, project_tools};
-use crate::tool::trait_::Tool;
 use crate::engines::WorkspaceEngines;
 use crate::optional::EngineManager;
 use crate::permission::permission_surface;
+use crate::tool::project::{RejectedTool, project_tools};
+use crate::tool::trait_::Tool;
 
 pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
     if core_tool_ids().iter().any(|id| id == tool_id) {
@@ -156,8 +156,7 @@ pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
 /// Settings catalog plus code-admission failures for the same response.
 ///
 /// `code_candidates` is the caller's visible code-surface set (builtins today;
-/// a non-builtin test tool is the same projection). Rejections are empty when
-/// the temporary gate is closed, matching runtime projection.
+/// a non-builtin test tool is the same projection).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AvailableToolsPayload {
     pub tools: Vec<AvailableTool>,
@@ -167,11 +166,10 @@ pub struct AvailableToolsPayload {
 pub fn available_tools_payload(
     resolved: &ResolvedConfig,
     code_candidates: Vec<Arc<dyn Tool>>,
-    gate_open: bool,
 ) -> AvailableToolsPayload {
     AvailableToolsPayload {
         tools: available_tools(resolved),
-        code_rejections: project_tools(code_candidates, gate_open).rejected,
+        code_rejections: project_tools(code_candidates).rejected,
     }
 }
 

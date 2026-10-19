@@ -1,7 +1,6 @@
 //! One projection from a caller's visible tools to direct list, code surface, and rejections.
 //!
-//! The temporary `LITECODE_CODE_MODE` gate is a single boolean. It does not decide
-//! which tool is code; that comes from [`Tool::surface`](crate::tool::Tool::surface).
+//! Which tool is code comes from [`Tool::surface`](crate::tool::Tool::surface).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,20 +33,9 @@ pub struct ToolProjection {
 
 /// Project `tools` after the caller has already applied its own visibility filter.
 ///
-/// When `gate_open` is false, every tool stays Direct. When it is true, each
-/// tool's own [`Tool::surface`] decides the side. Code tools that fail admission
-/// are removed from both sides and recorded in [`ToolProjection::rejected`].
-pub fn project_tools(tools: Vec<Arc<dyn Tool>>, gate_open: bool) -> ToolProjection {
-    if !gate_open {
-        return ToolProjection {
-            direct: tools,
-            code_tools: Vec::new(),
-            sdk: String::new(),
-            whitelist: Vec::new(),
-            rejected: Vec::new(),
-        };
-    }
-
+/// Each tool's own [`Tool::surface`] decides the side. Code tools that fail
+/// admission are removed from both sides and recorded in [`ToolProjection::rejected`].
+pub fn project_tools(tools: Vec<Arc<dyn Tool>>) -> ToolProjection {
     let mut direct = Vec::new();
     let mut code_tools = Vec::new();
     let mut rejected = Vec::new();
@@ -84,9 +72,7 @@ pub fn project_tools(tools: Vec<Arc<dyn Tool>>, gate_open: bool) -> ToolProjecti
         listed.sort();
         let joined = listed.join(", ");
         for name in names {
-            let reason = format!(
-                "tool '{name}' SDK type '{type_base}' collides with {joined}"
-            );
+            let reason = format!("tool '{name}' SDK type '{type_base}' collides with {joined}");
             tracing::warn!(tool = %name, %reason, "code tool failed admission");
             collided.push(name.clone());
             rejected.push(RejectedTool {
@@ -107,7 +93,10 @@ pub fn project_tools(tools: Vec<Arc<dyn Tool>>, gate_open: bool) -> ToolProjecti
     } else {
         match render_code_tool_description(&admitted) {
             Ok(sdk) => {
-                let whitelist = admitted.iter().map(|tool| tool.name().to_string()).collect();
+                let whitelist = admitted
+                    .iter()
+                    .map(|tool| tool.name().to_string())
+                    .collect();
                 (sdk, whitelist)
             }
             Err(reason) => {

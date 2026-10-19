@@ -26,8 +26,6 @@ pub struct RuntimeContext {
     /// Process-wide write lock for cross-session resource exclusion (Phase 3).
     pub write_lock: Arc<WorkspaceWriteLock>,
     pub session: Option<crate::session::SessionDataReader>,
-    /// Temporary code-mode gate. Closed means every declared code tool stays direct.
-    pub code_gate_open: bool,
 }
 
 impl RuntimeContext {
@@ -55,13 +53,7 @@ impl RuntimeContext {
             turn_anchor_seq: Arc::new(AtomicI64::new(-1)),
             write_lock,
             session,
-            code_gate_open: false,
         }
-    }
-
-    pub fn with_code_gate(mut self, open: bool) -> Self {
-        self.code_gate_open = open;
-        self
     }
 
     pub fn set_turn_anchor_seq(&self, seq: i64) {

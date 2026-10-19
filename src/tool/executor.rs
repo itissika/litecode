@@ -306,7 +306,9 @@ fn emit_audit(
 pub enum ToolCaller {
     Direct,
     /// Nested call inside `run_code`. `parent_call_id` is the outer call.
-    Code { parent_call_id: String },
+    Code {
+        parent_call_id: String,
+    },
 }
 
 /// Per-call side effect shared by direct and nested callers.
@@ -317,8 +319,6 @@ pub type PlanTouch = Arc<dyn Fn(&FunctionToolCall) + Send + Sync>;
 #[derive(Clone)]
 pub struct ToolCallOrigin {
     pub caller: ToolCaller,
-    /// Temporary total gate. When false, declared code tools stay directly callable.
-    pub gate_open: bool,
     /// Admitted code-surface names, used only to route a direct call.
     pub code_names: Arc<[String]>,
     pub file_note: Option<Arc<dyn Fn(&[PathBuf]) + Send + Sync>>,
@@ -331,7 +331,6 @@ impl ToolCallOrigin {
     pub fn direct() -> Self {
         Self {
             caller: ToolCaller::Direct,
-            gate_open: false,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -679,22 +678,27 @@ fn callable_tool(
 
 fn surface_mismatch(tool: &dyn Tool, origin: &ToolCallOrigin) -> bool {
     match &origin.caller {
-        ToolCaller::Direct if !origin.gate_open => false,
         ToolCaller::Direct => tool.surface() == ToolSurface::Code,
         ToolCaller::Code { .. } => tool.surface() != ToolSurface::Code,
     }
 }
 
-fn surface_or_missing(name: &str, tools: &[Arc<dyn Tool>], origin: &ToolCallOrigin) -> ToolCallResult {
+fn surface_or_missing(
+    name: &str,
+    tools: &[Arc<dyn Tool>],
+    origin: &ToolCallOrigin,
+) -> ToolCallResult {
     let declared = tools.iter().find(|tool| tool.name() == name);
     let routed = match &origin.caller {
-        ToolCaller::Direct if origin.gate_open && origin.code_names.iter().any(|n| n == name) => {
+        ToolCaller::Direct if origin.code_names.iter().any(|n| n == name) => {
             Some(code_route_message(name))
         }
-        ToolCaller::Direct if origin.gate_open && declared.is_some_and(|tool| tool.surface() == ToolSurface::Code) => {
+        ToolCaller::Direct if declared.is_some_and(|tool| tool.surface() == ToolSurface::Code) => {
             Some(code_route_message(name))
         }
-        ToolCaller::Code { .. } if declared.is_some_and(|tool| tool.surface() != ToolSurface::Code) => {
+        ToolCaller::Code { .. }
+            if declared.is_some_and(|tool| tool.surface() != ToolSurface::Code) =>
+        {
             Some(format!(
                 "`{name}` is a direct tool and is not available inside run_code"
             ))
@@ -729,10 +733,7 @@ fn is_js_identifier(name: &str) -> bool {
 
 fn enforce_code_output(tool: &dyn Tool, result: ToolCallResult) -> ToolCallResult {
     let success = result.error.is_none()
-        && matches!(
-            result.level,
-            ToolSignalLevel::Ok | ToolSignalLevel::Warning
-        );
+        && matches!(result.level, ToolSignalLevel::Ok | ToolSignalLevel::Warning);
     if !success {
         return result;
     }
@@ -756,8 +757,7 @@ fn enforce_code_output(tool: &dyn Tool, result: ToolCallResult) -> ToolCallResul
         ));
     };
     if let Err(error) = schema_validate(&schema, data) {
-        let reason =
-            format!("tool '{name}' returned data that does not match its schema: {error}");
+        let reason = format!("tool '{name}' returned data that does not match its schema: {error}");
         tracing::error!(tool = %name, "{reason}");
         return wire_result(ToolCallResult::error_with_kind(
             ToolErrorKind::Internal,

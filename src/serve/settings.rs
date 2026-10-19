@@ -11,8 +11,7 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, CustomToolDefinition, LogSettings, McpServerDefinition,
-    ToolOrigin, ToolPreset,
+    AgentProfile, CustomToolDefinition, LogSettings, McpServerDefinition, ToolOrigin, ToolPreset,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
@@ -372,11 +371,7 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
 
 async fn get_available_tools(State(state): State<ServeState>) -> Response {
     let runtime = state.runtime.read().expect("runtime lock");
-    let payload = available_tools_payload(
-        &runtime.resolved,
-        builtin_code_surface_tools(),
-        crate::tools::code::code_mode_enabled(),
-    );
+    let payload = available_tools_payload(&runtime.resolved, builtin_code_surface_tools());
     ok_json(payload)
 }
 

@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 
 use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
 use litecode::context_pipeline::Context;
-use litecode::permission::{PermissionAction, PermissionEngine, RecordingPermissionSink, ToolPolicy};
+use litecode::permission::{
+    PermissionAction, PermissionEngine, RecordingPermissionSink, ToolPolicy,
+};
 use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use litecode::tool::write_lock::process_write_lock;
 use litecode::tool::{Tool, ToolSurface, project_tools};
@@ -198,21 +200,15 @@ fn builtin_code_tools_pass_admission_and_edit_write_stay_direct() {
     assert_eq!(EditTool::new().surface(), ToolSurface::Direct);
     assert_eq!(WriteTool::new().surface(), ToolSurface::Direct);
 
-    let projected = project_tools(
-        vec![
-            Arc::new(ReadTool::default()),
-            Arc::new(GlobTool),
-            Arc::new(GrepTool),
-            Arc::new(EditTool::new()),
-            Arc::new(WriteTool::new()),
-        ],
-        true,
-    );
+    let projected = project_tools(vec![
+        Arc::new(ReadTool::default()),
+        Arc::new(GlobTool),
+        Arc::new(GrepTool),
+        Arc::new(EditTool::new()),
+        Arc::new(WriteTool::new()),
+    ]);
     assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-    assert_eq!(
-        names(&projected.code_tools),
-        ["glob", "grep", "read"]
-    );
+    assert_eq!(names(&projected.code_tools), ["glob", "grep", "read"]);
     assert_eq!(projected.whitelist, vec!["glob", "grep", "read"]);
     assert_eq!(names(&projected.direct), ["edit", "write"]);
     assert!(projected.sdk.contains("[\"read\"]"));
@@ -221,33 +217,23 @@ fn builtin_code_tools_pass_admission_and_edit_write_stay_direct() {
 }
 
 #[test]
-fn closed_gate_keeps_every_tool_direct() {
-    let projected = project_tools(
-        vec![Arc::new(ReadTool::default()), Arc::new(GlobTool)],
-        false,
-    );
-    assert!(projected.code_tools.is_empty());
-    assert!(projected.sdk.is_empty());
+fn code_surface_is_projected_without_an_env_gate() {
+    let projected = project_tools(vec![Arc::new(ReadTool::default()), Arc::new(GlobTool)]);
+    assert_eq!(names(&projected.code_tools), ["glob", "read"]);
+    assert!(projected.direct.is_empty());
     assert!(projected.rejected.is_empty());
-    assert_eq!(names(&projected.direct), ["read", "glob"]);
+    assert!(!projected.sdk.is_empty());
 }
 
 #[test]
 fn fake_code_tool_joins_the_same_projection_as_builtins() {
     let hits = Arc::new(AtomicUsize::new(0));
-    let projected = project_tools(
-        vec![
-            Arc::new(ReadTool::default()),
-            Arc::new(CountTool::code("marker", hits)),
-            Arc::new(EditTool::new()),
-        ],
-        true,
-    );
-    assert!(
-        projected.rejected.is_empty(),
-        "{:?}",
-        projected.rejected
-    );
+    let projected = project_tools(vec![
+        Arc::new(ReadTool::default()),
+        Arc::new(CountTool::code("marker", hits)),
+        Arc::new(EditTool::new()),
+    ]);
+    assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
     assert_eq!(projected.whitelist, vec!["marker", "read"]);
     assert!(names(&projected.direct).contains(&"edit"));
     assert!(!names(&projected.direct).contains(&"marker"));
@@ -260,17 +246,18 @@ fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
     let hits = Arc::new(AtomicUsize::new(0));
     let mut stripped = CountTool::code("stripped", hits);
     stripped.data_schema = None;
-    let projected = project_tools(
-        vec![
-            Arc::new(stripped),
-            Arc::new(BrokenCode),
-            Arc::new(ReadTool::default()),
-            Arc::new(Colliding { name: "foo-bar" }),
-            Arc::new(Colliding { name: "foo_bar" }),
-        ],
-        true,
-    );
-    let rejected: Vec<&str> = projected.rejected.iter().map(|item| item.name.as_str()).collect();
+    let projected = project_tools(vec![
+        Arc::new(stripped),
+        Arc::new(BrokenCode),
+        Arc::new(ReadTool::default()),
+        Arc::new(Colliding { name: "foo-bar" }),
+        Arc::new(Colliding { name: "foo_bar" }),
+    ]);
+    let rejected: Vec<&str> = projected
+        .rejected
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect();
     assert!(rejected.contains(&"stripped"), "{rejected:?}");
     assert!(rejected.contains(&"broken"), "{rejected:?}");
     assert!(rejected.contains(&"foo-bar"), "{rejected:?}");
@@ -288,9 +275,11 @@ fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
             .any(|item| item.name == "broken" && item.reason.contains("$ref"))
     );
     assert_eq!(projected.whitelist, vec!["read"]);
-    assert!(!names(&projected.direct).iter().any(|name| {
-        ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name)
-    }));
+    assert!(
+        !names(&projected.direct)
+            .iter()
+            .any(|name| { ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name) })
+    );
     assert!(!projected.sdk.contains("stripped"));
     assert!(!projected.sdk.contains("broken"));
     assert!(!projected.sdk.contains("foo-bar"));
@@ -300,11 +289,8 @@ fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
 #[test]
 fn run_code_description_is_a_pure_function_of_the_code_surface() {
     let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(GrepTool), Arc::new(ReadTool::default())];
-    let left = project_tools(tools.clone(), true);
-    let right = project_tools(
-        vec![Arc::new(ReadTool::default()), Arc::new(GrepTool)],
-        true,
-    );
+    let left = project_tools(tools.clone());
+    let right = project_tools(vec![Arc::new(ReadTool::default()), Arc::new(GrepTool)]);
     assert_eq!(left.sdk, right.sdk);
     let host_ctx = ctx(std::path::Path::new("/var/workspaces/one"));
     let other = ctx(std::path::Path::new("/tmp/other-depth"));
@@ -334,7 +320,11 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
     let hits = Arc::new(AtomicUsize::new(0));
     let tool = Arc::new(CountTool::code("read", Arc::clone(&hits)));
     let dir = tempfile::tempdir().unwrap();
-    let permission = engine(dir.path(), "read", ToolPolicy::with_default(PermissionAction::Ask));
+    let permission = engine(
+        dir.path(),
+        "read",
+        ToolPolicy::with_default(PermissionAction::Ask),
+    );
     let sink = RecordingPermissionSink::from_reply(true, false);
     let context = ctx(dir.path());
     let leaked = execute_tool_call(
@@ -353,7 +343,6 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
         None,
         ToolCallOrigin {
             caller: ToolCaller::Direct,
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -366,7 +355,9 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
         Some(ToolErrorKind::NotFound)
     );
     assert!(
-        leaked.content.contains("`read` is only available as tools.read inside run_code"),
+        leaked
+            .content
+            .contains("`read` is only available as tools.read inside run_code"),
         "{}",
         leaked.content
     );
@@ -389,7 +380,6 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
         None,
         ToolCallOrigin {
             caller: ToolCaller::Direct,
-            gate_open: true,
             code_names: Arc::from(["read".to_string()]),
             file_note: None,
             permission_sink: None,
@@ -430,7 +420,6 @@ async fn code_call_of_invisible_tool_is_not_found_and_does_not_run() {
             caller: ToolCaller::Code {
                 parent_call_id: "outer".into(),
             },
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -438,7 +427,11 @@ async fn code_call_of_invisible_tool_is_not_found_and_does_not_run() {
         },
     )
     .await;
-    assert!(result.content.contains("tool 'hidden' not found"), "{}", result.content);
+    assert!(
+        result.content.contains("tool 'hidden' not found"),
+        "{}",
+        result.content
+    );
     assert!(sink.calls.lock().unwrap().is_empty());
     assert_eq!(hidden.hits.load(Ordering::SeqCst), 0);
 }
@@ -472,7 +465,6 @@ async fn code_call_keeps_the_tools_own_permission_and_does_not_execute_a_deny() 
             caller: ToolCaller::Code {
                 parent_call_id: "outer-1".into(),
             },
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -512,7 +504,6 @@ async fn code_success_without_matching_data_is_an_internal_error() {
             caller: ToolCaller::Code {
                 parent_call_id: "outer".into(),
             },
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -524,7 +515,11 @@ async fn code_success_without_matching_data_is_an_internal_error() {
         result.error.as_ref().map(|error| error.kind),
         Some(ToolErrorKind::Internal)
     );
-    assert!(result.content.contains("without data"), "{}", result.content);
+    assert!(
+        result.content.contains("without data"),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -559,7 +554,6 @@ async fn nested_and_direct_calls_note_the_same_paths() {
         None,
         ToolCallOrigin {
             caller: ToolCaller::Direct,
-            gate_open: false,
             code_names: Arc::from([]),
             file_note: Some(Arc::clone(&hook)),
             permission_sink: None,
@@ -588,7 +582,6 @@ async fn nested_and_direct_calls_note_the_same_paths() {
             caller: ToolCaller::Code {
                 parent_call_id: "outer".into(),
             },
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: Some(hook),
             permission_sink: None,
@@ -605,7 +598,9 @@ async fn nested_and_direct_calls_note_the_same_paths() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn code_transport_is_allowed_by_identity_not_by_name() {
-    use litecode::config::schema::{AgentProfile, AgentToolBinding, CustomToolDefinition, ToolPreset, ToolSchema};
+    use litecode::config::schema::{
+        AgentProfile, AgentToolBinding, CustomToolDefinition, ToolPreset, ToolSchema,
+    };
     use litecode::permission::{ArgMatcher, PermissionAction, PolicyRule};
     use litecode::tool::{AuthResult, authorize};
 
@@ -659,12 +654,8 @@ async fn code_transport_is_allowed_by_identity_not_by_name() {
         process_write_lock(),
         None,
     ));
-    let transport = litecode::tools::code::CodeTool::from_surface(
-        Vec::new(),
-        "sdk".into(),
-        Vec::new(),
-        host,
-    );
+    let transport =
+        litecode::tools::code::CodeTool::from_surface(Vec::new(), "sdk".into(), Vec::new(), host);
     assert!(transport.is_code_transport());
     let allowed = authorize(
         &call("run_code", json!({"code": "return 1"})),
@@ -711,7 +702,6 @@ fn code_admission_rejections_are_in_the_catalog_payload() {
             Arc::new(BrokenCode) as Arc<dyn Tool>,
             Arc::new(ReadTool::default()),
         ],
-        true,
     );
     let broken = payload
         .code_rejections
@@ -726,14 +716,12 @@ fn code_admission_rejections_are_in_the_catalog_payload() {
             .all(|item| item.name != "read")
     );
     let body = serde_json::to_value(&payload).unwrap();
-    assert!(body["code_rejections"][0]["reason"].as_str().unwrap().contains("$ref"));
-
-    let closed = available_tools_payload(
-        &resolved,
-        vec![Arc::new(BrokenCode) as Arc<dyn Tool>],
-        false,
+    assert!(
+        body["code_rejections"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("$ref")
     );
-    assert!(closed.code_rejections.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -767,7 +755,6 @@ async fn direct_and_nested_calls_share_plan_touch() {
         None,
         ToolCallOrigin {
             caller: ToolCaller::Direct,
-            gate_open: false,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,
@@ -778,7 +765,10 @@ async fn direct_and_nested_calls_share_plan_touch() {
 
     execute_tool_call(
         &call("touch", json!({})),
-        &[Arc::new(CountTool::code("touch", Arc::new(AtomicUsize::new(0))))],
+        &[Arc::new(CountTool::code(
+            "touch",
+            Arc::new(AtomicUsize::new(0)),
+        ))],
         &permission,
         &context,
         "s",
@@ -794,7 +784,6 @@ async fn direct_and_nested_calls_share_plan_touch() {
             caller: ToolCaller::Code {
                 parent_call_id: "outer".into(),
             },
-            gate_open: true,
             code_names: Arc::from([]),
             file_note: None,
             permission_sink: None,

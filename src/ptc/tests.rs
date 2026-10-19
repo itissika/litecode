@@ -1195,3 +1195,27 @@ async fn deep_nest_child() {
         failure.message
     );
 }
+
+#[tokio::test]
+async fn host_receives_extra_arguments_as_a_json_array() {
+    let seen = Arc::new(Mutex::new(Value::Null));
+    let record = Arc::clone(&seen);
+    let echo = HostFn::new(move |args, _, _| {
+        let value = args.as_value().clone();
+        let record = Arc::clone(&record);
+        async move {
+            *record.lock().expect("seen") = value;
+            Ok(json!(null))
+        }
+    });
+    let outcome = run(
+        "await tools.echo({ path: 'a' }, { timeout_ms: 5 }); return null;",
+        tools(vec![("echo", echo)]),
+    )
+    .await;
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert_eq!(
+        *seen.lock().expect("seen"),
+        json!([{"path": "a"}, {"timeout_ms": 5}])
+    );
+}

@@ -681,11 +681,22 @@ async fn invoke<'js>(
                 return Err(boundary::throw_message(&ctx, &thrown.message));
             }
         },
-        _ => {
-            return Err(boundary::throw_type(
-                &ctx,
-                "host functions take one JSON argument",
-            ));
+        many => {
+            // Extra arguments stay generic: the host receives one JSON array,
+            // in call order. A single argument is still that value alone.
+            let mut items = Vec::with_capacity(many.len());
+            for arg in many {
+                items.push(match boundary::from_js(arg) {
+                    Ok(json) => json,
+                    Err(BoundaryError::Illegal(message)) => {
+                        return Err(boundary::throw_type(&ctx, &message));
+                    }
+                    Err(BoundaryError::Thrown(thrown)) => {
+                        return Err(boundary::throw_message(&ctx, &thrown.message));
+                    }
+                });
+            }
+            Json::from_array(items)
         }
     };
 

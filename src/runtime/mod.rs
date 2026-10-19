@@ -51,7 +51,7 @@ use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
-use crate::tools::code::{CodeToolHost, code_mode_enabled};
+use crate::tools::code::CodeToolHost;
 use crate::types::{LitecodeError, Result, UserInput, user_message};
 
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
@@ -998,23 +998,20 @@ impl AgentRuntime {
             let plan_touch: crate::tool::executor::PlanTouch = Arc::new(move |call| {
                 plan_sessions.note_plan_tool_touch(&plan_sid, call);
             });
-            let gate_open = code_mode_enabled();
-            let code_host = gate_open.then(|| {
-                Arc::new(
-                    CodeToolHost::new(
-                        permission.clone(),
-                        self.base_ctx.clone(),
-                        params.agent_name.to_string(),
-                        Arc::clone(&permission_sink),
-                        data_root.clone(),
-                        spill_threshold,
-                        Arc::clone(&write_lock),
-                        Some(session_reader.clone()),
-                    )
-                    .with_file_note(Arc::clone(&file_note))
-                    .with_plan_touch(Arc::clone(&plan_touch)),
+            let code_host = Some(Arc::new(
+                CodeToolHost::new(
+                    permission.clone(),
+                    self.base_ctx.clone(),
+                    params.agent_name.to_string(),
+                    Arc::clone(&permission_sink),
+                    data_root.clone(),
+                    spill_threshold,
+                    Arc::clone(&write_lock),
+                    Some(session_reader.clone()),
                 )
-            });
+                .with_file_note(Arc::clone(&file_note))
+                .with_plan_touch(Arc::clone(&plan_touch)),
+            ));
 
             let tools_lap = crate::telemetry::latency::lap("build_tool_list");
             let tools = build_tool_list(
@@ -1038,21 +1035,18 @@ impl AgentRuntime {
                 "agent initialized (lazy)"
             );
 
-            let runtime_ctx = Arc::new(
-                RuntimeContext::new(
-                    tools,
-                    permission,
-                    self.base_ctx.clone(),
-                    params.agent_name.to_string(),
-                    permission_sink,
-                    params.cancel.clone(),
-                    data_root,
-                    spill_threshold,
-                    write_lock,
-                    Some(session_reader),
-                )
-                .with_code_gate(gate_open),
-            );
+            let runtime_ctx = Arc::new(RuntimeContext::new(
+                tools,
+                permission,
+                self.base_ctx.clone(),
+                params.agent_name.to_string(),
+                permission_sink,
+                params.cancel.clone(),
+                data_root,
+                spill_threshold,
+                write_lock,
+                Some(session_reader),
+            ));
             let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
             tool_pipeline.bind_session(self.session_id.clone());
             tool_pipeline.set_file_note(file_note);

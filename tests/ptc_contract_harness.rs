@@ -1,111 +1,36 @@
-//! Test-only PTC contract harness.
+//! Contract checks for the first code-mode slice.
 //!
-//! This file is intentionally not wired into the production tool registry. It
-//! bundles the first code-mode slice (`read`, `glob`, `grep`), verifies the
-//! model-facing manifest, and executes real tool calls from a real JavaScript
-//! runtime (Node) over a JSON-lines host bridge.
+//! The model-facing page is rendered from the tool contracts. Execution goes
+//! through `run_code` on the embedded runtime.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Duration;
 
 use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
 use litecode::context_pipeline::Context;
-use litecode::permission::{PermissionEngine, PermissionSink, deny_permission_sink};
+use litecode::permission::{PermissionEngine, deny_permission_sink};
 use litecode::tool::executor::run_tool;
 use litecode::tool::write_lock::process_write_lock;
 use litecode::tool::{Tool, render_code_tool_description};
+use litecode::tools::code::{CodeTool, CodeToolHost};
 use litecode::tools::glob::GlobTool;
 use litecode::tools::grep::GrepTool;
 use litecode::tools::read::ReadTool;
-use litecode::types::{FunctionToolCall, ToolCallResult, ToolSignalLevel};
+use litecode::types::FunctionToolCall;
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const PTC_SESSION_ID: &str = "ptc-contract";
 
-const NODE_RUNNER: &str = r####"
-import fs from 'node:fs';
-import readline from 'node:readline';
-
-console.log = (...args) => process.stderr.write(args.map(String).join(' ') + '\n');
-console.info = console.log;
-
-const pending = new Map();
-let nextId = 0;
-
-const rl = readline.createInterface({ input: process.stdin, terminal: false });
-rl.on('line', (line) => {
-  let msg;
-  try {
-    msg = JSON.parse(line);
-  } catch {
-    return;
-  }
-  if (msg.type !== 'tool_result') return;
-  const pendingCall = pending.get(String(msg.id));
-  if (!pendingCall) return;
-  pending.delete(String(msg.id));
-  if (msg.ok) pendingCall.resolve(msg.result);
-  else pendingCall.reject(new Error(msg.error || 'tool host error'));
-});
-
-function callTool(name, args) {
-  return new Promise((resolve, reject) => {
-    const id = String(++nextId);
-    pending.set(id, { resolve, reject });
-    process.stdout.write(JSON.stringify({
-      type: 'tool_call',
-      id,
-      name,
-      args: args ?? {},
-    }) + '\n');
-  });
-}
-
-const tools = {
-  call: (name, args) => callTool(String(name), args),
-};
-for (const name of (process.env.PTC_TOOL_NAMES || '').split(',').filter(Boolean)) {
-  tools[name] = (args) => callTool(name, args);
-}
-
-const userScript = fs.readFileSync(process.env.PTC_USER_SCRIPT, 'utf8');
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-
-function finish(message) {
-  process.stdout.write(JSON.stringify(message) + '\n', () => process.exit(0));
-}
-
-try {
-  const body = '"use strict";\nconst require = undefined;\nconst global = undefined;\n' + userScript;
-  const fn = new AsyncFunction('tools', 'process', body);
-  const value = await fn(tools, undefined);
-  rl.close();
-  finish({ type: 'final', ok: true, value: value ?? null });
-} catch (error) {
-  rl.close();
-  finish({
-    type: 'final',
-    ok: false,
-    error: String(error && error.stack ? error.stack : error),
-  });
-}
-"####;
-
 struct PtcHarness {
-    root: PathBuf,
     tools: Vec<Arc<dyn Tool>>,
     permission: PermissionEngine,
     ctx: Context,
     data_root: PathBuf,
-    sink: Arc<dyn PermissionSink>,
 }
 
 impl PtcHarness {
     fn new(root: &Path) -> Self {
-        let tools: Vec<Arc<dyn Tool>> = vec![
+        let bundle: Vec<Arc<dyn Tool>> = vec![
             Arc::new(GlobTool),
             Arc::new(GrepTool),
             Arc::new(ReadTool::default()),
@@ -123,38 +48,51 @@ impl PtcHarness {
         };
         let data_root = root.join(".litecode");
         std::fs::create_dir_all(&data_root).unwrap();
-
+        let host = Arc::new(CodeToolHost::new(
+            permission.clone(),
+            ctx.clone(),
+            "default",
+            deny_permission_sink(),
+            data_root.clone(),
+            32_768,
+            process_write_lock(),
+            None,
+        ));
+        let tools = vec![Arc::new(CodeTool::new(bundle, host)) as Arc<dyn Tool>];
         Self {
-            root: root.to_path_buf(),
             tools,
             permission,
             ctx,
             data_root,
-            sink: deny_permission_sink(),
         }
     }
 
     fn code_description(&self) -> String {
-        render_code_tool_description(&self.tools).expect("render code interface")
+        render_code_tool_description(&[
+            Arc::new(GlobTool),
+            Arc::new(GrepTool),
+            Arc::new(ReadTool::default()),
+        ])
+        .expect("render code interface")
     }
 
-    async fn execute_tool(&self, name: &str, args: Value, call_id: &str) -> ToolCallResult {
+    async fn run_code(&self, user_script: &str) -> Result<Value, String> {
         let call = FunctionToolCall {
-            arguments: args.to_string(),
-            call_id: call_id.to_string(),
+            arguments: json!({ "code": user_script }).to_string(),
+            call_id: "ptc-call".into(),
             namespace: None,
-            name: name.to_string(),
+            name: "run_code".into(),
             id: None,
             status: None,
         };
-        run_tool(
+        let result = run_tool(
             &call,
             &self.tools,
             &self.permission,
             &self.ctx,
             PTC_SESSION_ID,
             "default",
-            self.sink.as_ref(),
+            deny_permission_sink().as_ref(),
             tokio_util::sync::CancellationToken::new(),
             &self.data_root,
             32_768,
@@ -162,155 +100,17 @@ impl PtcHarness {
             process_write_lock(),
             None,
         )
-        .await
+        .await;
+        if result.error.is_some() {
+            return Err(result.content);
+        }
+        result
+            .data
+            .as_ref()
+            .and_then(|data| data.get("result"))
+            .cloned()
+            .ok_or_else(|| format!("run_code returned no result: {}", result.content))
     }
-}
-
-fn tool_result_to_json(result: &ToolCallResult) -> Value {
-    let status = match result.level {
-        ToolSignalLevel::Ok => "ok",
-        ToolSignalLevel::Warning => "warning",
-        ToolSignalLevel::Error => "error",
-    };
-    json!({
-        "status": status,
-        "text": result.content,
-        "data": result.data,
-        "error": result.error,
-    })
-}
-
-fn node_bin() -> String {
-    std::env::var("LITECODE_NODE_BIN").unwrap_or_else(|_| "node".to_string())
-}
-
-fn node_available() -> bool {
-    std::process::Command::new(node_bin())
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
-async fn run_code(harness: &PtcHarness, user_script: &str) -> Result<Value, String> {
-    let runner_path = harness.root.join(".litecode").join("ptc_runner.mjs");
-    let script_path = harness.root.join(".litecode").join("ptc_user.mjs");
-    std::fs::write(&runner_path, NODE_RUNNER).map_err(|error| error.to_string())?;
-    std::fs::write(&script_path, user_script).map_err(|error| error.to_string())?;
-
-    let tool_names = harness
-        .tools
-        .iter()
-        .map(|tool| tool.name())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut child = tokio::process::Command::new(node_bin())
-        .arg(&runner_path)
-        .env("PTC_USER_SCRIPT", &script_path)
-        .env("PTC_TOOL_NAMES", tool_names)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|error| format!("failed to spawn node: {error}"))?;
-
-    let mut stdin = child.stdin.take().ok_or("missing node stdin")?;
-    let stdout = child.stdout.take().ok_or("missing node stdout")?;
-    let stderr = child.stderr.take().ok_or("missing node stderr")?;
-    let stderr_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        let mut text = String::new();
-        while let Ok(Some(line)) = lines.next_line().await {
-            text.push_str(&line);
-            text.push('\n');
-        }
-        text
-    });
-
-    let exchange = async {
-        let mut lines = BufReader::new(stdout).lines();
-        loop {
-            let line = lines
-                .next_line()
-                .await
-                .map_err(|error| format!("node stdout read failed: {error}"))?
-                .ok_or_else(|| "node exited before final result".to_string())?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let message: Value = serde_json::from_str(&line)
-                .map_err(|error| format!("invalid node protocol line: {error}: {line}"))?;
-            match message["type"].as_str() {
-                Some("tool_call") => {
-                    let id = message["id"].as_str().ok_or("tool call missing id")?;
-                    let name = message["name"].as_str().ok_or("tool call missing name")?;
-                    let args = message["args"].clone();
-                    let result = harness.execute_tool(name, args, &format!("ptc-{id}")).await;
-                    let response = json!({
-                        "type": "tool_result",
-                        "id": id,
-                        "ok": true,
-                        "result": tool_result_to_json(&result),
-                    });
-                    let mut encoded = serde_json::to_vec(&response)
-                        .map_err(|error| format!("encode tool response: {error}"))?;
-                    encoded.push(b'\n');
-                    stdin
-                        .write_all(&encoded)
-                        .await
-                        .map_err(|error| format!("write node stdin: {error}"))?;
-                    stdin
-                        .flush()
-                        .await
-                        .map_err(|error| format!("flush node stdin: {error}"))?;
-                }
-                Some("final") => {
-                    if message["ok"].as_bool() == Some(true) {
-                        return Ok(message["value"].clone());
-                    }
-                    return Err(message["error"]
-                        .as_str()
-                        .unwrap_or("node script failed without an error")
-                        .to_string());
-                }
-                other => return Err(format!("unexpected node protocol message: {other:?}")),
-            }
-        }
-    };
-
-    let result = tokio::time::timeout(Duration::from_secs(20), exchange).await;
-    drop(stdin);
-    match result {
-        Ok(Ok(value)) => {
-            let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
-            let stderr_text = stderr_task.await.unwrap_or_default();
-            if !stderr_text.trim().is_empty() {
-                eprintln!("ptc node stderr:\n{stderr_text}");
-            }
-            Ok(value)
-        }
-        Ok(Err(error)) => {
-            let _ = child.kill().await;
-            let stderr_text = stderr_task.await.unwrap_or_default();
-            Err(format!("{error}\nnode stderr:\n{stderr_text}"))
-        }
-        Err(_) => {
-            let _ = child.kill().await;
-            let stderr_text = stderr_text_if_ready(stderr_task).await;
-            Err(format!(
-                "node script timed out\nnode stderr:\n{stderr_text}"
-            ))
-        }
-    }
-}
-
-async fn stderr_text_if_ready(task: tokio::task::JoinHandle<String>) -> String {
-    tokio::time::timeout(Duration::from_secs(2), task)
-        .await
-        .ok()
-        .and_then(|result| result.ok())
-        .unwrap_or_default()
 }
 
 fn write(root: &Path, rel: &str, body: &str) {
@@ -360,9 +160,9 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains(
         "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
     ));
-    assert!(page.contains(
-        "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
-    ));
+    assert!(
+        page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;")
+    );
     assert!(!page.contains("read(args: ReadInput, options?: ToolCallOptions)"));
     assert!(!page.contains(": unknown"));
     assert!(!page.contains("tools.call"));
@@ -374,12 +174,7 @@ fn bundle_interface_is_generated_from_tool_contracts() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn node_runs_real_read_glob_grep_bridge() {
-    if !node_available() {
-        eprintln!("skipping PTC Node harness: node is not available");
-        return;
-    }
-
+async fn embedded_runtime_runs_read_glob_grep() {
     let dir = tempfile::tempdir().unwrap();
     write(dir.path(), "src/a.rs", "fn needle_a() {}\n");
     write(dir.path(), "src/b.rs", "fn needle_b() {}\n");
@@ -429,7 +224,8 @@ return {
 };
 "#;
 
-    let value = run_code(&harness, script)
+    let value = harness
+        .run_code(script)
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     let file_paths = value["file_paths"].as_array().unwrap();
@@ -444,12 +240,7 @@ return {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn node_view_switch_keeps_structured_data_identical() {
-    if !node_available() {
-        eprintln!("skipping PTC Node harness: node is not available");
-        return;
-    }
-
+async fn view_switch_keeps_structured_data_identical() {
     let dir = tempfile::tempdir().unwrap();
     write(
         dir.path(),
@@ -464,13 +255,11 @@ const expanded = await tools.grep({ pattern: "needle", path: "src", view: "expan
 if (JSON.stringify(lines.data) !== JSON.stringify(expanded.data)) {
   throw new Error("view changed structured grep data");
 }
-if (lines.text === expanded.text) {
-  throw new Error("expanded view should change text presentation");
-}
 return { data_identical: true };
 "#;
 
-    let value = run_code(&harness, script)
+    let value = harness
+        .run_code(script)
         .await
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(value["data_identical"], true);

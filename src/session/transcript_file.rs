@@ -330,6 +330,40 @@ fn is_session_target(arg: &str) -> bool {
     rest.is_empty() || rest.starts_with('/')
 }
 
+/// True when a `run_code` result ledger records a nested read or grep of the
+/// session store. The outer call's name is `run_code`; the nested tool and its
+/// key-arg summary are the lines this checks.
+pub fn ledger_reads_sessions(text: &str) -> bool {
+    text.lines().any(|line| {
+        let Some((tool, summary)) = parse_ledger_line(line) else {
+            return false;
+        };
+        match tool {
+            "session_search" => true,
+            "read" | "grep" => is_session_target(summary),
+            _ => false,
+        }
+    })
+}
+
+/// `{index}. {tool} {summary} {outcome}` as written by the code-mode host.
+fn parse_ledger_line(line: &str) -> Option<(&str, &str)> {
+    let line = line.trim();
+    let (index, rest) = line.split_once(". ")?;
+    if index.is_empty() || !index.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let (tool, after) = rest.split_once(' ')?;
+    if tool.is_empty() {
+        return None;
+    }
+    let summary = match after.rsplit_once(' ') {
+        Some((summary, _outcome)) => summary,
+        None => "",
+    };
+    Some((tool, summary))
+}
+
 pub fn load_blob_text(body_ref: &str, data_root: &Path) -> Result<String> {
     let rest = body_ref
         .strip_prefix(BLOB_PREFIX)
@@ -408,6 +442,9 @@ pub fn load_transcript_file(
             // is the only row that can be an echo copy.
             Item::FunctionCallOutput(out) => {
                 result_call_ids.insert(row.seq, out.call_id.clone());
+                if ledger_reads_sessions(&text) {
+                    session_read_calls.insert(out.call_id.clone());
+                }
                 links.push((row.seq, out.call_id.clone(), None));
             }
             _ => {}

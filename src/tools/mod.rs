@@ -3,7 +3,6 @@ pub mod bash;
 pub mod bash_safety;
 pub mod bash_status;
 pub mod code;
-pub(crate) mod code_process;
 pub mod code_search;
 pub mod custom;
 pub mod custom_hub;

@@ -55,7 +55,6 @@ impl ToolPipeline {
             .unwrap_or_else(|| Arc::from([]));
         ToolCallOrigin {
             caller: ToolCaller::Direct,
-            gate_open: self.runtime.code_gate_open,
             code_names,
             file_note: self.file_note.clone(),
             permission_sink: Some(Arc::clone(&self.runtime.permission_sink)),

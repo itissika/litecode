@@ -88,8 +88,6 @@ fn capture_request(request: &ModelRequest) -> CapturedLlmRequest {
     }
 }
 
-static CODE_MODE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 fn assert_request_prefix(prev: &CapturedLlmRequest, next: &CapturedLlmRequest, step: usize) {
     assert_eq!(
         prev.instructions, next.instructions,
@@ -199,10 +197,6 @@ impl LlmProvider for RecordingProvider {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tool_loop_llm_request_prefix_json_is_stable() {
-    let _gate = CODE_MODE_ENV.lock().expect("code mode env");
-    unsafe {
-        std::env::remove_var("LITECODE_CODE_MODE");
-    }
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("probe.txt"), "ok").unwrap();
 
@@ -245,29 +239,8 @@ async fn tool_loop_llm_request_prefix_json_is_stable() {
     assert_request_prefix(&captured[1], &captured[2], 2);
 }
 
-struct CodeModeOn;
-
-impl CodeModeOn {
-    fn enter() -> Self {
-        unsafe {
-            std::env::set_var("LITECODE_CODE_MODE", "1");
-        }
-        Self
-    }
-}
-
-impl Drop for CodeModeOn {
-    fn drop(&mut self) {
-        unsafe {
-            std::env::remove_var("LITECODE_CODE_MODE");
-        }
-    }
-}
-
 #[tokio::test]
 async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
-    let _gate = CODE_MODE_ENV.lock().expect("code mode env");
-    let _on = CodeModeOn::enter();
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("probe.txt"), "ok").unwrap();
 

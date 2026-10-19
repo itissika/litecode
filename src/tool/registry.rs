@@ -291,21 +291,19 @@ pub async fn build_tool_list(
         tools.extend(new_tools);
     }
 
-    // The host is present only while the temporary total gate is open. Which
-    // tools are code is still each tool's own surface, at every depth.
-    let gate_open = code_host.is_some();
-    tools = assemble_projected_tools(tools, gate_open, code_host);
+    // One projection from this caller's visible set. A missing host cannot
+    // publish `run_code` or drop the code tools.
+    tools = assemble_projected_tools(tools, code_host);
 
     tools
 }
 
 fn assemble_projected_tools(
     tools: Vec<Arc<dyn Tool>>,
-    gate_open: bool,
     host: Option<Arc<CodeToolHost>>,
 ) -> Vec<Arc<dyn Tool>> {
     let tools = strip_reserved_transport_names(tools);
-    let projected = project_tools(tools, gate_open);
+    let projected = project_tools(tools);
     for rejection in &projected.rejected {
         tracing::warn!(
             tool = %rejection.name,
@@ -318,7 +316,8 @@ fn assemble_projected_tools(
         return direct;
     }
     let Some(host) = host else {
-        tracing::error!("code surface dropped: no code host for an open gate");
+        tracing::error!("code surface kept direct: no code host to bind run_code");
+        direct.extend(projected.code_tools);
         return direct;
     };
     let names = projected.whitelist.clone();
@@ -688,7 +687,7 @@ mod tests {
             Arc::new(ReadTool::default()),
         ];
 
-        let tools = assemble_projected_tools(direct, true, Some(host));
+        let tools = assemble_projected_tools(direct, Some(host));
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "run_code");
         assert!(tools[0].schema()["properties"].get("timeout_ms").is_some());
@@ -702,9 +701,11 @@ mod tests {
         assert!(description.contains(
             "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
         ));
-        assert!(description.contains(
-            "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
-        ));
+        assert!(
+            description.contains(
+                "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
+            )
+        );
         assert!(!description.contains("timeout_ms") || description.contains("ToolCallOptions"));
         let bindings = tools[0].code_bindings().expect("whitelist");
         let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
@@ -823,7 +824,6 @@ mod tests {
                 Arc::new(ReadTool::default()) as Arc<dyn Tool>,
                 Arc::new(Impostor),
             ],
-            true,
             Some(host),
         );
         assert_eq!(tools.len(), 1);
@@ -838,11 +838,56 @@ mod tests {
                 Arc::new(ReadTool::default()) as Arc<dyn Tool>,
                 Arc::new(Impostor),
             ],
-            false,
             None,
         );
         let closed_names: Vec<&str> = closed.iter().map(|tool| tool.name()).collect();
         assert_eq!(closed_names, ["read"]);
         assert_eq!(ReadTool::default().surface(), ToolSurface::Code);
+    }
+
+    struct Unrenderable;
+
+    impl Tool for Unrenderable {
+        fn name(&self) -> &str {
+            "unrenderable"
+        }
+
+        fn surface(&self) -> crate::tool::ToolSurface {
+            crate::tool::ToolSurface::Code
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn description(&self, _: &Context) -> String {
+            "missing data schema".into()
+        }
+    }
+
+    #[test]
+    fn unrenderable_code_tool_does_not_publish_run_code() {
+        use crate::permission::{PermissionEngine, deny_permission_sink};
+        use crate::tools::code::CodeToolHost;
+
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = test_resolved(default_bindings());
+        let permission = PermissionEngine::resolver(resolved, "default", 0);
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            32_768,
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let tools = assemble_projected_tools(vec![Arc::new(Unrenderable)], Some(host));
+        assert!(
+            tools.is_empty(),
+            "a failed code surface must not leave run_code running: {:?}",
+            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
+        );
     }
 }

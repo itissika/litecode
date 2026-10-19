@@ -18,25 +18,8 @@ use litecode::tools::read::ReadTool;
 use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLevel};
 use serde_json::json;
 
-fn node_bin() -> String {
-    std::env::var("LITECODE_NODE_BIN").unwrap_or_else(|_| "node".to_string())
-}
-
-fn node_available() -> bool {
-    std::process::Command::new(node_bin())
-        .arg("--version")
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn code_tool_runs_real_bundle_with_data_only_results() {
-    if !node_available() {
-        eprintln!("skipping CodeTool runtime test: node is not available");
-        return;
-    }
-
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -102,14 +85,13 @@ const unsupported = await tools.read(
 if (unsupported.status !== "error" || unsupported.error.kind !== "invalid_input") {
   throw new Error("unsupported timeout must fail explicitly: " + JSON.stringify(unsupported));
 }
-const host = console.log.constructor("return process")();
 return {
   path: file.data.path,
   line: file.data.lines[0].text,
   bad_kind: bad.error.kind,
   unsupported_kind: unsupported.error.kind,
-  env_keys: Object.keys(host.env),
-  cwd: host.cwd(),
+  process_absent: typeof process === "undefined",
+  require_absent: typeof require === "undefined",
   stats_mean: libs.stats.mean([1, 2, 3, 4]),
   csv: libs.csv.parse("a,b\n1,2\n"),
   diff: libs.text.diffLines("a\nb", "a\nc"),
@@ -150,12 +132,8 @@ return {
     assert_eq!(value["line"], "fn needle_a() {}");
     assert_eq!(value["bad_kind"], "invalid_input");
     assert_eq!(value["unsupported_kind"], "invalid_input");
-    assert_eq!(value["env_keys"], json!([]));
-    let cwd = value["cwd"].as_str().expect("runtime cwd");
-    assert!(
-        std::path::Path::new(cwd).starts_with(data_root.join("code")),
-        "runtime cwd {cwd:?} should be inside the isolated run directory"
-    );
+    assert_eq!(value["process_absent"], true);
+    assert_eq!(value["require_absent"], true);
     assert_eq!(value["stats_mean"], 2.5);
     assert_eq!(value["csv"], json!([["a", "b"], ["1", "2"]]));
     assert_eq!(
@@ -224,28 +202,33 @@ impl Tool for ProbeTool {
     fn execute(
         &self,
         input: serde_json::Value,
-        _execution: ToolExecutionContext,
+        execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
         let id = input["id"].as_u64().unwrap_or(0);
         let active = Arc::clone(&self.active);
         let max_active = Arc::clone(&self.max_active);
+        let cancel = execution.cancel.clone();
         Box::pin(async move {
             let current = active.fetch_add(1, Ordering::SeqCst) + 1;
             max_active.fetch_max(current, Ordering::SeqCst);
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            let outcome = tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    ToolCallResult::ok("probe").with_data(json!({ "id": id }))
+                }
+                _ = cancel.cancelled() => ToolCallResult::error_with_kind(
+                    ToolErrorKind::Cancelled,
+                    "probe cancelled",
+                    false,
+                ),
+            };
             active.fetch_sub(1, Ordering::SeqCst);
-            ToolCallResult::ok("probe").with_data(json!({ "id": id }))
+            outcome
         })
     }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn code_tool_parallelizes_safe_calls_and_honors_call_timeout() {
-    if !node_available() {
-        eprintln!("skipping CodeTool runtime test: node is not available");
-        return;
-    }
-
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let resolved = ConfigManager::resolve_without_catalog(
@@ -395,11 +378,6 @@ return result.error.kind;
 
 #[tokio::test(flavor = "current_thread")]
 async fn code_tool_captures_logs_and_enforces_output_ledger() {
-    if !node_available() {
-        eprintln!("skipping CodeTool runtime test: node is not available");
-        return;
-    }
-
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let resolved = ConfigManager::resolve_without_catalog(
@@ -433,8 +411,6 @@ async fn code_tool_captures_logs_and_enforces_output_ledger() {
     let logs_script = r#"
 console.log("hello", 42);
 console.error("warn");
-const host = console.log.constructor("return process")();
-host.getBuiltinModule("node:fs").writeSync(1, "native-out\n");
 return { ok: true };
 "#;
     let call = FunctionToolCall {
@@ -464,10 +440,9 @@ return { ok: true };
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     let data = result.data.expect("code result data");
     let logs = data["logs"].as_array().expect("captured logs");
-    assert_eq!(logs.len(), 3);
+    assert_eq!(logs.len(), 2);
     assert!(logs.contains(&json!("hello 42")), "{logs:?}");
     assert!(logs.contains(&json!("warn")), "{logs:?}");
-    assert!(logs.contains(&json!("native-out")), "{logs:?}");
     assert_eq!(data["result"], json!({ "ok": true }));
     assert!(result.content.contains("hello 42"), "{}", result.content);
 
@@ -504,16 +479,11 @@ return { ok: true };
         result.error.expect("typed output-limit result").kind,
         ToolErrorKind::OutputLimit
     );
-    assert!(result.content.contains("exceeds"), "{}", result.content);
+    assert!(result.content.contains("exceeded"), "{}", result.content);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn code_tool_applies_node_permission_model_to_native_surface() {
-    if !node_available() {
-        eprintln!("skipping CodeTool runtime test: node is not available");
-        return;
-    }
-
+async fn code_tool_has_no_process_filesystem_or_module_surface() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let resolved = ConfigManager::resolve_without_catalog(
@@ -543,33 +513,19 @@ async fn code_tool_applies_node_permission_model_to_native_surface() {
     let code: Arc<dyn Tool> = Arc::new(CodeTool::new(vec![Arc::new(ReadTool::default())], host));
     let tools = vec![Arc::clone(&code)];
 
-    let outside = std::env::current_dir().unwrap().join("Cargo.toml");
-    let outside = serde_json::to_string(&outside.to_string_lossy()).unwrap();
-    let script = format!(
-        r#"
-const p = console.log.constructor("return process")();
-const fs = p.getBuiltinModule("node:fs");
-let fs_error;
-try {{
-  fs.readFileSync({outside}, "utf8");
-  fs_error = "allowed";
-}} catch (error) {{
-  fs_error = error.code || String(error);
-}}
-let child_error;
-try {{
-  p.getBuiltinModule("node:child_process").execFileSync(
-    p.execPath,
-    ["--version"],
-    {{ encoding: "utf8" }},
-  );
-  child_error = "allowed";
-}} catch (error) {{
-  child_error = error.code || String(error);
-}}
-return {{ fs_error, child_error }};
-"#
-    );
+    let script = r#"
+let require_state = "threw";
+try {
+  require("fs");
+  require_state = "loaded";
+} catch (error) {
+  require_state = String(error && error.message ? error.message : error);
+}
+return {
+  process: typeof process,
+  require_state,
+};
+"#;
     let call = FunctionToolCall {
         arguments: json!({ "code": script }).to_string(),
         call_id: "code-permission-1".to_string(),
@@ -596,6 +552,11 @@ return {{ fs_error, child_error }};
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     let data = result.data.expect("code result data");
-    assert_eq!(data["result"]["fs_error"], "ERR_ACCESS_DENIED");
-    assert_eq!(data["result"]["child_error"], "ERR_ACCESS_DENIED");
+    assert_eq!(data["result"]["process"], "undefined");
+    let require_state = data["result"]["require_state"].as_str().unwrap_or("");
+    assert_ne!(require_state, "loaded", "{require_state}");
+    assert!(
+        require_state.contains("require") || require_state.contains("defined"),
+        "{require_state}"
+    );
 }

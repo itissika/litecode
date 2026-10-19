@@ -14,7 +14,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::session::transcript_file::{SearchableRow, call_reads_sessions, load_blob_text};
+use crate::session::transcript_file::{
+    SearchableRow, call_reads_sessions, ledger_reads_sessions, load_blob_text,
+};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -99,8 +101,25 @@ pub fn result_keys_with(
         {
             out.insert((row.session_id.clone(), row.seq));
         }
+        if result_body_reads_sessions(row, data_root) {
+            out.insert((row.session_id.clone(), row.seq));
+        }
     }
     Ok(out)
+}
+
+fn result_body_reads_sessions(row: &SearchableRow, data_root: &Path) -> bool {
+    let Some(value) = row_json(row, data_root) else {
+        return false;
+    };
+    if value.get("type").and_then(Value::as_str) != Some("function_call_output") {
+        return false;
+    }
+    match value.get("output") {
+        Some(Value::String(text)) => ledger_reads_sessions(text),
+        Some(other) => ledger_reads_sessions(&other.to_string()),
+        None => false,
+    }
 }
 
 /// The row's raw JSON, parsed. `None` on unreadable input — the caller keeps
@@ -187,5 +206,38 @@ mod tests {
         assert!(keys.contains(&("s1".to_string(), 6)));
         assert!(keys.contains(&("s1".to_string(), 8)));
         assert!(!keys.contains(&("s1".to_string(), 10)));
+    }
+
+    #[test]
+    fn nested_code_calls_are_echoes_when_the_ledger_reads_sessions() {
+        let rows = vec![
+            call_row(
+                "s1",
+                1,
+                "run_code",
+                r#"{"code":"await tools.read({path:'.litecode/sessions/abc.md'})"}"#,
+            ),
+            {
+                let body = json!({
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": "1. read path=.litecode/sessions/abc.md ok\n\nsecret session body",
+                })
+                .to_string();
+                SearchableRow {
+                    session_id: "s1".into(),
+                    seq: 2,
+                    kind: "item/tool_result".into(),
+                    item_type: "function_call_output".into(),
+                    body: Some(body),
+                    body_ref: None,
+                }
+            },
+            call_row("s1", 3, "run_code", r#"{"code":"return 1"}"#),
+            result_row("s1", 4, 3),
+        ];
+        let keys = result_keys(&rows, Path::new(".")).unwrap();
+        assert!(keys.contains(&("s1".to_string(), 2)), "{keys:?}");
+        assert!(!keys.contains(&("s1".to_string(), 4)), "{keys:?}");
     }
 }
