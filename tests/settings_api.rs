@@ -474,6 +474,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             tokio_util::sync::CancellationToken::new(),
             "test-parent-session",
             common::test_sessions_manager(""),
+            None,
         ))
         .len();
     assert!(
@@ -501,6 +502,7 @@ fn disabled_binding_changes_tools_count_after_reload() {
             tokio_util::sync::CancellationToken::new(),
             "test-parent-session",
             common::test_sessions_manager(""),
+            None,
         ))
         .len();
 
@@ -1699,6 +1701,7 @@ async fn settings_custom_tool_crud_enable_bind_execute_and_delete() {
             tokio_util::sync::CancellationToken::new(),
             "test-parent-session",
             common::test_sessions_manager(""),
+            None,
         )
         .await;
         let tool = tools.iter().find(|t| t.name() == id).expect("in tool list");

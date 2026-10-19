@@ -242,6 +242,7 @@ fn settings_reload_reconciles_engine_manager() {
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
+        None,
     ));
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"webfetch"));

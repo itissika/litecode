@@ -138,6 +138,9 @@ windows-sys = { version = "0.59", features = [
   "Win32_UI_Shell",
 ] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # SSE 自实现，不引入第三方 SSE 库
 # MCP 自实现 (~200 行 JSON-RPC 2.0 over stdio)，不引入第三方
 

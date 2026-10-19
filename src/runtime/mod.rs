@@ -51,6 +51,7 @@ use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
+use crate::tools::code::{CodeToolHost, code_mode_enabled};
 use crate::types::{LitecodeError, Result, UserInput, user_message};
 
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
@@ -968,27 +969,6 @@ impl AgentRuntime {
         // Lazy-init: build tool list (async MCP schema fetch) on first turn.
         if self.tool_pipeline.is_none() {
             let params = self.build_tool_params.take().unwrap();
-            let tools_lap = crate::telemetry::latency::lap("build_tool_list");
-            let tools = build_tool_list(
-                &params.runtime,
-                &params.agent_name,
-                params.depth,
-                params.cancel.clone(),
-                &params.parent_session_id,
-                Arc::clone(&params.sessions),
-            )
-            .await;
-            tools_lap.done();
-
-            let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-            tracing::debug!(
-                target: "litecode.debug.startup",
-                tools_count = tool_names.len(),
-                tools = ?tool_names,
-                agent = %params.agent_name,
-                "agent initialized (lazy)"
-            );
-
             let permission = PermissionEngine::resolver(
                 params.runtime.resolved.clone(),
                 &params.agent_name,
@@ -1006,6 +986,42 @@ impl AgentRuntime {
             let data_root = self.sessions.data_root_path();
             let spill_threshold = output::DEFAULT_SPILL_THRESHOLD;
             let write_lock = crate::tool::write_lock::process_write_lock();
+            let session_reader = self.sessions.reader();
+            let code_host = code_mode_enabled().then(|| {
+                Arc::new(CodeToolHost::new(
+                    permission.clone(),
+                    self.base_ctx.clone(),
+                    params.agent_name.to_string(),
+                    Arc::clone(&permission_sink),
+                    data_root.clone(),
+                    spill_threshold,
+                    Arc::clone(&write_lock),
+                    Some(session_reader.clone()),
+                ))
+            });
+
+            let tools_lap = crate::telemetry::latency::lap("build_tool_list");
+            let tools = build_tool_list(
+                &params.runtime,
+                &params.agent_name,
+                params.depth,
+                params.cancel.clone(),
+                &params.parent_session_id,
+                Arc::clone(&params.sessions),
+                code_host,
+            )
+            .await;
+            tools_lap.done();
+
+            let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+            tracing::debug!(
+                target: "litecode.debug.startup",
+                tools_count = tool_names.len(),
+                tools = ?tool_names,
+                agent = %params.agent_name,
+                "agent initialized (lazy)"
+            );
+
             let runtime_ctx = Arc::new(RuntimeContext::new(
                 tools,
                 permission,
@@ -1016,7 +1032,7 @@ impl AgentRuntime {
                 data_root,
                 spill_threshold,
                 write_lock,
-                Some(self.sessions.reader()),
+                Some(session_reader),
             ));
             let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
             tool_pipeline.bind_session(self.session_id.clone());

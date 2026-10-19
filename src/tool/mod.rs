@@ -2,6 +2,7 @@ pub mod agent_bindings;
 pub mod authorize;
 pub mod availability;
 pub mod catalog;
+pub mod code_manifest;
 pub mod coords;
 pub mod executor;
 pub mod output;
@@ -14,6 +15,7 @@ pub mod trait_;
 pub mod write_lock;
 
 pub use authorize::{AuthResult, authorize};
+pub use code_manifest::render_code_tool_description;
 pub use coords::{
     FILE_LINE_PREFIX_HINT, attach_offset_footer, format_file_line, format_file_window_footer,
     format_line_label, format_line_list, format_offset_done, format_offset_more, format_path_lines,

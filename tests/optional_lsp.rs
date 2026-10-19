@@ -152,6 +152,7 @@ fn engines_json_off_no_lsp_tool() {
             Arc::new(TurnGuard::new()),
             String::new(),
         )),
+        None,
     ));
     assert!(!tools.iter().any(|t| t.name() == "lsp"));
 }

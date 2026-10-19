@@ -14,6 +14,7 @@ use crate::tool::trait_::Tool;
 use crate::tools::{
     ask_user::AskUserTool,
     bash::BashTool,
+    code::{CODE_BUNDLE_TOOL_IDS, CODE_TOOL_NAME, CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
     custom::CustomTool,
     edit::EditTool,
@@ -179,6 +180,7 @@ pub async fn build_tool_list(
     parent_cancel: tokio_util::sync::CancellationToken,
     parent_session_id: &str,
     sessions: Arc<SessionManager>,
+    code_host: Option<Arc<CodeToolHost>>,
 ) -> Vec<Arc<dyn Tool>> {
     let resolved = &runtime.resolved;
     let engines = &runtime.engine_manager;
@@ -288,7 +290,44 @@ pub async fn build_tool_list(
         tools.extend(new_tools);
     }
 
+    if depth == 0
+        && let Some(host) = code_host
+    {
+        tools = bundle_code_tools(tools, host);
+    }
+
     tools
+}
+
+/// Replace the first-slice operational tools with one model-facing CodeTool.
+///
+/// This is the internal `LITECODE_CODE_MODE` path. Bundle members are removed
+/// from the direct list, so there is exactly one advertised interface for them.
+fn bundle_code_tools(mut tools: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Vec<Arc<dyn Tool>> {
+    if tools.iter().any(|tool| tool.name() == CODE_TOOL_NAME) {
+        tracing::warn!("code mode skipped: a tool named '{CODE_TOOL_NAME}' already exists");
+        return tools;
+    }
+
+    let mut bundle = Vec::new();
+    let mut direct = Vec::with_capacity(tools.len());
+    for tool in tools.drain(..) {
+        if CODE_BUNDLE_TOOL_IDS.contains(&tool.name()) {
+            bundle.push(tool);
+        } else {
+            direct.push(tool);
+        }
+    }
+    if bundle.is_empty() {
+        tracing::warn!("code mode skipped: none of the bundle tools are enabled");
+        return direct;
+    }
+
+    bundle.sort_by(|left, right| left.name().cmp(right.name()));
+    let names: Vec<&str> = bundle.iter().map(|tool| tool.name()).collect();
+    tracing::info!("code mode active: bundling {names:?}");
+    direct.push(Arc::new(CodeTool::new(bundle, host)));
+    direct
 }
 
 #[cfg(test)]
@@ -388,6 +427,7 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
             "test-parent-session",
             dummy_sessions(),
+            None,
         ))
     }
 
@@ -573,5 +613,48 @@ mod tests {
             !names.iter().any(|n| n == "mcp_dead" || n.contains("dead")),
             "unusable MCP must not enter the model tool list, got {names:?}"
         );
+    }
+
+    #[test]
+    fn code_mode_bundles_and_hides_first_slice_tools() {
+        use crate::permission::{PermissionEngine, deny_permission_sink};
+        use crate::tools::code::CodeToolHost;
+        use crate::tools::glob::GlobTool;
+        use crate::tools::grep::GrepTool;
+        use crate::tools::read::ReadTool;
+
+        let resolved = test_resolved(default_bindings());
+        let permission = PermissionEngine::resolver(resolved, "default", 0);
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Context {
+            cwd: dir.path().to_path_buf(),
+            workspace_paths: WorkspacePaths::for_legacy_root(dir.path()),
+            agents_md: None,
+            claude_md: None,
+        };
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            ctx.clone(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            32_768,
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let direct: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(GlobTool),
+            Arc::new(GrepTool),
+            Arc::new(ReadTool::default()),
+        ];
+
+        let tools = bundle_code_tools(direct, host);
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "run_code");
+        assert!(tools[0].schema()["properties"].get("timeout_ms").is_some());
+        let description = tools[0].description(&ctx);
+        assert!(description.contains("declare const tools"));
+        assert!(description.contains("grep(args: GrepInput, options?: ToolCallOptions)"));
+        assert!(description.contains("read(args: ReadInput, options?: ToolCallOptions)"));
     }
 }
