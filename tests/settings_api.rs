@@ -1159,6 +1159,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     ctrl.subscribe(&sid).await;
     let _ = ctrl.take_outgoing_for(&sid);
 
+    let revision_before_switch = sessions.data().revision_blocking(&sid).expect("revision");
     ctrl.set_session_model(&sid, common::TEST_COMPACTION_MODEL_REF)
         .expect("set model");
     assert_eq!(
@@ -1169,6 +1170,11 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     let _ = ctrl.take_outgoing_for(&sid);
 
     let revision_after_first_switch = sessions.data().revision_blocking(&sid).expect("revision");
+    assert_eq!(
+        revision_after_first_switch,
+        revision_before_switch + 1,
+        "one model switch must commit state and history in one revision"
+    );
     let model_changes_after_first_switch = sessions
         .data()
         .events_blocking(&sid)

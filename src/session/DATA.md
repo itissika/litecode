@@ -189,7 +189,7 @@ bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn �
 | `turn/end` | `{ turn, reason: completed \| cancelled \| error \| max_steps \| hook_blocked }` |
 | `request/header` | `{ provider, model, thinking_tier?, context_mode?, … }` 当时调用绑定（DSH `EpochHeader.config`） |
 | `request/context` | 当时系统提示、工具集等装配快照 |
-| `model/changed` | `{ from, to, at_seq, report }` 用户切换；`report` 是 port 预算的丢弃/投影计数。即便下一轮未发生也保留 |
+| `model/changed` | `{ from, to, at_seq, report }` 用户切换；`report` 是 port 预算的丢弃/投影计数。与 `sessions.model_id` 在同一 writer 事务提交，即便下一轮未发生也保留 |
 
 ### 不是 kind
 

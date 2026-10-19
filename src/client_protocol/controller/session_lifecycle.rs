@@ -671,13 +671,8 @@ impl SessionController {
             }
             return Ok(());
         }
-        self.sessions
-            .set_session_model_id(session_id, Some(model_id.to_string()))
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        // Best-effort switch diagnostics: control-plane, never model input.
-        // `sessions.model_id` is the state authority; this row records what the
-        // port said the switch would cost. Folding state + row into one writer
-        // transaction is tracked separately from the current product fix.
+        // State and history share one writer transaction: either the model
+        // changes and the switch row exists, or neither change lands.
         let record = serde_json::json!({
             "schema": 1,
             "from": previous,
@@ -692,12 +687,17 @@ impl SessionController {
                 "projected_parts": preview.report.projected_parts,
             }
         });
+        let change_seq = self
+            .sessions
+            .set_session_model_with_change(session_id, Some(model_id.to_string()), &record)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         tracing::info!(
             target: "litecode.debug.model_switch",
             session_id,
             from = %previous,
             to = %model_id,
             at_seq = preview.at_seq,
+            change_seq,
             items_in = preview.report.items_in,
             items_out = preview.report.items_out,
             reasoning_dropped = preview.report.reasoning_dropped,
@@ -707,13 +707,6 @@ impl SessionController {
             degraded = preview.report.degraded(),
             "session model switched"
         );
-        if let Err(error) = self.sessions.append_model_change(session_id, &record) {
-            tracing::warn!(
-                session_id,
-                %error,
-                "model switched but the switch record could not be appended"
-            );
-        }
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = binding.context_window;

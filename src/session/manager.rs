@@ -2629,22 +2629,61 @@ impl SessionManager {
 
     /// Persist sticky session model catalog id. Does not touch `agent_id`.
     pub fn set_session_model_id(&self, session_id: &str, model_id: Option<String>) -> Result<()> {
+        self.set_session_model_id_inner(session_id, model_id, None)?;
+        Ok(())
+    }
+
+    /// Atomically persist the session model and its control-plane switch event.
+    ///
+    /// The model column and `model/changed` row share one writer transaction,
+    /// so a failed event append rolls the model change back too.
+    pub fn set_session_model_with_change(
+        &self,
+        session_id: &str,
+        model_id: Option<String>,
+        record: &serde_json::Value,
+    ) -> Result<crate::session::event::Seq> {
+        let event = EventDraft {
+            time: chrono::Utc::now().timestamp_millis(),
+            event_type: EventType::ModelChanged,
+            data: record.clone(),
+            surface_op: None,
+            source_seqs: None,
+            ignorable: false,
+            state: crate::session::model::LogState::Final,
+        };
+        let receipt = self.set_session_model_id_inner(session_id, model_id, Some(event))?;
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(LitecodeError::InvalidSessionEvent(format!(
+                "set_session_model_with_change: unexpected commit outcome {other:?}"
+            ))),
+        }
+    }
+
+    fn set_session_model_id_inner(
+        &self,
+        session_id: &str,
+        model_id: Option<String>,
+        event: Option<EventDraft>,
+    ) -> Result<crate::session::data::command::CommitReceipt> {
         let normalized = model_id
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
         let expected = self.expected_revision(session_id);
-        self.mutate_blocking(SessionMutation::SetModel {
+        let receipt = self.mutate_blocking(SessionMutation::SetModel {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
             model_id: normalized.clone(),
+            event,
         })?;
         if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
             record.model_id = normalized;
         }
-        Ok(())
+        Ok(receipt)
     }
 
     pub fn session_model_id(&self, session_id: &str) -> Option<String> {
@@ -2920,41 +2959,6 @@ impl SessionManager {
             crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
             other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
                 "append_request_origin: unexpected commit outcome {other:?}"
-            ))),
-        }
-    }
-
-    /// Record a user-visible model switch.
-    ///
-    /// Control-plane only: like `request/header`, the row never enters the
-    /// spine or model input. Unlike a header it exists even when the next turn
-    /// never runs, so the UI and the diag log can answer "who switched, when,
-    /// and what did the port say it would cost".
-    ///
-    /// Best-effort diagnostics: the session model column is the state
-    /// authority. The caller owns the transaction currently separating the
-    /// model update from this append; a future mutation may fold both together.
-    pub fn append_model_change(
-        &self,
-        session_id: &str,
-        record: &serde_json::Value,
-    ) -> crate::types::Result<crate::session::event::Seq> {
-        let receipt = self.apply(
-            session_id,
-            SessionApply::Append(EventDraft {
-                time: chrono::Utc::now().timestamp_millis(),
-                event_type: EventType::ModelChanged,
-                data: record.clone(),
-                surface_op: None,
-                source_seqs: None,
-                ignorable: false,
-                state: crate::session::model::LogState::Final,
-            }),
-        )?;
-        match receipt.outcome {
-            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
-            other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
-                "append_model_change: unexpected commit outcome {other:?}"
             ))),
         }
     }
@@ -3475,14 +3479,21 @@ mod request_origin_tests {
         );
     }
 
-    /// A switch is durable and control-plane: it never becomes model input,
-    /// and it is not a request origin.
+    /// A switch is durable and control-plane: state and history share one
+    /// revision, it never becomes model input, and it is not a request origin.
     #[test]
-    fn model_change_round_trips_as_a_control_plane_row() {
+    fn model_change_commits_state_and_control_plane_row_together() {
         let manager = SessionManager::ephemeral_registry();
         let session_id = manager
             .open_session_sync("", "default", None)
             .expect("session opens");
+        manager
+            .set_session_model_id(&session_id, Some("p/a".into()))
+            .expect("initial model");
+        let revision = manager
+            .data()
+            .revision_blocking(&session_id)
+            .expect("revision");
         let record = serde_json::json!({
             "schema": 1,
             "from": "p/a",
@@ -3491,9 +3502,21 @@ mod request_origin_tests {
             "report": { "reasoning_dropped": 3, "projected_parts": 1 },
         });
         let seq = manager
-            .append_model_change(&session_id, &record)
-            .expect("switch record appends");
+            .set_session_model_with_change(&session_id, Some("p/b".into()), &record)
+            .expect("switch commits");
 
+        assert_eq!(
+            manager.session_model_id(&session_id).as_deref(),
+            Some("p/b")
+        );
+        assert_eq!(
+            manager
+                .data()
+                .revision_blocking(&session_id)
+                .expect("revision"),
+            revision + 1,
+            "one user action must advance the session revision once"
+        );
         let events = manager.data().events_blocking(&session_id).expect("events");
         let row = events
             .iter()
@@ -3511,6 +3534,58 @@ mod request_origin_tests {
         assert!(
             manager.request_origins(&session_id).unwrap().is_empty(),
             "a switch is not a request origin"
+        );
+    }
+
+    #[test]
+    fn failed_model_change_rolls_back_state_and_event_together() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        manager
+            .set_session_model_id(&session_id, Some("p/a".into()))
+            .expect("initial model");
+        let revision = manager
+            .data()
+            .revision_blocking(&session_id)
+            .expect("revision");
+        let record = serde_json::json!({
+            "schema": 1,
+            "from": "p/a",
+            "to": "p/b",
+            "at_seq": 0,
+            "report": { "reasoning_dropped": 0 },
+        });
+
+        manager
+            .data()
+            .hooks()
+            .inject(crate::session::FaultKind::BeforeCommit);
+        let error = manager
+            .set_session_model_with_change(&session_id, Some("p/b".into()), &record)
+            .expect_err("injected commit failure must fail the switch");
+        assert!(error.to_string().contains("before commit"), "{error}");
+
+        assert_eq!(
+            manager.session_model_id(&session_id).as_deref(),
+            Some("p/a"),
+            "the model change must roll back with the event"
+        );
+        let events = manager.data().events_blocking(&session_id).expect("events");
+        assert!(
+            !events
+                .iter()
+                .any(|event| event.event_type == EventType::ModelChanged),
+            "no switch row may survive a rolled-back model change"
+        );
+        assert_eq!(
+            manager
+                .data()
+                .revision_blocking(&session_id)
+                .expect("revision"),
+            revision,
+            "a failed switch must not advance the revision"
         );
     }
 

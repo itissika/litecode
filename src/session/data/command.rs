@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::session::data::sqlite::session::{
     ProviderUsageRollup, SessionApply, SessionContextMeter,
 };
-use crate::session::event::Seq;
+use crate::session::event::{EventDraft, Seq};
 use crate::session::task_state::TaskReminders;
 use crate::session::working::WorkingRow;
 use crate::types::Item;
@@ -227,6 +227,8 @@ pub enum SessionMutation {
         expected_revision: u64,
         operation_id: MutationId,
         model_id: Option<String>,
+        /// Optional control-plane event committed with the model state change.
+        event: Option<EventDraft>,
     },
     SetThinkingTier {
         session_id: String,
