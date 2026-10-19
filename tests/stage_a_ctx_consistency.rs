@@ -547,7 +547,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     seed.push(function_call_item(
         "c-kept",
         "read",
-        r#"{"file_path":"a.rs"}"#,
+        r#"{"path":"a.rs"}"#,
         "fc_kept",
     ));
     seed.push(Item::FunctionCallOutput(FunctionCallOutputItemParam {

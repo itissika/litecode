@@ -1,3 +1,4 @@
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
@@ -30,13 +31,51 @@ impl Tool for GlobTool {
                     "type": "string",
                     "description": "Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
                 },
-                "-u": {
+                "include_ignored": {
                     "type": "boolean",
-                    "description": "Also search gitignored and workspace-excluded paths (rg -u / --no-ignore). Default false."
+                    "description": "Also search gitignored and workspace-excluded paths. Default false."
                 }
             },
             "required": ["pattern"]
         })
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(serde_json::json!({
+            "type": "object",
+            "description": "A bounded page of path matches.",
+            "properties": {
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Matching paths, relative to the effective search path: relative to path when provided, otherwise workspace-relative."
+                },
+                "total": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Total matches before truncation."
+                },
+                "truncated": {
+                    "type": "boolean",
+                    "description": "True when paths contains fewer entries than total."
+                },
+                "effective_pattern": {
+                    "type": "string",
+                    "description": "Pattern actually matched after redundant path-prefix normalization."
+                },
+                "searched_path": {
+                    "type": ["string", "null"],
+                    "description": "The path argument used for this search; null means workspace root."
+                }
+            },
+            "required": [
+                "paths",
+                "total",
+                "truncated",
+                "effective_pattern",
+                "searched_path"
+            ]
+        }))
     }
 
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
@@ -48,9 +87,18 @@ impl Tool for GlobTool {
         input: Value,
         execution: ToolExecutionContext,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
-        Box::pin(std::future::ready(
-            self.call_for_execution(input, execution),
-        ))
+        Box::pin(async move {
+            match tokio::task::spawn_blocking(move || GlobTool.call_for_execution(input, execution))
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => ToolCallResult::error_with_kind(
+                    crate::types::ToolErrorKind::Internal,
+                    format!("glob worker failed: {error}"),
+                    false,
+                ),
+            }
+        })
     }
 
     fn call_inner(&self, input: Value) -> ToolCallResult {
@@ -71,6 +119,14 @@ impl Tool for GlobTool {
     fn description(&self, _ctx: &Context) -> String {
         crate::tools::description_text(include_str!("descriptions/glob.md"))
     }
+
+    fn timeout(&self) -> Option<u64> {
+        Some(30)
+    }
+
+    fn is_cancellable(&self) -> bool {
+        true
+    }
 }
 
 impl GlobTool {
@@ -81,7 +137,10 @@ impl GlobTool {
         };
 
         let pattern_warning = parent_dir_pattern_warning(pattern);
-        let no_ignore = input.get("-u").and_then(Value::as_bool).unwrap_or(false);
+        let no_ignore = input
+            .get("include_ignored")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let path_arg = input["path"]
             .as_str()
             .map(str::trim)
@@ -96,13 +155,14 @@ impl GlobTool {
                 Ok(r) => r,
                 Err(e) => return ToolCallResult::error(e.to_string()),
             };
-            return ToolCallResult::ok(format_glob_body(
+            let body = format_glob_body(
                 &results,
                 &effective_pattern,
                 path_arg,
                 pattern_warning.as_deref(),
                 prefix_note.as_deref(),
-            ));
+            );
+            return glob_result(body, &results, &effective_pattern, path_arg);
         }
 
         let search_path = match path_arg {
@@ -138,26 +198,32 @@ impl GlobTool {
                 &search_path,
             )
         {
-            return ToolCallResult::ok(message);
+            let empty = GlobListing {
+                hits: Vec::new(),
+                total: 0,
+            };
+            return glob_result(message, &empty, &effective_pattern, path_arg);
         }
 
-        let results = match glob_match(
+        let results = match glob_match_cancellable(
             &execution.workspace_root,
             &search_path,
             &effective_pattern,
             no_ignore,
+            Some(&execution.cancel),
         ) {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
 
-        ToolCallResult::ok(format_glob_body(
+        let body = format_glob_body(
             &results,
             &effective_pattern,
             path_arg,
             pattern_warning.as_deref(),
             prefix_note.as_deref(),
-        ))
+        );
+        glob_result(body, &results, &effective_pattern, path_arg)
     }
 }
 
@@ -165,6 +231,15 @@ impl GlobTool {
 struct GlobListing {
     hits: Vec<String>,
     total: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct GlobData {
+    paths: Vec<String>,
+    total: usize,
+    truncated: bool,
+    effective_pattern: String,
+    searched_path: Option<String>,
 }
 
 impl GlobListing {
@@ -178,6 +253,23 @@ impl GlobListing {
     fn iter(&self) -> impl Iterator<Item = &String> {
         self.hits.iter()
     }
+}
+
+fn glob_result(
+    body: String,
+    listing: &GlobListing,
+    effective_pattern: &str,
+    path_arg: Option<&str>,
+) -> ToolCallResult {
+    let data = GlobData {
+        paths: listing.hits.clone(),
+        total: listing.total,
+        truncated: listing.hits.len() < listing.total,
+        effective_pattern: effective_pattern.to_string(),
+        searched_path: path_arg.map(str::to_string),
+    };
+    let data = serde_json::to_value(data).unwrap_or(Value::Null);
+    ToolCallResult::ok(body).with_data(data)
 }
 
 fn format_glob_body(
@@ -284,11 +376,22 @@ fn glob_virtual_sessions(
     Ok(GlobListing::capped(hits))
 }
 
+#[cfg(test)]
 fn glob_match(
     workspace: &std::path::Path,
     base: &std::path::Path,
     pattern: &str,
     no_ignore: bool,
+) -> Result<GlobListing> {
+    glob_match_cancellable(workspace, base, pattern, no_ignore, None)
+}
+
+fn glob_match_cancellable(
+    workspace: &std::path::Path,
+    base: &std::path::Path,
+    pattern: &str,
+    no_ignore: bool,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
 ) -> Result<GlobListing> {
     let glob_matcher = compile_include_pattern(pattern)?;
     let preset = discovery_preset(no_ignore);
@@ -311,6 +414,11 @@ fn glob_match(
     let walker = builder.build();
 
     for entry in walker.flatten() {
+        if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            return Err(crate::types::LitecodeError::ToolExecution(
+                "glob cancelled".into(),
+            ));
+        }
         if !entry.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
@@ -329,6 +437,11 @@ fn glob_match(
         && let Some(extra) = private_knowledge_walker(workspace, preset, Some(false))
     {
         for entry in extra.build().flatten() {
+            if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+                return Err(crate::types::LitecodeError::ToolExecution(
+                    "glob cancelled".into(),
+                ));
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
@@ -498,7 +611,7 @@ mod tests {
             serde_json::json!({
                 "pattern": "**/*",
                 "path": "node_modules",
-                "-u": true,
+                "include_ignored": true,
             }),
         );
         assert!(
@@ -708,8 +821,8 @@ mod tests {
         assert!(body.contains("No files found"), "{body}");
         assert!(body.contains(".litecode/excludes.json"), "{body}");
         assert!(
-            !body.contains("-u"),
-            "empty glob must not advertise -u, got: {body}"
+            !body.contains("include_ignored"),
+            "empty glob must not advertise include_ignored, got: {body}"
         );
     }
 
@@ -726,7 +839,7 @@ mod tests {
         id
     }
 
-    fn glob_in(root: &std::path::Path, input: Value) -> String {
+    fn glob_result_in(root: &std::path::Path, input: Value) -> ToolCallResult {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -745,7 +858,87 @@ mod tests {
                 )),
             },
         ))
-        .content
+    }
+
+    fn glob_in(root: &std::path::Path, input: Value) -> String {
+        glob_result_in(root, input).content
+    }
+
+    fn glob_data_in(root: &std::path::Path, input: Value) -> Value {
+        glob_result_in(root, input)
+            .data
+            .expect("glob must return structured data")
+    }
+
+    #[test]
+    fn structured_result_lists_paths_and_totals() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        std::fs::write(root.join("c.md"), "c").unwrap();
+
+        let data = glob_data_in(root, serde_json::json!({"pattern": "**/*.txt"}));
+        assert_eq!(data["total"], 2);
+        assert_eq!(data["truncated"], false);
+        assert_eq!(data["effective_pattern"], "**/*.txt");
+        let mut paths: Vec<String> = data["paths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        paths.sort();
+        assert_eq!(paths, vec!["a.txt".to_string(), "b.txt".to_string()]);
+    }
+
+    #[test]
+    fn structured_result_is_empty_on_no_hits() {
+        let dir = TempDir::new().unwrap();
+        let data = glob_data_in(dir.path(), serde_json::json!({"pattern": "**/*.nope"}));
+        assert_eq!(data["paths"], serde_json::json!([]));
+        assert_eq!(data["total"], 0);
+        assert_eq!(data["truncated"], false);
+    }
+
+    #[test]
+    fn include_ignored_is_the_public_boolean() {
+        assert_eq!(GlobTool.timeout(), Some(30));
+        assert!(GlobTool.is_cancellable());
+        let schema = GlobTool.schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("include_ignored"));
+        assert!(!props.contains_key("-u"));
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
+        std::fs::write(root.join("ignored.txt"), "x\n").unwrap();
+        let data = glob_data_in(
+            root,
+            serde_json::json!({"pattern": "**/*", "include_ignored": true}),
+        );
+        assert!(
+            data["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path == "ignored.txt")
+        );
+    }
+
+    #[test]
+    fn structured_result_reports_truncation() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        for i in 0..(MAX_RESULTS + 3) {
+            std::fs::write(root.join(format!("f{i:04}.txt")), "x").unwrap();
+        }
+        let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
+        assert_eq!(data["paths"].as_array().unwrap().len(), MAX_RESULTS);
+        assert_eq!(data["total"], MAX_RESULTS + 3);
+        assert_eq!(data["truncated"], true);
     }
 
     #[test]
@@ -836,11 +1029,32 @@ mod tests {
 
         let unscoped_ignore = glob_in(
             root,
-            serde_json::json!({ "pattern": "**/*.md", "-u": true }),
+            serde_json::json!({ "pattern": "**/*.md", "include_ignored": true }),
         );
         assert!(
             !unscoped_ignore.contains(".litecode/sessions/"),
             "no_ignore workspace glob must still skip sessions, got: {unscoped_ignore}"
         );
+    }
+
+    #[test]
+    fn data_schema_accepts_structured_results() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let data = glob_data_in(dir.path(), serde_json::json!({"pattern": "**/*.txt"}));
+        let schema = GlobTool.data_schema().expect("glob data schema");
+        crate::tool::schema_validate(&schema, &data)
+            .unwrap_or_else(|error| panic!("glob data does not match its schema: {error}: {data}"));
+    }
+
+    #[test]
+    fn cancelled_glob_stops_before_walking() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel))
+            .unwrap_err();
+        assert!(error.to_string().contains("glob cancelled"), "{error}");
     }
 }

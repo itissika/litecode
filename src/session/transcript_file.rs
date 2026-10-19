@@ -687,11 +687,7 @@ mod tests {
             result("c1"),
             call("bash", r#"{"command":"ls"}"#, "c2"),
             result("c2"),
-            call(
-                "read",
-                r#"{"file_path":".litecode/sessions/01ARZ.md"}"#,
-                "c3",
-            ),
+            call("read", r#"{"path":".litecode/sessions/01ARZ.md"}"#, "c3"),
             result("c3"),
         ]);
         let reader = data.reader();
@@ -718,7 +714,7 @@ mod tests {
         ));
         assert!(call_reads_sessions(
             "read",
-            Some(r#"{"file_path":".litecode/sessions/01ARZ.md"}"#)
+            Some(r#"{"path":".litecode/sessions/01ARZ.md"}"#)
         ));
         assert!(call_reads_sessions(
             "grep",
@@ -726,7 +722,7 @@ mod tests {
         ));
         assert!(!call_reads_sessions(
             "read",
-            Some(r#"{"file_path":"src/main.rs"}"#)
+            Some(r#"{"path":"src/main.rs"}"#)
         ));
         assert!(!call_reads_sessions(
             "bash",

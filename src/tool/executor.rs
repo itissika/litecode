@@ -23,8 +23,8 @@ use crate::tool::schema_validate::{
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
-    FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolOutputPart,
-    ToolSignalLevel,
+    FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolErrorKind,
+    ToolOutputPart, ToolSignalLevel,
 };
 
 #[derive(Debug)]
@@ -114,7 +114,12 @@ fn resource_keys_conflict(a: &[ResourceKey], b: &[ResourceKey]) -> bool {
 }
 
 fn cancelled_tool_result(name: &str) -> ToolCallResult {
-    ToolCallResult::error(format!("tool '{name}' cancelled")).finalize_signals()
+    ToolCallResult::error_with_kind(
+        ToolErrorKind::Cancelled,
+        format!("tool '{name}' cancelled"),
+        false,
+    )
+    .finalize_signals()
 }
 
 fn wire_result(result: ToolCallResult) -> ToolCallResult {
@@ -321,19 +326,31 @@ pub async fn run_tool(
     let tool = match tools.iter().find(|t| t.name() == tu_name) {
         Some(t) => t.clone(),
         None => {
-            return wire_result(ToolCallResult::error(format!("tool '{tu_name}' not found")));
+            return wire_result(ToolCallResult::error_with_kind(
+                ToolErrorKind::NotFound,
+                format!("tool '{tu_name}' not found"),
+                false,
+            ));
         }
     };
 
     let tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
         Ok(value) => value,
         Err(detail) => {
-            return wire_result(ToolCallResult::error(invalid_input_for(&tu_name, detail)));
+            return wire_result(ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidInput,
+                invalid_input_for(&tu_name, detail),
+                false,
+            ));
         }
     };
 
     if let Err(msg) = check_tool_input(tool.as_ref(), &tool_use_input) {
-        return wire_result(ToolCallResult::error(invalid_input_for(&tu_name, msg)));
+        return wire_result(ToolCallResult::error_with_kind(
+            ToolErrorKind::InvalidInput,
+            invalid_input_for(&tu_name, msg),
+            false,
+        ));
     }
 
     // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
@@ -385,7 +402,11 @@ pub async fn run_tool(
                 e.error_kind = Some("denied".into());
                 e.error = Some(audit_truncate(&msg));
             });
-            return wire_result(ToolCallResult::error(msg));
+            return wire_result(ToolCallResult::error_with_kind(
+                ToolErrorKind::PermissionDenied,
+                msg,
+                false,
+            ));
         }
         AuthResult::Aborted => {
             emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
@@ -417,7 +438,11 @@ pub async fn run_tool(
                     e.error_kind = Some("other".into());
                     e.error = Some(audit_truncate(&msg));
                 });
-                return wire_result(ToolCallResult::error(msg));
+                return wire_result(ToolCallResult::error_with_kind(
+                    ToolErrorKind::Conflict,
+                    msg,
+                    true,
+                ));
             }
         }
     } else {
@@ -435,25 +460,40 @@ pub async fn run_tool(
     let tool_clone = tool.clone();
     let input = effective_input.clone();
     let name = tu_name.clone();
+    // A child token lets the tool timeout stop its own work without cancelling
+    // the surrounding turn. The parent still propagates into this child.
+    let execution_cancel = cancel.child_token();
     let execution = ToolExecutionContext {
         path_mode,
         workspace_root: ctx.cwd.clone(),
         call_id: tu_id.clone(),
-        cancel: cancel.clone(),
+        cancel: execution_cancel.clone(),
         output_limit: tool.max_result_size(),
         session_id: session_id.to_string(),
         session,
     };
     // Build the tool execution future
     let tool_fut = AssertUnwindSafe(tool_clone.execute(input, execution)).catch_unwind();
+    tokio::pin!(tool_fut);
 
-    // Wrap with timeout if the tool specifies one
+    // Wrap with timeout if the tool specifies one. On expiry, ask the tool to
+    // stop and wait for it to settle before returning the timeout result.
     let raw_result = if let Some(secs) = tool.timeout() {
-        match tokio::time::timeout(std::time::Duration::from_secs(secs), tool_fut).await {
-            Ok(result) => result,
-            Err(_elapsed) => Ok(ToolCallResult::error(format!(
-                "tool '{name}' timed out after {secs} seconds. Retry with a narrower scope, or use bash run_in_background for long commands"
-            ))),
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(secs));
+        tokio::pin!(timeout);
+        tokio::select! {
+            result = &mut tool_fut => result,
+            _ = &mut timeout => {
+                execution_cancel.cancel();
+                let _ = tool_fut.await;
+                Ok(ToolCallResult::error_with_kind(
+                    ToolErrorKind::Timeout,
+                    format!(
+                        "tool '{name}' timed out after {secs} seconds. Retry with a narrower scope, or use bash run_in_background for long commands"
+                    ),
+                    true,
+                ))
+            }
         }
     } else {
         tool_fut.await
@@ -475,7 +515,11 @@ pub async fn run_tool(
                 e.error_kind = Some("panic".into());
                 e.error = Some(audit_truncate(&msg));
             });
-            ToolCallResult::error(format!("tool '{name}' panicked: {msg}"))
+            ToolCallResult::error_with_kind(
+                ToolErrorKind::Internal,
+                format!("tool '{name}' panicked: {msg}"),
+                false,
+            )
         }
     };
     let unknown = unknown_top_level_properties(&tool.schema(), &effective_input);
@@ -490,9 +534,11 @@ pub async fn run_tool(
         Ok(processed) => processed,
         Err(e) => {
             tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");
-            wire_result(ToolCallResult::error(format!(
-                "output processing failed: {e}"
-            )))
+            wire_result(ToolCallResult::error_with_kind(
+                ToolErrorKind::Io,
+                format!("output processing failed: {e}"),
+                false,
+            ))
         }
     };
     tracing::info!(
@@ -846,7 +892,7 @@ mod tests {
         ];
         let root = Path::new("/proj");
         let uses = vec![
-            fc("r1", "read", serde_json::json!({"file_path": "a.txt"})),
+            fc("r1", "read", serde_json::json!({"path": "a.txt"})),
             fc(
                 "w1",
                 "write",
@@ -877,7 +923,7 @@ mod tests {
         ];
         let root = Path::new("/proj");
         let uses = vec![
-            fc("r1", "read", serde_json::json!({"file_path": "a.txt"})),
+            fc("r1", "read", serde_json::json!({"path": "a.txt"})),
             fc("b1", "bash", serde_json::json!({"command": "cat a.txt"})),
         ];
         let batches =
@@ -894,8 +940,8 @@ mod tests {
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::read::ReadTool::default())];
         let root = Path::new("/proj");
         let uses = vec![
-            fc("r1", "read", serde_json::json!({"file_path": "a.txt"})),
-            fc("r2", "read", serde_json::json!({"file_path": "b.txt"})),
+            fc("r1", "read", serde_json::json!({"path": "a.txt"})),
+            fc("r2", "read", serde_json::json!({"path": "b.txt"})),
         ];
         let batches =
             partition_tool_calls(&uses, &tools, root, |_| crate::workspace::ToolPathMode::All);

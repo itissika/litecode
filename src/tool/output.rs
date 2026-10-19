@@ -67,6 +67,8 @@ pub fn finalize_tool_call_result(
     let parts = materialize_media_parts(result.parts, data_root)?;
     Ok(ToolCallResult {
         content: finalize_tool_output(result.content, data_root, spill_threshold)?,
+        data: result.data,
+        error: result.error,
         parts,
         metadata: result.metadata,
         level: result.level,
@@ -284,6 +286,25 @@ mod tests {
             },
             _ => panic!("function_call_output expected"),
         }
+    }
+
+    #[test]
+    fn finalize_preserves_structured_data_and_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ToolCallResult::ok("done").with_data(serde_json::json!({"paths": ["a.rs"]}));
+        let finalized = finalize_tool_call_result(result, dir.path(), 32_768).unwrap();
+        assert_eq!(finalized.data, Some(serde_json::json!({"paths": ["a.rs"]})));
+        assert!(finalized.error.is_none());
+
+        let result = ToolCallResult::error_with_kind(
+            crate::types::ToolErrorKind::InvalidInput,
+            "bad input",
+            false,
+        );
+        let finalized = finalize_tool_call_result(result, dir.path(), 32_768).unwrap();
+        let error = finalized.error.expect("typed error");
+        assert_eq!(error.kind, crate::types::ToolErrorKind::InvalidInput);
+        assert_eq!(error.message, "bad input");
     }
 
     #[test]

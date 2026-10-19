@@ -61,7 +61,7 @@ pub use index_status::{
 };
 pub use lexical::{
     LexicalMatch, LexicalQuery, LexicalSearchOutcome, lexical_search, lexical_search_for_agent,
-    lexical_search_with_preset, type_to_include_globs,
+    lexical_search_for_agent_cancellable, lexical_search_with_preset, type_to_include_globs,
 };
 pub use lexical_primitive::LexicalPrimitive;
 pub use meta::{

@@ -128,7 +128,7 @@ fn truncation_location(result: &TurnResult) -> String {
     match (result.start_line, result.end_line) {
         (Some(start), Some(end)) => format!(
             "transcript: {}\nstart_line: {start}\nend_line: {end}\n\
-             read: {{\"file_path\":\"{}\",\"start_line\":{start},\"end_line\":{end}}}\n",
+             read: {{\"path\":\"{}\",\"start_line\":{start},\"end_line\":{end}}}\n",
             result.transcript_path, result.transcript_path
         ),
         _ => format!("transcript: {}\n", result.transcript_path),

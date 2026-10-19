@@ -177,7 +177,7 @@ async fn queued_message_is_injected_at_the_tool_loop_seam() {
             vec![function_call_item(
                 "call_1",
                 "read",
-                r#"{"file_path":"probe.txt"}"#,
+                r#"{"path":"probe.txt"}"#,
                 "fc_1",
             )],
             vec![assistant_text_item("done", "msg_done")],
@@ -310,7 +310,7 @@ async fn the_seam_injection_announces_its_own_commit() {
             vec![function_call_item(
                 "call_1",
                 "read",
-                r#"{"file_path":"probe.txt"}"#,
+                r#"{"path":"probe.txt"}"#,
                 "fc_1",
             )],
             vec![assistant_text_item("done", "msg_done")],

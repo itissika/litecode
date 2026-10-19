@@ -193,7 +193,7 @@ mod tests {
             "a session_search call reads the store"
         );
 
-        let plain = call_row(2, "c2", "read", r#"{"file_path":"src/main.rs"}"#);
+        let plain = call_row(2, "c2", "read", r#"{"path":"src/main.rs"}"#);
         let decoded = decode_row(&plain, &dir).unwrap();
         assert_eq!(decoded.call_id.as_deref(), Some("c2"));
         assert!(!decoded.session_read_call);

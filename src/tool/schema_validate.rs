@@ -130,6 +130,9 @@ fn is_unconstrained(schema: &Value) -> bool {
     }
     !obj.contains_key("type")
         && !obj.contains_key("enum")
+        && !obj.contains_key("const")
+        && !obj.contains_key("oneOf")
+        && !obj.contains_key("anyOf")
         && !obj.contains_key("properties")
         && !obj.contains_key("items")
         && !obj.contains_key("required")
@@ -141,6 +144,31 @@ fn validate_node(schema: &Value, value: &Value, path: &str) -> Result<(), String
     };
     if is_unconstrained(schema) {
         return Ok(());
+    }
+
+    if let Some(expected) = schema_obj.get("const")
+        && expected != value
+    {
+        return Err(enum_error(path, std::slice::from_ref(expected), value));
+    }
+
+    if let Some(variants) = schema_obj.get("oneOf").and_then(Value::as_array) {
+        let matches = variants
+            .iter()
+            .filter(|variant| validate_node(variant, value, path).is_ok())
+            .count();
+        if matches != 1 {
+            return Err(one_of_error(path, value));
+        }
+    }
+
+    if let Some(variants) = schema_obj.get("anyOf").and_then(Value::as_array) {
+        let matched = variants
+            .iter()
+            .any(|variant| validate_node(variant, value, path).is_ok());
+        if !matched {
+            return Err(any_of_error(path, value));
+        }
     }
 
     if let Some(enum_vals) = schema_obj.get("enum").and_then(Value::as_array)
@@ -311,6 +339,23 @@ fn type_error(path: &str, expected: &str, value: &Value) -> String {
         format!("expected {expected}, got {got}")
     } else {
         format!("parameter '{path}' expected {expected}, got {got}")
+    }
+}
+
+fn one_of_error(path: &str, value: &Value) -> String {
+    variant_error(path, "exactly one matching oneOf", value)
+}
+
+fn any_of_error(path: &str, value: &Value) -> String {
+    variant_error(path, "at least one matching anyOf", value)
+}
+
+fn variant_error(path: &str, expected: &str, value: &Value) -> String {
+    let got = got_clause(value);
+    if path.is_empty() {
+        format!("expected {expected} variant, got {got}")
+    } else {
+        format!("parameter '{path}' expected {expected} variant, got {got}")
     }
 }
 
@@ -656,6 +701,40 @@ mod tests {
         assert_eq!(
             require_string(&json!({}), "file_path").unwrap_err(),
             "missing required parameter 'file_path'"
+        );
+    }
+
+    #[test]
+    fn one_of_discriminated_union() {
+        let schema = json!({
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"const": "text"},
+                        "text": {"type": "string"}
+                    },
+                    "required": ["kind", "text"]
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"const": "image"},
+                        "bytes": {"type": "integer"}
+                    },
+                    "required": ["kind", "bytes"]
+                }
+            ]
+        });
+        assert!(schema_validate(&schema, &json!({"kind": "text", "text": "hi"})).is_ok());
+        assert!(schema_validate(&schema, &json!({"kind": "image", "bytes": 8})).is_ok());
+        assert!(
+            schema_validate(&schema, &json!({"kind": "text", "bytes": 8})).is_err(),
+            "text variant requires text"
+        );
+        assert!(
+            schema_validate(&schema, &json!({"kind": "other"})).is_err(),
+            "unknown discriminator must fail"
         );
     }
 }

@@ -80,7 +80,7 @@ fn tool_then_done() -> Vec<Vec<Item>> {
         vec![function_call_item(
             "call_1",
             "read",
-            r#"{"file_path":"probe.txt"}"#,
+            r#"{"path":"probe.txt"}"#,
             "fc_1",
         )],
         vec![assistant_text_item("done", "msg_done")],

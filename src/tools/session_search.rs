@@ -569,7 +569,7 @@ mod tests {
             .unwrap();
         let read = rt.block_on(crate::tools::read::ReadTool::default().execute(
             serde_json::json!({
-                "file_path": path,
+                "path": path,
                 "start_line": start_line,
                 "end_line": end_line,
             }),

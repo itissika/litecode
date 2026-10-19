@@ -7,6 +7,7 @@ use super::policy::DEFAULT_RULE_ID;
 pub fn permission_denied_message(tool_name: &str, rule_id: &str, input: &Value) -> String {
     let file_path = input
         .get("file_path")
+        .or_else(|| input.get("path"))
         .and_then(Value::as_str)
         .unwrap_or(tool_name);
     match (tool_name, rule_id) {

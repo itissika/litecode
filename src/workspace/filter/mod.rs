@@ -83,7 +83,7 @@ pub fn search_corpus_note(no_ignore: bool) -> Option<String> {
 
 /// One next step after a Search-corpus miss. Names schema fields, not bash.
 pub fn search_corpus_next_step() -> &'static str {
-    "If the text may live in an excluded tree, set path there or pass \"-u\": true; otherwise it is absent from this corpus."
+    "If the text may live in an excluded tree, set path there or explicitly allow ignored paths; otherwise it is absent from this corpus."
 }
 
 fn format_corpus_globs(globs: &[String]) -> String {
@@ -186,7 +186,7 @@ mod corpus_note_tests {
     #[test]
     fn search_corpus_next_step_names_fields() {
         let step = search_corpus_next_step();
-        assert!(step.contains("\"-u\": true"), "{step}");
+        assert!(step.contains("allow ignored"), "{step}");
         assert!(step.contains("path"), "{step}");
         assert!(!step.to_ascii_lowercase().contains("bash"), "{step}");
     }

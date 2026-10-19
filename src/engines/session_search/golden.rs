@@ -98,7 +98,7 @@ fn corpus() -> Vec<SearchableRow> {
             2,
             "c1",
             "read",
-            r#"{"file_path":".litecode/sessions/OTHER.md"}"#,
+            r#"{"path":".litecode/sessions/OTHER.md"}"#,
         ),
         function_result("S1", 3, "c1", "echoed page UNIQUE_ECHO"),
         // Ordinary tool pair: call stays (sparse whitelist); result is out.

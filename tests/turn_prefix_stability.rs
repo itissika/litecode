@@ -204,13 +204,13 @@ async fn tool_loop_llm_request_prefix_json_is_stable() {
         vec![function_call_item(
             "call_1",
             "read",
-            r#"{"file_path":"probe.txt"}"#,
+            r#"{"path":"probe.txt"}"#,
             "fc_1",
         )],
         vec![function_call_item(
             "call_2",
             "read",
-            r#"{"file_path":"probe.txt"}"#,
+            r#"{"path":"probe.txt"}"#,
             "fc_2",
         )],
         vec![assistant_text_item("done", "msg_done")],
@@ -298,7 +298,7 @@ fn persist_roundtrip_preserves_item_json() {
     let (sid, sessions) = setup_session(dir.path());
     let original = vec![
         user_text("hello"),
-        function_call_item("c1", "read", r#"{"file_path":"a.rs"}"#, "fc_1"),
+        function_call_item("c1", "read", r#"{"path":"a.rs"}"#, "fc_1"),
         fco("c1", "file contents"),
         assistant_text_item("ok", "msg_1"),
     ];
@@ -416,7 +416,7 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
     let streamed = sessions
         .begin_stream_item(&sid, &in_progress_fc("c1", "read", "fc_1"), "t1")
         .expect("stream open");
-    let completed_fc = function_call_item("c1", "read", r#"{"file_path":"a.rs"}"#, "fc_1");
+    let completed_fc = function_call_item("c1", "read", r#"{"path":"a.rs"}"#, "fc_1");
     sessions
         .seal_stream_item(&sid, streamed, &completed_fc)
         .expect("stream seal");
@@ -446,7 +446,7 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
     let streamed2 = sessions
         .begin_stream_item(&sid, &in_progress_fc("c2", "read", "fc_2"), "t1")
         .expect("stream open 2");
-    let completed_fc2 = function_call_item("c2", "read", r#"{"file_path":"b.rs"}"#, "fc_2");
+    let completed_fc2 = function_call_item("c2", "read", r#"{"path":"b.rs"}"#, "fc_2");
     sessions
         .seal_stream_item(&sid, streamed2, &completed_fc2)
         .expect("stream seal 2");
@@ -589,7 +589,7 @@ fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
     sessions
         .persist_item(
             &sid,
-            &function_call_item("call_1", "read", r#"{"file_path":"a.rs"}"#, "fc_1"),
+            &function_call_item("call_1", "read", r#"{"path":"a.rs"}"#, "fc_1"),
         )
         .unwrap();
     sessions.persist_item(&sid, &fco("call_1", "ok-a")).unwrap();
@@ -612,7 +612,7 @@ fn persist_item_reused_function_call_id_must_not_rewrite_final_row() {
     );
     assert_eq!(
         item_json(&calls[0])["arguments"],
-        r#"{"file_path":"a.rs"}"#,
+        r#"{"path":"a.rs"}"#,
         "already-sent FunctionCall must stay byte-identical"
     );
 }
@@ -639,7 +639,7 @@ async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
     turn.push(WorkingRow::pending(function_call_item(
         "call_1",
         "read",
-        r#"{"file_path":"a.rs"}"#,
+        r#"{"path":"a.rs"}"#,
         "fc_1",
     )));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
@@ -654,7 +654,7 @@ async fn next_turn_reload_must_keep_sent_row_when_provider_reuses_id() {
     turn.push(WorkingRow::pending(function_call_item(
         "call_1",
         "read",
-        r#"{"file_path":"b.rs"}"#,
+        r#"{"path":"b.rs"}"#,
         "fc_1",
     )));
     pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();

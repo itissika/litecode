@@ -13,6 +13,7 @@ use grep::searcher::{
     BinaryDetection, Searcher, SearcherBuilder, Sink, SinkContext, SinkContextKind, SinkMatch,
 };
 use ignore::WalkBuilder;
+use tokio_util::sync::CancellationToken;
 
 use crate::types::{LitecodeError, Result};
 use crate::workspace::filter::{
@@ -93,7 +94,7 @@ pub fn lexical_search_with_preset(
         });
     }
 
-    lexical_search_ripgrep(query, preset, false, None)
+    lexical_search_ripgrep(query, preset, false, None, None)
 }
 
 /// Agent `grep`. Reaches `knowledge/` and `.litecode/knowledge`.
@@ -103,13 +104,26 @@ pub fn lexical_search_for_agent(
     preset: FilterPreset,
     workspace: &Path,
 ) -> Result<LexicalSearchOutcome> {
+    lexical_search_for_agent_cancellable(query, preset, workspace, None)
+}
+
+/// Agent `grep` with an optional cooperative cancellation token.
+///
+/// The token is checked between walked files. A single very large file can
+/// still outlive the check, but directory-scale searches stop promptly.
+pub fn lexical_search_for_agent_cancellable(
+    query: &LexicalQuery,
+    preset: FilterPreset,
+    workspace: &Path,
+    cancel: Option<&CancellationToken>,
+) -> Result<LexicalSearchOutcome> {
     if query.pattern.is_empty() || query.max_matches == 0 {
         return Ok(LexicalSearchOutcome {
             matches: Vec::new(),
             files_searched: 0,
         });
     }
-    lexical_search_ripgrep(query, preset, true, Some(workspace))
+    lexical_search_ripgrep(query, preset, true, Some(workspace), cancel)
 }
 
 fn lexical_search_ripgrep(
@@ -117,7 +131,11 @@ fn lexical_search_ripgrep(
     preset: FilterPreset,
     allow_knowledge_root: bool,
     workspace: Option<&Path>,
+    cancel: Option<&CancellationToken>,
 ) -> Result<LexicalSearchOutcome> {
+    if cancel.is_some_and(CancellationToken::is_cancelled) {
+        return Err(LitecodeError::ToolExecution("search cancelled".into()));
+    }
     let search_root = query
         .path
         .as_ref()
@@ -228,6 +246,9 @@ fn lexical_search_ripgrep(
         matches.len() < query.max_matches
     };
     for entry in walker.build() {
+        if cancel.is_some_and(CancellationToken::is_cancelled) {
+            return Err(LitecodeError::ToolExecution("search cancelled".into()));
+        }
         let Ok(entry) = entry else {
             continue;
         };
@@ -248,6 +269,9 @@ fn lexical_search_ripgrep(
         && let Some(extra) = private_knowledge_walker(workspace, preset, walk_opts.skip_binary)
     {
         for entry in extra.build().flatten() {
+            if cancel.is_some_and(CancellationToken::is_cancelled) {
+                return Err(LitecodeError::ToolExecution("search cancelled".into()));
+            }
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
@@ -843,8 +867,24 @@ mod tests {
             "LexicalLane must stay a disk walk; do not wire the mention path catalog here"
         );
         assert!(
-            prod.contains("lexical_search_ripgrep(query, preset, false, None)"),
-            "lexical_search_with_preset must call the ripgrep walk (4-arg form)"
+            prod.contains("lexical_search_ripgrep(query, preset, false, None, None)"),
+            "lexical_search_with_preset must call the ripgrep walk (5-arg form)"
         );
+    }
+
+    #[test]
+    fn cancelled_agent_search_stops_before_walking() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = lexical_search_for_agent_cancellable(
+            &q(dir.path(), "needle"),
+            FilterPreset::Search,
+            dir.path(),
+            Some(&cancel),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("search cancelled"), "{error}");
     }
 }

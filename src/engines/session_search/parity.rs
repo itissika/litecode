@@ -87,7 +87,7 @@ fn tricky_rows() -> Vec<SearchableRow> {
             1,
             "p1c",
             "read",
-            r#"{"file_path":".litecode/sessions/OTHER.md"}"#,
+            r#"{"path":".litecode/sessions/OTHER.md"}"#,
         ),
         function_result("P1", 2, "p1c", "echoed page UNIQUE_ECHO"),
         row(
@@ -197,7 +197,7 @@ impl Fixture {
 
 fn read_session_call(call_id: &str) -> Item {
     Item::FunctionCall(FunctionToolCall {
-        arguments: r#"{"file_path":".litecode/sessions/OTHER.md"}"#.into(),
+        arguments: r#"{"path":".litecode/sessions/OTHER.md"}"#.into(),
         call_id: call_id.into(),
         namespace: None,
         name: "read".into(),

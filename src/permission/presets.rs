@@ -70,7 +70,7 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
             rules: vec![PolicyRule {
                 id: "outside_workspace".into(),
                 when: ArgMatcher::PathOutsideWorkspace {
-                    name: "file_path".into(),
+                    name: "path".into(),
                 },
                 action: PermissionAction::Deny,
             }],
@@ -206,6 +206,10 @@ mod tests {
         let (read, _) = binding_for_tool("read", ToolPreset::Safe);
         assert_eq!(read.default, PermissionAction::Allow);
         assert_eq!(read.rules[0].id, "outside_workspace");
+        assert!(matches!(
+            &read.rules[0].when,
+            ArgMatcher::PathOutsideWorkspace { name } if name == "path"
+        ));
         let (write, _) = binding_for_tool("write", ToolPreset::Safe);
         assert_eq!(write.default, PermissionAction::Ask);
         let (bash, _) = binding_for_tool("bash", ToolPreset::Safe);

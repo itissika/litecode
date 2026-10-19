@@ -34,6 +34,13 @@ pub trait Tool: Send + Sync {
 
     fn schema(&self) -> Value;
 
+    /// JSON Schema for [`ToolCallResult::data`]. Direct-call tools may omit it;
+    /// tools projected into a code bundle must provide it so the generated
+    /// interface can expose a stable result type.
+    fn data_schema(&self) -> Option<Value> {
+        None
+    }
+
     /// Unit-test / sync helper. Production Agent calls must enter through
     /// [`execute`].
     fn call(&self, input: Value) -> ToolCallResult {
@@ -70,6 +77,9 @@ pub trait Tool: Send + Sync {
 
     fn description(&self, ctx: &Context) -> String;
 
+    /// Cooperative call budget in seconds. `None` means the tool cannot accept
+    /// a deadline. A dispatcher may request a shorter call budget, but it never
+    /// extends this ceiling; expiry must reach a cancellation-aware tool.
     fn timeout(&self) -> Option<u64> {
         None
     }

@@ -25,7 +25,12 @@ fn permission_summary(tool_name: &str, input: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
-        "read" | "write" | "edit" => input
+        "read" => input
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        "write" | "edit" => input
             .get("file_path")
             .and_then(Value::as_str)
             .unwrap_or("")
