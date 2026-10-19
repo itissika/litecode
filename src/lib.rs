@@ -15,6 +15,7 @@ pub mod permission;
 pub mod platform_knobs;
 pub mod proc_lifetime;
 pub mod provider_catalog;
+pub mod ptc;
 pub mod reminder;
 pub mod runtime;
 pub mod serve;
