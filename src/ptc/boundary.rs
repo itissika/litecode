@@ -11,16 +11,37 @@
 //! accepted; `2^53` is rejected. Non-integer JSON numbers are injected as
 //! numbers because `serde_json` already stores them as `f64`.
 
-use rquickjs::{Ctx, Error, Exception, Type, Value};
+use std::mem::size_of;
+
+use rquickjs::{Atom, Ctx, Error, Exception, Filter, Type, Value};
 use serde_json::{Map, Number};
 
 use super::MAX_SAFE_INTEGER;
+
+/// Deepest array/object nesting accepted in either direction.
+///
+/// Both directions walk the value recursively, and the host-to-JS path then
+/// re-enters `serde_json` and QuickJS `JSON.parse`, which are recursive too.
+/// A Windows thread starts with a 1 MiB stack; QuickJS's own stack cap in this
+/// runtime is a few hundred KiB. A conversion or parse frame is on the order of
+/// a kilobyte, so 32 frames stay far under either limit. 20_000 frames overflow
+/// the thread (`0xC00000FD`) before either engine can report an error.
+pub(crate) const MAX_JSON_DEPTH: usize = 32;
+
+pub(crate) const NESTING_LIMIT: &str = "nesting depth exceeded";
+
+/// Largest array whose `Vec<Value>` fits in the output budget.
+///
+/// `serde_json::Value` is much wider than its JSON text. Checking this before
+/// `Vec::with_capacity` keeps a sparse `length` of 1e8 from reserving gigabytes.
+pub(crate) fn max_json_elements(output_limit: usize) -> usize {
+    output_limit / size_of::<serde_json::Value>().max(1)
+}
 
 #[derive(Debug)]
 pub(crate) struct Thrown {
     pub message: String,
     pub stack: Option<String>,
-    pub name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -29,15 +50,23 @@ pub(crate) enum BoundaryError {
     Thrown(Thrown),
 }
 
-pub(crate) fn from_js(value: &Value<'_>) -> Result<serde_json::Value, BoundaryError> {
+pub(crate) fn from_js(
+    value: &Value<'_>,
+    output_limit: usize,
+) -> Result<serde_json::Value, BoundaryError> {
     let mut stack = Vec::new();
-    from_js_inner(value, &mut stack)
+    from_js_inner(value, &mut stack, 0, output_limit)
 }
 
 fn from_js_inner(
     value: &Value<'_>,
     stack: &mut Vec<usize>,
+    depth: usize,
+    output_limit: usize,
 ) -> Result<serde_json::Value, BoundaryError> {
+    if depth > MAX_JSON_DEPTH {
+        return Err(BoundaryError::Illegal(NESTING_LIMIT.into()));
+    }
     if value.is_null() {
         return Ok(serde_json::Value::Null);
     }
@@ -63,10 +92,10 @@ fn from_js_inner(
         return Err(BoundaryError::Illegal("function".into()));
     }
     if value.is_array() {
-        return array_from_js(value, stack);
+        return array_from_js(value, stack, depth, output_limit);
     }
     if value.is_object() {
-        return object_from_js(value, stack);
+        return object_from_js(value, stack, depth, output_limit);
     }
     Err(BoundaryError::Illegal(format!(
         "unsupported value {}",
@@ -91,6 +120,8 @@ fn number_from_f64(number: f64) -> Result<serde_json::Value, BoundaryError> {
 fn array_from_js(
     value: &Value<'_>,
     stack: &mut Vec<usize>,
+    depth: usize,
+    output_limit: usize,
 ) -> Result<serde_json::Value, BoundaryError> {
     let array = value
         .as_array()
@@ -101,23 +132,32 @@ fn array_from_js(
     }
     stack.push(ptr);
     let result = (|| {
-        let len = array.len();
-        let mut items = Vec::with_capacity(len);
+        let len = array_length(value)?;
+        if len > max_json_elements(output_limit) as u64 {
+            return Err(BoundaryError::Illegal("array exceeds output limit".into()));
+        }
+        let len = usize::try_from(len).unwrap_or(usize::MAX);
+        reject_symbol_keys(value)?;
+        let object = array.as_object();
         for index in 0..len {
-            let present = array
-                .as_object()
-                .contains_key(index.to_string())
+            let key = u32::try_from(index)
+                .map_err(|_| BoundaryError::Illegal("array exceeds output limit".into()))?;
+            let present = object
+                .contains_key(key)
                 .map_err(|error| script_error(value, error))?;
             if !present {
                 return Err(BoundaryError::Illegal("sparse array".into()));
             }
+        }
+        let mut items = Vec::with_capacity(len);
+        for index in 0..len {
             let element = array
                 .get::<Value<'_>>(index)
                 .map_err(|error| script_error(value, error))?;
             if element.is_undefined() {
                 return Err(BoundaryError::Illegal("undefined".into()));
             }
-            items.push(from_js_inner(&element, stack)?);
+            items.push(from_js_inner(&element, stack, depth + 1, output_limit)?);
         }
         Ok(serde_json::Value::Array(items))
     })();
@@ -125,9 +165,32 @@ fn array_from_js(
     result
 }
 
+fn array_length(value: &Value<'_>) -> Result<u64, BoundaryError> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| BoundaryError::Illegal("sparse array".into()))?;
+    let length = object
+        .get::<_, Value<'_>>("length")
+        .map_err(|error| script_error(value, error))?;
+    if let Some(int) = length.as_int() {
+        return u64::try_from(int).map_err(|_| BoundaryError::Illegal("array length".into()));
+    }
+    if let Some(number) = length.as_number()
+        && number.is_finite()
+        && number >= 0.0
+        && number.fract() == 0.0
+        && number <= u64::MAX as f64
+    {
+        return Ok(number as u64);
+    }
+    Err(BoundaryError::Illegal("array length".into()))
+}
+
 fn object_from_js(
     value: &Value<'_>,
     stack: &mut Vec<usize>,
+    depth: usize,
+    output_limit: usize,
 ) -> Result<serde_json::Value, BoundaryError> {
     if !is_plain_object(value) {
         let name = constructor_name(value);
@@ -144,18 +207,30 @@ fn object_from_js(
     }
     stack.push(ptr);
     let result = (|| {
+        reject_symbol_keys(value)?;
         let mut map = Map::new();
         for property in object.props::<String, Value<'_>>() {
             let (key, child) = property.map_err(|error| script_error(value, error))?;
             if child.is_undefined() {
                 return Err(BoundaryError::Illegal("undefined property".into()));
             }
-            map.insert(key, from_js_inner(&child, stack)?);
+            map.insert(key, from_js_inner(&child, stack, depth + 1, output_limit)?);
         }
         Ok(serde_json::Value::Object(map))
     })();
     stack.pop();
     result
+}
+
+fn reject_symbol_keys(value: &Value<'_>) -> Result<(), BoundaryError> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    match object.own_keys::<Atom<'_>>(Filter::new().symbol()).next() {
+        None => Ok(()),
+        Some(Ok(_)) => Err(BoundaryError::Illegal("symbol key".into())),
+        Some(Err(error)) => Err(script_error(value, error)),
+    }
 }
 
 fn is_plain_object(value: &Value<'_>) -> bool {
@@ -195,51 +270,58 @@ fn script_error(value: &Value<'_>, error: Error) -> BoundaryError {
         BoundaryError::Thrown(Thrown {
             message: error.to_string(),
             stack: None,
-            name: None,
         })
     }
 }
 
 pub(crate) fn take_exception(ctx: &Ctx<'_>) -> Thrown {
-    let value = ctx.catch();
-    let name = value
-        .as_object()
-        .and_then(|object| object.get::<_, String>("name").ok());
+    describe(&ctx.catch())
+}
+
+pub(crate) fn describe(value: &Value<'_>) -> Thrown {
     if let Some(exception) = value.as_exception() {
         return Thrown {
             message: exception.message().unwrap_or_else(|| "exception".into()),
             stack: exception.stack(),
-            name,
         };
     }
     let message = value.get::<String>().unwrap_or_else(|_| "exception".into());
     Thrown {
         message,
         stack: None,
-        name,
     }
 }
 
-/// Reject host integers that are outside the safe integer range, then parse.
+/// Reject host integers outside the safe range and values nested past
+/// [`MAX_JSON_DEPTH`], then parse. The depth check returns before `to_string`
+/// or `JSON.parse`, so neither recursive walk can overflow the thread stack.
 pub(crate) fn to_js<'js>(ctx: &Ctx<'js>, value: &serde_json::Value) -> Result<Value<'js>, String> {
-    ensure_safe_integers(value)?;
+    check_host_value(value, 0)?;
     let text = serde_json::to_string(value).map_err(|error| error.to_string())?;
-    ctx.json_parse(text)
-        .map_err(|error| format!("host result could not be injected: {error}"))
+    match ctx.json_parse(text) {
+        Ok(parsed) => Ok(parsed),
+        Err(error) => {
+            let _ = ctx.catch();
+            Err(format!("host result could not be injected: {error}"))
+        }
+    }
 }
 
-pub(crate) fn ensure_safe_integers(value: &serde_json::Value) -> Result<(), String> {
+fn check_host_value(value: &serde_json::Value, depth: usize) -> Result<(), String> {
+    if depth > MAX_JSON_DEPTH {
+        return Err(NESTING_LIMIT.into());
+    }
     match value {
         serde_json::Value::Number(number) => check_number(number),
         serde_json::Value::Array(items) => {
             for item in items {
-                ensure_safe_integers(item)?;
+                check_host_value(item, depth + 1)?;
             }
             Ok(())
         }
         serde_json::Value::Object(map) => {
             for child in map.values() {
-                ensure_safe_integers(child)?;
+                check_host_value(child, depth + 1)?;
             }
             Ok(())
         }

@@ -22,6 +22,7 @@ mod boundary;
 mod budget;
 mod calls;
 mod engine;
+mod heap;
 mod output;
 
 use std::fmt;

@@ -1,3 +1,4 @@
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -525,6 +526,10 @@ async fn illegal_output_values() {
         ("const a = {}; a.self = a; return a;", "circular reference"),
         ("return new Date();", "Date"),
         ("return [1,,2];", "sparse array"),
+        (
+            "const marked = { a: 1 }; marked[Symbol('s')] = 2; return marked;",
+            "symbol key",
+        ),
     ];
     for (source, needle) in cases {
         let outcome = run(source, Vec::new()).await;
@@ -564,6 +569,10 @@ async fn illegal_arguments_skip_host() {
         ),
         ("await tools.f(new Date());", "Date"),
         ("await tools.f([1,,2]);", "sparse array"),
+        (
+            "const marked = { a: 1 }; marked[Symbol('s')] = 2; await tools.f(marked);",
+            "symbol key",
+        ),
     ];
     for (body, needle) in cases {
         calls.store(0, Ordering::SeqCst);
@@ -624,7 +633,7 @@ async fn host_integer_above_safe_range_is_rejected() {
 async fn no_ambient_capabilities() {
     let outcome = run(
         r#"
-        const names = ["fetch", "require", "process", "setTimeout", "std", "os"];
+        const names = ["fetch", "require", "process", "setTimeout", "std", "os", "Atomics", "SharedArrayBuffer"];
         const present = names.filter((name) => typeof globalThis[name] !== "undefined");
         let imported = false;
         try { await import("fs"); imported = true; } catch (e) { imported = false; }
@@ -696,8 +705,16 @@ async fn unawaited_calls_are_waited_and_recorded() {
     assert!(finished.load(Ordering::SeqCst));
     assert_eq!(outcome.calls.len(), 1);
     assert_eq!(outcome.calls[0].name, "echo");
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
+    assert_eq!(outcome.calls[0].state, CallState::CancelledFinished);
     assert!(outcome.calls[0].ended.is_some());
+    assert!(
+        outcome
+            .logs
+            .iter()
+            .any(|entry| entry.message.contains("1 host calls were still running")),
+        "{:?}",
+        outcome.logs
+    );
 }
 
 #[tokio::test]
@@ -729,4 +746,239 @@ async fn host_error_finishes_the_call() {
     .await;
     assert_eq!(value_of(&outcome), &json!("nope"));
     assert_eq!(outcome.calls[0].state, CallState::Completed);
+}
+
+fn nested_arrays(depth: usize) -> Value {
+    let mut value = json!(0);
+    for _ in 0..depth {
+        value = Value::Array(vec![value]);
+    }
+    value
+}
+
+#[tokio::test]
+async fn success_cancels_inflight_calls() {
+    let slow = HostFn::new(|_, _, _| async move {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        Ok(json!(null))
+    });
+    let started = Instant::now();
+    let outcome = run_with(
+        "tools.slow(null); return 'ok';",
+        tools(vec![("slow", slow)]),
+        limits(),
+        Duration::from_millis(80),
+        Duration::from_millis(40),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_millis(400),
+        "slow call turned success into a wait: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(value_of(&outcome), &json!("ok"));
+    assert_ne!(failure_kind_if_any(&outcome), Some(FailureKind::Timeout));
+    assert_eq!(outcome.calls.len(), 1);
+    assert_eq!(outcome.calls[0].state, CallState::CancelledUnfinished);
+    assert!(
+        outcome
+            .logs
+            .iter()
+            .any(|entry| { entry.message.contains("1 host calls were still running") }),
+        "{:?}",
+        outcome.logs
+    );
+
+    let paused = HostFn::new(|_, _, pause| async move {
+        let _guard = pause.pause();
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        Ok(json!(null))
+    });
+    let started = Instant::now();
+    let outcome = run_with(
+        "tools.hold(null); return 1;",
+        tools(vec![("hold", paused)]),
+        limits(),
+        Duration::from_millis(50),
+        Duration::from_millis(80),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_millis(600),
+        "paused call did not return: {:?}",
+        started.elapsed()
+    );
+    assert_eq!(value_of(&outcome), &json!(1));
+    assert_eq!(outcome.calls.len(), 1);
+    assert_eq!(outcome.calls[0].state, CallState::CancelledUnfinished);
+}
+
+fn failure_kind_if_any(outcome: &Outcome) -> Option<FailureKind> {
+    outcome.failure.as_ref().map(|failure| failure.kind)
+}
+
+#[tokio::test]
+async fn microtasks_do_not_drop_host_calls() {
+    let marks = Arc::new(AtomicUsize::new(0));
+    let marks_host = Arc::clone(&marks);
+    let mark = HostFn::new(move |_, _, _| {
+        marks_host.fetch_add(1, Ordering::SeqCst);
+        async move { Ok(json!(null)) }
+    });
+    let outcome = run(
+        r#"
+        let pending = Promise.resolve();
+        for (let i = 0; i < 2000; i++) pending = pending.then(() => {});
+        pending.then(() => { tools.mark(null); });
+        return "ok";
+        "#,
+        tools(vec![("mark", mark)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!("ok"));
+    assert_eq!(marks.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.calls.len(), 1);
+    assert_eq!(outcome.calls[0].name, "mark");
+}
+
+#[tokio::test]
+async fn user_exceptions_are_not_classified_by_message() {
+    let cases = [
+        r#"throw new Error("interrupted");"#,
+        r#"throw "out of memory";"#,
+        r#"throw "Maximum call stack size exceeded";"#,
+        r#"throw new RangeError("Maximum call stack size exceeded");"#,
+        r#"throw new InternalError("out of memory");"#,
+    ];
+    for source in cases {
+        let outcome = run(source, Vec::new()).await;
+        let failure = outcome
+            .failure
+            .as_ref()
+            .unwrap_or_else(|| panic!("{source} succeeded: {outcome:?}"));
+        assert_eq!(
+            failure.kind,
+            FailureKind::Exception,
+            "{source}: {failure:?}"
+        );
+        assert!(outcome.value.is_none());
+    }
+}
+
+#[tokio::test]
+async fn moderate_nesting_round_trips() {
+    let outcome = run(
+        r#"
+        let value = 1;
+        for (let i = 0; i < 8; i++) value = [value, { n: i }];
+        return value;
+        "#,
+        Vec::new(),
+    )
+    .await;
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert!(value_of(&outcome).is_array());
+}
+
+#[tokio::test]
+async fn deep_nesting_does_not_crash() {
+    if std::env::var_os("PTC_DEEP_NEST_CHILD").is_some() {
+        deep_nest_child().await;
+        return;
+    }
+    let output = Command::new(std::env::current_exe().expect("test executable"))
+        .arg(concat!(module_path!(), "::deep_nesting_does_not_crash"))
+        .arg("--exact")
+        .env("PTC_DEEP_NEST_CHILD", "1")
+        .output()
+        .expect("spawn deep-nest child");
+    assert!(
+        output.status.success(),
+        "child status {:?}\nstdout {}\nstderr {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+async fn deep_nest_child() {
+    let returned = run(
+        r#"
+        let value = 0;
+        for (let i = 0; i < 20000; i++) value = [value];
+        return value;
+        "#,
+        Vec::new(),
+    )
+    .await;
+    let failure = returned.failure.expect("deep return");
+    assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
+    assert!(
+        failure.message.contains("nesting depth exceeded"),
+        "{}",
+        failure.message
+    );
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_host = Arc::clone(&calls);
+    let host = HostFn::new(move |_, _, _| {
+        calls_host.fetch_add(1, Ordering::SeqCst);
+        async move { Ok(json!(null)) }
+    });
+    let argument = run(
+        r#"
+        let value = 0;
+        for (let i = 0; i < 20000; i++) value = [value];
+        try { await tools.f(value); return "called"; }
+        catch (e) { return String(e.message); }
+        "#,
+        tools(vec![("f", host)]),
+    )
+    .await;
+    let message = value_of(&argument).as_str().unwrap_or("");
+    assert!(message.contains("nesting depth exceeded"), "{message}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(argument.calls.is_empty());
+
+    let injected = HostFn::new(|_, _, _| async move { Ok(nested_arrays(20_000)) });
+    let host_to_js = run(
+        r#"
+        try { await tools.deep(null); return "called"; }
+        catch (e) { return String(e.name) + ": " + String(e.message); }
+        "#,
+        tools(vec![("deep", injected)]),
+    )
+    .await;
+    let message = value_of(&host_to_js).as_str().unwrap_or("");
+    assert!(message.contains("TypeError"), "{message}");
+    assert!(message.contains("nesting depth exceeded"), "{message}");
+    assert_eq!(host_to_js.calls[0].state, CallState::Completed);
+
+    let mut wide = limits();
+    wide.memory_bytes = 64 * 1024 * 1024;
+    wide.output_bytes = 64 * 1024;
+    let started = Instant::now();
+    let sparse = run_with(
+        "const sparse = []; sparse.length = 1e8; return sparse;",
+        Vec::new(),
+        wide,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "sparse array took {:?}",
+        started.elapsed()
+    );
+    let failure = sparse.failure.expect("sparse array");
+    assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
+    assert!(
+        failure.message.contains("array exceeds output limit"),
+        "{}",
+        failure.message
+    );
 }

@@ -111,7 +111,10 @@ impl Ledger {
 
     /// Cancel open calls, wait out the grace period, then freeze whatever is
     /// still running as [`CallState::CancelledUnfinished`].
-    pub(crate) fn seal(&self, grace: Duration) {
+    ///
+    /// Returns how many calls were still running when cancellation was signaled.
+    pub(crate) fn seal(&self, grace: Duration) -> usize {
+        let pending = self.in_flight();
         self.cancel_open();
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline {
@@ -128,6 +131,7 @@ impl Ledger {
                 slot.ended = None;
             }
         }
+        pending
     }
 
     pub(crate) fn snapshot(&self) -> Vec<CallRecord> {
