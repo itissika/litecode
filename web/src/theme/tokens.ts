@@ -25,6 +25,12 @@ export interface DkTokens {
   accent: string;
   /** Danger / critical color (mirrors --_dk-red-500). */
   danger: string;
+  /** Git diff added color (mirrors --_dk-cat-green). */
+  diffAdded: string;
+  /** Git diff modified color (mirrors --_dk-cat-blue). */
+  diffModified: string;
+  /** Prominent border (mirrors --_dk-border-strong). */
+  borderStrong: string;
   /** Resolved UI font stack (mirrors --_dk-font-ui, var chain flattened). */
   fontUi: string;
 }
@@ -44,6 +50,9 @@ const FALLBACKS: DkTokens = {
   lineVisible: "rgba(255, 255, 255, 0.10)",
   accent: "#2c3033",
   danger: "#ef4444",
+  diffAdded: "#22c55e",
+  diffModified: "#1a85ff",
+  borderStrong: "rgba(255, 255, 255, 0.22)",
   fontUi: "Inter, ui-sans-serif, system-ui, sans-serif",
 };
 
@@ -67,6 +76,9 @@ function readVars(root: HTMLElement): DkTokens {
     lineVisible: get("--_dk-line-visible", FALLBACKS.lineVisible),
     accent: get("--_dk-accent", FALLBACKS.accent),
     danger: get("--_dk-red-500", FALLBACKS.danger),
+    diffAdded: get("--_dk-cat-green", FALLBACKS.diffAdded),
+    diffModified: get("--_dk-cat-blue", FALLBACKS.diffModified),
+    borderStrong: get("--_dk-border-strong", FALLBACKS.borderStrong),
     fontUi: resolveFont(get("--_dk-font-ui", FALLBACKS.fontUi), cs),
   };
 }

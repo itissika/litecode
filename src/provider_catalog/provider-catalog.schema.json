@@ -47,7 +47,7 @@
     "quirk": {
       "type": "string",
       "description": "Named non-universal protocol behavior, implemented by the codec for the provider's endpoint_type.",
-      "enum": ["thinking_type_switch", "reasoning_replay"]
+      "enum": ["thinking_type_switch"]
     },
     "reasoning_key": {
       "type": "string",
@@ -56,8 +56,8 @@
     },
     "reasoning_replay": {
       "type": "string",
-      "description": "How a Responses host takes reasoning back. ciphertext (default) returns encrypted blobs to their producer. summary is Bailian: the item this provider minted, with its id and summary_text.",
-      "enum": ["ciphertext", "summary"],
+      "description": "How a Responses host accepts reasoning back. ciphertext (default) returns encrypted blobs to their producer. summary is Bailian: the item this host minted, with its id and summary_text. text is DeepSeek/MiMo: readable reasoning_text from any producer.",
+      "enum": ["ciphertext", "summary", "text"],
       "default": "ciphertext"
     },
     "tiers": {

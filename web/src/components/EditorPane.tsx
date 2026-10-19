@@ -36,7 +36,10 @@ import {
 } from "../theme/monaco";
 import { getTheme, THEME_CHANGE_EVENT } from "../lib/theme";
 import { BINARY_FILE_MESSAGE } from "../lib/fileKind";
-import { attachGitQuickDiff } from "../lib/gitQuickDiffController";
+import {
+  attachGitQuickDiff,
+  type GitQuickDiffHandle,
+} from "../lib/gitQuickDiffController";
 import { languageFromPath } from "../utils/language";
 import {
   isPreviewMarkdownPath,
@@ -118,9 +121,7 @@ export function EditorPane({
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const addToChatRef = useRef<{ dispose: () => void } | null>(null);
   const spanDragCleanup = useRef<(() => void) | null>(null);
-  const quickDiffRef = useRef<{ dispose: () => void; refresh: () => void } | null>(
-    null,
-  );
+  const quickDiffRef = useRef<GitQuickDiffHandle | null>(null);
   const pathRef = useRef(filePath);
   pathRef.current = filePath;
 
@@ -237,7 +238,11 @@ export function EditorPane({
           editorRef.current?.focus();
         }
       }),
+      api.onDidVisibilityChange((event) => {
+        quickDiffRef.current?.setHostVisible(event.isVisible);
+      }),
     ];
+    quickDiffRef.current?.setHostVisible(api.isVisible);
     return () => disposables.forEach((d) => d.dispose());
   }, [api, filePath]);
 
@@ -402,6 +407,7 @@ export function EditorPane({
                     monaco,
                     () => pathRef.current,
                   );
+                  if (api) quickDiffRef.current.setHostVisible(api.isVisible);
                   const model = monaco.editor.getModel(
                     monaco.Uri.parse(filePath),
                   );

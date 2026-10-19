@@ -260,8 +260,17 @@ fn seed_claude_messages_models_use_the_documented_routes() {
 #[test]
 fn seed_provider_quirks_land_on_their_models() {
     let catalog = seeded();
-    let flash = catalog.model("deepseek/deepseek-flash").unwrap();
-    assert!(flash.has_quirk(ProviderQuirk::ReasoningReplay));
+    for reference in [
+        "deepseek/deepseek-flash",
+        "mimo/mimo-v2.6-pro",
+        "mimo/mimo-v2.6-flash",
+    ] {
+        assert_eq!(
+            catalog.model(reference).unwrap().reasoning_replay,
+            ReasoningReplay::Text,
+            "{reference}"
+        );
+    }
     let ark = catalog.model("ark-coding/doubao-seed-2.1-turbo").unwrap();
     assert!(ark.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
     assert_eq!(
@@ -286,16 +295,11 @@ id = "p"
 name = "P"
 endpoint = "https://x.example/v1"
 endpoint_type = "responses"
-quirks = ["thinking_type_switch", "reasoning_replay"]
+quirks = ["thinking_type_switch"]
 
 [[models]]
 id = "inherit"
 provider_id = "p"
-
-[[models]]
-id = "only-replay"
-provider_id = "p"
-quirks = ["reasoning_replay"]
 
 [[models]]
 id = "cleared"
@@ -312,11 +316,6 @@ endpoint_type = "chat_completions"
 
     let inherit = catalog.model("p/inherit").unwrap();
     assert!(inherit.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
-    assert!(inherit.has_quirk(ProviderQuirk::ReasoningReplay));
-
-    let only = catalog.model("p/only-replay").unwrap();
-    assert!(!only.has_quirk(ProviderQuirk::ThinkingTypeSwitch));
-    assert!(only.has_quirk(ProviderQuirk::ReasoningReplay));
 
     let cleared = catalog.model("p/cleared").unwrap();
     assert!(cleared.quirks.is_empty());
@@ -594,23 +593,24 @@ fn reasoning_summary_must_be_non_empty_and_ride_on_tiers() {
 }
 
 #[test]
-fn summary_replay_requires_responses_and_rejects_the_text_quirk() {
-    let chat = err(
+fn non_ciphertext_replay_requires_the_responses_codec() {
+    let chat_summary = err(
         "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"chat_completions\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
     );
-    assert!(chat.contains("responses codec"), "{chat}");
+    assert!(chat_summary.contains("responses codec"), "{chat_summary}");
 
-    let quirk = err(
-        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\nquirks = [\"reasoning_replay\"]\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
+    let chat_text = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"chat_completions\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"text\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
     );
-    assert!(quirk.contains("reasoning_replay"), "{quirk}");
+    assert!(chat_text.contains("responses codec"), "{chat_text}");
 
-    let unknown = err(
+    let responses_text = parse(
         "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"text\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
-    );
-    assert!(
-        unknown.contains("text") || unknown.contains("replay"),
-        "{unknown}"
+    )
+    .expect("text replay is a Responses shape");
+    assert_eq!(
+        responses_text.model("p/m").unwrap().reasoning_replay,
+        ReasoningReplay::Text
     );
 }
 
@@ -648,7 +648,7 @@ fn bailian_models_replay_their_own_summary() {
             .model("deepseek/deepseek-flash")
             .unwrap()
             .reasoning_replay,
-        ReasoningReplay::Ciphertext
+        ReasoningReplay::Text
     );
 }
 
@@ -702,10 +702,10 @@ fn messages_refuses_unimplemented_controls() {
         json_output.contains("json_output is not implemented"),
         "{json_output}"
     );
-    let quirk = err(
-        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\nquirks = [\"reasoning_replay\"]\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\n",
+    let text = err(
+        "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"text\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
     );
-    assert!(quirk.contains("responses codec"), "{quirk}");
+    assert!(text.contains("responses codec"), "{text}");
     let summary = err(
         "version = 1\n\n[[providers]]\nid = \"p\"\nname = \"P\"\nendpoint = \"https://x.example/v1\"\nendpoint_type = \"messages\"\n\n[[models]]\nid = \"m\"\nprovider_id = \"p\"\nreasoning = { replay = \"summary\", tiers = { low = \"low\", medium = \"medium\", high = \"high\" } }\n",
     );

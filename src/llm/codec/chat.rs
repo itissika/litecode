@@ -859,6 +859,119 @@ headers = { "x-opencode-session" = "{{session_id}}" }
     }
 
     #[test]
+    fn ported_foreign_summary_reaches_chat_reasoning_content() {
+        use crate::authority::responses::{ReasoningItem, SummaryPart, SummaryTextContent};
+        use crate::llm::ItemProducer;
+        use crate::platform_knobs::ThinkingTier;
+
+        let codec = codec("");
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: None,
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "foreign summary".into(),
+                })],
+                content: None,
+                encrypted_content: Some("foreign-cipher".into()),
+                status: None,
+            }),
+            crate::types::assistant_text("done"),
+        ];
+        let producers = vec![
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+        ];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &[false; 3],
+            codec.model.as_ref(),
+            ThinkingSpec::Tier(ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{report:?}");
+        let body = codec.encode_body(&request, true).unwrap();
+        assert_eq!(
+            body["messages"][2]["reasoning_content"], "foreign summary",
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn ported_claude_text_reaches_chat_after_signature_strip() {
+        use crate::authority::responses::{
+            ReasoningItem, ReasoningItemContent, ReasoningTextContent,
+        };
+        use crate::llm::ItemProducer;
+        use crate::platform_knobs::ThinkingTier;
+
+        let codec = codec("");
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: None,
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "claude thought".into(),
+                    },
+                )]),
+                encrypted_content: Some("claude-signature".into()),
+                status: None,
+            }),
+            crate::types::assistant_text("done"),
+        ];
+        let producers = vec![
+            Some(ItemProducer {
+                provider_id: "anthropic".into(),
+                endpoint_type: Some("messages".into()),
+                model_ref: Some("anthropic/claude".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "anthropic".into(),
+                endpoint_type: Some("messages".into()),
+                model_ref: Some("anthropic/claude".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "anthropic".into(),
+                endpoint_type: Some("messages".into()),
+                model_ref: Some("anthropic/claude".into()),
+            }),
+        ];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &[false; 3],
+            codec.model.as_ref(),
+            ThinkingSpec::Tier(ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{report:?}");
+        assert_eq!(report.ciphertext_stripped, 1);
+        let body = codec.encode_body(&request, true).unwrap();
+        assert_eq!(
+            body["messages"][2]["reasoning_content"], "claude thought",
+            "{body}"
+        );
+    }
+
+    #[test]
     fn headers_come_from_the_catalog_and_identification_is_litecode() {
         let request = codec("")
             .request(&serde_json::json!({}), "sk-test", Some("ses_parallel_a"))
@@ -885,10 +998,10 @@ headers = { "x-opencode-session" = "{{session_id}}" }
 
     #[test]
     fn extra_body_is_merged_last() {
-        let body = codec("extra_body = { top_p = 0.9 }")
+        let body = codec("extra_body = { presence_penalty = 0.3 }")
             .encode_body(&sample_request(), true)
             .unwrap();
-        assert_eq!(body["top_p"], 0.9);
+        assert_eq!(body["presence_penalty"], 0.3);
     }
 
     #[test]

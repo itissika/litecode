@@ -174,19 +174,14 @@ pub enum ProviderQuirk {
     /// Ark Coding (Doubao Responses): send `thinking.type` next to
     /// `reasoning.effort`; the low tier disables thinking.
     ThinkingTypeSwitch,
-    /// DeepSeek / MiMo: a thinking request that carries tools must pass every
-    /// earlier assistant turn's reasoning text back, so missing reasoning is
-    /// synthesized before the input is serialized.
-    ReasoningReplay,
 }
 
 impl ProviderQuirk {
-    pub const ALL: &'static [ProviderQuirk] = &[Self::ThinkingTypeSwitch, Self::ReasoningReplay];
+    pub const ALL: &'static [ProviderQuirk] = &[Self::ThinkingTypeSwitch];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ThinkingTypeSwitch => "thinking_type_switch",
-            Self::ReasoningReplay => "reasoning_replay",
         }
     }
 
@@ -198,21 +193,24 @@ impl ProviderQuirk {
     }
 }
 
-/// How a Responses host takes reasoning back on a later request.
+/// How a Responses host accepts reasoning on a later request.
 ///
 /// `ciphertext` is the OpenAI shape: encrypted blobs return only to their
-/// producer. `summary` is Bailian: the item that provider minted, with its id
-/// and `summary_text`. Chat Completions ignores this and uses [`ReasoningKey`].
+/// producer. `summary` is Bailian: the item that host minted, with its id and
+/// `summary_text`. `text` is DeepSeek/MiMo: plain `reasoning_text` from any
+/// producer is readable and can be carried. Chat Completions ignores this and
+/// uses [`ReasoningKey`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningReplay {
     #[default]
     Ciphertext,
     Summary,
+    Text,
 }
 
 impl ReasoningReplay {
-    pub const ALL: &'static [ReasoningReplay] = &[Self::Ciphertext, Self::Summary];
+    pub const ALL: &'static [ReasoningReplay] = &[Self::Ciphertext, Self::Summary, Self::Text];
 
     fn is_ciphertext(&self) -> bool {
         matches!(self, Self::Ciphertext)
@@ -272,8 +270,9 @@ pub struct RawReasoning {
     /// Replay write-back key (Chat Completions codec).
     #[serde(default)]
     pub key: ReasoningKey,
-    /// How this Responses model takes its own reasoning back. Absent means
-    /// ciphertext. Chat models must not set `summary`.
+    /// Which reasoning shape this Responses model accepts back. Absent means
+    /// ciphertext. Chat defaults to its text key; Messages defaults to signed
+    /// thinking, so non-ciphertext overrides are Responses-only.
     #[serde(default, skip_serializing_if = "ReasoningReplay::is_ciphertext")]
     pub replay: ReasoningReplay,
 }

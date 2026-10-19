@@ -30,6 +30,8 @@ const DIFF_DEBOUNCE_MS = 300;
 
 export interface GitQuickDiffHandle {
   refresh: () => void;
+  /** Dockview keeps hidden panels laid out. The peek lives on document.body. */
+  setHostVisible: (visible: boolean) => void;
   dispose: () => void;
 }
 
@@ -77,10 +79,12 @@ export function attachGitQuickDiff(
 
   const schedule = () => {
     if (disposed) return;
+    // Invalidate in-flight reads at once, not when the debounce fires: the old
+    // model may already be replaced and its hunks must not paint on the new one.
+    const token = ++generation;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      const token = ++generation;
       void refresh(token);
     }, DIFF_DEBOUNCE_MS);
   };
@@ -97,6 +101,9 @@ export function attachGitQuickDiff(
   const contentSub = codeEditor.onDidChangeModelContent(schedule);
   const modelSub = codeEditor.onDidChangeModel(() => {
     peek.close();
+    // Gutter bars belong to the previous model. Clear them before the debounce
+    // so a tab/file switch never shows them on the new contents.
+    clearBars();
     schedule();
   });
   const disposeSub = codeEditor.onDidDispose(() => dispose());
@@ -274,7 +281,11 @@ export function attachGitQuickDiff(
     host.remove();
   }
 
-  return { refresh: schedule, dispose };
+  return {
+    refresh: schedule,
+    setHostVisible: (visible) => peek.setHostVisible(visible),
+    dispose,
+  };
 }
 
 function glyphLine(
@@ -395,6 +406,8 @@ class QuickDiffPeek {
   private readonly diffEditor: editor.IStandaloneDiffEditor;
   private readonly zoneSpacer: HTMLElement;
   private revealHunk: DiffHunk | null = null;
+  private hostVisible = true;
+  private overlayWatch: HTMLElement | null = null;
   private readonly subscriptions: Array<{ dispose: () => void }> = [];
 
   constructor(
@@ -405,7 +418,7 @@ class QuickDiffPeek {
   ) {
     this.panel = document.createElement("div");
     this.panel.className = "git-quick-diff-peek";
-    this.panel.style.visibility = "hidden";
+    this.hidePanel();
     this.panel.setAttribute("role", "dialog");
     this.panel.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
@@ -488,6 +501,13 @@ class QuickDiffPeek {
     this.zoneSpacer = document.createElement("div");
     this.subscriptions.push(editor.onDidScrollChange(() => this.position()));
     this.subscriptions.push(editor.onDidLayoutChange(() => this.position()));
+    this.watchHostVisibility();
+  }
+
+  setHostVisible(visible: boolean) {
+    this.hostVisible = visible;
+    this.position();
+    if (visible) requestAnimationFrame(() => this.position());
   }
 
   isOpen(): boolean {
@@ -531,7 +551,7 @@ class QuickDiffPeek {
 
   close() {
     if (!this.open && this.zoneId == null) {
-      this.panel.style.visibility = "hidden";
+      this.hidePanel();
       return;
     }
     this.open = false;
@@ -539,7 +559,7 @@ class QuickDiffPeek {
     this.revealHunk = null;
     this.zoneAfter = -1;
     this.zoneHeight = 0;
-    this.panel.style.visibility = "hidden";
+    this.hidePanel();
     this.diffEditor.setModel(null);
     if (this.zoneId) {
       const id = this.zoneId;
@@ -610,18 +630,62 @@ class QuickDiffPeek {
     }
   }
 
+  private watchHostVisibility(): void {
+    const node = this.editor.getDomNode();
+    const overlay = node?.closest(".dv-render-overlay");
+    if (!(overlay instanceof HTMLElement) || overlay === this.overlayWatch) return;
+    this.overlayWatch = overlay;
+    let hidden = overlay.style.visibility === "hidden";
+    const observer = new MutationObserver(() => {
+      const next = overlay.style.visibility === "hidden";
+      // While hidden there is nothing to place. Once visible, react to layout
+      // writes too — the overlay may be shown before its final geometry lands.
+      if (next && next === hidden) return;
+      hidden = next;
+      this.position();
+    });
+    observer.observe(overlay, { attributes: true, attributeFilter: ["style"] });
+    this.subscriptions.push({ dispose: () => observer.disconnect() });
+  }
+
+  /** `display: none` — a child diff editor sets `visibility: visible` and would paint through. */
+  private hidePanel() {
+    this.panel.style.display = "none";
+  }
+
+  private showPanel() {
+    this.panel.style.display = "";
+  }
+
+  private hostCovered(): boolean {
+    if (!this.hostVisible) return true;
+    const node = this.editor.getDomNode();
+    if (!node) return true;
+    let el: HTMLElement | null = node;
+    while (el) {
+      const style = getComputedStyle(el);
+      if (style.display === "none" || style.visibility === "hidden") return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
   private position() {
+    this.watchHostVisibility();
     if (!this.open) return;
     const editorNode = this.editor.getDomNode();
     const editorRect = editorNode?.getBoundingClientRect();
     const zoneRect = this.zoneSpacer.getBoundingClientRect();
+    // A hidden tab keeps its layout box, so a non-zero rect still overlaps the
+    // panel that replaced it. The peek is on document.body.
     if (
+      this.hostCovered() ||
       !editorRect ||
       editorRect.width < 2 ||
       editorRect.height < 2 ||
       zoneRect.height < 2
     ) {
-      this.panel.style.visibility = "hidden";
+      this.hidePanel();
       return;
     }
     const top = Math.max(zoneRect.top, editorRect.top);
@@ -629,10 +693,10 @@ class QuickDiffPeek {
     const left = Math.max(zoneRect.left, editorRect.left);
     const right = Math.min(zoneRect.right, editorRect.right);
     if (bottom - top < PEEK_HEADER_PX || right - left < 40) {
-      this.panel.style.visibility = "hidden";
+      this.hidePanel();
       return;
     }
-    this.panel.style.visibility = "visible";
+    this.showPanel();
     this.panel.style.top = `${top}px`;
     this.panel.style.left = `${left}px`;
     this.panel.style.width = `${right - left}px`;

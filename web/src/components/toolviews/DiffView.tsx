@@ -46,8 +46,8 @@ export function computeLineDiff(oldStr: string, newStr: string): DiffLine[] {
 
 const ROW_CLASS: Record<DiffLine["type"], string> = {
   context: "text-(--_dk-text-muted)",
-  add: "bg-(--_dk-emerald-500)/10 text-(--_dk-emerald-500)",
-  remove: "bg-(--_dk-red-500)/10 text-(--_dk-red-500)",
+  add: "bg-(--_dk-cat-green)/20 text-(--_dk-cat-green)",
+  remove: "bg-(--_dk-red-500)/20 text-(--_dk-red-500)",
 };
 
 const PREFIX: Record<DiffLine["type"], string> = {
@@ -89,7 +89,7 @@ export function DiffView({
       >
         <GitDiffIcon size={12} aria-hidden />
         <span>Δ {diff.length} lines</span>
-        <span className="text-(--_dk-emerald-500)">+{added}</span>
+        <span className="text-(--_dk-cat-green)">+{added}</span>
         <span className="text-(--_dk-red-500)">−{removed}</span>
         <span className="ml-auto">Show full diff</span>
       </button>

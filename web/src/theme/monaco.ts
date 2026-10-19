@@ -85,6 +85,19 @@ function monacoColorsFromTokens(t: DkTokens, mode: "dark" | "light") {
     t.lineVisible,
     mode === "light" ? "#0000001a" : "#ffffff1a",
   );
+  const added = toMonacoHex(t.diffAdded, "#22c55e");
+  const removed = toMonacoHex(t.danger, "#ef4444");
+  const modified = toMonacoHex(t.diffModified, "#1a85ff");
+  const addedWash = withAlpha(added, 0x33);
+  const removedWash = withAlpha(removed, 0x33);
+  const frame = toMonacoHex(
+    t.borderStrong,
+    mode === "light" ? "#0000004d" : "#ffffff38",
+  );
+  const float = toMonacoHex(
+    t.float,
+    mode === "light" ? "#fafafa" : "#020202",
+  );
 
   return {
     "editor.background": editor,
@@ -107,6 +120,30 @@ function monacoColorsFromTokens(t: DkTokens, mode: "dark" | "light") {
     "scrollbarSlider.background": withAlpha(disabled, 0x80),
     "scrollbarSlider.hoverBackground": withAlpha(muted, 0x80),
     "editorOverviewRuler.border": "#00000000",
+    // Same hues as the gutter bars: green add, red delete. Washes stay
+    // translucent so syntax highlighting still shows through.
+    "diffEditor.insertedTextBackground": addedWash,
+    "diffEditor.insertedLineBackground": addedWash,
+    "diffEditor.removedTextBackground": removedWash,
+    "diffEditor.removedLineBackground": removedWash,
+    "diffEditorGutter.insertedLineBackground": addedWash,
+    "diffEditorGutter.removedLineBackground": removedWash,
+    "diffEditorOverview.insertedForeground": added,
+    "diffEditorOverview.removedForeground": removed,
+    // Reference peek uses the same surfaces as the git diff peek.
+    "peekViewTitle.background": float,
+    "peekViewTitleLabel.foreground": fg,
+    "peekViewTitleDescription.foreground": muted,
+    "peekView.border": frame,
+    "peekViewEditor.background": editor,
+    "peekViewEditorGutter.background": editor,
+    "peekViewEditorStickyScroll.background": editor,
+    "peekViewEditorStickyScrollGutter.background": editor,
+    "peekViewResult.background": widget,
+    "peekViewResult.lineForeground": muted,
+    "peekViewResult.fileForeground": fg,
+    "peekViewResult.selectionBackground": withAlpha(modified, 0x33),
+    "peekViewResult.selectionForeground": fg,
   };
 }
 

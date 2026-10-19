@@ -124,6 +124,18 @@
   overflow: clip;
 }
 
+/* Inactive tabs stay mounted and hide with `visibility: hidden`. A descendant
+   can paint anyway by setting `visibility: visible` — Monaco's peek preview
+   does this via `fixedOverflowWidgets`, and suggest, parameter hints, find,
+   and scrollbars carry the class `visible` (Tailwind's utility of the same
+   name). Opacity applies to the whole overlay, so those layers hide with the
+   editor. Auto-hide clears the inline visibility instead of leaving it
+   hidden, so a slid-out edge panel is unaffected. */
+.litecode-dv-base .dv-render-overlay[style*="visibility: hidden"],
+.litecode-dv-base .dv-render-overlay[style*="visibility:hidden"] {
+  opacity: 0;
+}
+
 /* A popout has no app shell. Its document is the frame that must not scroll. */
 html.litecode-popout {
   overflow: clip;

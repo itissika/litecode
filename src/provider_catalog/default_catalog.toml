@@ -51,9 +51,6 @@ name = "DeepSeek"
 endpoint = "https://api.deepseek.com"
 endpoint_type = "responses"
 auth = "bearer"
-# DeepSeek hard-requires every earlier assistant turn's reasoning text to be
-# passed back in thinking mode.
-quirks = ["reasoning_replay"]
 
 [[providers]]
 id = "mimo"
@@ -61,8 +58,6 @@ name = "MiMo"
 endpoint = "https://api.xiaomimimo.com/v1"
 endpoint_type = "responses"
 auth = "bearer"
-# MiMo requires reasoning pass-back too (see Deep Thinking docs).
-quirks = ["reasoning_replay"]
 
 [[providers]]
 id = "ark-coding"
@@ -203,7 +198,7 @@ context_window_max = 1000000
 max_output = 128000
 modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
-reasoning = { tiers = { off = "none", low = "low", medium = "high", high = "max" } }
+reasoning = { replay = "text", tiers = { off = "none", low = "low", medium = "high", high = "max" } }
 
 # ── MiMo ─────────────────────────────────────────────────────────────────────
 
@@ -217,8 +212,8 @@ max_output = 128000
 modalities = ["text", "image", "video", "audio"]
 usage_patch = "fill_empty_token_details"
 # MiMo's ladder is none/low/medium/high: low/medium/high all enable thinking,
-# only "none" turns it off.
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+# only "none" turns it off. Responses accepts plain reasoning_text back.
+reasoning = { replay = "text", tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
 
 [[models]]
 id = "mimo-v2.6-flash"
@@ -229,7 +224,7 @@ context_window_max = 1048576
 max_output = 128000
 modalities = ["text", "image", "video", "audio"]
 usage_patch = "fill_empty_token_details"
-reasoning = { tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
+reasoning = { replay = "text", tiers = { off = "none", low = "low", medium = "medium", high = "high" } }
 
 # ── Ark Coding Plan ──────────────────────────────────────────────────────────
 

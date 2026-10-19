@@ -30,6 +30,9 @@ pub enum EventType {
     AssistantChunk,
     RequestHeader,
     RequestContext,
+    /// A user-visible model switch. Control-plane: records who switched to
+    /// what, when, and what the port said the transcript would lose.
+    ModelChanged,
     Unknown(String),
 }
 
@@ -62,6 +65,7 @@ impl EventType {
             "assistant/chunk" => Self::AssistantChunk,
             "request/header" => Self::RequestHeader,
             "request/context" => Self::RequestContext,
+            "model/changed" => Self::ModelChanged,
             other => {
                 if let Some(kind) = ReminderKind::parse_wire(other) {
                     Self::Reminder(kind)
@@ -88,6 +92,7 @@ impl EventType {
             Self::AssistantChunk => "assistant/chunk",
             Self::RequestHeader => "request/header",
             Self::RequestContext => "request/context",
+            Self::ModelChanged => "model/changed",
             Self::Unknown(s) => s.as_str(),
         }
     }
@@ -124,7 +129,11 @@ impl EventType {
     pub fn is_control_plane(&self) -> bool {
         matches!(
             self,
-            Self::TurnStart | Self::TurnEnd | Self::RequestHeader | Self::RequestContext
+            Self::TurnStart
+                | Self::TurnEnd
+                | Self::RequestHeader
+                | Self::RequestContext
+                | Self::ModelChanged
         )
     }
 }

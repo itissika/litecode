@@ -1,4 +1,6 @@
-/* Git gutter bars and the inline peek. Colors follow the app theme tokens. */
+/* Git gutter bars and the inline peek.
+   Add / modify / delete use --_dk-cat-green, --_dk-cat-blue, --_dk-red-500.
+   The Monaco diff editor and the chat diff use the same hues. */
 
 .monaco-editor .dirty-diff-glyph {
   position: relative;
@@ -6,6 +8,25 @@
   margin-left: 4px;
   width: 6px;
   box-sizing: border-box;
+  cursor: pointer;
+}
+
+.monaco-editor .dirty-diff-glyph::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 0;
+  left: -2px;
+  pointer-events: none;
+  transition:
+    width 80ms linear,
+    left 80ms linear;
+}
+
+.monaco-editor .margin-view-overlays .dirty-diff-glyph:hover::before {
+  width: 6px;
+  left: -6px;
 }
 
 .monaco-editor .dirty-diff-added,
@@ -18,16 +39,32 @@
   border-left-color: var(--_dk-cat-green);
 }
 
+.monaco-editor .dirty-diff-added.primary::before {
+  background: var(--_dk-cat-green);
+}
+
 .monaco-editor .dirty-diff-added.secondary {
   border-left-color: color-mix(in srgb, var(--_dk-cat-green) 55%, transparent);
+}
+
+.monaco-editor .dirty-diff-added.secondary::before {
+  background: color-mix(in srgb, var(--_dk-cat-green) 55%, transparent);
 }
 
 .monaco-editor .dirty-diff-modified.primary {
   border-left-color: var(--_dk-cat-blue);
 }
 
+.monaco-editor .dirty-diff-modified.primary::before {
+  background: var(--_dk-cat-blue);
+}
+
 .monaco-editor .dirty-diff-modified.secondary {
   border-left-color: color-mix(in srgb, var(--_dk-cat-blue) 55%, transparent);
+}
+
+.monaco-editor .dirty-diff-modified.secondary::before {
+  background: color-mix(in srgb, var(--_dk-cat-blue) 55%, transparent);
 }
 
 .monaco-editor .dirty-diff-deleted.primary::after,
@@ -49,6 +86,20 @@
 
 .monaco-editor .dirty-diff-deleted.secondary::after {
   border-left: 5px solid color-mix(in srgb, var(--_dk-red-500) 55%, transparent);
+}
+
+.monaco-editor .dirty-diff-deleted.primary::before {
+  background: var(--_dk-red-500);
+}
+
+.monaco-editor .dirty-diff-deleted.secondary::before {
+  background: color-mix(in srgb, var(--_dk-red-500) 55%, transparent);
+}
+
+.monaco-editor .margin-view-overlays .dirty-diff-deleted:hover::after {
+  bottom: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
 }
 
 .git-quick-diff-peek {

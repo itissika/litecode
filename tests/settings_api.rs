@@ -1168,6 +1168,38 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     );
     let _ = ctrl.take_outgoing_for(&sid);
 
+    let revision_after_first_switch = sessions.data().revision_blocking(&sid).expect("revision");
+    let model_changes_after_first_switch = sessions
+        .data()
+        .events_blocking(&sid)
+        .expect("events")
+        .into_iter()
+        .filter(|event| event.event_type == litecode::session::EventType::ModelChanged)
+        .count();
+    assert_eq!(model_changes_after_first_switch, 1);
+
+    // Re-selecting the current model is a no-op: no duplicate control-plane
+    // row and no revision bump.
+    ctrl.set_session_model(&sid, common::TEST_COMPACTION_MODEL_REF)
+        .expect("same-model selection is accepted");
+    let _ = ctrl.take_outgoing_for(&sid);
+    assert_eq!(
+        sessions.data().revision_blocking(&sid).expect("revision"),
+        revision_after_first_switch,
+        "same-model selection must not mutate the session"
+    );
+    let model_changes_after_repeat = sessions
+        .data()
+        .events_blocking(&sid)
+        .expect("events")
+        .into_iter()
+        .filter(|event| event.event_type == litecode::session::EventType::ModelChanged)
+        .count();
+    assert_eq!(
+        model_changes_after_repeat, model_changes_after_first_switch,
+        "same-model selection must not append model/changed"
+    );
+
     // A reference the catalog does not declare is refused on the wire and never
     // overwrites the persisted session row.
     ctrl.set_session_model(&sid, "test/ghost-model")

@@ -141,21 +141,10 @@ impl MessagesCodec {
                     .collect(),
             );
         }
-        let carries_thinking = messages.iter().any(|message| {
-            message
-                .blocks
-                .iter()
-                .any(|block| matches!(block.body, Body::Thinking { .. } | Body::Redacted { .. }))
-        });
+        // Signed blocks only reach this codec when the port kept them, which it
+        // does only for an enabled thinking intent. A thinking-off request
+        // therefore never carries a block the off literal cannot sit beside.
         let (thinking, output_config) = self.thinking_fields(params.thinking);
-        // `between_tools` / `disabled` reject `block_binding`, and a request
-        // that still carries a signed block must be able to drop it. Adaptive
-        // is the only shape that accepts the binding.
-        let (thinking, output_config) = if carries_thinking {
-            self.thinking_beside_replayed_blocks(thinking, output_config)
-        } else {
-            (thinking, output_config)
-        };
         if let Some(thinking) = thinking {
             body["thinking"] = thinking;
         }
@@ -199,30 +188,6 @@ impl MessagesCodec {
                 .filter(|display| !display.is_empty()),
         );
         (Some(thinking), Some(serde_json::json!({"effort": effort})))
-    }
-
-    fn thinking_beside_replayed_blocks(
-        &self,
-        thinking: Option<Value>,
-        output_config: Option<Value>,
-    ) -> (Option<Value>, Option<Value>) {
-        let adaptive = thinking
-            .as_ref()
-            .and_then(|value| value.get("type"))
-            .and_then(Value::as_str)
-            == Some("adaptive");
-        if adaptive {
-            return (thinking, output_config);
-        }
-        (
-            Some(adaptive_thinking(
-                self.model
-                    .reasoning_summary
-                    .as_deref()
-                    .filter(|display| !display.is_empty()),
-            )),
-            None,
-        )
     }
 
     fn request(
@@ -1481,7 +1446,7 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
     }
 
     #[test]
-    fn off_literal_is_not_sent_beside_a_thinking_block() {
+    fn thinking_off_drops_signed_history_before_encoding() {
         let sonnet = codec_at(
             "https://opencode.ai/inference/anthropic/v1",
             "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { off = \"between_tools\", low = \"low\", medium = \"high\", high = \"max\" } }\n",
@@ -1493,14 +1458,33 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             user_text("q2"),
         ]);
         params.thinking = ThinkingSpec::Off;
-        let body = sonnet.encode_body(&params, true).unwrap();
-        assert!(body.to_string().contains("sig-old"));
-        assert_eq!(body["thinking"]["type"], "adaptive");
-        assert_eq!(
-            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
-            "drop_block"
+        let target = sonnet.model.as_ref();
+        let producers: Vec<_> = params
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: target.provider_id.clone(),
+                    endpoint_type: Some("messages".into()),
+                    model_ref: Some(target.reference.clone()),
+                })
+            })
+            .collect();
+        let rebased = vec![false; params.input.len()];
+        let report = crate::llm::port::port(
+            &mut params.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
         );
-        assert!(body.get("output_config").is_none());
+        assert_eq!(report.reasoning_dropped, 1);
+
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert!(!body.to_string().contains("sig-old"), "{body}");
+        assert_eq!(body["thinking"]["type"], "between_tools");
+        assert!(body["thinking"].get("block_binding").is_none());
 
         params.input = vec![user_text("compacted")];
         let body = sonnet.encode_body(&params, true).unwrap();
@@ -1623,7 +1607,7 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
     }
 
     #[test]
-    fn opus_off_still_sends_drop_block_because_thinking_stays_on() {
+    fn a_model_without_an_off_literal_stays_adaptive() {
         let opus = codec_at(
             "https://opencode.ai/inference/anthropic/v1",
             "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { low = \"low\", medium = \"high\", high = \"max\" } }\n",

@@ -192,6 +192,92 @@ fn binding_from_ref(
     })
 }
 
+/// Read the producer of each item from durable request headers.
+///
+/// One definition shared by the request builder and the switch preview, so a
+/// preview and the next turn cannot disagree about who produced what.
+pub(crate) fn producers_from_origins(
+    origins: Vec<(crate::session::event::Seq, serde_json::Value)>,
+    item_seqs: &[Option<crate::session::event::Seq>],
+) -> Vec<Option<crate::llm::ItemProducer>> {
+    let headers = origins
+        .into_iter()
+        .map(|(seq, body)| {
+            let field = |key: &str| {
+                body.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            (
+                seq,
+                crate::llm::ItemProducer {
+                    provider_id: field("provider_id").unwrap_or_default(),
+                    endpoint_type: field("endpoint_type"),
+                    model_ref: field("model_ref"),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    crate::llm::producers_for_seqs(item_seqs, &headers)
+}
+
+/// What a model switch would cost, computed before the switch is persisted.
+#[derive(Debug, Clone)]
+pub(crate) struct SwitchPreview {
+    pub report: crate::llm::port::PortReport,
+    /// Highest durable seq at preview time. Later items did not exist when the
+    /// user switched and are not part of this report.
+    pub at_seq: crate::session::event::Seq,
+}
+
+/// Port the current committed view to `model_ref` without sending anything.
+///
+/// This is the same policy function the next turn runs; only the input is a
+/// preview (no turn-specific padding or reminders). A blocked target must not
+/// be persisted as the session model.
+pub(crate) fn preview_session_model(
+    resolved: &ResolvedConfig,
+    sessions: &SessionManager,
+    session_id: &str,
+    model_ref: &str,
+) -> Result<SwitchPreview> {
+    let target = resolved
+        .catalog()
+        .model(model_ref)
+        .cloned()
+        .ok_or_else(|| {
+            LitecodeError::Config(format!(
+                "model '{model_ref}' is not in this build's provider catalog"
+            ))
+        })?;
+    let rows = sessions.data().working_set_blocking(session_id)?;
+    let seqs: Vec<Option<crate::session::event::Seq>> =
+        rows.iter().map(|row| row.log_seq).collect();
+    let mut items: Vec<Item> = rows.into_iter().map(|row| row.item).collect();
+    let origins = sessions.request_origins(session_id).unwrap_or_default();
+    let producers = producers_from_origins(origins, &seqs);
+    let rebased = vec![false; items.len()];
+    let projected = project_llm_input_for_model(&mut items, target.as_ref());
+    let mut report = crate::llm::port::port(
+        &mut items,
+        &producers,
+        &rebased,
+        target.as_ref(),
+        crate::platform_knobs::ThinkingSpec::Tier(
+            sessions.thinking_tier(session_id).unwrap_or_default(),
+        ),
+        // The agent loop offers tools; a target that cannot take them cannot
+        // be a session model. This is the same predicate the request uses.
+        true,
+    );
+    report.projected_parts = projected;
+    Ok(SwitchPreview {
+        report,
+        at_seq: sessions.entry_wire_seq_cursor(session_id).0.max(0) as u64,
+    })
+}
+
 fn require_capability(model: &ResolvedModel, modality: Modality, context: &str) -> Result<()> {
     if model.supports(modality) {
         Ok(())
@@ -257,13 +343,15 @@ pub fn validate_llm_input_capabilities(items: &[Item], model: &ResolvedModel) ->
 ///
 /// After this, [`validate_llm_input_capabilities`] should succeed for the same
 /// `model` (safety net if projection is skipped).
-pub fn project_llm_input_for_model(items: &mut [Item], model: &ResolvedModel) {
+pub fn project_llm_input_for_model(items: &mut [Item], model: &ResolvedModel) -> u32 {
+    let mut projected = 0u32;
     for item in items.iter_mut() {
         match item {
             Item::Message(MessageItem::Input(message)) => {
                 for part in message.content.iter_mut() {
                     if let Some(text) = omit_unsupported_part(part, model) {
                         *part = InputContent::InputText(InputTextContent { text });
+                        projected += 1;
                     }
                 }
             }
@@ -276,6 +364,7 @@ pub fn project_llm_input_for_model(items: &mut [Item], model: &ResolvedModel) {
                     if let Some(text) = omit_unsupported_part(part, model) {
                         *part = InputContent::InputText(InputTextContent { text });
                         replaced = true;
+                        projected += 1;
                     }
                 }
                 if replaced
@@ -297,6 +386,7 @@ pub fn project_llm_input_for_model(items: &mut [Item], model: &ResolvedModel) {
             _ => {}
         }
     }
+    projected
 }
 
 /// If `part` needs a capability the model lacks, return placeholder text.
@@ -409,6 +499,13 @@ id = "mm"
 provider_id = "compact-provider"
 context_window = 200000
 modalities = ["text", "image", "video", "audio"]
+
+[[models]]
+id = "no-tools"
+provider_id = "compact-provider"
+context_window = 8000
+max_output = 1024
+tool_call = false
 "#;
 
     fn catalog() -> Arc<ProviderCatalog> {
@@ -622,6 +719,42 @@ modalities = ["text", "image", "video", "audio"]
                 .to_string()
                 .contains("not in this build's provider catalog"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn a_switch_to_a_tool_less_model_is_blocked_before_persisting() {
+        let resolved = resolved_with("compact-provider/compact-api-model");
+        let (sessions, sid) = ephemeral_session();
+
+        let blocked =
+            preview_session_model(&resolved, &sessions, &sid, "compact-provider/no-tools")
+                .expect("preview");
+        assert_eq!(
+            blocked.report.blocked,
+            Some(crate::llm::port::PortBlock::ToolsUnsupported)
+        );
+
+        let open = preview_session_model(
+            &resolved,
+            &sessions,
+            &sid,
+            "compact-provider/compact-api-model",
+        )
+        .expect("preview");
+        assert_eq!(open.report.blocked, None);
+        assert_eq!(open.report.items_in, 0);
+    }
+
+    #[test]
+    fn preview_rejects_a_model_outside_the_catalog() {
+        let resolved = resolved_with("compact-provider/compact-api-model");
+        let (sessions, sid) = ephemeral_session();
+        let error = preview_session_model(&resolved, &sessions, &sid, "ghost/model").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not in this build's provider catalog")
         );
     }
 

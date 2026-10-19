@@ -5,6 +5,7 @@
 @import "./components/chat.css";
 @import "./components/content.css";
 @import "./components/editor-tab.css";
+@import "./components/monaco.css";
 @import "./components/markdown-preview.css";
 @import "./components/settings.css";
 @import "./components/skeleton.css";

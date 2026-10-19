@@ -47,6 +47,10 @@ pub struct PreparedView {
     /// that prefix cannot verify.
     pub rebased: Vec<bool>,
     pub token_count: usize,
+    /// Media parts this view replaced with text placeholders for the target
+    /// model. Counted at build time because the projection must run before
+    /// media refs are expanded; carried into the request's port report.
+    pub projected_parts: u32,
     /// Optional system / instructions string for this step (set by prepare or caller).
     pub instructions: Option<String>,
 }

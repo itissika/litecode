@@ -81,10 +81,9 @@ impl ResponsesCodec {
 
         let mut input_items = params.input.clone();
         let summary_replay = model.reasoning_replay == ReasoningReplay::Summary;
-        if model.has_quirk(ProviderQuirk::ReasoningReplay) {
-            // Declared: reasoning text must go back. Replay whenever this request
-            // thinks: a vendor whose default is thinking-on must never see a
-            // reasoning-less assistant turn.
+        if model.reasoning_replay == ReasoningReplay::Text {
+            // Pass back reasoning the model already wrote. A summary with no
+            // raw text moves into reasoning_text; a missing turn stays missing.
             input_items =
                 ensure_reasoning_replay(&input_items, !params.tools.is_empty(), thinking_active);
         } else if summary_replay {
@@ -92,12 +91,11 @@ impl ResponsesCodec {
             // The request builder has already dropped every other provider's items.
             input_items = project_summary_replay(input_items);
         } else {
-            // Undeclared (OpenAI family): only the endpoint's own ciphertext
-            // replays. Input `content` is rejected outright
-            // (`array_above_max_length`, maximum length 0), and a foreign
-            // summary is a field this dialect is not verified to accept — so an
-            // item without ciphertext carries nothing that may go out.
-            input_items = keep_replayable_reasoning(input_items);
+            // Undeclared (OpenAI family): the port has already kept only
+            // reasoning whose ciphertext this endpoint can read. Input
+            // `content` is rejected outright (`array_above_max_length`,
+            // maximum length 0), so clearing it is shape, not policy.
+            input_items = clear_input_reasoning_content(input_items);
         }
         let input: Vec<Value> = input_items
             .iter()
@@ -201,21 +199,18 @@ impl ResponsesCodec {
     }
 }
 
-/// Keep only reasoning the endpoint itself produced (its ciphertext survived the
-/// provider check) and never send input `content`, which this dialect rejects.
-/// The session copy is not this vec.
-fn keep_replayable_reasoning(items: Vec<Item>) -> Vec<Item> {
+/// Never send input `content`: this dialect rejects it. Whether an item is
+/// admissible at all is the port's decision, not this codec's. The session copy
+/// is not this vec.
+fn clear_input_reasoning_content(items: Vec<Item>) -> Vec<Item> {
     items
         .into_iter()
-        .filter_map(|item| {
-            let Item::Reasoning(mut reasoning) = item else {
-                return Some(item);
-            };
-            if reasoning.encrypted_content.is_none() {
-                return None;
+        .map(|item| match item {
+            Item::Reasoning(mut reasoning) => {
+                reasoning.content = None;
+                Item::Reasoning(reasoning)
             }
-            reasoning.content = None;
-            Some(Item::Reasoning(reasoning))
+            other => other,
         })
         .collect()
 }
@@ -598,7 +593,6 @@ id = "deepseek"
 name = "DeepSeek"
 endpoint = "https://api.deepseek.com"
 endpoint_type = "responses"
-quirks = ["reasoning_replay"]
 "#;
 
     const ARK_PROVIDER: &str = r#"
@@ -947,9 +941,9 @@ endpoint_type = "responses"
         assert_eq!(input[0]["role"], "assistant");
     }
 
-    /// Without `reasoning_replay`, only the endpoint's own ciphertext replays.
-    /// Foreign text — raw or summary — is not sent, and input `content` never
-    /// reaches the wire (OpenAI rejects it). The session copy is unchanged.
+    /// A ciphertext-only target keeps only reasoning this endpoint can read
+    /// (its own ciphertext); the codec then clears input `content`, which the
+    /// dialect rejects. The session copy is unchanged.
     #[test]
     fn undeclared_dialect_replays_only_its_own_ciphertext() {
         use crate::authority::responses::{
@@ -999,6 +993,36 @@ endpoint_type = "responses"
             }),
             assistant_text("answer"),
         ];
+        let target = codec.model.as_ref();
+        let producers: Vec<_> = request
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: target.provider_id.clone(),
+                    endpoint_type: Some("responses".into()),
+                    model_ref: Some(target.reference.clone()),
+                })
+            })
+            .collect();
+        let mut producers = producers;
+        producers[1] = Some(crate::llm::ItemProducer {
+            provider_id: "other".into(),
+            endpoint_type: Some("responses".into()),
+            model_ref: Some("other/model".into()),
+        });
+        producers[2] = producers[1].clone();
+        let session_copy = request.input.clone();
+        let rebased = vec![false; request.input.len()];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 2, "{report:?}");
         let body = request_body(&codec, &request);
         let input = body["input"].as_array().unwrap();
         assert_eq!(input.len(), 3, "{input:?}");
@@ -1010,7 +1034,11 @@ endpoint_type = "responses"
         assert!(input[1].get("content").is_none(), "{}", input[1]);
         assert_eq!(input[1]["summary"][0]["text"], "own summary rides along");
         assert_eq!(input[2]["role"], "assistant");
-        assert_eq!(request.input.len(), 5, "session-owned copy unchanged");
+        assert_eq!(
+            session_copy.len(),
+            5,
+            "the ported request copy is not the session copy"
+        );
     }
 
     #[test]
@@ -1191,6 +1219,29 @@ endpoint_type = "responses"
             user_text("continue"),
         ];
 
+        let target = codec.model.as_ref();
+        let producers: Vec<_> = request
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: "zen".into(),
+                    endpoint_type: Some("chat_completions".into()),
+                    model_ref: Some("zen/m".into()),
+                })
+            })
+            .collect();
+        let rebased = vec![false; request.input.len()];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 1, "{report:?}");
+
         let input = request_body(&codec, &request)["input"]
             .as_array()
             .unwrap()
@@ -1207,10 +1258,10 @@ endpoint_type = "responses"
     }
 
     #[test]
-    fn chat_reasoning_keeps_its_slot_and_is_patched_for_replay() {
+    fn empty_reasoning_keeps_its_slot_without_invented_text() {
         use crate::authority::responses::ReasoningItem;
 
-        let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
         let mut request = sample_request();
         request.tools = vec![tool("read")];
         request.input = vec![
@@ -1232,17 +1283,74 @@ endpoint_type = "responses"
         assert_eq!(input.len(), 3, "{input:?}");
         assert_eq!(input[1]["type"], "reasoning");
         assert!(input[1].get("id").is_none(), "{input:?}");
-        assert_eq!(
-            input[1]["content"][0]["text"],
-            super::super::replay::REPLAY_REASONING_PLACEHOLDER
+        assert!(
+            input[1].get("content").is_none() || input[1]["content"].is_null(),
+            "empty reasoning stays empty: {input:?}"
         );
         assert_eq!(input[2]["role"], "assistant");
     }
 
     #[test]
-    fn reasoning_replay_patches_a_foreign_uuid_item_in_place() {
+    fn foreign_summary_reaches_text_replay_responses() {
+        use crate::authority::responses::{ReasoningItem, SummaryPart, SummaryTextContent};
+        use crate::llm::ItemProducer;
+
+        let codec = ResponsesCodec::new(deepseek(
+            "reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: None,
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "foreign summary".into(),
+                })],
+                content: None,
+                encrypted_content: Some("foreign-cipher".into()),
+                status: None,
+            }),
+            assistant_text("done"),
+        ];
+        let producers = vec![
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+        ];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &[false; 3],
+            codec.model.as_ref(),
+            ModelRequest::sample_thinking(),
+            true,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{report:?}");
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[1]["type"], "reasoning", "{body}");
+        assert_eq!(input[1]["content"][0]["text"], "foreign summary", "{body}");
+        assert!(input[1]["summary"].as_array().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn foreign_reasoning_id_is_stripped_and_missing_text_stays_missing() {
         use crate::authority::responses::ReasoningItem;
-        let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
         let mut request = sample_request();
         request.tools = vec![tool("read")];
         request.input = vec![
@@ -1260,14 +1368,15 @@ endpoint_type = "responses"
         assert_eq!(body["input"].as_array().unwrap().len(), 3);
         assert_eq!(body["input"][1]["type"], "reasoning");
         assert!(body["input"][1].get("id").is_none(), "{}", body["input"][1]);
-        assert_eq!(
-            body["input"][1]["content"][0]["text"],
-            super::super::replay::REPLAY_REASONING_PLACEHOLDER
+        assert!(
+            body["input"][1].get("content").is_none() || body["input"][1]["content"].is_null(),
+            "a foreign id is stripped; its missing text is not invented: {}",
+            body["input"][1]
         );
     }
 
     #[test]
-    fn replay_is_quirk_gated_and_synthesizes_missing_reasoning() {
+    fn replay_does_not_invent_reasoning_the_model_omitted() {
         let request = {
             let mut request = sample_request();
             request.tools = vec![tool("read")];
@@ -1292,17 +1401,16 @@ endpoint_type = "responses"
             request
         };
 
-        let codec = ResponsesCodec::new(deepseek("reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
         let body = request_body(&codec, &request);
         let input = body["input"].as_array().unwrap();
-        assert_eq!(input.len(), 3, "{input:?}");
-        assert_eq!(input[1]["type"], "reasoning");
-        assert_eq!(
-            input[1]["content"][0]["text"],
-            super::super::replay::REPLAY_REASONING_PLACEHOLDER
+        assert_eq!(input.len(), 2, "{input:?}");
+        assert!(
+            input.iter().all(|item| item["type"] != "reasoning"),
+            "{input:?}"
         );
 
-        // A provider without the quirk keeps the input untouched.
+        // A ciphertext-only provider keeps the same history.
         let codec = ResponsesCodec::new(openai("")).unwrap();
         let body = request_body(&codec, &request);
         assert_eq!(body["input"].as_array().unwrap().len(), 2);
@@ -1319,9 +1427,8 @@ id = "mimo"
 name = "MiMo"
 endpoint = "https://mimo.example/v1"
 endpoint_type = "responses"
-quirks = ["reasoning_replay"]
 "#;
-        let entry = "reasoning = { tiers = { off = \"none\", low = \"none\", medium = \"medium\", high = \"high\" } }";
+        let entry = "reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"none\", medium = \"medium\", high = \"high\" } }";
         let text =
             format!("{MIMO_PROVIDER}\n[[models]]\nid = \"m\"\nprovider_id = \"mimo\"\n{entry}\n");
         let catalog = ProviderCatalog::parse(&text, Path::new("test-catalog.toml")).unwrap();
@@ -1364,8 +1471,8 @@ quirks = ["reasoning_replay"]
                 .as_array()
                 .unwrap()
                 .len(),
-            3,
-            "medium thinks: replay is synthesized"
+            2,
+            "medium thinks, but a turn with no reasoning is not given one"
         );
     }
 

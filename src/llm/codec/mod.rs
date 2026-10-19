@@ -3,6 +3,16 @@
 //! [EndpointKind](crate::provider_catalog::EndpointKind) is the only codec
 //! selector: providers are data, protocols are code. A codec receives a fully
 //! resolved [ResolvedModel] and never inspects a provider id.
+//!
+//! # Contract with the port
+//!
+//! A codec receives a view that [crate::llm::port] already made admissible for
+//! this target: foreign ciphertext/signatures are gone, readable text survives
+//! when the dialect accepts it, and a thinking-off request carries no signed
+//! block. The codec may **shape** (clear input `content`, merge same-role
+//! messages, reorder tool uses, add cache breakpoints) but must not decide
+//! that content is unwanted. A drop for shape reasons is an invariant
+//! violation, not policy.
 
 pub(crate) mod chat;
 pub(crate) mod chat_synth;

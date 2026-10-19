@@ -5,6 +5,7 @@
 //! providers themselves are data.
 
 mod codec;
+pub(crate) mod port;
 mod provider;
 pub mod reconnect;
 mod replay_compat;
@@ -19,9 +20,13 @@ pub use request::{ModelRequest, ToolDef};
 /// reasoning id, ciphertext only to the provider, protocol, and model that
 /// minted it, summary replay drops reasoning any other provider produced, and
 /// a rewritten Messages prefix drops the signature minted against that prefix.
+pub(crate) use replay_compat::{ItemProducer, producers_for_seqs};
+
+/// Replay primitives are exercised directly by their own unit tests. The
+/// production path reaches them only through `port`.
+#[cfg(test)]
 pub(crate) use replay_compat::{
-    ItemProducer, StripCiphertextStats, producers_for_seqs, retain_own_reasoning,
-    strip_foreign_ciphertext, strip_rebased_signatures,
+    retain_own_reasoning, strip_foreign_ciphertext, strip_rebased_signatures,
 };
 
 /// Folding a provider's stream into canonical `Item`s.

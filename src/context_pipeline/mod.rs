@@ -332,7 +332,7 @@ impl ContextPipeline {
         let mut llm_items = turn_view.clone();
         Session::pad_unanswered_calls(&mut llm_items);
         let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
-        crate::runtime::project_llm_input_for_model(&mut llm_items, model);
+        let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
         // Runs before refs expand, so a dropped part never becomes a data URL.
         let mut rebased = media_budget::drop_stale_media(&mut llm_items);
         for (flag, compacted) in rebased
@@ -354,6 +354,7 @@ impl ContextPipeline {
             item_seqs,
             rebased,
             token_count,
+            projected_parts,
             instructions: None,
         });
         Ok(())

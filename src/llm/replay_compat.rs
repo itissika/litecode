@@ -9,8 +9,8 @@
 //!    or no `model_ref`, keeps the previous rule: it returns to the same provider
 //!    on Responses and Chat, and is dropped for Messages.
 //! 3. Reasoning text is never dropped by the ciphertext strip. Each codec writes
-//!    it in its own dialect; a provider declaring `reasoning_replay` receives it
-//!    on every turn.
+//!    it in its own dialect; a target declaring `reasoning.replay = "text"`
+//!    receives readable text from any producer.
 //! 4. Summary replay keeps only reasoning this provider produced. Foreign
 //!    reasoning has no id that host minted, and its input schema requires that
 //!    id, so the item is removed on the request copy.

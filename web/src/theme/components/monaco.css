@@ -1,0 +1,11 @@
+/* Find-widget tips ("Close (Escape)") are a context-view anchored above the
+   button. A wrapped second line drops onto the button, so the tip eats the
+   click (monaco-editor#5208). Keep the tip one line and click-through while
+   find is open. Content hovers stay inside .monaco-editor and are unchanged. */
+.monaco-editor:has(.find-widget.visible) ~ .context-view:has(.workbench-hover) {
+  pointer-events: none;
+}
+
+.monaco-editor:has(.find-widget.visible) ~ .context-view .hover-contents {
+  white-space: nowrap !important;
+}

@@ -268,12 +268,6 @@ fn resolve_model(
             "thinking_type_switch"
         ));
     }
-    if endpoint_type == EndpointKind::Messages && quirks.contains(&ProviderQuirk::ReasoningReplay) {
-        return Err(format!(
-            "quirk '{}' is only implemented by the responses codec",
-            "reasoning_replay"
-        ));
-    }
     if endpoint_type == EndpointKind::Messages && model.json_output {
         return Err("json_output is not implemented by the messages codec".into());
     }
@@ -325,18 +319,15 @@ fn resolve_model(
         .as_ref()
         .map(|raw| raw.replay)
         .unwrap_or_default();
-    if reasoning_replay == ReasoningReplay::Summary {
-        if endpoint_type != EndpointKind::Responses {
-            return Err(
-                "reasoning.replay \"summary\" is only implemented by the responses codec".into(),
-            );
-        }
-        if quirks.contains(&ProviderQuirk::ReasoningReplay) {
-            return Err(
-                "reasoning.replay \"summary\" cannot be combined with quirk reasoning_replay"
-                    .into(),
-            );
-        }
+    if reasoning_replay != ReasoningReplay::Ciphertext && endpoint_type != EndpointKind::Responses {
+        return Err(format!(
+            "reasoning.replay \"{}\" is only implemented by the responses codec",
+            match reasoning_replay {
+                ReasoningReplay::Text => "text",
+                ReasoningReplay::Summary => "summary",
+                ReasoningReplay::Ciphertext => unreachable!(),
+            }
+        ));
     }
     let reasoning_summary = model.reasoning.as_ref().and_then(|raw| raw.summary.clone());
     if let Some(summary) = &reasoning_summary {
@@ -405,14 +396,6 @@ pub fn validate_provider(provider: &RawProvider) -> std::result::Result<(), Stri
         return Err(format!(
             "quirk '{}' is only implemented by the responses codec",
             "thinking_type_switch"
-        ));
-    }
-    if provider.endpoint_type == EndpointKind::Messages
-        && provider.quirks.contains(&ProviderQuirk::ReasoningReplay)
-    {
-        return Err(format!(
-            "quirk '{}' is only implemented by the responses codec",
-            "reasoning_replay"
         ));
     }
     Ok(())

@@ -47,6 +47,8 @@ pub enum SessionKind {
     RequestHeader,
     #[serde(rename = "request/context")]
     RequestContext,
+    #[serde(rename = "model/changed")]
+    ModelChanged,
     #[serde(untagged)]
     Unknown(String),
 }
@@ -63,6 +65,7 @@ impl SessionKind {
             Self::TurnEnd => "turn/end",
             Self::RequestHeader => "request/header",
             Self::RequestContext => "request/context",
+            Self::ModelChanged => "model/changed",
             Self::Unknown(value) => value,
         }
     }

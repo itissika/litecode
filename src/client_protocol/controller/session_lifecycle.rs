@@ -618,9 +618,102 @@ impl SessionController {
             }
             return Ok(());
         }
+        let previous = self
+            .sessions
+            .session_model_id(session_id)
+            .unwrap_or_default();
+        if previous == model_id {
+            // Re-selecting the current model is an idempotent success. There is
+            // no state transition, so no control-plane row and no revision.
+            let binding = self.session_binding(session_id);
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.push_operation_ok(OperationKind::SetModel, &project, &binding);
+            }
+            return Ok(());
+        }
+        // Port the current view before committing the switch: the user sees
+        // what the new target will drop, and a target that cannot serve this
+        // session is rejected here instead of on the next turn.
+        let preview = match crate::runtime::llm_resolve::preview_session_model(
+            &self.runtime.resolved,
+            &self.sessions,
+            session_id,
+            model_id,
+        ) {
+            Ok(preview) => preview,
+            Err(error) => {
+                let binding = self.session_binding(session_id);
+                if let Some(proj) = self.projection_mut(session_id) {
+                    proj.push_operation_error(
+                        OperationKind::SetModel,
+                        ErrorCode::InvalidRequest,
+                        error.to_string(),
+                        &project,
+                        &binding,
+                    );
+                }
+                return Ok(());
+            }
+        };
+        if let Some(block) = preview.report.blocked {
+            let binding = self.session_binding(session_id);
+            if let Some(proj) = self.projection_mut(session_id) {
+                proj.push_operation_error(
+                    OperationKind::SetModel,
+                    ErrorCode::InvalidRequest,
+                    format!(
+                        "model '{model_id}' cannot serve this session: {}",
+                        block.message()
+                    ),
+                    &project,
+                    &binding,
+                );
+            }
+            return Ok(());
+        }
         self.sessions
             .set_session_model_id(session_id, Some(model_id.to_string()))
             .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Best-effort switch diagnostics: control-plane, never model input.
+        // `sessions.model_id` is the state authority; this row records what the
+        // port said the switch would cost. Folding state + row into one writer
+        // transaction is tracked separately from the current product fix.
+        let record = serde_json::json!({
+            "schema": 1,
+            "from": previous,
+            "to": model_id,
+            "at_seq": preview.at_seq,
+            "report": {
+                "items_in": preview.report.items_in,
+                "items_out": preview.report.items_out,
+                "reasoning_dropped": preview.report.reasoning_dropped,
+                "ciphertext_stripped": preview.report.ciphertext_stripped,
+                "signatures_stripped": preview.report.signatures_stripped,
+                "projected_parts": preview.report.projected_parts,
+            }
+        });
+        tracing::info!(
+            target: "litecode.debug.model_switch",
+            session_id,
+            from = %previous,
+            to = %model_id,
+            at_seq = preview.at_seq,
+            items_in = preview.report.items_in,
+            items_out = preview.report.items_out,
+            reasoning_dropped = preview.report.reasoning_dropped,
+            ciphertext_stripped = preview.report.ciphertext_stripped,
+            signatures_stripped = preview.report.signatures_stripped,
+            projected_parts = preview.report.projected_parts,
+            degraded = preview.report.degraded(),
+            "session model switched"
+        );
+        if let Err(error) = self.sessions.append_model_change(session_id, &record) {
+            tracing::warn!(
+                session_id,
+                %error,
+                "model switched but the switch record could not be appended"
+            );
+        }
         let binding = self.session_binding(session_id);
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = binding.context_window;

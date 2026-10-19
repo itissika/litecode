@@ -2924,6 +2924,41 @@ impl SessionManager {
         }
     }
 
+    /// Record a user-visible model switch.
+    ///
+    /// Control-plane only: like `request/header`, the row never enters the
+    /// spine or model input. Unlike a header it exists even when the next turn
+    /// never runs, so the UI and the diag log can answer "who switched, when,
+    /// and what did the port say it would cost".
+    ///
+    /// Best-effort diagnostics: the session model column is the state
+    /// authority. The caller owns the transaction currently separating the
+    /// model update from this append; a future mutation may fold both together.
+    pub fn append_model_change(
+        &self,
+        session_id: &str,
+        record: &serde_json::Value,
+    ) -> crate::types::Result<crate::session::event::Seq> {
+        let receipt = self.apply(
+            session_id,
+            SessionApply::Append(EventDraft {
+                time: chrono::Utc::now().timestamp_millis(),
+                event_type: EventType::ModelChanged,
+                data: record.clone(),
+                surface_op: None,
+                source_seqs: None,
+                ignorable: false,
+                state: crate::session::model::LogState::Final,
+            }),
+        )?;
+        match receipt.outcome {
+            crate::session::data::command::CommitKind::Appended { seq } => Ok(seq),
+            other => Err(crate::types::LitecodeError::InvalidSessionEvent(format!(
+                "append_model_change: unexpected commit outcome {other:?}"
+            ))),
+        }
+    }
+
     /// `(seq, body)` of every recorded request origin, oldest first.
     pub fn request_origins(
         &self,
@@ -3437,6 +3472,45 @@ mod request_origin_tests {
         assert!(
             messages.is_empty(),
             "a request origin must never reach the model: {messages:?}"
+        );
+    }
+
+    /// A switch is durable and control-plane: it never becomes model input,
+    /// and it is not a request origin.
+    #[test]
+    fn model_change_round_trips_as_a_control_plane_row() {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        let record = serde_json::json!({
+            "schema": 1,
+            "from": "p/a",
+            "to": "p/b",
+            "at_seq": 0,
+            "report": { "reasoning_dropped": 3, "projected_parts": 1 },
+        });
+        let seq = manager
+            .append_model_change(&session_id, &record)
+            .expect("switch record appends");
+
+        let events = manager.data().events_blocking(&session_id).expect("events");
+        let row = events
+            .iter()
+            .find(|event| event.event_type == EventType::ModelChanged)
+            .expect("durable switch row");
+        assert_eq!(row.seq, seq);
+        assert_eq!(row.data["to"], "p/b");
+        assert_eq!(row.data["report"]["reasoning_dropped"], 3);
+
+        let messages = crate::session::surface::derive_messages(&events).expect("derive");
+        assert!(
+            messages.is_empty(),
+            "a switch record must never reach the model: {messages:?}"
+        );
+        assert!(
+            manager.request_origins(&session_id).unwrap().is_empty(),
+            "a switch is not a request origin"
         );
     }
 

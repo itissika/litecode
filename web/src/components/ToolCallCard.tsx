@@ -159,7 +159,7 @@ export function ToolCallCard({
               <span
                 className={`${FOLDCARD_HEADER_TONE} shrink-0 font-mono text-dk-2xs`}
               >
-                <span className="text-(--_dk-emerald-500)">
+                <span className="text-(--_dk-cat-green)">
                   +{editDiff.added}
                 </span>
                 <span className="text-(--_dk-red-500)">

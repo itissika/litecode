@@ -101,7 +101,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 |---|---|
 | Live / 线投影 | `TurnId`、相位、是否在跑、compacting、bash jobs、权限、token 统计 |
 | 目录投影 | `api_model_id`、`label`、`context_window` |
-| SessionEvent | 换过的模型/工具集（`request/header`、`request/context`）、回合起止 |
+| SessionEvent | 换过的模型/工具集（`request/header`、`request/context`）、用户切换模型（`model/changed`）、回合起止 |
 | 派生 | `max_seq`（active tail）、文件撤回锚点、FTS、meter |
 | 不抄 | Codex `WorldState`、Guardian、Realtime、fork 线程 id、`memory_mode` |
 
@@ -189,6 +189,7 @@ bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn �
 | `turn/end` | `{ turn, reason: completed \| cancelled \| error \| max_steps \| hook_blocked }` |
 | `request/header` | `{ provider, model, thinking_tier?, context_mode?, … }` 当时调用绑定（DSH `EpochHeader.config`） |
 | `request/context` | 当时系统提示、工具集等装配快照 |
+| `model/changed` | `{ from, to, at_seq, report }` 用户切换；`report` 是 port 预算的丢弃/投影计数。即便下一轮未发生也保留 |
 
 ### 不是 kind
 

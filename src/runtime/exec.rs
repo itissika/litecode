@@ -46,6 +46,7 @@ impl AgentDeps for AgentRuntime {
             view.item_seqs,
             &view.rebased,
             token_count,
+            view.projected_parts,
         )?;
         build_lap.done();
         // Turn entry -> first request leaves this process (once per turn).
@@ -618,12 +619,10 @@ impl AgentRuntime {
             code: health.code.clone(),
             message: health.message.clone(),
         });
-        if health.severity == "toast" {
-            self.emit_internal(InternalEvent::SnapshotNotice {
-                level: "warn".into(),
-                message: health.message.clone(),
-            });
-        }
+        // Every current code is debug-only: a switch or a foreign strip is
+        // evidence for the log, not a reason to interrupt the user. If a code
+        // ever becomes user-visible, route it through the durable
+        // `model/changed` report instead of reviving a toast here.
     }
 
     /// If the agent touched its active plan this turn, record the on-disk
@@ -683,6 +682,7 @@ impl AgentRuntime {
         item_seqs: Vec<Option<crate::session::event::Seq>>,
         rebased: &[bool],
         token_count: usize,
+        projected_parts: u32,
     ) -> Result<(ModelRequest, crate::session::event::Seq)> {
         let tool_schemas = self.rctx().tool_defs();
 
@@ -697,33 +697,29 @@ impl AgentRuntime {
         let model_ref = self.turn_llm.model_ref.clone();
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
-        // Before summary replay drops items, while `rebased` still lines up.
-        let rebased_stripped =
-            crate::llm::strip_rebased_signatures(&mut input, rebased, &endpoint_type);
         let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
-        let (ciphertexts_stripped, reasoning_dropped, reasoning_wholly_omitted) =
-            if self.turn_llm.model.reasoning_replay
-                == crate::provider_catalog::ReasoningReplay::Summary
-            {
-                (
-                    0u32,
-                    crate::llm::retain_own_reasoning(&mut input, &producers, &provider_id) as u32,
-                    0u32,
-                )
-            } else {
-                let stats = crate::llm::strip_foreign_ciphertext(
-                    &mut input,
-                    &producers,
-                    &provider_id,
-                    &endpoint_type,
-                    &model_ref,
-                );
-                (
-                    stats.ciphertexts_stripped as u32,
-                    0u32,
-                    stats.reasoning_wholly_omitted as u32,
-                )
-            };
+        // One semantic gate. The port decides what this target may receive and
+        // counts every removal; codecs below only spell what survives.
+        let mut report = crate::llm::port::port(
+            &mut input,
+            &producers,
+            rebased,
+            &self.turn_llm.model,
+            crate::platform_knobs::ThinkingSpec::Tier(self.turn_llm.thinking_tier),
+            !tool_schemas.is_empty(),
+        );
+        if let Some(block) = report.blocked {
+            return Err(crate::types::LitecodeError::Config(format!(
+                "model '{}' cannot serve this turn: {}",
+                model_ref,
+                block.message()
+            )));
+        }
+        report.projected_parts = projected_parts;
+        let ciphertexts_stripped = report.ciphertext_stripped;
+        let rebased_stripped = report.signatures_stripped;
+        let reasoning_dropped = report.reasoning_dropped;
+        let reasoning_wholly_omitted = 0u32;
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
         let origin_seq = self.record_request_origin()?;
@@ -753,9 +749,9 @@ impl AgentRuntime {
             .session_model_id(&self.session_id)
             .unwrap_or_default();
         let bind_matches_sticky = sticky_model_id == model_ref;
-        // Projection rewrite detection is out of scope for this package
-        // (acceptance documents the gap); never invent a true.
-        let projection_rewrote = false;
+        // The pipeline counts every part it rewrote; a switch to a text-only
+        // model is visible instead of silent.
+        let projection_rewrote = report.projected_parts > 0;
         let health = classify_llm_request_health(LlmRequestHealthInput {
             sticky_model_id,
             turn_model_ref: model_ref.clone(),
@@ -766,7 +762,9 @@ impl AgentRuntime {
             origin_endpoint_type: endpoint_type.clone(),
             origin_model_ref: model_ref.clone(),
             ciphertexts_stripped,
-            rebased_stripped: rebased_stripped as u32,
+            rebased_stripped,
+            // The port now counts a wholly-unusable reasoning item as a
+            // drop, so the old separate counter has no producer.
             reasoning_dropped,
             reasoning_wholly_omitted,
             rebased_true_count,
@@ -798,29 +796,12 @@ impl AgentRuntime {
         &self,
         item_seqs: &[Option<crate::session::event::Seq>],
     ) -> Vec<Option<crate::llm::ItemProducer>> {
-        let headers = self
-            .sessions
-            .request_origins(&self.session_id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(seq, body)| {
-                let field = |key: &str| {
-                    body.get(key)
-                        .and_then(serde_json::Value::as_str)
-                        .filter(|value| !value.is_empty())
-                        .map(str::to_string)
-                };
-                (
-                    seq,
-                    crate::llm::ItemProducer {
-                        provider_id: field("provider_id").unwrap_or_default(),
-                        endpoint_type: field("endpoint_type"),
-                        model_ref: field("model_ref"),
-                    },
-                )
-            })
-            .collect::<Vec<_>>();
-        crate::llm::producers_for_seqs(item_seqs, &headers)
+        crate::runtime::llm_resolve::producers_from_origins(
+            self.sessions
+                .request_origins(&self.session_id)
+                .unwrap_or_default(),
+            item_seqs,
+        )
     }
 
     /// Append the request boundary before sending, so the next durable Item row
