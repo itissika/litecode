@@ -625,56 +625,6 @@ impl AgentRuntime {
         // `model/changed` report instead of reviving a toast here.
     }
 
-    /// If the agent touched its active plan this turn, record the on-disk
-    /// revision as seen so the next execution turn only reminds on human edits.
-    pub(crate) fn sync_active_plan_revision_after_turn(&self, items: &[Item]) {
-        let Ok(Some(plan)) = self
-            .sessions
-            .with_entry_task_state(&self.session_id, |state| Ok(state.active_plan.clone()))
-        else {
-            return;
-        };
-        let completed: std::collections::HashSet<&str> = items
-            .iter()
-            .filter_map(|item| match item {
-                Item::FunctionCallOutput(output) => Some(output.call_id.as_str()),
-                _ => None,
-            })
-            .collect();
-        let touched = items.iter().any(|item| {
-            let Item::FunctionCall(call) = item else {
-                return false;
-            };
-            if !completed.contains(call.call_id.as_str())
-                || !matches!(call.name.as_str(), "read" | "write" | "edit")
-            {
-                return false;
-            }
-            let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
-                return false;
-            };
-            args.get("file_path")
-                .and_then(|value| value.as_str())
-                .is_some_and(|raw| {
-                    raw.replace('\\', "/")
-                        .trim_start_matches("./")
-                        .ends_with(&plan.relative_path)
-                })
-        });
-        if !touched {
-            return;
-        }
-        let path = self
-            .sessions
-            .plan_dir_path()
-            .join(format!("{}.md", plan.slug));
-        if let Some(revision) = crate::session::task_state::plan_file_revision(&path) {
-            let _ =
-                self.sessions
-                    .update_active_plan_revision(&self.session_id, &plan.slug, &revision);
-        }
-    }
-
     pub(crate) fn build_model_request(
         &self,
         instructions: &str,

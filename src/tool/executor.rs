@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures_util::FutureExt;
@@ -18,9 +18,10 @@ use crate::session::store::Session;
 use crate::tool::authorize::{AuthResult, authorize};
 use crate::tool::output;
 use crate::tool::schema_validate::{
-    check_tool_input, invalid_input_for, parse_tool_arguments, unknown_top_level_properties,
+    check_tool_input, invalid_input_for, parse_tool_arguments, schema_validate,
+    unknown_top_level_properties,
 };
-use crate::tool::trait_::{Tool, ToolExecutionContext};
+use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
     FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolErrorKind,
@@ -300,8 +301,82 @@ fn emit_audit(
     emit_tool_audit(data_root, &event);
 }
 
+/// Who is invoking the single-call pipeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolCaller {
+    Direct,
+    /// Nested call inside `run_code`. `parent_call_id` is the outer call.
+    Code { parent_call_id: String },
+}
+
+/// Per-call side effect shared by direct and nested callers.
+pub type PlanTouch = Arc<dyn Fn(&FunctionToolCall) + Send + Sync>;
+
+/// Facts that differ between a direct call and a nested code call.
+/// Both callers enter [`execute_tool_call`].
+#[derive(Clone)]
+pub struct ToolCallOrigin {
+    pub caller: ToolCaller,
+    /// Temporary total gate. When false, declared code tools stay directly callable.
+    pub gate_open: bool,
+    /// Admitted code-surface names, used only to route a direct call.
+    pub code_names: Arc<[String]>,
+    pub file_note: Option<Arc<dyn Fn(&[PathBuf]) + Send + Sync>>,
+    pub permission_sink: Option<Arc<dyn PermissionSink>>,
+    /// Fired once when a callable tool settles, for both callers.
+    pub plan_touch: Option<PlanTouch>,
+}
+
+impl ToolCallOrigin {
+    pub fn direct() -> Self {
+        Self {
+            caller: ToolCaller::Direct,
+            gate_open: false,
+            code_names: Arc::from([]),
+            file_note: None,
+            permission_sink: None,
+            plan_touch: None,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run_tool(
+    tool_use: &FunctionToolCall,
+    tools: &[Arc<dyn Tool>],
+    permission: &PermissionEngine,
+    ctx: &Context,
+    session_id: &str,
+    agent_name: &str,
+    sink: &dyn PermissionSink,
+    cancel: CancellationToken,
+    data_root: &std::path::Path,
+    spill_threshold: usize,
+    turn_anchor_seq: Option<i64>,
+    write_lock: Arc<WorkspaceWriteLock>,
+    session: Option<crate::session::SessionDataReader>,
+) -> ToolCallResult {
+    execute_tool_call(
+        tool_use,
+        tools,
+        permission,
+        ctx,
+        session_id,
+        agent_name,
+        sink,
+        cancel,
+        data_root,
+        spill_threshold,
+        turn_anchor_seq,
+        write_lock,
+        session,
+        ToolCallOrigin::direct(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn execute_tool_call(
     tool_use: &FunctionToolCall,
     tools: &[Arc<dyn Tool>],
     permission: &PermissionEngine,
@@ -315,24 +390,38 @@ pub async fn run_tool(
     _turn_anchor_seq: Option<i64>,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
+    origin: ToolCallOrigin,
 ) -> ToolCallResult {
     let tu_name = tool_use.name.clone();
     let tu_id = call_id(tool_use);
 
     if cancel.is_cancelled() {
+        if let Some(tool) = callable_tool(tools, &tu_name, &origin) {
+            note_settled_call(&origin, tool.as_ref(), tool_use, permission, &ctx.cwd);
+        }
         return cancelled_tool_result(&tu_name);
     }
 
-    let tool = match tools.iter().find(|t| t.name() == tu_name) {
-        Some(t) => t.clone(),
-        None => {
-            return wire_result(ToolCallResult::error_with_kind(
-                ToolErrorKind::NotFound,
-                format!("tool '{tu_name}' not found"),
-                false,
-            ));
-        }
+    let tool = match callable_tool(tools, &tu_name, &origin) {
+        Some(tool) => tool,
+        None => return surface_or_missing(&tu_name, tools, &origin),
     };
+    let _note = ArmedNote {
+        arm: true,
+        tool: Some(Arc::clone(&tool)),
+        origin: &origin,
+        call: tool_use,
+        permission,
+        cwd: &ctx.cwd,
+    };
+
+    tool.set_active_session(session_id.to_string());
+    if let Some(permission_sink) = &origin.permission_sink {
+        tool.set_permission_sink(Arc::clone(permission_sink));
+    }
+    if let ToolCaller::Code { parent_call_id } = &origin.caller {
+        tracing::debug!(%parent_call_id, tool = %tu_name, "nested code tool call");
+    }
 
     let tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
         Ok(value) => value,
@@ -541,6 +630,11 @@ pub async fn run_tool(
             ))
         }
     };
+    let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
+        enforce_code_output(tool.as_ref(), output)
+    } else {
+        output
+    };
     tracing::info!(
         tool = %tu_name,
         id = %tu_id,
@@ -568,6 +662,169 @@ pub async fn run_tool(
     }
 
     output
+}
+
+fn callable_tool(
+    tools: &[Arc<dyn Tool>],
+    name: &str,
+    origin: &ToolCallOrigin,
+) -> Option<Arc<dyn Tool>> {
+    let tool = tools.iter().find(|tool| tool.name() == name)?.clone();
+    if surface_mismatch(tool.as_ref(), origin) {
+        None
+    } else {
+        Some(tool)
+    }
+}
+
+fn surface_mismatch(tool: &dyn Tool, origin: &ToolCallOrigin) -> bool {
+    match &origin.caller {
+        ToolCaller::Direct if !origin.gate_open => false,
+        ToolCaller::Direct => tool.surface() == ToolSurface::Code,
+        ToolCaller::Code { .. } => tool.surface() != ToolSurface::Code,
+    }
+}
+
+fn surface_or_missing(name: &str, tools: &[Arc<dyn Tool>], origin: &ToolCallOrigin) -> ToolCallResult {
+    let declared = tools.iter().find(|tool| tool.name() == name);
+    let routed = match &origin.caller {
+        ToolCaller::Direct if origin.gate_open && origin.code_names.iter().any(|n| n == name) => {
+            Some(code_route_message(name))
+        }
+        ToolCaller::Direct if origin.gate_open && declared.is_some_and(|tool| tool.surface() == ToolSurface::Code) => {
+            Some(code_route_message(name))
+        }
+        ToolCaller::Code { .. } if declared.is_some_and(|tool| tool.surface() != ToolSurface::Code) => {
+            Some(format!(
+                "`{name}` is a direct tool and is not available inside run_code"
+            ))
+        }
+        _ => None,
+    };
+    let message = routed.unwrap_or_else(|| format!("tool '{name}' not found"));
+    wire_result(ToolCallResult::error_with_kind(
+        ToolErrorKind::NotFound,
+        message,
+        false,
+    ))
+}
+
+fn code_route_message(name: &str) -> String {
+    if is_js_identifier(name) {
+        format!("`{name}` is only available as tools.{name} inside run_code")
+    } else {
+        let key = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
+        format!("`{name}` is only available as tools[{key}] inside run_code")
+    }
+}
+
+fn is_js_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$')
+}
+
+fn enforce_code_output(tool: &dyn Tool, result: ToolCallResult) -> ToolCallResult {
+    let success = result.error.is_none()
+        && matches!(
+            result.level,
+            ToolSignalLevel::Ok | ToolSignalLevel::Warning
+        );
+    if !success {
+        return result;
+    }
+    let name = tool.name();
+    let Some(data) = result.data.as_ref() else {
+        let reason = format!("tool '{name}' returned success without data");
+        tracing::error!(tool = %name, "{reason}");
+        return wire_result(ToolCallResult::error_with_kind(
+            ToolErrorKind::Internal,
+            reason,
+            false,
+        ));
+    };
+    let Some(schema) = tool.data_schema() else {
+        let reason = format!("tool '{name}' is on the code surface without a data schema");
+        tracing::error!(tool = %name, "{reason}");
+        return wire_result(ToolCallResult::error_with_kind(
+            ToolErrorKind::Internal,
+            reason,
+            false,
+        ));
+    };
+    if let Err(error) = schema_validate(&schema, data) {
+        let reason =
+            format!("tool '{name}' returned data that does not match its schema: {error}");
+        tracing::error!(tool = %name, "{reason}");
+        return wire_result(ToolCallResult::error_with_kind(
+            ToolErrorKind::Internal,
+            reason,
+            false,
+        ));
+    }
+    result
+}
+
+fn note_settled_call(
+    origin: &ToolCallOrigin,
+    tool: &dyn Tool,
+    call: &FunctionToolCall,
+    permission: &PermissionEngine,
+    cwd: &Path,
+) {
+    note_tool_paths(origin, tool, call, permission, cwd);
+    if let Some(hook) = &origin.plan_touch {
+        hook(call);
+    }
+}
+
+fn note_tool_paths(
+    origin: &ToolCallOrigin,
+    tool: &dyn Tool,
+    call: &FunctionToolCall,
+    permission: &PermissionEngine,
+    cwd: &Path,
+) {
+    let Some(hook) = &origin.file_note else {
+        return;
+    };
+    let input = serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let mode = permission.path_mode(call.name.as_str()).to_tool_path_mode();
+    let paths = tool
+        .resource_keys(&input, mode, cwd)
+        .into_iter()
+        .filter_map(|key| match key {
+            ResourceKey::File(path) => Some(PathBuf::from(path)),
+            ResourceKey::Workspace => None,
+        })
+        .collect::<Vec<_>>();
+    if !paths.is_empty() {
+        hook(&paths);
+    }
+}
+
+struct ArmedNote<'a> {
+    arm: bool,
+    tool: Option<Arc<dyn Tool>>,
+    origin: &'a ToolCallOrigin,
+    call: &'a FunctionToolCall,
+    permission: &'a PermissionEngine,
+    cwd: &'a Path,
+}
+
+impl Drop for ArmedNote<'_> {
+    fn drop(&mut self) {
+        if !self.arm {
+            return;
+        }
+        let Some(tool) = self.tool.as_deref() else {
+            return;
+        };
+        note_settled_call(self.origin, tool, self.call, self.permission, self.cwd);
+    }
 }
 
 fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {

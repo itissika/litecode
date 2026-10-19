@@ -3,10 +3,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::runtime::context::RuntimeContext;
-use crate::tool::write_lock::ResourceKey;
 use crate::types::{FunctionToolCall, ToolCallResult, Transcript};
 
-use super::executor::{outputs_from_tool_results, partition_tool_calls, run_tool};
+use super::executor::{
+    PlanTouch, ToolCallOrigin, ToolCaller, execute_tool_call, outputs_from_tool_results,
+    partition_tool_calls,
+};
 use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 
 pub struct ToolPipeline {
@@ -15,6 +17,7 @@ pub struct ToolPipeline {
     /// Told which files a finished tool declared, so the reminder engine can
     /// tell this session's writes from later external edits.
     file_note: Option<Arc<dyn Fn(&[PathBuf]) + Send + Sync>>,
+    plan_touch: Option<PlanTouch>,
 }
 
 impl ToolPipeline {
@@ -23,11 +26,16 @@ impl ToolPipeline {
             runtime,
             session_id: String::new(),
             file_note: None,
+            plan_touch: None,
         }
     }
 
     pub fn set_file_note(&mut self, hook: Arc<dyn Fn(&[PathBuf]) + Send + Sync>) {
         self.file_note = Some(hook);
+    }
+
+    pub fn set_plan_touch(&mut self, hook: PlanTouch) {
+        self.plan_touch = Some(hook);
     }
 
     pub fn bind_session(&mut self, session_id: impl Into<String>) {
@@ -38,13 +46,20 @@ impl ToolPipeline {
         self.runtime = runtime;
     }
 
-    /// Inject session_id + permission sink into session-scoped tools before execution.
-    fn inject_sessions(&self) {
-        let sid = &self.session_id;
-        let sink = std::sync::Arc::clone(&self.runtime.permission_sink);
-        for tool in &self.runtime.tools {
-            tool.set_active_session(sid.clone());
-            tool.set_permission_sink(std::sync::Arc::clone(&sink));
+    fn call_origin(&self) -> ToolCallOrigin {
+        let code_names = self
+            .runtime
+            .tools
+            .iter()
+            .find_map(|tool| tool.code_bindings())
+            .unwrap_or_else(|| Arc::from([]));
+        ToolCallOrigin {
+            caller: ToolCaller::Direct,
+            gate_open: self.runtime.code_gate_open,
+            code_names,
+            file_note: self.file_note.clone(),
+            permission_sink: Some(Arc::clone(&self.runtime.permission_sink)),
+            plan_touch: self.plan_touch.clone(),
         }
     }
 
@@ -74,8 +89,7 @@ impl ToolPipeline {
             return Err(crate::types::LitecodeError::Canceled);
         }
 
-        self.inject_sessions();
-
+        let origin = self.call_origin();
         let batches = partition_tool_calls(
             invocations,
             &self.runtime.tools,
@@ -98,8 +112,9 @@ impl ToolPipeline {
                         let session_id = self.session_id.clone();
                         let cancel = cancel.clone();
                         let write_lock = Arc::clone(&runtime.write_lock);
+                        let origin = origin.clone();
                         let handle = tokio::spawn(async move {
-                            let result = run_tool(
+                            let result = execute_tool_call(
                                 &tu,
                                 &runtime.tools,
                                 &runtime.permission,
@@ -113,6 +128,7 @@ impl ToolPipeline {
                                 runtime.turn_anchor_seq(),
                                 write_lock,
                                 runtime.session.clone(),
+                                origin,
                             )
                             .await;
                             (tu.call_id.clone(), result)
@@ -142,7 +158,6 @@ impl ToolPipeline {
                     }
                     match handle.await {
                         Ok((tool_use_id, result)) => {
-                            self.note_call(&tool_use_id, invocations);
                             results_by_id.insert(tool_use_id, result);
                             if is_cancelled() || cancel.is_cancelled() {
                                 for (id, remaining) in iter {
@@ -197,7 +212,7 @@ impl ToolPipeline {
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                     let tool_use_id = tu.call_id.clone();
-                    let result = run_tool(
+                    let result = execute_tool_call(
                         tu,
                         &self.runtime.tools,
                         &self.runtime.permission,
@@ -211,9 +226,9 @@ impl ToolPipeline {
                         self.runtime.turn_anchor_seq(),
                         Arc::clone(&self.runtime.write_lock),
                         self.runtime.session.clone(),
+                        origin.clone(),
                     )
                     .await;
-                    self.note_invocation(tu);
                     results_by_id.insert(tool_use_id.clone(), result);
                     if is_cancelled() || cancel.is_cancelled() {
                         self.append_cancelled_outputs(invocations, results_by_id, transcript);
@@ -231,43 +246,6 @@ impl ToolPipeline {
         ));
 
         Ok(())
-    }
-
-    fn note_call(&self, call_id: &str, invocations: &[FunctionToolCall]) {
-        if let Some(invocation) = invocations.iter().find(|call| call.call_id == call_id) {
-            self.note_invocation(invocation);
-        }
-    }
-
-    fn note_invocation(&self, invocation: &FunctionToolCall) {
-        let Some(hook) = &self.file_note else {
-            return;
-        };
-        let input = serde_json::from_str(&invocation.arguments).unwrap_or(serde_json::Value::Null);
-        let Some(tool) = self
-            .runtime
-            .tools
-            .iter()
-            .find(|tool| tool.name() == invocation.name)
-        else {
-            return;
-        };
-        let mode = self
-            .runtime
-            .permission
-            .path_mode(invocation.name.as_str())
-            .to_tool_path_mode();
-        let paths = tool
-            .resource_keys(&input, mode, &self.runtime.ctx.cwd)
-            .into_iter()
-            .filter_map(|key| match key {
-                ResourceKey::File(path) => Some(PathBuf::from(path)),
-                ResourceKey::Workspace => None,
-            })
-            .collect::<Vec<_>>();
-        if !paths.is_empty() {
-            hook(&paths);
-        }
     }
 
     /// Join a spawned tool task. Cancellation must kill-and-wait inside the

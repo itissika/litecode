@@ -23,7 +23,7 @@ use crate::context_pipeline::Context;
 use crate::permission::{PermissionEngine, PermissionSink};
 use crate::tool::Tool;
 use crate::tool::code_manifest::render_code_tool_description;
-use crate::tool::executor::run_tool;
+use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code_process::ProcessTree;
@@ -31,8 +31,6 @@ use crate::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLe
 
 /// Model-facing name of the aggregated code transport.
 pub const CODE_TOOL_NAME: &str = "run_code";
-/// Tools bundled into the first internal code-mode slice.
-pub const CODE_BUNDLE_TOOL_IDS: &[&str] = &["glob", "grep", "read"];
 /// Default total program budget, matching the DSH reference.
 pub const DEFAULT_RUN_TIMEOUT_MS: u64 = 120_000;
 /// Maximum total program budget accepted from the model.
@@ -69,6 +67,8 @@ pub struct CodeToolHost {
     spill_threshold: usize,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
+    file_note: Option<Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync>>,
+    plan_touch: Option<crate::tool::executor::PlanTouch>,
 }
 
 impl CodeToolHost {
@@ -92,7 +92,22 @@ impl CodeToolHost {
             spill_threshold,
             write_lock,
             session,
+            file_note: None,
+            plan_touch: None,
         }
+    }
+
+    pub fn with_file_note(
+        mut self,
+        file_note: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync>,
+    ) -> Self {
+        self.file_note = Some(file_note);
+        self
+    }
+
+    pub fn with_plan_touch(mut self, plan_touch: crate::tool::executor::PlanTouch) -> Self {
+        self.plan_touch = Some(plan_touch);
+        self
     }
 
     fn sink(&self) -> Arc<dyn PermissionSink> {
@@ -105,8 +120,9 @@ impl CodeToolHost {
         call: &FunctionToolCall,
         session_id: &str,
         cancel: CancellationToken,
+        parent_call_id: &str,
     ) -> ToolCallResult {
-        run_tool(
+        execute_tool_call(
             call,
             bundle,
             &self.permission,
@@ -120,6 +136,16 @@ impl CodeToolHost {
             None,
             Arc::clone(&self.write_lock),
             self.session.clone(),
+            ToolCallOrigin {
+                caller: ToolCaller::Code {
+                    parent_call_id: parent_call_id.to_string(),
+                },
+                gate_open: true,
+                code_names: Arc::from([]),
+                file_note: self.file_note.clone(),
+                permission_sink: Some(self.sink()),
+                plan_touch: self.plan_touch.clone(),
+            },
         )
         .await
     }
@@ -136,6 +162,7 @@ impl CodeToolHost {
         outer_cancel: &CancellationToken,
         run_deadline: tokio::time::Instant,
         requested_timeout_ms: Option<u64>,
+        parent_call_id: &str,
     ) -> ToolCallResult {
         let Some(tool) = bundle.iter().find(|tool| tool.name() == call.name) else {
             return ToolCallResult::error_with_kind(
@@ -178,7 +205,13 @@ impl CodeToolHost {
             .unwrap_or(run_deadline)
             .min(run_deadline);
         let call_cancel = outer_cancel.child_token();
-        let future = self.run_inner(bundle.as_slice(), &call, session_id, call_cancel.clone());
+        let future = self.run_inner(
+            bundle.as_slice(),
+            &call,
+            session_id,
+            call_cancel.clone(),
+            parent_call_id,
+        );
         tokio::pin!(future);
 
         tokio::select! {
@@ -231,18 +264,42 @@ impl CodeToolHost {
 /// A bounded code bundle projected as one model-facing tool.
 pub struct CodeTool {
     bundle: Arc<Vec<Arc<dyn Tool>>>,
+    sdk: String,
+    whitelist: Arc<[String]>,
     host: Arc<CodeToolHost>,
 }
 
 impl CodeTool {
-    pub fn new(bundle: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Self {
+    /// Build from an already-admitted surface. `sdk` is the pure rendering of that surface.
+    pub fn from_surface(
+        bundle: Vec<Arc<dyn Tool>>,
+        sdk: String,
+        whitelist: Vec<String>,
+        host: Arc<CodeToolHost>,
+    ) -> Self {
         Self {
             bundle: Arc::new(bundle),
+            sdk,
+            whitelist: whitelist.into(),
             host,
         }
     }
 
+    pub fn new(bundle: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Self {
+        let sdk = render_code_tool_description(&bundle).unwrap_or_default();
+        let mut whitelist: Vec<String> = bundle.iter().map(|tool| tool.name().to_string()).collect();
+        whitelist.sort();
+        Self::from_surface(bundle, sdk, whitelist, host)
+    }
+
     async fn execute_code(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
+        if self.sdk.is_empty() {
+            return ToolCallResult::error_with_kind(
+                ToolErrorKind::Internal,
+                "run_code is unavailable because its code surface failed admission",
+                false,
+            );
+        }
         let code = match crate::tool::require_nonempty_string(&input, "code") {
             Ok(code) => code.to_string(),
             Err(error) => {
@@ -293,13 +350,6 @@ impl CodeTool {
                     false,
                 );
             }
-        }
-
-        // The pipeline injects session and sink into the CodeTool. Bundle tools
-        // are not top-level tools, so propagate the same execution facts here.
-        for tool in self.bundle.iter() {
-            tool.set_active_session(execution.session_id.clone());
-            tool.set_permission_sink(self.host.sink());
         }
 
         let mut names: Vec<&str> = self.bundle.iter().map(|tool| tool.name()).collect();
@@ -583,15 +633,19 @@ impl Tool for CodeTool {
         })
     }
 
-    fn description(&self, ctx: &Context) -> String {
-        match render_code_tool_description(self.bundle.as_slice(), ctx) {
-            Ok(description) => description,
-            Err(error) => {
-                tracing::error!("invalid code bundle: {error}");
-                format!(
-                    "Code tool is unavailable because its generated interface is invalid: {error}"
-                )
-            }
+    fn code_bindings(&self) -> Option<Arc<[String]>> {
+        Some(Arc::clone(&self.whitelist))
+    }
+
+    fn is_code_transport(&self) -> bool {
+        true
+    }
+
+    fn description(&self, _ctx: &Context) -> String {
+        if self.sdk.is_empty() {
+            "run_code is unavailable because its code surface failed admission".to_string()
+        } else {
+            self.sdk.clone()
         }
     }
 
@@ -729,6 +783,7 @@ async fn exchange_control(
                     let writer = Arc::clone(&writer);
                     let cancel = run_cancel.clone();
                     let session_id = session_id.clone();
+                    let parent_call_id = execution_call_id.clone();
                     active.spawn(async move {
                         dispatch_tool_call(
                             host,
@@ -738,6 +793,7 @@ async fn exchange_control(
                             cancel,
                             run_deadline,
                             requested_timeout_ms,
+                            parent_call_id,
                             writer,
                             id,
                             Some(permit),
@@ -758,6 +814,7 @@ async fn exchange_control(
                         run_cancel.clone(),
                         run_deadline,
                         requested_timeout_ms,
+                        execution_call_id.clone(),
                         Arc::clone(&writer),
                         id,
                         None,
@@ -811,6 +868,7 @@ async fn dispatch_tool_call(
     run_cancel: CancellationToken,
     run_deadline: tokio::time::Instant,
     requested_timeout_ms: Option<u64>,
+    parent_call_id: String,
     writer: Arc<Mutex<OwnedWriteHalf>>,
     id: String,
     _permit: Option<OwnedSemaphorePermit>,
@@ -823,6 +881,7 @@ async fn dispatch_tool_call(
             &run_cancel,
             run_deadline,
             requested_timeout_ms,
+            &parent_call_id,
         )
         .await;
     if let Err(error) = send_tool_result(&writer, &id, &result).await {

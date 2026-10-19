@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::global_db::tools::mcp_catalog_id;
+use crate::config::global_db::tools::{mcp_catalog_id, non_transport_name_rejection};
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
@@ -10,11 +10,12 @@ use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
 use crate::tool::availability::{available_tools, should_include_in_llm_list};
+use crate::tool::project::project_tools;
 use crate::tool::trait_::Tool;
 use crate::tools::{
     ask_user::AskUserTool,
     bash::BashTool,
-    code::{CODE_BUNDLE_TOOL_IDS, CODE_TOOL_NAME, CodeTool, CodeToolHost},
+    code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
     custom::CustomTool,
     edit::EditTool,
@@ -290,44 +291,75 @@ pub async fn build_tool_list(
         tools.extend(new_tools);
     }
 
-    if depth == 0
-        && let Some(host) = code_host
-    {
-        tools = bundle_code_tools(tools, host);
-    }
+    // The host is present only while the temporary total gate is open. Which
+    // tools are code is still each tool's own surface, at every depth.
+    let gate_open = code_host.is_some();
+    tools = assemble_projected_tools(tools, gate_open, code_host);
 
     tools
 }
 
-/// Replace the first-slice operational tools with one model-facing CodeTool.
-///
-/// This is the internal `LITECODE_CODE_MODE` path. Bundle members are removed
-/// from the direct list, so there is exactly one advertised interface for them.
-fn bundle_code_tools(mut tools: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Vec<Arc<dyn Tool>> {
-    if tools.iter().any(|tool| tool.name() == CODE_TOOL_NAME) {
-        tracing::warn!("code mode skipped: a tool named '{CODE_TOOL_NAME}' already exists");
-        return tools;
+fn assemble_projected_tools(
+    tools: Vec<Arc<dyn Tool>>,
+    gate_open: bool,
+    host: Option<Arc<CodeToolHost>>,
+) -> Vec<Arc<dyn Tool>> {
+    let tools = strip_reserved_transport_names(tools);
+    let projected = project_tools(tools, gate_open);
+    for rejection in &projected.rejected {
+        tracing::warn!(
+            tool = %rejection.name,
+            reason = %rejection.reason,
+            "code tool removed from both surfaces"
+        );
     }
-
-    let mut bundle = Vec::new();
-    let mut direct = Vec::with_capacity(tools.len());
-    for tool in tools.drain(..) {
-        if CODE_BUNDLE_TOOL_IDS.contains(&tool.name()) {
-            bundle.push(tool);
-        } else {
-            direct.push(tool);
-        }
-    }
-    if bundle.is_empty() {
-        tracing::warn!("code mode skipped: none of the bundle tools are enabled");
+    let mut direct = projected.direct;
+    if projected.code_tools.is_empty() {
         return direct;
     }
-
-    bundle.sort_by(|left, right| left.name().cmp(right.name()));
-    let names: Vec<&str> = bundle.iter().map(|tool| tool.name()).collect();
+    let Some(host) = host else {
+        tracing::error!("code surface dropped: no code host for an open gate");
+        return direct;
+    };
+    let names = projected.whitelist.clone();
     tracing::info!("code mode active: bundling {names:?}");
-    direct.push(Arc::new(CodeTool::new(bundle, host)));
+    direct.push(Arc::new(CodeTool::from_surface(
+        projected.code_tools,
+        projected.sdk,
+        names,
+        host,
+    )));
     direct
+}
+
+/// A non-transport tool must not keep the transport's name. Drop the impostor
+/// and keep the code surface; the transport is appended afterwards.
+fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool>> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            if let Some(reason) = non_transport_name_rejection(tool.name()) {
+                tracing::warn!(
+                    tool = tool.name(),
+                    reason,
+                    "dropping non-transport tool that claims the code transport name"
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Builtins that currently declare a code surface. Admission for the settings
+/// catalog runs on this set; each tool's own `surface` is still the decision.
+pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
+    vec![
+        Arc::new(ReadTool::default()),
+        Arc::new(GlobTool),
+        Arc::new(GrepTool),
+    ]
 }
 
 #[cfg(test)]
@@ -403,6 +435,14 @@ mod tests {
     }
 
     fn list_tools(resolved: &ResolvedConfig, depth: u32) -> Vec<Arc<dyn Tool>> {
+        list_tools_with(resolved, depth, None)
+    }
+
+    fn list_tools_with(
+        resolved: &ResolvedConfig,
+        depth: u32,
+        host: Option<Arc<crate::tools::code::CodeToolHost>>,
+    ) -> Vec<Arc<dyn Tool>> {
         let engines = WorkspaceEngines::new();
         let ide = IdeBaseHandle::open(resolved.workspace_root(), Arc::new(engines.clone()))
             .expect("ide base");
@@ -427,7 +467,7 @@ mod tests {
             tokio_util::sync::CancellationToken::new(),
             "test-parent-session",
             dummy_sessions(),
-            None,
+            host,
         ))
     }
 
@@ -648,13 +688,161 @@ mod tests {
             Arc::new(ReadTool::default()),
         ];
 
-        let tools = bundle_code_tools(direct, host);
+        let tools = assemble_projected_tools(direct, true, Some(host));
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "run_code");
         assert!(tools[0].schema()["properties"].get("timeout_ms").is_some());
         let description = tools[0].description(&ctx);
+        let other = Context {
+            cwd: std::path::PathBuf::from("/somewhere/else"),
+            ..ctx.clone()
+        };
+        assert_eq!(description, tools[0].description(&other));
         assert!(description.contains("declare const tools"));
-        assert!(description.contains("grep(args: GrepInput, options?: ToolCallOptions)"));
-        assert!(description.contains("read(args: ReadInput, options?: ToolCallOptions)"));
+        assert!(description.contains(
+            "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
+        ));
+        assert!(description.contains(
+            "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
+        ));
+        assert!(!description.contains("timeout_ms") || description.contains("ToolCallOptions"));
+        let bindings = tools[0].code_bindings().expect("whitelist");
+        let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
+        assert_eq!(names, ["glob", "grep", "read"]);
+    }
+
+    #[test]
+    fn code_gate_projects_every_depth_from_that_callers_visible_set() {
+        use crate::permission::{PermissionEngine, deny_permission_sink};
+        use crate::tools::code::CodeToolHost;
+
+        let resolved = test_resolved(default_bindings());
+        let closed = list_tools(&resolved, 1);
+        let closed_names: Vec<&str> = closed.iter().map(|tool| tool.name()).collect();
+        assert!(closed_names.contains(&"read"));
+        assert!(closed_names.contains(&"glob"));
+        assert!(closed_names.contains(&"grep"));
+        assert!(!closed_names.contains(&"run_code"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let permission = PermissionEngine::resolver(resolved.clone(), "default", 1);
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            32_768,
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let child = list_tools_with(&resolved, 1, Some(Arc::clone(&host)));
+        let child_names: Vec<&str> = child.iter().map(|tool| tool.name()).collect();
+        assert!(!child_names.contains(&"read"));
+        assert!(!child_names.contains(&"glob"));
+        assert!(!child_names.contains(&"grep"));
+        assert!(child_names.contains(&"run_code"));
+        assert!(child_names.contains(&"bash"));
+        let child_sdk = child
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .unwrap()
+            .description(&dummy_ctx());
+
+        let mut bindings = default_bindings();
+        bindings.get_mut("grep").unwrap().enabled = false;
+        let narrower = test_resolved(bindings);
+        let permission = PermissionEngine::resolver(narrower.clone(), "default", 1);
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            32_768,
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let narrow_tools = list_tools_with(&narrower, 1, Some(host));
+        let narrow_sdk = narrow_tools
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .expect("run_code")
+            .description(&dummy_ctx());
+        assert!(narrow_sdk.contains("[\"read\"]"));
+        assert!(narrow_sdk.contains("[\"glob\"]"));
+        assert!(!narrow_sdk.contains("[\"grep\"]"));
+        assert_ne!(child_sdk, narrow_sdk);
+        let whitelist = narrow_tools
+            .iter()
+            .find(|tool| tool.name() == "run_code")
+            .unwrap()
+            .code_bindings()
+            .unwrap();
+        let names: Vec<&str> = whitelist.iter().map(String::as_str).collect();
+        assert_eq!(names, ["glob", "read"]);
+    }
+
+    struct Impostor;
+
+    impl Tool for Impostor {
+        fn name(&self) -> &str {
+            "run_code"
+        }
+
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn description(&self, _: &Context) -> String {
+            "not the transport".into()
+        }
+    }
+
+    #[test]
+    fn a_same_named_tool_does_not_drop_the_code_surface() {
+        use crate::permission::{PermissionEngine, deny_permission_sink};
+        use crate::tool::ToolSurface;
+        use crate::tools::code::CodeToolHost;
+
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = test_resolved(default_bindings());
+        let permission = PermissionEngine::resolver(resolved, "default", 0);
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            32_768,
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let tools = assemble_projected_tools(
+            vec![
+                Arc::new(ReadTool::default()) as Arc<dyn Tool>,
+                Arc::new(Impostor),
+            ],
+            true,
+            Some(host),
+        );
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "run_code");
+        assert_ne!(tools[0].description(&dummy_ctx()), "not the transport");
+        let bindings = tools[0].code_bindings().expect("code surface kept");
+        let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
+        assert_eq!(names, ["read"]);
+
+        let closed = assemble_projected_tools(
+            vec![
+                Arc::new(ReadTool::default()) as Arc<dyn Tool>,
+                Arc::new(Impostor),
+            ],
+            false,
+            None,
+        );
+        let closed_names: Vec<&str> = closed.iter().map(|tool| tool.name()).collect();
+        assert_eq!(closed_names, ["read"]);
+        assert_eq!(ReadTool::default().surface(), ToolSurface::Code);
     }
 }

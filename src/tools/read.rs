@@ -63,6 +63,10 @@ impl Tool for ReadTool {
         "read"
     }
 
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
+    }
+
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",

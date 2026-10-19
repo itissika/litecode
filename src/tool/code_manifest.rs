@@ -17,7 +17,7 @@ use crate::types::ToolErrorKind;
 const PRELUDE: &str = r#"`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
 Expected tool failures resolve as `ToolResult` values with `status: "error"`; `status: "warning"` is a successful result with data. Runtime or protocol failures reject. Return a JSON-serializable value.
-A binding may receive an optional `options.timeout_ms`; it is host execution metadata, not part of the tool arguments.
+Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. A binding whose signature includes `options` accepts `options.timeout_ms` as host execution metadata, not as a tool argument; other bindings do not.
 
 ```ts
 "#;
@@ -77,15 +77,82 @@ declare const libs: {
 
 "#;
 
+/// Context used only to ask a tool for its description. Code-surface text must
+/// not pick up the caller's cwd, permission, or depth.
+fn description_context() -> Context {
+    Context {
+        cwd: std::path::PathBuf::new(),
+        workspace_paths: crate::config::WorkspacePaths::for_legacy_root(std::path::Path::new(".")),
+        agents_md: None,
+        claude_md: None,
+    }
+}
+
+/// SDK type prefix for `name`. Collisions of this prefix are admission failures.
+pub(crate) fn code_type_base(name: &str) -> String {
+    pascal_case(name)
+}
+
+/// One code tool's contract can be rendered. Returns the SDK type prefix.
+pub fn validate_code_contract(tool: &dyn Tool) -> Result<String, String> {
+    let name = tool.name();
+    if name.is_empty() || name.chars().any(|ch| ch.is_control()) {
+        return Err(format!("tool '{name}' has an unsafe name"));
+    }
+    let description = tool.description(&description_context());
+    if description.trim().is_empty() {
+        return Err(format!("tool '{name}' has an empty description"));
+    }
+    let input_schema = tool.schema();
+    if !input_schema_complete(&input_schema) {
+        return Err(format!(
+            "tool '{name}' input schema must be a complete object schema"
+        ));
+    }
+    let data_schema = tool
+        .data_schema()
+        .ok_or_else(|| format!("tool '{name}' has no data schema"))?;
+    if !data_schema
+        .as_object()
+        .is_some_and(|schema| !schema.is_empty())
+    {
+        return Err(format!(
+            "tool '{name}' data schema must be a non-empty object"
+        ));
+    }
+    parse_schema(&input_schema, &format!("{name}.input"))?;
+    parse_schema(&data_schema, &format!("{name}.data"))?;
+    Ok(code_type_base(name))
+}
+
+fn input_schema_complete(schema: &Value) -> bool {
+    let Some(object) = schema.as_object() else {
+        return false;
+    };
+    if object.is_empty() {
+        return false;
+    }
+    let type_ok = match object.get("type") {
+        Some(Value::String(kind)) => kind == "object",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("object")),
+        _ => false,
+    };
+    if !type_ok {
+        return false;
+    }
+    match object.get("properties") {
+        None => true,
+        Some(Value::Object(_)) => true,
+        Some(_) => false,
+    }
+}
+
 /// Render the complete model-facing description for a bounded code tool.
 ///
 /// Tools are sorted by name so both the generated text and prompt cache remain
-/// deterministic. Every bundled tool must have a non-empty description and a
-/// `data_schema`; otherwise the bundle is invalid and rendering fails.
-pub fn render_code_tool_description(
-    tools: &[Arc<dyn Tool>],
-    ctx: &Context,
-) -> Result<String, String> {
+/// deterministic. The text is a pure function of the tools' own contracts.
+pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, String> {
+    let ctx = description_context();
     let mut ordered: Vec<&Arc<dyn Tool>> = tools.iter().collect();
     ordered.sort_by(|left, right| left.name().cmp(right.name()));
 
@@ -98,28 +165,14 @@ pub fn render_code_tool_description(
         if !seen_names.insert(name.to_string()) {
             return Err(format!("duplicate tool name '{name}' in code bundle"));
         }
-
-        let description = tool.description(ctx);
-        if description.trim().is_empty() {
-            return Err(format!("tool '{name}' has an empty description"));
-        }
+        validate_code_contract(tool.as_ref())?;
+        let description = tool.description(&ctx);
         let data_schema = tool
             .data_schema()
             .ok_or_else(|| format!("tool '{name}' has no data schema"))?;
         let input_schema = tool.schema();
-        if !input_schema.is_object() {
-            return Err(format!("tool '{name}' input schema must be an object"));
-        }
-        if !data_schema
-            .as_object()
-            .is_some_and(|schema| !schema.is_empty())
-        {
-            return Err(format!(
-                "tool '{name}' data schema must be a non-empty object"
-            ));
-        }
 
-        let type_base = pascal_case(name);
+        let type_base = code_type_base(name);
         let input_type = format!("{type_base}Input");
         let data_type = format!("{type_base}Data");
         for type_name in [&input_type, &data_type] {
@@ -136,6 +189,7 @@ pub fn render_code_tool_description(
         declarations.push(ToolDeclaration {
             name: name.to_string(),
             description,
+            accepts_timeout: tool.timeout().is_some(),
             input_type,
             data_type,
             input,
@@ -165,8 +219,14 @@ pub fn render_code_tool_description(
         "type ToolErrorKind = {error_kinds};\n\
          type ToolError = {{\n  kind: ToolErrorKind;\n  message: string;\n  retryable: boolean;\n}};\n\
          type ToolResult<T> =\n  | {{ status: \"ok\" | \"warning\"; data: T; error: null }}\n  | {{ status: \"error\"; data: null; error: ToolError }};\n\n\
-         type ToolCallOptions = {{\n  /** Host-enforced per-call budget; the tool may clamp or reject it. */\n  timeout_ms?: number;\n}};\n\n"
+         /** Whole JSON number. The host rejects fractional values. */\n\
+         type Integer = number;\n\n"
     ));
+    if declarations.iter().any(|declaration| declaration.accepts_timeout) {
+        out.push_str(
+            "type ToolCallOptions = {\n  /** Host-enforced per-call budget; the tool may clamp or reject it. */\n  timeout_ms?: number;\n};\n\n",
+        );
+    }
     out.push_str(LIBS_SDK);
 
     for declaration in &declarations {
@@ -189,19 +249,17 @@ pub fn render_code_tool_description(
     out.push_str("declare const tools: {\n");
     for declaration in &declarations {
         out.push_str(&render_comment(&declaration.description, 2));
-        if is_ts_identifier(&declaration.name) {
-            out.push_str(&format!(
-                "  {}(args: {}, options?: ToolCallOptions): Promise<ToolResult<{}>>;\n",
-                declaration.name, declaration.input_type, declaration.data_type
-            ));
+        let key = serde_json::to_string(&declaration.name)
+            .map_err(|error| format!("serialize tool name: {error}"))?;
+        let options = if declaration.accepts_timeout {
+            ", options?: ToolCallOptions"
         } else {
-            let key = serde_json::to_string(&declaration.name)
-                .map_err(|error| format!("serialize tool name: {error}"))?;
-            out.push_str(&format!(
-                "  {key}: (args: {}, options?: ToolCallOptions) => Promise<ToolResult<{}>>;\n",
-                declaration.input_type, declaration.data_type
-            ));
-        }
+            ""
+        };
+        out.push_str(&format!(
+            "  readonly [{key}]: (args: {}{options}) => Promise<ToolResult<{}>>;\n",
+            declaration.input_type, declaration.data_type
+        ));
     }
     out.push_str("};\n```\n");
 
@@ -211,6 +269,7 @@ pub fn render_code_tool_description(
 struct ToolDeclaration {
     name: String,
     description: String,
+    accepts_timeout: bool,
     input_type: String,
     data_type: String,
     input: TsType,
@@ -221,7 +280,6 @@ struct ToolDeclaration {
 
 #[derive(Debug)]
 enum TsType {
-    Unknown,
     Keyword(&'static str),
     Literal(String),
     Array(Box<TsType>),
@@ -239,8 +297,29 @@ struct TsField {
 
 fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
     let Some(object) = schema.as_object() else {
-        return Ok(TsType::Unknown);
+        return Err(format!("{path}: schema must be an object"));
     };
+
+    for key in [
+        "$ref",
+        "allOf",
+        "not",
+        "patternProperties",
+        "dependencies",
+        "if",
+        "unevaluatedProperties",
+    ] {
+        if object.contains_key(key) {
+            return Err(format!("{path}: unsupported schema construct '{key}'"));
+        }
+    }
+    if let Some(extra) = object.get("additionalProperties")
+        && !extra.is_boolean()
+    {
+        return Err(format!(
+            "{path}: unsupported additionalProperties schema"
+        ));
+    }
 
     if let Some(value) = object.get("const") {
         return Ok(TsType::Literal(json_literal(value, path)?));
@@ -251,15 +330,21 @@ fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
         .or_else(|| object.get("anyOf"))
         .and_then(Value::as_array)
     {
+        if variants.is_empty() {
+            return Err(format!("{path}: empty union"));
+        }
         let types = variants
             .iter()
             .enumerate()
             .map(|(index, variant)| parse_schema(variant, &format!("{path}.variant[{index}]")))
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(normalize_union(types));
+        return normalize_union(types, path);
     }
 
     if let Some(values) = object.get("enum").and_then(Value::as_array) {
+        if values.is_empty() {
+            return Err(format!("{path}: empty enum"));
+        }
         let types = values
             .iter()
             .enumerate()
@@ -267,7 +352,7 @@ fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
                 json_literal(value, &format!("{path}.enum[{index}]")).map(TsType::Literal)
             })
             .collect::<Result<Vec<_>, _>>()?;
-        return Ok(normalize_union(types));
+        return normalize_union(types, path);
     }
 
     if let Some(type_spec) = object.get("type") {
@@ -285,7 +370,7 @@ fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
                 if types.is_empty() {
                     return Err(format!("{path}: type array contains no strings"));
                 }
-                return Ok(normalize_union(types));
+                return normalize_union(types, path);
             }
             _ => {
                 return Err(format!("{path}: unsupported non-string `type`"));
@@ -300,13 +385,14 @@ fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
         return parse_array(object, path);
     }
 
-    Ok(TsType::Unknown)
+    Err(format!("{path}: schema cannot be rendered"))
 }
 
 fn parse_typed(object: &Map<String, Value>, kind: &str, path: &str) -> Result<TsType, String> {
     match kind {
         "string" => Ok(TsType::Keyword("string")),
-        "integer" | "number" => Ok(TsType::Keyword("number")),
+        "integer" => Ok(TsType::Keyword("Integer")),
+        "number" => Ok(TsType::Keyword("number")),
         "boolean" => Ok(TsType::Keyword("boolean")),
         "null" => Ok(TsType::Keyword("null")),
         "object" => parse_object(object, path),
@@ -355,24 +441,27 @@ fn parse_object(object: &Map<String, Value>, path: &str) -> Result<TsType, Strin
 fn parse_array(object: &Map<String, Value>, path: &str) -> Result<TsType, String> {
     let item_type = match object.get("items") {
         Some(Value::Array(items)) => {
+            if items.is_empty() {
+                return Err(format!("{path}: empty tuple items"));
+            }
             let types = items
                 .iter()
                 .enumerate()
                 .map(|(index, item)| parse_schema(item, &format!("{path}.items[{index}]")))
                 .collect::<Result<Vec<_>, _>>()?;
-            normalize_union(types)
+            normalize_union(types, path)?
         }
         Some(item) => parse_schema(item, &format!("{path}.items"))?,
-        None => TsType::Unknown,
+        None => return Err(format!("{path}: array schema has no items")),
     };
     Ok(TsType::Array(Box::new(item_type)))
 }
 
-fn normalize_union(types: Vec<TsType>) -> TsType {
+fn normalize_union(types: Vec<TsType>, path: &str) -> Result<TsType, String> {
     match types.len() {
-        0 => TsType::Unknown,
-        1 => types.into_iter().next().unwrap_or(TsType::Unknown),
-        _ => TsType::Union(types),
+        0 => Err(format!("{path}: empty union")),
+        1 => Ok(types.into_iter().next().unwrap_or(TsType::Keyword("never"))),
+        _ => Ok(TsType::Union(types)),
     }
 }
 
@@ -417,7 +506,7 @@ fn render_type_alias(name: &str, ty: &TsType, doc: Option<&str>, out: &mut Strin
 
 fn is_flat(ty: &TsType) -> bool {
     match ty {
-        TsType::Unknown | TsType::Keyword(_) | TsType::Literal(_) => true,
+        TsType::Keyword(_) | TsType::Literal(_) => true,
         TsType::Array(item) => is_flat(item),
         TsType::Object(_) => false,
         TsType::Union(items) => items.iter().all(is_flat),
@@ -445,13 +534,12 @@ fn render_type(ty: &TsType, indent: usize) -> String {
             }
             out
         }
-        TsType::Unknown | TsType::Keyword(_) | TsType::Literal(_) => render_flat(ty),
+        TsType::Keyword(_) | TsType::Literal(_) => render_flat(ty),
     }
 }
 
 fn render_flat(ty: &TsType) -> String {
     match ty {
-        TsType::Unknown => "unknown".to_string(),
         TsType::Keyword(keyword) => (*keyword).to_string(),
         TsType::Literal(literal) => literal.clone(),
         TsType::Array(item) => format!("Array<{}>", render_flat(item)),
@@ -574,6 +662,10 @@ mod tests {
                         "enum": ["fast", "safe"],
                         "description": "Execution mode."
                     },
+                    "ratio": {
+                        "type": "number",
+                        "description": "A fractional ratio."
+                    },
                     "input": {
                         "type": "object",
                         "description": "Nested input.",
@@ -642,42 +734,103 @@ mod tests {
         }
     }
 
-    fn ctx() -> Context {
-        Context {
-            cwd: std::path::PathBuf::from("."),
-            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(std::path::Path::new(
-                ".",
-            )),
-            agents_md: None,
-            claude_md: None,
+    struct TimedTool;
+
+    impl Tool for TimedTool {
+        fn name(&self) -> &str {
+            "timed"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+
+        fn data_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}))
+        }
+
+        fn description(&self, _ctx: &Context) -> String {
+            "Tool with a declared timeout.".into()
+        }
+
+        fn timeout(&self) -> Option<u64> {
+            Some(5)
+        }
+    }
+
+    struct RefTool;
+
+    impl Tool for RefTool {
+        fn name(&self) -> &str {
+            "ref_tool"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type": "object", "properties": {"item": {"$ref": "#/defs/Item"}}})
+        }
+
+        fn data_schema(&self) -> Option<Value> {
+            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+        }
+
+        fn description(&self, _ctx: &Context) -> String {
+            "Tool with an unresolved ref.".into()
         }
     }
 
     #[test]
     fn renders_contract_as_commented_typescript() {
-        let page = render_code_tool_description(&[Arc::new(FakeTool)], &ctx()).unwrap();
+        let page = render_code_tool_description(&[Arc::new(FakeTool)]).unwrap();
         assert!(page.contains("do not copy type annotations"));
+        assert!(page.contains("tools[\"name\"]"));
+        assert!(page.contains("type Integer = number;"));
         assert!(page.contains("type DemoInput = {"));
         assert!(page.contains("  // Execution mode."));
         assert!(page.contains("mode: \"fast\" | \"safe\";"));
+        assert!(page.contains("ratio?: number;"));
+        assert!(page.contains("value: Integer;"));
         assert!(page.contains("input?: {"));
         assert!(page.contains("type DemoData ="));
         assert!(page.contains("kind: \"text\";"));
+        assert!(page.contains("bytes: Integer;"));
         assert!(page.contains(
-            "demo(args: DemoInput, options?: ToolCallOptions): Promise<ToolResult<DemoData>>;"
+            "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
         ));
+        assert!(!page.contains("ToolCallOptions"));
         assert!(page.contains("Glob text stays literal: **/*.rs."));
         assert!(page.contains("declare const libs:"));
-        assert!(page.contains("output_limit"));
         assert!(page.contains("stats: {"));
         assert!(page.contains("csv: {"));
         assert!(page.contains("groupBy<T>"));
         assert!(!page.contains("tools.call"));
+        assert!(!page.contains(": unknown"));
+    }
+
+    #[test]
+    fn timeout_option_is_emitted_only_when_declared() {
+        let page = render_code_tool_description(&[Arc::new(TimedTool), Arc::new(FakeTool)]).unwrap();
+        assert!(page.contains("type ToolCallOptions = {"));
+        assert!(page.contains(
+            "readonly [\"timed\"]: (args: TimedInput, options?: ToolCallOptions) => Promise<ToolResult<TimedData>>;"
+        ));
+        assert!(page.contains(
+            "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
+        ));
+        let timed = page.find("[\"timed\"]").unwrap();
+        let demo = page.find("[\"demo\"]").unwrap();
+        assert!(demo < timed, "bindings are sorted by name");
     }
 
     #[test]
     fn rejects_tools_without_a_data_contract() {
-        let error = render_code_tool_description(&[Arc::new(NoDataTool)], &ctx()).unwrap_err();
+        let error = render_code_tool_description(&[Arc::new(NoDataTool)]).unwrap_err();
         assert_eq!(error, "tool 'no_data' has no data schema");
+    }
+
+    #[test]
+    fn unresolved_ref_fails_admission() {
+        let error = render_code_tool_description(&[Arc::new(RefTool)]).unwrap_err();
+        assert!(error.contains("$ref"), "{error}");
+        assert!(!error.contains("unknown"));
     }
 }

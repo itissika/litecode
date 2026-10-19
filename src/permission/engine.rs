@@ -383,4 +383,33 @@ mod tests {
         );
         assert_eq!(bash.action, PermissionAction::Deny);
     }
+
+    #[test]
+    fn a_tool_named_run_code_keeps_safe_deny() {
+        let deny = PolicyRule {
+            id: "block".into(),
+            when: ArgMatcher::Any,
+            action: PermissionAction::Deny,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalSettings::default();
+        let mut profile = AgentProfile::default();
+        profile.tools.insert(
+            "run_code".into(),
+            AgentToolBinding {
+                enabled: true,
+                policy: ToolPolicy::allow_all(),
+                path_mode: BindingPathMode::Unrestricted,
+                last_applied_preset: Some(ToolPreset::Safe),
+                allowed_tools: None,
+            },
+        );
+        global.agents.insert("default".into(), profile);
+        global.custom_tools.push(named_tool("run_code", vec![deny]));
+        let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let engine = PermissionEngine::resolver(resolved, "default", 0);
+        let decision = engine.evaluate_tool("run_code", &serde_json::json!({}), dir.path());
+        assert_eq!(decision.action, PermissionAction::Deny);
+        assert_eq!(decision.rule_id, "block");
+    }
 }

@@ -1225,6 +1225,9 @@ fn restore_workspace_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
 /// `timeout: 0` → 120) and rejects ids the runtime could not bind.
 pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinition) -> Result<()> {
     validate_tool_id(id)?;
+    if let Some(reason) = tools::non_transport_name_rejection(id) {
+        return Err(LitecodeError::Config(reason.to_string()));
+    }
     if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
         return Err(LitecodeError::Config(format!(
             "custom tool id '{id}' conflicts with a builtin tool"
@@ -1239,6 +1242,9 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
                 def.name
             )));
         }
+    }
+    if let Some(reason) = tools::non_transport_name_rejection(&def.name) {
+        return Err(LitecodeError::Config(reason.to_string()));
     }
     if def.command.trim().is_empty() {
         return Err(LitecodeError::Config(
@@ -1715,6 +1721,16 @@ max_output = 1024
         assert_eq!(
             tools["gated"].policy,
             crate::permission::ToolPolicy::allow_all()
+        );
+    }
+
+    #[test]
+    fn custom_tool_named_run_code_is_rejected() {
+        let mut def = custom_def("run_code", Vec::new());
+        let error = super::validate_custom_definition("run_code", &mut def).unwrap_err();
+        assert!(
+            error.to_string().contains("reserved for the code transport"),
+            "{error}"
         );
     }
 

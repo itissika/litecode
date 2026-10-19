@@ -66,6 +66,17 @@ pub fn is_reserved_builtin(id: &str) -> bool {
     is_core_tool(id) || is_optional_builtin(id)
 }
 
+/// `run_code` belongs to the code transport. Every create, write, and load path
+/// for a custom tool — and any other non-transport source that would publish a
+/// tool name — must reject with this function. `None` means the name is free.
+pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
+    if name == "run_code" {
+        Some("run_code is reserved for the code transport")
+    } else {
+        None
+    }
+}
+
 /// A custom tool may own permission only when the catalog key is the body name
 /// and that name is not a builtin. Reserved names always keep the binding.
 pub fn is_custom_tool_identity(key: &str, body_name: &str) -> bool {

@@ -909,6 +909,40 @@ impl SessionManager {
         self.data_root_path().join("plan")
     }
 
+    /// One settled `read` / `write` / `edit` of the active plan file.
+    ///
+    /// Direct and nested calls both reach this from the shared tool entry.
+    /// `read` names the file `path`; `write` and `edit` name it `file_path`.
+    pub fn note_plan_tool_touch(&self, session_id: &str, call: &crate::types::FunctionToolCall) {
+        let key = match call.name.as_str() {
+            "read" => "path",
+            "write" | "edit" => "file_path",
+            _ => return,
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            return;
+        };
+        let Some(raw) = args.get(key).and_then(|value| value.as_str()) else {
+            return;
+        };
+        let Ok(Some(plan)) = self
+            .with_entry_task_state(session_id, |state| Ok(state.active_plan.clone()))
+        else {
+            return;
+        };
+        let normalized = raw.replace('\\', "/");
+        if !normalized
+            .trim_start_matches("./")
+            .ends_with(plan.relative_path.as_str())
+        {
+            return;
+        }
+        let path = self.plan_dir_path().join(format!("{}.md", plan.slug));
+        if let Some(revision) = crate::session::task_state::plan_file_revision(&path) {
+            let _ = self.update_active_plan_revision(session_id, &plan.slug, &revision);
+        }
+    }
+
     /// Update the content hash the session last saw for its active plan.
     pub fn update_active_plan_revision(
         &self,
@@ -5117,6 +5151,52 @@ mod plan_settle_tests {
             Some(rev2)
         );
         assert!(plan_changed_reminder(&mgr, &sid).is_none());
+    }
+
+    fn tool_call(name: &str, arguments: &str) -> crate::types::FunctionToolCall {
+        crate::types::FunctionToolCall {
+            arguments: arguments.into(),
+            call_id: "c".into(),
+            namespace: None,
+            name: name.into(),
+            id: None,
+            status: None,
+        }
+    }
+
+    fn seen_revision(mgr: &SessionManager, sid: &str) -> Option<String> {
+        mgr.with_entry_task_state(sid, |state| Ok(state.active_plan.clone()))
+            .unwrap()
+            .unwrap()
+            .revision
+    }
+
+    #[test]
+    fn plan_touch_records_read_path_and_edit_file_path() {
+        let (_dir, mgr, sid) = setup();
+        write_plan_file(&mgr, "calm-river", "# v1");
+        seed_active_plan(&mgr, &sid, "calm-river");
+        let plan = ".litecode/plan/calm-river.md";
+
+        mgr.note_plan_tool_touch(&sid, &tool_call("bash", r#"{"command":"cat plan"}"#));
+        mgr.note_plan_tool_touch(&sid, &tool_call("read", r#"{"path":"notes.md"}"#));
+        assert_eq!(seen_revision(&mgr, &sid), None);
+
+        mgr.note_plan_tool_touch(
+            &sid,
+            &tool_call("read", &format!(r#"{{"path":"{plan}"}}"#)),
+        );
+        let rev1 = seen_revision(&mgr, &sid).expect("read path records the plan");
+        assert_eq!(rev1, crate::session::task_state::plan_content_revision(b"# v1"));
+
+        write_plan_file(&mgr, "calm-river", "# v2");
+        mgr.note_plan_tool_touch(
+            &sid,
+            &tool_call("edit", &format!(r#"{{"file_path":"./{plan}"}}"#)),
+        );
+        let rev2 = seen_revision(&mgr, &sid).expect("edit file_path records the plan");
+        assert_eq!(rev2, crate::session::task_state::plan_content_revision(b"# v2"));
+        assert_ne!(rev1, rev2);
     }
 }
 

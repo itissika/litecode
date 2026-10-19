@@ -135,7 +135,7 @@ impl PtcHarness {
     }
 
     fn code_description(&self) -> String {
-        render_code_tool_description(&self.tools, &self.ctx).expect("render code interface")
+        render_code_tool_description(&self.tools).expect("render code interface")
     }
 
     async fn execute_tool(&self, name: &str, args: Value, call_id: &str) -> ToolCallResult {
@@ -337,7 +337,6 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains("type ReadInput = {"));
     assert!(page.contains("type ReadData ="));
     assert!(page.contains("declare const libs:"));
-    assert!(page.contains("output_limit"));
     assert!(page.contains("stats: {"));
     assert!(page.contains("csv: {"));
     assert!(page.contains("groupBy<T>"));
@@ -352,28 +351,25 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains("// Opaque continuation cursor from a previous grep result."));
     assert!(page.contains("next_cursor: string | null;"));
     assert!(page.contains("truncated: boolean;"));
-    assert!(page.contains("next_start_line: number | null;"));
+    assert!(page.contains("next_start_line: Integer | null;"));
+    assert!(page.contains("type Integer = number;"));
 
     assert!(page.contains(
-        "glob(args: GlobInput, options?: ToolCallOptions): Promise<ToolResult<GlobData>>;"
+        "readonly [\"glob\"]: (args: GlobInput, options?: ToolCallOptions) => Promise<ToolResult<GlobData>>;"
     ));
     assert!(page.contains(
-        "grep(args: GrepInput, options?: ToolCallOptions): Promise<ToolResult<GrepData>>;"
+        "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
     ));
     assert!(page.contains(
-        "read(args: ReadInput, options?: ToolCallOptions): Promise<ToolResult<ReadData>>;"
+        "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
     ));
+    assert!(!page.contains("read(args: ReadInput, options?: ToolCallOptions)"));
+    assert!(!page.contains(": unknown"));
     assert!(!page.contains("tools.call"));
 
-    let glob = page
-        .find("glob(args: GlobInput, options?: ToolCallOptions)")
-        .unwrap();
-    let grep = page
-        .find("grep(args: GrepInput, options?: ToolCallOptions)")
-        .unwrap();
-    let read = page
-        .find("read(args: ReadInput, options?: ToolCallOptions)")
-        .unwrap();
+    let glob = page.find("[\"glob\"]").unwrap();
+    let grep = page.find("[\"grep\"]").unwrap();
+    let read = page.find("[\"read\"]").unwrap();
     assert!(glob < grep && grep < read);
 }
 

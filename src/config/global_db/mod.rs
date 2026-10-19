@@ -579,7 +579,16 @@ pub mod store {
         })?;
         let mut tools = Vec::new();
         for row in rows {
-            tools.push(row?);
+            let tool = row?;
+            if let Some(reason) = super::tools::non_transport_name_rejection(&tool.name) {
+                tracing::warn!(
+                    tool = %tool.name,
+                    reason,
+                    "skipping global custom tool"
+                );
+                continue;
+            }
+            tools.push(tool);
         }
         Ok(tools)
     }
@@ -995,5 +1004,46 @@ mod open_tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         assert_eq!(version, migrate::CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn load_drops_a_stored_custom_tool_named_run_code() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("litecode.db");
+        let conn = open(&db).unwrap();
+        let tool = |name: &str| CustomToolDefinition {
+            name: name.into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        };
+        store::upsert_custom_tool(&conn, &tool("run_code")).unwrap();
+        store::upsert_custom_tool(&conn, &tool("demo")).unwrap();
+        drop(conn);
+
+        let loaded = load_global_from_path(&db).unwrap();
+        let names: Vec<_> = loaded.custom_tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(names, ["demo"]);
+
+        let conn = open(&db).unwrap();
+        let still: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM custom_tools WHERE id = 'run_code'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(still, 1, "load rejects the row without rewriting the database");
     }
 }

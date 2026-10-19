@@ -263,7 +263,13 @@ fn accepted_workspace_custom_tools(
 }
 
 fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<String> {
-    use super::global_db::tools::{is_custom_tool_identity, is_reserved_builtin};
+    use super::global_db::tools::{
+        is_custom_tool_identity, is_reserved_builtin, non_transport_name_rejection,
+    };
+    if let Some(reason) = non_transport_name_rejection(key).or_else(|| non_transport_name_rejection(&def.name))
+    {
+        return Some(reason.to_string());
+    }
     if is_reserved_builtin(key) || is_reserved_builtin(&def.name) {
         return Some(format!(
             "custom tool id '{key}' conflicts with a builtin tool"
@@ -646,6 +652,11 @@ mod engine_state_tests {
       "name": "blank",
       "schema": { "type": "object" },
       "command": "   "
+    },
+    "run_code": {
+      "name": "run_code",
+      "schema": { "type": "object" },
+      "command": "echo"
     },
     "demo": {
       "name": "demo",

@@ -217,6 +217,9 @@ fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
                 tool.name
             )));
         }
+        if let Some(reason) = tools::non_transport_name_rejection(&tool.name) {
+            return Err(LitecodeError::Config(reason.to_string()));
+        }
         if tools::is_core_tool(&tool.name) || tools::is_optional_builtin(&tool.name) {
             return Err(LitecodeError::Config(format!(
                 "custom tool '{}' conflicts with a builtin tool",
@@ -459,5 +462,32 @@ mod tests {
             },
         );
         ConfigManager::validate(&global).unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_custom_tool_named_run_code() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+
+        let mut global = GlobalSettings::default();
+        global.custom_tools.push(CustomToolDefinition {
+            name: "run_code".into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        });
+        let error = ConfigManager::validate(&global).unwrap_err();
+        assert!(
+            error.to_string().contains("reserved for the code transport"),
+            "{error}"
+        );
     }
 }

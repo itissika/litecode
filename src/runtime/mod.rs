@@ -46,7 +46,7 @@ use crate::runtime::observer::{
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::session::store::SessionApply;
-use crate::session::working::{WorkingRow, project_items};
+use crate::session::working::WorkingRow;
 use crate::session::{EventDraft, EventType};
 use crate::tool::ToolPipeline;
 use crate::tool::output;
@@ -987,17 +987,33 @@ impl AgentRuntime {
             let spill_threshold = output::DEFAULT_SPILL_THRESHOLD;
             let write_lock = crate::tool::write_lock::process_write_lock();
             let session_reader = self.sessions.reader();
-            let code_host = code_mode_enabled().then(|| {
-                Arc::new(CodeToolHost::new(
-                    permission.clone(),
-                    self.base_ctx.clone(),
-                    params.agent_name.to_string(),
-                    Arc::clone(&permission_sink),
-                    data_root.clone(),
-                    spill_threshold,
-                    Arc::clone(&write_lock),
-                    Some(session_reader.clone()),
-                ))
+            let note_sessions = Arc::clone(&self.sessions);
+            let note_sid = self.session_id.clone();
+            let file_note: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync> =
+                Arc::new(move |paths| {
+                    note_sessions.note_touched_files(&note_sid, paths);
+                });
+            let plan_sessions = Arc::clone(&self.sessions);
+            let plan_sid = self.session_id.clone();
+            let plan_touch: crate::tool::executor::PlanTouch = Arc::new(move |call| {
+                plan_sessions.note_plan_tool_touch(&plan_sid, call);
+            });
+            let gate_open = code_mode_enabled();
+            let code_host = gate_open.then(|| {
+                Arc::new(
+                    CodeToolHost::new(
+                        permission.clone(),
+                        self.base_ctx.clone(),
+                        params.agent_name.to_string(),
+                        Arc::clone(&permission_sink),
+                        data_root.clone(),
+                        spill_threshold,
+                        Arc::clone(&write_lock),
+                        Some(session_reader.clone()),
+                    )
+                    .with_file_note(Arc::clone(&file_note))
+                    .with_plan_touch(Arc::clone(&plan_touch)),
+                )
             });
 
             let tools_lap = crate::telemetry::latency::lap("build_tool_list");
@@ -1022,25 +1038,25 @@ impl AgentRuntime {
                 "agent initialized (lazy)"
             );
 
-            let runtime_ctx = Arc::new(RuntimeContext::new(
-                tools,
-                permission,
-                self.base_ctx.clone(),
-                params.agent_name.to_string(),
-                permission_sink,
-                params.cancel.clone(),
-                data_root,
-                spill_threshold,
-                write_lock,
-                Some(session_reader),
-            ));
+            let runtime_ctx = Arc::new(
+                RuntimeContext::new(
+                    tools,
+                    permission,
+                    self.base_ctx.clone(),
+                    params.agent_name.to_string(),
+                    permission_sink,
+                    params.cancel.clone(),
+                    data_root,
+                    spill_threshold,
+                    write_lock,
+                    Some(session_reader),
+                )
+                .with_code_gate(gate_open),
+            );
             let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
             tool_pipeline.bind_session(self.session_id.clone());
-            let note_sessions = Arc::clone(&self.sessions);
-            let note_sid = self.session_id.clone();
-            tool_pipeline.set_file_note(Arc::new(move |paths| {
-                note_sessions.note_touched_files(&note_sid, paths);
-            }));
+            tool_pipeline.set_file_note(file_note);
+            tool_pipeline.set_plan_touch(plan_touch);
             self.runtime_ctx = Some(runtime_ctx);
             self.tool_pipeline = Some(tool_pipeline);
         }
@@ -1199,9 +1215,6 @@ impl AgentRuntime {
                 });
             crate::llm::reconnect::scope(sink, crate::agent::run(self)).await
         };
-        let settled = project_items(&self.context_pipeline.working_set());
-        self.sync_active_plan_revision_after_turn(&settled);
-
         let should_commit = matches!(
             outcome,
             TurnOutcome::Completed { .. } | TurnOutcome::MaxSteps { .. }

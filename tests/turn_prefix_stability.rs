@@ -88,6 +88,8 @@ fn capture_request(request: &ModelRequest) -> CapturedLlmRequest {
     }
 }
 
+static CODE_MODE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn assert_request_prefix(prev: &CapturedLlmRequest, next: &CapturedLlmRequest, step: usize) {
     assert_eq!(
         prev.instructions, next.instructions,
@@ -197,6 +199,10 @@ impl LlmProvider for RecordingProvider {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tool_loop_llm_request_prefix_json_is_stable() {
+    let _gate = CODE_MODE_ENV.lock().expect("code mode env");
+    unsafe {
+        std::env::remove_var("LITECODE_CODE_MODE");
+    }
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("probe.txt"), "ok").unwrap();
 
@@ -237,6 +243,84 @@ async fn tool_loop_llm_request_prefix_json_is_stable() {
     );
     assert_request_prefix(&captured[0], &captured[1], 1);
     assert_request_prefix(&captured[1], &captured[2], 2);
+}
+
+struct CodeModeOn;
+
+impl CodeModeOn {
+    fn enter() -> Self {
+        unsafe {
+            std::env::set_var("LITECODE_CODE_MODE", "1");
+        }
+        Self
+    }
+}
+
+impl Drop for CodeModeOn {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var("LITECODE_CODE_MODE");
+        }
+    }
+}
+
+#[tokio::test]
+async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
+    let _gate = CODE_MODE_ENV.lock().expect("code mode env");
+    let _on = CodeModeOn::enter();
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("probe.txt"), "ok").unwrap();
+
+    let provider = RecordingProvider::new(vec![
+        vec![function_call_item(
+            "call_1",
+            "todo",
+            r#"{"todos":[{"content":"keep the prefix","status":"pending"}]}"#,
+            "fc_1",
+        )],
+        vec![function_call_item(
+            "call_2",
+            "todo",
+            r#"{"todos":[{"content":"keep the prefix","status":"completed"}]}"#,
+            "fc_2",
+        )],
+        vec![assistant_text_item("done", "msg_done")],
+    ]);
+    let captured_handle = provider.clone();
+    let mut runtime = build_runtime_with_provider(
+        dir.path(),
+        test_agent(vec!["read".into(), "todo".into()], "readonly", 10),
+        Arc::new(provider),
+    );
+
+    let text = runtime
+        .run("plan the prefix")
+        .await
+        .expect("turn completes without compact");
+    assert_eq!(text, "done");
+
+    let captured = captured_handle.captured();
+    assert_eq!(captured.len(), 3, "got {}", captured.len());
+    assert_request_prefix(&captured[0], &captured[1], 1);
+    assert_request_prefix(&captured[1], &captured[2], 2);
+
+    let names: Vec<&str> = captured[0]
+        .tools
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(names.contains(&"run_code"), "{names:?}");
+    assert!(!names.contains(&"read"), "{names:?}");
+    assert!(names.contains(&"todo"), "{names:?}");
+    let sdk = captured[0]
+        .tools
+        .iter()
+        .find(|tool| tool["name"] == "run_code")
+        .unwrap()["description"]
+        .as_str()
+        .unwrap();
+    assert!(sdk.contains("declare const tools"), "{sdk}");
+    assert!(!sdk.contains(&dir.path().display().to_string()), "{sdk}");
 }
 
 // ── persist / working-set JSON identity ─────────────────────────────────────

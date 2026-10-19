@@ -1251,6 +1251,11 @@ async fn settings_available_tools_includes_core() {
             .iter()
             .any(|t| t["id"] == "read")
     );
+    assert!(
+        body["code_rejections"].as_array().unwrap().is_empty(),
+        "passing builtins are not admission failures: {}",
+        body["code_rejections"]
+    );
 }
 
 #[tokio::test]

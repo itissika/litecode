@@ -11,14 +11,15 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, AvailableTool, CustomToolDefinition, LogSettings, McpServerDefinition,
+    AgentProfile, CustomToolDefinition, LogSettings, McpServerDefinition,
     ToolOrigin, ToolPreset,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
-use crate::tool::availability::available_tools;
+use crate::tool::availability::available_tools_payload;
+use crate::tool::registry::builtin_code_surface_tools;
 use crate::types::LitecodeError;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
@@ -371,8 +372,12 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
 
 async fn get_available_tools(State(state): State<ServeState>) -> Response {
     let runtime = state.runtime.read().expect("runtime lock");
-    let tools: Vec<AvailableTool> = available_tools(&runtime.resolved);
-    ok_json(serde_json::json!({ "tools": tools }))
+    let payload = available_tools_payload(
+        &runtime.resolved,
+        builtin_code_surface_tools(),
+        crate::tools::code::code_mode_enabled(),
+    );
+    ok_json(payload)
 }
 
 async fn list_custom_tools(State(state): State<ServeState>) -> Response {

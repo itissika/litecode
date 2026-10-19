@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -7,6 +8,16 @@ use crate::context_pipeline::Context;
 use crate::session::store::Session;
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
+
+/// Where a tool may be called. The declaration lives on the tool.
+///
+/// `Direct` is the model-facing function call. `Code` is reachable only as
+/// `tools["name"]` inside `run_code`. A tool has exactly one surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSurface {
+    Direct,
+    Code,
+}
 
 /// Cross-cutting execution facts prepared once by the executor. These values
 /// are deliberately separate from model-controlled tool JSON.
@@ -31,6 +42,21 @@ impl ToolExecutionContext {
 
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Call surface declared by this tool. Custom and MCP tools keep [`ToolSurface::Direct`].
+    fn surface(&self) -> ToolSurface {
+        ToolSurface::Direct
+    }
+
+    /// Code-surface names bound by a transport such as `run_code`.
+    fn code_bindings(&self) -> Option<Arc<[String]>> {
+        None
+    }
+
+    /// The code transport itself. Permission allow follows this identity, not the name.
+    fn is_code_transport(&self) -> bool {
+        false
+    }
 
     fn schema(&self) -> Value;
 

@@ -19,6 +19,10 @@ impl Tool for GlobTool {
         "glob"
     }
 
+    fn surface(&self) -> crate::tool::ToolSurface {
+        crate::tool::ToolSurface::Code
+    }
+
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",

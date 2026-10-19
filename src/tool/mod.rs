@@ -7,6 +7,7 @@ pub mod coords;
 pub mod executor;
 pub mod output;
 pub mod pipeline;
+pub mod project;
 pub mod registry;
 pub mod schema_validate;
 pub mod signal;
@@ -21,6 +22,7 @@ pub use coords::{
     format_line_label, format_line_list, format_offset_done, format_offset_more, format_path_lines,
 };
 pub use pipeline::ToolPipeline;
+pub use project::{RejectedTool, ToolProjection, project_tools};
 pub use registry::build_tool_list;
 pub use schema_validate::{
     check_tool_input, expected_type, invalid_input_for, missing_parameter, must_be,
@@ -29,5 +31,5 @@ pub use schema_validate::{
     unknown_top_level_properties,
 };
 pub use snippet::{SnippetSection, format_snippet_sections};
-pub use trait_::Tool;
+pub use trait_::{Tool, ToolSurface};
 pub use write_lock::{ResourceKey, WorkspaceWriteLock};

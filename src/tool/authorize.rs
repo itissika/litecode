@@ -64,6 +64,12 @@ pub async fn authorize(
 
     let effective_input = input.clone();
 
+    // The transport carries no permission of its own. A same-named custom tool
+    // does not take this path: only the transport object does.
+    if tool.is_code_transport() {
+        return AuthResult::Proceed { effective_input };
+    }
+
     let eval = permission.evaluate_tool(&name, &effective_input, &ctx.cwd);
 
     let mut action = eval.action;

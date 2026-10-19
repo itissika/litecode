@@ -185,6 +185,10 @@ impl Tool for ProbeTool {
         "probe"
     }
 
+    fn surface(&self) -> litecode::tool::ToolSurface {
+        litecode::tool::ToolSurface::Code
+    }
+
     fn schema(&self) -> serde_json::Value {
         json!({
             "type": "object",
