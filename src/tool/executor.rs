@@ -698,20 +698,35 @@ pub async fn execute_tool_call(
             result = &mut tool_fut => result,
             _ = &mut timeout => {
                 execution_cancel.cancel();
-                let _ = tool_fut.await;
-                let budget_label = timeout_budget_label(budget);
-                let message = if matches!(origin.caller, ToolCaller::Code { .. }) {
-                    format!("tool '{name}' timed out after {budget_label}")
-                } else {
-                    format!(
-                        "tool '{name}' timed out after {budget_label}. Retry with a narrower scope, or use bash run_in_background for long commands"
-                    )
-                };
-                Ok(ToolCallResult::error_with_kind(
-                    ToolErrorKind::Timeout,
-                    message,
-                    true,
-                ))
+                let late = tool_fut.await;
+                // A result that already committed beats the tool timeout. A
+                // cancelled or panicked finish did not commit, so the timeout
+                // stands.
+                match late {
+                    Ok(result)
+                        if result.error.as_ref().is_none_or(|error| {
+                            error.kind != ToolErrorKind::Cancelled
+                        }) =>
+                    {
+                        tracing::warn!(tool = %name, "completed after timeout");
+                        Ok(result)
+                    }
+                    _ => {
+                        let budget_label = timeout_budget_label(budget);
+                        let message = if matches!(origin.caller, ToolCaller::Code { .. }) {
+                            format!("tool '{name}' timed out after {budget_label}")
+                        } else {
+                            format!(
+                                "tool '{name}' timed out after {budget_label}. Retry with a narrower scope, or use bash run_in_background for long commands"
+                            )
+                        };
+                        Ok(ToolCallResult::error_with_kind(
+                            ToolErrorKind::Timeout,
+                            message,
+                            true,
+                        ))
+                    }
+                }
             }
         }
     } else {
@@ -1186,6 +1201,7 @@ mod tests {
                 _execution: ToolExecutionContext,
             ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
             {
+                let cancel = _execution.cancel.clone();
                 Box::pin(async move {
                     // Mirrors the 2.6 fix: blocking work runs off the executor so
                     // the pipeline timeout can interrupt the call.
@@ -1193,6 +1209,13 @@ mod tests {
                         std::thread::sleep(std::time::Duration::from_secs(2));
                     })
                     .await;
+                    if cancel.is_cancelled() {
+                        return ToolCallResult::error_with_kind(
+                            ToolErrorKind::Cancelled,
+                            "slow tool cancelled",
+                            false,
+                        );
+                    }
                     ToolCallResult::ok("done")
                 })
             }
@@ -1266,6 +1289,99 @@ mod tests {
             "timeout did not interrupt promptly: {:?}",
             start.elapsed()
         );
+    }
+
+    /// E-7: a tool that ignores cancellation and returns a committed result
+    /// after the budget wins over the tool timeout.
+    #[tokio::test]
+    async fn committed_result_wins_over_tool_timeout() {
+        struct CommitTool;
+        impl Tool for CommitTool {
+            fn name(&self) -> &str {
+                "commit"
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            fn description(&self, _ctx: &Context) -> String {
+                "returns after the budget".into()
+            }
+            fn timeout(&self) -> Option<Duration> {
+                Some(Duration::from_secs(1))
+            }
+            fn execute(
+                &self,
+                _input: serde_json::Value,
+                _execution: ToolExecutionContext,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+            {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                    ToolCallResult::ok("committed").with_data(serde_json::json!({"ok": true}))
+                })
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = crate::config::schema::GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            crate::config::schema::AgentProfile {
+                role: crate::config::schema::AgentRole::Primary,
+                model_ref: "default".into(),
+                tools: HashMap::from([(
+                    "commit".to_string(),
+                    crate::config::schema::AgentToolBinding {
+                        enabled: true,
+                        policy: crate::permission::ToolPolicy::allow_all(),
+                        path_mode: crate::permission::BindingPathMode::default(),
+                        last_applied_preset: None,
+                        allowed_tools: None,
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        let resolved = crate::config::resolved::resolve_without_catalog(
+            global,
+            crate::config::resolved::WorkspaceState::new("/tmp/test"),
+        );
+        let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
+        let ctx = Context {
+            cwd: dir.path().to_path_buf(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(dir.path()),
+            agents_md: None,
+            claude_md: None,
+        };
+        let sink = crate::permission::sinks::RecordingPermissionSink::from_reply(true, true);
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(CommitTool)];
+        let tu = FunctionToolCall {
+            arguments: "{}".into(),
+            call_id: "call_commit".into(),
+            name: "commit".into(),
+            namespace: None,
+            id: Some("fc_commit".into()),
+            status: None,
+        };
+        let result = run_tool(
+            &tu,
+            &tools,
+            &permission,
+            &ctx,
+            "sess",
+            "default",
+            &sink,
+            CancellationToken::new(),
+            dir.path(),
+            4096,
+            None,
+            Arc::new(WorkspaceWriteLock::new()),
+            None,
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        assert!(result.content.contains("committed"), "{}", result.content);
+        assert!(!result.content.contains("timed out"), "{}", result.content);
     }
 
     fn fc(call_id: &str, name: &str, args: serde_json::Value) -> FunctionToolCall {

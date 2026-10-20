@@ -29,6 +29,11 @@ fn write_temp(name: &str, contents: impl AsRef<[u8]>) -> (tempfile::TempDir, std
 }
 
 #[test]
+fn edit_declares_a_thirty_second_timeout() {
+    assert_eq!(tool().timeout(), Some(std::time::Duration::from_secs(30)));
+}
+
+#[test]
 fn edit_tool_roundtrips_bom_and_matches_first_line() {
     let (_dir, path) = write_temp("bom.rs", "\u{feff}fn main() {}\n");
     let result = call_edits(&path, one("fn main() {}", "fn start() {}"));

@@ -134,6 +134,10 @@ impl Tool for WriteTool {
         }))
     }
 
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
+
     fn execute(
         &self,
         input: Value,
@@ -378,6 +382,14 @@ pub fn is_sensitive_write_path(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_declares_a_thirty_second_timeout() {
+        assert_eq!(
+            WriteTool::new().timeout(),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
 
     #[test]
     fn test_write_create_new() {

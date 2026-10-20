@@ -47,9 +47,9 @@ struct Faults {
     /// `0` means the stack watch is not armed.
     stack_limit: AtomicUsize,
     /// Raw `JSContext*`, valid only while that context is alive.
-    ctx: AtomicPtr<c_void>,
+    ctx: Arc<AtomicPtr<c_void>>,
     /// Byte offset of `JSContext.interrupt_counter`. `0` means unknown.
-    counter_offset: AtomicUsize,
+    counter_offset: Arc<AtomicUsize>,
 }
 
 impl Faults {
@@ -58,6 +58,7 @@ impl Faults {
     const TIMEOUT: u8 = 2;
     const OUTPUT: u8 = 3;
     const STACK: u8 = 4;
+    const MEMORY: u8 = 5;
 
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -65,8 +66,8 @@ impl Faults {
             memory: Arc::new(AtomicBool::new(false)),
             stack: AtomicBool::new(false),
             stack_limit: AtomicUsize::new(0),
-            ctx: AtomicPtr::new(std::ptr::null_mut()),
-            counter_offset: AtomicUsize::new(0),
+            ctx: Arc::new(AtomicPtr::new(std::ptr::null_mut())),
+            counter_offset: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -171,6 +172,8 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     let runtime = match AsyncRuntime::new_with_alloc(LimitAlloc::new(
         request.limits.memory_bytes,
         Arc::clone(&faults.memory),
+        Arc::clone(&faults.ctx),
+        Arc::clone(&faults.counter_offset),
     )) {
         Ok(runtime) => runtime,
         Err(error) => return Outcome::from_failure(Failure::internal(error.to_string())),
@@ -200,6 +203,13 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                 // notices the native stack is past the limit throws.
                 if faults.stack_fault() {
                     faults.record(Faults::STACK);
+                    return true;
+                }
+                // A refused heap allocation sets the fault in the allocator and
+                // asks for this check on the next opcode. Returning true marks
+                // the stop uncatchable, same as the stack seal.
+                if faults.memory_fault() {
+                    faults.record(Faults::MEMORY);
                     return true;
                 }
                 false
@@ -926,7 +936,19 @@ async fn run_program(
         }
     };
     match promise.into_future::<Value<'_>>().await {
-        Ok(value) => accept_value(&value, output.as_ref(), output_limit),
+        Ok(value) => {
+            // The stack watch may be disarmed, so the allocator cannot poke
+            // the interrupt counter. A caught allocation failure still leaves
+            // the fault set; that must not resolve as success.
+            if faults.memory_fault() {
+                return ProgramEnd::Failure(Failure::resource(
+                    ResourceKind::Memory,
+                    "out of memory",
+                    None,
+                ));
+            }
+            accept_value(&value, output.as_ref(), output_limit)
+        }
         Err(error) => classify(
             &ctx,
             error,
@@ -1021,6 +1043,7 @@ fn classify_value<'js>(
             Faults::OUTPUT => Failure::output(output_limit),
             Faults::TIMEOUT => Failure::timeout(),
             Faults::STACK => Failure::resource(ResourceKind::Stack, "stack overflow", None),
+            Faults::MEMORY => Failure::resource(ResourceKind::Memory, "out of memory", None),
             _ if user.is_cancelled() => Failure::cancelled(),
             _ if flags.output.load(Ordering::Relaxed) => Failure::output(output_limit),
             _ if clock.exhausted() => Failure::timeout(),

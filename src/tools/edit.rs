@@ -228,6 +228,10 @@ impl Tool for EditTool {
         }))
     }
 
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
+
     fn execute(
         &self,
         input: Value,

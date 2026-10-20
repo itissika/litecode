@@ -6,8 +6,9 @@
 //! exception can be classified from that flag.
 
 use std::alloc::{self, Layout};
+use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use rquickjs::allocator::Allocator;
 
@@ -34,19 +35,41 @@ pub(crate) struct LimitAlloc {
     /// `0` means unlimited.
     limit: usize,
     fault: Arc<AtomicBool>,
+    /// `JSContext*` and the byte offset of `interrupt_counter`, shared with the
+    /// engine so a refused allocation can request the next opcode's interrupt.
+    ctx: Arc<AtomicPtr<c_void>>,
+    counter_offset: Arc<AtomicUsize>,
 }
 
 impl LimitAlloc {
-    pub(crate) fn new(limit: usize, fault: Arc<AtomicBool>) -> Self {
+    pub(crate) fn new(
+        limit: usize,
+        fault: Arc<AtomicBool>,
+        ctx: Arc<AtomicPtr<c_void>>,
+        counter_offset: Arc<AtomicUsize>,
+    ) -> Self {
         Self {
             used: 0,
             limit,
             fault,
+            ctx,
+            counter_offset,
         }
     }
 
     fn note_fault(&self) {
         self.fault.store(true, Ordering::Release);
+        // The interpreter checks the counter at the top of the next opcode.
+        // Setting it to 1 makes that check run before a `catch` body can
+        // swallow the allocation failure.
+        let ctx = self.ctx.load(Ordering::Relaxed);
+        let offset = self.counter_offset.load(Ordering::Relaxed);
+        if ctx.is_null() || offset == 0 {
+            return;
+        }
+        unsafe {
+            ctx.cast::<u8>().add(offset).cast::<i32>().write(1);
+        }
     }
 
     fn exceeds(&self, extra: usize) -> bool {

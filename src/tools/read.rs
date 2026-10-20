@@ -163,6 +163,10 @@ impl Tool for ReadTool {
         }
     }
 
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
+    }
+
     fn resource_keys(
         &self,
         input: &Value,
@@ -244,23 +248,18 @@ impl ReadTool {
         let located = locate_resolved(&execution.workspace_root, &path, raw_path);
         let workspace_bytes = self.ide.as_ref().and_then(|ide| {
             let relative = ide.workspace.sandbox().rel_path(&path).ok()?;
-            match ide.workspace.read_file_bytes(&relative) {
-                Ok((_, bytes)) => Some(Ok(bytes)),
-                Err(crate::workspace::WorkspaceError::NotFound(_)) => None,
-                Err(
-                    crate::workspace::WorkspaceError::NotFile(p)
-                    | crate::workspace::WorkspaceError::IsDir(p),
-                ) => Some(Err(coded(
-                    "invalid_input",
-                    crate::tools::file_path::directory_not_file_message(&p),
-                ))),
-                Err(error) => Some(Err(crate::tools::file_path::workspace_error(error))),
+            match load_workspace_bytes(ide.workspace.as_ref(), &relative, &execution.cancel) {
+                WorkspaceBytes::Bytes(bytes) => Some(Ok(bytes)),
+                WorkspaceBytes::Missing => None,
+                WorkspaceBytes::Failed(error) => Some(Err(error)),
             }
         });
         let result = match workspace_bytes {
-            Some(Ok(bytes)) => self.read_resolved(&path, Some(bytes), &input, located),
+            Some(Ok(bytes)) => {
+                self.read_resolved(&path, Some(bytes), &input, located, &execution.cancel)
+            }
             Some(Err(error)) => error,
-            None => self.read_resolved(&path, None, &input, located),
+            None => self.read_resolved(&path, None, &input, located, &execution.cancel),
         };
         if !matches!(result.level, crate::types::ToolSignalLevel::Error)
             && let Some(ide) = &self.ide
@@ -276,6 +275,7 @@ impl ReadTool {
         workspace_bytes: Option<Vec<u8>>,
         input: &Value,
         located: file_identity::LocatedPath,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> ToolCallResult {
         let path_display = path.to_string_lossy().into_owned();
         let metadata = match std::fs::metadata(path) {
@@ -303,8 +303,15 @@ impl ReadTool {
 
         let bytes = match workspace_bytes {
             Some(bytes) => bytes,
-            None => match std::fs::read(path) {
-                Ok(bytes) => bytes,
+            None => match read_file_checking_cancel(path, cancel) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) => {
+                    return ToolCallResult::error_with_kind(
+                        crate::types::ToolErrorKind::Cancelled,
+                        "read cancelled",
+                        false,
+                    );
+                }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     return coded("not_found", format!("file not found: {path_display}"));
                 }
@@ -528,6 +535,93 @@ fn finish_read(
     crate::tool::outcome::ok_data(data)
 }
 
+enum WorkspaceBytes {
+    Bytes(Vec<u8>),
+    /// The workspace sandbox does not have this path. Fall through to the
+    /// direct read, which still reports a missing file.
+    Missing,
+    Failed(ToolCallResult),
+}
+
+/// Workspace policy stays with the sandbox: resolve, not-a-file, and the 10MB
+/// cap. The bytes themselves are read in chunks so cancel can drop a partial
+/// buffer before decode.
+fn load_workspace_bytes(
+    workspace: &crate::workspace::WorkspaceService,
+    relative: &str,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> WorkspaceBytes {
+    let sandbox = workspace.sandbox();
+    let abs = match sandbox.resolve(relative) {
+        Ok(abs) => abs,
+        Err(error) => {
+            return WorkspaceBytes::Failed(crate::tools::file_path::workspace_error(error.into()));
+        }
+    };
+    if !abs.exists() {
+        return WorkspaceBytes::Missing;
+    }
+    if !abs.is_file() {
+        let display = sandbox
+            .rel_path(&abs)
+            .unwrap_or_else(|_| relative.to_string());
+        return WorkspaceBytes::Failed(coded(
+            "invalid_input",
+            crate::tools::file_path::directory_not_file_message(&display),
+        ));
+    }
+    let meta = match abs.metadata() {
+        Ok(meta) => meta,
+        Err(error) => {
+            return WorkspaceBytes::Failed(crate::tools::file_path::workspace_error(error.into()));
+        }
+    };
+    if meta.len() > crate::workspace::MAX_FILE_SIZE {
+        return WorkspaceBytes::Failed(crate::tools::file_path::workspace_error(
+            crate::workspace::WorkspaceError::TooLarge,
+        ));
+    }
+    match read_file_checking_cancel(&abs, cancel) {
+        Ok(Some(bytes)) => WorkspaceBytes::Bytes(bytes),
+        Ok(None) => WorkspaceBytes::Failed(ToolCallResult::error_with_kind(
+            crate::types::ToolErrorKind::Cancelled,
+            "read cancelled",
+            false,
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => WorkspaceBytes::Missing,
+        Err(error) => {
+            WorkspaceBytes::Failed(crate::tools::file_path::workspace_error(error.into()))
+        }
+    }
+}
+
+const READ_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Read the file in chunks so a cancel that arrives between chunks can stop
+/// the read. A single `read` syscall itself cannot be interrupted.
+fn read_file_checking_cancel(
+    path: &Path,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> std::io::Result<Option<Vec<u8>>> {
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    let mut buf = [0u8; READ_CHUNK_BYTES];
+    loop {
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
+        let read = std::io::Read::read(&mut file, &mut buf)?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buf[..read]);
+    }
+    Ok(Some(bytes))
+}
+
 fn data_line_text(line: &str) -> (String, bool) {
     if line.chars().count() <= MAX_LINE_CHARS {
         (line.to_string(), false)
@@ -605,6 +699,90 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_declares_a_thirty_second_timeout() {
+        assert_eq!(
+            ReadTool::default().timeout(),
+            Some(std::time::Duration::from_secs(30))
+        );
+    }
+
+    #[test]
+    fn cancelled_read_stops_between_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        std::fs::write(&path, vec![b'a'; READ_CHUNK_BYTES + 8]).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        assert!(read_file_checking_cancel(&path, &cancel).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn ide_read_checks_cancel_between_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut body = b"IDE_CANCEL_SENTINEL\n".to_vec();
+        body.resize(READ_CHUNK_BYTES + 32, b'q');
+        std::fs::write(dir.path().join("note.txt"), &body).unwrap();
+        let ide = crate::ide_base::IdeBaseHandle::open(
+            dir.path(),
+            std::sync::Arc::new(crate::engines::WorkspaceEngines::new()),
+        )
+        .unwrap();
+        let tool = ReadTool::with_ide(ide);
+        let execution = |cancel| ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::All,
+            workspace_root: dir.path().to_path_buf(),
+            call_id: "read-ide".into(),
+            cancel,
+            output_limit: usize::MAX,
+            session_id: String::new(),
+            session: None,
+        };
+        let read = tool
+            .execute(
+                serde_json::json!({"path": "note.txt"}),
+                execution(tokio_util::sync::CancellationToken::new()),
+            )
+            .await;
+        assert!(read.error.is_none(), "{}", read.content);
+        assert_eq!(
+            read.data.as_ref().unwrap()["file"]["bytes"],
+            body.len() as u64
+        );
+        assert!(
+            read.content.contains("IDE_CANCEL_SENTINEL")
+                || read.data.as_ref().unwrap()["lines"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("IDE_CANCEL_SENTINEL"),
+            "{}",
+            read.content
+        );
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let cancelled = tool
+            .execute(serde_json::json!({"path": "note.txt"}), execution(cancel))
+            .await;
+        assert_eq!(
+            cancelled.error.as_ref().map(|error| error.kind),
+            Some(crate::types::ToolErrorKind::Cancelled)
+        );
+        assert!(cancelled.data.is_none());
+        assert!(!cancelled.content.contains("IDE_CANCEL_SENTINEL"));
+    }
+
+    #[test]
+    fn chunked_read_returns_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        let body = vec![b'b'; READ_CHUNK_BYTES + 8];
+        std::fs::write(&path, &body).unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let read = read_file_checking_cancel(&path, &cancel).unwrap().unwrap();
+        assert_eq!(read, body);
+    }
 
     #[test]
     fn test_read_basic() {

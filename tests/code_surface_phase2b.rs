@@ -53,7 +53,7 @@ fn engine(root: &Path, policy: PermissionAction) -> PermissionEngine {
         allowed_tools: None,
     };
     let mut tools = std::collections::HashMap::new();
-    for name in ["read", "glob", "grep", "block", "fast", "hold"] {
+    for name in ["read", "glob", "grep", "block", "fast", "hold", "late"] {
         tools.insert(name.to_string(), binding.clone());
     }
     global.agents.insert(
@@ -242,6 +242,45 @@ impl Tool for GateTool {
     }
 }
 
+struct LateTool;
+
+impl Tool for LateTool {
+    fn name(&self) -> &str {
+        "late"
+    }
+
+    fn surface(&self) -> ToolSurface {
+        ToolSurface::Code
+    }
+
+    fn schema(&self) -> Value {
+        object_schema()
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(flag_schema())
+    }
+
+    fn description(&self, _: &litecode::context_pipeline::Context) -> String {
+        "finishes after the cancel grace".into()
+    }
+
+    fn is_concurrency_safe(&self, _: &Value) -> bool {
+        true
+    }
+
+    fn execute(
+        &self,
+        _: Value,
+        _: ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        Box::pin(async move {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            ToolCallResult::ok("late").with_data(json!({ "ok": true }))
+        })
+    }
+}
+
 struct SlowAllow;
 
 impl PermissionSink for SlowAllow {
@@ -414,6 +453,41 @@ async fn cancellation_seals_in_flight_nested_calls() {
         "{}",
         result.content
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_call_that_outlasts_the_grace_period_is_unsettled() {
+    let dir = tempfile::tempdir().unwrap();
+    let hosted = hosted(
+        dir.path(),
+        vec![Arc::new(LateTool)],
+        PermissionAction::Allow,
+        litecode::permission::deny_permission_sink(),
+    );
+    let sink = RecordingPermissionSink::from_reply(true, false);
+    let result = execute(
+        &hosted,
+        "run_code",
+        json!({
+            "code": "await tools.late({}); return 'done';",
+            "timeout_ms": 400
+        }),
+        &sink,
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        result.content.contains("may still land"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains("unsettled"), "{}", result.content);
+    assert!(
+        result.content.contains("1. late") && result.content.contains("unsettled"),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("retryable"), "{}", result.content);
 }
 
 #[tokio::test(flavor = "current_thread")]

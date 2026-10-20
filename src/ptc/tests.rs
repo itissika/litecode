@@ -410,6 +410,59 @@ async fn memory_limit() {
 }
 
 #[tokio::test]
+async fn memory_exhaustion_stays_sealed_when_the_program_catches_it() {
+    let mut limits = limits();
+    limits.memory_bytes = 3 * 1024 * 1024;
+    let outcome = run_with(
+        r#"
+        try {
+          const blob = new Uint8Array(16 * 1024 * 1024);
+          return "caught " + blob[0];
+        } catch (e) {
+          return "caught";
+        }
+        "#,
+        Vec::new(),
+        limits,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    let failure = outcome.failure.expect("out of memory is not catchable");
+    assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
+    assert_eq!(failure.resource, Some(ResourceKind::Memory), "{failure:?}");
+}
+
+#[tokio::test]
+async fn caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed() {
+    let mut limits = limits();
+    limits.memory_bytes = 3 * 1024 * 1024;
+    limits.stack_bytes = 0;
+    let outcome = run_with(
+        r#"
+        try {
+          const blob = new Uint8Array(16 * 1024 * 1024);
+          return "caught " + blob[0];
+        } catch (e) {
+          return "caught";
+        }
+        "#,
+        Vec::new(),
+        limits,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    let failure = outcome.failure.expect("memory fault overrides success");
+    assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
+    assert_eq!(failure.resource, Some(ResourceKind::Memory), "{failure:?}");
+}
+
+#[tokio::test]
 async fn stack_limit() {
     let mut limits = limits();
     limits.stack_bytes = 64 * 1024;
