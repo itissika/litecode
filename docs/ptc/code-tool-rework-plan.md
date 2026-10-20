@@ -20,11 +20,11 @@
 - **D-03 已定**：五个工具彻底放弃 markdown 输出；`data` 是唯一真相，且必须结构化、带类型、完全契合 code 形态。
 - **D-04 已定**：图片与媒体整体砍掉；`read` 只读文本，遇到图片/二进制返回 `unsupported`；后续需要时另开独立工具，不在本轮。
 - **D-05 已定**：fuzzy 整条链砍掉；但 `edit` 保留“部分应用”——一个块失败不连坐其他块，`edit` 的目标是省 token，不是 all-or-none。
-- **D-05a 已定**：`edit` 部分成功用 `status:"partial"`。
+- **D-05a 已定**：`edit` 部分成功用 `status:"partial"`。已取代：已被 run-code-remediation-plan 取代（A3）。
 - **D-06 已定**：本批不做多文件 `apply_changes`；多文件由 `run_code` 程序循环 `edit`/`write`，不做跨文件回滚。
 - **D-20 已定**：`edit` 形态保持 `{path, edits[]}`；单次调用单文件，多文件多块由程序循环。
 - **D-09 已定（本轮做）**：删除 per-call `options`；工具内部兜底超时；只保留 `run_code.timeout_ms` 作为整批预算。
-- **D-14 已定**：`grep` 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，`details` 带 pattern/regex_error/position/suggested_literal/suggested_pattern；需要字面量用 `literal:true`。
+- **D-14 已定**：`grep` 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，`details` 带 pattern/regex_error/position/suggested_literal/suggested_pattern；需要字面量用 `literal:true`。其中 `suggested_literal` / `suggested_pattern` 与 `retryable:true` 已取代：已被 run-code-remediation-plan 取代（A1/A4）。
 - **D-17 已定**：保留工作区外路径；`FileRef.abs` / `base:"absolute"` 是正式契约。
 - **执行已开始**：必须按 Phase 0→1→2→3→4→5 顺序推进；阶段门禁未过不得进入下一阶段。Phase 0–5 均已独立审核通过，产物未提交。本文件仍负责把契约、边界、门禁定清楚；已定决策不改。
 - **剩余待确认**：D-07/D-10/D-11 为待定，不阻塞 Phase 0/1；D-06a 撤销（不适用）。D-15/D-16 已按设计裁剪砍掉，可恢复。
@@ -138,6 +138,8 @@
 
 #### 2.4.1 结果封套
 
+> **已取代：** 本节信封契约（含 `ToolResult` 与 `status:"partial"`）已被 run-code-remediation-plan 取代（A1）。
+
 ```ts
 type ToolResult<T> =
   | { status: "ok"; data: T; diagnostics: Diagnostic[]; page?: Page; error: null }
@@ -166,7 +168,7 @@ type Page = {
 ```
 
 - `ok`：完整成功。
-- `partial`：已提交部分变更，但有块失败；由 `edit` 返回（D-05a 已定）。
+- `partial`：已提交部分变更，但有块失败；由 `edit` 返回（D-05a 已定）。已取代：已被 run-code-remediation-plan 取代（A3）。
 - `error`：没有提交任何变更，或调用失败；`details` 里可带 `blocks` / `current_hash` 等。
 - 这五个工具取消 `warning` 作为独立 status（direct 工具不变）；非致命信号一律进 `diagnostics`。
 
@@ -244,7 +246,7 @@ grep({
 - `end_line` 是显式上界；`limit` 是页大小上限；实际结束行 = `min(end_line, start_line + limit - 1)`。
 - `read` 对图片/二进制返回 `unsupported`，`details` 带 `path/mime/bytes`。
 - `grep` 不再有 `view`、`context_lines`；上下文由程序用 `read` 取。
-- `grep` 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，`details` 带 `pattern` / `regex_error` / `position`（若可用）/ `suggested_literal` / `suggested_pattern`；`retryable:true`（D-14）。
+- `grep` 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，`details` 带 `pattern` / `regex_error` / `position`（若可用）/ `suggested_literal` / `suggested_pattern`；`retryable:true`（D-14）。其中 `suggested_literal` / `suggested_pattern` 与 `retryable:true` 已取代：已被 run-code-remediation-plan 取代（A1/A4）。
 - 需要按字面量搜索时显式 `literal:true`；错误里的建议只是建议，不自动应用。
 - `glob` 不再自动剥离 path/pattern 重复前缀；按传入 pattern 匹配（D-16）。
 - `read` 的 `page.has_more` 必须回答“后面还有没有”，显式窗口也一样。
@@ -284,16 +286,18 @@ write({
 ```
 
 - `edit` 只做精确匹配（保留 CRLF/LF、BOM 归一）；fuzzy 整条链砍掉；没有 `match` 参数（D-05）。
-- `edit` 默认逐块部分应用：所有块对“原始文件”匹配；成功的块写入；失败的块不连坐。状态：全成功 `ok`，部分成功 `partial`，全失败 `error`。
+- `edit` 默认逐块部分应用：所有块对“原始文件”匹配；成功的块写入；失败的块不连坐。状态：全成功 `ok`，部分成功 `partial`，全失败 `error`。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - `edit` 的失败块必须带 `reason.code`（如 `no_match` / `multiple_matches` / `empty_old_string` / `no_op` / `chained` / `overlap` / `whitespace_only`）。
 - `edit` 的失败块同时产出 `diagnostic`（`edit_block_failed`，details 带 index/reason），由 `run_code` 聚合；这样即使程序忽略返回值，外层模型仍能看到哪些块失败。
 - `edit` 的 `expected_hash` 可选；省略时不做版本校验；不匹配时整次调用 `stale`，不写入。
 - `replace_all` 只对精确匹配生效；fuzzy 不存在，因此不存在“模糊 replace_all”。
 - `write` 的 `create_only` 与 `expected_hash` 同时给且文件不存在时，返回 `invalid_input`。
 - `edit` 是单文件、多块；多文件由 `run_code` 程序循环调用 `edit`/`write`，本批不做跨文件事务（D-06/D-20）。
-- `edit` 部分成功返回 `partial`（D-05a）。
+- `edit` 部分成功返回 `partial`（D-05a）。已取代：已被 run-code-remediation-plan 取代（A3）。
 
 #### 2.4.5 run_code 传输
+
+> **已取代：** 本节 run_code data 已被 run-code-remediation-plan 取代（E-8）。
 
 ```ts
 run_code({ code: string; timeout_ms?: number }) => {
@@ -326,7 +330,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 | ID | 不变量 |
 |---|---|
 | C-01 | 五个工具的 `data` 是唯一结果契约；`content` 不再承载事实 |
-| C-02 | `ok` / `partial` 必有 `data` 且通过 schema；`error` 必无 `data`，必有 `error` |
+| C-02 | `ok` / `partial` 必有 `data` 且通过 schema；`error` 必无 `data`，必有 `error`。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A1/A3） |
 | C-03 | 任何截断/上限都必须有 `page.has_more`、`page.next` 或 `diagnostic` |
 | C-04 | 所有路径有稳定 `base`；工作区内相对，工作区外 `abs` |
 | C-05 | 所有写结果返回新的 `FileRef`；所有写接受 `expected_hash` |
@@ -426,7 +430,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 - [x] `glob` 超过 limit 时 `has_more=true`，路径可直接传给 `read`。
 - [x] `grep` 换 pattern 复用 cursor 返回 `stale_cursor`；同一查询翻页稳定。
 - [x] 零命中五种原因各有测试。
-- [x] 非法 regex 返回 `invalid_regex`，details 含 pattern/regex_error/position/suggested_literal/suggested_pattern；`literal:true` 正常。
+- [x] 非法 regex 返回 `invalid_regex`，details 含 pattern/regex_error/position/suggested_literal/suggested_pattern；`literal:true` 正常。其中 `suggested_literal` / `suggested_pattern` 已取代：已被 run-code-remediation-plan 取代（A1/A4）。
 - [x] 工作区外路径：`base:"absolute"`，`read` 可消费。
 - [x] SDK 快照中不再出现 `view`、`file_path`、`context_lines`。
 - [x] 组合链测试通过。
@@ -442,7 +446,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 **落地细则**
 
 - **P3-01 `write`**：接受 `expected_hash`；返回 `FileRef`；`create_only` 保留；删除文本状态，改为 `created` + `file`。
-- **P3-02 `edit`**：保留逐块部分应用；返回 `blocks[]`（status/ranges/reason）+ `file` + `applied/failed`；全成功 `ok`，部分成功 `partial`，全失败 `error`；不连坐。失败块同时产出 `edit_block_failed` 诊断，供 `run_code` 聚合。
+- **P3-02 `edit`**：保留逐块部分应用；返回 `blocks[]`（status/ranges/reason）+ `file` + `applied/failed`；全成功 `ok`，部分成功 `partial`，全失败 `error`；不连坐。失败块同时产出 `edit_block_failed` 诊断，供 `run_code` 聚合。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - **P3-03 fuzzy 整链删除**：删除 `match` 参数、fuzzy matcher 分支、`MatchKind::Fuzzy`、fuzzy 提示与测试；同时删除 typography 等价（D-15）；`edit` 只做精确匹配（保留 CRLF/LF、BOM 归一）。
 - **P3-07 LSP 诊断**：编辑后的 LSP 诊断进入 `diagnostics`，由 `run_code` 聚合；即使程序忽略返回值，外层也能看到。
 
@@ -450,7 +454,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 
 - [x] `cargo check` 通过。
 - [x] `expected_hash` 不匹配返回 `stale`，文件未修改。
-- [x] `edit` 10 块中 1 块失败：其余 9 块写入，`status:"partial"`，`blocks` 能指出失败块与原因，`run_code.data.diagnostics` 有 `edit_block_failed`。
+- [x] `edit` 10 块中 1 块失败：其余 9 块写入，`status:"partial"`，`blocks` 能指出失败块与原因，`run_code.data.diagnostics` 有 `edit_block_failed`。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - [x] `edit` 全部失败：`status:"error"`，文件未修改，`error.details.blocks` 可读。
 - [x] fuzzy 与 typography 等价代码不存在；`rg` 无残留。
 - [x] LSP 诊断在 `run_code.data.diagnostics` 可见。
@@ -469,7 +473,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 - **P4-02 统一锁管理器**：用同一 `ResourceKey` 函数（大小写、`..`、分隔符与 `resolve_agent` 一致）替换 `PathGate` 与 `path_gate_key`；同 key FIFO；多 key 按排序后的 key 顺序获取，避免死锁。
 - **P4-03 授权后取锁**：锁必须在 `authorize` 之后获取；审批等待期间不持有资源锁。
 - **P4-04 取消封口**：mutating call 在返回前必须 settle；宽限期结束仍未结束时记录 `unsettled`，不得渲染成 `cancelled`；外层明确“可能已提交/未提交”。
-- **P4-05 账本诚实**：`run_code.data.calls[].outcome` 区分 `ok/partial/error/cancelled/unsettled`；文本账本同步。
+- **P4-05 账本诚实**：`run_code.data.calls[].outcome` 区分 `ok/partial/error/cancelled/unsettled`；文本账本同步。其中 run_code data 已取代：已被 run-code-remediation-plan 取代（E-8）。
 - **P4-06 timeout 收口（D-09）**：删除 per-call `options`、`split_invocation` 双参数、`parse_call_timeout_ms`；所有 binding 只接受一个参数；工具内部以 `Duration`/毫秒兜底；`run_code.timeout_ms` 保留为整批预算。
 
 **验收门禁**
@@ -507,7 +511,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 - [ ] `rg` 删除清单全绿。除 spill-emergency 外为绿；该条保留是因为共享函数仍服务 direct 工具。
 - [x] 契约矩阵全绿。
 - [x] SDK 快照稳定：同一工具集、不同 cwd/权限下哈希一致。
-- [x] 手工验收程序：read→grep→edit(partial)→write→取消→审批，全部符合预期。
+- [x] 手工验收程序：read→grep→edit(partial)→write→取消→审批，全部符合预期。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - [x] 旧 transcript 回放与 session search 测试通过。
 
 **回退**：Phase 5 删除项按文件拆提交；任一删除导致回归，单独恢复该文件，不影响前四阶段契约。
@@ -519,7 +523,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 ### 4.1 契约与结果
 
 - 五个工具改为 data-only：`data` + `diagnostics` + `page` + `error`。
-- 删除 `warning` 作为独立 status；非致命信号进 `diagnostics`；`edit` 部分成功用 `partial`。
+- 删除 `warning` 作为独立 status；非致命信号进 `diagnostics`；`edit` 部分成功用 `partial`。其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - 建立稳定错误码与 `details`；不再默认 `Internal`。
 - 五个工具的 `data_schema` 与真实输出由契约矩阵强制一致。
 
@@ -622,7 +626,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 
 - `ToolCallResult` 在五个工具中的 `content` 事实地位。
 - `hint` / `warning_status` / `appendix` 在五个工具中的使用。
-- `warning` 作为独立结果 status（保留 `partial` 作为变更结果，不保留 warning）。
+- `warning` 作为独立结果 status（保留 `partial` 作为变更结果，不保留 warning）。其中保留 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 - `file_path` 别名与历史兼容分支。
 - `grep.view`、`grep.context_lines`、所有展示型参数。
 - read 的行号文本渲染/pagination footer、glob 的列表文本、grep 的文本视图、edit/write 的文本状态渲染。
@@ -668,7 +672,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 | L-23 | `FileRef` `mtime/eol/encoding` | 砍（D-18） | 内部处理，不暴露 |
 | L-24 | `run_code` 媒体聚合 | 砍 | D-04 |
 | L-25 | `run_code` 文本账本作为唯一账本 | 改为 data 优先，文本渲染 | F-01 |
-| L-26 | `suggest_similar_files` 文本提示 | 保留能力，迁到 `error.details` | 有用，不是展示 |
+| L-26 | `suggest_similar_files` 文本提示 | 保留能力，迁到 `error.details` | 已取代：已被 run-code-remediation-plan 取代（A4）。原文：有用，不是展示 |
 | L-27 | `Tool::call` / `call_inner` 测试辅助 | 评估；不作为产品契约 | 测试内部 |
 | L-28 | `edit` `SNAPSHOT_RULE` 文本 | 改写为部分应用语义 | 旧规则会被读成 all-or-none |
 | L-29 | `grep` “more matches” 文本 footer | 砍 | 改 `page.next` |
@@ -697,7 +701,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 | D-03 | 五个工具放弃 markdown/`content`，只产出结构化、带类型的 `data`，完全契合 code 形态 | 已定 | 产品负责人，2026-10-20 |
 | D-04 | 图片与媒体整体砍掉；`read` 只读文本，图片/二进制返回 `unsupported`；后续另开工具 | 已定 | 产品负责人，2026-10-20 |
 | D-05 | fuzzy 整链砍掉；`edit` 保留逐块部分应用，一个块失败不连坐其他块 | 已定 | 产品负责人，2026-10-20 |
-| D-05a | `edit` 部分成功用 `status:"partial"`（三态） | 已定 | 与现有三态一致 |
+| D-05a | `edit` 部分成功用 `status:"partial"`（三态） | 已定 | 已取代：已被 run-code-remediation-plan 取代（A3）。原文：与现有三态一致 |
 | D-06 | 本批不做多文件 `apply_changes`；多文件由 `run_code` 程序循环 `edit`/`write` | 已定 | 不做跨文件回滚；后续确有需要再开独立工具 |
 | D-06a | `apply_changes` 事务语义 | 撤销（不适用） | D-06 决定本批不做 |
 | D-07 | grep/glob cursor 快照策略：查询指纹 + 版本校验；或全量快照 | 待定 | 推荐查询指纹 + 版本校验 |
@@ -707,7 +711,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 | D-11 | 本批是否 code 化 `bash` / `kill_shell` / `wait_shell` | 待定 | 推荐“否”，独立项目；没有 `exec` 工具（`bash.exec` 是权限 rule id） |
 | D-12 | 是否保留 `ToolSurface` 与 direct 分支 | 约束（charter D2） | 其他工具仍是 direct，只移除五工具遗留 |
 | D-13 | 路径 base：工作区内相对，工作区外绝对；glob/grep 带 `base` | 已定（设计） | 与 `FileRef.abs` 一致 |
-| D-14 | grep 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，details 给 literal/转义建议；需要字面量用 `literal:true` | 已定 | 产品负责人 2026-10-20；可靠优先，不替模型做决定 |
+| D-14 | grep 不做正则自动修复；非法 regex 硬失败 `invalid_regex`，details 给 literal/转义建议；需要字面量用 `literal:true` | 已定 | 产品负责人 2026-10-20；可靠优先，不替模型做决定。其中 `suggested_*` 与 `retryable:true` 已取代：已被 run-code-remediation-plan 取代（A1/A4） |
 | D-15 | edit 的 typography 等价（smart quotes/dashes）砍掉；只保留 CRLF/BOM 归一 | 已定（设计裁剪） | 与 fuzzy 同类：不做“看起来不同却命中”；可恢复 |
 | D-16 | glob 的 path/pattern 前缀自动剥离砍掉；按传入 pattern 匹配 | 已定（设计裁剪） | 不做静默语义改写；可恢复 |
 | D-17 | 保留工作区外路径；`FileRef.abs` / `base:"absolute"` | 已定 | 产品负责人 2026-10-20 |
@@ -729,6 +733,8 @@ run_code({ code: string; timeout_ms?: number }) => {
 - `rg` 删除清单全绿（Phase 5）。
 
 ### 7.2 契约矩阵模板
+
+> **已取代：** 表中 `partial` 状态已被 run-code-remediation-plan 取代（A3）；`run_code` 的 data 列已被取代（E-8）。
 
 | 工具 | 场景 | status | data 关键字段 | page | diagnostics | error.code |
 |---|---|---|---|---|---|---|
@@ -771,7 +777,7 @@ run_code({ code: string; timeout_ms?: number }) => {
 2. `grep` 搜内容 → 用 `data.path` 链到 `read`；
 3. `read` 拿 `file.hash` → `edit` 带 `expected_hash`；
 4. 故意用旧 hash 触发 `stale`；
-5. `edit` 10 块中 1 块失败，确认 9 块写入、`status:"partial"`、失败块可读；
+5. `edit` 10 块中 1 块失败，确认 9 块写入、`status:"partial"`、失败块可读；其中 `partial` 状态已取代：已被 run-code-remediation-plan 取代（A3）。
 6. `write` 新文件 → `read` 校验 hash；
 7. 触发一次审批，确认审批期间其他调用不被锁死；
 8. 触发一次取消，确认 `calls[].outcome` 为 `cancelled/unsettled`，且没有事后写入。
@@ -852,6 +858,8 @@ run_code({ code: string; timeout_ms?: number }) => {
 - F-20：`src/tools/glob.rs:339-363`
 
 ## 附录 B：目标 SDK 示例（讨论用）
+
+> **已取代：** 本示例里的 `status` / `partial` 信封已被 run-code-remediation-plan 取代（A1/A3）。
 
 ```ts
 // 只示意形状，最终以 Phase 1 实现评审为准
