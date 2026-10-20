@@ -35,6 +35,7 @@ pub(crate) struct Ledger {
 
 pub(crate) struct Ticket {
     pub idx: usize,
+    pub seq: u64,
     pub token: CancellationToken,
 }
 
@@ -79,6 +80,7 @@ impl Ledger {
         });
         Some(Ticket {
             idx: guard.slots.len() - 1,
+            seq,
             token,
         })
     }

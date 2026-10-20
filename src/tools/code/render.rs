@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use crate::ptc::{FailureKind, ResourceKind};
+use crate::ptc::{FailureKind, ResourceKind, SourceLocation};
+use crate::session::transcript_file::RUN_CODE_SESSION_NOTE;
 use crate::tool::outcome::Diagnostic;
 use crate::types::utf8::{prefix_utf8, suffix_utf8};
 
@@ -33,6 +34,8 @@ pub(super) struct LedgerSnap {
     pub summary: String,
     pub state: String,
     pub error_code: Option<String>,
+    pub error_message: Option<String>,
+    pub session_read: bool,
 }
 
 /// Facts the renderer needs. Built from the in-memory execution report.
@@ -48,6 +51,15 @@ pub(super) struct RunReport {
     pub calls_omitted: usize,
     pub diagnostics: Vec<Diagnostic>,
     pub diagnostics_omitted: usize,
+    pub tool_counts: BTreeMap<String, usize>,
+    pub error_counts: BTreeMap<String, usize>,
+    pub call_total: Option<usize>,
+    pub unsettled_total: Option<usize>,
+    pub session_read_hidden: bool,
+    pub failure_location: Option<SourceLocation>,
+    pub failure_at_end: bool,
+    pub failure_stack: Option<String>,
+    pub source: String,
 }
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
@@ -152,14 +164,8 @@ fn result_section_len(body: &str) -> usize {
 
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
-    let unsettled = report
-        .calls
-        .iter()
-        .filter(|call| call.state == "unsettled")
-        .count();
-    // Dropped calls are not in the snapshot, so a failure cannot state an exact
-    // unsettled count. Phase 2 keeps those totals.
-    if unsettled > 0 && report.calls_omitted == 0 {
+    let unsettled = unsettled_total(report);
+    if unsettled > 0 {
         parts.push(format!(
             "{unsettled} calls were still running when the program stopped; their side effects may still land. Re-read the files before retrying any write."
         ));
@@ -167,46 +173,62 @@ fn render_header_block(report: &RunReport) -> String {
     explained_cut(&parts.join("\n\n"), HEADER_CAP)
 }
 
+fn call_total(report: &RunReport) -> usize {
+    report
+        .call_total
+        .unwrap_or(report.calls.len() + report.calls_omitted)
+}
+
+fn unsettled_total(report: &RunReport) -> usize {
+    report.unsettled_total.unwrap_or_else(|| {
+        report
+            .calls
+            .iter()
+            .filter(|call| call.state == "unsettled")
+            .count()
+    })
+}
+
 fn header_line(report: &RunReport) -> String {
-    let total = report.calls.len() + report.calls_omitted;
+    let total = call_total(report);
     let Some(kind) = report.failure_kind else {
         let mut line = format!("run_code ok · {total} calls");
-        if report.calls_omitted == 0 && !report.calls.is_empty() {
+        if let Some(counts) = header_tool_counts(report) {
             line.push_str(" (");
-            line.push_str(&tool_counts(&report.calls));
+            line.push_str(&counts);
             line.push(')');
         }
-        if report.calls_omitted == 0
-            && let Some(rejected) = rejected_clause(&report.calls)
-        {
+        if let Some(rejected) = rejected_clause(report) {
             line.push_str(" · ");
             line.push_str(&rejected);
         }
         return line;
     };
-    let label = failure_label(kind, report.resource, report.timeout_ms);
-    if report.calls_omitted > 0 {
-        return format!("run_code failed: {label} · {total} calls");
-    }
-    let finished = report
-        .calls
-        .iter()
-        .filter(|call| call.state != "unsettled")
-        .count();
-    let unsettled = report
-        .calls
-        .iter()
-        .filter(|call| call.state == "unsettled")
-        .count();
+    let label = failure_label(kind, report);
+    let unsettled = unsettled_total(report);
+    let finished = total.saturating_sub(unsettled);
     format!("run_code failed: {label} · {finished}/{total} calls finished, {unsettled} unsettled")
 }
 
-fn failure_label(kind: FailureKind, resource: Option<ResourceKind>, timeout_ms: u64) -> String {
+fn header_tool_counts(report: &RunReport) -> Option<String> {
+    if !report.tool_counts.is_empty() {
+        return Some(format_counts(&report.tool_counts));
+    }
+    if report.calls_omitted > 0 || report.calls.is_empty() {
+        return None;
+    }
+    Some(tool_counts(&report.calls))
+}
+
+fn failure_label(kind: FailureKind, report: &RunReport) -> String {
     match kind {
-        FailureKind::Timeout => format!("timeout after {timeout_ms}ms"),
+        FailureKind::Timeout => format!("timeout after {}ms", report.timeout_ms),
+        FailureKind::Cancelled if report.value.is_some() => {
+            "cancelled after the program returned".to_string()
+        }
         FailureKind::Cancelled => "cancelled".to_string(),
         FailureKind::OutputLimit => "output limit".to_string(),
-        FailureKind::ResourceLimit => match resource {
+        FailureKind::ResourceLimit => match report.resource {
             Some(ResourceKind::Stack) => "stack overflow".to_string(),
             _ => "out of memory".to_string(),
         },
@@ -217,11 +239,23 @@ fn failure_label(kind: FailureKind, resource: Option<ResourceKind>, timeout_ms: 
     }
 }
 
-fn rejected_clause(calls: &[LedgerSnap]) -> Option<String> {
+fn rejected_clause(report: &RunReport) -> Option<String> {
+    if !report.error_counts.is_empty() {
+        let total: usize = report.error_counts.values().copied().sum();
+        return Some(format!(
+            "{total} rejected, handled by the program ({})",
+            format_counts(&report.error_counts)
+        ));
+    }
+    if report.calls_omitted > 0 {
+        return None;
+    }
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for call in calls {
-        if call.state == "error" {
-            let code = call.error_code.as_deref().unwrap_or("error");
+    for call in &report.calls {
+        let Some(code) = error_state_code(&call.state).or(call.error_code.as_deref()) else {
+            continue;
+        };
+        if call.state.starts_with("error") {
             *counts.entry(code).or_default() += 1;
         }
     }
@@ -239,6 +273,10 @@ fn rejected_clause(calls: &[LedgerSnap]) -> Option<String> {
     ))
 }
 
+fn error_state_code(state: &str) -> Option<&str> {
+    state.strip_prefix("error:")
+}
+
 fn tool_counts(calls: &[LedgerSnap]) -> String {
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for call in calls {
@@ -251,12 +289,97 @@ fn tool_counts(calls: &[LedgerSnap]) -> String {
         .join(", ")
 }
 
+fn format_counts(counts: &BTreeMap<String, usize>) -> String {
+    counts
+        .iter()
+        .map(|(name, count)| format!("{name}×{count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn render_failure(report: &RunReport) -> Option<String> {
-    let text = report.failure_text.as_deref()?;
-    if text.is_empty() {
+    let mut parts = Vec::new();
+    if let Some(message) = report.failure_text.as_deref().filter(|text| !text.is_empty()) {
+        let message = prefix_utf8(message, 1024);
+        if !message.is_empty() {
+            parts.push(message.to_string());
+        }
+    }
+    if report.failure_at_end {
+        parts.push("at end of input".to_string());
+    } else if let Some(location) = report.failure_location {
+        parts.push(format!(
+            "line {}, column {}",
+            location.line, location.column
+        ));
+        if let Some(line) = source_line(&report.source, location.line) {
+            let shown = prefix_utf8(line, 200);
+            let caret_at = (location.column as usize)
+                .saturating_sub(1)
+                .min(shown.chars().count());
+            parts.push(shown.to_string());
+            parts.push(format!("{}^", " ".repeat(caret_at)));
+        }
+    }
+    if shows_stack(report)
+        && let Some(stack) = report.failure_stack.as_deref()
+    {
+        let stack = present_stack(stack);
+        if !stack.is_empty() {
+            parts.push(stack);
+        }
+    }
+    if parts.is_empty() {
         return None;
     }
-    nonempty(explained_cut(text, FAILURE_CAP))
+    nonempty(explained_cut(&parts.join("\n"), FAILURE_CAP))
+}
+
+fn shows_stack(report: &RunReport) -> bool {
+    match report.failure_kind {
+        Some(FailureKind::Exception) => true,
+        Some(FailureKind::ResourceLimit) => report.resource == Some(ResourceKind::Stack),
+        _ => false,
+    }
+}
+
+fn source_line(source: &str, line: u32) -> Option<&str> {
+    source.lines().nth(line.saturating_sub(1) as usize)
+}
+
+/// First 8 frames, with `program.js` line numbers shifted back off the wrapper.
+fn present_stack(stack: &str) -> String {
+    stack
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(8)
+        .map(adjust_program_frame)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn adjust_program_frame(line: &str) -> String {
+    let marker = "program.js:";
+    let Some(start) = line.find(marker) else {
+        return line.to_string();
+    };
+    let digits_at = start + marker.len();
+    let digits = line[digits_at..]
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    if digits == 0 {
+        return line.to_string();
+    }
+    let Ok(number) = line[digits_at..digits_at + digits].parse::<u32>() else {
+        return line.to_string();
+    };
+    let adjusted = number.saturating_sub(1).max(1);
+    format!(
+        "{}{adjusted}{}",
+        &line[..digits_at],
+        &line[digits_at + digits..]
+    )
 }
 
 fn render_error_details(report: &RunReport) -> Option<String> {
@@ -281,11 +404,19 @@ fn render_error_details(report: &RunReport) -> Option<String> {
 }
 
 fn format_error_detail(call: &LedgerSnap) -> String {
-    let code = call.error_code.as_deref().unwrap_or("error");
-    if call.summary.is_empty() {
-        format!("#{} {} {code}", call.seq, call.tool)
+    let code = call
+        .error_code
+        .as_deref()
+        .or_else(|| error_state_code(&call.state))
+        .unwrap_or("error");
+    let head = if call.summary.is_empty() {
+        format!("#{} {}: {code}", call.seq, call.tool)
     } else {
-        format!("#{} {} {} {code}", call.seq, call.tool, call.summary)
+        format!("#{} {} {}: {code}", call.seq, call.tool, call.summary)
+    };
+    match call.error_message.as_deref() {
+        Some(message) if !message.is_empty() => format!("{head}: {message}"),
+        _ => head,
     }
 }
 
@@ -334,47 +465,139 @@ fn detail_str(diagnostic: &Diagnostic, key: &str) -> Option<String> {
 }
 
 fn render_ledger(report: &RunReport) -> Option<String> {
-    if report.calls.is_empty() && report.calls_omitted == 0 {
+    let total = call_total(report);
+    if report.calls.is_empty() && total == 0 {
         return None;
     }
-    let rendered: Vec<String> = report.calls.iter().map(format_ledger_line).collect();
-    let total = report.calls.len() + report.calls_omitted;
-    let mut shown = rendered.len();
-    loop {
-        let body = ledger_body(report, &rendered, shown, total);
-        if body.len() <= LEDGER_CAP || shown == 0 {
-            if body.len() <= LEDGER_CAP {
-                return Some(body);
-            }
-            return nonempty(explained_cut(&body, LEDGER_CAP));
-        }
-        shown -= 1;
+    let chosen = choose_ledger_lines(report, total);
+    let rendered: Vec<String> = chosen.iter().map(|call| format_ledger_line(call)).collect();
+    let body = ledger_body(report, &rendered, total, &chosen);
+    if body.len() <= LEDGER_CAP {
+        return Some(body);
     }
+    nonempty(explained_cut(&body, LEDGER_CAP))
 }
 
-fn ledger_body(report: &RunReport, rendered: &[String], shown: usize, total: usize) -> String {
+fn choose_ledger_lines<'a>(report: &'a RunReport, total: usize) -> Vec<&'a LedgerSnap> {
+    // Reserve priority rows first, then fill from the head in seq order.
+    let mut reserved = Vec::new();
+    for call in &report.calls {
+        if !is_priority_line(call) {
+            continue;
+        }
+        reserved.push(call);
+        if !ledger_fits(report, total, &reserved) {
+            reserved.pop();
+        }
+    }
+    let mut chosen = reserved;
+    for call in &report.calls {
+        if chosen.iter().any(|kept| kept.seq == call.seq) {
+            continue;
+        }
+        chosen.push(call);
+        if !ledger_fits(report, total, &chosen) {
+            chosen.pop();
+            break;
+        }
+    }
+    chosen.sort_by_key(|call| call.seq);
+    chosen
+}
+
+fn is_priority_line(call: &LedgerSnap) -> bool {
+    call.state == "cancelled"
+        || call.state == "unsettled"
+        || call.state.starts_with("error:")
+        || call.state.starts_with("ok(")
+}
+
+fn ledger_fits(report: &RunReport, total: usize, chosen: &[&LedgerSnap]) -> bool {
+    let rendered: Vec<String> = chosen.iter().map(|call| format_ledger_line(call)).collect();
+    ledger_body(report, &rendered, total, chosen).len() <= LEDGER_CAP
+}
+
+fn ledger_body(
+    report: &RunReport,
+    rendered: &[String],
+    total: usize,
+    chosen: &[&LedgerSnap],
+) -> String {
+    let shown = rendered.len();
     let mut body = format!("calls ({shown} of {total} shown):");
-    for line in rendered.iter().take(shown) {
+    for line in rendered {
         body.push('\n');
         body.push_str(line);
     }
-    let hidden = total - shown;
+    let hidden = total.saturating_sub(shown);
     if hidden > 0 {
         body.push('\n');
-        body.push_str(&ledger_omission(hidden, &report.calls[shown..], report.calls_omitted));
+        body.push_str(&ledger_omission(report, hidden, chosen));
     }
     body
 }
 
-fn ledger_omission(hidden: usize, hidden_calls: &[LedgerSnap], ledger_omitted: usize) -> String {
-    if ledger_omitted == 0 && !hidden_calls.is_empty() {
-        format!(
-            "… {hidden} more calls not listed ({})",
-            tool_counts(hidden_calls)
-        )
+fn ledger_omission(report: &RunReport, hidden: usize, chosen: &[&LedgerSnap]) -> String {
+    let mut line = if let Some(counts) = omitted_tool_counts(report, chosen) {
+        format!("… {hidden} more calls not listed ({counts})")
     } else {
         format!("… {hidden} more calls not listed")
+    };
+    if omitted_session_read(report, chosen) {
+        line.push(' ');
+        line.push_str(RUN_CODE_SESSION_NOTE);
     }
+    line
+}
+
+fn omitted_tool_counts(report: &RunReport, chosen: &[&LedgerSnap]) -> Option<String> {
+    if !report.tool_counts.is_empty() {
+        let mut counts = report.tool_counts.clone();
+        for call in chosen {
+            if let Some(count) = counts.get_mut(&call.tool) {
+                *count = count.saturating_sub(1);
+            }
+        }
+        counts.retain(|_, count| *count > 0);
+        if counts.is_empty() {
+            return None;
+        }
+        return Some(format_counts(&counts));
+    }
+    if report.calls_omitted > 0 {
+        return None;
+    }
+    let shown: std::collections::HashSet<u64> = chosen.iter().map(|call| call.seq).collect();
+    let hidden: Vec<&LedgerSnap> = report
+        .calls
+        .iter()
+        .filter(|call| !shown.contains(&call.seq))
+        .collect();
+    if hidden.is_empty() {
+        return None;
+    }
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for call in hidden {
+        *counts.entry(call.tool.as_str()).or_default() += 1;
+    }
+    Some(
+        counts
+            .into_iter()
+            .map(|(tool, count)| format!("{tool}×{count}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+fn omitted_session_read(report: &RunReport, chosen: &[&LedgerSnap]) -> bool {
+    if report.session_read_hidden {
+        return true;
+    }
+    let shown: std::collections::HashSet<u64> = chosen.iter().map(|call| call.seq).collect();
+    report
+        .calls
+        .iter()
+        .any(|call| call.session_read && !shown.contains(&call.seq))
 }
 
 fn format_ledger_line(call: &LedgerSnap) -> String {
@@ -568,6 +791,8 @@ mod tests {
             summary: summary.to_string(),
             state: state.to_string(),
             error_code: code.map(str::to_string),
+            error_message: None,
+            session_read: false,
         }
     }
 
@@ -584,6 +809,15 @@ mod tests {
             calls_omitted: 0,
             diagnostics: Vec::new(),
             diagnostics_omitted: 0,
+            tool_counts: BTreeMap::new(),
+            error_counts: BTreeMap::new(),
+            call_total: None,
+            unsettled_total: None,
+            session_read_hidden: false,
+            failure_location: None,
+            failure_at_end: false,
+            failure_stack: None,
+            source: String::new(),
         }
     }
 
@@ -674,16 +908,21 @@ mod tests {
     }
 
     #[test]
-    fn ledger_line_does_not_print_the_error_code() {
+    fn ledger_line_prints_the_error_code_and_detail_message() {
         let mut report = report();
-        report.calls = vec![snap(1, "write", "path=a.txt", "error", Some("permission_denied"))];
+        let mut call = snap(1, "write", "path=a.txt", "error:permission_denied", Some("permission_denied"));
+        call.error_message = Some("denied".into());
+        report.calls = vec![call];
         let text = render_model_view(&report);
         let ledger = text
             .lines()
             .find(|line| line.starts_with("1. write"))
             .expect("ledger line");
-        assert_eq!(ledger, "1. write path=a.txt error");
-        assert!(text.contains("#1 write path=a.txt permission_denied"), "{text}");
+        assert_eq!(ledger, "1. write path=a.txt error:permission_denied");
+        assert!(
+            text.contains("#1 write path=a.txt: permission_denied: denied"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -698,29 +937,22 @@ mod tests {
     }
 
     #[test]
-    fn failure_header_omits_exact_counts_when_calls_were_dropped() {
+    fn failure_header_counts_dropped_calls() {
         let mut report = report();
         report.failure_kind = Some(FailureKind::Timeout);
         report.failure_text = Some("run_code timed out after 120000ms".into());
         report.calls = vec![snap(1, "write", "path=a", "unsettled", None)];
         report.calls_omitted = 3;
+        report.call_total = Some(4);
+        report.unsettled_total = Some(1);
         let text = render_model_view(&report);
         assert!(
-            text.starts_with("run_code failed: timeout after 120000ms · 4 calls\n"),
+            text.starts_with(
+                "run_code failed: timeout after 120000ms · 3/4 calls finished, 1 unsettled"
+            ),
             "{text}"
         );
-        assert!(!text.contains("calls finished"), "{text}");
-        assert!(!text.contains("were still running"), "{text}");
-
-        report.calls_omitted = 0;
-        let exact = render_model_view(&report);
-        assert!(
-            exact.starts_with(
-                "run_code failed: timeout after 120000ms · 0/1 calls finished, 1 unsettled"
-            ),
-            "{exact}"
-        );
-        assert!(exact.contains("were still running"), "{exact}");
+        assert!(text.contains("1 calls were still running"), "{text}");
     }
 
     #[test]

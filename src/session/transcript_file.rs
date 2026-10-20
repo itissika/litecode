@@ -321,7 +321,7 @@ fn collect_strings<'a>(v: &'a serde_json::Value, out: &mut Vec<&'a str>) {
 
 /// `.litecode/sessions` followed by `/` (a file below it) or end (the directory
 /// itself). `.litecode/sessions.db` is *not* a hit. Backslashes are folded.
-fn is_session_target(arg: &str) -> bool {
+pub(crate) fn is_session_target(arg: &str) -> bool {
     let norm = arg.replace('\\', "/");
     let Some(pos) = norm.find(VIRTUAL_SESSION_DIR) else {
         return false;
@@ -330,17 +330,23 @@ fn is_session_target(arg: &str) -> bool {
     rest.is_empty() || rest.starts_with('/')
 }
 
-/// True when a `run_code` result ledger records a nested read or grep of the
-/// session store. The outer call's name is `run_code`; the nested tool and its
-/// key-arg summary are the lines this checks.
+/// Fixed mark appended to a truncated `run_code` ledger when an omitted call
+/// read the session store. `ledger_reads_sessions` matches this same text.
+pub const RUN_CODE_SESSION_NOTE: &str = "· reads session store";
+
+/// True when a `run_code` result ledger records a nested read, grep, or glob of
+/// the session store, or the omission line says that an omitted call did.
 pub fn ledger_reads_sessions(text: &str) -> bool {
+    if text.contains(RUN_CODE_SESSION_NOTE) {
+        return true;
+    }
     text.lines().any(|line| {
         let Some((tool, summary)) = parse_ledger_line(line) else {
             return false;
         };
         match tool {
             "session_search" => true,
-            "read" | "grep" => is_session_target(summary),
+            "read" | "grep" | "glob" => is_session_target(summary),
             _ => false,
         }
     })
@@ -758,6 +764,12 @@ mod tests {
         assert!(ledger_reads_sessions(
             "1. read path=notes.txt ok\n2. read path=.litecode/sessions/abc.md ok"
         ));
+        assert!(ledger_reads_sessions(
+            "calls (2 of 466 shown):\n1. read path=probe.txt ok\n… 464 more calls not listed (read×464) · reads session store"
+        ));
+        assert!(ledger_reads_sessions(&format!(
+            "… 1 more calls not listed {RUN_CODE_SESSION_NOTE}"
+        )));
     }
 
     /// The read-time echo check: a hit served from a stale index must not make a

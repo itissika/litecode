@@ -111,6 +111,8 @@ enum Stop {
 
 enum ProgramEnd {
     Success(Json),
+    /// The user cancelled after the program had already returned.
+    CancelledAfterReturn(Json),
     Failure(Failure),
 }
 
@@ -168,7 +170,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         Arc::clone(&faults.memory),
     )) {
         Ok(runtime) => runtime,
-        Err(error) => return failure_outcome(Failure::internal(error.to_string())),
+        Err(error) => return Outcome::from_failure(Failure::internal(error.to_string())),
     };
     {
         let user = user.clone();
@@ -197,7 +199,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
 
     let context = match AsyncContext::full(&runtime).await {
         Ok(context) => context,
-        Err(error) => return failure_outcome(Failure::internal(error.to_string())),
+        Err(error) => return Outcome::from_failure(Failure::internal(error.to_string())),
     };
 
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
@@ -243,7 +245,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         drop(protos);
         drop(context);
         drop(runtime);
-        return failure_outcome(failure);
+        return Outcome::from_failure(failure);
     }
     // Libs are loaded first. The user's stack cap applies to the program, so a
     // tight cap still leaves room to install the runtime's own helpers.
@@ -293,10 +295,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         output_limit,
     )
     .await;
-    let end = match (end, drained) {
-        (ProgramEnd::Success(_), Some(failure)) => ProgramEnd::Failure(failure),
-        (end, _) => end,
-    };
+    let end = reconcile_drain(end, drained, &output);
     let pending = calls.seal(grace);
     let end = match end {
         ProgramEnd::Success(value) if pending > 0 => {
@@ -324,6 +323,12 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             logs,
             value: Some(value),
             failure: None,
+            calls,
+        },
+        ProgramEnd::CancelledAfterReturn(value) => Outcome {
+            logs,
+            value: Some(value),
+            failure: Some(Failure::cancelled()),
             calls,
         },
         ProgramEnd::Failure(failure) => Outcome {
@@ -377,6 +382,7 @@ async fn drive_queued(
                             clock,
                             user,
                             protos,
+                            0,
                         )
                     })
                     .await;
@@ -387,6 +393,33 @@ async fn drive_queued(
                 }
             }
         }
+    }
+}
+
+/// A program that already returned keeps its value when the drain then stops
+/// for budget or an internal fault. User cancel keeps the value and records
+/// cancellation. Any other drain failure replaces the success.
+fn reconcile_drain(
+    end: ProgramEnd,
+    drained: Option<Failure>,
+    output: &RefCell<OutputLedger>,
+) -> ProgramEnd {
+    match (end, drained) {
+        (ProgramEnd::Success(value), Some(failure)) => match failure.kind {
+            FailureKind::Cancelled => ProgramEnd::CancelledAfterReturn(value),
+            FailureKind::Timeout | FailureKind::Internal => {
+                let note = match failure.kind {
+                    FailureKind::Timeout => {
+                        "program budget expired while draining host calls after the program returned"
+                    }
+                    _ => "host drain stopped after the program returned",
+                };
+                let _ = output.borrow_mut().push(LogLevel::Warn, note.to_string());
+                ProgramEnd::Success(value)
+            }
+            _ => ProgramEnd::Failure(failure),
+        },
+        (end, _) => end,
     }
 }
 
@@ -482,15 +515,21 @@ fn settle<Left, Right>(
             ProgramEnd::Failure(Failure::internal("budget watcher stopped"))
         }
     };
+    if let ProgramEnd::Success(value) = end {
+        // The program already returned. Budget expiry must not rewrite that
+        // into a timeout. Only a user cancel keeps the value and records failure.
+        if user.is_cancelled() {
+            return ProgramEnd::CancelledAfterReturn(value);
+        }
+        return ProgramEnd::Success(value);
+    }
     if output.borrow().tripped() || flags.output.load(Ordering::Relaxed) {
         return ProgramEnd::Failure(Failure::output(output_limit));
     }
     if user.is_cancelled() {
         return ProgramEnd::Failure(Failure::cancelled());
     }
-    if matches!(end, ProgramEnd::Success(_)) && clock.exhausted() {
-        return ProgramEnd::Failure(Failure::timeout());
-    }
+    let _ = clock;
     end
 }
 
@@ -710,7 +749,8 @@ async fn invoke<'js>(
     let finish_clock = Arc::clone(&clock);
     let idx = ticket.idx;
     handle.spawn(async move {
-        let result = AssertUnwindSafe(host.call(json_args, token, pause))
+        let info = super::CallInfo { seq: ticket.seq };
+    let result = AssertUnwindSafe(host.call(json_args, token, pause, info))
             .catch_unwind()
             .await;
         let mapped = match result {
@@ -764,6 +804,7 @@ async fn run_program(
     if let Err(failure) = arm_stack_watch(&ctx, faults, stack_bytes) {
         return ProgramEnd::Failure(failure);
     }
+    let source_lines = source.lines().count() as u32;
     let wrapped = format!("(async () => {{\n{source}\n}})()\n");
     let mut options = EvalOptions::default();
     options.strict = false;
@@ -781,6 +822,7 @@ async fn run_program(
                 clock,
                 user,
                 protos,
+                source_lines,
             );
         }
     };
@@ -796,6 +838,7 @@ async fn run_program(
             clock,
             user,
             protos,
+            source_lines,
         ),
     }
 }
@@ -833,6 +876,7 @@ fn classify(
     clock: &BudgetClock,
     user: &CancellationToken,
     protos: &RefCell<Option<Protos>>,
+    source_lines: u32,
 ) -> ProgramEnd {
     match error {
         Error::Exception => {
@@ -847,6 +891,7 @@ fn classify(
                 clock,
                 user,
                 protos,
+                source_lines,
             )
         }
         Error::Allocation => ProgramEnd::Failure(Failure::resource(
@@ -869,6 +914,7 @@ fn classify_value<'js>(
     clock: &BudgetClock,
     user: &CancellationToken,
     protos: &RefCell<Option<Protos>>,
+    source_lines: u32,
 ) -> ProgramEnd {
     if value.is_uncatchable_error() {
         let failure = match faults.interrupt() {
@@ -919,7 +965,7 @@ fn classify_value<'js>(
             .as_ref()
             .is_some_and(|protos| proto_is(ctx, value, &protos.syntax))
     {
-        return ProgramEnd::Failure(Failure::syntax(thrown.message));
+        return ProgramEnd::Failure(Failure::syntax(thrown.message, thrown.stack, source_lines));
     }
     ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
 }
@@ -1212,11 +1258,78 @@ fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> Stri
     text
 }
 
-fn failure_outcome(failure: Failure) -> Outcome {
-    Outcome {
-        logs: Vec::new(),
-        value: None,
-        failure: Some(failure),
-        calls: Vec::new(),
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    #[test]
+    fn success_is_not_rewritten_when_the_clock_is_already_exhausted() {
+        let clock = BudgetClock::new(Duration::from_millis(1));
+        thread::sleep(Duration::from_millis(5));
+        assert!(clock.exhausted());
+        let output = RefCell::new(OutputLedger::new(1024));
+        let flags = Flags {
+            output: AtomicBool::new(false),
+        };
+        let user = CancellationToken::new();
+        let end = settle::<(), ()>(
+            Either::Left((
+                ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+                (),
+            )),
+            &output,
+            &flags,
+            &clock,
+            &user,
+            1024,
+        );
+        assert!(matches!(end, ProgramEnd::Success(_)));
+    }
+
+    #[test]
+    fn timeout_during_drain_keeps_the_returned_value() {
+        let output = RefCell::new(OutputLedger::new(4096));
+        let end = reconcile_drain(
+            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            Some(Failure::timeout()),
+            &output,
+        );
+        match end {
+            ProgramEnd::Success(value) => {
+                assert_eq!(value.as_value(), &serde_json::json!("kept"));
+            }
+            _ => panic!("expected the returned value to survive a drain timeout"),
+        }
+        assert!(
+            output.borrow().logs().iter().any(|entry| {
+                entry.message.contains("program budget expired while draining")
+            })
+        );
+    }
+
+    #[test]
+    fn cancel_during_drain_keeps_the_value() {
+        let output = RefCell::new(OutputLedger::new(4096));
+        let end = reconcile_drain(
+            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            Some(Failure::cancelled()),
+            &output,
+        );
+        assert!(matches!(end, ProgramEnd::CancelledAfterReturn(_)));
+    }
+
+    #[test]
+    fn other_drain_failures_replace_success() {
+        let output = RefCell::new(OutputLedger::new(4096));
+        let end = reconcile_drain(
+            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
+            Some(Failure::output(32)),
+            &output,
+        );
+        match end {
+            ProgramEnd::Failure(failure) => assert_eq!(failure.kind, FailureKind::OutputLimit),
+            _ => panic!("expected the output failure to replace success"),
+        }
     }
 }
+

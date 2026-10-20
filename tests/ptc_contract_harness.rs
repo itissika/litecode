@@ -104,13 +104,17 @@ impl PtcHarness {
         if result.error.is_some() {
             return Err(result.content);
         }
-        result
-            .data
-            .as_ref()
-            .and_then(|data| data.get("result"))
-            .cloned()
-            .ok_or_else(|| format!("run_code returned no result: {}", result.content))
+        model_view_result(&result.content)
     }
+}
+
+fn model_view_result(content: &str) -> Result<Value, String> {
+    let body = content
+        .split_once("\nresult:\n")
+        .map(|(_, body)| body)
+        .or_else(|| content.strip_prefix("result:\n"))
+        .ok_or_else(|| format!("run_code returned no result: {content}"))?;
+    serde_json::from_str(body.trim()).map_err(|error| format!("{error}: {content}"))
 }
 
 fn write(root: &Path, rel: &str, body: &str) {

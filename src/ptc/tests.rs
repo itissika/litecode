@@ -139,11 +139,11 @@ async fn log_levels() {
 
 #[tokio::test]
 async fn concurrent_host_calls() {
-    let slow = HostFn::new(|_, _, _| async move {
+    let slow = HostFn::new(|_, _, _, _| async move {
         tokio::time::sleep(Duration::from_millis(80)).await;
         Ok(json!("slow"))
     });
-    let fast = HostFn::new(|_, _, _| async move {
+    let fast = HostFn::new(|_, _, _, _| async move {
         tokio::time::sleep(Duration::from_millis(10)).await;
         Ok(json!("fast"))
     });
@@ -169,14 +169,14 @@ async fn in_flight_limit() {
     let calls = Arc::new(AtomicUsize::new(0));
     let hold_calls = Arc::clone(&calls);
     let ping_calls = Arc::clone(&calls);
-    let hold = HostFn::new(move |_, _, _| {
+    let hold = HostFn::new(move |_, _, _, _| {
         hold_calls.fetch_add(1, Ordering::SeqCst);
         async move {
             tokio::time::sleep(Duration::from_millis(60)).await;
             Ok(json!(null))
         }
     });
-    let ping = HostFn::new(move |_, _, _| {
+    let ping = HostFn::new(move |_, _, _, _| {
         ping_calls.fetch_add(10, Ordering::SeqCst);
         async move { Ok(json!(null)) }
     });
@@ -228,7 +228,7 @@ async fn cancel_while_js_running_cancels_inflight() {
     let saw = Arc::new(AtomicBool::new(false));
     let started_host = Arc::clone(&started);
     let saw_host = Arc::clone(&saw);
-    let watch = HostFn::new(move |_, cancel, _| {
+    let watch = HostFn::new(move |_, cancel, _, _| {
         let started_host = Arc::clone(&started_host);
         let saw_host = Arc::clone(&saw_host);
         async move {
@@ -276,7 +276,7 @@ async fn cancel_while_awaiting_host() {
     let saw = Arc::new(AtomicBool::new(false));
     let started_host = Arc::clone(&started);
     let saw_host = Arc::clone(&saw);
-    let watch = HostFn::new(move |_, cancel, _| {
+    let watch = HostFn::new(move |_, cancel, _, _| {
         let started_host = Arc::clone(&started_host);
         let saw_host = Arc::clone(&saw_host);
         async move {
@@ -314,7 +314,7 @@ async fn cancel_grace_records_unfinished() {
     let token_slot: Arc<Mutex<Option<CancellationToken>>> = Arc::new(Mutex::new(None));
     let started_host = Arc::clone(&started);
     let token_host = Arc::clone(&token_slot);
-    let hang = HostFn::new(move |_, cancel, _| {
+    let hang = HostFn::new(move |_, cancel, _, _| {
         let started_host = Arc::clone(&started_host);
         let token_host = Arc::clone(&token_host);
         async move {
@@ -350,7 +350,7 @@ async fn cancel_grace_records_unfinished() {
 
 #[tokio::test]
 async fn budget_pause_is_not_charged() {
-    let pause_host = HostFn::new(|_, _, pause| async move {
+    let pause_host = HostFn::new(|_, _, pause, _| async move {
         let _guard = pause.pause();
         tokio::time::sleep(Duration::from_millis(300)).await;
         Ok(json!(7))
@@ -367,7 +367,7 @@ async fn budget_pause_is_not_charged() {
     assert_eq!(value_of(&outcome), &json!(7));
     assert_eq!(outcome.calls[0].state, CallState::Completed);
 
-    let plain = HostFn::new(|_, cancel, _| async move {
+    let plain = HostFn::new(|_, cancel, _, _| async move {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(300)) => Ok(json!(1)),
             _ = cancel.cancelled() => Ok(json!(0)),
@@ -438,8 +438,83 @@ async fn syntax_error() {
     let failure = outcome.failure.expect("syntax");
     assert_eq!(failure.kind, FailureKind::Syntax);
     assert!(!failure.message.is_empty());
+    // QuickJS points `return (` at the wrapper's closing brace (program.js:3),
+    // which is outside the one-line source, so the site is end of input.
+    assert_eq!(failure.location, None, "{failure:?}");
+    assert!(failure.at_end_of_input, "{failure:?}");
+    assert!(failure.stack.is_some(), "{failure:?}");
     assert!(outcome.calls.is_empty());
     assert!(outcome.value.is_none());
+}
+
+#[tokio::test]
+async fn syntax_error_on_the_second_line_keeps_stack_and_location() {
+    let outcome = run("const x = 1;\nreturn (;", Vec::new()).await;
+    let failure = outcome.failure.expect("syntax");
+    assert_eq!(failure.kind, FailureKind::Syntax);
+    assert_eq!(
+        failure.location,
+        Some(super::SourceLocation { line: 2, column: 9 }),
+        "message={:?} stack={:?}",
+        failure.message,
+        failure.stack
+    );
+    assert!(failure.stack.is_some());
+}
+
+#[tokio::test]
+async fn exception_keeps_stack() {
+    let outcome = run(
+        "function inner() { throw new Error(\"boom\"); }\nfunction outer() { return inner(); }\nreturn outer();\n",
+        Vec::new(),
+    )
+    .await;
+    let failure = outcome.failure.expect("exception");
+    let stack = failure.stack.expect("stack");
+    assert!(stack.contains("inner"), "{stack}");
+    assert!(stack.contains("program.js:"), "{stack}");
+}
+
+#[tokio::test]
+async fn success_survives_budget_expiry_at_return() {
+    // The interrupt aborts JavaScript once the clock is exhausted, so a live
+    // program cannot return after the deadline. The expiry-after-return policy
+    // is locked in `engine::settle_tests`. This run checks that a normal return
+    // is still a success.
+    let outcome = run("return \"kept\";", Vec::new()).await;
+    assert_eq!(value_of(&outcome), &json!("kept"), "{outcome:?}");
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn seq_is_shared_with_host() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&seen);
+    let host = HostFn::new(move |_args, _cancel, _pause, info| {
+        let record = Arc::clone(&record);
+        async move {
+            let delay = 11u64.saturating_sub(info.seq);
+            tokio::time::sleep(Duration::from_millis(delay * 3)).await;
+            record.lock().unwrap().push(info.seq);
+            Ok(json!(info.seq))
+        }
+    });
+    let mut limits = limits();
+    limits.max_in_flight = 16;
+    let outcome = run_with(
+        "const calls = []; for (let i = 0; i < 10; i++) calls.push(tools.ping(i)); return await Promise.all(calls);",
+        tools(vec![("ping", host)]),
+        limits,
+        Duration::from_secs(2),
+        Duration::from_millis(200),
+        CancellationToken::new(),
+    )
+    .await;
+    let seqs: Vec<u64> = outcome.calls.iter().map(|call| call.seq).collect();
+    assert_eq!(seqs, (1..=10).collect::<Vec<_>>(), "{outcome:?}");
+    let mut host_seqs = seen.lock().unwrap().clone();
+    host_seqs.sort();
+    assert_eq!(host_seqs, seqs);
 }
 
 #[tokio::test]
@@ -559,7 +634,7 @@ async fn illegal_output_values() {
 async fn illegal_arguments_skip_host() {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_host = Arc::clone(&calls);
-    let host = HostFn::new(move |_, _, _| {
+    let host = HostFn::new(move |_, _, _, _| {
         calls_host.fetch_add(1, Ordering::SeqCst);
         async move { Ok(json!(null)) }
     });
@@ -596,7 +671,7 @@ async fn illegal_arguments_skip_host() {
 
 #[tokio::test]
 async fn host_safe_integer_round_trips() {
-    let host = HostFn::new(|_, _, _| async move { Ok(json!(9_007_199_254_740_991_i64)) });
+    let host = HostFn::new(|_, _, _, _| async move { Ok(json!(9_007_199_254_740_991_i64)) });
     let outcome = run("return await tools.n(null);", tools(vec![("n", host)])).await;
     assert_eq!(value_of(&outcome), &json!(9_007_199_254_740_991_i64));
     assert_eq!(outcome.calls[0].state, CallState::Completed);
@@ -611,7 +686,7 @@ async fn host_integer_above_safe_range_is_rejected() {
     ];
     for value in cases {
         let host_value = value.clone();
-        let host = HostFn::new(move |_, _, _| {
+        let host = HostFn::new(move |_, _, _, _| {
             let host_value = host_value.clone();
             async move { Ok(host_value) }
         });
@@ -632,7 +707,7 @@ async fn host_integer_above_safe_range_is_rejected() {
         assert_eq!(outcome.calls[0].state, CallState::Completed, "{value}");
     }
 
-    let fraction = HostFn::new(|_, _, _| async move { Ok(json!(1.25)) });
+    let fraction = HostFn::new(|_, _, _, _| async move { Ok(json!(1.25)) });
     let outcome = run("return await tools.n(null);", tools(vec![("n", fraction)])).await;
     assert_eq!(value_of(&outcome), &json!(1.25));
 }
@@ -696,7 +771,7 @@ async fn libs_samples() {
 async fn unawaited_calls_are_waited_and_recorded() {
     let finished = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&finished);
-    let echo = HostFn::new(move |args, _, _| {
+    let echo = HostFn::new(move |args, _, _, _| {
         let flag = Arc::clone(&flag);
         async move {
             tokio::time::sleep(Duration::from_millis(40)).await;
@@ -746,7 +821,7 @@ async fn cold_start_median() {
 
 #[tokio::test]
 async fn host_error_finishes_the_call() {
-    let host = HostFn::new(|_, _, _| async move { Err(HostError::new("nope")) });
+    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::new("nope")) });
     let outcome = run(
         r#"try { await tools.f(null); return "called"; } catch (e) { return String(e.message); }"#,
         tools(vec![("f", host)]),
@@ -829,7 +904,7 @@ fn isolated(test: &str) -> bool {
 
 #[tokio::test]
 async fn success_cancels_inflight_calls() {
-    let slow = HostFn::new(|_, _, _| async move {
+    let slow = HostFn::new(|_, _, _, _| async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
         Ok(json!(null))
     });
@@ -861,7 +936,7 @@ async fn success_cancels_inflight_calls() {
         outcome.logs
     );
 
-    let paused = HostFn::new(|_, _, pause| async move {
+    let paused = HostFn::new(|_, _, pause, _| async move {
         let _guard = pause.pause();
         tokio::time::sleep(Duration::from_secs(2)).await;
         Ok(json!(null))
@@ -894,7 +969,7 @@ fn failure_kind_if_any(outcome: &Outcome) -> Option<FailureKind> {
 async fn microtasks_do_not_drop_host_calls() {
     let marks = Arc::new(AtomicUsize::new(0));
     let marks_host = Arc::clone(&marks);
-    let mark = HostFn::new(move |_, _, _| {
+    let mark = HostFn::new(move |_, _, _, _| {
         marks_host.fetch_add(1, Ordering::SeqCst);
         async move { Ok(json!(null)) }
     });
@@ -969,7 +1044,7 @@ async fn object_nesting_past_old_depth_cap() {
     assert_eq!(directory_depth(value), 48);
     assert_eq!(value["name"], json!("d"));
 
-    let host = HostFn::new(|_, _, _| async move {
+    let host = HostFn::new(|_, _, _, _| async move {
         let mut node = json!("leaf");
         for _ in 0..48 {
             node = json!({ "name": "d", "entries": [node] });
@@ -1108,7 +1183,7 @@ async fn deep_nest_child() {
     }
 
     {
-        let ignored = HostFn::new(|_value, _, _| async move { Ok(json!(1)) });
+        let ignored = HostFn::new(|_value, _, _, _| async move { Ok(json!(1)) });
         let ignored_argument = run(
             r#"
             let value = 0;
@@ -1123,7 +1198,7 @@ async fn deep_nest_child() {
     }
 
     {
-        let injected = HostFn::new(|_, _, _| async move { Ok(nested_arrays(20_000)) });
+        let injected = HostFn::new(|_, _, _, _| async move { Ok(nested_arrays(20_000)) });
         let host_to_js = run(
             "return await tools.deep(null);",
             tools(vec![("deep", injected)]),
@@ -1203,7 +1278,7 @@ async fn deep_nest_child() {
 async fn host_receives_extra_arguments_as_a_json_array() {
     let seen = Arc::new(Mutex::new(Value::Null));
     let record = Arc::clone(&seen);
-    let echo = HostFn::new(move |args, _, _| {
+    let echo = HostFn::new(move |args, _, _, _| {
         let value = args.as_value().clone();
         let record = Arc::clone(&record);
         async move {

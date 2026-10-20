@@ -86,26 +86,33 @@ impl HostError {
 
 pub type HostFuture = BoxFuture<'static, Result<serde_json::Value, HostError>>;
 
+/// Identity of one host call. `seq` is the runtime ledger's submission number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallInfo {
+    pub seq: u64,
+}
+
 /// Async host function. It receives one JSON argument, a cancellation token for
-/// this call, and a handle that pauses the program budget.
+/// this call, a handle that pauses the program budget, and the call's seq.
 ///
 /// The argument is a [`Json`] value. Dropping it, even when the host ignores
 /// it, does not walk a deep tree on the thread stack.
 #[derive(Clone)]
 pub struct HostFn {
-    invoke:
-        std::sync::Arc<dyn Fn(Json, CancellationToken, BudgetPause) -> HostFuture + Send + Sync>,
+    invoke: std::sync::Arc<
+        dyn Fn(Json, CancellationToken, BudgetPause, CallInfo) -> HostFuture + Send + Sync,
+    >,
 }
 
 impl HostFn {
     pub fn new<F, Fut>(function: F) -> Self
     where
-        F: Fn(Json, CancellationToken, BudgetPause) -> Fut + Send + Sync + 'static,
+        F: Fn(Json, CancellationToken, BudgetPause, CallInfo) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<serde_json::Value, HostError>> + Send + 'static,
     {
         Self {
-            invoke: std::sync::Arc::new(move |args, cancel, pause| {
-                Box::pin(function(args, cancel, pause))
+            invoke: std::sync::Arc::new(move |args, cancel, pause, info| {
+                Box::pin(function(args, cancel, pause, info))
             }),
         }
     }
@@ -115,8 +122,9 @@ impl HostFn {
         args: Json,
         cancel: CancellationToken,
         pause: BudgetPause,
+        info: CallInfo,
     ) -> HostFuture {
-        (self.invoke)(args, cancel, pause)
+        (self.invoke)(args, cancel, pause, info)
     }
 }
 
@@ -212,12 +220,22 @@ pub enum FailureKind {
     Internal,
 }
 
+/// 1-based position in the user's source, after the wrapper line is removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub line: u32,
+    pub column: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     pub kind: FailureKind,
     pub resource: Option<ResourceKind>,
     pub message: String,
     pub stack: Option<String>,
+    pub location: Option<SourceLocation>,
+    /// The syntax site was outside the user's source.
+    pub at_end_of_input: bool,
 }
 
 impl Failure {
@@ -232,11 +250,23 @@ impl Failure {
             message: message.into(),
             stack,
             resource,
+            location: None,
+            at_end_of_input: false,
         }
     }
 
-    pub(crate) fn syntax(message: impl Into<String>) -> Self {
-        Self::new(FailureKind::Syntax, message, None, None)
+    pub(crate) fn syntax(
+        message: impl Into<String>,
+        stack: Option<String>,
+        source_lines: u32,
+    ) -> Self {
+        let message = message.into();
+        let (location, at_end_of_input) =
+            locate_syntax(stack.as_deref(), &message, source_lines);
+        let mut failure = Self::new(FailureKind::Syntax, message, stack, None);
+        failure.location = location;
+        failure.at_end_of_input = at_end_of_input;
+        failure
     }
 
     pub(crate) fn exception(message: impl Into<String>, stack: Option<String>) -> Self {
@@ -277,7 +307,60 @@ impl Failure {
     }
 }
 
-/// Result of one program. `value` is set only when `failure` is absent.
+/// QuickJS reports `program.js:L:C` against the wrapped source. The wrapper
+/// occupies line 1, so the user's line is `L - 1`. A site outside the user's
+/// source is `at end of input`.
+pub(crate) fn locate_syntax(
+    stack: Option<&str>,
+    message: &str,
+    source_lines: u32,
+) -> (Option<SourceLocation>, bool) {
+    let site = stack
+        .and_then(program_js_site)
+        .or_else(|| program_js_site(message));
+    let Some((line, column)) = site else {
+        return (None, false);
+    };
+    let adjusted = line.saturating_sub(1);
+    if adjusted == 0 || adjusted > source_lines {
+        return (None, true);
+    }
+    (
+        Some(SourceLocation {
+            line: adjusted,
+            column,
+        }),
+        false,
+    )
+}
+
+fn program_js_site(text: &str) -> Option<(u32, u32)> {
+    let marker = "program.js:";
+    let start = text.find(marker)?;
+    let rest = &text[start + marker.len()..];
+    let line_digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if line_digits == 0 {
+        return None;
+    }
+    let line: u32 = rest[..line_digits].parse().ok()?;
+    let rest = &rest[line_digits..];
+    if !rest.starts_with(':') {
+        return None;
+    }
+    let rest = &rest[1..];
+    let column_digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if column_digits == 0 {
+        return None;
+    }
+    let column: u32 = rest[..column_digits].parse().ok()?;
+    Some((line, column))
+}
+
+/// Result of one program.
+///
+/// `value` is kept when the program has returned. `failure` coexists with
+/// `value` only for [`FailureKind::Cancelled`] (the user cancelled after the
+/// return). Other close events after a return become warnings on `logs`.
 ///
 /// `value` is [`Json`], so dropping, cloning, comparing, or debugging an
 /// outcome does not overflow the stack on a deep tree.
@@ -290,7 +373,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn from_failure(failure: Failure) -> Self {
+    pub(crate) fn from_failure(failure: Failure) -> Self {
         Self {
             logs: Vec::new(),
             value: None,

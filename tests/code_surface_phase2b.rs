@@ -400,6 +400,16 @@ async fn cancellation_seals_in_flight_nested_calls() {
         "{}",
         result.content
     );
+    assert!(
+        result.content.contains("1/1 calls finished, 0 unsettled"),
+        "{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("calls were still running"),
+        "{}",
+        result.content
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

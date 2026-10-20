@@ -717,7 +717,7 @@ async fn live_row(row: &Row) {
             assert!(result.content.contains("result:"), "{}", result.content);
         }
         ("run_code", "嵌套部分成功") => {
-            assert!(result.content.contains(" partial"), "{}", result.content);
+            assert!(result.content.contains("ok("), "{}", result.content);
         }
         ("run_code", "嵌套取消") => {
             assert!(

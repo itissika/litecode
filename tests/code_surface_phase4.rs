@@ -282,8 +282,7 @@ return "wrote";
         .lines()
         .find(|line| line.starts_with("1. write"))
         .unwrap_or("");
-    assert!(ledger.ends_with(" error"), "{ledger}");
-    assert!(!ledger.contains("permission_denied"), "{ledger}");
+    assert!(ledger.ends_with(" error:permission_denied"), "{ledger}");
     assert!(result.content.contains("permission_denied"), "{}", result.content);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("same.txt")).unwrap(),
@@ -427,7 +426,7 @@ return { status: denied.status, code: denied.error && denied.error.code };
         .lines()
         .find(|line| line.starts_with("1. write"))
         .unwrap_or("");
-    assert!(ledger.ends_with(" error"), "{ledger}");
+    assert!(ledger.ends_with(" error:invalid_input"), "{ledger}");
     assert!(
         result.content.contains("1. write path=extra.txt error"),
         "{}",

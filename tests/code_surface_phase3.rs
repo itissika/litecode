@@ -365,8 +365,8 @@ return { status: denied.status };
         .find(|line| line.contains("1. write path=nope.txt"))
         .unwrap_or("");
     assert!(
-        !ledger.contains("permission_denied"),
-        "the ledger line does not print the error code: {ledger}"
+        ledger.contains("error:permission_denied"),
+        "the ledger line prints the error code: {ledger}"
     );
     assert!(
         result.content.contains("permission_denied"),
@@ -414,10 +414,9 @@ return {{ status: denied.status }};
         .lines()
         .find(|line| line.starts_with("1. write"))
         .unwrap_or("");
-    assert!(ledger.contains(" error"), "{ledger}");
     assert!(
-        !ledger.contains("permission_denied"),
-        "the ledger line does not print the error code: {ledger}"
+        ledger.contains("error:permission_denied"),
+        "the ledger line prints the error code: {ledger}"
     );
     assert!(result.content.contains("permission_denied"), "{}", result.content);
     assert!(!Path::new(target).exists());
