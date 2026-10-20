@@ -9,11 +9,6 @@ use serde_json::{Value, json};
 
 use crate::types::{ToolCallResult, ToolErrorKind, ToolSignalLevel};
 
-/// Trailing marker in a `run_code` text render. The JSON after it is the same
-/// object as `data`. Session search and the UI read it first; older transcripts
-/// have no marker and stay on the text ledger.
-pub const RUN_CODE_DATA_MARK: &str = "@@run_code_data\n";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {

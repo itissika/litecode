@@ -23,6 +23,14 @@ use litecode::tools::read::ReadTool;
 use litecode::tools::write::WriteTool;
 use litecode::types::FunctionToolCall;
 use serde_json::{Value, json};
+
+fn run_code_result(content: &str) -> Value {
+    let rest = content
+        .split_once("result:\n")
+        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .1;
+    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+}
 use tokio_util::sync::CancellationToken;
 
 fn ctx(root: &Path) -> Context {
@@ -265,7 +273,7 @@ return {
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    let value = &result.data.as_ref().unwrap()["result"];
+    let value = run_code_result(&result.content);
     assert_eq!(value["glob_path"], "chain.txt", "{value}");
     assert_eq!(value["window_line"], "one");
     assert_eq!(value["window_next"], "2");
@@ -334,7 +342,7 @@ return { line: page.data.lines[0].text, hits: found.data.matches.length };
     .await
     .expect("another call stayed locked while approval was pending");
     assert!(other.error.is_none(), "{}", other.content);
-    let value = &other.data.as_ref().unwrap()["result"];
+    let value = run_code_result(&other.content);
     assert_eq!(value["line"], "OTHER_NEEDLE");
     assert_eq!(value["hits"], 1);
 
@@ -376,9 +384,11 @@ async fn cancel_before_approval_does_not_write_later() {
         .await
         .expect("cancelled run did not return")
         .unwrap();
-    let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-    let outcome = calls[0]["outcome"].as_str().unwrap();
-    assert!(outcome == "cancelled" || outcome == "unsettled", "{calls:?}");
+    assert!(
+        result.content.contains(" cancelled") || result.content.contains(" unsettled"),
+        "{}",
+        result.content
+    );
     assert!(!root.join("gone.txt").exists());
     tokio::time::sleep(Duration::from_millis(400)).await;
     assert!(!root.join("gone.txt").exists(), "a write landed after cancellation");

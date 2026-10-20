@@ -334,9 +334,6 @@ fn is_session_target(arg: &str) -> bool {
 /// session store. The outer call's name is `run_code`; the nested tool and its
 /// key-arg summary are the lines this checks.
 pub fn ledger_reads_sessions(text: &str) -> bool {
-    if let Some(hit) = structured_ledger_reads_sessions(text) {
-        return hit;
-    }
     text.lines().any(|line| {
         let Some((tool, summary)) = parse_ledger_line(line) else {
             return false;
@@ -347,26 +344,6 @@ pub fn ledger_reads_sessions(text: &str) -> bool {
             _ => false,
         }
     })
-}
-
-/// Prefer `run_code` `data.calls` when the text render carries it. `None` means
-/// this is an older ledger and the caller should keep parsing text.
-fn structured_ledger_reads_sessions(text: &str) -> Option<bool> {
-    let (_, json) = text.rsplit_once(crate::tool::outcome::RUN_CODE_DATA_MARK)?;
-    let value: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
-    let calls = value.get("calls")?.as_array()?;
-    Some(calls.iter().any(|call| {
-        let tool = call.get("tool").and_then(serde_json::Value::as_str).unwrap_or("");
-        let summary = call
-            .get("args_summary")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("");
-        match tool {
-            "session_search" => true,
-            "read" | "grep" => is_session_target(summary),
-            _ => false,
-        }
-    }))
 }
 
 /// `{index}. {tool} {summary} {outcome}` as written by the code-mode host.
@@ -771,21 +748,15 @@ mod tests {
     }
 
     #[test]
-    fn structured_ledger_wins_and_old_text_still_matches() {
-        let session_read = format!(
-            "1. read path=notes.txt ok\n\n{}{}",
-            crate::tool::outcome::RUN_CODE_DATA_MARK,
-            r#"{"calls":[{"tool":"read","args_summary":"path=.litecode/sessions/abc.md"}]}"#
-        );
-        assert!(ledger_reads_sessions(&session_read));
-        let text_says_session_but_calls_do_not = format!(
-            "1. read path=.litecode/sessions/abc.md ok\n\n{}{}",
-            crate::tool::outcome::RUN_CODE_DATA_MARK,
-            r#"{"calls":[{"tool":"write","args_summary":"path=notes.txt"}]}"#
-        );
-        assert!(!ledger_reads_sessions(&text_says_session_but_calls_do_not));
+    fn text_ledger_matches_a_session_read_and_ignores_a_write() {
         assert!(ledger_reads_sessions(
             "1. read path=.litecode/sessions/abc.md ok"
+        ));
+        assert!(!ledger_reads_sessions(
+            "1. write path=.litecode/sessions/abc.md ok"
+        ));
+        assert!(ledger_reads_sessions(
+            "1. read path=notes.txt ok\n2. read path=.litecode/sessions/abc.md ok"
         ));
     }
 

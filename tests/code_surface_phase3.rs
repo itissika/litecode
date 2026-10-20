@@ -22,6 +22,14 @@ use litecode::tools::read::ReadTool;
 use litecode::tools::write::WriteTool;
 use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
 use serde_json::{Value, json};
+
+fn run_code_result(content: &str) -> Value {
+    let rest = content
+        .split_once("result:\n")
+        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .1;
+    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+}
 use tokio_util::sync::CancellationToken;
 
 fn ctx(root: &Path) -> Context {
@@ -268,9 +276,9 @@ return { written: written.status, edited: edited.status };
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    let data = result.data.expect("data");
-    assert_eq!(data["result"]["written"], "ok", "{}", result.content);
-    assert_eq!(data["result"]["edited"], "ok", "{}", result.content);
+    let value = run_code_result(&result.content);
+    assert_eq!(value["written"], "ok", "{}", result.content);
+    assert_eq!(value["edited"], "ok", "{}", result.content);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
         "beta\n"
@@ -344,19 +352,25 @@ return { status: denied.status };
         "the program continues: {}",
         result.content
     );
-    let data = result.data.as_ref().unwrap();
-    assert_eq!(data["result"]["status"], "error");
-    let calls = data["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
-    assert_eq!(calls[0]["error_code"], "permission_denied", "{calls:?}");
+    let value = run_code_result(&result.content);
+    assert_eq!(value["status"], "error");
     assert!(
         result.content.contains("1. write path=nope.txt error"),
         "{}",
         result.content
     );
+    let ledger = result
+        .content
+        .lines()
+        .find(|line| line.contains("1. write path=nope.txt"))
+        .unwrap_or("");
     assert!(
-        !result.content.contains("permission_denied"),
-        "the ledger prints outcome, not the error code: {}",
+        !ledger.contains("permission_denied"),
+        "the ledger line does not print the error code: {ledger}"
+    );
+    assert!(
+        result.content.contains("permission_denied"),
+        "{}",
         result.content
     );
     assert!(
@@ -393,21 +407,19 @@ return {{ status: denied.status }};
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    let data = result.data.as_ref().unwrap();
-    assert_eq!(data["result"]["status"], "error");
-    let calls = data["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
-    assert_eq!(calls[0]["error_code"], "permission_denied", "{calls:?}");
+    let value = run_code_result(&result.content);
+    assert_eq!(value["status"], "error");
+    let ledger = result
+        .content
+        .lines()
+        .find(|line| line.starts_with("1. write"))
+        .unwrap_or("");
+    assert!(ledger.contains(" error"), "{ledger}");
     assert!(
-        result.content.contains("1. write") && result.content.contains(" error"),
-        "{}",
-        result.content
+        !ledger.contains("permission_denied"),
+        "the ledger line does not print the error code: {ledger}"
     );
-    assert!(
-        !result.content.contains("permission_denied"),
-        "the ledger prints outcome, not the error code: {}",
-        result.content
-    );
+    assert!(result.content.contains("permission_denied"), "{}", result.content);
     assert!(!Path::new(target).exists());
 }
 
@@ -935,8 +947,8 @@ return { races, held, spelled };
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    let data = result.data.expect("data");
-    let races = data["result"]["races"].as_array().expect("races");
+    let value = run_code_result(&result.content);
+    let races = value["races"].as_array().expect("races");
     assert_eq!(races.len(), pairs.len(), "{races:?}");
     for (pair, race) in pairs.iter().zip(races) {
         let statuses: Vec<&str> = race["statuses"]
@@ -988,7 +1000,7 @@ return { races, held, spelled };
         );
     }
 
-    let held = &data["result"]["held"];
+    let held = &value["held"];
     assert_eq!(held["saw"], true, "write never reached the gate: {held}");
     assert_eq!(held["write"], "ok", "{held}");
     let reads = held["reads"].as_array().expect("reads");
@@ -1007,7 +1019,7 @@ return { races, held, spelled };
         "exclusive-body\n"
     );
 
-    let spelled = data["result"]["spelled"].as_array().expect("spelled");
+    let spelled = value["spelled"].as_array().expect("spelled");
     if cfg!(windows) {
         assert_eq!(spelled.len(), 2, "{spelled:?}");
         for read in spelled {

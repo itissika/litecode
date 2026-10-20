@@ -746,6 +746,16 @@ pub async fn execute_tool_call(
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
         let output = attach_unknown_param_diagnostic(output, &unknown);
         enforce_code_output(tool.as_ref(), output)
+    } else if tool.is_code_transport() {
+        let output = wire_result(attach_unknown_param_warning(output, &unknown));
+        if output.content.len() > crate::tools::code::RUN_CODE_VIEW_MAX_BYTES {
+            tracing::warn!(
+                bytes = output.content.len(),
+                limit = crate::tools::code::RUN_CODE_VIEW_MAX_BYTES,
+                "run_code model view exceeded its budget"
+            );
+        }
+        output
     } else {
         let mut output = attach_unknown_param_warning(output, &unknown);
         output = wire_result(output);

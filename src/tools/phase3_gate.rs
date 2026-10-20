@@ -403,15 +403,13 @@ async fn phase3_edit_block_failed_reaches_run_code_diagnostics() {
     );
     let nested = run_program(dir.path(), &code).await;
     assert!(nested.error.is_none(), "run_code failed: {}", nested.content);
-    let diagnostics = nested.data.as_ref().unwrap()["diagnostics"]
-        .as_array()
-        .expect("diagnostics");
-    let failed = diagnostics
-        .iter()
-        .find(|item| item["code"] == "edit_block_failed")
-        .expect("edit_block_failed");
-    assert_eq!(failed["details"]["index"], 10);
-    assert_eq!(failed["details"]["reason"]["code"], "no_match");
+    assert!(nested.data.is_none(), "run_code no longer returns data");
+    assert!(
+        nested.content.contains("edit_block_failed")
+            && nested.content.contains("edit block 10 failed: no_match"),
+        "run_code content: {}",
+        nested.content
+    );
     let written = std::fs::read_to_string(dir.path().join("many.txt")).unwrap();
     assert!(written.contains("LINE-0\n"));
     assert!(written.contains("line-9\n"));

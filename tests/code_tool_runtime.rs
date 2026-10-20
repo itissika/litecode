@@ -16,7 +16,16 @@ use litecode::tools::glob::GlobTool;
 use litecode::tools::grep::GrepTool;
 use litecode::tools::read::ReadTool;
 use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLevel};
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn run_code_result(content: &str) -> Value {
+    let rest = content
+        .split_once("result:\n")
+        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .1;
+    serde_json::from_str(rest.trim())
+        .unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn code_tool_runs_real_bundle_with_data_only_results() {
@@ -125,9 +134,9 @@ return {
     .await;
 
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let data = result.data.expect("code result data");
-    assert_eq!(data["logs"], json!([]));
-    let value = &data["result"];
+    assert!(result.data.is_none(), "{}", result.content);
+    assert!(!result.content.contains("\nlogs:"), "{}", result.content);
+    let value = run_code_result(&result.content);
     assert_eq!(value["path"], "src/a.rs");
     assert_eq!(value["line"], "fn needle_a() {}");
     assert_eq!(value["bad_code"], "invalid_input");
@@ -338,8 +347,12 @@ return result.error.code;
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let data = result.data.expect("second-argument result data");
-    assert_eq!(data["result"], json!("invalid_input"));
+    assert!(result.data.is_none(), "{}", result.content);
+    assert!(
+        result.content.contains("result:\ninvalid_input"),
+        "{}",
+        result.content
+    );
 
     let runaway_script = "while (true) {}";
     let call = FunctionToolCall {
@@ -438,20 +451,10 @@ return { ok: true };
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let data = result.data.expect("code result data");
-    let logs = data["logs"].as_array().expect("captured logs");
-    assert_eq!(logs.len(), 2);
-    assert!(
-        logs.iter()
-            .any(|log| log["level"] == "log" && log["message"] == "hello 42"),
-        "{logs:?}"
-    );
-    assert!(
-        logs.iter()
-            .any(|log| log["level"] == "error" && log["message"] == "warn"),
-        "{logs:?}"
-    );
-    assert_eq!(data["result"], json!({ "ok": true }));
+    assert!(result.data.is_none(), "{}", result.content);
+    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
+    assert!(result.content.contains("[error] warn"), "{}", result.content);
+    assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
     assert!(result.content.contains("hello 42"), "{}", result.content);
 
     let oversized = format!(
@@ -559,9 +562,10 @@ return {
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let data = result.data.expect("code result data");
-    assert_eq!(data["result"]["process"], "undefined");
-    let require_state = data["result"]["require_state"].as_str().unwrap_or("");
+    assert!(result.data.is_none(), "{}", result.content);
+    let value = run_code_result(&result.content);
+    assert_eq!(value["process"], "undefined");
+    let require_state = value["require_state"].as_str().unwrap_or("");
     assert_ne!(require_state, "loaded", "{require_state}");
     assert!(
         require_state.contains("require") || require_state.contains("defined"),

@@ -40,7 +40,7 @@ impl OutputLedger {
             self.logs.push(LogEntry { level, message });
             return true;
         }
-        let prefix = prefix_utf8(&message, room).to_string();
+        let prefix = crate::types::utf8::prefix_utf8(&message, room).to_string();
         if !prefix.is_empty() {
             self.used += prefix.len();
             self.logs.push(LogEntry {
@@ -63,29 +63,9 @@ impl OutputLedger {
     }
 }
 
-pub(crate) fn prefix_utf8(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut end = max;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn prefix_keeps_a_char_boundary() {
-        let text = "aé";
-        assert_eq!(prefix_utf8(text, 0), "");
-        assert_eq!(prefix_utf8(text, 1), "a");
-        assert_eq!(prefix_utf8(text, 2), "a");
-        assert_eq!(prefix_utf8(text, 3), "aé");
-    }
 
     #[test]
     fn push_keeps_the_fitting_prefix() {

@@ -20,6 +20,14 @@ use litecode::tools::read::ReadTool;
 use litecode::tools::write::WriteTool;
 use litecode::types::FunctionToolCall;
 use serde_json::{Value, json};
+
+fn run_code_result(content: &str) -> Value {
+    let rest = content
+        .split_once("result:\n")
+        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .1;
+    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+}
 use tokio_util::sync::CancellationToken;
 
 fn ctx(root: &Path) -> Context {
@@ -257,7 +265,7 @@ return "wrote";
     .await
     .expect("a same-path read/write was blocked while approval was still pending");
     assert!(other.error.is_none(), "{}", other.content);
-    assert_eq!(other.data.as_ref().unwrap()["result"], "wrote");
+    assert_eq!(run_code_result(&other.content), json!("wrote"));
     assert_eq!(
         std::fs::read_to_string(dir.path().join("same.txt")).unwrap(),
         "from-direct"
@@ -269,9 +277,14 @@ return "wrote";
         .expect("nested write stayed pending after the approval was denied")
         .unwrap();
     assert!(result.error.is_none(), "{}", result.content);
-    let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
-    assert_eq!(calls[0]["error_code"], "permission_denied", "{calls:?}");
+    let ledger = result
+        .content
+        .lines()
+        .find(|line| line.starts_with("1. write"))
+        .unwrap_or("");
+    assert!(ledger.ends_with(" error"), "{ledger}");
+    assert!(!ledger.contains("permission_denied"), "{ledger}");
+    assert!(result.content.contains("permission_denied"), "{}", result.content);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("same.txt")).unwrap(),
         "from-direct"
@@ -310,8 +323,6 @@ return "done";
         .await
         .expect("cancelled run did not return")
         .unwrap();
-    let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "cancelled", "{calls:?}");
     assert!(
         result.content.contains("1. write path=gone.txt cancelled"),
         "{}",
@@ -362,8 +373,6 @@ return "done";
         .await
         .expect("grace did not seal the running call")
         .unwrap();
-    let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "unsettled", "{calls:?}");
     assert!(
         result.content.contains("1. write path=late.txt unsettled"),
         "{}",
@@ -410,12 +419,15 @@ return { status: denied.status, code: denied.error && denied.error.code };
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    let data = result.data.as_ref().unwrap();
-    assert_eq!(data["result"]["status"], "error");
-    assert_eq!(data["result"]["code"], "invalid_input");
-    let calls = data["calls"].as_array().unwrap();
-    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
-    assert_eq!(calls[0]["error_code"], "invalid_input", "{calls:?}");
+    let value = run_code_result(&result.content);
+    assert_eq!(value["status"], "error");
+    assert_eq!(value["code"], "invalid_input");
+    let ledger = result
+        .content
+        .lines()
+        .find(|line| line.starts_with("1. write"))
+        .unwrap_or("");
+    assert!(ledger.ends_with(" error"), "{ledger}");
     assert!(
         result.content.contains("1. write path=extra.txt error"),
         "{}",

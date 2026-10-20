@@ -43,7 +43,7 @@ pub fn apply_emergency_cap(content: String) -> String {
         estimated_tokens,
         "tool output exceeds token cap — circuit breaker fired"
     );
-    let preview = &content[..EMERGENCY_PREVIEW_CHARS];
+    let preview = crate::types::utf8::prefix_utf8(&content, EMERGENCY_PREVIEW_CHARS);
     let has_more = content.len() > EMERGENCY_PREVIEW_CHARS;
     format!(
         "<persisted-output>\n\
@@ -233,7 +233,7 @@ fn spill_content_if_needed(body: String, data_root: &Path, threshold: usize) -> 
     let blob_path = blob_dir.join(format!("{blob_id}.txt"));
     fs::write(&blob_path, body.as_bytes())?;
     let preview_len = 500.min(original_len);
-    let preview = &body[..preview_len];
+    let preview = crate::types::utf8::prefix_utf8(&body, preview_len);
     Ok(format!(
         "{BLOB_PREFIX}{blob_id}]\n{preview}... [spilled, {original_len} bytes total]",
     ))
@@ -356,6 +356,27 @@ mod tests {
         let capped = apply_emergency_cap(huge);
         assert!(capped.contains("<persisted-output>"));
         assert!(capped.len() < EMERGENCY_HARD_CAP_CHARS);
+    }
+
+    #[test]
+    fn emergency_cap_cjk_boundary_does_not_panic() {
+        let mut huge = "a".repeat(EMERGENCY_PREVIEW_CHARS - 1);
+        huge.push('中');
+        huge.push_str(&"b".repeat(EMERGENCY_HARD_CAP_CHARS));
+        let capped = apply_emergency_cap(huge);
+        assert!(std::str::from_utf8(capped.as_bytes()).is_ok());
+        assert!(capped.contains("<persisted-output>"));
+    }
+
+    #[test]
+    fn spill_cjk_boundary_does_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut body = "a".repeat(499);
+        body.push('中');
+        body.push_str(&"b".repeat(40_000));
+        let spilled = finalize_tool_output(body, dir.path(), 32).unwrap();
+        assert!(std::str::from_utf8(spilled.as_bytes()).is_ok());
+        assert!(spilled.starts_with(BLOB_PREFIX));
     }
 
     #[test]

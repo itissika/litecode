@@ -5,7 +5,10 @@
 //! the host binding records the nested-call ledger and pauses the program budget
 //! while an approval card is waiting.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+mod render;
+pub use render::RUN_CODE_VIEW_MAX_BYTES;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,7 +39,7 @@ pub const MAX_RUN_TIMEOUT_MS: u64 = 600_000;
 pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
 /// Nested-call ledger lines kept in the outer result. Further calls are counted, not copied.
 const LEDGER_CAP: usize = 64;
-/// Nested diagnostics kept on `run_code.data`. Further diagnostics are counted.
+/// Nested diagnostics kept for the model view. Further diagnostics are counted.
 const DIAGNOSTIC_CAP: usize = 32;
 /// How long the runtime waits for in-flight nested calls after it cancels them.
 const NESTED_CANCEL_GRACE: Duration = Duration::from_secs(3);
@@ -632,22 +635,33 @@ fn render_run_output(
         match outcome.value.as_ref().map(present_program_value) {
             Some(Ok(presented)) => Some(presented),
             Some(Err(message)) => {
-                let data = assemble_run_data(ledger, outcome, None);
-                let content = render_text_from_data(&data, Some(&message));
-                return ToolCallResult::error_with_kind(
-                    ToolErrorKind::InvalidOutput,
-                    content,
-                    false,
-                )
-                .with_data(data);
+                let content = render::render_model_view(&run_report(
+                    ledger,
+                    outcome,
+                    None,
+                    Some(message),
+                    Some(FailureKind::IllegalOutput),
+                    None,
+                    run_timeout_ms,
+                ));
+                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidOutput, content, false);
             }
             None => None,
         }
     } else {
         None
     };
-    let data = assemble_run_data(ledger, outcome, presented.as_ref());
-    let content = render_text_from_data(&data, failure_text.as_deref());
+    let failure_kind = outcome.failure.as_ref().map(|failure| failure.kind);
+    let resource = outcome.failure.as_ref().and_then(|failure| failure.resource);
+    let content = render::render_model_view(&run_report(
+        ledger,
+        outcome,
+        presented,
+        failure_text,
+        failure_kind,
+        resource,
+        run_timeout_ms,
+    ));
 
     if let Some(failure) = &outcome.failure {
         let (kind, retryable) = match failure.kind {
@@ -660,67 +674,51 @@ fn render_run_output(
             FailureKind::IllegalOutput => (ToolErrorKind::InvalidOutput, false),
             FailureKind::Internal => (ToolErrorKind::Internal, false),
         };
-        return ToolCallResult::error_with_kind(kind, content, retryable).with_data(data);
+        return ToolCallResult::error_with_kind(kind, content, retryable);
     }
 
-    ToolCallResult::ok(content).with_data(data)
+    ToolCallResult::ok(content)
 }
 
-fn assemble_run_data(
+fn run_report(
     ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
-    result: Option<&Value>,
-) -> Value {
+    value: Option<Value>,
+    failure_text: Option<String>,
+    failure_kind: Option<FailureKind>,
+    resource: Option<crate::ptc::ResourceKind>,
+    timeout_ms: u64,
+) -> render::RunReport {
     let (lines, calls_omitted, omitted_diagnostics) = ledger.snapshot();
-    let runtime: HashMap<u64, &crate::ptc::CallRecord> = outcome
-        .calls
-        .iter()
-        .map(|call| (call.seq, call))
-        .collect();
     let mut calls = Vec::with_capacity(lines.len());
     for line in &lines {
-        let record = runtime.get(&line.seq).copied();
-        let merged = merge_call_outcome(line.outcome.as_deref(), record.map(|call| call.state));
-        let mut call = json!({
-            "seq": line.seq,
-            "tool": line.tool,
-            "args_summary": line.args_summary,
-            "outcome": merged,
-            "started_ms": record.map(|call| duration_ms(call.started)).unwrap_or(0),
+        let record = outcome.calls.iter().find(|call| call.seq == line.seq);
+        calls.push(render::LedgerSnap {
+            seq: line.seq,
+            tool: line.tool.clone(),
+            summary: line.args_summary.clone(),
+            state: merge_call_outcome(line.outcome.as_deref(), record.map(|call| call.state)),
+            error_code: line.error_code.clone(),
         });
-        if merged == "error" {
-            if let Some(code) = &line.error_code {
-                call["error_code"] = Value::String(code.clone());
-            }
-        }
-        if let Some(ended) = record.and_then(|call| call.ended.map(duration_ms)) {
-            call["ended_ms"] = json!(ended);
-        }
-        calls.push(call);
     }
-    let (diagnostics, diagnostics_omitted) =
-        aggregate_diagnostics(&lines, omitted_diagnostics);
-    let logs: Vec<Value> = outcome
-        .logs
-        .iter()
-        .map(|entry| {
-            json!({
-                "level": log_level_name(entry.level),
-                "message": entry.message,
-            })
-        })
-        .collect();
-    let mut data = json!({
-        "calls": calls,
-        "calls_omitted": calls_omitted,
-        "logs": logs,
-        "diagnostics": diagnostics,
-        "diagnostics_omitted": diagnostics_omitted,
-    });
-    if let Some(result) = result {
-        data["result"] = result.clone();
+    let (diagnostics, diagnostics_omitted) = aggregate_diagnostics(&lines, omitted_diagnostics);
+    render::RunReport {
+        logs: outcome
+            .logs
+            .iter()
+            .map(|entry| (log_level_name(entry.level).to_string(), entry.message.clone()))
+            .collect(),
+        value,
+        failure_text,
+        failure_kind,
+        resource,
+        timeout_ms,
+        output_limited: failure_kind == Some(FailureKind::OutputLimit),
+        calls,
+        calls_omitted,
+        diagnostics,
+        diagnostics_omitted,
     }
-    data
 }
 
 fn aggregate_diagnostics(lines: &[LedgerLine], already_omitted: usize) -> (Vec<Diagnostic>, usize) {
@@ -767,10 +765,6 @@ fn merge_call_outcome(host: Option<&str>, state: Option<CallState>) -> String {
     }
 }
 
-fn duration_ms(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-}
-
 fn log_level_name(level: LogLevel) -> &'static str {
     match level {
         LogLevel::Log => "log",
@@ -779,102 +773,6 @@ fn log_level_name(level: LogLevel) -> &'static str {
         LogLevel::Error => "error",
         LogLevel::Debug => "debug",
     }
-}
-
-fn render_text_from_data(data: &Value, failure: Option<&str>) -> String {
-    let mut parts = Vec::new();
-    let mut ledger = String::new();
-    if let Some(calls) = data.get("calls").and_then(Value::as_array) {
-        for call in calls {
-            let seq = call.get("seq").and_then(Value::as_u64).unwrap_or(0);
-            let tool = call.get("tool").and_then(Value::as_str).unwrap_or("");
-            let summary = call
-                .get("args_summary")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let outcome = call.get("outcome").and_then(Value::as_str).unwrap_or("");
-            if !ledger.is_empty() {
-                ledger.push('\n');
-            }
-            if summary.is_empty() {
-                ledger.push_str(&format!("{seq}. {tool} {outcome}"));
-            } else {
-                ledger.push_str(&format!("{seq}. {tool} {summary} {outcome}"));
-            }
-        }
-    }
-    let calls_omitted = data
-        .get("calls_omitted")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    if calls_omitted > 0 {
-        if !ledger.is_empty() {
-            ledger.push('\n');
-        }
-        ledger.push_str(&format!("… {calls_omitted} more calls omitted"));
-    }
-    if !ledger.is_empty() {
-        parts.push(ledger);
-    }
-    if let Some(diagnostics) = data.get("diagnostics").and_then(Value::as_array) {
-        if !diagnostics.is_empty() {
-            let mut block = String::from("diagnostics:");
-            for diagnostic in diagnostics {
-                let code = diagnostic
-                    .get("code")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let message = diagnostic
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                block.push_str(&format!("\n- {code}: {message}"));
-            }
-            let omitted = data
-                .get("diagnostics_omitted")
-                .and_then(Value::as_u64)
-                .unwrap_or(0);
-            if omitted > 0 {
-                block.push_str(&format!("\n… {omitted} diagnostics omitted"));
-            }
-            parts.push(block);
-        }
-    }
-    if let Some(logs) = data.get("logs").and_then(Value::as_array) {
-        let text = logs
-            .iter()
-            .filter_map(|entry| {
-                let level = entry.get("level").and_then(Value::as_str)?;
-                let message = entry.get("message").and_then(Value::as_str)?;
-                Some(format!("[{level}] {message}"))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !text.is_empty() {
-            parts.push(text);
-        }
-    }
-    if let Some(failure) = failure {
-        parts.push(failure.to_string());
-    } else if let Some(result) = data.get("result") {
-        let text = match result {
-            Value::String(text) => text.clone(),
-            other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
-        };
-        if !text.is_empty() {
-            parts.push(text);
-        }
-    }
-    let rendered = if parts.is_empty() {
-        "(run_code completed with no output)".to_string()
-    } else {
-        parts.join("\n\n")
-    };
-    let payload = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());
-    format!(
-        "{rendered}\n\n{}{payload}",
-        crate::tool::outcome::RUN_CODE_DATA_MARK
-    )
 }
 
 fn present_program_value(value: &Json) -> Result<Value, String> {
@@ -929,69 +827,6 @@ impl Tool for CodeTool {
         })
     }
 
-    fn data_schema(&self) -> Option<Value> {
-        Some(json!({
-            "type": "object",
-            "additionalProperties": false,
-            "description": "One run_code execution. Nested tool facts live on calls, logs, and diagnostics.",
-            "properties": {
-                "calls": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "seq": { "type": "integer", "minimum": 0 },
-                            "tool": { "type": "string" },
-                            "args_summary": { "type": "string" },
-                            "outcome": {
-                                "type": "string",
-                                "enum": ["ok", "partial", "error", "cancelled", "unsettled"]
-                            },
-                            "error_code": { "type": "string" },
-                            "started_ms": { "type": "integer", "minimum": 0 },
-                            "ended_ms": { "type": "integer", "minimum": 0 }
-                        },
-                        "required": ["seq", "tool", "args_summary", "outcome", "started_ms"]
-                    }
-                },
-                "calls_omitted": { "type": "integer", "minimum": 0 },
-                "logs": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "level": {
-                                "type": "string",
-                                "enum": ["log", "info", "warn", "error", "debug"]
-                            },
-                            "message": { "type": "string" }
-                        },
-                        "required": ["level", "message"]
-                    }
-                },
-                "diagnostics": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "properties": {
-                            "code": { "type": "string" },
-                            "severity": { "type": "string", "enum": ["info", "warning"] },
-                            "message": { "type": "string" },
-                            "details": {}
-                        },
-                        "required": ["code", "severity", "message"]
-                    }
-                },
-                "diagnostics_omitted": { "type": "integer", "minimum": 0 },
-                "result": {}
-            },
-            "required": ["calls", "logs", "diagnostics", "calls_omitted", "diagnostics_omitted"]
-        }))
-    }
-
     fn code_bindings(&self) -> Option<Arc<[String]>> {
         Some(Arc::clone(&self.whitelist))
     }
@@ -1039,8 +874,7 @@ impl Tool for CodeTool {
     }
 
     fn max_result_size(&self) -> usize {
-        // The runtime output cap is the only hard limit. The outer pipeline may
-        // spill this presentation; it does not truncate it again.
+        // render 保证预算，外层不 spill
         usize::MAX
     }
 }
@@ -1049,12 +883,12 @@ impl Tool for CodeTool {
 mod outcome_tests {
     use std::time::Duration;
 
-    use serde_json::{Value, json};
+    use serde_json::json;
 
     use crate::ptc::{CallRecord, CallState, Failure, Json, Outcome};
     use crate::types::{ToolCallResult, ToolErrorKind};
 
-    use super::{assemble_run_data, decode_invocation, merge_call_outcome, render_text_from_data, CallLedger, DecodeFail};
+    use super::{decode_invocation, merge_call_outcome, render_run_output, CallLedger, DecodeFail};
 
     fn runtime(state: CallState) -> Outcome {
         Outcome {
@@ -1076,11 +910,11 @@ mod outcome_tests {
         }
     }
 
-    fn recorded(result: &ToolCallResult, outcome: &Outcome) -> Value {
+    fn rendered(result: &ToolCallResult, outcome: &Outcome) -> String {
         let ledger = CallLedger::new();
         let index = ledger.begin("write", "path=a.txt");
         ledger.record(index, result);
-        assemble_run_data(&ledger, outcome, None)
+        render_run_output(&ledger, outcome, 120_000).content
     }
 
     #[test]
@@ -1089,35 +923,31 @@ mod outcome_tests {
             merge_call_outcome(Some("ok"), Some(CallState::CancelledUnfinished)),
             "unsettled"
         );
-        let data = recorded(
+        let text = rendered(
             &ToolCallResult::ok("wrote"),
             &runtime(CallState::CancelledUnfinished),
         );
-        assert_eq!(data["calls"][0]["outcome"], "unsettled");
-        let text = render_text_from_data(&data, Some("code execution cancelled"));
-        assert!(
-            text.contains("1. write path=a.txt unsettled"),
-            "{text}"
-        );
+        assert!(text.contains("1. write path=a.txt unsettled"), "{text}");
         assert!(!text.contains("1. write path=a.txt cancelled"), "{text}");
+        assert!(!text.contains("@@run_code_data"), "{text}");
     }
 
     #[test]
     fn a_finished_call_keeps_the_host_outcome() {
-        let ok = recorded(
+        let text = rendered(
             &ToolCallResult::ok("wrote"),
             &runtime(CallState::CancelledFinished),
         );
-        assert_eq!(ok["calls"][0]["outcome"], "ok");
-        let text = render_text_from_data(&ok, Some("code execution cancelled"));
         assert!(text.contains("1. write path=a.txt ok"), "{text}");
 
-        let cancelled = recorded(
-            &ToolCallResult::error_with_kind(ToolErrorKind::Cancelled, "write cancelled before write; file was not modified", false),
+        let text = rendered(
+            &ToolCallResult::error_with_kind(
+                ToolErrorKind::Cancelled,
+                "write cancelled before write; file was not modified",
+                false,
+            ),
             &runtime(CallState::CancelledFinished),
         );
-        assert_eq!(cancelled["calls"][0]["outcome"], "cancelled");
-        let text = render_text_from_data(&cancelled, None);
         assert!(text.contains("1. write path=a.txt cancelled"), "{text}");
     }
 
@@ -1136,23 +966,21 @@ mod outcome_tests {
                 state: CallState::Completed,
             }],
         };
-        let data = recorded(
+        let text = rendered(
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
             &completed,
         );
-        assert_eq!(data["calls"][0]["outcome"], "error");
-        assert_eq!(data["calls"][0]["error_code"], "permission_denied");
-        let text = render_text_from_data(&data, None);
         let ledger = text
-            .split(crate::tool::outcome::RUN_CODE_DATA_MARK)
-            .next()
-            .unwrap_or(&text);
-        assert!(ledger.contains("1. write path=a.txt error"), "{ledger}");
+            .lines()
+            .find(|line| line.starts_with("1. write"))
+            .unwrap_or("");
+        assert_eq!(ledger, "1. write path=a.txt error", "{text}");
         assert!(
             !ledger.contains("permission_denied"),
             "the text ledger must not invent an error code: {ledger}"
         );
         assert!(text.contains("permission_denied"), "{text}");
+        assert!(!text.contains("@@run_code_data"), "{text}");
     }
 
     #[test]

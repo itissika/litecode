@@ -2,6 +2,7 @@ pub mod error;
 pub mod media;
 pub mod result;
 pub mod transcript;
+pub mod utf8;
 
 #[cfg(test)]
 mod death_list_gate;

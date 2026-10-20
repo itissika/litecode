@@ -22,6 +22,14 @@ use litecode::tools::grep::GrepTool;
 use litecode::tools::read::ReadTool;
 use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
 use serde_json::{Value, json};
+
+fn run_code_result(content: &str) -> Value {
+    let rest = content
+        .split_once("result:\n")
+        .unwrap_or_else(|| panic!("missing result section in {content}"))
+        .1;
+    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+}
 use tokio_util::sync::CancellationToken;
 
 const SECRET: &str = "secret-file-body-zz";
@@ -314,10 +322,10 @@ return { read: read.status, glob: glob.status, grep: grep.status };
         "run_code failed: {}",
         result.content
     );
-    let data = result.data.expect("run_code data");
-    assert_eq!(data["result"]["read"], "ok", "{}", result.content);
-    assert_eq!(data["result"]["glob"], "ok", "{}", result.content);
-    assert_eq!(data["result"]["grep"], "ok", "{}", result.content);
+    let value = run_code_result(&result.content);
+    assert_eq!(value["read"], "ok", "{}", result.content);
+    assert_eq!(value["glob"], "ok", "{}", result.content);
+    assert_eq!(value["grep"], "ok", "{}", result.content);
     assert!(
         result.content.contains("1. read path=probe.txt ok"),
         "{}",
@@ -421,7 +429,7 @@ async fn approval_wait_does_not_consume_the_program_budget() {
         "approval wait consumed the program budget: {}",
         result.content
     );
-    assert_eq!(result.data.unwrap()["result"], "ok");
+    assert_eq!(run_code_result(&result.content), json!("ok"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -528,10 +536,10 @@ async fn run_deep_return_probe() {
         result.content.chars().take(180).collect::<String>()
     );
     let text = result
-        .data
-        .as_ref()
-        .and_then(|data| data["result"].as_str())
-        .expect("deep result is a string");
+        .content
+        .split_once("result:\n")
+        .expect("deep result section")
+        .1;
     assert_eq!(text.matches('[').count(), 20_000);
     assert!(text.starts_with("[[[") && text.ends_with("]]]") && text.contains('0'));
     assert!(result.content.contains("[[["));

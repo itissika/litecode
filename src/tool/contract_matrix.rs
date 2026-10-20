@@ -249,7 +249,6 @@ use crate::permission::{
 };
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use crate::tool::outcome::OutcomeStatus;
-use crate::tool::schema_validate::schema_validate;
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code::{CodeTool, CodeToolHost};
@@ -347,15 +346,16 @@ async fn run_program(root: &Path, code: &str) -> ToolCallResult {
     result
 }
 
-fn assert_run_schema(tool: &CodeTool, result: &ToolCallResult) {
+fn assert_run_schema(_tool: &CodeTool, result: &ToolCallResult) {
     if result.error.is_some() {
         return;
     }
-    let schema = tool.data_schema().expect("run_code data schema");
-    let data = result.data.as_ref().expect("run_code data");
-    schema_validate(&schema, data).unwrap_or_else(|error| {
-        panic!("run_code data does not match its schema: {error}: {data}")
-    });
+    assert!(result.data.is_none(), "run_code success has no data");
+    assert!(
+        !result.content.contains("@@run_code_data"),
+        "{}",
+        result.content
+    );
 }
 
 fn status_of(result: &ToolCallResult) -> &'static str {
@@ -438,12 +438,15 @@ fn assert_cells(result: &ToolCallResult, row: &Row) {
         }
         other => panic!("{scene}: unhandled page cell {other}"),
     }
-    if actual != "error" {
-        assert!(result.data.is_some(), "{scene}: success without data");
-        if row.tool != "run_code" {
-            assert!(result.content.is_empty(), "{scene}: content carries facts");
+    if row.tool == "run_code" {
+        assert!(result.data.is_none(), "{scene}: run_code carries no data");
+        if actual != "error" {
+            assert!(!result.content.is_empty(), "{scene}: empty model view");
         }
-    } else if row.tool != "run_code" {
+    } else if actual != "error" {
+        assert!(result.data.is_some(), "{scene}: success without data");
+        assert!(result.content.is_empty(), "{scene}: content carries facts");
+    } else {
         assert!(result.data.is_none(), "{scene}: error carried data");
     }
 }
@@ -709,23 +712,18 @@ async fn live_row(row: &Row) {
             assert_eq!(std::fs::read_to_string(root.join("fresh.txt")).unwrap(), "hello\n");
         }
         ("run_code", "正常") => {
-            let data = result.data.as_ref().unwrap();
-            assert!(data["calls"].is_array());
-            assert!(data["logs"].is_array());
-            assert!(data["result"].is_string());
-            assert!(data["diagnostics"].is_array());
-            assert_eq!(data["calls"][0]["outcome"], "ok");
+            assert!(result.content.contains("1. read "), "{}", result.content);
+            assert!(result.content.contains(" ok"), "{}", result.content);
+            assert!(result.content.contains("result:"), "{}", result.content);
         }
         ("run_code", "嵌套部分成功") => {
-            let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-            assert_eq!(calls[0]["outcome"], "partial");
+            assert!(result.content.contains(" partial"), "{}", result.content);
         }
         ("run_code", "嵌套取消") => {
-            let calls = result.data.as_ref().unwrap()["calls"].as_array().unwrap();
-            let outcome = calls[0]["outcome"].as_str().unwrap();
             assert!(
-                outcome == "cancelled" || outcome == "unsettled",
-                "{calls:?}"
+                result.content.contains(" cancelled") || result.content.contains(" unsettled"),
+                "{}",
+                result.content
             );
             assert!(!root.join("gone.txt").exists());
         }
@@ -832,24 +830,8 @@ async fn nested_cancel(root: &Path) -> ToolCallResult {
         .expect("cancelled run did not return")
         .unwrap();
     if result.error.is_none() {
-        let schema = CodeTool::new(
-            tools(),
-            Arc::new(CodeToolHost::new(
-                allow_engine(root),
-                context(root),
-                "default",
-                crate::permission::deny_permission_sink(),
-                root.join(".litecode"),
-                usize::MAX,
-                Arc::new(WorkspaceWriteLock::new()),
-                None,
-            )),
-        )
-        .data_schema()
-        .unwrap();
-        schema_validate(&schema, result.data.as_ref().unwrap()).unwrap_or_else(|error| {
-            panic!("cancelled run_code data does not match its schema: {error}")
-        });
+        assert!(result.data.is_none(), "cancelled run_code carries no data");
+        assert!(!result.content.is_empty(), "{}", result.content);
     }
     result
 }

@@ -149,14 +149,12 @@ async fn edit_lsp_error_reaches_outcome_and_run_code_data() {
     )
     .await;
     assert!(nested.error.is_none(), "run_code failed: {}", nested.content);
-    let diagnostics = nested.data.as_ref().unwrap()["diagnostics"]
-        .as_array()
-        .expect("diagnostics array");
     assert!(
-        diagnostics.iter().any(|diagnostic| diagnostic["code"] == "lsp_error"),
-        "run_code data: {}",
-        nested.data.as_ref().unwrap()
+        nested.content.contains("lsp_error"),
+        "run_code content: {}",
+        nested.content
     );
+    assert!(nested.data.is_none(), "run_code no longer returns data");
 }
 
 #[tokio::test]
@@ -234,27 +232,15 @@ async fn run_code_calls_match_the_text_ledger_and_logs_keep_level() {
     )
     .await;
     assert!(result.error.is_none(), "run_code failed: {}", result.content);
-    let data = result.data.as_ref().expect("run_code data");
-    let call = &data["calls"][0];
-    assert_eq!(call["seq"], 1);
-    assert_eq!(call["tool"], "read");
-    assert_eq!(call["outcome"], "ok");
-    let summary = call["args_summary"].as_str().unwrap_or("");
-    let line = format!("1. read {summary} ok");
+    assert!(result.data.is_none(), "run_code no longer returns data");
     assert!(
-        result.content.contains(&line),
-        "ledger line {line:?} missing from {}",
+        result.content.contains("1. read ") && result.content.contains(" ok"),
+        "ledger line missing from {}",
         result.content
     );
-    let logs = data["logs"].as_array().expect("logs");
-    assert!(
-        logs.iter()
-            .any(|entry| entry["level"] == "info" && entry["message"] == "seen")
-    );
-    assert!(
-        logs.iter()
-            .any(|entry| entry["level"] == "warn" && entry["message"] == "careful")
-    );
+    assert!(result.content.contains("path=a.txt") || result.content.contains("a.txt"), "{}", result.content);
     assert!(result.content.contains("[info] seen"), "{}", result.content);
     assert!(result.content.contains("[warn] careful"), "{}", result.content);
+    assert!(result.content.contains("hello"), "{}", result.content);
+    assert!(!result.content.contains("@@run_code_data"), "{}", result.content);
 }

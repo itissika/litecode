@@ -11,22 +11,19 @@
 
 mod common;
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use common::fake_deps::{assistant_text_item, function_call_item};
-use common::{build_runtime_with_provider, test_agent};
+use common::{CapturedLlmRequest, RecordingProvider, build_runtime_with_provider, test_agent};
 use litecode::authority::responses::{
-    FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, MessageItem, OutputItem,
-    OutputStatus, ResponseOutputItemAddedEvent, ResponseStreamEvent,
+    FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, MessageItem, OutputStatus,
 };
 use litecode::config::TurnGuard;
 use litecode::config::workspace::set_runtime_paths;
 use litecode::context_pipeline::{Context, ContextPipeline, ProviderPromptBaseline};
-use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::session::manager::SessionManager;
 use litecode::session::{WorkingRow, project_items};
-use litecode::types::{Item, Result, StreamEvents, item_text_preview, user_text};
+use litecode::types::{Item, Result, item_text_preview, user_text};
 use tokio_util::sync::CancellationToken;
 
 fn item_json(item: &Item) -> serde_json::Value {
@@ -61,33 +58,6 @@ fn assert_json_prefix(prev: &[serde_json::Value], next: &[serde_json::Value], la
     }
 }
 
-// ── recording provider (product path: stream added → persist_item) ───────────
-
-#[derive(Clone, Debug)]
-struct CapturedLlmRequest {
-    instructions: String,
-    tools: Vec<serde_json::Value>,
-    input: Vec<serde_json::Value>,
-}
-
-fn capture_request(request: &ModelRequest) -> CapturedLlmRequest {
-    CapturedLlmRequest {
-        instructions: request.instructions.clone(),
-        tools: request
-            .tools
-            .iter()
-            .map(|t| {
-                serde_json::json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema,
-                })
-            })
-            .collect(),
-        input: items_json(&request.input),
-    }
-}
-
 fn assert_request_prefix(prev: &CapturedLlmRequest, next: &CapturedLlmRequest, step: usize) {
     assert_eq!(
         prev.instructions, next.instructions,
@@ -98,101 +68,6 @@ fn assert_request_prefix(prev: &CapturedLlmRequest, next: &CapturedLlmRequest, s
         "step {step}: tools[] changed (full cache miss)"
     );
     assert_json_prefix(&prev.input, &next.input, &format!("step {step} input"));
-}
-
-/// Queued Items, plus `output_item.added` (InProgress) so `call_model` hits
-/// `sessions.persist_item` before the completed Items are returned.
-#[derive(Clone)]
-struct RecordingProvider {
-    responses: Arc<Mutex<Vec<Vec<Item>>>>,
-    index: Arc<AtomicUsize>,
-    captured: Arc<Mutex<Vec<CapturedLlmRequest>>>,
-}
-
-impl RecordingProvider {
-    fn new(responses: Vec<Vec<Item>>) -> Self {
-        Self {
-            responses: Arc::new(Mutex::new(responses)),
-            index: Arc::new(AtomicUsize::new(0)),
-            captured: Arc::new(Mutex::new(Vec::new())),
-        }
-    }
-
-    fn captured(&self) -> Vec<CapturedLlmRequest> {
-        self.captured.lock().expect("captured").clone()
-    }
-
-    fn next_items(&self) -> Result<Vec<Item>> {
-        let idx = self.index.fetch_add(1, Ordering::Relaxed);
-        let guard = self.responses.lock().expect("responses");
-        guard.get(idx).cloned().ok_or_else(|| {
-            litecode::types::LitecodeError::Llm(format!(
-                "RecordingProvider: no response queued at index {idx}"
-            ))
-        })
-    }
-}
-
-fn emit_in_progress_added(
-    on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + '_>>,
-    item: &Item,
-    output_index: u32,
-) {
-    let Some(cb) = on_event else {
-        return;
-    };
-    let output = match item {
-        Item::FunctionCall(fc) => {
-            let mut fc = fc.clone();
-            fc.arguments.clear();
-            fc.status = Some(OutputStatus::InProgress);
-            OutputItem::FunctionCall(fc)
-        }
-        Item::Message(MessageItem::Output(msg)) => {
-            let mut msg = msg.clone();
-            msg.status = OutputStatus::InProgress;
-            OutputItem::Message(msg)
-        }
-        _ => return,
-    };
-    cb(ResponseStreamEvent::ResponseOutputItemAdded(
-        ResponseOutputItemAddedEvent {
-            sequence_number: u64::from(output_index) + 1,
-            output_index,
-            item: output,
-        },
-    ));
-}
-
-impl LlmProvider for RecordingProvider {
-    fn endpoint(&self) -> &str {
-        "recording://turn-prefix"
-    }
-
-    fn box_clone(&self) -> Box<dyn LlmProvider> {
-        Box::new(self.clone())
-    }
-
-    fn complete_with_stream_events<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        _api_key: &'a str,
-        mut on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
-        _cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        self.captured
-            .lock()
-            .expect("captured")
-            .push(capture_request(request));
-        let items = self.next_items();
-        Box::pin(async move {
-            let items = items?;
-            for (i, item) in items.iter().enumerate() {
-                emit_in_progress_added(&mut on_event, item, i as u32);
-            }
-            Ok(items)
-        })
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -2710,8 +2710,8 @@ impl Session {
         if byte_limit >= content.len() {
             return content.to_string();
         }
-        let end = byte_limit;
-        format!("{}\n... [truncated]", &content[..end])
+        let preview = crate::types::utf8::prefix_utf8(content, byte_limit);
+        format!("{preview}\n... [truncated]")
     }
 
     /// Remove orphan `FunctionCallOutput` items whose `call_id` has no matching
@@ -5793,5 +5793,15 @@ mod tests {
             assert_eq!(events[0].data["reason"], expected);
             assert!(session.load_transcript().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn truncated_tool_result_cjk_boundary() {
+        let content = "中".repeat(3);
+        let truncated = Session::truncated_tool_result(&content, 1);
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+        assert!(truncated.ends_with("\n... [truncated]"));
+        assert!(truncated.contains('中'));
+        assert!(!truncated.contains('\u{FFFD}'));
     }
 }
