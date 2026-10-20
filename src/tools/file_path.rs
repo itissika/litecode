@@ -16,14 +16,81 @@ pub use crate::workspace::AGENT_FILE_PATH_HINT as FILE_PATH_SCHEMA_HINT;
 
 /// Directory-as-file error shared by read (workspace + direct FS).
 pub fn directory_not_file_message(path_display: &str) -> String {
-    format!(
-        "{path_display} is a directory, not a file. Use glob to list files, or pass a file path."
-    )
+    format!("{path_display} is a directory, not a file")
 }
 
-/// Not-found guidance when no similar-file suggestions are available.
-pub fn missing_file_hint() -> String {
-    "verify the path exists".to_string()
+/// Domain failure with a stable code. `content` and `error.message` are the same fact.
+pub fn coded_error(code: &str, message: impl Into<String>) -> ToolCallResult {
+    let message = message.into();
+    crate::tool::outcome::ToolOutcome::<Value>::failure(code, message.clone(), false)
+        .into_call_result(message)
+}
+
+pub fn tool_path_error(error: crate::workspace::ToolPathError) -> ToolCallResult {
+    let code = match &error {
+        crate::workspace::ToolPathError::Io(_) => "io",
+        _ => "invalid_input",
+    };
+    coded_error(code, error.to_string())
+}
+
+pub fn workspace_error(error: crate::workspace::WorkspaceError) -> ToolCallResult {
+    use crate::workspace::WorkspaceError as Kind;
+    let code = match &error {
+        Kind::NotFound(_) => "not_found",
+        Kind::NotFile(_) | Kind::IsDir(_) | Kind::AlreadyExists(_) | Kind::InvalidMove(_) => {
+            "invalid_input"
+        }
+        Kind::Binary | Kind::Utf16 | Kind::NotUtf8 => "unsupported",
+        Kind::TooLarge | Kind::Io(_) | Kind::Sqlite(_) | Kind::OpenFailed(_) => "io",
+        Kind::PreviewTooLarge
+        | Kind::NotSqlite
+        | Kind::UnknownTable
+        | Kind::Sandbox(_)
+        | Kind::Tree(_)
+        | Kind::OpenUnsupported
+        | Kind::PreviewOffset => "internal",
+    };
+    coded_error(code, error.to_string())
+}
+
+pub fn litecode_error(error: crate::types::LitecodeError) -> ToolCallResult {
+    use crate::types::LitecodeError as Kind;
+    let code = match &error {
+        Kind::Io(_) => "io",
+        Kind::SessionNotFound(_) => "not_found",
+        Kind::ToolExecution(message) => tool_message_code(message),
+        _ => "internal",
+    };
+    let message = match error {
+        Kind::ToolExecution(message) => message,
+        other => other.to_string(),
+    };
+    coded_error(code, message)
+}
+
+fn tool_message_code(message: &str) -> &'static str {
+    if message.contains("invalid regular expression") {
+        return "invalid_regex";
+    }
+    if message.starts_with("path does not exist")
+        || message.contains("not found")
+        || message.starts_with("File not found")
+    {
+        return "not_found";
+    }
+    if message.starts_with("parameter ")
+        || message.contains("must be")
+        || message.contains("must stay")
+        || message.contains("expected")
+        || message.starts_with("invalid ")
+        || message.contains("SAFE mode")
+        || message.contains("Unix-style")
+        || message.contains("path must")
+    {
+        return "invalid_input";
+    }
+    "internal"
 }
 
 /// Attach outside-workspace / sensitive-path diagnostics after a successful edit/write.
@@ -94,6 +161,27 @@ pub fn code_path(input: &Value) -> Option<&str> {
         .get("path")
         .and_then(Value::as_str)
         .filter(|path| !path.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_error;
+    use crate::workspace::WorkspaceError;
+
+    fn code(error: WorkspaceError) -> Option<String> {
+        workspace_error(error).error_code
+    }
+
+    #[test]
+    fn workspace_error_codes() {
+        assert_eq!(code(WorkspaceError::TooLarge).as_deref(), Some("io"));
+        assert_eq!(code(WorkspaceError::Binary).as_deref(), Some("unsupported"));
+        assert_eq!(code(WorkspaceError::Utf16).as_deref(), Some("unsupported"));
+        assert_eq!(code(WorkspaceError::NotUtf8).as_deref(), Some("unsupported"));
+        assert_eq!(code(WorkspaceError::PreviewTooLarge).as_deref(), Some("internal"));
+        assert_eq!(code(WorkspaceError::NotSqlite).as_deref(), Some("internal"));
+        assert_eq!(code(WorkspaceError::UnknownTable).as_deref(), Some("internal"));
+    }
 }
 
 pub fn require_code_path(input: &Value) -> Result<&str, String> {

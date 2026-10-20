@@ -296,7 +296,7 @@ return { written: written.file ? "ok" : "missing", edited: edited.applied >= 1 ?
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn historical_file_path_still_writes_through_run_code() {
+async fn historical_file_path_is_rejected_and_does_not_write() {
     let dir = tempfile::tempdir().unwrap();
     let hosted = hosted(
         dir.path(),
@@ -305,12 +305,29 @@ async fn historical_file_path_still_writes_through_run_code() {
     );
     let sink = RecordingPermissionSink::from_reply(true, false);
     let script = r#"
-const written = await tools.write({ file_path: "legacy.txt", content: "kept" });
-const edited = await tools.edit({
-  file_path: "legacy.txt",
-  edits: [{ old_string: "kept", new_string: "replayed" }]
-});
-return { written: written.status, edited: edited.status };
+let write_error = null;
+let edit_error = null;
+let alias_only = null;
+try {
+  await tools.write({ file_path: "legacy.txt", content: "kept" });
+} catch (e) {
+  alias_only = { name: e.name, code: e.code, message: e.message };
+}
+try {
+  await tools.write({ path: "legacy.txt", file_path: "legacy.txt", content: "kept" });
+} catch (e) {
+  write_error = { name: e.name, code: e.code, message: e.message };
+}
+try {
+  await tools.edit({
+    path: "legacy.txt",
+    file_path: "legacy.txt",
+    edits: [{ old_string: "kept", new_string: "replayed" }]
+  });
+} catch (e) {
+  edit_error = { name: e.name, code: e.code, message: e.message };
+}
+return { alias_only, write_error, edit_error };
 "#;
     let result = execute(
         &hosted,
@@ -322,10 +339,31 @@ return { written: written.status, edited: edited.status };
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join("legacy.txt")).unwrap(),
-        "replayed"
+    assert!(
+        result.content.contains("error:invalid_input"),
+        "{}",
+        result.content
     );
+    let value = run_code_result(&result.content);
+    assert_eq!(value["alias_only"]["name"], "ToolError", "{value}");
+    assert_eq!(value["alias_only"]["code"], "invalid_input", "{value}");
+    assert!(
+        value["alias_only"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("path")),
+        "{value}"
+    );
+    for key in ["write_error", "edit_error"] {
+        assert_eq!(value[key]["name"], "ToolError", "{value}");
+        assert_eq!(value[key]["code"], "invalid_input", "{value}");
+        assert!(
+            value[key]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("file_path")),
+            "{value}"
+        );
+    }
+    assert!(!dir.path().join("legacy.txt").exists());
 }
 
 #[tokio::test(flavor = "current_thread")]

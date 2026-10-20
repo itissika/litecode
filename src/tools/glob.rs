@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::file_identity::{self, QueryCursor, encode_cursor, fingerprint};
-use crate::tool::outcome::{Diagnostic, Page};
+use crate::tool::outcome::Page;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{Result, ToolCallResult};
 use crate::workspace::filter::{
@@ -52,7 +52,8 @@ impl Tool for GlobTool {
                     "description": "Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor."
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
+            "additionalProperties": false
         })
     }
 
@@ -79,6 +80,11 @@ impl Tool for GlobTool {
                         "total": { "type": "integer", "minimum": 0 }
                     },
                     "required": ["has_more", "next"]
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["no_match", "path_excluded"],
+                    "description": "no_match: nothing matched. path_excluded: the path is hidden by the default filters."
                 }
             },
             "required": ["base", "paths", "page"]
@@ -112,7 +118,8 @@ impl Tool for GlobTool {
                     crate::types::ToolErrorKind::Internal,
                     format!("glob worker failed: {error}"),
                     false,
-                ),
+                )
+                .with_error_code("internal"),
             }
         })
     }
@@ -149,10 +156,15 @@ impl GlobTool {
     fn call_for_execution(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
         let pattern = match crate::tool::require_nonempty_string(&input, "pattern") {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return coded("invalid_input", e),
         };
+        if pattern_reaches_parent(pattern) {
+            return coded(
+                "invalid_input",
+                format!("pattern '{pattern}' reaches outside the search directory"),
+            );
+        }
 
-        let pattern_warning = parent_dir_pattern_warning(pattern);
         let no_ignore = input
             .get("include_ignored")
             .and_then(Value::as_bool)
@@ -164,7 +176,7 @@ impl GlobTool {
 
         let limit = match parse_glob_limit(&input) {
             Ok(limit) => limit,
-            Err(error) => return contract_error("invalid_input", error),
+            Err(error) => return coded("invalid_input", error),
         };
         let outside = path_arg.is_some_and(|path| {
             crate::workspace::resolve_agent(
@@ -182,7 +194,7 @@ impl GlobTool {
         {
             let results = match glob_virtual_sessions(&execution, pattern) {
                 Ok(r) => r,
-                Err(e) => return ToolCallResult::error(e.to_string()),
+                Err(e) => return crate::tools::file_path::litecode_error(e),
             };
             return finish_glob(
                 &results.hits,
@@ -192,8 +204,7 @@ impl GlobTool {
                 no_ignore,
                 limit,
                 input.get("cursor").and_then(Value::as_str),
-                pattern_warning.as_deref(),
-                None,
+                false,
             );
         }
 
@@ -205,30 +216,31 @@ impl GlobTool {
                     execution.path_mode,
                 ) {
                     Ok(path) => path,
-                    Err(error) => return ToolCallResult::error(error.to_string()),
+                    Err(error) => return crate::tools::file_path::tool_path_error(error),
                 }
             }
             None => execution.workspace_root.clone(),
         };
 
         if !search_path.exists() {
-            return ToolCallResult::error(format!(
-                "path does not exist: {}",
-                search_path.display()
-            ));
+            return coded(
+                "not_found",
+                format!("path does not exist: {}", search_path.display()),
+            );
         }
         if !search_path.is_dir() {
-            return ToolCallResult::error(format!(
-                "path is not a directory: {}",
-                search_path.display()
-            ));
+            return coded(
+                "invalid_input",
+                format!("path is not a directory: {}", search_path.display()),
+            );
         }
 
         if !no_ignore
-            && let Some(message) = crate::workspace::filter::ignored_discovery_message(
+            && crate::workspace::filter::ignored_discovery_message(
                 &execution.workspace_root,
                 &search_path,
             )
+            .is_some()
         {
             return finish_glob(
                 &[],
@@ -238,8 +250,7 @@ impl GlobTool {
                 no_ignore,
                 limit,
                 input.get("cursor").and_then(Value::as_str),
-                None,
-                Some(message.as_str()),
+                true,
             );
         }
 
@@ -251,7 +262,7 @@ impl GlobTool {
             Some(&execution.cancel),
         ) {
             Ok(r) => r,
-            Err(e) => return ToolCallResult::error(e.to_string()),
+            Err(e) => return crate::tools::file_path::litecode_error(e),
         };
         let base = if outside {
             file_identity::PathBase::Absolute
@@ -266,8 +277,7 @@ impl GlobTool {
             no_ignore,
             limit,
             input.get("cursor").and_then(Value::as_str),
-            pattern_warning.as_deref(),
-            None,
+            false,
         )
     }
 }
@@ -303,10 +313,8 @@ fn parse_glob_limit(input: &Value) -> std::result::Result<usize, String> {
     Ok(limit as usize)
 }
 
-fn contract_error(code: &str, message: impl Into<String>) -> ToolCallResult {
-    let message = message.into();
-    crate::tool::outcome::ToolOutcome::<Value>::failure(code, message.clone(), false)
-        .into_call_result(message)
+fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
+    crate::tools::file_path::coded_error(code, message)
 }
 
 fn finish_glob(
@@ -317,8 +325,7 @@ fn finish_glob(
     include_ignored: bool,
     limit: usize,
     cursor: Option<&str>,
-    pattern_warning: Option<&str>,
-    content_override: Option<&str>,
+    path_excluded: bool,
 ) -> ToolCallResult {
     let version = file_identity::version_hash(hits.iter().map(String::as_str));
     let bound = match file_identity::bind_cursor(
@@ -361,49 +368,31 @@ fn finish_glob(
         next,
         total: Some(hits.len() as u64),
     };
-    let data = serde_json::json!({
+    let reason = if path_excluded {
+        Some("path_excluded")
+    } else if hits.is_empty() {
+        Some("no_match")
+    } else {
+        None
+    };
+    let mut data = serde_json::json!({
         "base": base.as_str(),
         "paths": page_hits,
         "page": page,
     });
-    let mut result = crate::tool::outcome::ok_data(data);
-    if let Some(warning) = pattern_warning {
-        let mut message = warning.to_string();
-        message.push_str(
-            " Glob only matches paths under the search directory; patterns like '../*' cannot reach parent folders.",
-        );
-        result
-            .diagnostics
-            .push(Diagnostic::warning("pattern_parent", message));
+    if let Some(reason) = reason {
+        data["reason"] = serde_json::json!(reason);
     }
-    if let Some(message) = content_override {
-        result
-            .diagnostics
-            .push(Diagnostic::warning("path_excluded", message));
-    } else if hits.is_empty() {
-        result.diagnostics            .push(Diagnostic::info(
-            "empty_glob",
-            crate::workspace::filter::empty_discovery_hint(),
-        ));
-    }
-    result
+    crate::tool::outcome::ok_data(data)
 }
 
-fn parent_dir_pattern_warning(pattern: &str) -> Option<String> {
+fn pattern_reaches_parent(pattern: &str) -> bool {
     let normalized = normalize_pattern(pattern);
-    if normalized.contains("../") || normalized.starts_with("..") {
-        Some(format!(
-            "pattern '{pattern}' references parent directories; workspace-relative paths never include '..', so matches are usually empty."
-        ))
-    } else {
-        None
-    }
+    normalized.contains("../") || normalized.starts_with("..")
 }
 
-/// When `path` is `src` and `pattern` is `src/**/*.rs`, match against `**/*.rs`.
-///
-/// `glob_match` compares the pattern to paths *relative to* `path`, so repeating
-/// the directory prefix never hits. Agents commonly pass both; strip quietly.
+/// Match `pattern` against virtual session paths as given.
+/// A repeated directory prefix is not stripped.
 fn glob_virtual_sessions(
     execution: &crate::tool::trait_::ToolExecutionContext,
     pattern: &str,
@@ -661,23 +650,19 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
 
-        let body = glob_note(
+        let body = glob_data_in(
             root,
             serde_json::json!({ "pattern": "**/*", "path": "node_modules" }),
         );
-        assert_eq!(
-            body,
-            "path 'node_modules' is not searched: excluded by search.exclude."
-        );
+        assert_eq!(body["reason"], "path_excluded");
+        assert!(body["paths"].as_array().unwrap().is_empty(), "{body}");
 
-        let nested = glob_note(
+        let nested = glob_data_in(
             root,
             serde_json::json!({ "pattern": "**/*", "path": "node_modules/pkg" }),
         );
-        assert_eq!(
-            nested,
-            "path 'node_modules/pkg' is not searched: excluded by search.exclude."
-        );
+        assert_eq!(nested["reason"], "path_excluded");
+        assert!(nested["paths"].as_array().unwrap().is_empty(), "{nested}");
 
         let raw = glob_in(
             root,
@@ -727,14 +712,12 @@ mod tests {
             "{filtered:?}"
         );
 
-        let index = glob_note(
+        let index = glob_data_in(
             root,
             serde_json::json!({ "pattern": "**/*", "path": ".litecode/index" }),
         );
-        assert_eq!(
-            index,
-            "path '.litecode/index' is not searched: LiteCode runtime directory."
-        );
+        assert_eq!(index["reason"], "path_excluded");
+        assert!(index["paths"].as_array().unwrap().is_empty(), "{index}");
 
         let inside = glob_in(
             root,
@@ -751,15 +734,20 @@ mod tests {
     }
 
     #[test]
-    fn parent_dir_pattern_warning_detects_dot_dot() {
-        assert!(parent_dir_pattern_warning("../*").is_some());
-        assert!(parent_dir_pattern_warning("foo/../bar").is_some());
-        assert!(parent_dir_pattern_warning("**/*.rs").is_none());
-        let text = parent_dir_pattern_warning("../*").unwrap();
+    fn parent_dir_pattern_is_invalid_input() {
+        assert!(pattern_reaches_parent("../*"));
+        assert!(pattern_reaches_parent("foo/../bar"));
+        assert!(!pattern_reaches_parent("**/*.rs"));
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
+        let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "../*" }));
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
         assert!(
-            text.ends_with('.'),
-            "warning must end with a period so it does not glue to the next sentence: {text}"
+            result.content.contains("pattern '../*' reaches outside the search directory"),
+            "{}",
+            result.content
         );
+        assert!(result.data.is_none());
     }
 
     #[test]
@@ -863,15 +851,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_glob_mentions_excludes_config() {
+    fn empty_glob_sets_no_match_reason() {
         let dir = TempDir::new().unwrap();
-        let body = glob_note(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
-        let data = glob_data_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
+        let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
+        let data = result.data.expect("data");
         assert!(data["paths"].as_array().unwrap().is_empty(), "{data}");
-        assert!(body.contains(".litecode/excludes.json"), "{body}");
+        assert_eq!(data["reason"], "no_match");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(
-            !body.contains("include_ignored"),
-            "empty glob must not advertise include_ignored, got: {body}"
+            !result.content.contains("excludes.json") && !result.content.contains("include_ignored"),
+            "{}",
+            result.content
         );
     }
 
@@ -916,15 +906,6 @@ mod tests {
             .into_iter()
             .flatten()
             .filter_map(|path| path.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn glob_note(root: &std::path::Path, input: Value) -> String {
-        glob_result_in(root, input)
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.message.clone())
             .collect::<Vec<_>>()
             .join("\n")
     }

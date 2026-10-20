@@ -217,22 +217,6 @@ fn present_for_caller(origin: &ToolCallOrigin, result: ToolCallResult) -> ToolCa
     }
 }
 
-fn attach_unknown_param_diagnostic(mut result: ToolCallResult, extra: &[String]) -> ToolCallResult {
-    if extra.is_empty() || result.level == ToolSignalLevel::Error || result.error.is_some() {
-        return result;
-    }
-    result
-        .diagnostics
-        .push(crate::tool::outcome::Diagnostic::warning(
-            "unknown_parameter",
-            format!(
-                "ignored unknown parameter(s): {}. Not in this tool's schema; the call ran without them",
-                extra.join(", ")
-            ),
-        ).with_details(serde_json::json!({ "parameters": extra })));
-    result
-}
-
 fn attach_unknown_param_warning(result: ToolCallResult, extra: &[String]) -> ToolCallResult {
     if extra.is_empty() || result.level == ToolSignalLevel::Error {
         return result;
@@ -545,14 +529,15 @@ pub async fn execute_tool_call(
     let schema_input = tool.schema_arguments(&tool_use_input);
 
     if let Err(msg) = check_tool_input(tool.as_ref(), &schema_input) {
-        return present_for_caller(
-            &origin,
-            ToolCallResult::error_with_kind(
-                ToolErrorKind::InvalidInput,
-                invalid_input_for(&tu_name, msg),
-                false,
-            ),
-        );
+            return present_for_caller(
+                &origin,
+                ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidInput,
+                    invalid_input_for(&tu_name, msg),
+                    false,
+                )
+                .with_error_code("invalid_input"),
+            );
     }
 
     // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
@@ -646,18 +631,27 @@ pub async fn execute_tool_call(
                 session_id: session_id.to_string(),
             }),
             Err(holder) => {
-                let msg = format!(
-                    "resource busy: held by session {holder}. Retry after the other session finishes writing"
-                );
+                let code_caller = matches!(origin.caller, ToolCaller::Code { .. });
+                let msg = if code_caller {
+                    format!("resource busy: held by session {holder}")
+                } else {
+                    format!(
+                        "resource busy: held by session {holder}. Retry after the other session finishes writing"
+                    )
+                };
                 emit_audit(data_root, "exec_done", session_id, &tu_name, &tu_id, |e| {
                     e.ok = Some(false);
                     e.error_kind = Some("other".into());
                     e.error = Some(audit_truncate(&msg));
                 });
-                return present_for_caller(
-                    &origin,
-                    ToolCallResult::error_with_kind(ToolErrorKind::Conflict, msg, true),
-                );
+                let mut result =
+                    ToolCallResult::error_with_kind(ToolErrorKind::Conflict, msg, true);
+                if code_caller {
+                    result = result.with_error_code("conflict").with_error_details(
+                        serde_json::json!({ "holder": holder }),
+                    );
+                }
+                return present_for_caller(&origin, result);
             }
         }
     } else {
@@ -705,12 +699,17 @@ pub async fn execute_tool_call(
             _ = &mut timeout => {
                 execution_cancel.cancel();
                 let _ = tool_fut.await;
+                let budget_label = timeout_budget_label(budget);
+                let message = if matches!(origin.caller, ToolCaller::Code { .. }) {
+                    format!("tool '{name}' timed out after {budget_label}")
+                } else {
+                    format!(
+                        "tool '{name}' timed out after {budget_label}. Retry with a narrower scope, or use bash run_in_background for long commands"
+                    )
+                };
                 Ok(ToolCallResult::error_with_kind(
                     ToolErrorKind::Timeout,
-                    format!(
-                        "tool '{name}' timed out after {}. Retry with a narrower scope, or use bash run_in_background for long commands",
-                        timeout_budget_label(budget)
-                    ),
+                    message,
                     true,
                 ))
             }
@@ -744,7 +743,6 @@ pub async fn execute_tool_call(
     };
     let unknown = unknown_top_level_properties(&tool.schema(), &effective_input);
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
-        let output = attach_unknown_param_diagnostic(output, &unknown);
         enforce_code_output(tool.as_ref(), output)
     } else if tool.is_code_transport() {
         let output = wire_result(attach_unknown_param_warning(output, &unknown));

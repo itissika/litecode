@@ -17,12 +17,12 @@ use crate::context_pipeline::Context;
 use crate::engines::code_search::{LexicalQuery, lexical_search_for_agent_cancellable};
 use crate::tool::Tool;
 use crate::tool::file_identity::{self, QueryCursor, encode_cursor, fingerprint};
-use crate::tool::outcome::{Diagnostic, Page};
+use crate::tool::outcome::Page;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{LitecodeError, Result, ToolCallResult};
 use crate::workspace::filter::{
-    FilterPreset, PathGlobMatcher, WORKSPACE_EXCLUDES_REL, WalkOptions, cheap_rel_under,
-    compile_include_patterns, empty_discovery_hint, ignored_discovery_message, looks_binary,
+    FilterPreset, PathGlobMatcher, WalkOptions, cheap_rel_under, compile_include_patterns,
+    ignored_discovery_message, looks_binary,
     path_matches_include, private_knowledge_walker, split_glob_include_exclude, walk_builder_with,
 };
 
@@ -111,7 +111,8 @@ impl Tool for GrepTool {
                     "description": "Maximum matches in this page. Default 20, maximum 100."
                 }
             },
-            "required": ["pattern"]
+            "required": ["pattern"],
+            "additionalProperties": false
         })
     }
 
@@ -196,7 +197,8 @@ impl Tool for GrepTool {
                     crate::types::ToolErrorKind::Internal,
                     format!("grep worker failed: {error}"),
                     false,
-                ),
+                )
+                .with_error_code("internal"),
             }
         })
     }
@@ -222,9 +224,10 @@ impl Tool for GrepTool {
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
-        parse_grep_options(input)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        parse_grep_options(input).map(|_| ()).map_err(|error| match error {
+            LitecodeError::ToolExecution(message) => message,
+            other => other.to_string(),
+        })
     }
 
     fn timeout(&self) -> Option<Duration> {
@@ -242,11 +245,11 @@ fn dispatch(input: Value, execution: ToolExecutionContext, examine_cap: usize) -
     }
     let options = match parse_grep_options(&input) {
         Ok(options) => options,
-        Err(error) => return ToolCallResult::error(error.to_string()),
+        Err(error) => return crate::tools::file_path::litecode_error(error),
     };
     match search(&input, &options, &execution, examine_cap) {
-        Ok(result) => attach_line_truncation(result),
-        Err(error) => ToolCallResult::error(error.to_string()),
+        Ok(result) => result,
+        Err(error) => crate::tools::file_path::litecode_error(error),
     }
 }
 
@@ -315,7 +318,9 @@ fn parse_limit(input: &Value) -> Result<usize> {
 fn optional_string(input: &Value, name: &str) -> Result<Option<String>> {
     match input.get(name) {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
+        Some(Value::String(value)) if value.trim().is_empty() => Err(LitecodeError::ToolExecution(
+            format!("parameter '{name}' must not be blank"),
+        )),
         Some(Value::String(value)) => Ok(Some(value.clone())),
         _ => Err(LitecodeError::ToolExecution(format!(
             "parameter '{name}' must be a string"
@@ -361,8 +366,6 @@ fn invalid_regex_result(pattern: &str, error: &regex::Error) -> ToolCallResult {
         "pattern": pattern,
         "regex_error": error.to_string(),
         "position": position,
-        "suggested_literal": pattern,
-        "suggested_pattern": regex::escape(pattern),
     });
     let message = format!("invalid regular expression: {error}");
     crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_regex", message.clone(), false)
@@ -385,26 +388,6 @@ fn regex_error_position(rendered: &str) -> Option<usize> {
         }
     }
     None
-}
-
-fn attach_line_truncation(mut result: ToolCallResult) -> ToolCallResult {
-    let truncated = result
-        .data
-        .as_ref()
-        .and_then(|data| data.get("matches"))
-        .and_then(Value::as_array)
-        .is_some_and(|matches| {
-            matches.iter().any(|hit| {
-                hit.get("line_truncated").and_then(Value::as_bool) == Some(true)
-            })
-        });
-    if truncated {
-        result.diagnostics.push(Diagnostic::warning(
-            "line_truncated",
-            "one or more match lines were truncated",
-        ));
-    }
-    result
 }
 
 fn query_fingerprint(options: &GrepOptions, path: &str) -> String {
@@ -446,40 +429,31 @@ fn search(
 
     let workspace = &execution.workspace_root;
     let resolved = match raw_path {
-        Some(raw_path) => crate::workspace::resolve_agent(workspace, raw_path, execution.path_mode)
-            .map_err(|error| LitecodeError::ToolExecution(error.to_string()))?,
+        Some(raw_path) => {
+            match crate::workspace::resolve_agent(workspace, raw_path, execution.path_mode) {
+                Ok(path) => path,
+                Err(error) => return Ok(crate::tools::file_path::tool_path_error(error)),
+            }
+        }
         None => crate::config::path::canon_abs_lossy(workspace),
     };
     let outside = !crate::config::path::is_under(&resolved, workspace);
     let base = if outside { "absolute" } else { "workspace" };
-    let display = display_search_path(workspace, &resolved);
     let file_scoped = resolved.is_file();
     if !file_scoped && !resolved.is_dir() {
-        return Err(LitecodeError::ToolExecution(format!(
-            "path does not exist: {}",
-            resolved.display()
-        )));
+        return Ok(crate::tools::file_path::coded_error(
+            "not_found",
+            format!("path does not exist: {}", resolved.display()),
+        ));
     }
     if file_scoped && looks_binary(&resolved) {
-        return Ok(empty_result(
-            base,
-            0,
-            !options.include_ignored,
-            "binary_file",
-            Some(format!("path '{display}' is not searched: binary file.")),
-        ));
+        return Ok(empty_result(base, 0, !options.include_ignored, "binary_file"));
     }
     if !file_scoped
         && raw_path.is_some()
-        && let Some(message) = ignored_discovery_message(workspace, &resolved)
+        && ignored_discovery_message(workspace, &resolved).is_some()
     {
-        return Ok(empty_result(
-            base,
-            0,
-            true,
-            "path_excluded",
-            Some(with_path_excluded_ledger(message)),
-        ));
+        return Ok(empty_result(base, 0, true, "path_excluded"));
     }
 
     let preset = if options.include_ignored {
@@ -514,16 +488,7 @@ fn search(
     }
 
     if options.glob.is_some() && candidates.is_empty() {
-        return Ok(empty_result(
-            base,
-            0,
-            !options.include_ignored,
-            "glob_empty",
-            Some(format_glob_empty(
-                options.glob.as_deref().unwrap_or(""),
-                &display,
-            )),
-        ));
+        return Ok(empty_result(base, 0, !options.include_ignored, "glob_empty"));
     }
 
     let scan = collect_matches(
@@ -543,9 +508,6 @@ fn search(
                 0,
                 !options.include_ignored,
                 "file_not_searched",
-                Some(format!(
-                    "No matches found (path '{display}' was not searched)."
-                )),
             ));
         }
         if scan.opened || !candidates.is_empty() {
@@ -554,7 +516,6 @@ fn search(
                 candidates.len() as u64,
                 !options.include_ignored,
                 "no_match",
-                None,
             ));
         }
         return Ok(empty_result(
@@ -562,7 +523,6 @@ fn search(
             0,
             !options.include_ignored,
             "corpus_empty",
-            Some(format_corpus_empty(options.include_ignored)),
         ));
     }
 
@@ -570,7 +530,6 @@ fn search(
         &scan.matches,
         base,
         scan.has_more,
-        scan.hit_cap,
         &fp,
         &version,
         candidates.len() as u64,
@@ -582,7 +541,6 @@ fn search(
 struct Scan {
     matches: Vec<GrepMatchData>,
     has_more: bool,
-    hit_cap: bool,
     opened: bool,
 }
 
@@ -649,7 +607,6 @@ fn collect_matches(
     Ok(Scan {
         matches: kept,
         has_more,
-        hit_cap,
         opened,
     })
 }
@@ -890,7 +847,6 @@ fn page_result(
     matches: &[GrepMatchData],
     base: &str,
     has_more: bool,
-    hit_cap: bool,
     fp: &str,
     version: &str,
     files: u64,
@@ -910,45 +866,11 @@ fn page_result(
     });
     let next = next.flatten();
     let has_more = next.is_some();
-    let diagnostic = (hit_cap && has_more).then_some(Diagnostic::warning(
-        "scan_budget",
-        "match scan stopped at the examine cap; pass cursor to continue",
-    ));
-    finish_result(
-        base,
-        matches.to_vec(),
-        has_more,
-        next,
-        files,
-        excluded,
-        reason,
-        diagnostic,
-    )
+    finish_result(base, matches.to_vec(), has_more, next, files, excluded, reason)
 }
 
-fn empty_result(
-    base: &str,
-    files: u64,
-    excluded: bool,
-    reason: &str,
-    note: Option<String>,
-) -> ToolCallResult {
-    let diagnostic = if reason == "no_match" {
-        None
-    } else {
-        note.filter(|text| !text.is_empty())
-            .map(|message| Diagnostic::info(reason, message))
-    };
-    finish_result(
-        base,
-        Vec::new(),
-        false,
-        None,
-        files,
-        excluded,
-        Some(reason),
-        diagnostic,
-    )
+fn empty_result(base: &str, files: u64, excluded: bool, reason: &str) -> ToolCallResult {
+    finish_result(base, Vec::new(), false, None, files, excluded, Some(reason))
 }
 
 fn finish_result(
@@ -959,7 +881,6 @@ fn finish_result(
     files: u64,
     excluded: bool,
     reason: Option<&str>,
-    diagnostic: Option<Diagnostic>,
 ) -> ToolCallResult {
     let page = Page {
         has_more,
@@ -975,45 +896,7 @@ fn finish_result(
     if let Some(reason) = reason {
         data["reason"] = serde_json::json!(reason);
     }
-    let mut result = crate::tool::outcome::ok_data(data);
-    if let Some(diagnostic) = diagnostic {
-        result.diagnostics.push(diagnostic);
-    }
-    result
-}
-
-fn format_corpus_empty(include_ignored: bool) -> String {
-    if include_ignored {
-        "No matches found. Searched including gitignored and workspace-excluded paths.".to_string()
-    } else {
-        format!("No matches found. {}", empty_discovery_hint())
-    }
-}
-
-fn format_glob_empty(pat: &str, resolved_display: &str) -> String {
-    format!(
-        "No files matched glob '{pat}' under '{resolved_display}'. Use forward slashes; multi-ext like '**/*.ts,**/*.tsx'; or omit glob. {}",
-        empty_discovery_hint()
-    )
-}
-
-fn with_path_excluded_ledger(message: String) -> String {
-    if message.contains("LiteCode runtime directory") {
-        return format!("{message} To search it anyway, name a single file inside it.");
-    }
-    let message = if message.contains(".gitignore") {
-        format!("{message} git_ignore is on in {WORKSPACE_EXCLUDES_REL}.")
-    } else {
-        format!("{message} Exclusion lists are in {WORKSPACE_EXCLUDES_REL}.")
-    };
-    format!("{message} To search it anyway, name a single file inside it.")
-}
-
-fn display_search_path(workspace_root: &Path, resolved: &Path) -> String {
-    cheap_rel_under(workspace_root, resolved)
-        .map(|rel| rel.replace('\\', "/"))
-        .filter(|rel| !rel.is_empty())
-        .unwrap_or_else(|| resolved.display().to_string())
+    crate::tool::outcome::ok_data(data)
 }
 
 fn grep_virtual_file(
@@ -1127,17 +1010,11 @@ fn finish_virtual(
     };
     if matches.is_empty() {
         let reason = if file_scoped { "no_match" } else { "corpus_empty" };
-        let note = if reason == "no_match" {
-            None
-        } else {
-            Some(format_corpus_empty(options.include_ignored))
-        };
         return Ok(empty_result(
             "workspace",
             u64::from(file_scoped),
             !options.include_ignored,
             reason,
-            note,
         ));
     }
     let resume_path = bound.as_ref().and_then(|cursor| cursor.resume_path.clone());
@@ -1169,7 +1046,6 @@ fn finish_virtual(
         &page,
         "workspace",
         has_extra || hit_cap,
-        hit_cap,
         &fp,
         &version,
         1,
@@ -1311,15 +1187,6 @@ mod tests {
                     hit["line_text"].as_str().unwrap_or("")
                 )
             })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-
-    fn note_text(result: &ToolCallResult) -> String {
-        result
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.message.clone())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1475,8 +1342,8 @@ mod tests {
         assert_eq!(details["pattern"], pattern);
         assert!(details["regex_error"].as_str().is_some_and(|text| !text.is_empty()));
         assert!(details.get("position").is_some());
-        assert_eq!(details["suggested_literal"], pattern);
-        assert!(details["suggested_pattern"].as_str().is_some_and(|text| !text.is_empty()));
+        assert!(details.get("suggested_literal").is_none());
+        assert!(details.get("suggested_pattern").is_none());
     }
 
     #[test]
@@ -1491,11 +1358,10 @@ mod tests {
         let result = call_result(dir.path(), serde_json::json!({"pattern": pattern}));
         assert_invalid_regex(pattern, &result);
         assert!(!result.content.contains("pub struct ModelRequest"));
-        let suggested = result.error_details.as_ref().unwrap()["suggested_pattern"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let retry = call_result(dir.path(), serde_json::json!({"pattern": suggested}));
+        let retry = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": pattern, "literal": true}),
+        );
         assert!(retry.error.is_none(), "{}", retry.content);
         assert!(match_blob(&retry).contains("ModelRequest"));
     }
@@ -1530,9 +1396,8 @@ mod tests {
         let result = call_result(dir.path(), serde_json::json!({"pattern": "anything"}));
         let data = grep_data(&result);
         assert_eq!(data["reason"], "corpus_empty");
-        let out = note_text(&result);
-        assert!(out.contains("excludes.json"), "got: {out}");
-        assert!(!out.contains("-u"), "got: {out}");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(!result.content.contains("-u"), "{}", result.content);
     }
 
     fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {
@@ -1586,10 +1451,8 @@ mod tests {
             )
         });
         assert_eq!(grep_data(&result)["reason"], "path_excluded");
-        let out = note_text(&result);
-        assert!(out.contains("not searched"), "got: {out}");
-        assert!(out.contains("search.exclude"), "got: {out}");
-        assert!(out.contains("name a single file inside it"), "got: {out}");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(grep_data(&result)["matches"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -1607,9 +1470,9 @@ mod tests {
         assert_eq!(data["matches"].as_array().unwrap().len(), 0);
         assert_eq!(data["searched"]["excluded"], false);
         assert!(
-            !note_text(&result).contains("Default filters may hide"),
-            "got: {}",
-            note_text(&result)
+            result.diagnostics.is_empty(),
+            "{:?}",
+            result.diagnostics
         );
     }
 
@@ -1671,18 +1534,20 @@ mod tests {
     }
 
     #[test]
-    fn empty_glob_value_falls_back_to_the_whole_workspace() {
+    fn blank_glob_is_invalid_input() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "a.rs", "needle\n");
         let result = call_result(
             dir.path(),
             serde_json::json!({"pattern": "needle", "glob": "   "}),
         );
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
         assert!(
-            match_blob(&result).contains("a.rs"),
-            "an empty glob is not a filter, got: {}",
-            match_blob(&result)
+            result.content.contains("parameter 'glob' must not be blank"),
+            "{}",
+            result.content
         );
+        assert!(result.data.is_none());
     }
 
     #[test]
@@ -1764,13 +1629,6 @@ mod tests {
         assert_eq!(data["matches"].as_array().unwrap().len(), 3);
         assert_eq!(data["page"]["has_more"], true);
         assert!(data["page"]["next"].is_string());
-        assert!(
-            result
-                .diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.code == "scan_budget"),
-            "got: {:?}",
-            result.diagnostics
-        );
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 }

@@ -1,13 +1,12 @@
 use serde::Serialize;
 use serde_json::Value;
-use similar::TextDiff;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::file_identity::{self, file_ref, locate_resolved};
-use crate::tool::outcome::{Diagnostic, FileRef, Page, ToolOutcome};
+use crate::tool::outcome::{FileRef, Page};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
@@ -29,6 +28,8 @@ struct ReadPageData {
     file: FileRef,
     lines: Vec<ReadLineData>,
     page: Page,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
 }
 
 #[derive(Default)]
@@ -75,7 +76,8 @@ impl Tool for ReadTool {
                     "description": "Maximum lines in this page. Default 2000, maximum 5000."
                 }
             },
-            "required": ["path"]
+            "required": ["path"],
+            "additionalProperties": false
         })
     }
 
@@ -136,6 +138,11 @@ impl Tool for ReadTool {
                         }
                     },
                     "required": ["has_more", "next"]
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["in_context_window"],
+                    "description": "Set when lines is empty because those session lines are already in the context window."
                 }
             },
             "required": ["file", "lines", "page"]
@@ -221,7 +228,7 @@ impl ReadTool {
     ) -> ToolCallResult {
         let raw_path = match crate::tool::require_nonempty_string(&input, "path") {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return coded("invalid_input", e),
         };
         if let Some(result) = read_virtual_session(raw_path, &input, &execution) {
             return result;
@@ -232,7 +239,7 @@ impl ReadTool {
             execution.path_mode,
         ) {
             Ok(path) => path,
-            Err(error) => return ToolCallResult::error(error.to_string()),
+            Err(error) => return crate::tools::file_path::tool_path_error(error),
         };
         let located = locate_resolved(&execution.workspace_root, &path, raw_path);
         let workspace_bytes = self.ide.as_ref().and_then(|ide| {
@@ -243,13 +250,16 @@ impl ReadTool {
                 Err(
                     crate::workspace::WorkspaceError::NotFile(p)
                     | crate::workspace::WorkspaceError::IsDir(p),
-                ) => Some(Err(crate::tools::file_path::directory_not_file_message(&p))),
-                Err(error) => Some(Err(error.to_string())),
+                ) => Some(Err(coded(
+                    "invalid_input",
+                    crate::tools::file_path::directory_not_file_message(&p),
+                ))),
+                Err(error) => Some(Err(crate::tools::file_path::workspace_error(error))),
             }
         });
         let result = match workspace_bytes {
             Some(Ok(bytes)) => self.read_resolved(&path, Some(bytes), &input, located),
-            Some(Err(error)) => ToolCallResult::error(error),
+            Some(Err(error)) => error,
             None => self.read_resolved(&path, None, &input, located),
         };
         if !matches!(result.level, crate::types::ToolSignalLevel::Error)
@@ -271,37 +281,34 @@ impl ReadTool {
         let metadata = match std::fs::metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut msg = format!("File not found: {path_display}");
-                let suggestions = suggest_similar_files(&path_display);
-                if !suggestions.is_empty() {
-                    msg.push_str(&format!("\nSimilar files: {}", suggestions.join(", ")));
-                } else {
-                    msg.push_str(&format!(
-                        "\n{}",
-                        crate::tools::file_path::missing_file_hint()
-                    ));
-                }
-                return contract_error("not_found", msg);
+                return coded("not_found", format!("file not found: {path_display}"));
             }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                return ToolCallResult::error(format!(
-                    "Permission denied reading {path_display}. Check file permissions or choose a different path."
-                ));
+                return coded(
+                    "io",
+                    format!(
+                        "Permission denied reading {path_display}. Check file permissions or choose a different path."
+                    ),
+                );
             }
-            Err(e) => return ToolCallResult::error(format!("read {path_display}: {e}")),
+            Err(e) => return coded("io", format!("read {path_display}: {e}")),
         };
 
         if metadata.is_dir() {
-            return ToolCallResult::error(crate::tools::file_path::directory_not_file_message(
-                &path_display,
-            ));
+            return coded(
+                "invalid_input",
+                crate::tools::file_path::directory_not_file_message(&path_display),
+            );
         }
 
         let bytes = match workspace_bytes {
             Some(bytes) => bytes,
             None => match std::fs::read(path) {
                 Ok(bytes) => bytes,
-                Err(e) => return ToolCallResult::error(format!("read {}: {}", path_display, e)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return coded("not_found", format!("file not found: {path_display}"));
+                }
+                Err(e) => return coded("io", format!("read {path_display}: {e}")),
             },
         };
         if let Some(mime_type) = sniff_image_mime(&bytes) {
@@ -341,9 +348,8 @@ impl ReadTool {
 
 }
 
-fn contract_error(code: &str, message: impl Into<String>) -> ToolCallResult {
-    let message = message.into();
-    ToolOutcome::<Value>::failure(code, message.clone(), false).into_call_result(message)
+fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
+    crate::tools::file_path::coded_error(code, message)
 }
 
 fn limit_error(input: &Value) -> Option<String> {
@@ -369,15 +375,15 @@ fn read_virtual_session(
     let stem = crate::session::transcript_file::try_parse_virtual_path(raw_path)?;
     let reader = match execution.session_reader() {
         Ok(r) => r,
-        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+        Err(e) => return Some(crate::tools::file_path::litecode_error(e)),
     };
     let session_id = match crate::engines::session_search::resolve_session_ref(reader, &stem) {
         Ok(id) => id,
-        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+        Err(e) => return Some(crate::tools::file_path::litecode_error(e)),
     };
     let file = match reader.transcript_file_blocking(&session_id) {
         Ok(f) => f,
-        Err(e) => return Some(ToolCallResult::error(e.to_string())),
+        Err(e) => return Some(crate::tools::file_path::litecode_error(e)),
     };
     let hidden = hidden_surface_seqs(reader, &session_id, &execution.session_id);
     Some(render_projection_page(&file, input, &hidden, raw_path))
@@ -408,16 +414,20 @@ fn render_projection_page(
         },
         file.lines.join("\n").as_bytes(),
     );
-    let (start_line, start_warning) = resolve_start_line(input);
-    let (end_line, window_warning) = match resolve_end_line(input, start_line) {
-        Ok(pair) => pair,
-        Err(msg) => return contract_error("invalid_input", msg),
+    let start_line = match resolve_start_line(input) {
+        Ok(line) => line,
+        Err(msg) => return coded("invalid_input", msg),
+    };
+    let end_line = match resolve_end_line(input, start_line) {
+        Ok(line) => line,
+        Err(msg) => return coded("invalid_input", msg),
     };
     let total_lines = file.total_lines();
     if start_line > total_lines && total_lines > 0 {
-        return ToolCallResult::error(format!(
-            "start_line {start_line} exceeds file length ({total_lines} lines)"
-        ));
+        return coded(
+            "invalid_input",
+            format!("start_line {start_line} exceeds file length ({total_lines} lines)"),
+        );
     }
     let start = start_line.saturating_sub(1);
     let end = end_line.min(total_lines);
@@ -426,26 +436,15 @@ fn render_projection_page(
             .is_some_and(|seq| hidden_seqs.contains(&seq))
     });
     if total_lines > 0 && start < end && range_hidden && !hidden_seqs.is_empty() {
-        let mut result = finish_read(
+        return finish_read(
             identity,
             Vec::new(),
             end,
             total_lines,
-            [&start_warning, &window_warning],
+            Some("in_context_window"),
         );
-        result.diagnostics.push(Diagnostic::info(
-            "in_context_window",
-            crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG,
-        ));
-        return result;
     }
-    render_line_window(
-        identity,
-        start,
-        end,
-        total_lines,
-        [&start_warning, &window_warning],
-        |i| {
+    render_line_window(identity, start, end, total_lines, None, |i| {
             let line_no = (i + 1) as u32;
             if file
                 .seq_at(line_no)
@@ -460,27 +459,26 @@ fn render_projection_page(
 
 fn render_text_page(content: &str, input: &Value, file: FileRef) -> ToolCallResult {
     let lines: Vec<&str> = content.lines().collect();
-    let (start_line, start_warning) = resolve_start_line(input);
-    let (end_line, window_warning) = match resolve_end_line(input, start_line) {
-        Ok(pair) => pair,
-        Err(msg) => return contract_error("invalid_input", msg),
+    let start_line = match resolve_start_line(input) {
+        Ok(line) => line,
+        Err(msg) => return coded("invalid_input", msg),
+    };
+    let end_line = match resolve_end_line(input, start_line) {
+        Ok(line) => line,
+        Err(msg) => return coded("invalid_input", msg),
     };
     let total_lines = lines.len();
     if start_line > total_lines && total_lines > 0 {
-        return ToolCallResult::error(format!(
-            "start_line {start_line} exceeds file length ({total_lines} lines)"
-        ));
+        return coded(
+            "invalid_input",
+            format!("start_line {start_line} exceeds file length ({total_lines} lines)"),
+        );
     }
     let start = start_line.saturating_sub(1);
     let end = end_line.min(total_lines);
-    render_line_window(
-        file,
-        start,
-        end,
-        total_lines,
-        [&start_warning, &window_warning],
-        |i| Some((i + 1, lines[i])),
-    )
+    render_line_window(file, start, end, total_lines, None, |i| {
+        Some((i + 1, lines[i]))
+    })
 }
 
 fn render_line_window<'a>(
@@ -488,7 +486,7 @@ fn render_line_window<'a>(
     start: usize,
     end: usize,
     total_lines: usize,
-    warnings: [&Option<String>; 2],
+    reason: Option<&str>,
     mut line_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
 ) -> ToolCallResult {
     let mut data_lines = Vec::new();
@@ -503,7 +501,7 @@ fn render_line_window<'a>(
             line_truncated,
         });
     }
-    finish_read(file, data_lines, end, total_lines, warnings)
+    finish_read(file, data_lines, end, total_lines, reason)
 }
 
 fn finish_read(
@@ -511,7 +509,7 @@ fn finish_read(
     lines: Vec<ReadLineData>,
     covered_end: usize,
     total_lines: usize,
-    warnings: [&Option<String>; 2],
+    reason: Option<&str>,
 ) -> ToolCallResult {
     let has_more = covered_end < total_lines;
     let next = has_more.then(|| (covered_end + 1).to_string());
@@ -523,10 +521,11 @@ fn finish_read(
     let data = serde_json::to_value(ReadPageData {
         file,
         lines,
-        page: page.clone(),
+        page,
+        reason: reason.map(str::to_string),
     })
     .unwrap_or(Value::Null);
-    attach_read_signals(crate::tool::outcome::ok_data(data), warnings)
+    crate::tool::outcome::ok_data(data)
 }
 
 fn data_line_text(line: &str) -> (String, bool) {
@@ -537,40 +536,23 @@ fn data_line_text(line: &str) -> (String, bool) {
     }
 }
 
-fn resolve_start_line(input: &Value) -> (usize, Option<String>) {
-    if input.get("start_line").is_none() {
-        return (1, None);
-    }
-    if let Some(n) = input["start_line"].as_i64() {
-        if n < 1 {
-            return (
-                1,
-                Some(format!(
-                    "start_line {n} is invalid (must be >= 1); starting at line 1"
-                )),
-            );
-        }
-        return (n as usize, None);
-    }
-    if let Some(n) = input["start_line"].as_u64() {
-        if n < 1 {
-            return (
-                1,
-                Some("start_line 0 is invalid (must be >= 1); starting at line 1".into()),
-            );
-        }
-        return (n as usize, None);
-    }
-    (
-        1,
-        Some("start_line must be a positive integer; starting at line 1".into()),
-    )
+fn line_number(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
 }
 
-fn resolve_end_line(
-    input: &Value,
-    start_line: usize,
-) -> std::result::Result<(usize, Option<String>), String> {
+fn resolve_start_line(input: &Value) -> Result<usize, String> {
+    let Some(value) = input.get("start_line").filter(|value| !value.is_null()) else {
+        return Ok(1);
+    };
+    match line_number(value) {
+        Some(n) if n >= 1 => Ok(n as usize),
+        _ => Err("parameter 'start_line' must be an integer >= 1".into()),
+    }
+}
+
+fn resolve_end_line(input: &Value, start_line: usize) -> Result<usize, String> {
     if let Some(message) = limit_error(input) {
         return Err(message);
     }
@@ -580,28 +562,20 @@ fn resolve_end_line(
         .map(|limit| limit as usize)
         .unwrap_or(DEFAULT_LINE_LIMIT);
     let max_end = start_line.saturating_add(limit - 1);
-    let (requested, parse_warning) = if input.get("end_line").is_none() {
-        (max_end, None)
-    } else if let Some(n) = input["end_line"].as_i64() {
-        if n < 1 {
-            return Err("end_line must be >= start_line".into());
-        }
-        (n as usize, None)
-    } else if let Some(n) = input["end_line"].as_u64() {
-        if n < 1 {
-            return Err("end_line must be >= start_line".into());
-        }
-        (n as usize, None)
-    } else {
-        (
-            max_end,
-            Some("end_line must be a positive integer; using default window".into()),
-        )
+    let Some(value) = input.get("end_line").filter(|value| !value.is_null()) else {
+        return Ok(max_end);
     };
+    let Some(n) = line_number(value) else {
+        return Err("parameter 'end_line' must be an integer >= 1".into());
+    };
+    if n < 1 {
+        return Err("parameter 'end_line' must be an integer >= 1".into());
+    }
+    let requested = n as usize;
     if requested < start_line {
         return Err("end_line must be >= start_line".into());
     }
-    Ok((requested.min(max_end), parse_warning))
+    Ok(requested.min(max_end))
 }
 
 fn unsupported_read(path: &str, mime: &str, bytes: u64, message: &str) -> ToolCallResult {
@@ -612,34 +586,6 @@ fn unsupported_read(path: &str, mime: &str, bytes: u64, message: &str) -> ToolCa
             "bytes": bytes,
         }))
         .into_call_result(message)
-}
-
-fn attach_read_signals(
-    mut result: ToolCallResult,
-    warnings: [&Option<String>; 2],
-) -> ToolCallResult {
-    for warning in warnings.into_iter().flatten() {
-        result.diagnostics.push(Diagnostic::warning("read_window", warning));
-    }
-    let truncated = result
-        .data
-        .as_ref()
-        .and_then(|data| data.get("lines"))
-        .and_then(Value::as_array)
-        .is_some_and(|lines| {
-            lines
-                .iter()
-                .any(|line| line.get("line_truncated").and_then(Value::as_bool) == Some(true))
-        });
-    if truncated {
-        result
-            .diagnostics
-            .push(Diagnostic::warning(
-                "line_truncated",
-                "one or more lines were truncated",
-            ));
-    }
-    result
 }
 
 fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
@@ -654,59 +600,6 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
     } else {
         None
     }
-}
-
-/// Suggest similar files when the exact file is not found.
-/// Returns a list of file paths in the same directory that have similar names.
-pub fn suggest_similar_files(path: &str) -> Vec<String> {
-    let file_path = Path::new(path);
-    let parent = file_path.parent();
-    let filename = file_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-
-    if filename.is_empty() {
-        return Vec::new();
-    }
-
-    let dir = match parent {
-        Some(d) if d.exists() => d,
-        _ => return Vec::new(),
-    };
-
-    let mut suggestions = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let entry_name = entry.file_name();
-            let entry_str = entry_name.to_string_lossy();
-
-            // Skip the original file
-            if entry_str == filename {
-                continue;
-            }
-
-            // Compute simple similarity: shared prefix + suffix length
-            let sim = simple_similarity(filename, &entry_str);
-            if sim >= 0.4
-                && let Some(full_path) = entry.path().to_str()
-            {
-                suggestions.push((sim, full_path.to_string()));
-            }
-        }
-    }
-
-    // Sort by similarity descending, take top 5
-    suggestions.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-    suggestions.truncate(5);
-    suggestions.into_iter().map(|(_, p)| p).collect()
-}
-
-/// Simple string similarity based on Levenshtein/edit distance ratio.
-/// Uses the `similar` crate for robust comparison.
-fn simple_similarity(a: &str, b: &str) -> f64 {
-    if a.is_empty() || b.is_empty() {
-        return 0.0;
-    }
-    let diff = TextDiff::from_chars(a, b);
-    diff.ratio() as f64
 }
 
 #[cfg(test)]
@@ -997,7 +890,6 @@ mod tests {
                 .is_err()
         );
 
-        // start_line = 0 → fallback with warning
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("lines.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
@@ -1005,15 +897,13 @@ mod tests {
             "path": file_path.to_str().expect("path"),
             "start_line": 0
         }));
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
         assert!(
-            result.diagnostics.iter().any(|diagnostic| {
-                diagnostic.message.contains("start_line 0 is invalid")
-            }),
-            "got: {:?}",
-            result.diagnostics
+            result.content.contains("start_line"),
+            "got: {}",
+            result.content
         );
-        assert!(result.error.is_none());
-        assert_eq!(result.data.as_ref().unwrap()["lines"][0]["text"], "line1");
+        assert!(result.data.is_none());
 
         let result = tool.call(serde_json::json!({
             "path": file_path.to_str().expect("path"),
@@ -1035,7 +925,7 @@ mod tests {
     }
 
     #[test]
-    fn negative_start_line_warns_and_reads() {
+    fn negative_start_line_is_invalid_input() {
         let tool = ReadTool::default();
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("lines.txt");
@@ -1046,39 +936,9 @@ mod tests {
             "path": path,
             "start_line": -5
         }));
-        assert!(
-            start.diagnostics.iter().any(|diagnostic| {
-                diagnostic.message.contains("start_line -5 is invalid")
-            }),
-            "got: {:?}",
-            start.diagnostics
-        );
-        assert_eq!(start.data.as_ref().unwrap()["lines"][0]["text"], "line1");
-    }
-
-    #[test]
-    fn test_suggest_similar_files() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join("main.rs"), "fn main() {}").expect("write");
-        std::fs::write(dir.path().join("main_test.rs"), "mod test;").expect("write");
-        std::fs::write(dir.path().join("lib.rs"), "pub mod lib;").expect("write");
-        std::fs::write(dir.path().join("build.rs"), "fn build() {}").expect("write");
-
-        let missing = dir.path().join("mian.rs").to_str().unwrap().to_string();
-        let suggestions = suggest_similar_files(&missing);
-        assert!(
-            suggestions.iter().any(|s| s.contains("main.rs")),
-            "should suggest main.rs for 'mian.rs', got: {:?}",
-            suggestions
-        );
-    }
-
-    #[test]
-    fn test_simple_similarity() {
-        assert!(simple_similarity("main.rs", "main.rs") > 0.9);
-        assert!(simple_similarity("main.rs", "main_test.rs") > 0.4);
-        assert!(simple_similarity("main.rs", "completely_different.go") < 0.4);
-        assert_eq!(simple_similarity("", "foo"), 0.0);
+        assert_eq!(start.error_code.as_deref(), Some("invalid_input"));
+        assert!(start.content.contains("start_line"), "got: {}", start.content);
+        assert!(start.data.is_none());
     }
 
     #[test]
@@ -1178,10 +1038,10 @@ mod tests {
             "{}",
             self_read.content
         );
-        assert!(
-            diag_text(&self_read).contains(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
+        assert_eq!(
+            self_read.data.as_ref().unwrap()["reason"], "in_context_window",
             "live surface should be filtered: {:?}",
-            self_read.diagnostics
+            self_read.data
         );
         assert!(
             !page_text(&self_read).contains("VIRTUAL_READ_NEEDLE"),
@@ -1265,10 +1125,10 @@ mod tests {
             serde_json::json!({ "start_line": live_no, "end_line": live_no }),
             &current,
         );
-        assert!(
-            diag_text(&live_only).contains(crate::session::transcript_file::IN_CONTEXT_WINDOW_MSG),
-            "offset into the live surface must stay in-window:\n{:?}",
-            live_only.diagnostics
+        assert_eq!(
+            live_only.data.as_ref().unwrap()["reason"], "in_context_window",
+            "offset into the live surface must stay in-window: {:?}",
+            live_only.data
         );
         assert!(
             !page_text(&live_only).contains("LIVE_READ_TOKEN still in window"),
@@ -1303,15 +1163,6 @@ mod tests {
                     .join("\n")
             })
             .unwrap_or_default()
-    }
-
-    fn diag_text(result: &ToolCallResult) -> String {
-        result
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.message.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 
     fn read_data(result: &ToolCallResult) -> Value {

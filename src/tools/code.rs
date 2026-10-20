@@ -775,15 +775,7 @@ fn key_arg_summary(args: &Value) -> String {
             .map(|text| truncate_chars(&text, SUMMARY_VALUE_CHARS))
             .unwrap_or_default();
     };
-    const PREFERRED: &[&str] = &[
-        "path",
-        "file_path",
-        "pattern",
-        "glob",
-        "query",
-        "command",
-        "url",
-    ];
+    const PREFERRED: &[&str] = &["path", "pattern", "glob", "query", "command", "url"];
     let mut parts = Vec::new();
     for key in PREFERRED {
         if let Some(text) = object.get(*key).and_then(scalar_text) {

@@ -259,3 +259,85 @@ async fn a_second_argument_is_a_catchable_type_error() {
     assert!(text.contains("result:\nTypeError") || text.contains("\"TypeError\""), "{text}");
     assert!(text.starts_with("run_code ok"), "{text}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn start_line_zero_is_invalid_input() {
+    let text = captured_run(
+        json!({
+            "code": r#"
+                try {
+                  await tools.read({ path: "a.txt", start_line: 0 });
+                  return "resolved";
+                } catch (e) {
+                  return [e instanceof ToolError, e.code, e.message];
+                }
+            "#
+        }),
+        |root| {
+            std::fs::write(root.join("a.txt"), "alpha\n").unwrap();
+        },
+    )
+    .await;
+    assert!(text.contains("\"invalid_input\""), "{text}");
+    assert!(text.contains("start_line"), "{text}");
+    assert!(text.contains("error:invalid_input"), "{text}");
+    assert!(!text.contains("resolved"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn file_path_alias_is_rejected_without_reading() {
+    let text = captured_run(
+        json!({
+            "code": r#"
+                try {
+                  const page = await tools.read({ path: "a.txt", file_path: "a.txt" });
+                  return JSON.stringify(page);
+                } catch (e) {
+                  return [e instanceof ToolError, e.code, e.message];
+                }
+            "#
+        }),
+        |root| {
+            std::fs::write(root.join("a.txt"), "SENTINEL_NOT_READ\n").unwrap();
+        },
+    )
+    .await;
+    assert!(text.contains("\"invalid_input\""), "{text}");
+    assert!(text.contains("file_path"), "{text}");
+    assert!(text.contains("error:invalid_input"), "{text}");
+    assert!(!text.contains("SENTINEL_NOT_READ"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn parent_glob_and_blank_grep_glob_are_invalid_input() {
+    let text = captured_run_code(
+        r#"
+        let glob_error = null;
+        let grep_error = null;
+        try {
+          await tools.glob({ pattern: "../*" });
+        } catch (e) {
+          glob_error = [e instanceof ToolError, e.code, e.message];
+        }
+        try {
+          await tools.grep({ pattern: "x", glob: "  " });
+        } catch (e) {
+          grep_error = [e instanceof ToolError, e.code, e.message];
+        }
+        return { glob_error, grep_error };
+        "#,
+    )
+    .await;
+    assert!(text.contains("invalid_input"), "{text}");
+    assert!(text.contains("reaches outside the search directory"), "{text}");
+    assert!(text.contains("parameter 'glob' must not be blank"), "{text}");
+    assert!(text.contains("error:invalid_input"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_file_message_has_no_discovery_hint() {
+    let text = captured_run_code(r#"await tools.read({ path: "nope.rs" });"#).await;
+    assert!(text.contains("file not found:"), "{text}");
+    assert!(!text.contains("Similar files"), "{text}");
+    assert!(!text.contains("verify"), "{text}");
+}

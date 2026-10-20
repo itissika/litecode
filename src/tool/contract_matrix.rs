@@ -47,8 +47,35 @@ const MATRIX: &[Row] = &[
         status: "ok",
         data: "lines[].line_truncated=true",
         page: "—",
-        diagnostics: "line_truncated",
+        diagnostics: "[]",
         error_code: "null",
+    },
+    Row {
+        tool: "read",
+        scenario: "start_line 非法",
+        status: "error",
+        data: "null",
+        page: "—",
+        diagnostics: "[]",
+        error_code: "invalid_input",
+    },
+    Row {
+        tool: "read",
+        scenario: "未知参数",
+        status: "error",
+        data: "null",
+        page: "—",
+        diagnostics: "[]",
+        error_code: "invalid_input",
+    },
+    Row {
+        tool: "read",
+        scenario: "上下文窗口",
+        status: "ok",
+        data: "lines=[]",
+        page: "完成",
+        diagnostics: "[]",
+        error_code: "reason=in_context_window",
     },
     Row {
         tool: "read",
@@ -96,6 +123,24 @@ const MATRIX: &[Row] = &[
         error_code: "null",
     },
     Row {
+        tool: "glob",
+        scenario: "父目录 pattern",
+        status: "error",
+        data: "null",
+        page: "—",
+        diagnostics: "[]",
+        error_code: "invalid_input",
+    },
+    Row {
+        tool: "glob",
+        scenario: "路径被排除",
+        status: "ok",
+        data: "paths=[]",
+        page: "完成",
+        diagnostics: "[]",
+        error_code: "reason=path_excluded",
+    },
+    Row {
         tool: "grep",
         scenario: "零命中",
         status: "ok",
@@ -106,12 +151,21 @@ const MATRIX: &[Row] = &[
     },
     Row {
         tool: "grep",
+        scenario: "空白 glob",
+        status: "error",
+        data: "null",
+        page: "—",
+        diagnostics: "[]",
+        error_code: "invalid_input",
+    },
+    Row {
+        tool: "grep",
         scenario: "非法 regex",
         status: "error",
         data: "null",
         page: "—",
         diagnostics: "[]",
-        error_code: "invalid_regex + suggestion",
+        error_code: "invalid_regex",
     },
     Row {
         tool: "grep",
@@ -279,6 +333,16 @@ fn tools() -> Vec<Arc<dyn Tool>> {
 }
 
 async fn call_code(root: &Path, name: &str, args: Value) -> ToolCallResult {
+    call_in_session(root, name, args, "p5-session", None).await
+}
+
+async fn call_in_session(
+    root: &Path,
+    name: &str,
+    args: Value,
+    session_id: &str,
+    session: Option<crate::session::SessionDataReader>,
+) -> ToolCallResult {
     let permission = allow_engine(root);
     let call = FunctionToolCall {
         arguments: args.to_string(),
@@ -293,7 +357,7 @@ async fn call_code(root: &Path, name: &str, args: Value) -> ToolCallResult {
         &tools(),
         &permission,
         &context(root),
-        "p5-session",
+        session_id,
         "default",
         crate::permission::deny_permission_sink().as_ref(),
         CancellationToken::new(),
@@ -301,7 +365,7 @@ async fn call_code(root: &Path, name: &str, args: Value) -> ToolCallResult {
         usize::MAX,
         None,
         Arc::new(WorkspaceWriteLock::new()),
-        None,
+        session,
         ToolCallOrigin {
             caller: ToolCaller::Code {
                 parent_call_id: "p5".into(),
@@ -313,6 +377,19 @@ async fn call_code(root: &Path, name: &str, args: Value) -> ToolCallResult {
         },
     )
     .await
+}
+
+fn seed_session(root: &Path, text: &str) -> String {
+    let db = root.join(".litecode").join("sessions.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+    let data = crate::session::SessionData::open(&lease, &db).unwrap();
+    let id = data
+        .create_session(root.to_str().unwrap(), "default", None)
+        .unwrap();
+    data.insert_items(&id, &[crate::types::user_text(text)])
+        .unwrap();
+    id
 }
 
 async fn run_program(root: &Path, code: &str) -> ToolCallResult {
@@ -399,12 +476,36 @@ fn assert_cells(result: &ToolCallResult, row: &Row) {
             assert!(result.error_code.is_none(), "{scene}");
             assert_eq!(result.data.as_ref().unwrap()["reason"], "no_match", "{scene}");
         }
-        "invalid_regex + suggestion" => {
-            assert_eq!(result.error_code.as_deref(), Some("invalid_regex"), "{scene}");
-            assert!(
-                result.error_details.as_ref().unwrap()["suggested_pattern"].is_string(),
+        "reason=path_excluded" => {
+            assert!(result.error_code.is_none(), "{scene}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["reason"],
+                "path_excluded",
                 "{scene}"
             );
+        }
+        "reason=in_context_window" => {
+            assert!(result.error_code.is_none(), "{scene}");
+            assert_eq!(
+                result.data.as_ref().unwrap()["reason"],
+                "in_context_window",
+                "{scene}"
+            );
+            assert!(
+                result.data.as_ref().unwrap()["lines"]
+                    .as_array()
+                    .is_some_and(|lines| lines.is_empty()),
+                "{scene}"
+            );
+        }
+        "invalid_regex" => {
+            assert_eq!(result.error_code.as_deref(), Some("invalid_regex"), "{scene}");
+            let details = result.error_details.as_ref().unwrap();
+            assert!(details["pattern"].is_string(), "{scene}");
+            assert!(details["regex_error"].is_string(), "{scene}");
+            assert!(details.get("position").is_some(), "{scene}");
+            assert!(details.get("suggested_pattern").is_none(), "{scene}");
+            assert!(details.get("suggested_literal").is_none(), "{scene}");
         }
         "edit_failed + blocks" => {
             assert_eq!(result.error_code.as_deref(), Some("edit_failed"), "{scene}");
@@ -483,6 +584,26 @@ async fn live_row(row: &Row) {
             write_file(root, "wide.txt", &format!("{}\n", "x".repeat(1600)));
             call_code(root, "read", json!({"path": "wide.txt"})).await
         }
+        ("read", "start_line 非法") => {
+            write_file(root, "a.txt", "alpha\n");
+            call_code(root, "read", json!({"path": "a.txt", "start_line": 0})).await
+        }
+        ("read", "未知参数") => {
+            write_file(root, "a.txt", "SENTINEL_NOT_READ\n");
+            call_code(
+                root,
+                "read",
+                json!({"path": "a.txt", "file_path": "a.txt"}),
+            )
+            .await
+        }
+        ("read", "上下文窗口") => {
+            let sid = seed_session(root, "WINDOW_NEEDLE hidden");
+            let path = crate::session::transcript_file::virtual_path_for(&sid);
+            let reader =
+                crate::session::SessionDataReader::open(&root.join(".litecode").join("sessions.db"));
+            call_in_session(root, "read", json!({"path": path}), &sid, Some(reader)).await
+        }
         ("read", "文件不存在") => call_code(root, "read", json!({"path": "missing.txt"})).await,
         ("read", "图片/二进制") => {
             std::fs::write(
@@ -502,6 +623,18 @@ async fn live_row(row: &Row) {
             write_file(root, "b.txt", "b");
             call_code(root, "glob", json!({"pattern": "*.txt", "limit": 1})).await
         }
+        ("glob", "父目录 pattern") => {
+            call_code(root, "glob", json!({"pattern": "../*"})).await
+        }
+        ("glob", "路径被排除") => {
+            write_file(root, "node_modules/pkg/index.js", "export {}\n");
+            call_code(
+                root,
+                "glob",
+                json!({"pattern": "**/*", "path": "node_modules"}),
+            )
+            .await
+        }
         ("grep", "有命中") => {
             write_file(root, "a.txt", "needle one\nneedle two\n");
             call_code(root, "grep", json!({"pattern": "needle", "limit": 1})).await
@@ -509,6 +642,10 @@ async fn live_row(row: &Row) {
         ("grep", "零命中") => {
             write_file(root, "a.txt", "present\n");
             call_code(root, "grep", json!({"pattern": "absent_token"})).await
+        }
+        ("grep", "空白 glob") => {
+            write_file(root, "a.rs", "needle\n");
+            call_code(root, "grep", json!({"pattern": "needle", "glob": "   "})).await
         }
         ("grep", "非法 regex") => call_code(root, "grep", json!({"pattern": "("})).await,
         ("grep", "literal 命中") => {
@@ -667,6 +804,29 @@ async fn live_row(row: &Row) {
             assert_eq!(
                 result.data.as_ref().unwrap()["lines"][0]["line_truncated"],
                 true
+            );
+        }
+        ("read", "start_line 非法") => {
+            assert!(result.content.contains("start_line"), "{}", result.content);
+            assert!(result.data.is_none());
+        }
+        ("read", "未知参数") => {
+            assert!(result.content.contains("file_path"), "{}", result.content);
+            assert!(result.data.is_none());
+            assert!(!result.content.contains("SENTINEL_NOT_READ"), "{}", result.content);
+        }
+        ("grep", "空白 glob") => {
+            assert!(
+                result.content.contains("parameter 'glob' must not be blank"),
+                "{}",
+                result.content
+            );
+        }
+        ("glob", "父目录 pattern") => {
+            assert!(
+                result.content.contains("reaches outside the search directory"),
+                "{}",
+                result.content
             );
         }
         ("glob", "正常") | ("glob", "超 limit") => {
@@ -855,7 +1015,7 @@ async fn probe_file_not_searched(root: &Path) -> ToolCallResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase5_contract_matrix_asserts_live_output() {
-    assert_eq!(MATRIX.len(), 24);
+    assert_eq!(MATRIX.len(), 30);
     let mut seen = std::collections::BTreeSet::new();
     for row in MATRIX {
         assert!(

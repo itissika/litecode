@@ -20,6 +20,8 @@ Permission denial is a catchable `ToolError` whose `code` is `permission_denied`
 An edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
+A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
+A glob that matches nothing returns `reason` `"no_match"`. A glob whose path is hidden by the default filters returns `reason` `"path_excluded"`.
 The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.

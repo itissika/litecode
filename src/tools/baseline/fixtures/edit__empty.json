@@ -3,7 +3,7 @@
   "covered": true,
   "data": null,
   "error": {
-    "kind": "internal",
+    "kind": "invalid_input",
     "message": "The file is empty. old_string cannot match an empty file.",
     "retryable": false
   },

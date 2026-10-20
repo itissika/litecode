@@ -314,16 +314,17 @@ impl EditTool {
     ) -> ToolCallResult {
         let raw_path = match crate::tools::file_path::require_code_path(&input) {
             Ok(s) => s.to_string(),
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return crate::tools::file_path::coded_error("invalid_input", e),
         };
         if crate::session::transcript_file::is_virtual_session_path(&raw_path) {
-            return ToolCallResult::error(
-                crate::session::transcript_file::READ_ONLY_MSG.to_string(),
+            return crate::tools::file_path::coded_error(
+                "invalid_input",
+                crate::session::transcript_file::READ_ONLY_MSG,
             );
         }
         let blocks = match parse_edits(&input) {
             Ok(blocks) => blocks,
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return crate::tools::file_path::coded_error("invalid_input", e),
         };
         let path = match crate::workspace::resolve_agent(
             &execution.workspace_root,
@@ -331,7 +332,7 @@ impl EditTool {
             execution.path_mode,
         ) {
             Ok(path) => path,
-            Err(error) => return ToolCallResult::error(error.to_string()),
+            Err(error) => return crate::tools::file_path::tool_path_error(error),
         };
         if execution.cancel.is_cancelled() {
             return cancelled_edit();
@@ -344,12 +345,21 @@ impl EditTool {
         let raw_bytes = match (&self.ide, &workspace_relative) {
             (Some(ide), Some(relative)) => match ide.workspace.read_file_bytes(relative) {
                 Ok((_, bytes)) => bytes,
-                Err(error) => return ToolCallResult::error(error.to_string()),
+                Err(error) => return crate::tools::file_path::workspace_error(error),
             },
             _ => match std::fs::read(&path) {
                 Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return crate::tools::file_path::coded_error(
+                        "not_found",
+                        format!("read {path_display}: {error}"),
+                    );
+                }
                 Err(error) => {
-                    return ToolCallResult::error(format!("read {path_display}: {error}"));
+                    return crate::tools::file_path::coded_error(
+                        "io",
+                        format!("read {path_display}: {error}"),
+                    );
                 }
             },
         };
@@ -369,19 +379,24 @@ impl EditTool {
         let decoded = match text_codec::decode_utf8_bytes(&raw_bytes) {
             Ok(decoded) => decoded,
             Err(error) => {
-                return ToolCallResult::error(text_codec::decode_error_for_path(
-                    error,
-                    &path_display,
-                ));
+                return crate::tools::file_path::coded_error(
+                    "unsupported",
+                    text_codec::decode_error_for_path(error, &path_display),
+                );
             }
         };
         let content = decoded.text;
         let planned = match plan_edits(&content, &blocks, &execution.cancel) {
             Ok(planned) => planned,
             Err(RequestFail::Cancelled) => return cancelled_edit(),
-            Err(RequestFail::EmptyFile) => return ToolCallResult::error(empty_file_message()),
+            Err(RequestFail::EmptyFile) => {
+                return crate::tools::file_path::coded_error("invalid_input", empty_file_message());
+            }
             Err(RequestFail::InvalidPlan(msg)) => {
-                return ToolCallResult::error(format!("{msg}; file was not modified"));
+                return crate::tools::file_path::coded_error(
+                    "invalid_input",
+                    format!("{msg}; file was not modified"),
+                );
             }
         };
         if execution.cancel.is_cancelled() {
@@ -410,18 +425,17 @@ impl EditTool {
             }
             let edited = planned.edited_content().expect("wrote implies edited");
             let to_write = text_codec::reattach_utf8_bom(decoded.has_bom, edited);
-            let write_err = match (&self.ide, &workspace_relative) {
-                (Some(ide), Some(relative)) => ide
-                    .workspace
-                    .write_file(relative, &to_write)
-                    .err()
-                    .map(|e| e.to_string()),
-                _ => crate::workspace::file_ops::atomic_write(&path, &to_write)
-                    .err()
-                    .map(|e| e.to_string()),
-            };
-            if let Some(error) = write_err {
-                return ToolCallResult::error(error);
+            match (&self.ide, &workspace_relative) {
+                (Some(ide), Some(relative)) => {
+                    if let Err(error) = ide.workspace.write_file(relative, &to_write) {
+                        return crate::tools::file_path::workspace_error(error);
+                    }
+                }
+                _ => {
+                    if let Err(error) = crate::workspace::file_ops::atomic_write(&path, &to_write) {
+                        return crate::tools::file_path::coded_error("io", error.to_string());
+                    }
+                }
             }
             if let (Some(ide), Some(_)) = (&self.ide, &workspace_relative) {
                 ide.apply_document_if_ready(&path, edited).await;

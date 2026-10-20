@@ -221,16 +221,17 @@ impl WriteTool {
     ) -> ToolCallResult {
         let raw_path = match crate::tools::file_path::require_code_path(&input) {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return crate::tools::file_path::coded_error("invalid_input", e),
         };
         if crate::session::transcript_file::is_virtual_session_path(raw_path) {
-            return ToolCallResult::error(
-                crate::session::transcript_file::READ_ONLY_MSG.to_string(),
+            return crate::tools::file_path::coded_error(
+                "invalid_input",
+                crate::session::transcript_file::READ_ONLY_MSG,
             );
         }
         let content = match crate::tool::require_string(&input, "content") {
             Ok(s) => s,
-            Err(e) => return ToolCallResult::error(e),
+            Err(e) => return crate::tools::file_path::coded_error("invalid_input", e),
         };
         let resolved = match crate::workspace::resolve_agent(
             &execution.workspace_root,
@@ -238,7 +239,7 @@ impl WriteTool {
             execution.path_mode,
         ) {
             Ok(path) => path,
-            Err(error) => return ToolCallResult::error(error.to_string()),
+            Err(error) => return crate::tools::file_path::tool_path_error(error),
         };
         let create_only = input["create_only"].as_bool().unwrap_or(false);
         let expected_hash = input.get("expected_hash").and_then(Value::as_str);
@@ -248,7 +249,7 @@ impl WriteTool {
             .and_then(|ide| ide.workspace.sandbox().rel_path(&resolved).ok());
         let current = match self.read_existing(&resolved, workspace_relative.as_deref()) {
             Ok(bytes) => bytes,
-            Err(error) => return ToolCallResult::error(error),
+            Err(error) => return error,
         };
         if let Some(rejected) =
             write_precondition(&resolved, create_only, expected_hash, current.as_deref())
@@ -270,7 +271,7 @@ impl WriteTool {
                     self.finish_ok(created, content.as_bytes(), &execution, raw_path, &resolved)
                         .await
                 }
-                Err(error) => ToolCallResult::error(error.to_string()),
+                Err(error) => crate::tools::file_path::workspace_error(error),
             };
         }
 
@@ -284,18 +285,18 @@ impl WriteTool {
         &self,
         resolved: &Path,
         workspace_relative: Option<&str>,
-    ) -> Result<Option<Vec<u8>>, String> {
+    ) -> Result<Option<Vec<u8>>, ToolCallResult> {
         if let (Some(ide), Some(relative)) = (&self.ide, workspace_relative) {
             return match ide.workspace.read_file_bytes(relative) {
                 Ok((_, bytes)) => Ok(Some(bytes)),
                 Err(crate::workspace::WorkspaceError::NotFound(_)) => Ok(None),
-                Err(error) => Err(error.to_string()),
+                Err(error) => Err(crate::tools::file_path::workspace_error(error)),
             };
         }
         match std::fs::read(resolved) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(crate::tools::file_path::coded_error("io", error.to_string())),
         }
     }
 
@@ -310,13 +311,13 @@ impl WriteTool {
         if let Some(parent) = file_path.parent() {
             match std::fs::create_dir_all(parent) {
                 Ok(()) => {}
-                Err(e) => return ToolCallResult::error(e.to_string()),
+                Err(e) => return crate::tools::file_path::coded_error("io", e.to_string()),
             }
         }
 
         match crate::workspace::file_ops::atomic_write(file_path, content) {
             Ok(()) => {}
-            Err(e) => return ToolCallResult::error(e.to_string()),
+            Err(e) => return crate::tools::file_path::coded_error("io", e.to_string()),
         }
 
         self.finish_ok(created, content.as_bytes(), execution, raw_path, file_path)

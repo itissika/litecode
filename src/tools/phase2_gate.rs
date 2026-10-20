@@ -253,8 +253,8 @@ fn phase2_grep_invalid_regex_details() {
         "position should be the caret column, got {}",
         details["position"]
     );
-    assert_eq!(details["suggested_literal"], "ModelRequest {");
-    assert!(details["suggested_pattern"].is_string());
+    assert!(details.get("suggested_literal").is_none());
+    assert!(details.get("suggested_pattern").is_none());
 }
 
 #[test]

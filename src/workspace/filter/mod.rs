@@ -47,11 +47,6 @@ pub use path_glob::{
 };
 pub use preset::{FilterPreset, exclude_globs, search_and_files_exclude_globs};
 
-/// Footer when grep/glob searched zero files under default filters.
-pub fn empty_discovery_hint() -> &'static str {
-    "Default filters may hide paths (.gitignore, files_exclude, search_exclude). Workspace exclude lists are in .litecode/excludes.json."
-}
-
 const CORPUS_LIST_CAP: usize = 8;
 
 /// Live Search-corpus boundary for agent grep empty states.

@@ -5,6 +5,8 @@ Permission denial is a catchable `ToolError` whose `code` is `permission_denied`
 An edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
+A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
+A glob that matches nothing returns `reason` `"no_match"`. A glob whose path is hidden by the default filters returns `reason` `"path_excluded"`.
 The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
@@ -159,6 +161,8 @@ type GlobData = {
   };
   // Matching paths sorted by depth, then parent directory, then name. Pass a path to read.
   paths: Array<string>;
+  // no_match: nothing matched. path_excluded: the path is hidden by the default filters.
+  reason?: "no_match" | "path_excluded";
 };
 
 type GrepInput = {
@@ -241,6 +245,8 @@ type ReadData = {
     // Total lines in the file.
     total?: Integer;
   };
+  // Set when lines is empty because those session lines are already in the context window.
+  reason?: "in_context_window";
 };
 
 type WriteInput = {
@@ -278,11 +284,11 @@ declare const tools: {
   readonly ["edit"]: (args: EditInput) => Promise<EditData>;
   // Find files by path glob. The result is `data.base`, `data.paths`, and `data.page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative and can be passed to read. When `base` is `"absolute"`, each path is absolute and can be passed to read.
   //
-  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. `limit` defaults to 1000 and is at most 5000. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. For content matches use grep.
+  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `data.reason` to `no_match`. A path hidden by those filters sets `data.reason` to `path_excluded`. For content matches use grep.
   readonly ["glob"]: (args: GlobInput) => Promise<GlobData>;
   // Search file contents. The result is `data.base`, `data.matches`, `data.page`, `data.searched`, and sometimes `data.reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`. Read the file for surrounding lines.
   //
-  // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text.
+  // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.
   //
   // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `data.reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.
   //
@@ -290,7 +296,7 @@ declare const tools: {
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData>;
   // Read one workspace file as structured data. Use `data.file` and `data.lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
   //
-  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `data.page.has_more` is true when any line remains after this page, including after an explicit window. `data.page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `data.file.hash` is the sha256 of the file bytes; pass it to edit as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. For discovery by name use glob; for content search use grep.
+  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `data.page.has_more` is true when any line remains after this page, including after an explicit window. `data.page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `data.file.hash` is the sha256 of the file bytes; pass it to edit as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`. For discovery by name use glob; for content search use grep.
   readonly ["read"]: (args: ReadInput) => Promise<ReadData>;
   // Create a new file or overwrite an existing one. The result is `data.file` and `data.created`. `data.file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `data.created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text. Prefer edit for a surgical change in an existing file.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;

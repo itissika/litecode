@@ -181,7 +181,7 @@ async fn write_outside_workspace_reports_path_outside_workspace() {
 }
 
 #[tokio::test]
-async fn unknown_parameter_is_a_diagnostic() {
+async fn unknown_parameter_is_invalid_input() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
     let result = call_code(
@@ -190,14 +190,9 @@ async fn unknown_parameter_is_a_diagnostic() {
         json!({ "path": "a.txt", "nope": true }),
     )
     .await;
-    assert!(
-        has_code(&result, "unknown_parameter"),
-        "diagnostics={:?} content={}",
-        result.diagnostics,
-        result.content
-    );
-    assert!(result.data.is_some(), "the call still returns data");
-    assert!(result.error.is_none());
+    assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+    assert!(result.content.contains("nope"), "{}", result.content);
+    assert!(result.data.is_none());
 }
 
 #[tokio::test]
