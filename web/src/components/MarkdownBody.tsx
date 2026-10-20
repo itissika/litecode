@@ -1,5 +1,4 @@
-import { Copy, Check } from "@phosphor-icons/react";
-import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -14,96 +13,11 @@ import {
   remarkKnowledgeRef,
 } from "../lib/knowledge/remarkKnowledgeRef";
 import type { Citation } from "../lib/knowledge/refDisplay";
-import {
-  getMarkdownHighlighter,
-  isSupportedHighlightLang,
-  SHIKI_THEME_DARK,
-  SHIKI_THEME_LIGHT,
-  normalizeLang,
-} from "../lib/shiki";
 import { isMermaidLang } from "../lib/mermaid";
 import { CitationChip } from "./CitationChip";
+import { CodeBlock } from "./CodeBlock";
 import { MermaidBlock } from "./MermaidBlock";
 import { WorkspacePicture } from "./WorkspacePicture";
-
-const GENERIC_LANGS = new Set(["", "text", "txt", "plain", "plaintext"]);
-
-function MarkdownCodeBlock({ code, lang }: { code: string; lang: string }) {
-  const [html, setHtml] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const normalizedLang = useMemo(() => normalizeLang(lang), [lang]);
-  const displayLang = lang || "text";
-  const skipHighlight =
-    GENERIC_LANGS.has(normalizedLang) ||
-    !isSupportedHighlightLang(normalizedLang);
-
-  useEffect(() => {
-    if (skipHighlight) {
-      setHtml(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const highlighter = await getMarkdownHighlighter();
-        const highlighted = highlighter.codeToHtml(code, {
-          lang: normalizedLang,
-          themes: { light: SHIKI_THEME_LIGHT, dark: SHIKI_THEME_DARK },
-        });
-        if (!cancelled) setHtml(highlighted);
-      } catch {
-        if (!cancelled) setHtml(null);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [code, normalizedLang, skipHighlight]);
-
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      /* clipboard unavailable */
-    }
-  };
-
-  return (
-    <div className="agent-code-block mb-2 last:mb-0">
-      <div className="agent-code-block-header">
-        <span className="agent-code-block-lang">{displayLang}</span>
-        <button
-          type="button"
-          onClick={() => void copyCode()}
-          className="agent-code-block-copy"
-          aria-label={copied ? "Copied" : "Copy code"}
-        >
-          {copied ? (
-            <Check size={12} weight="bold" aria-hidden />
-          ) : (
-            <Copy size={12} aria-hidden />
-          )}
-          <span>{copied ? "Copied" : "Copy"}</span>
-        </button>
-      </div>
-      {html ? (
-        <div
-          className="agent-code-block-body shiki-host"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        <pre className="agent-code-block-fallback">
-          <code>{code}</code>
-        </pre>
-      )}
-    </div>
-  );
-}
 
 function linkLabel(children: ReactNode): string {
   if (typeof children === "string" || typeof children === "number") return String(children);
@@ -307,12 +221,12 @@ export const MarkdownBody = memo(function MarkdownBody({
           if (isMermaidLang(lang)) {
             return <MermaidBlock code={raw} streaming={streaming} />;
           }
-          return <MarkdownCodeBlock code={raw} lang={lang} />;
+          return <CodeBlock code={raw} lang={lang} />;
         }
 
         // Fenced code block without language → render as block
         if (raw.includes("\n")) {
-          return <MarkdownCodeBlock code={raw} lang="" />;
+          return <CodeBlock code={raw} lang="" />;
         }
 
         // Inline code

@@ -7,6 +7,7 @@ import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { KillShellToolView } from "./KillShellToolView";
 import { CodeSearchToolView } from "./CodeSearchToolView";
+import { RunCodeToolView } from "./RunCodeToolView";
 import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
 import { SubagentListToolView } from "./SubagentListToolView";
@@ -41,6 +42,7 @@ const TOOL_VIEWS: Record<
   write: WriteToolView,
   edit: EditToolView,
   bash: BashToolView,
+  run_code: RunCodeToolView,
   wait_shell: WaitShellToolView,
   kill_shell: KillShellToolView,
   subagent_launch: SubagentLaunchToolView,
@@ -81,6 +83,7 @@ const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "session_search",
   "litecode_workspace",
   "knowledge",
+  "run_code",
 ]);
 
 export function viewOwnsOutput(name: string): boolean {
