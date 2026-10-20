@@ -111,7 +111,7 @@ impl Tool for EditTool {
                 },
                 "expected_hash": {
                     "type": "string",
-                    "description": "sha256 of the file bytes from a previous read. Omit to skip the check. A mismatch rejects stale and does not write."
+                    "description": "sha256 of the file bytes. Omit to skip the check. A mismatch rejects stale and does not write."
                 },
                 "edits": {
                     "type": "array",

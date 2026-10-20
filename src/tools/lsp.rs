@@ -58,7 +58,7 @@ impl LspTool {
             Some(EngineState::Warm) => None,
             Some(EngineState::Warming) => Some(
                 "LSP is still loading for the current workspace after waiting; \
-                 skipped — use read/grep, or wait for Settings → Engines → LSP to show Warm, then retry"
+                 skipped — wait for Settings → Engines → LSP to show Warm, then retry"
                     .into(),
             ),
             Some(EngineState::Failed) => Some(format!(
@@ -347,7 +347,7 @@ fn snippet_for_landing(path: &Path, line: u32) -> String {
         let mut out = fence_block(&text);
         if ancestor.remaining_lines > 0 {
             out.push_str(&format!(
-                "{} lines remaining in ancestor node. Read the file to see all.\n",
+                "{} lines remaining in ancestor node.\n",
                 ancestor.remaining_lines
             ));
         }
@@ -525,11 +525,11 @@ impl Tool for LspTool {
                 },
                 "line": {
                     "type": "integer",
-                    "description": "1-based line number from a prior read of the file. Prefer: the exact line shown by read. Avoid: 0-based indexes, guessed lines, or lines from an outdated buffer."
+                    "description": "1-based line number. Avoid: 0-based indexes, guessed lines, or lines from an outdated buffer."
                 },
                 "text": {
                     "type": "string",
-                    "description": "Exact substring on the target line identifying the symbol. Prefer: copy the symbol token from read output (e.g. AgentDeps). Avoid: invented spellings, fuzzy abbreviations, or pasting the entire line."
+                    "description": "Exact substring on the target line identifying the symbol. Prefer: copy the symbol token from that line (e.g. AgentDeps). Avoid: invented spellings, fuzzy abbreviations, or pasting the entire line."
                 }
             },
             "required": ["action", "file_path"]

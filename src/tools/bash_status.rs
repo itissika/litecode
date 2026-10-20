@@ -31,7 +31,7 @@ pub fn format_running_list(jobs: &[RunningJob], workspace_root: &Path) -> String
 }
 
 pub fn guidance_line() -> &'static str {
-    "Use wait_shell to wait. The output_file is the full log; grep/read it only if you need more than the inline window. kill_shell to stop."
+    "Use wait_shell to wait. The output_file is the full log. kill_shell to stop."
 }
 
 pub fn format_running_status(
@@ -133,7 +133,7 @@ pub fn format_completed_view(
             out.push_str("truncated_on_disk: true\n");
         }
         out.push_str(&format!(
-            "[head {INLINE_HEAD}B + tail {INLINE_TAIL}B of {} bytes. output_file has the full log — grep/read it only if this window is not enough. Do not re-run.]\n",
+            "[head {INLINE_HEAD}B + tail {INLINE_TAIL}B of {} bytes. output_file has the full log. Do not re-run.]\n",
             capture.total_bytes
         ));
         if cancelled {
@@ -286,7 +286,7 @@ mod tests {
         assert_eq!(
             got,
             format!(
-                "exit_code: 0\nbytes: 99\noutput_file: .litecode/bash/bg_x.output\ntruncated_on_disk: true\n[head {INLINE_HEAD}B + tail {INLINE_TAIL}B of 99 bytes. output_file has the full log — grep/read it only if this window is not enough. Do not re-run.]\n\n--- head ---\nHEAD\n--- tail ---\nTAIL\n"
+                "exit_code: 0\nbytes: 99\noutput_file: .litecode/bash/bg_x.output\ntruncated_on_disk: true\n[head {INLINE_HEAD}B + tail {INLINE_TAIL}B of 99 bytes. output_file has the full log. Do not re-run.]\n\n--- head ---\nHEAD\n--- tail ---\nTAIL\n"
             )
         );
     }

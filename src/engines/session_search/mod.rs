@@ -921,7 +921,7 @@ fn spill_footer(
         .collect::<Vec<_>>()
         .join(", ");
     let mut out = format!(
-        "\nShowing {shown} of {total} hits; the remaining {remaining} are in {location} — read or grep it."
+        "\nShowing {shown} of {total} hits; the remaining {remaining} are in {location}."
     );
     if !per_session.is_empty() {
         out.push_str(&format!("\nMore in: {per_session}."));

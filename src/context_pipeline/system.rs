@@ -230,8 +230,9 @@ mod tests {
     fn system_prompt_restores_tool_guidance_and_notes_code_mode() {
         let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
         assert!(prompt.contains("# Using your tools"));
-        assert!(prompt.contains("When a dedicated tool exists"));
-        assert!(prompt.contains("Prefer making multiple tool calls"));
+        assert!(prompt.contains("this request's tool list already has a dedicated tool"));
+        assert!(prompt.contains("cut round trips and use tokens more efficiently"));
+        assert!(!prompt.contains("over the shell"));
         assert!(prompt.contains("run_code"));
         assert!(prompt.contains("do not call them directly"));
         let tools = prompt.find("# Using your tools").unwrap();

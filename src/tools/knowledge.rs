@@ -212,7 +212,7 @@ impl KnowledgeTool {
         let follow = if card_issues.is_empty() {
             String::new()
         } else {
-            "Edit the body with `edit`. Rename with `knowledge rename`.".into()
+            "Edit the body. Rename with `knowledge rename`.".into()
         };
         ToolCallResult::ok(join_blocks(&[
             format!("# {key}\n\n{document}"),
@@ -358,7 +358,7 @@ impl KnowledgeTool {
             return ToolCallResult::error(format!("# Could not write\n\n{error}"));
         }
         let next = format!(
-            "Status is pending. The user enables it in the knowledge panel. Next, use `edit` on `{full}` to add a summary and a body, then run `knowledge check {}`.",
+            "Status is pending. The user enables it in the knowledge panel. Next, add a summary and a body on `{full}`, then run `knowledge check {}`.",
             quote_key(&key)
         );
         let corpus = Corpus::load(workspace);
@@ -1159,7 +1159,7 @@ mod tests {
         assert!(!refs.content.contains("- `missing` does not exist"));
         assert!(
             refs.content
-                .contains("Edit the body with `edit`. Rename with `knowledge rename`.")
+                .contains("Edit the body. Rename with `knowledge rename`.")
         );
         assert!(refs.content.contains("node : note"));
         assert!(refs.content.contains(&tail));

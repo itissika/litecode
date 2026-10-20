@@ -17,7 +17,7 @@ The knowledge base is human-owned. The agent helps record durable invariants: de
 Do not record trivia or details that will change.";
 
 const BUTTONS: &str = "\
-> This tool wraps the common commands. If they are not enough, combine them with other tools to read and edit. Run check after changes. Quote a key or folder that contains spaces.
+> This tool wraps the common commands. Run check after changes. Quote a key or folder that contains spaces.
 - `knowledge guide`: syntax, checks, and notes
 - `knowledge list [folder]`: list nodes; a folder only narrows the scope
 - `knowledge refs <key>`: that node's full file, plus summaries for the nodes that cite it and the nodes it cites

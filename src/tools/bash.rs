@@ -171,7 +171,7 @@ impl Tool for BashTool {
                 },
                 "run_in_background": {
                     "type": "boolean",
-                    "description": "Return immediately with bash_id. Inspect with read/grep; wait_shell to wait; kill_shell to stop.",
+                    "description": "Return immediately with bash_id. wait_shell to wait; kill_shell to stop.",
                     "default": false
                 },
                 "timeout": {
@@ -517,7 +517,7 @@ mod tests {
                 "exit_code: 1\n",
                 "bytes: 50000\n",
                 "output_file: .litecode/bash/bash_x.output\n",
-                "[head 2048B + tail 4096B of 50000 bytes. output_file has the full log — grep/read it only if this window is not enough. Do not re-run.]\n",
+                "[head 2048B + tail 4096B of 50000 bytes. output_file has the full log. Do not re-run.]\n",
                 "\n",
                 "--- head ---\n",
                 "HEADCHUNK\n",

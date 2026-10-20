@@ -39,7 +39,7 @@ pub const VIRTUAL_SESSION_SUFFIX: &str = ".md";
 /// is a product constant — never a per-call option.
 pub const RENDER_WIDTH: usize = 160;
 pub const READ_ONLY_MSG: &str =
-    "this path is a read-only session transcript projection; use read or grep";
+    "this path is a read-only session transcript projection";
 pub const IN_CONTEXT_WINDOW_MSG: &str =
     "requested lines are already in the current session context window";
 

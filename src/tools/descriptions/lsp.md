@@ -1,1 +1,1 @@
-Language-server navigation and diagnostics: goToDefinition, findReferences, hover, diagnostics. Read the file first to obtain line numbers, then call. diagnostics needs file_path only; other actions need file_path + line + text. Waits briefly if the language server is still loading.
+Language-server navigation and diagnostics: goToDefinition, findReferences, hover, diagnostics. The diagnostics action needs file_path only; the others need file_path + line + text. Waits briefly if the language server is still loading.

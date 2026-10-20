@@ -70,7 +70,7 @@ impl Tool for GlobTool {
                 "paths": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Matching paths sorted by depth, then parent directory, then name. Pass a path to read."
+                    "description": "Matching paths sorted by depth, then parent directory, then name."
                 },
                 "page": {
                     "type": "object",

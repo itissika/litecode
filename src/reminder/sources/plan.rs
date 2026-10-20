@@ -17,7 +17,7 @@ pub(crate) fn plan_changed(view: &SpineReminderView, facts: &TaskFacts) -> Optio
         return None;
     }
     let text = format!(
-        "[Plan updated] {} changed since you last read it. Read that file before continuing.",
+        "[Plan updated] {} changed since you last read it.",
         plan.relative_path
     );
     Some(Reminder::PlanChanged(PlanChangedBody {

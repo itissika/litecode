@@ -329,7 +329,7 @@ fn format_snippet_body(
                     "this chunk"
                 };
                 body.push_str(&format!(
-                    "\n{} lines remaining in {reason}. Read the file to see all.\n",
+                    "\n{} lines remaining in {reason}.\n",
                     snippet.remaining_lines
                 ));
             }

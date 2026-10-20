@@ -82,7 +82,7 @@ impl Tool for GrepTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute so read can open them."
+                    "description": "File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute."
                 },
                 "glob": {
                     "type": "string",

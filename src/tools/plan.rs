@@ -248,7 +248,7 @@ impl PlanTool {
         }
 
         let mut out = format!(
-            "Created plan at {relative}\nUser approved. The file contains only `# Plan`. Replace that heading with the full plan body using the edit tool (do not use write)."
+            "Created plan at {relative}\nUser approved. The file contains only `# Plan`. Replace that heading with the full plan body."
         );
         if let Some(opinion) = reply.free_text.as_deref() {
             out.push_str("\nUser opinion: ");
@@ -363,7 +363,7 @@ mod tests {
             result.content
         );
         assert!(
-            result.content.contains("edit tool"),
+            result.content.contains("full plan body"),
             "got: {}",
             result.content
         );

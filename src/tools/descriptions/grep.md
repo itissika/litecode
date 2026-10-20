@@ -1,4 +1,4 @@
-Search file contents. The result is `data.base`, `data.matches`, `data.page`, `data.searched`, and sometimes `data.reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`. Read the file for surrounding lines.
+Search file contents. The result is `data.base`, `data.matches`, `data.page`, `data.searched`, and sometimes `data.reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.
 
 `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.
 

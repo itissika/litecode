@@ -35,7 +35,7 @@ pub fn format_snippet_sections(sections: &[SnippetSection]) -> String {
         body.push_str(&fence_block(&section.text));
         if section.remaining_lines > 0 {
             body.push_str(&format!(
-                "\n{} lines remaining in ancestor node. Read the file to see all.\n",
+                "\n{} lines remaining in ancestor node.\n",
                 section.remaining_lines
             ));
         }
@@ -103,7 +103,7 @@ mod tests {
         assert!(out.contains("## Matches in b.rs"), "{out}");
         assert!(out.contains("### L12"), "{out}");
         assert!(
-            out.contains("3 lines remaining in ancestor node. Read the file to see all."),
+            out.contains("3 lines remaining in ancestor node."),
             "{out}"
         );
         assert!(out.contains("```\nfn save()"), "{out}");

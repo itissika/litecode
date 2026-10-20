@@ -48,9 +48,7 @@ pub fn apply_emergency_cap(content: String) -> String {
     format!(
         "<persisted-output>\n\
          Output exceeded token budget (~{et} tokens, {ch} chars).  \
-         Full output not shown.\n\
-         Use the read tool on the original source if the data came from a file, \
-         or re-run with narrower parameters.\n\
+         Full output not shown. Re-run with narrower parameters.\n\
          \n\
          Preview (first {preview_ch} chars):\n\n\
          {preview}{ellipsis}\n\
