@@ -5,7 +5,7 @@
 > 执行本整改期间，**本文档是唯一执行依据**。`docs/ptc/charter.md`、`docs/ptc/code-tool-rework-plan.md` 及其他任何文档，与本文档冲突或含糊时一律以本文档为准。执行者**无需、也不应**去读它们来决定做法。执行所需的章程条款、约定和类型草案都已内联在本文档中（§4、§5、§3.3）。文中保留的少量外部文档名只作背景出处，**仅背景，非执行依据**。代码位置（`文件:行号`/函数名）是执行对象，不是参考文档，照常使用。
 > 唯一例外是仓库根目录的 `AGENTS.md`：它是所有 agent 的工作契约，本文档 §6.0 已内联其中与本整改相关的条款（提交与构建门禁）。
 
-> 状态：**v1.1 定稿**（2026-10-20）。产品决策、架构定论和原待决三项已全部定案（§2），无待决项。Phase 0 的章程修订**已获产品负责人批准，Phase 0 已执行**。
+> 状态：**已实施**（2026-10-21）。v1.1 定稿的产品决策、架构定论与 Phase 0–6 已全部落地。各阶段提交见 §6 标题下的完成标注与 §11。
 > 范围：`run_code` 的模型可见文本、JS 侧结果/错误契约、封口语义、失败现场、账本；五个文件工具（read/glob/grep/edit/write）的 direct 时期冗余；与之相连的共享管线修补（UTF-8 安全切片、超时后结果）；`run_code` 人类视图删除。
 > 不在范围：Session schema、ctx/提示词组装、MCP/custom、bash 系列的 code 化、新增工具能力。
 > 方向原则：精力放在模型 agent 体验（模型看到的文本、SDK 契约、错误可读性）；人类 UI 最小化，按原始文本显示。
@@ -419,12 +419,16 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 
 ### Phase 0：章程与旧计划修订
 
+**完成：** 已实施，`f59a378`。
+
 - **前提：** 修订已获产品负责人批准，本阶段直接执行，不再另行确认。
 - **改动：** 按 §5 修订 `docs/ptc/charter.md`，条文内容以本文档 §4 内联文本为准、原样写入；在 `docs/ptc/code-tool-rework-plan.md` 标注被取代的条目；把本计划状态改为「Phase 0 已执行」。
 - **验收：** 章程中 I7、I10、D7、D8、I12 与本文档 §4 逐字一致；rework 计划中 `partial`、`ToolResult`、`suggested_pattern` 所在条目都带有「已取代」标注。
 - **提交建议：** `docs(ptc): 修订章程 I7/I10/D7/D8、新增 I12 并标注被取代的旧契约`
 
 ### Phase 1：模型视口——run_code 自持 64KB 预算，绕过 spill，UTF-8 安全
+
+**完成：** 已实施，`3b33184`。
 
 **改动：**
 
@@ -473,6 +477,8 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 **提交建议：** `fix(code): run_code 结果按 64KB 自持预算渲染，绕过 spill 并修复 UTF-8 截断`
 
 ### Phase 2：失败现场与账本——单一 seq、有界逐条、诊断、语法位置、stack、成功值
+
+**完成：** 已实施，`ec79e60`。
 
 **改动：**
 
@@ -525,6 +531,8 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 **提交建议：** `fix(code): run_code 失败现场带位置与栈，账本共用 runtime 序号并按预算逐条截断`
 
 ### Phase 3：JS 结果与错误契约（A1/A2/A3/P2）
+
+**完成：** 已实施，`1f946b5`。
 
 **改动：**
 
@@ -587,6 +595,8 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 
 ### Phase 4：砍掉 direct 时期冗余（A4）
 
+**完成：** 已实施，`60e4527`。
+
 **改动**（按 §3.6，每项都写明位置）：
 
 1. **未知参数**：`src/tools/read.rs`、`grep.rs`、`glob.rs` 的 `schema()` 补 `"additionalProperties": false`；删除 `executor.rs::attach_unknown_param_diagnostic`（:220-234）及其调用（:747）。确认 `check_tool_input`（:547）会拒绝，message 点名多余字段，例如 `unknown parameter 'file_path'`；不点名就补上。
@@ -638,6 +648,8 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 
 ### Phase 5：取消与超时诚实（A8，与 Phase 2–4 互相独立）
 
+**完成：** 已实施，`65b795c`。
+
 **改动：**
 
 1. **超时后以工具结果为准（E-7）**：`executor.rs` 超时分支（:700-717）取 `let late = tool_fut.await`。若 `late` 是 `Ok(r)` 且 `r` 不是 `Cancelled` 错误，返回 `r`，可附 `tracing::warn!("completed after timeout")`；否则返回 `Timeout` 错误（retryable）。该修改对 direct 和 code 一致。
@@ -663,6 +675,8 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 **提交建议：** `fix(tool): 工具超时后以已提交结果为准，并为 read/edit/write 补内部超时`
 
 ### Phase 6：人类 UI 最小化与收尾（P3、A9 余项）
+
+**完成：** 已实施，`387ed9c`。
 
 **改动：**
 
@@ -749,3 +763,15 @@ Phase 0 把下列条文写入 `docs/ptc/charter.md`。**内容以本文档 §4 �
 | v0.1 | 2026-10-20 | 初稿：一个持久化权威；run_code 自渲染；分 Phase 0–3 |
 | v1.0 | 2026-10-20 | 重写：纠正根因（外层 spill 是主因，`from_failure` 不是）；纳入产品决策 P1–P3 与架构定论 A1–A9；新增 UTF-8 切片、双 seq、成功值丢失、工具超时后结果、diagnostics 去向、`RESOURCE_BUSY_RE` 等核实结果；目标契约（模型文本结构与预算、JS 契约、封口表）；章程修订项；Phase 0–6 实施步骤与请求侧验收；待决 3 项 |
 | v1.1 | 2026-10-20 | 定稿：文首加权威声明（本文档为唯一执行依据）；原待决三项定案为 Q1–Q3 并移入决策记录；§4 改为执行用条款终稿，内联 D3/D7/D8/I5–I8/I10–I12/S-1 全文；§5 标为已批准、待 Phase 0 执行，修订内容以 §4 为准；新增 §6.0 执行约定（提交与构建门禁）；去掉执行层面对外部文档的依赖 |
+| v1.2 | 2026-10-21 | 标记已实施：各 Phase 完成状态与提交；文末实施记录记下审核确认的偏离 |
+
+---
+
+## 11. 实施记录
+
+2026-10-21 独立审核确认的偏离（相对本文档字面，语义已接受）：
+
+1. **5 处 `@@run_code_data` 否定断言保留。** rg 门禁仍命中 `src/tools/code.rs` 两处、`src/tools/code/render.rs`、`src/tool/contract_matrix.rs`、`src/tool/phase1_gate.rs`。这些断言锁定输出不含 marker。生产代码已无该常量、解析器与 `RunCodeToolView`。
+2. **direct 路径保留 `spill_threshold`。** `RuntimeContext` 继续按 direct 阈值 spill。`CodeToolHost` 已删除该字段，嵌套调用向 `execute_tool_call` 传 0。计划里约 `runtime/mod.rs:1046` 是 direct 构造点。
+3. **`present_returned_value` 改名。** 渲染辅助函数原名 `present_program_value` 含已删符号 `program_value` 的子串，改为 `present_returned_value`。该函数继续负责把程序返回值写入模型视图。
+4. **SDK 否定断言收为 `ToolResult`。** 生成文本的断言由不含 `ToolResult<` 改为不含 `ToolResult`。该类型本来就不在生成文本里。
