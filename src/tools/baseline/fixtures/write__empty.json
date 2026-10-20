@@ -1,0 +1,16 @@
+{
+  "content_historical": "Created: <ws>blank.txt (0 bytes)",
+  "covered": true,
+  "data": {
+    "created": true,
+    "file": {
+      "bytes": 0,
+      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "path": "blank.txt"
+    }
+  },
+  "error": null,
+  "gap": null,
+  "scenario": "empty",
+  "tool": "write"
+}

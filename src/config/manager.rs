@@ -486,7 +486,9 @@ mod tests {
         });
         let error = ConfigManager::validate(&global).unwrap_err();
         assert!(
-            error.to_string().contains("reserved for the code transport"),
+            error
+                .to_string()
+                .contains("reserved for the code transport"),
             "{error}"
         );
     }

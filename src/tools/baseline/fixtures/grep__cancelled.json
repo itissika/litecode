@@ -1,0 +1,13 @@
+{
+  "content_historical": "tool 'grep' cancelled",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "cancelled",
+    "message": "tool 'grep' cancelled",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "cancelled",
+  "tool": "grep"
+}

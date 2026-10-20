@@ -15,7 +15,7 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
     // A user-configurable preset (e.g. All → Unrestricted) must never weaken this
     // floor, so it no longer depends on `path_mode == WorkspaceOnly`.
     if matches!(tool_name, "write" | "edit")
-        && let Some(path) = args.get("file_path").and_then(Value::as_str)
+        && let Some(path) = code_file_arg(args)
         && is_sensitive_system_path(path)
     {
         return Some(EvalResult {
@@ -37,4 +37,12 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
     }
 
     None
+}
+
+/// `path` is the code-tool argument. `file_path` is still denied when a caller
+/// sends it, so dropping the tool alias does not open the sensitive-path floor.
+fn code_file_arg(args: &Value) -> Option<&str> {
+    args.get("path")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("file_path").and_then(Value::as_str))
 }

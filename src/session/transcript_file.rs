@@ -334,6 +334,9 @@ fn is_session_target(arg: &str) -> bool {
 /// session store. The outer call's name is `run_code`; the nested tool and its
 /// key-arg summary are the lines this checks.
 pub fn ledger_reads_sessions(text: &str) -> bool {
+    if let Some(hit) = structured_ledger_reads_sessions(text) {
+        return hit;
+    }
     text.lines().any(|line| {
         let Some((tool, summary)) = parse_ledger_line(line) else {
             return false;
@@ -344,6 +347,26 @@ pub fn ledger_reads_sessions(text: &str) -> bool {
             _ => false,
         }
     })
+}
+
+/// Prefer `run_code` `data.calls` when the text render carries it. `None` means
+/// this is an older ledger and the caller should keep parsing text.
+fn structured_ledger_reads_sessions(text: &str) -> Option<bool> {
+    let (_, json) = text.rsplit_once(crate::tool::outcome::RUN_CODE_DATA_MARK)?;
+    let value: serde_json::Value = serde_json::from_str(json.trim()).ok()?;
+    let calls = value.get("calls")?.as_array()?;
+    Some(calls.iter().any(|call| {
+        let tool = call.get("tool").and_then(serde_json::Value::as_str).unwrap_or("");
+        let summary = call
+            .get("args_summary")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        match tool {
+            "session_search" => true,
+            "read" | "grep" => is_session_target(summary),
+            _ => false,
+        }
+    }))
 }
 
 /// `{index}. {tool} {summary} {outcome}` as written by the code-mode host.
@@ -747,6 +770,25 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn structured_ledger_wins_and_old_text_still_matches() {
+        let session_read = format!(
+            "1. read path=notes.txt ok\n\n{}{}",
+            crate::tool::outcome::RUN_CODE_DATA_MARK,
+            r#"{"calls":[{"tool":"read","args_summary":"path=.litecode/sessions/abc.md"}]}"#
+        );
+        assert!(ledger_reads_sessions(&session_read));
+        let text_says_session_but_calls_do_not = format!(
+            "1. read path=.litecode/sessions/abc.md ok\n\n{}{}",
+            crate::tool::outcome::RUN_CODE_DATA_MARK,
+            r#"{"calls":[{"tool":"write","args_summary":"path=notes.txt"}]}"#
+        );
+        assert!(!ledger_reads_sessions(&text_says_session_but_calls_do_not));
+        assert!(ledger_reads_sessions(
+            "1. read path=.litecode/sessions/abc.md ok"
+        ));
+    }
+
     /// The read-time echo check: a hit served from a stale index must not make a
     /// copy searchable again. It is answered from the same parse the renderer did.
     #[test]
@@ -947,5 +989,116 @@ mod tests {
         assert_eq!(file.lines[1], "one");
         assert_eq!(file.lines[2], "two");
         assert!(!file.lines.iter().any(|l| l.contains('\r')));
+    }
+
+    /// Old direct `read` / `edit` rows stay as stored text. This does not rewrite them.
+    #[test]
+    fn historical_direct_read_and_edit_text_still_displays_and_searches() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::engines::session_search::{self, SessionTextQuery};
+        use crate::session::SessionDataReader;
+        use crate::types::Item;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let read_body = "     1: alpha DIRECT_READ_NEEDLE\n     2: beta\n";
+        let edit_body = "Edited notes.txt (1 applied). DIRECT_EDIT_NEEDLE\n[1] applied: exact\n";
+        let read_args = r#"{"file_path":"legacy_read_card.txt"}"#;
+        let edit_args =
+            r#"{"file_path":"legacy_edit_card.txt","old_string":"alpha","new_string":"beta"}"#;
+        let session_id = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let session_id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &session_id,
+                &[
+                    Item::FunctionCall(FunctionToolCall {
+                        arguments: read_args.into(),
+                        call_id: "call_read".into(),
+                        namespace: None,
+                        name: "read".into(),
+                        id: None,
+                        status: None,
+                    }),
+                    Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                        call_id: "call_read".into(),
+                        output: FunctionCallOutput::Text(read_body.into()),
+                        id: None,
+                        status: None,
+                    }),
+                    Item::FunctionCall(FunctionToolCall {
+                        arguments: edit_args.into(),
+                        call_id: "call_edit".into(),
+                        namespace: None,
+                        name: "edit".into(),
+                        id: None,
+                        status: None,
+                    }),
+                    Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                        call_id: "call_edit".into(),
+                        output: FunctionCallOutput::Text(edit_body.into()),
+                        id: None,
+                        status: None,
+                    }),
+                ],
+            )
+            .unwrap();
+            session_id
+        };
+
+        let reader = SessionDataReader::open(&db);
+        let rows = reader.searchable_rows_blocking(Some(&session_id)).unwrap();
+        let file = load_transcript_file(&session_id, &rows, reader.data_root()).unwrap();
+        let rendered = file.lines.join("\n");
+        assert!(
+            rendered.contains("DIRECT_READ_NEEDLE"),
+            "old read text must still render: {rendered}"
+        );
+        assert!(
+            rendered.contains("DIRECT_EDIT_NEEDLE"),
+            "old edit text must still render: {rendered}"
+        );
+        assert!(
+            rendered.contains("file_path"),
+            "historical file_path arguments stay visible: {rendered}"
+        );
+        assert_eq!(file.tool_name(0), Some("read"));
+        assert_eq!(file.tool_name(1), Some("read"));
+        assert_eq!(file.tool_name(2), Some("edit"));
+        assert_eq!(file.tool_name(3), Some("edit"));
+
+        let texts = iter_searchable_texts(&rows, reader.data_root()).unwrap();
+        let joined = texts
+            .iter()
+            .map(|(_, _, _, text)| text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains(read_body.trim()),
+            "stored read output must stay retrievable"
+        );
+        assert!(
+            joined.contains("DIRECT_EDIT_NEEDLE"),
+            "stored edit output must stay retrievable"
+        );
+
+        for needle in ["legacy_read_card", "legacy_edit_card"] {
+            let hits = session_search::search(
+                &reader,
+                &SessionTextQuery {
+                    query: needle.into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_or_else(|error| panic!("session search failed for {needle}: {error}"));
+            assert!(
+                hits.iter()
+                    .any(|hit| hit.session_id == session_id && hit.summary.contains(needle)),
+                "{needle} was not searchable: {hits:?}"
+            );
+        }
     }
 }

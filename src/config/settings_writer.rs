@@ -1729,7 +1729,9 @@ max_output = 1024
         let mut def = custom_def("run_code", Vec::new());
         let error = super::validate_custom_definition("run_code", &mut def).unwrap_err();
         assert!(
-            error.to_string().contains("reserved for the code transport"),
+            error
+                .to_string()
+                .contains("reserved for the code transport"),
             "{error}"
         );
     }

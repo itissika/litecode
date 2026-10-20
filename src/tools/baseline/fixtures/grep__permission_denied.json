@@ -1,0 +1,13 @@
+{
+  "content_historical": "permission denied for 'grep'",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "permission_denied",
+    "message": "permission denied for 'grep'",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "permission_denied",
+  "tool": "grep"
+}

@@ -1,0 +1,9 @@
+{
+  "tool": "write",
+  "scenario": "partial_failure",
+  "covered": false,
+  "gap": "write 是整文件替换：成功则 data 齐全，失败则没有半份 data。没有部分失败。",
+  "data": null,
+  "error": null,
+  "content_historical": null
+}

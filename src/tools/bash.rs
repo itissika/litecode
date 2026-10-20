@@ -216,7 +216,7 @@ impl Tool for BashTool {
         usize::MAX
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
 
@@ -260,10 +260,11 @@ impl Tool for BashTool {
         }
         let mut keys = Vec::new();
         for raw in paths {
-            let key = crate::workspace::resolve_agent(workspace_root, &raw, path_mode)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| raw.clone());
-            keys.push(ResourceKey::File(key));
+            let key = match crate::workspace::resolve_agent(workspace_root, &raw, path_mode) {
+                Ok(path) => crate::tool::resource_gate::file_resource_key(&path),
+                Err(_) => crate::tool::resource_gate::file_resource_key(std::path::Path::new(&raw)),
+            };
+            keys.push(key);
         }
         keys
     }

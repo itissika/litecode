@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -61,29 +62,12 @@ pub trait Tool: Send + Sync {
 
     fn schema(&self) -> Value;
 
-    /// Historical `file_path` is still an invocation of this tool. The schema
-    /// the model sees only advertises `path`.
-    fn accepts_historical_file_path(&self) -> bool {
-        false
-    }
+    /// Hook before validation. Code file tools do not rewrite arguments.
+    fn prepare_input(&self, _input: &mut Value) {}
 
-    /// Copy a historical `file_path` onto `path` (and the reverse) before
-    /// validation, permission, and execution.
-    fn prepare_input(&self, input: &mut Value) {
-        if self.accepts_historical_file_path() {
-            crate::tools::file_path::alias_code_path(input);
-        }
-    }
-
-    /// Arguments checked against [`schema`](Tool::schema). Tools that accept
-    /// historical `file_path` hide that key here so the code-mode schema stays
-    /// `path` only.
+    /// Arguments checked against [`schema`](Tool::schema).
     fn schema_arguments<'a>(&self, input: &'a Value) -> Cow<'a, Value> {
-        if self.accepts_historical_file_path() {
-            Cow::Owned(crate::tools::file_path::without_legacy_file_path(input))
-        } else {
-            Cow::Borrowed(input)
-        }
+        Cow::Borrowed(input)
     }
 
     /// JSON Schema for [`ToolCallResult::data`]. Direct-call tools may omit it;
@@ -129,24 +113,37 @@ pub trait Tool: Send + Sync {
 
     fn description(&self, ctx: &Context) -> String;
 
-    /// Cooperative call budget in seconds. `None` means the tool cannot accept
-    /// a deadline. A dispatcher may request a shorter call budget, but it never
-    /// extends this ceiling; expiry must reach a cancellation-aware tool.
-    fn timeout(&self) -> Option<u64> {
+    /// Safety-net budget for one call. `None` means this tool does not arm a
+    /// deadline. The model cannot override it. `run_code.timeout_ms` is the
+    /// only program budget. Expiry cancels the call and waits for it to settle.
+    fn timeout(&self) -> Option<Duration> {
         None
     }
 
-    /// Returns true if this tool can run concurrently with other concurrency-safe tools.
-    /// Returns false if the tool must execute strictly serially.
+    /// Resources this call reads and writes. Reads are shared. Writes are
+    /// exclusive. The executor acquires them after authorization, in sorted
+    /// key order. Empty means this call does not take a resource lock.
+    fn effects(
+        &self,
+        _input: &Value,
+        _path_mode: crate::workspace::ToolPathMode,
+        _workspace_root: &std::path::Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        crate::tool::resource_gate::ToolEffects::default()
+    }
+
+    /// Tools that do not declare [`effects`](Tool::effects) use this. A tool
+    /// with writes is scheduled from those effects instead, so the five file
+    /// tools do not special-case this method.
     fn is_concurrency_safe(&self, _input: &Value) -> bool {
         false
     }
 
-    /// Resources this call touches. Overlapping keys in the same step do not
-    /// run concurrently (same-path read/write share one lock graph).
+    /// Paths a settled call should report to the file tracker. This is the
+    /// resolved path, not the lock identity: the tracker opens it.
     ///
-    /// Write/edit/read return [`ResourceKey::File`]; bash returns per-path keys
-    /// when paths can be attributed, otherwise none.
+    /// Bash returns per-path keys when paths can be attributed, otherwise none.
+    /// Locking uses [`effects`](Tool::effects).
     fn resource_keys(
         &self,
         _input: &Value,

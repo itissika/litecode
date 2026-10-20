@@ -1,0 +1,28 @@
+{
+  "content_historical": "hits.txt: hit one",
+  "covered": true,
+  "data": {
+    "base": "workspace",
+    "matches": [
+      {
+        "end_line": 1,
+        "line_text": "hit one",
+        "line_truncated": false,
+        "path": "hits.txt",
+        "start_line": 1
+      }
+    ],
+    "page": {
+      "has_more": true,
+      "next": "<cursor>"
+    },
+    "searched": {
+      "excluded": true,
+      "files": 1
+    }
+  },
+  "error": null,
+  "gap": null,
+  "scenario": "truncation",
+  "tool": "grep"
+}

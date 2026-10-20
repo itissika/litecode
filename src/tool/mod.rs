@@ -5,15 +5,27 @@ pub mod catalog;
 pub mod code_manifest;
 pub mod coords;
 pub mod executor;
+pub mod file_identity;
+pub mod outcome;
 pub mod output;
 pub mod pipeline;
 pub mod project;
 pub mod registry;
+pub mod resource_gate;
 pub mod schema_validate;
 pub mod signal;
 pub mod snippet;
 pub mod trait_;
 pub mod write_lock;
+
+#[cfg(test)]
+mod contract_matrix;
+#[cfg(test)]
+mod phase1_gate;
+#[cfg(test)]
+mod deletion_gate;
+#[cfg(test)]
+mod sdk_snapshot;
 
 pub use authorize::{AuthResult, authorize};
 pub use code_manifest::render_code_tool_description;

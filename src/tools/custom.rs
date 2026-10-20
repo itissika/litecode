@@ -137,7 +137,7 @@ impl Tool for CustomTool {
         }
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         // Self-enforced inside run_sync_with_lifecycle so cancel/kill stay coupled.
         None
     }

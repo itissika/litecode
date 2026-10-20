@@ -120,7 +120,7 @@ impl Tool for WaitShellTool {
         crate::tools::description_text(include_str!("descriptions/wait_shell.md"))
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
 

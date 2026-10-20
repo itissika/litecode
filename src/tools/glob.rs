@@ -1,8 +1,11 @@
-use serde::Serialize;
+use std::time::Duration;
+
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
+use crate::tool::file_identity::{self, QueryCursor, encode_cursor, fingerprint};
+use crate::tool::outcome::{Diagnostic, Page};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{Result, ToolCallResult};
 use crate::workspace::filter::{
@@ -10,7 +13,8 @@ use crate::workspace::filter::{
     normalize_pattern, path_matches_include, private_knowledge_walker, walk_builder_with,
 };
 
-const MAX_RESULTS: usize = 1000;
+const DEFAULT_GLOB_LIMIT: usize = 1000;
+const MAX_GLOB_LIMIT: usize = 5000;
 
 pub struct GlobTool;
 
@@ -29,7 +33,7 @@ impl Tool for GlobTool {
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. Do not repeat path — if path is 'src', use '**/*.rs' not 'src/**/*.rs'."
+                    "description": "Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'."
                 },
                 "path": {
                     "type": "string",
@@ -38,6 +42,14 @@ impl Tool for GlobTool {
                 "include_ignored": {
                     "type": "boolean",
                     "description": "Also search gitignored and workspace-excluded paths. Default false."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum paths in this page. Default 1000, maximum 5000."
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query returns stale_cursor."
                 }
             },
             "required": ["pattern"]
@@ -47,43 +59,43 @@ impl Tool for GlobTool {
     fn data_schema(&self) -> Option<Value> {
         Some(serde_json::json!({
             "type": "object",
-            "description": "A bounded page of path matches.",
+            "description": "One page of matching paths.",
             "properties": {
+                "base": {
+                    "type": "string",
+                    "enum": ["workspace", "absolute"],
+                    "description": "workspace: paths are workspace-relative. absolute: paths are absolute."
+                },
                 "paths": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Matching paths, relative to the effective search path: relative to path when provided, otherwise workspace-relative."
+                    "description": "Matching paths sorted by depth, then parent directory, then name. Pass a path to read."
                 },
-                "total": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Total matches before truncation."
-                },
-                "truncated": {
-                    "type": "boolean",
-                    "description": "True when paths contains fewer entries than total."
-                },
-                "effective_pattern": {
-                    "type": "string",
-                    "description": "Pattern actually matched after redundant path-prefix normalization."
-                },
-                "searched_path": {
-                    "type": ["string", "null"],
-                    "description": "The path argument used for this search; null means workspace root."
+                "page": {
+                    "type": "object",
+                    "properties": {
+                        "has_more": { "type": "boolean" },
+                        "next": { "type": ["string", "null"] },
+                        "total": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["has_more", "next"]
                 }
             },
-            "required": [
-                "paths",
-                "total",
-                "truncated",
-                "effective_pattern",
-                "searched_path"
-            ]
+            "required": ["base", "paths", "page"]
         }))
     }
 
-    fn is_concurrency_safe(&self, _input: &Value) -> bool {
-        true
+    fn effects(
+        &self,
+        input: &Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        crate::tool::resource_gate::ToolEffects::read(crate::tool::resource_gate::scan_key(
+            workspace_root,
+            input.get("path").and_then(Value::as_str),
+            path_mode,
+        ))
     }
 
     fn execute(
@@ -124,8 +136,8 @@ impl Tool for GlobTool {
         crate::tools::description_text(include_str!("descriptions/glob.md"))
     }
 
-    fn timeout(&self) -> Option<u64> {
-        Some(30)
+    fn timeout(&self) -> Option<Duration> {
+        Some(Duration::from_secs(30))
     }
 
     fn is_cancellable(&self) -> bool {
@@ -150,23 +162,39 @@ impl GlobTool {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        let (effective_pattern, prefix_note) = strip_redundant_path_prefix(path_arg, pattern);
+        let limit = match parse_glob_limit(&input) {
+            Ok(limit) => limit,
+            Err(error) => return contract_error("invalid_input", error),
+        };
+        let outside = path_arg.is_some_and(|path| {
+            crate::workspace::resolve_agent(
+                &execution.workspace_root,
+                path,
+                execution.path_mode,
+            )
+            .is_ok_and(|resolved| {
+                !crate::config::path::is_under(&resolved, &execution.workspace_root)
+            })
+        });
 
         if let Some(path) = path_arg
             && crate::session::transcript_file::is_virtual_session_dir(path)
         {
-            let results = match glob_virtual_sessions(&execution, &effective_pattern) {
+            let results = match glob_virtual_sessions(&execution, pattern) {
                 Ok(r) => r,
                 Err(e) => return ToolCallResult::error(e.to_string()),
             };
-            let body = format_glob_body(
-                &results,
-                &effective_pattern,
+            return finish_glob(
+                &results.hits,
+                file_identity::PathBase::Workspace,
+                pattern,
                 path_arg,
+                no_ignore,
+                limit,
+                input.get("cursor").and_then(Value::as_str),
                 pattern_warning.as_deref(),
-                prefix_note.as_deref(),
+                None,
             );
-            return glob_result(body, &results, &effective_pattern, path_arg);
         }
 
         let search_path = match path_arg {
@@ -202,55 +230,56 @@ impl GlobTool {
                 &search_path,
             )
         {
-            let empty = GlobListing {
-                hits: Vec::new(),
-                total: 0,
-            };
-            return glob_result(message, &empty, &effective_pattern, path_arg);
+            return finish_glob(
+                &[],
+                file_identity::PathBase::Workspace,
+                pattern,
+                path_arg,
+                no_ignore,
+                limit,
+                input.get("cursor").and_then(Value::as_str),
+                None,
+                Some(message.as_str()),
+            );
         }
 
         let results = match glob_match_cancellable(
             &execution.workspace_root,
             &search_path,
-            &effective_pattern,
+            pattern,
             no_ignore,
             Some(&execution.cancel),
         ) {
             Ok(r) => r,
             Err(e) => return ToolCallResult::error(e.to_string()),
         };
-
-        let body = format_glob_body(
-            &results,
-            &effective_pattern,
+        let base = if outside {
+            file_identity::PathBase::Absolute
+        } else {
+            file_identity::PathBase::Workspace
+        };
+        finish_glob(
+            &results.hits,
+            base,
+            pattern,
             path_arg,
+            no_ignore,
+            limit,
+            input.get("cursor").and_then(Value::as_str),
             pattern_warning.as_deref(),
-            prefix_note.as_deref(),
-        );
-        glob_result(body, &results, &effective_pattern, path_arg)
+            None,
+        )
     }
 }
 
 #[derive(Debug)]
 struct GlobListing {
     hits: Vec<String>,
-    total: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct GlobData {
-    paths: Vec<String>,
-    total: usize,
-    truncated: bool,
-    effective_pattern: String,
-    searched_path: Option<String>,
 }
 
 impl GlobListing {
-    fn capped(mut hits: Vec<String>) -> Self {
-        let total = hits.len();
-        hits.truncate(MAX_RESULTS);
-        Self { hits, total }
+    fn all(hits: Vec<String>) -> Self {
+        Self { hits }
     }
 
     #[cfg(test)]
@@ -259,66 +288,105 @@ impl GlobListing {
     }
 }
 
-fn glob_result(
-    body: String,
-    listing: &GlobListing,
-    effective_pattern: &str,
-    path_arg: Option<&str>,
-) -> ToolCallResult {
-    let data = GlobData {
-        paths: listing.hits.clone(),
-        total: listing.total,
-        truncated: listing.hits.len() < listing.total,
-        effective_pattern: effective_pattern.to_string(),
-        searched_path: path_arg.map(str::to_string),
+fn parse_glob_limit(input: &Value) -> std::result::Result<usize, String> {
+    let Some(value) = input.get("limit").filter(|value| !value.is_null()) else {
+        return Ok(DEFAULT_GLOB_LIMIT);
     };
-    let data = serde_json::to_value(data).unwrap_or(Value::Null);
-    ToolCallResult::ok(body).with_data(data)
+    let Some(limit) = value.as_u64() else {
+        return Err("parameter 'limit' must be an integer".into());
+    };
+    if !(1..=MAX_GLOB_LIMIT as u64).contains(&limit) {
+        return Err(format!(
+            "parameter 'limit' must be between 1 and {MAX_GLOB_LIMIT}"
+        ));
+    }
+    Ok(limit as usize)
 }
 
-fn format_glob_body(
-    listing: &GlobListing,
-    effective_pattern: &str,
+fn contract_error(code: &str, message: impl Into<String>) -> ToolCallResult {
+    let message = message.into();
+    crate::tool::outcome::ToolOutcome::<Value>::failure(code, message.clone(), false)
+        .into_call_result(message)
+}
+
+fn finish_glob(
+    hits: &[String],
+    base: file_identity::PathBase,
+    pattern: &str,
     path_arg: Option<&str>,
+    include_ignored: bool,
+    limit: usize,
+    cursor: Option<&str>,
     pattern_warning: Option<&str>,
-    prefix_note: Option<&str>,
-) -> String {
-    if listing.hits.is_empty() {
-        let mut msg = format!("No files found for pattern '{effective_pattern}'");
-        if let Some(p) = path_arg {
-            msg.push_str(&format!(" under path '{p}'"));
-            msg.push_str(". Pattern is relative to path — with path set, prefer '**/*.rs' over repeating the directory in pattern.");
-        }
-        if let Some(w) = pattern_warning {
-            msg.push_str(". ");
-            msg.push_str(w);
-            msg.push_str(" Glob only matches paths under the search directory; patterns like '../*' cannot reach parent folders.");
-        }
-        if let Some(note) = prefix_note {
-            msg.push_str(". ");
-            msg.push_str(note);
-        }
-        if !msg.ends_with('.') {
-            msg.push('.');
-        }
-        msg.push(' ');
-        msg.push_str(crate::workspace::filter::empty_discovery_hint());
-        msg
-    } else {
-        let mut msg = listing.hits.join("\n");
-        if listing.hits.len() < listing.total {
-            msg.push_str(&format!(
-                "\n[showing {} of {}. Narrow pattern or path to see the rest.]",
-                listing.hits.len(),
-                listing.total
-            ));
-        }
-        if let Some(note) = prefix_note {
-            msg.push('\n');
-            msg.push_str(note);
-        }
-        msg
+    content_override: Option<&str>,
+) -> ToolCallResult {
+    let version = file_identity::version_hash(hits.iter().map(String::as_str));
+    let bound = match file_identity::bind_cursor(
+        cursor,
+        &fingerprint(&[
+            ("pattern", pattern),
+            ("path", path_arg.unwrap_or("")),
+            ("include_ignored", if include_ignored { "true" } else { "false" }),
+        ]),
+        &version,
+    ) {
+        Ok(bound) => bound,
+        Err(stale) => return stale,
+    };
+    let offset = bound
+        .as_ref()
+        .map(|cursor| cursor.offset as usize)
+        .unwrap_or(0);
+    if offset > hits.len() {
+        return file_identity::stale_cursor_result("offset");
     }
+    let end = (offset + limit).min(hits.len());
+    let page_hits = hits[offset..end].to_vec();
+    let has_more = end < hits.len();
+    let next = has_more.then(|| {
+        encode_cursor(&QueryCursor {
+            fp: fingerprint(&[
+                ("pattern", pattern),
+                ("path", path_arg.unwrap_or("")),
+                ("include_ignored", if include_ignored { "true" } else { "false" }),
+            ]),
+            ver: version,
+            offset: end as u64,
+            resume_path: None,
+            resume_line: None,
+        })
+    });
+    let page = Page {
+        has_more,
+        next,
+        total: Some(hits.len() as u64),
+    };
+    let data = serde_json::json!({
+        "base": base.as_str(),
+        "paths": page_hits,
+        "page": page,
+    });
+    let mut result = crate::tool::outcome::ok_data(data, Some(page));
+    if let Some(warning) = pattern_warning {
+        let mut message = warning.to_string();
+        message.push_str(
+            " Glob only matches paths under the search directory; patterns like '../*' cannot reach parent folders.",
+        );
+        result
+            .diagnostics
+            .push(Diagnostic::warning("pattern_parent", message));
+    }
+    if let Some(message) = content_override {
+        result
+            .diagnostics
+            .push(Diagnostic::warning("path_excluded", message));
+    } else if hits.is_empty() {
+        result.diagnostics            .push(Diagnostic::info(
+            "empty_glob",
+            crate::workspace::filter::empty_discovery_hint(),
+        ));
+    }
+    result
 }
 
 fn parent_dir_pattern_warning(pattern: &str) -> Option<String> {
@@ -336,33 +404,6 @@ fn parent_dir_pattern_warning(pattern: &str) -> Option<String> {
 ///
 /// `glob_match` compares the pattern to paths *relative to* `path`, so repeating
 /// the directory prefix never hits. Agents commonly pass both; strip quietly.
-fn strip_redundant_path_prefix<'a>(
-    path: Option<&str>,
-    pattern: &'a str,
-) -> (std::borrow::Cow<'a, str>, Option<String>) {
-    let Some(path) = path else {
-        return (std::borrow::Cow::Borrowed(pattern), None);
-    };
-    let path_n = normalize_pattern(path).trim_matches('/').trim().to_string();
-    if path_n.is_empty() || path_n == "." {
-        return (std::borrow::Cow::Borrowed(pattern), None);
-    }
-    let pattern_n = normalize_pattern(pattern);
-    let prefix = format!("{path_n}/");
-    if let Some(rest) = pattern_n.strip_prefix(&prefix) {
-        let rest = if rest.is_empty() { "**/*" } else { rest };
-        let note = format!(
-            "stripped redundant '{path_n}/' from pattern (matched as '{rest}' under path '{path_n}')"
-        );
-        return (std::borrow::Cow::Owned(rest.to_string()), Some(note));
-    }
-    if pattern_n == path_n {
-        let note = format!("pattern equaled path '{path_n}'; using '**/*' under that directory");
-        return (std::borrow::Cow::Borrowed("**/*"), Some(note));
-    }
-    (std::borrow::Cow::Borrowed(pattern), None)
-}
-
 fn glob_virtual_sessions(
     execution: &crate::tool::trait_::ToolExecutionContext,
     pattern: &str,
@@ -377,7 +418,7 @@ fn glob_virtual_sessions(
         .filter(|path| matcher.matches(path))
         .collect();
     crate::workspace::sort_glob_hits(&mut hits);
-    Ok(GlobListing::capped(hits))
+    Ok(GlobListing::all(hits))
 }
 
 #[cfg(test)]
@@ -416,6 +457,7 @@ fn glob_match_cancellable(
             .git_exclude(false);
     }
     let walker = builder.build();
+    let outside = !crate::config::path::is_under(base, workspace);
 
     for entry in walker.flatten() {
         if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
@@ -432,7 +474,7 @@ fn glob_match_cancellable(
         else {
             continue;
         };
-        hits.push(rel_str);
+        hits.push(display_glob_path(workspace, base, outside, &rel_str));
     }
 
     if knowledge.is_dir()
@@ -455,15 +497,42 @@ fn glob_match_cancellable(
             if !path_matches_include(&rel, std::slice::from_ref(&glob_matcher)) {
                 continue;
             }
-            if hits.iter().any(|hit| hit == &rel) {
+            let displayed = display_glob_path(workspace, base, outside, &rel);
+            if hits.iter().any(|hit| hit == &displayed) {
                 continue;
             }
-            hits.push(rel);
+            hits.push(displayed);
         }
     }
 
     crate::workspace::sort_glob_hits(&mut hits);
-    Ok(GlobListing::capped(hits))
+    Ok(GlobListing::all(hits))
+}
+
+fn display_glob_path(
+    workspace: &std::path::Path,
+    search_base: &std::path::Path,
+    outside: bool,
+    rel_to_base: &str,
+) -> String {
+    let rel_to_base = rel_to_base.replace('\\', "/");
+    if outside {
+        let mut abs = search_base.to_path_buf();
+        for part in rel_to_base.split('/').filter(|part| !part.is_empty()) {
+            abs.push(part);
+        }
+        return file_identity::absolute_path_string(&abs);
+    }
+    let prefix = cheap_rel_under(workspace, search_base)
+        .unwrap_or_default()
+        .replace('\\', "/");
+    if prefix.is_empty() {
+        rel_to_base
+    } else if rel_to_base.is_empty() {
+        prefix
+    } else {
+        format!("{prefix}/{rel_to_base}")
+    }
 }
 
 fn discovery_preset(no_ignore: bool) -> FilterPreset {
@@ -592,7 +661,7 @@ mod tests {
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
 
-        let body = glob_in(
+        let body = glob_note(
             root,
             serde_json::json!({ "pattern": "**/*", "path": "node_modules" }),
         );
@@ -601,7 +670,7 @@ mod tests {
             "path 'node_modules' is not searched: excluded by search.exclude."
         );
 
-        let nested = glob_in(
+        let nested = glob_note(
             root,
             serde_json::json!({ "pattern": "**/*", "path": "node_modules/pkg" }),
         );
@@ -658,7 +727,7 @@ mod tests {
             "{filtered:?}"
         );
 
-        let index = glob_in(
+        let index = glob_note(
             root,
             serde_json::json!({ "pattern": "**/*", "path": ".litecode/index" }),
         );
@@ -694,43 +763,24 @@ mod tests {
     }
 
     #[test]
-    fn strips_redundant_path_prefix_from_pattern() {
-        let (p, note) = strip_redundant_path_prefix(Some("src"), "src/**/*.rs");
-        assert_eq!(p, "**/*.rs");
-        assert!(note.unwrap().contains("stripped redundant"));
-
-        let (p, note) = strip_redundant_path_prefix(Some("src/"), "src/**/*.rs");
-        assert_eq!(p, "**/*.rs");
-        assert!(note.is_some());
-
-        let (p, note) = strip_redundant_path_prefix(Some("src"), "**/*.rs");
-        assert_eq!(p, "**/*.rs");
-        assert!(note.is_none());
-
-        let (p, _) = strip_redundant_path_prefix(None, "src/**/*.rs");
-        assert_eq!(p, "src/**/*.rs");
-
-        let (p, note) = strip_redundant_path_prefix(Some("src"), "src");
-        assert_eq!(p, "**/*");
-        assert!(note.is_some());
-    }
-
-    #[test]
-    fn path_plus_prefixed_pattern_finds_files() {
+    fn repeated_path_prefix_is_not_stripped() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src/agent")).unwrap();
         std::fs::write(root.join("src/agent/core.rs"), "fn x() {}\n").unwrap();
 
-        // After strip: path=src + pattern=src/**/*.rs → **/*.rs under src
-        let (effective, _) = strip_redundant_path_prefix(Some("src"), "src/**/*.rs");
-        let found = glob_match(root, &root.join("src"), &effective, false)
+        let found = glob_match(root, &root.join("src"), "src/**/*.rs", false)
             .unwrap()
             .hits;
         assert!(
-            found
-                .iter()
-                .any(|p| p == "agent/core.rs" || p.ends_with("core.rs")),
+            found.is_empty(),
+            "pattern is matched under path as given, got {found:?}"
+        );
+        let found = glob_match(root, &root.join("src"), "**/*.rs", false)
+            .unwrap()
+            .hits;
+        assert!(
+            found.iter().any(|path| path.ends_with("src/agent/core.rs")),
             "got {found:?}"
         );
     }
@@ -772,28 +822,22 @@ mod tests {
 
         let found = glob_match(root, root, "**/*.rs", false).unwrap();
         assert_eq!(found.hits, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
-        assert_eq!(found.total, 3);
+        assert_eq!(found.hits.len(), 3);
     }
 
     #[test]
     fn truncates_with_count_note() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        for i in 0..(MAX_RESULTS + 7) {
+        for i in 0..(DEFAULT_GLOB_LIMIT + 7) {
             std::fs::write(root.join(format!("f{i:04}.txt")), "x\n").unwrap();
         }
         let listing = glob_match(root, root, "*.txt", true).unwrap();
-        assert_eq!(listing.hits.len(), MAX_RESULTS);
-        assert_eq!(listing.total, MAX_RESULTS + 7);
-        let body = format_glob_body(&listing, "*.txt", None, None, None);
-        assert!(
-            body.contains(&format!(
-                "[showing {MAX_RESULTS} of {}. Narrow pattern or path to see the rest.]",
-                MAX_RESULTS + 7
-            )),
-            "got: {body}"
-        );
-        assert!(!body.contains(&format!("f{:04}.txt", MAX_RESULTS + 6)));
+        assert_eq!(listing.hits.len(), DEFAULT_GLOB_LIMIT + 7);
+        let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
+        assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
+        assert_eq!(data["page"]["has_more"], true);
+        assert_eq!(data["page"]["total"], listing.hits.len() as u64);
     }
 
     #[test]
@@ -821,8 +865,9 @@ mod tests {
     #[test]
     fn empty_glob_mentions_excludes_config() {
         let dir = TempDir::new().unwrap();
-        let body = glob_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
-        assert!(body.contains("No files found"), "{body}");
+        let body = glob_note(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
+        let data = glob_data_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
+        assert!(data["paths"].as_array().unwrap().is_empty(), "{data}");
         assert!(body.contains(".litecode/excludes.json"), "{body}");
         assert!(
             !body.contains("include_ignored"),
@@ -865,7 +910,23 @@ mod tests {
     }
 
     fn glob_in(root: &std::path::Path, input: Value) -> String {
-        glob_result_in(root, input).content
+        let data = glob_data_in(root, input);
+        data["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn glob_note(root: &std::path::Path, input: Value) -> String {
+        glob_result_in(root, input)
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn glob_data_in(root: &std::path::Path, input: Value) -> Value {
@@ -883,9 +944,9 @@ mod tests {
         std::fs::write(root.join("c.md"), "c").unwrap();
 
         let data = glob_data_in(root, serde_json::json!({"pattern": "**/*.txt"}));
-        assert_eq!(data["total"], 2);
-        assert_eq!(data["truncated"], false);
-        assert_eq!(data["effective_pattern"], "**/*.txt");
+        assert_eq!(data["base"], "workspace");
+        assert_eq!(data["page"]["total"], 2);
+        assert_eq!(data["page"]["has_more"], false);
         let mut paths: Vec<String> = data["paths"]
             .as_array()
             .unwrap()
@@ -901,13 +962,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let data = glob_data_in(dir.path(), serde_json::json!({"pattern": "**/*.nope"}));
         assert_eq!(data["paths"], serde_json::json!([]));
-        assert_eq!(data["total"], 0);
-        assert_eq!(data["truncated"], false);
+        assert_eq!(data["page"]["total"], 0);
+        assert_eq!(data["page"]["has_more"], false);
     }
 
     #[test]
     fn include_ignored_is_the_public_boolean() {
-        assert_eq!(GlobTool.timeout(), Some(30));
+        assert_eq!(GlobTool.timeout(), Some(Duration::from_secs(30)));
         assert!(GlobTool.is_cancellable());
         let schema = GlobTool.schema();
         let props = schema["properties"].as_object().unwrap();
@@ -936,13 +997,14 @@ mod tests {
     fn structured_result_reports_truncation() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        for i in 0..(MAX_RESULTS + 3) {
+        for i in 0..(DEFAULT_GLOB_LIMIT + 3) {
             std::fs::write(root.join(format!("f{i:04}.txt")), "x").unwrap();
         }
         let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
-        assert_eq!(data["paths"].as_array().unwrap().len(), MAX_RESULTS);
-        assert_eq!(data["total"], MAX_RESULTS + 3);
-        assert_eq!(data["truncated"], true);
+        assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
+        assert_eq!(data["page"]["total"], DEFAULT_GLOB_LIMIT + 3);
+        assert_eq!(data["page"]["has_more"], true);
+        assert!(data["page"]["next"].is_string());
     }
 
     #[test]

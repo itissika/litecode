@@ -1,9 +1,7 @@
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use super::matcher::{
-    self, MatchKind, PlannedReplacement, RejectReason, ResolveOutcome, SourceSpan,
-};
+use super::matcher::{self, PlannedReplacement, RejectReason, ResolveOutcome, SourceSpan};
 
 pub(super) const SNAPSHOT_RULE: &str = "All edits in one call match the file before any of them apply. Independent edits can share a call; if a later old_string depends on an earlier new_string, submit it in a later edit call.";
 
@@ -19,21 +17,6 @@ pub(super) struct EditBlock {
 pub(super) struct BlockPlan {
     pub index: usize,
     pub replacements: Vec<PlannedReplacement>,
-    pub notice: Option<matcher::ApplyNotice>,
-}
-
-impl BlockPlan {
-    pub(super) fn match_kind(&self) -> MatchKind {
-        if self
-            .replacements
-            .iter()
-            .any(|item| item.kind == MatchKind::Fuzzy)
-        {
-            MatchKind::Fuzzy
-        } else {
-            MatchKind::Exact
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -144,12 +127,7 @@ pub(super) fn plan_edits(
         if cancel.is_cancelled() {
             return Err(RequestFail::Cancelled);
         }
-        resolved.push(resolve_with_relations(
-            content,
-            block,
-            &blocks[..i],
-            cancel,
-        )?);
+        resolved.push(resolve_with_relations(content, block, &blocks[..i])?);
     }
     if cancel.is_cancelled() {
         return Err(RequestFail::Cancelled);
@@ -163,15 +141,12 @@ fn resolve_with_relations(
     content: &str,
     block: &EditBlock,
     prior: &[EditBlock],
-    cancel: &CancellationToken,
 ) -> Result<BlockDecision, RequestFail> {
-    let allow_fuzzy = chained_from_prior(prior, &block.old_string).is_none();
-    let outcome = matcher::resolve_block(content, block, cancel, allow_fuzzy)?;
+    let outcome = matcher::resolve_block(content, block)?;
     Ok(match outcome {
         ResolveOutcome::Apply(plan) => BlockDecision::Accept(BlockPlan {
             index: block.index,
             replacements: plan.replacements,
-            notice: plan.notice,
         }),
         ResolveOutcome::Reject(reason) => {
             let reason = overlay_chain(prior, &block.old_string, reason);
@@ -192,7 +167,6 @@ fn overlay_chain(prior: &[EditBlock], old: &str, reason: RejectReason) -> Reject
             | RejectReason::WhitespaceOnly { .. }
             | RejectReason::WhitespaceOnlyInput
             | RejectReason::MultipleExact { .. }
-            | RejectReason::UnicodeConfusable
     ) {
         return reason;
     }
@@ -387,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_exact_blocks_fuzzy() {
+    fn plan_exact_unique_block_applies() {
         let batch = plan_of(
             "fn unique_name() { alpha }\nfn unique_name() { beta }\n",
             &[(
@@ -396,64 +370,16 @@ mod tests {
                 false,
             )],
         );
-        assert_eq!(accepted(&batch, 0).match_kind(), MatchKind::Exact);
-        assert!(accepted(&batch, 0).notice.is_none());
+        assert_eq!(accepted(&batch, 0).replacements.len(), 1);
+        assert!(batch.edited.unwrap().contains("gamma"));
     }
 
     #[test]
-    fn plan_fuzzy_too_short_does_not_apply() {
+    fn plan_unmatched_string_is_no_match() {
         let batch = plan_of("hello world\n", &[("zz", "yy", false)]);
-        assert!(matches!(
-            rejected(&batch, 0).reason,
-            RejectReason::FuzzyTooShort
-        ));
+        assert!(matches!(rejected(&batch, 0).reason, RejectReason::NoMatch));
+        assert_eq!(rejected(&batch, 0).reason.code(), "no_match");
         assert!(batch.edited.is_none());
-    }
-
-    #[test]
-    fn plan_unique_fuzzy_applies_with_warning_same_window() {
-        let content = "fn greet_user_alpha() {\n    println!(\"hi\");\n}\n";
-        let old = "fn greet_user_alpa() {\n    println!(\"hi\");\n}";
-        let batch = plan_of(
-            content,
-            &[(
-                old,
-                "fn greet_user_beta() {\n    println!(\"hi\");\n}",
-                false,
-            )],
-        );
-        let plan = accepted(&batch, 0);
-        assert_eq!(plan.match_kind(), MatchKind::Fuzzy);
-        assert!(plan.notice.is_some());
-        assert_eq!(plan.replacements[0].span.start_line, 1);
-        assert_eq!(
-            plan.replacements[0].span.end_line,
-            plan.replacements[0].span.start_line + old.lines().count().saturating_sub(1)
-        );
-        assert!(batch.edited.unwrap().contains("greet_user_beta"));
-    }
-
-    #[test]
-    fn plan_long_unique_fuzzy_is_not_shadowed_by_expanded_windows() {
-        let content = (0..40)
-            .map(|i| format!("unique_line_{i:02}();"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let old = content.replace("unique_line_20", "unique_lime_20");
-        let batch = plan_of(&content, &[(&old, "REPLACED", false)]);
-        assert_eq!(accepted(&batch, 0).match_kind(), MatchKind::Fuzzy);
-        assert_eq!(batch.edited.as_deref(), Some("REPLACED"));
-    }
-
-    #[test]
-    fn plan_replace_all_unique_fuzzy_applies_once() {
-        let content = "fn greet_user_alpha() {\n    println!(\"hi\");\n}\n";
-        let old = "fn greet_user_alpa() {\n    println!(\"hi\");\n}";
-        let batch = plan_of(content, &[(old, "CHANGED", true)]);
-        let plan = accepted(&batch, 0);
-        assert_eq!(plan.replacements.len(), 1);
-        assert_eq!(plan.match_kind(), MatchKind::Fuzzy);
-        assert!(plan.notice.as_ref().is_some_and(|n| n.replace_all_ignored));
     }
 
     #[test]
@@ -474,10 +400,7 @@ mod tests {
                 ("beta\ngamma", "BG", false),
             ],
         );
-        assert!(matches!(
-            rejected(&batch, 0).reason,
-            RejectReason::FuzzyTooShort
-        ));
+        assert!(matches!(rejected(&batch, 0).reason, RejectReason::NoMatch));
         assert!(matches!(&batch.decisions[1], BlockDecision::Accept(_)));
         assert!(matches!(
             rejected(&batch, 2).reason,
@@ -520,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_fuzzy_overlap_does_not_apply_second_candidate() {
+    fn plan_unmatched_second_block_does_not_apply() {
         let content = "fn greet_user_alpha() {\n    println!(\"hi\");\n}\nfn greet_user_gamma() {\n    println!(\"hi\");\n}\n";
         let old = "fn greet_user_alpa() {\n    println!(\"hi\");\n}";
         let batch = plan_of(
@@ -535,30 +458,16 @@ mod tests {
             ],
         );
         assert!(matches!(&batch.decisions[0], BlockDecision::Accept(_)));
-        match &batch.decisions[1] {
-            BlockDecision::Reject(failure) => {
-                assert!(
-                    matches!(
-                        failure.reason,
-                        RejectReason::Overlap { .. } | RejectReason::FuzzySuggestedAmbiguous { .. }
-                    ),
-                    "{failure:?}"
-                );
-            }
-            BlockDecision::Accept(plan) => panic!("must not apply runner-up, got {plan:?}"),
-        }
+        assert!(matches!(rejected(&batch, 1).reason, RejectReason::NoMatch));
         let edited = batch.edited.as_deref().unwrap();
         assert!(edited.contains("CHANGED"));
         assert!(!edited.contains("OTHER"));
     }
 
     #[test]
-    fn plan_unicode_confusable_does_not_fuzzy() {
+    fn plan_distinct_dash_is_no_match() {
         let batch = plan_of("foo\u{2014}bar\n", &[("-", "=", false)]);
-        assert!(matches!(
-            rejected(&batch, 0).reason,
-            RejectReason::UnicodeConfusable
-        ));
+        assert!(matches!(rejected(&batch, 0).reason, RejectReason::NoMatch));
         assert!(batch.edited.is_none());
     }
 
@@ -572,17 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_window_matches_replacement_range() {
-        let content = "keep\nfn greet_user_alpha() {\n    println!(\"hi\");\n}\n";
-        let old = "fn greet_user_alpa() {\n    println!(\"hi\");\n}";
-        let batch = plan_of(content, &[(old, "X", false)]);
-        let plan = accepted(&batch, 0);
-        let span = &plan.replacements[0].span;
-        assert_eq!(span.end_line - span.start_line + 1, old.lines().count());
-    }
-
-    #[test]
-    fn planner_never_auto_applies_known_prefix_or_indent_mistakes() {
+    fn planner_never_applies_known_prefix_or_indent_mistakes() {
         let line = "fn exceptionally_long_unique_function_name_for_edit_safety() {}";
         let prefixed = crate::tool::format_file_line(1, line);
         let prefix = plan_of(
@@ -616,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn chain_blocks_fuzzy_despite_high_score() {
+    fn chain_blocks_dependent_edit() {
         let content = "fn greet_user_alpha() {\n    println!(\"hi\");\n}\n";
         let batch = plan_of(
             content,
@@ -642,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_blocks_fuzzy_despite_high_score() {
+    fn prefix_blocks_dependent_looking_edit() {
         let line = "fn greet_user_alpha() { println!(\"hi\"); }";
         let prefixed = crate::tool::format_file_line(1, line);
         let batch = plan_of(

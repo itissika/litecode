@@ -39,6 +39,9 @@ pub struct LexicalQuery {
     pub max_matches: usize,
     pub before_context: usize,
     pub after_context: usize,
+    /// Drop matches on this line and earlier. Zero keeps every match.
+    /// Used so a later page can continue without storing the prefix.
+    pub min_line: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +192,7 @@ fn lexical_search_ripgrep(
             &exclude,
             /* include_via_walk */ false,
             query.max_matches,
+            query.min_line,
             &mut matches,
         );
         return Ok(LexicalSearchOutcome {
@@ -239,6 +243,7 @@ fn lexical_search_ripgrep(
             &exclude,
             include_via_walk,
             query.max_matches,
+            query.min_line,
             &mut matches,
         ) {
             files_searched += 1;
@@ -296,6 +301,7 @@ fn search_one_file(
     exclude: &[Pattern],
     include_via_walk: bool,
     max_matches: usize,
+    min_line: u32,
     out: &mut Vec<LexicalMatch>,
 ) -> bool {
     if out.len() >= max_matches {
@@ -313,6 +319,7 @@ fn search_one_file(
         path: rel,
         out,
         max_matches,
+        min_line,
         pending_before: Vec::new(),
         current: None,
     };
@@ -387,6 +394,7 @@ struct MatchSink<'a> {
     path: String,
     out: &'a mut Vec<LexicalMatch>,
     max_matches: usize,
+    min_line: u32,
     pending_before: Vec<String>,
     current: Option<LexicalMatch>,
 }
@@ -419,6 +427,9 @@ impl Sink for MatchSink<'_> {
         }
 
         let start_line = mat.line_number().unwrap_or(1) as u32;
+        if start_line <= self.min_line {
+            return Ok(self.out.len() < self.max_matches);
+        }
         let raw = String::from_utf8_lossy(mat.bytes());
         let line_text = raw.trim_end_matches(['\r', '\n']).to_string();
         let extra_lines = line_text.bytes().filter(|&b| b == b'\n').count() as u32;
@@ -516,6 +527,7 @@ mod tests {
             max_matches: 50,
             before_context: 0,
             after_context: 0,
+            min_line: 0,
         }
     }
 

@@ -1,9 +1,7 @@
 //! Shared UTF-8 / BOM / EOL helpers for known-path file tools.
 //!
-//! Matching may treat CRLF and LF as equivalent, and may treat a narrow set of
-//! Unicode typography confusables as equivalent to ASCII for search. Write-back
-//! for **edit** must not rewrite unmatched bytes. **write** does not use this
-//! layer for content.
+//! Matching may treat CRLF and LF as equivalent. Write-back for **edit** must
+//! not rewrite unmatched bytes. **write** does not use this layer for content.
 
 /// UTF-8 file decoded for display and editing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,76 +85,28 @@ pub struct ByteSpan {
     pub end: usize,
 }
 
-/// Result of exact edit matching (EOL-agnostic, then typography-confusable).
+/// Result of an exact, EOL-agnostic replace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditReplace {
     Applied { content: String, count: usize },
     NotFound,
-    Ambiguous,
 }
 
-/// All exact matches against the original snapshot, or why matching stopped.
+/// All exact matches against the original snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExactSpans {
     Hits(Vec<ByteSpan>),
     NotFound,
-    Ambiguous,
 }
 
-/// Narrow typography substitutions that are almost always accidental
-/// (smart quotes, dashes, ellipsis, non-breaking space). Not Unicode NFC/NFKC.
-const CONFUSABLE_MAP: &[(char, &str)] = &[
-    ('\u{201C}', "\""),  // left double quotation mark
-    ('\u{201D}', "\""),  // right double quotation mark
-    ('\u{2018}', "'"),   // left single quotation mark
-    ('\u{2019}', "'"),   // right single quotation mark
-    ('\u{2014}', "--"),  // em-dash
-    ('\u{2013}', "-"),   // en-dash
-    ('\u{2026}', "..."), // horizontal ellipsis
-    ('\u{00A0}', " "),   // non-breaking space
-];
-
-fn confusable_ascii(c: char) -> Option<&'static str> {
-    CONFUSABLE_MAP
-        .iter()
-        .find(|&&(ch, _)| ch == c)
-        .map(|&(_, replacement)| replacement)
-}
-
-fn has_confusables(s: &str) -> bool {
-    s.chars().any(|c| confusable_ascii(c).is_some())
-}
-
-fn normalize_confusables(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match confusable_ascii(c) {
-            Some(replacement) => out.push_str(replacement),
-            None => out.push(c),
-        }
-    }
-    out
-}
-
-/// Locate every EOL-equivalent (then typography-confusable) match in `content`.
+/// Locate every EOL-equivalent match in `content`.
 /// Spans refer to the original snapshot; nothing is rewritten.
 pub fn find_exact_spans(content: &str, old: &str) -> ExactSpans {
     let eol = find_eol_spans(content, old);
-    if !eol.is_empty() {
-        return ExactSpans::Hits(eol);
-    }
-    if !has_confusables(content) && !has_confusables(old) {
-        return ExactSpans::NotFound;
-    }
-    match find_confusable_spans(content, old) {
-        ConfusableMatch::NoMatch => ExactSpans::NotFound,
-        ConfusableMatch::Ambiguous => ExactSpans::Ambiguous,
-        ConfusableMatch::Matches(spans) => ExactSpans::Hits(
-            spans
-                .into_iter()
-                .map(|(start, end)| ByteSpan { start, end })
-                .collect(),
-        ),
+    if eol.is_empty() {
+        ExactSpans::NotFound
+    } else {
+        ExactSpans::Hits(eol)
     }
 }
 
@@ -281,8 +231,7 @@ fn apply_rendered_spans(content: &str, spans: &[ByteSpan], new: &str) -> Result<
     apply_byte_spans(content, &replacements)
 }
 
-/// Exact replace used by the edit tool: EOL-agnostic first, then a confusable
-/// fallback that remaps matches back to original bytes.
+/// Exact replace used by the edit tool. CRLF and LF compare equal.
 pub fn edit_preserving_replace(
     content: &str,
     old: &str,
@@ -291,7 +240,6 @@ pub fn edit_preserving_replace(
 ) -> EditReplace {
     match find_exact_spans(content, old) {
         ExactSpans::NotFound => EditReplace::NotFound,
-        ExactSpans::Ambiguous => EditReplace::Ambiguous,
         ExactSpans::Hits(spans) => {
             let count = spans.len();
             if count == 0 {
@@ -315,7 +263,7 @@ pub fn edit_preserving_replace(
     }
 }
 
-/// 1-based start line of each EOL- or confusable-normalized match.
+/// 1-based start line of each EOL-normalized match.
 pub fn edit_match_line_numbers(content: &str, old: &str) -> Vec<usize> {
     match find_exact_spans(content, old) {
         ExactSpans::Hits(spans) => spans
@@ -326,172 +274,12 @@ pub fn edit_match_line_numbers(content: &str, old: &str) -> Vec<usize> {
     }
 }
 
-/// Hint when an exact miss is explained by typography confusables.
-pub fn confusable_miss_hint(content: &str, old: &str) -> Option<String> {
-    if !has_confusables(content) && !has_confusables(old) {
-        return None;
-    }
-    let (content_lf, eol_map) = to_lf_with_index_map(content);
-    let old_lf = old.replace("\r\n", "\n");
-    if old_lf.is_empty() {
-        return None;
-    }
-    let (norm_file, conf_map) = build_confusable_offset_map(&content_lf);
-    let norm_old = normalize_confusables(&old_lf);
-    if norm_old.is_empty() {
-        return None;
-    }
-    let norm_start = norm_file.find(&norm_old)?;
-    let lf_start = conf_map[norm_start];
-    let lf_end = conf_map[norm_start + norm_old.len()];
-    if lf_end < lf_start || lf_end > content_lf.len() {
-        return None;
-    }
-    let orig_start = eol_map[lf_start];
-    let orig_end = eol_map[lf_end];
-    let match_start_line = content[..orig_start].matches('\n').count() + 1;
-    let match_end_line = content[..orig_end].matches('\n').count() + 1;
-    let mut affected_lines: Vec<usize> = detect_confusable_lines(content)
-        .into_iter()
-        .filter(|line| *line >= match_start_line && *line <= match_end_line)
-        .collect();
-    affected_lines.dedup();
-    const MAX_LISTED_LINES: usize = 8;
-    if affected_lines.is_empty() {
-        return Some(
-            "old_string contains Unicode typography characters (smart quotes, em-dashes, etc.) \
-             that look identical to ASCII but differ at the byte level. Re-read the file and \
-             use a shorter old_string anchored on nearby ASCII-only context."
-                .into(),
-        );
-    }
-    let line_summary = if affected_lines.len() <= MAX_LISTED_LINES {
-        affected_lines
-            .iter()
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    } else {
-        let shown: Vec<String> = affected_lines[..MAX_LISTED_LINES]
-            .iter()
-            .map(|n| n.to_string())
-            .collect();
-        format!(
-            "{} (and {} more)",
-            shown.join(", "),
-            affected_lines.len() - MAX_LISTED_LINES
-        )
-    };
-    Some(format!(
-        "The nearest matching region contains Unicode typography characters \
-         (smart quotes, em-dashes, etc.) on lines {line_summary} that look identical to \
-         ASCII but differ at the byte level. Re-read the file and use a shorter \
-         old_string anchored on nearby ASCII-only context."
-    ))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ConfusableMatch {
-    NoMatch,
-    Matches(Vec<(usize, usize)>),
-    Ambiguous,
-}
-
-fn find_confusable_spans(content: &str, old: &str) -> ConfusableMatch {
-    let (content_lf, eol_map) = to_lf_with_index_map(content);
-    let old_lf = old.replace("\r\n", "\n");
-    if old_lf.is_empty() {
-        return ConfusableMatch::NoMatch;
-    }
-    let (norm_text, conf_map) = build_confusable_offset_map(&content_lf);
-    let norm_old = normalize_confusables(&old_lf);
-    if norm_old.is_empty() {
-        return ConfusableMatch::NoMatch;
-    }
-
-    let mut validated = Vec::new();
-    let mut had_rejected = false;
-    for (norm_start, _) in norm_text.match_indices(&norm_old) {
-        let norm_end = norm_start + norm_old.len();
-        let lf_start = conf_map[norm_start];
-        let lf_end = conf_map[norm_end];
-        if lf_end <= lf_start || lf_end > content_lf.len() {
-            had_rejected = true;
-            continue;
-        }
-        let lf_slice = &content_lf[lf_start..lf_end];
-        if normalize_confusables(lf_slice) != norm_old {
-            had_rejected = true;
-            continue;
-        }
-        let orig_start = eol_map[lf_start];
-        let orig_end = eol_map[lf_end];
-        if orig_end <= orig_start {
-            had_rejected = true;
-            continue;
-        }
-        validated.push((orig_start, orig_end));
-    }
-
-    if had_rejected {
-        return ConfusableMatch::Ambiguous;
-    }
-    if validated.is_empty() {
-        return ConfusableMatch::NoMatch;
-    }
-    for window in validated.windows(2) {
-        if window[0].1 > window[1].0 {
-            return ConfusableMatch::Ambiguous;
-        }
-    }
-    ConfusableMatch::Matches(validated)
-}
-
 fn push_replacement(out: &mut String, content: &str, orig_start: usize, new_lf: &str) {
     if inferred_eol(content, orig_start) == "\r\n" {
         out.push_str(&new_lf.replace('\n', "\r\n"));
     } else {
         out.push_str(new_lf);
     }
-}
-
-fn detect_confusable_lines(s: &str) -> Vec<usize> {
-    let mut lines = Vec::new();
-    let mut line: usize = 1;
-    for c in s.chars() {
-        if confusable_ascii(c).is_some() && lines.last() != Some(&line) {
-            lines.push(line);
-        }
-        if c == '\n' {
-            line += 1;
-        }
-    }
-    lines
-}
-
-fn build_confusable_offset_map(s: &str) -> (String, Vec<usize>) {
-    let mut normalized = String::with_capacity(s.len());
-    let mut offset_map: Vec<usize> = Vec::with_capacity(s.len() + 1);
-    for (orig_byte_offset, c) in s.char_indices() {
-        match confusable_ascii(c) {
-            Some(replacement) => {
-                for _ in 0..replacement.len() {
-                    offset_map.push(orig_byte_offset);
-                }
-                normalized.push_str(replacement);
-            }
-            None => {
-                let char_len = c.len_utf8();
-                for i in 0..char_len {
-                    offset_map.push(orig_byte_offset + i);
-                }
-                normalized.push(c);
-            }
-        }
-    }
-    offset_map.push(s.len());
-    debug_assert_eq!(offset_map.len(), normalized.len() + 1);
-    (normalized, offset_map)
 }
 
 /// Split on `\n` / `\r\n` only, keeping each terminator.
@@ -638,103 +426,22 @@ mod tests {
     }
 
     #[test]
-    fn confusable_smart_quotes_replace() {
-        let content = "say \u{201C}hello\u{201D} world";
-        let (result, count) = applied(content, "\"hello\"", "\"goodbye\"", false);
-        assert_eq!(count, 1);
-        assert_eq!(result, "say \"goodbye\" world");
-    }
-
-    #[test]
-    fn confusable_em_dash_and_nbsp() {
-        let content = "foo\u{2014}bar hello\u{00A0}world";
-        let (result, count) = applied(content, "foo--bar hello world", "X", false);
-        assert_eq!(count, 1);
-        assert_eq!(result, "X");
-    }
-
-    #[test]
-    fn confusable_preserves_crlf_and_unmatched() {
-        let content = "say \u{201C}hi\u{201D}\r\nnext\r\n";
-        let (result, count) = applied(content, "say \"hi\"", "say \"ok\"", false);
-        assert_eq!(count, 1);
-        assert_eq!(result, "say \"ok\"\r\nnext\r\n");
-    }
-
-    #[test]
-    fn confusable_partial_dash_is_ambiguous() {
-        assert_eq!(
-            edit_preserving_replace("\u{2014}", "-", "x", false),
-            EditReplace::Ambiguous
-        );
-        assert_eq!(
-            edit_preserving_replace("a\u{2026}b", ".", "x", false),
-            EditReplace::Ambiguous
-        );
-    }
-
-    #[test]
-    fn confusable_valid_and_partial_matches_are_ambiguous_together() {
-        assert_eq!(
-            edit_preserving_replace("a\u{2013}b\u{2014}c", "-", "x", true),
-            EditReplace::Ambiguous
-        );
-    }
-
-    #[test]
-    fn confusable_full_em_dash_ok() {
-        let (result, count) = applied("a\u{2014}b", "--", "-", false);
-        assert_eq!(count, 1);
-        assert_eq!(result, "a-b");
-    }
-
-    #[test]
-    fn confusable_ascii_old_against_ascii_file_still_exact() {
+    fn ascii_replace_stays_exact() {
         let (result, count) = applied("hello world", "hello", "hi", false);
         assert_eq!(count, 1);
         assert_eq!(result, "hi world");
     }
 
     #[test]
-    fn confusable_hint_lists_affected_line() {
-        let hint = confusable_miss_hint("plain\n\u{201C}quoted\u{201D}\n", "\"quoted\"");
-        let hint = hint.expect("hint");
-        assert!(hint.contains("lines 2"), "{hint}");
-        assert!(hint.contains("typography"), "{hint}");
-    }
-
-    #[test]
-    fn confusable_hint_skips_unrelated_typography() {
-        assert!(
-            confusable_miss_hint("\u{201C}quoted\u{201D}\nplain\n", "totally_unrelated").is_none()
-        );
-        assert!(confusable_miss_hint("hello world\n", "xyz").is_none());
-    }
-
-    #[test]
-    fn confusable_replace_all() {
-        let content = "\u{201C}a\u{201D} and \u{201C}a\u{201D}";
-        let (result, count) = applied(content, "\"a\"", "'a'", true);
-        assert_eq!(count, 2);
-        assert_eq!(result, "'a' and 'a'");
-    }
-
-    #[test]
-    fn confusable_multiple_without_replace_all() {
-        let content = "\u{201C}a\u{201D} and \u{201C}a\u{201D}";
-        let (_, count) = applied(content, "\"a\"", "x", false);
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn offset_map_roundtrip_smart_quotes() {
-        let original = "\u{201C}hi\u{201D}";
-        let (normalized, map) = build_confusable_offset_map(original);
-        assert_eq!(normalized, "\"hi\"");
-        let start = normalized.find("\"hi\"").unwrap();
-        let end = start + 4;
-        let orig = &original[map[start]..map[end]];
-        assert_eq!(normalize_confusables(orig), "\"hi\"");
+    fn quoted_punctuation_is_not_an_ascii_match() {
+        assert!(matches!(
+            find_exact_spans("say \u{201C}hello\u{201D} world", "\"hello\""),
+            ExactSpans::NotFound
+        ));
+        assert!(matches!(
+            edit_preserving_replace("a\u{2014}b", "--", "-", false),
+            EditReplace::NotFound
+        ));
     }
 
     #[test]
@@ -754,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_spans_confusable_and_utf8_boundaries() {
-        let content = "say \u{201C}hello\u{201D} world";
+    fn exact_spans_respect_utf8_boundaries() {
+        let content = "say \"hello\" world";
         match find_exact_spans(content, "\"hello\"") {
             ExactSpans::Hits(spans) => {
                 assert_eq!(spans.len(), 1);

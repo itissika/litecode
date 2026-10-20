@@ -1,0 +1,9 @@
+{
+  "tool": "write",
+  "scenario": "truncation",
+  "covered": false,
+  "gap": "write 把 content 整份写入，结果是 file 与 created，没有截断或分页。截断场景仍然无法表达，套件保留这条缺口。",
+  "data": null,
+  "error": null,
+  "content_historical": null
+}

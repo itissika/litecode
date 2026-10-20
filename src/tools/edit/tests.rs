@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::edit::EditTool;
+use crate::tool::outcome::OutcomeStatus;
 use crate::types::ToolSignalLevel;
 
 fn tool() -> EditTool {
@@ -12,7 +13,7 @@ fn tool() -> EditTool {
 
 fn call_edits(path: &std::path::Path, edits: Value) -> crate::types::ToolCallResult {
     tool().call(serde_json::json!({
-        "file_path": path.to_str().unwrap(),
+        "path": path.to_str().unwrap(),
         "edits": edits
     }))
 }
@@ -49,12 +50,12 @@ fn edit_tool_roundtrips_bom_and_matches_first_line() {
 fn single_success_reports_summary_and_indexed_outcome() {
     let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
     let result = call_edits(&path, one("fn main() {}", "fn start() {}"));
-    assert!(result.content.contains("1 applied"), "{}", result.content);
-    assert!(
-        result.content.contains("[1] applied:"),
-        "{}",
-        result.content
-    );
+    assert_eq!(result.outcome_status, Some(OutcomeStatus::Ok));
+    let data = result.data.expect("edit data");
+    assert_eq!(data["applied"], 1);
+    assert_eq!(data["failed"], 0);
+    assert_eq!(data["blocks"][0]["status"], "applied");
+    assert_eq!(data["blocks"][0]["index"], 1);
 }
 
 #[test]
@@ -73,25 +74,26 @@ fn edit_tool_rejects_utf16() {
 }
 
 #[test]
-fn edit_tool_replaces_smart_quotes() {
+fn edit_tool_does_not_equate_curly_quotes() {
     let (_dir, path) = write_temp("doc.md", "say \u{201C}hello\u{201D}\n");
     let result = call_edits(&path, one("\"hello\"", "\"hi\""));
-    assert!(
-        !result.content.starts_with("Error:"),
-        "got: {}",
-        result.content
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    let blocks = result.error_details.as_ref().unwrap()["blocks"].as_array().unwrap();
+    assert_eq!(blocks[0]["reason"]["code"], "no_match");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "say \u{201C}hello\u{201D}\n"
     );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "say \"hi\"\n");
 }
 
 #[test]
-fn edit_tool_rejects_partial_em_dash() {
+fn edit_tool_does_not_equate_dash_characters() {
     let (_dir, path) = write_temp("dash.txt", "foo\u{2014}bar\n");
     let result = call_edits(&path, one("-", "="));
-    assert!(
-        result.content.contains("unicode_confusable"),
-        "got: {}",
-        result.content
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    assert_eq!(
+        result.error_details.as_ref().unwrap()["blocks"][0]["reason"]["code"],
+        "no_match"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\u{2014}bar\n");
 }
@@ -101,13 +103,10 @@ fn edit_tool_wire_view_prefixes_and_indent() {
     let (_dir, path) = write_temp("a.rs", "    foo()\n");
     let prefixed = crate::tool::format_file_line(1, "    foo()");
     let result = call_edits(&path, one(prefixed.trim_end(), "bar()"));
-    assert!(result.content.starts_with("Error:"));
-    assert!(result.content.contains("line-number prefix"));
-    assert!(
-        result.content.contains("L1") || result.content.contains("foo()"),
-        "{}",
-        result.content
-    );
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
+    assert_eq!(block["reason"]["code"], "read_line_prefix");
+    assert!(!block["ranges"].as_array().unwrap().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "    foo()\n");
 }
 
@@ -115,12 +114,12 @@ fn edit_tool_wire_view_prefixes_and_indent() {
 fn edit_tool_wire_multiple_matches() {
     let (_dir, path) = write_temp("a.rs", "foo\nbar\nfoo\n");
     let result = call_edits(&path, one("foo", "FOO"));
-    assert!(
-        result.content.contains("multiple_exact"),
-        "{}",
-        result.content
-    );
-    assert!(result.content.contains("L1, L3"), "{}", result.content);
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
+    assert_eq!(block["reason"]["code"], "multiple_matches");
+    assert_eq!(block["ranges"].as_array().unwrap().len(), 2);
+    assert_eq!(block["ranges"][0]["start_line"], 1);
+    assert_eq!(block["ranges"][1]["start_line"], 3);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\nbar\nfoo\n");
 }
 
@@ -128,7 +127,10 @@ fn edit_tool_wire_multiple_matches() {
 fn edit_tool_wire_noop_and_empty_file() {
     let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
     let noop = call_edits(&path, one("fn main() {}", "fn main() {}"));
-    assert!(noop.content.contains("no_op"), "{}", noop.content);
+    assert_eq!(
+        noop.error_details.as_ref().unwrap()["blocks"][0]["reason"]["code"],
+        "no_op"
+    );
 
     std::fs::write(&path, "").unwrap();
     let empty = call_edits(&path, one("hello", "world"));
@@ -147,17 +149,31 @@ fn edit_tool_partial_success_writes_once_and_warns() {
             {"old_string": "missing_token_zz", "new_string": "nope"}
         ]),
     );
-    assert_eq!(result.level, ToolSignalLevel::Warning);
+    assert_eq!(result.outcome_status, Some(OutcomeStatus::Partial));
+    assert!(result.error.is_none());
     assert!(
-        result.content.contains("applied: exact"),
-        "{}",
-        result.content
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "edit_block_failed"),
+        "{:?}",
+        result.diagnostics
     );
-    assert!(result.content.contains("failed:"), "{}", result.content);
-    assert!(
-        result.content.contains("File was modified") || result.content.contains("File updated"),
-        "{}",
-        result.content
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["applied"], 1);
+    assert_eq!(data["failed"], 1);
+    assert_eq!(data["blocks"][0]["status"], "applied");
+    assert_eq!(data["blocks"][1]["status"], "failed");
+    assert_eq!(data["blocks"][1]["reason"]["code"], "no_match");
+    let diagnostic = result
+        .diagnostics
+        .iter()
+        .find(|item| item.code == "edit_block_failed")
+        .expect("diagnostic");
+    assert_eq!(diagnostic.details.as_ref().unwrap()["index"], 2);
+    assert_eq!(
+        diagnostic.details.as_ref().unwrap()["reason"]["code"],
+        "no_match"
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "ALPHA\nbeta\n");
 }
@@ -172,7 +188,11 @@ fn edit_tool_all_fail_does_not_write() {
             {"old_string": "nope2", "new_string": "y"}
         ]),
     );
-    assert!(result.content.starts_with("Error:"));
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    assert!(result.data.is_none());
+    let blocks = result.error_details.as_ref().unwrap()["blocks"].as_array().unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert!(blocks.iter().all(|block| block["status"] == "failed"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
 }
 
@@ -180,7 +200,7 @@ fn edit_tool_all_fail_does_not_write() {
 fn edit_tool_schema_rejects_old_shape() {
     let err = tool()
         .validate_input(&serde_json::json!({
-            "file_path": "a.rs",
+            "path": "a.rs",
             "old_string": "a",
             "new_string": "b"
         }))
@@ -192,11 +212,11 @@ fn edit_tool_schema_rejects_old_shape() {
 fn edit_tool_rejects_unknown_item_parameter() {
     let err = tool()
         .validate_input(&serde_json::json!({
-            "file_path": "a.rs",
+            "path": "a.rs",
             "edits": [{
                 "old_string": "a",
                 "new_string": "b",
-                "mode": "fuzzy"
+                "mode": "loose"
             }]
         }))
         .unwrap_err();
@@ -207,7 +227,7 @@ fn edit_tool_rejects_unknown_item_parameter() {
 fn edit_tool_is_destructive_on_any_empty_new_string() {
     assert!(tool().is_destructive(
         &serde_json::json!({
-            "file_path": "a.rs",
+            "path": "a.rs",
             "edits": [
                 {"old_string": "a", "new_string": "b"},
                 {"old_string": "c", "new_string": ""}
@@ -218,7 +238,7 @@ fn edit_tool_is_destructive_on_any_empty_new_string() {
     ));
     assert!(!tool().is_destructive(
         &serde_json::json!({
-            "file_path": "a.rs",
+            "path": "a.rs",
             "edits": [{"old_string": "a", "new_string": "b"}]
         }),
         crate::workspace::ToolPathMode::All,
@@ -248,7 +268,7 @@ fn edit_tool_cancel_before_write() {
         .unwrap()
         .block_on(tool().call_for_execution(
             serde_json::json!({
-                "file_path": path.to_str().unwrap(),
+                "path": path.to_str().unwrap(),
                 "edits": [{"old_string": "fn main() {}", "new_string": "fn start() {}"}]
             }),
             execution,
@@ -276,7 +296,7 @@ fn description_has_no_mode_knob() {
 #[test]
 fn virtual_session_path_is_read_only() {
     let result = tool().call(serde_json::json!({
-        "file_path": ".litecode/sessions/01ABCDEF.md",
+        "path": ".litecode/sessions/01ABCDEF.md",
         "edits": [{ "old_string": "a", "new_string": "b" }]
     }));
     assert_eq!(result.level, ToolSignalLevel::Error);
@@ -290,22 +310,12 @@ fn virtual_session_path_is_read_only() {
 }
 
 #[test]
-fn low_fuzzy_message_is_actionable_without_garbage_preview() {
+fn unmatched_block_reports_no_match_without_applying() {
     let (_dir, path) = write_temp("a.rs", "fn keep() {}\n");
     let result = call_edits(&path, one("totally_unrelated_identifier_xyz", "nope"));
-    assert!(result.content.starts_with("Error:"));
-    assert!(
-        result
-            .content
-            .contains("No sufficiently similar region was found"),
-        "{}",
-        result.content
-    );
-    assert!(
-        result.content.contains("unique context"),
-        "{}",
-        result.content
-    );
-    assert!(!result.content.contains("score"), "{}", result.content);
+    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
+    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
+    assert_eq!(block["reason"]["code"], "no_match");
+    assert_eq!(block["ranges"].as_array().unwrap().len(), 0);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn keep() {}\n");
 }

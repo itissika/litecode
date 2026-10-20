@@ -7,7 +7,7 @@ use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::lsp_feedback;
-use crate::types::ToolCallResult;
+use crate::types::{ToolCallResult, ToolErrorKind};
 use crate::workspace::text_codec;
 
 mod feedback;
@@ -19,10 +19,14 @@ mod python_indent;
 #[cfg(test)]
 mod tests;
 
-use feedback::render_tool_result;
+use feedback::report;
 use planner::{
     RequestFail, SNAPSHOT_RULE, cancelled_message, empty_file_message, parse_edits, plan_edits,
 };
+
+fn cancelled_edit() -> ToolCallResult {
+    ToolCallResult::error_with_kind(ToolErrorKind::Cancelled, cancelled_message(), false)
+}
 
 pub struct EditTool {
     ide: Option<Arc<crate::ide_base::IdeBaseHandle>>,
@@ -61,12 +65,6 @@ impl EditTool {
                 "editing",
             );
         }
-        if result.error.is_none() {
-            result = result.with_data(serde_json::json!({
-                "path": path_display,
-                "applied": wrote,
-            }));
-        }
         result
     }
 
@@ -102,10 +100,6 @@ impl Tool for EditTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn accepts_historical_file_path(&self) -> bool {
-        true
-    }
-
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -114,6 +108,10 @@ impl Tool for EditTool {
                 "path": {
                     "type": "string",
                     "description": crate::tools::file_path::FILE_PATH_SCHEMA_HINT
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "sha256 of the file bytes from a previous read. Omit to skip the check. A mismatch returns stale and does not write."
                 },
                 "edits": {
                     "type": "array",
@@ -136,7 +134,7 @@ impl Tool for EditTool {
                             },
                             "replace_all": {
                                 "type": "boolean",
-                                "description": "Replace all exact occurrences (default: false). Never auto-replaces multiple fuzzy candidates."
+                                "description": "Replace every exact occurrence (default: false)."
                             }
                         },
                         "required": ["old_string", "new_string"]
@@ -151,12 +149,82 @@ impl Tool for EditTool {
         Some(serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "File that was edited.",
+            "description": "Blocks applied to one file. file is the identity after the successful blocks were written.",
             "properties": {
-                "path": { "type": "string", "description": "Path that was edited." },
-                "applied": { "type": "boolean", "description": "Whether the file contents changed." }
+                "file": {
+                    "type": "object",
+                    "description": "File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "abs": { "type": "string" },
+                        "hash": { "type": "string", "description": "sha256 hex of the file bytes." },
+                        "bytes": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["path", "hash", "bytes"]
+                },
+                "blocks": {
+                    "type": "array",
+                    "description": "One result per edit, in input order. Failed blocks do not roll back applied blocks.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "index": { "type": "integer", "minimum": 1, "description": "1-based index in edits." },
+                            "status": { "type": "string", "enum": ["applied", "failed"] },
+                            "ranges": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "start_line": { "type": "integer", "minimum": 1 },
+                                        "end_line": { "type": "integer", "minimum": 1 }
+                                    },
+                                    "required": ["start_line", "end_line"]
+                                }
+                            },
+                            "reason": {
+                                "type": "object",
+                                "description": "Present when status is failed.",
+                                "properties": {
+                                    "code": { "type": "string" },
+                                    "message": { "type": "string" },
+                                    "details": {
+                                        "type": "object",
+                                        "additionalProperties": false,
+                                        "description": "Structured cause. Fields appear only for the reason that produced them.",
+                                        "properties": {
+                                            "kind": {
+                                                "type": "string",
+                                                "enum": ["identical_strings", "replacement_unchanged", "leading_trailing", "internal_spacing", "input"]
+                                            },
+                                            "lines": {
+                                                "type": "array",
+                                                "items": { "type": "integer", "minimum": 1 }
+                                            },
+                                            "excerpt": { "type": "string", "description": "One line of the file the whitespace difference pointed at." },
+                                            "prior_index": { "type": "integer", "minimum": 1 },
+                                            "other_index": { "type": "integer", "minimum": 1 },
+                                            "other_range": {
+                                                "type": "object",
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                    "start_line": { "type": "integer", "minimum": 1 },
+                                                    "end_line": { "type": "integer", "minimum": 1 }
+                                                },
+                                                "required": ["start_line", "end_line"]
+                                            }
+                                        }
+                                    }
+                                },
+                                "required": ["code", "message"]
+                            }
+                        },
+                        "required": ["index", "status", "ranges"]
+                    }
+                },
+                "applied": { "type": "integer", "minimum": 0, "description": "Number of blocks written." },
+                "failed": { "type": "integer", "minimum": 0, "description": "Number of blocks not written." }
             },
-            "required": ["path", "applied"]
+            "required": ["file", "blocks", "applied", "failed"]
         }))
     }
 
@@ -170,6 +238,11 @@ impl Tool for EditTool {
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tools::file_path::require_code_path(input)?;
+        if let Some(value) = input.get("expected_hash").filter(|value| !value.is_null())
+            && !value.is_string()
+        {
+            return Err("parameter 'expected_hash' must be a string".into());
+        }
         parse_edits(input)?;
         Ok(())
     }
@@ -185,6 +258,20 @@ impl Tool for EditTool {
                 .iter()
                 .any(|item| item["new_string"].as_str().is_some_and(str::is_empty))
         })
+    }
+
+    fn effects(
+        &self,
+        input: &Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        match crate::tools::file_path::code_path(input) {
+            Some(path) => crate::tool::resource_gate::ToolEffects::write(
+                crate::tool::resource_gate::lock_key(workspace_root, path, path_mode),
+            ),
+            None => crate::tool::resource_gate::ToolEffects::default(),
+        }
     }
 
     fn resource_keys(
@@ -247,7 +334,7 @@ impl EditTool {
             Err(error) => return ToolCallResult::error(error.to_string()),
         };
         if execution.cancel.is_cancelled() {
-            return ToolCallResult::error(cancelled_message());
+            return cancelled_edit();
         }
         let path_display = path.to_string_lossy().into_owned();
         let workspace_relative = self
@@ -266,6 +353,19 @@ impl EditTool {
                 }
             },
         };
+        if let Some(expected) = input.get("expected_hash").and_then(Value::as_str) {
+            let current = crate::tool::file_identity::sha256_hex(&raw_bytes);
+            if expected != current {
+                let message = "file changed since it was read; expected_hash does not match";
+                return crate::tool::outcome::ToolOutcome::<Value>::failure(
+                    "stale",
+                    message,
+                    true,
+                )
+                .with_error_details(serde_json::json!({ "current_hash": current }))
+                .into_call_result(message);
+            }
+        }
         let decoded = match text_codec::decode_utf8_bytes(&raw_bytes) {
             Ok(decoded) => decoded,
             Err(error) => {
@@ -278,21 +378,35 @@ impl EditTool {
         let content = decoded.text;
         let planned = match plan_edits(&content, &blocks, &execution.cancel) {
             Ok(planned) => planned,
-            Err(RequestFail::Cancelled) => return ToolCallResult::error(cancelled_message()),
+            Err(RequestFail::Cancelled) => return cancelled_edit(),
             Err(RequestFail::EmptyFile) => return ToolCallResult::error(empty_file_message()),
             Err(RequestFail::InvalidPlan(msg)) => {
                 return ToolCallResult::error(format!("{msg}; file was not modified"));
             }
         };
         if execution.cancel.is_cancelled() {
-            return ToolCallResult::error(cancelled_message());
+            return cancelled_edit();
+        }
+        let edit_report = report(&planned);
+        if edit_report.applied == 0 {
+            let message = "no edits applied; file was not modified";
+            let mut outcome = crate::tool::outcome::ToolOutcome::<Value>::failure(
+                "edit_failed",
+                message,
+                true,
+            )
+            .with_error_details(serde_json::json!({ "blocks": edit_report.blocks }));
+            for diagnostic in edit_report.diagnostics {
+                outcome = outcome.with_diagnostic(diagnostic);
+            }
+            return outcome.into_call_result(message);
         }
         let wrote = planned
             .edited_content()
             .is_some_and(|edited| edited != content);
-        if wrote {
+        let written_bytes = if wrote {
             if execution.cancel.is_cancelled() {
-                return ToolCallResult::error(cancelled_message());
+                return cancelled_edit();
             }
             let edited = planned.edited_content().expect("wrote implies edited");
             let to_write = text_codec::reattach_utf8_bom(decoded.has_bom, edited);
@@ -312,8 +426,28 @@ impl EditTool {
             if let (Some(ide), Some(_)) = (&self.ide, &workspace_relative) {
                 ide.apply_document_if_ready(&path, edited).await;
             }
+            to_write.into_bytes()
+        } else {
+            raw_bytes
+        };
+        let located =
+            crate::tool::file_identity::locate_resolved(&execution.workspace_root, &path, &raw_path);
+        let file = crate::tool::file_identity::file_ref(located, &written_bytes);
+        let data = serde_json::json!({
+            "file": file,
+            "blocks": edit_report.blocks,
+            "applied": edit_report.applied,
+            "failed": edit_report.failed,
+        });
+        let mut outcome = if edit_report.failed > 0 {
+            crate::tool::outcome::ToolOutcome::partial(data)
+        } else {
+            crate::tool::outcome::ToolOutcome::ok(data)
+        };
+        for diagnostic in edit_report.diagnostics {
+            outcome = outcome.with_diagnostic(diagnostic);
         }
-        let result = render_tool_result(&path_display, &planned, wrote, execution.output_limit);
+        let result = outcome.into_call_result("");
         self.finish(result, wrote, &execution, &raw_path, &path, &path_display)
             .await
     }

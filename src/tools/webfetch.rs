@@ -306,8 +306,8 @@ impl Tool for WebFetchTool {
         crate::tools::description_text(include_str!("descriptions/webfetch.md"))
     }
 
-    fn timeout(&self) -> Option<u64> {
-        Some(35)
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(35))
     }
 }
 

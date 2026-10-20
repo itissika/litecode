@@ -406,7 +406,8 @@ mod tests {
         );
         global.agents.insert("default".into(), profile);
         global.custom_tools.push(named_tool("run_code", vec![deny]));
-        let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
         let engine = PermissionEngine::resolver(resolved, "default", 0);
         let decision = engine.evaluate_tool("run_code", &serde_json::json!({}), dir.path());
         assert_eq!(decision.action, PermissionAction::Deny);

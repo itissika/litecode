@@ -540,9 +540,9 @@ impl Tool for LspTool {
         true
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         // Warm wait (≤30s) + LSP request headroom.
-        Some(60)
+        Some(std::time::Duration::from_secs(60))
     }
 
     fn max_result_size(&self) -> usize {

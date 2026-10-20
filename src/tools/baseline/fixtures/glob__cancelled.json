@@ -1,0 +1,13 @@
+{
+  "content_historical": "tool 'glob' cancelled",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "cancelled",
+    "message": "tool 'glob' cancelled",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "cancelled",
+  "tool": "glob"
+}

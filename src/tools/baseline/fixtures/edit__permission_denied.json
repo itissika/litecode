@@ -1,0 +1,13 @@
+{
+  "content_historical": "permission denied for 'edit'",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "permission_denied",
+    "message": "permission denied for 'edit'",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "permission_denied",
+  "tool": "edit"
+}

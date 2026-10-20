@@ -105,8 +105,13 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
             default_id: super::policy::DEFAULT_RULE_ID.into(),
             rules: vec![PolicyRule {
                 id: "outside_workspace".into(),
-                when: ArgMatcher::PathOutsideWorkspace {
-                    name: "file_path".into(),
+                when: ArgMatcher::AnyOf {
+                    matchers: vec![
+                        ArgMatcher::PathOutsideWorkspace { name: "path".into() },
+                        ArgMatcher::PathOutsideWorkspace {
+                            name: "file_path".into(),
+                        },
+                    ],
                 },
                 action: PermissionAction::Deny,
             }],

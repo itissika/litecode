@@ -266,7 +266,8 @@ fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<St
     use super::global_db::tools::{
         is_custom_tool_identity, is_reserved_builtin, non_transport_name_rejection,
     };
-    if let Some(reason) = non_transport_name_rejection(key).or_else(|| non_transport_name_rejection(&def.name))
+    if let Some(reason) =
+        non_transport_name_rejection(key).or_else(|| non_transport_name_rejection(&def.name))
     {
         return Some(reason.to_string());
     }

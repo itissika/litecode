@@ -1,0 +1,13 @@
+{
+  "content_historical": "invalid input for 'write': missing required parameter 'path'",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "invalid_input",
+    "message": "invalid input for 'write': missing required parameter 'path'",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "invalid_input",
+  "tool": "write"
+}

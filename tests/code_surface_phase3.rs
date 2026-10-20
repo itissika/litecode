@@ -344,12 +344,19 @@ return { status: denied.status };
         "the program continues: {}",
         result.content
     );
-    assert_eq!(result.data.as_ref().unwrap()["result"]["status"], "error");
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["result"]["status"], "error");
+    let calls = data["calls"].as_array().unwrap();
+    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
+    assert_eq!(calls[0]["error_code"], "permission_denied", "{calls:?}");
     assert!(
-        result
-            .content
-            .contains("1. write path=nope.txt permission_denied"),
+        result.content.contains("1. write path=nope.txt error"),
         "{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("permission_denied"),
+        "the ledger prints outcome, not the error code: {}",
         result.content
     );
     assert!(
@@ -386,10 +393,19 @@ return {{ status: denied.status }};
     )
     .await;
     assert!(result.error.is_none(), "{}", result.content);
-    assert_eq!(result.data.as_ref().unwrap()["result"]["status"], "error");
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["result"]["status"], "error");
+    let calls = data["calls"].as_array().unwrap();
+    assert_eq!(calls[0]["outcome"], "error", "{calls:?}");
+    assert_eq!(calls[0]["error_code"], "permission_denied", "{calls:?}");
     assert!(
-        result.content.contains("permission_denied"),
+        result.content.contains("1. write") && result.content.contains(" error"),
         "{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("permission_denied"),
+        "the ledger prints outcome, not the error code: {}",
         result.content
     );
     assert!(!Path::new(target).exists());
@@ -636,6 +652,7 @@ return "done";
         assert!(
             result.content.contains("2. edit path=seal.txt ok")
                 || result.content.contains("2. edit path=seal.txt cancelled")
+                || result.content.contains("2. edit path=seal.txt unsettled")
                 || result.content.contains("2. edit path=seal.txt timeout"),
             "{}",
             result.content
@@ -643,9 +660,9 @@ return "done";
     }
 }
 
-/// Publish a marker only after the write has entered the same-program gate
-/// (approval runs while that hold is kept), then pause so a read of another
-/// spelling is in flight before the file exists.
+/// Publish a marker when approval starts, then pause. The path is not locked
+/// during that wait. A read of the same file in the window must return before
+/// the write is approved.
 struct HoldWriteSink {
     root: PathBuf,
     seq: AtomicU64,
@@ -669,7 +686,7 @@ impl PermissionSink for HoldWriteSink {
         {
             let generation = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
             std::fs::write(self.root.join(name), generation.to_string()).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::thread::sleep(std::time::Duration::from_millis(1500));
         }
         AskReply::from_outcome(AskOutcome::Allow { always: false })
     }
@@ -822,7 +839,7 @@ async function race(name, a, b) {
     name,
     statuses: results.map(result => result.status),
     messages: results.map(result => (result.error && result.error.message) || ""),
-    bytes: results.map(result => (result.data && result.data.bytes) || 0)
+    bytes: results.map(result => (result.data && result.data.file && result.data.file.bytes) || 0)
   };
 }
 async function lineText(result) {
@@ -857,11 +874,16 @@ async function readsDuringWrite(paths) {
     };
   }));
   const written = await writing;
+  const afterRead = await tools.read({ path: "held.txt" });
   return {
     saw,
     write: written.status,
     writeMessage: (written.error && written.error.message) || "",
-    reads
+    reads,
+    after: {
+      status: afterRead.status,
+      text: await lineText(afterRead)
+    }
   };
 }
 async function readAfterWrite(writePath, readPath, marker, prior) {
@@ -874,17 +896,21 @@ async function readAfterWrite(writePath, readPath, marker, prior) {
       break;
     }
   }
-  const result = await tools.read({ path: readPath });
+  const during = await tools.read({ path: readPath });
   const written = await writing;
+  const after = await tools.read({ path: readPath });
   return {
     saw: saw !== "",
     write: written.status,
     writeMessage: (written.error && written.error.message) || "",
-    read: {
+    during: {
       path: readPath,
-      status: result.status,
-      text: await lineText(result),
-      message: (result.error && result.error.message) || ""
+      status: during.status,
+      text: await lineText(during)
+    },
+    after: {
+      status: after.status,
+      text: await lineText(after)
     }
   };
 }
@@ -968,13 +994,14 @@ return { races, held, spelled };
     let reads = held["reads"].as_array().expect("reads");
     assert!(!reads.is_empty());
     for read in reads {
-        assert_eq!(
+        assert_ne!(
             read["status"], "ok",
-            "a read of {} overlapped the write: {read}",
+            "a read of {} ran while approval was pending and must not wait for the write: {read}",
             read["path"]
         );
-        assert_eq!(read["text"], "exclusive-body", "{read}");
     }
+    assert_eq!(held["after"]["status"], "ok", "{held}");
+    assert_eq!(held["after"]["text"], "exclusive-body", "{held}");
     assert_eq!(
         std::fs::read_to_string(root.join("held.txt")).unwrap(),
         "exclusive-body\n"
@@ -986,12 +1013,13 @@ return { races, held, spelled };
         for read in spelled {
             assert_eq!(read["saw"], true, "write never reached the gate: {read}");
             assert_eq!(read["write"], "ok", "{read}");
-            assert_eq!(
-                read["read"]["status"], "ok",
-                "a read of {} overlapped the write: {read}",
-                read["read"]["path"]
+            assert_ne!(
+                read["during"]["text"], "exclusive-body",
+                "a read of {} waited for the unapproved write: {read}",
+                read["during"]["path"]
             );
-            assert_eq!(read["read"]["text"], "exclusive-body", "{read}");
+            assert_eq!(read["after"]["status"], "ok", "{read}");
+            assert_eq!(read["after"]["text"], "exclusive-body", "{read}");
         }
         assert_eq!(
             std::fs::read_to_string(root.join("trail.txt")).unwrap(),

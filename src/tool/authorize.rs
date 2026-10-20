@@ -31,8 +31,8 @@ fn permission_summary(tool_name: &str, input: &Value) -> String {
             .unwrap_or("")
             .to_string(),
         "write" | "edit" => input
-            .get("file_path")
-            .or_else(|| input.get("path"))
+            .get("path")
+            .or_else(|| input.get("file_path"))
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
@@ -65,7 +65,7 @@ pub async fn authorize(
         return AuthResult::Denied(invalid_input_for(&name, msg));
     }
 
-    let mut effective_input = input;
+    let effective_input = input;
 
     // The transport carries no permission of its own. A same-named custom tool
     // does not take this path: only the transport object does.
@@ -121,12 +121,5 @@ pub async fn authorize(
         PermissionAction::Allow => {}
     }
 
-    // Permission already saw historical `file_path`. The model-facing schema
-    // only has `path`, so the executed call must not keep the alias.
-    if tool.accepts_historical_file_path()
-        && let Some(obj) = effective_input.as_object_mut()
-    {
-        obj.remove("file_path");
-    }
     AuthResult::Proceed { effective_input }
 }

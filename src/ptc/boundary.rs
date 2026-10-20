@@ -93,7 +93,7 @@ fn open<'js>(
         return Ok(ready(serde_json::Value::Null));
     }
     if value.is_undefined() {
-        return Err(illegal("undefined"));
+        return Err(undefined_at(frames.as_slice()));
     }
     if value.is_bool() {
         return Ok(ready(serde_json::Value::Bool(
@@ -208,7 +208,7 @@ fn next_child<'js>(frames: &[Frame<'js>]) -> Result<Value<'js>, BoundaryError> {
                 .get::<Value<'_>>(*index)
                 .map_err(|error| script_error(array.as_value(), error))?;
             if element.is_undefined() {
-                return Err(illegal("undefined"));
+                return Err(undefined_at(frames));
             }
             Ok(element)
         }
@@ -222,12 +222,62 @@ fn next_child<'js>(frames: &[Frame<'js>]) -> Result<Value<'js>, BoundaryError> {
                 .get::<_, Value<'_>>(&keys[*index])
                 .map_err(|error| script_error(object.as_value(), error))?;
             if child.is_undefined() {
-                return Err(illegal("undefined property"));
+                return Err(undefined_at(frames));
             }
             Ok(child)
         }
         None => Err(illegal("unsupported value")),
     }
+}
+
+/// JSON path of the value `frames` is currently reading. Diagnostics only.
+///
+/// Keys that are not plain identifiers use bracket notation so arbitrary keys
+/// stay unambiguous (`$["a-b"]`), and string keys are JSON-escaped.
+fn path_at(frames: &[Frame<'_>]) -> String {
+    let mut path = String::from("$");
+    for frame in frames {
+        match frame {
+            Frame::Array { index, .. } => {
+                path.push('[');
+                path.push_str(&index.to_string());
+                path.push(']');
+            }
+            Frame::Object { keys, index, .. } => {
+                let key = keys[*index].as_str();
+                if is_identifier(key) {
+                    path.push('.');
+                    path.push_str(key);
+                } else {
+                    match serde_json::to_string(key) {
+                        Ok(quoted) => {
+                            path.push('[');
+                            path.push_str(&quoted);
+                            path.push(']');
+                        }
+                        Err(_) => path.push_str("[?]"),
+                    }
+                }
+            }
+        }
+    }
+    path
+}
+
+fn is_identifier(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn undefined_at(frames: &[Frame<'_>]) -> BoundaryError {
+    illegal(&format!(
+        "undefined at {}: JSON has no undefined; use null or omit it",
+        path_at(frames)
+    ))
 }
 
 fn finish<'js>(

@@ -215,6 +215,7 @@ fn match_type(
         {
             validate_array_items(schema_obj, items, path)?;
         }
+        enforce_numeric_bounds(schema_obj, value, path)?;
         return Ok(());
     }
     Err(type_error(path, &expected_label(&types), value))
@@ -250,6 +251,31 @@ fn is_json_integer(value: &Value) -> bool {
     }
     n.as_f64()
         .is_some_and(|f| f.is_finite() && f.fract() == 0.0)
+}
+
+/// `minimum` / `maximum` apply only to numbers. Null in a union type skips them.
+fn enforce_numeric_bounds(
+    schema_obj: &Map<String, Value>,
+    value: &Value,
+    path: &str,
+) -> Result<(), String> {
+    let Some(actual) = value.as_f64() else {
+        return Ok(());
+    };
+    if let Some(min) = schema_obj.get("minimum").and_then(Value::as_f64)
+        && actual < min
+    {
+        return Err(must_be(
+            path,
+            &format!("greater than or equal to {min}"),
+        ));
+    }
+    if let Some(max) = schema_obj.get("maximum").and_then(Value::as_f64)
+        && actual > max
+    {
+        return Err(must_be(path, &format!("less than or equal to {max}")));
+    }
+    Ok(())
 }
 
 fn validate_object(
@@ -564,6 +590,27 @@ mod tests {
     }
 
     #[test]
+    fn minimum_and_maximum_are_enforced() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                "total": { "type": ["integer", "null"], "minimum": 0 }
+            }
+        });
+        assert!(schema_validate(&schema, &json!({"limit": 1, "total": 0})).is_ok());
+        assert!(schema_validate(&schema, &json!({"limit": 100, "total": null})).is_ok());
+        assert_eq!(
+            err(schema.clone(), json!({"limit": 0})),
+            "parameter 'limit' must be greater than or equal to 1"
+        );
+        assert_eq!(
+            err(schema, json!({"limit": 101})),
+            "parameter 'limit' must be less than or equal to 100"
+        );
+    }
+
+    #[test]
     fn min_items_rejects_empty_array() {
         let schema = json!({
             "type": "object",
@@ -616,7 +663,7 @@ mod tests {
                     "edits": [{
                         "old_string": "a",
                         "new_string": "b",
-                        "mode": "fuzzy"
+                        "mode": "loose"
                     }]
                 })
             ),

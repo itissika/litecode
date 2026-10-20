@@ -129,7 +129,7 @@ fn floor_sensitive_write_blocks_even_under_all_and_always_grant() {
 
     let eval = engine.evaluate_tool(
         "write",
-        &serde_json::json!({"file_path": "/etc/passwd", "content": "x"}),
+        &serde_json::json!({"path": "/etc/passwd", "content": "x"}),
         dir.path(),
     );
     assert_eq!(eval.action, PermissionAction::Deny);
@@ -190,7 +190,7 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
     assert_eq!(engine_w.path_mode("write"), BindingPathMode::Unrestricted);
     let eval_w = engine_w.evaluate_tool(
         "write",
-        &serde_json::json!({"file_path": "/etc/passwd", "content": "x"}),
+        &serde_json::json!({"path": "/etc/passwd", "content": "x"}),
         dir.path(),
     );
     assert_eq!(eval_w.action, PermissionAction::Deny);
@@ -204,7 +204,7 @@ fn subagent_ask_becomes_deny() {
     let engine = engine_for("reviewer", AgentRole::Subagent, 1, safe_tools(&["write"]));
     let eval = engine.evaluate_tool(
         "write",
-        &serde_json::json!({"file_path": "a.txt", "content": "x"}),
+        &serde_json::json!({"path": "a.txt", "content": "x"}),
         dir.path(),
     );
     assert_eq!(eval.action, PermissionAction::Deny);
@@ -240,7 +240,7 @@ async fn authorize_ask_denied_by_sink() {
     let sink = recording_sink((false, false));
     let inv = tool_call(
         "write",
-        serde_json::json!({"file_path": "out.txt", "content": "x"}),
+        serde_json::json!({"path": "out.txt", "content": "x"}),
     );
     let result = authorize(
         &inv,
@@ -266,7 +266,7 @@ async fn authorize_ask_always_grants_same_rule_only() {
     let sink = recording_sink((true, true));
     let inv = tool_call(
         "write",
-        serde_json::json!({"file_path": "out.txt", "content": "x"}),
+        serde_json::json!({"path": "out.txt", "content": "x"}),
     );
     let result = authorize(
         &inv,
@@ -315,7 +315,7 @@ async fn authorize_floor_deny_ignores_always_grant() {
     let sink = recording_sink((true, true));
     let inv = tool_call(
         "write",
-        serde_json::json!({"file_path": "/etc/passwd", "content": "x"}),
+        serde_json::json!({"path": "/etc/passwd", "content": "x"}),
     );
     let result = authorize(
         &inv,
@@ -342,7 +342,7 @@ async fn authorize_subagent_ask_denied_without_sink() {
     let sink = recording_sink((true, true));
     let inv = tool_call(
         "write",
-        serde_json::json!({"file_path": "out.txt", "content": "x"}),
+        serde_json::json!({"path": "out.txt", "content": "x"}),
     );
     let result = authorize(
         &inv,
@@ -370,7 +370,7 @@ async fn authorize_ask_aborted_is_not_deny() {
     );
     let inv = tool_call(
         "write",
-        serde_json::json!({"file_path": "out.txt", "content": "x"}),
+        serde_json::json!({"path": "out.txt", "content": "x"}),
     );
     let result = authorize(
         &inv,
@@ -443,7 +443,7 @@ async fn authorize_schema_missing_content_denied() {
     let engine = engine_for("auth_schema", AgentRole::Primary, 0, all_tools(&["write"]));
     let sink = recording_sink((true, false));
     let result = authorize(
-        &tool_call("write", serde_json::json!({"file_path": "out.txt"})),
+        &tool_call("write", serde_json::json!({"path": "out.txt"})),
         &WriteTool::new(),
         &engine,
         &ctx_for(&dir),

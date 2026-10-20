@@ -12,12 +12,11 @@ use serde_json::{Map, Value};
 
 use crate::context_pipeline::Context;
 use crate::tool::trait_::Tool;
-use crate::types::ToolErrorKind;
 
 const PRELUDE: &str = r#"`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
-Expected tool failures resolve as `ToolResult` values with `status: "error"`; `status: "warning"` is a successful result with data. Runtime or protocol failures reject. Return a JSON-serializable value.
-Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. A binding whose signature includes `options` accepts `options.timeout_ms` as host execution metadata, not as a tool argument; other bindings do not.
+Each tool returns a `ToolResult`. `status: "ok"` and `status: "partial"` include `data`. `partial` means some of the work was committed; `diagnostics` name what failed. `status: "error"` has `data: null` and `error.code`. Non-fatal signals are `diagnostics`, not a separate status. Runtime or protocol failures reject. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
+Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 
 ```ts
 "#;
@@ -189,7 +188,6 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         declarations.push(ToolDeclaration {
             name: name.to_string(),
             description,
-            accepts_timeout: tool.timeout().is_some(),
             input_type,
             data_type,
             input,
@@ -205,28 +203,16 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         });
     }
 
-    let error_kinds = ToolErrorKind::ALL
-        .iter()
-        .map(|kind| {
-            serde_json::to_string(kind).map_err(|error| format!("serialize ToolErrorKind: {error}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?
-        .join(" | ");
-
     let mut out = String::new();
     out.push_str(PRELUDE);
-    out.push_str(&format!(
-        "type ToolErrorKind = {error_kinds};\n\
-         type ToolError = {{\n  kind: ToolErrorKind;\n  message: string;\n  retryable: boolean;\n}};\n\
-         type ToolResult<T> =\n  | {{ status: \"ok\" | \"warning\"; data: T; error: null }}\n  | {{ status: \"error\"; data: null; error: ToolError }};\n\n\
+    out.push_str(
+        "type Diagnostic = {\n  code: string;\n  severity: \"info\" | \"warning\";\n  message: string;\n  details?: unknown;\n};\n\
+         type ToolError = {\n  code: string;\n  message: string;\n  details?: unknown;\n  retryable: boolean;\n};\n\
+         type Page = {\n  has_more: boolean;\n  next: string | null;\n  total?: number;\n};\n\
+         type ToolResult<T> =\n  | { status: \"ok\" | \"partial\"; data: T; diagnostics: Diagnostic[]; page?: Page; error: null }\n  | { status: \"error\"; data: null; diagnostics: Diagnostic[]; page?: Page; error: ToolError };\n\n\
          /** Whole JSON number. The host rejects fractional values. */\n\
-         type Integer = number;\n\n"
-    ));
-    if declarations.iter().any(|declaration| declaration.accepts_timeout) {
-        out.push_str(
-            "type ToolCallOptions = {\n  /** Host-enforced per-call budget; the tool may clamp or reject it. */\n  timeout_ms?: number;\n};\n\n",
-        );
-    }
+         type Integer = number;\n\n",
+    );
     out.push_str(LIBS_SDK);
 
     for declaration in &declarations {
@@ -251,13 +237,8 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         out.push_str(&render_comment(&declaration.description, 2));
         let key = serde_json::to_string(&declaration.name)
             .map_err(|error| format!("serialize tool name: {error}"))?;
-        let options = if declaration.accepts_timeout {
-            ", options?: ToolCallOptions"
-        } else {
-            ""
-        };
         out.push_str(&format!(
-            "  readonly [{key}]: (args: {}{options}) => Promise<ToolResult<{}>>;\n",
+            "  readonly [{key}]: (args: {}) => Promise<ToolResult<{}>>;\n",
             declaration.input_type, declaration.data_type
         ));
     }
@@ -269,7 +250,6 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
 struct ToolDeclaration {
     name: String,
     description: String,
-    accepts_timeout: bool,
     input_type: String,
     data_type: String,
     input: TsType,
@@ -316,9 +296,7 @@ fn parse_schema(schema: &Value, path: &str) -> Result<TsType, String> {
     if let Some(extra) = object.get("additionalProperties")
         && !extra.is_boolean()
     {
-        return Err(format!(
-            "{path}: unsupported additionalProperties schema"
-        ));
+        return Err(format!("{path}: unsupported additionalProperties schema"));
     }
 
     if let Some(value) = object.get("const") {
@@ -746,15 +724,17 @@ mod tests {
         }
 
         fn data_schema(&self) -> Option<Value> {
-            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}))
+            Some(
+                json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}),
+            )
         }
 
         fn description(&self, _ctx: &Context) -> String {
             "Tool with a declared timeout.".into()
         }
 
-        fn timeout(&self) -> Option<u64> {
-            Some(5)
+        fn timeout(&self) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(5))
         }
     }
 
@@ -793,9 +773,11 @@ mod tests {
         assert!(page.contains("type DemoData ="));
         assert!(page.contains("kind: \"text\";"));
         assert!(page.contains("bytes: Integer;"));
-        assert!(page.contains(
-            "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
-        ));
+        assert!(
+            page.contains(
+                "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
+            )
+        );
         assert!(!page.contains("ToolCallOptions"));
         assert!(page.contains("Glob text stays literal: **/*.rs."));
         assert!(page.contains("declare const libs:"));
@@ -803,19 +785,30 @@ mod tests {
         assert!(page.contains("csv: {"));
         assert!(page.contains("groupBy<T>"));
         assert!(!page.contains("tools.call"));
-        assert!(!page.contains(": unknown"));
+        assert!(
+            !page
+                .replace("details?: unknown", "")
+                .contains(": unknown"),
+            "schema projection must not fall back to unknown"
+        );
     }
 
     #[test]
-    fn timeout_option_is_emitted_only_when_declared() {
-        let page = render_code_tool_description(&[Arc::new(TimedTool), Arc::new(FakeTool)]).unwrap();
-        assert!(page.contains("type ToolCallOptions = {"));
+    fn declared_timeout_does_not_add_a_per_call_options_argument() {
+        let page =
+            render_code_tool_description(&[Arc::new(TimedTool), Arc::new(FakeTool)]).unwrap();
+        assert!(!page.contains("ToolCallOptions"));
+        for line in page.lines().filter(|line| line.contains("readonly [")) {
+            assert!(!line.contains("options"), "{line}");
+        }
         assert!(page.contains(
-            "readonly [\"timed\"]: (args: TimedInput, options?: ToolCallOptions) => Promise<ToolResult<TimedData>>;"
+            "readonly [\"timed\"]: (args: TimedInput) => Promise<ToolResult<TimedData>>;"
         ));
         assert!(page.contains(
             "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
         ));
+        assert!(page.contains("status: \"ok\" | \"partial\""));
+        assert!(page.contains("`undefined` is not JSON"));
         let timed = page.find("[\"timed\"]").unwrap();
         let demo = page.find("[\"demo\"]").unwrap();
         assert!(demo < timed, "bindings are sorted by name");

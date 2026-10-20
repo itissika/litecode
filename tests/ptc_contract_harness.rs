@@ -129,7 +129,14 @@ fn bundle_interface_is_generated_from_tool_contracts() {
 
     assert!(page.contains("do not copy type annotations"));
     assert!(page.contains("type ToolResult<T> ="));
-    assert!(page.contains("type ToolCallOptions = {"));
+    assert!(page.contains("type Diagnostic = {"));
+    assert!(!page.contains("type ToolCallOptions"));
+    assert!(
+        page.lines()
+            .filter(|line| line.contains("readonly ["))
+            .all(|line| !line.contains("options")),
+        "{page}"
+    );
     assert!(page.contains("type GlobInput = {"));
     assert!(page.contains("type GlobData = {"));
     assert!(page.contains("type GrepInput = {"));
@@ -142,29 +149,33 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains("groupBy<T>"));
 
     assert!(page.contains("include_ignored?: boolean;"));
-    assert!(page.contains("timeout_ms?: number;"));
+    assert!(page.contains("Tool timeouts are internal"));
+    assert!(!page.contains("timeout_ms?:"));
     assert!(!page.contains("-u?:"));
-    assert!(page.contains("view?: \"lines\" | \"context\" | \"expanded\";"));
+    assert!(page.contains("literal?: boolean;"));
     assert!(page.contains("path: string;"));
-    assert!(!page.contains("file_path: string;"));
+    assert!(!page.contains("file_path"));
+    assert!(!page.contains("context_lines"));
+    assert!(!page.contains("view?:"));
+    assert!(!page.contains("next_cursor"));
+    assert!(!page.contains("next_start_line"));
 
-    assert!(page.contains("// Opaque continuation cursor from a previous grep result."));
-    assert!(page.contains("next_cursor: string | null;"));
-    assert!(page.contains("truncated: boolean;"));
-    assert!(page.contains("next_start_line: Integer | null;"));
+    assert!(page.contains("stale_cursor"));
+    assert!(page.contains("has_more: boolean;"));
+    assert!(page.contains("next: string | null;"));
     assert!(page.contains("type Integer = number;"));
 
     assert!(page.contains(
-        "readonly [\"glob\"]: (args: GlobInput, options?: ToolCallOptions) => Promise<ToolResult<GlobData>>;"
+        "readonly [\"glob\"]: (args: GlobInput) => Promise<ToolResult<GlobData>>;"
     ));
     assert!(page.contains(
-        "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
+        "readonly [\"grep\"]: (args: GrepInput) => Promise<ToolResult<GrepData>>;"
     ));
     assert!(
         page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;")
     );
-    assert!(!page.contains("read(args: ReadInput, options?: ToolCallOptions)"));
-    assert!(!page.contains(": unknown"));
+    assert!(!page.contains("options?: ToolCallOptions"));
+    assert!(!page.replace("details?: unknown", "").contains(": unknown"));
     assert!(!page.contains("tools.call"));
 
     let glob = page.find("[\"glob\"]").unwrap();
@@ -176,7 +187,7 @@ fn bundle_interface_is_generated_from_tool_contracts() {
 #[tokio::test(flavor = "current_thread")]
 async fn embedded_runtime_runs_read_glob_grep() {
     let dir = tempfile::tempdir().unwrap();
-    write(dir.path(), "src/a.rs", "fn needle_a() {}\n");
+    write(dir.path(), "src/a.rs", "fn needle_a() {}\nsecond\n");
     write(dir.path(), "src/b.rs", "fn needle_b() {}\n");
     let harness = PtcHarness::new(dir.path());
 
@@ -187,21 +198,21 @@ if (files.status !== "ok" || !Array.isArray(files.data.paths)) {
 }
 
 const first = await tools.grep({ pattern: "needle", path: "src", limit: 1 });
-if (!first.data || first.data.total !== 2 || first.data.matches.length !== 1) {
-  throw new Error("grep first page contract failed");
+if (!first.data || first.data.matches.length !== 1 || !first.data.page.has_more) {
+  throw new Error("grep first page contract failed: " + JSON.stringify(first));
 }
-if (!first.data.next_cursor) {
-  throw new Error("grep must expose next_cursor");
+if (!first.data.page.next) {
+  throw new Error("grep must expose page.next");
 }
 
 const second = await tools.grep({
   pattern: "needle",
   path: "src",
   limit: 1,
-  cursor: first.data.next_cursor,
+  cursor: first.data.page.next,
 });
-if (!second.data || second.data.matches.length !== 1 || second.data.has_more) {
-  throw new Error("grep continuation contract failed");
+if (!second.data || second.data.matches.length !== 1 || second.data.page.has_more) {
+  throw new Error("grep continuation contract failed: " + JSON.stringify(second));
 }
 
 const read = await tools.read({
@@ -209,16 +220,15 @@ const read = await tools.read({
   start_line: 1,
   end_line: 1,
 });
-if (!read.data || read.data.kind !== "text" || read.data.lines.length !== 1) {
+if (!read.data || !read.data.file || !read.data.file.hash || read.data.lines.length !== 1 || !read.data.page.has_more) {
   throw new Error("read contract failed: " + JSON.stringify(read));
 }
 
 return {
   file_paths: files.data.paths,
-  grep_total: first.data.total,
-  second_has_more: second.data.has_more,
-  read_kind: read.data.kind,
-  read_path: read.data.path,
+  second_has_more: second.data.page.has_more,
+  read_has_more: read.data.page.has_more,
+  read_path: read.data.file.path,
   first_path: first.data.matches[0].path,
   first_line: read.data.lines[0].text,
 };
@@ -231,36 +241,30 @@ return {
     let file_paths = value["file_paths"].as_array().unwrap();
     assert!(file_paths.iter().any(|path| path == "src/a.rs"));
     assert!(file_paths.iter().any(|path| path == "src/b.rs"));
-    assert_eq!(value["grep_total"], 2);
     assert_eq!(value["second_has_more"], false);
-    assert_eq!(value["read_kind"], "text");
+    assert_eq!(value["read_has_more"], true);
     assert_eq!(value["read_path"], "src/a.rs");
     assert_eq!(value["first_path"], "src/a.rs");
     assert_eq!(value["first_line"], "fn needle_a() {}");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn view_switch_keeps_structured_data_identical() {
+async fn literal_true_searches_the_pattern_as_text() {
     let dir = tempfile::tempdir().unwrap();
-    write(
-        dir.path(),
-        "src/a.rs",
-        "fn outer() {\n    if ready {\n        needle();\n    }\n}\n",
-    );
+    write(dir.path(), "src/a.rs", "a.b\naxb\n");
     let harness = PtcHarness::new(dir.path());
 
     let script = r#"
-const lines = await tools.grep({ pattern: "needle", path: "src", view: "lines" });
-const expanded = await tools.grep({ pattern: "needle", path: "src", view: "expanded" });
-if (JSON.stringify(lines.data) !== JSON.stringify(expanded.data)) {
-  throw new Error("view changed structured grep data");
+const hit = await tools.grep({ pattern: "a.b", path: "src/a.rs", literal: true });
+if (!hit.data || hit.data.matches.length !== 1 || !hit.data.matches[0].line_text.includes("a.b")) {
+  throw new Error("literal search failed: " + JSON.stringify(hit));
 }
-return { data_identical: true };
+return { hits: hit.data.matches.length };
 "#;
 
     let value = harness
         .run_code(script)
         .await
         .unwrap_or_else(|error| panic!("{error}"));
-    assert_eq!(value["data_identical"], true);
+    assert_eq!(value["hits"], 1);
 }

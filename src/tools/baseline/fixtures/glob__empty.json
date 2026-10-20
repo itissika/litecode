@@ -1,0 +1,17 @@
+{
+  "content_historical": "No files found for pattern '**/zz-nope-*.qq'. Default filters may hide paths (.gitignore, files_exclude, search_exclude). Workspace exclude lists are in .litecode/excludes.json.",
+  "covered": true,
+  "data": {
+    "base": "workspace",
+    "page": {
+      "has_more": false,
+      "next": null,
+      "total": 0
+    },
+    "paths": []
+  },
+  "error": null,
+  "gap": null,
+  "scenario": "empty",
+  "tool": "glob"
+}

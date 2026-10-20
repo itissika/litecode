@@ -1,0 +1,304 @@
+`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
+The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
+Each tool returns a `ToolResult`. `status: "ok"` and `status: "partial"` include `data`. `partial` means some of the work was committed; `diagnostics` name what failed. `status: "error"` has `data: null` and `error.code`. Non-fatal signals are `diagnostics`, not a separate status. Runtime or protocol failures reject. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
+Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
+
+```ts
+type Diagnostic = {
+  code: string;
+  severity: "info" | "warning";
+  message: string;
+  details?: unknown;
+};
+type ToolError = {
+  code: string;
+  message: string;
+  details?: unknown;
+  retryable: boolean;
+};
+type Page = {
+  has_more: boolean;
+  next: string | null;
+  total?: number;
+};
+type ToolResult<T> =
+  | { status: "ok" | "partial"; data: T; diagnostics: Diagnostic[]; page?: Page; error: null }
+  | { status: "error"; data: null; diagnostics: Diagnostic[]; page?: Page; error: ToolError };
+
+/** Whole JSON number. The host rejects fractional values. */
+type Integer = number;
+
+
+type CsvOptions = {
+  /** Field separator; one character. Default ",". */
+  delimiter?: string;
+  /** Quote character; one character. Default is a double quote. */
+  quote?: string;
+  /** Trim fields while parsing. Default false. */
+  trim?: boolean;
+};
+
+type HistogramBin = {
+  start: number;
+  end: number;
+  count: number;
+};
+
+type DiffLine = {
+  kind: "equal" | "insert" | "delete";
+  text: string;
+};
+
+declare const libs: {
+  stats: {
+    sum(values: number[]): number;
+    mean(values: number[]): number;
+    median(values: number[]): number;
+    variance(values: number[], sample?: boolean): number;
+    stddev(values: number[], sample?: boolean): number;
+    quantile(values: number[], q: number): number;
+    histogram(values: number[], bins?: number): HistogramBin[];
+    min(values: number[]): number;
+    max(values: number[]): number;
+  };
+  csv: {
+    parse(text: string, options?: CsvOptions): string[][];
+    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;
+  };
+  text: {
+    lines(text: string): string[];
+    words(text: string): string[];
+    count(text: string, needle: string): number;
+    normalizeNewlines(text: string): string;
+    truncate(text: string, maxChars: number, suffix?: string): string;
+    diffLines(left: string, right: string): DiffLine[];
+  };
+  data: {
+    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;
+    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;
+    unique<T>(values: T[]): T[];
+    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: "asc" | "desc"): T[];
+  };
+};
+
+type EditInput = {
+  // Replacements to apply to this file.
+  edits: Array<{
+    // Replacement text. Use an empty string to delete old_string.
+    new_string: string;
+    // File text to find. Do not include read's line-number prefix. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.
+    old_string: string;
+    // Replace every exact occurrence (default: false).
+    replace_all?: boolean;
+  }>;
+  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
+  path: string;
+  // sha256 of the file bytes from a previous read. Omit to skip the check. A mismatch returns stale and does not write.
+  expected_hash?: string;
+};
+
+// Blocks applied to one file. file is the identity after the successful blocks were written.
+type EditData = {
+  // Number of blocks written.
+  applied: Integer;
+  // One result per edit, in input order. Failed blocks do not roll back applied blocks.
+  blocks: Array<{
+    // 1-based index in edits.
+    index: Integer;
+    ranges: Array<{
+      end_line: Integer;
+      start_line: Integer;
+    }>;
+    status: "applied" | "failed";
+    // Present when status is failed.
+    reason?: {
+      code: string;
+      message: string;
+      // Structured cause. Fields appear only for the reason that produced them.
+      details?: {
+        kind?: "identical_strings" | "replacement_unchanged" | "leading_trailing" | "internal_spacing" | "input";
+        // One line of the file the whitespace difference pointed at.
+        excerpt?: string;
+        lines?: Array<Integer>;
+        other_index?: Integer;
+        other_range?: {
+          end_line: Integer;
+          start_line: Integer;
+        };
+        prior_index?: Integer;
+      };
+    };
+  }>;
+  // Number of blocks not written.
+  failed: Integer;
+  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.
+  file: {
+    bytes: Integer;
+    // sha256 hex of the file bytes.
+    hash: string;
+    path: string;
+    abs?: string;
+  };
+};
+
+type GlobInput = {
+  // Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'.
+  pattern: string;
+  // Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query returns stale_cursor.
+  cursor?: string;
+  // Also search gitignored and workspace-excluded paths. Default false.
+  include_ignored?: boolean;
+  // Maximum paths in this page. Default 1000, maximum 5000.
+  limit?: Integer;
+  // Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`.
+  path?: string;
+};
+
+// One page of matching paths.
+type GlobData = {
+  // workspace: paths are workspace-relative. absolute: paths are absolute.
+  base: "workspace" | "absolute";
+  page: {
+    has_more: boolean;
+    next: string | null;
+    total?: Integer;
+  };
+  // Matching paths sorted by depth, then parent directory, then name. Pass a path to read.
+  paths: Array<string>;
+};
+
+type GrepInput = {
+  // Regular expression over file contents, unless literal is true.
+  pattern: string;
+  // Default true. Set false to ignore case.
+  case_sensitive?: boolean;
+  // Continuation from data.page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query returns stale_cursor.
+  cursor?: string;
+  // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.
+  glob?: string;
+  // Also search gitignored and workspace-excluded paths. Default false.
+  include_ignored?: boolean;
+  // Maximum matches in this page. Default 20, maximum 100.
+  limit?: Integer;
+  // Search for pattern as plain text. Default false.
+  literal?: boolean;
+  // File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute so read can open them.
+  path?: string;
+};
+
+// One page of content matches.
+type GrepData = {
+  base: "workspace" | "absolute";
+  matches: Array<{
+    end_line: Integer;
+    line_text: string;
+    line_truncated: boolean;
+    path: string;
+    start_line: Integer;
+  }>;
+  page: {
+    has_more: boolean;
+    next: string | null;
+    total?: Integer | null;
+  };
+  searched: {
+    // True when default exclusion filters were active, or the path itself was excluded.
+    excluded: boolean;
+    files: Integer;
+  };
+  reason?: "no_match" | "corpus_empty" | "glob_empty" | "path_excluded" | "binary_file" | "file_not_searched";
+};
+
+type ReadInput = {
+  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
+  path: string;
+  // Last line to read, 1-based, inclusive. The page ends at min(end_line, start_line + limit - 1).
+  end_line?: Integer;
+  // Maximum lines in this page. Default 2000, maximum 5000.
+  limit?: Integer;
+  // First line to read, 1-based, inclusive. Default 1.
+  start_line?: Integer;
+};
+
+// One page of a text file, with the file's sha256 identity.
+type ReadData = {
+  // File identity. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.
+  file: {
+    bytes: Integer;
+    // sha256 hex of the file bytes.
+    hash: string;
+    path: string;
+    abs?: string;
+  };
+  // Lines in this page, in file order.
+  lines: Array<{
+    // True when text was capped at the per-line character limit.
+    line_truncated: boolean;
+    // 1-based line number.
+    number: Integer;
+    // Line text without a line-number prefix.
+    text: string;
+  }>;
+  page: {
+    // True when any line remains after this page, including after an explicit window.
+    has_more: boolean;
+    // Next 1-based line number, or null when the file is finished.
+    next: string | null;
+    // Total lines in the file.
+    total?: Integer;
+  };
+};
+
+type WriteInput = {
+  // Content to write to the file
+  content: string;
+  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
+  path: string;
+  // If true, refuse to overwrite an existing file (default: false)
+  create_only?: boolean;
+  // sha256 of the current file bytes. Omit to skip the check. A mismatch returns stale and does not write. Together with create_only, a missing file returns invalid_input.
+  expected_hash?: string;
+};
+
+// File that was written.
+type WriteData = {
+  // True when the file did not exist before.
+  created: boolean;
+  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.
+  file: {
+    bytes: Integer;
+    // sha256 hex of the file bytes.
+    hash: string;
+    path: string;
+    abs?: string;
+  };
+};
+
+declare const tools: {
+  // Replace text in one file. The result is `data.file`, `data.blocks`, `data.applied`, and `data.failed`. `data.file` is the identity after the successful blocks are written (`path`, `hash`, `bytes`, and `abs` outside the workspace). Each block is `index`, `status` (`applied` or `failed`), `ranges` (`start_line`, `end_line`), and `reason` (`code`, `message`, optional `details`) when it failed. Optional `expected_hash` is the sha256 from `read` `data.file.hash`. Omit it to skip the check. A mismatch returns `error.code` `"stale"` with `details.current_hash` and does not write. All blocks match the file before any of them apply. Full success is `status: "ok"`. Some blocks applied and some failed is `status: "partial"` with diagnostic `edit_block_failed` (`details.index`, `details.reason`, and `details.ranges`). No block applied is `status: "error"` with `error.code` `"edit_failed"` and `error.details.blocks`; the file is not modified.
+  //
+  // Multiple files means multiple calls, one path each. Pass `path` and a non-empty `edits` array; each item is `old_string`, `new_string`, and optional `replace_all` (default false). Empty `new_string` deletes `old_string`. Matching is exact. CRLF and LF compare equal, and a leading UTF-8 BOM is preserved. `replace_all` replaces every exact occurrence. A block that matches more than once without `replace_all` fails with `multiple_matches`.
+  // All edits in one call match the file before any of them apply. Independent edits can share a call; if a later old_string depends on an earlier new_string, submit it in a later edit call.
+  // Example (one edit): {"path":"src/a.rs","edits":[{"old_string":"fn start() {}","new_string":"fn main() {}"}]}
+  // Example (several): {"path":"src/a.rs","edits":[{"old_string":"foo","new_string":"bar"},{"old_string":"old_api(","new_string":"new_api(","replace_all":true}]}
+  readonly ["edit"]: (args: EditInput) => Promise<ToolResult<EditData>>;
+  // Find files by path glob. The result is `data.base`, `data.paths`, and `data.page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative and can be passed to read. When `base` is `"absolute"`, each path is absolute and can be passed to read.
+  //
+  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. `limit` defaults to 1000 and is at most 5000. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query returns `error.code` `"stale_cursor"`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. For content matches use grep.
+  readonly ["glob"]: (args: GlobInput) => Promise<ToolResult<GlobData>>;
+  // Search file contents. The result is `data.base`, `data.matches`, `data.page`, `data.searched`, and sometimes `data.reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`. Read the file for surrounding lines.
+  //
+  // `pattern` is a regular expression unless `literal` is true. An invalid pattern fails with `error.code` `"invalid_regex"` and `retryable: true`. `details` include `pattern`, `regex_error`, `position`, `suggested_literal`, and `suggested_pattern`. The tool does not rewrite the pattern. Set `literal` true to search for the pattern as plain text.
+  //
+  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, returns `error.code` `"stale_cursor"`. A capped match line adds diagnostic `line_truncated`. An empty result sets `data.reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.
+  //
+  // Example: {"pattern":"fn main","path":"src"}
+  readonly ["grep"]: (args: GrepInput) => Promise<ToolResult<GrepData>>;
+  // Read one workspace file as structured data. Use `data.file` and `data.lines`. Images and other non-UTF-8 files fail with `error.code` `"unsupported"` and `details` `path`, `mime`, and `bytes`.
+  //
+  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `data.page.has_more` is true when any line remains after this page, including after an explicit window. `data.page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` and adds diagnostic `line_truncated`. `data.file.hash` is the sha256 of the file bytes; pass it to edit as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. For discovery by name use glob; for content search use grep.
+  readonly ["read"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;
+  // Create a new file or overwrite an existing one. The result is `data.file` and `data.created`. `data.file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `data.created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch returns `error.code` `"stale"` with `details.current_hash` and does not write. If the file is missing, `expected_hash` alone returns `not_found` and does not create the file. `create_only` refuses an existing file with `error.code` `"conflict"`. `create_only` together with `expected_hash` when the file does not exist returns `invalid_input` and does not create it. A write outside the workspace adds diagnostic `path_outside_workspace`. LSP errors in the written file add diagnostic `lsp_error`. Prefer edit for a surgical change in an existing file.
+  readonly ["write"]: (args: WriteInput) => Promise<ToolResult<WriteData>>;
+};
+```

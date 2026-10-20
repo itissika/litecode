@@ -1033,7 +1033,11 @@ mod open_tests {
         drop(conn);
 
         let loaded = load_global_from_path(&db).unwrap();
-        let names: Vec<_> = loaded.custom_tools.iter().map(|tool| tool.name.as_str()).collect();
+        let names: Vec<_> = loaded
+            .custom_tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
         assert_eq!(names, ["demo"]);
 
         let conn = open(&db).unwrap();
@@ -1044,6 +1048,9 @@ mod open_tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(still, 1, "load rejects the row without rewriting the database");
+        assert_eq!(
+            still, 1,
+            "load rejects the row without rewriting the database"
+        );
     }
 }

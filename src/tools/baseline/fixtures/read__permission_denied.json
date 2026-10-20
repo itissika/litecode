@@ -1,0 +1,13 @@
+{
+  "content_historical": "permission denied for 'read'",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "permission_denied",
+    "message": "permission denied for 'read'",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "permission_denied",
+  "tool": "read"
+}

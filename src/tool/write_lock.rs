@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
 /// Resource key: a file path, or the workspace-wide coarse lock.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResourceKey {
     File(String),
     /// Coarse workspace lock. Production bash no longer acquires this.

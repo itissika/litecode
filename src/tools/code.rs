@@ -5,23 +5,25 @@
 //! the host binding records the nested-call ledger and pauses the program budget
 //! while an approval card is waiting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::context_pipeline::Context;
 use crate::permission::{AskPrompt, AskReply, PermissionEngine, PermissionSink};
 use crate::ptc::{
-    self, BudgetPause, ExecuteRequest, FailureKind, HostBinding, HostFn, Json, Limits, Namespace,
+    self, BudgetPause, CallState, ExecuteRequest, FailureKind, HostBinding, HostFn, Json, Limits,
+    LogLevel, Namespace,
 };
 use crate::tool::Tool;
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::WorkspaceWriteLock;
+use crate::tool::outcome::{self, Diagnostic};
 use crate::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLevel};
 
 /// Model-facing name of the aggregated code transport.
@@ -34,112 +36,11 @@ pub const MAX_RUN_TIMEOUT_MS: u64 = 600_000;
 pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
 /// Nested-call ledger lines kept in the outer result. Further calls are counted, not copied.
 const LEDGER_CAP: usize = 64;
+/// Nested diagnostics kept on `run_code.data`. Further diagnostics are counted.
+const DIAGNOSTIC_CAP: usize = 32;
 /// How long the runtime waits for in-flight nested calls after it cancels them.
 const NESTED_CANCEL_GRACE: Duration = Duration::from_secs(3);
 const SUMMARY_VALUE_CHARS: usize = 80;
-
-/// Same-program reader-writer gate. Writes are exclusive. Reads of one path
-/// share. A write does not run beside a read of that path. Distinct paths
-/// proceed together. Waiting here consumes the program budget; only an
-/// approval card pauses it. The process write lock still runs inside the
-/// shared tool pipeline.
-struct PathGate {
-    slots: Mutex<HashMap<String, PathSlot>>,
-    changed: tokio::sync::Notify,
-}
-
-#[derive(Default)]
-struct PathSlot {
-    readers: u32,
-    writing: bool,
-}
-
-struct PathHold {
-    gate: Arc<PathGate>,
-    key: String,
-    exclusive: bool,
-}
-
-impl Default for PathGate {
-    fn default() -> Self {
-        Self {
-            slots: Mutex::new(HashMap::new()),
-            changed: tokio::sync::Notify::new(),
-        }
-    }
-}
-
-impl PathGate {
-    async fn enter(
-        self: &Arc<Self>,
-        key: String,
-        exclusive: bool,
-        cancel: &CancellationToken,
-    ) -> Result<PathHold, ()> {
-        loop {
-            if cancel.is_cancelled() {
-                return Err(());
-            }
-            let notified = self.changed.notified();
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if self.try_enter(&key, exclusive) {
-                return Ok(PathHold {
-                    gate: Arc::clone(self),
-                    key,
-                    exclusive,
-                });
-            }
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(()),
-                _ = notified => {}
-            }
-        }
-    }
-
-    fn try_enter(&self, key: &str, exclusive: bool) -> bool {
-        let mut slots = self.slots.lock().unwrap_or_else(|error| error.into_inner());
-        let slot = slots.entry(key.to_string()).or_default();
-        let free = if exclusive {
-            slot.readers == 0 && !slot.writing
-        } else {
-            !slot.writing
-        };
-        if !free {
-            return false;
-        }
-        if exclusive {
-            slot.writing = true;
-        } else {
-            slot.readers += 1;
-        }
-        true
-    }
-}
-
-impl Drop for PathHold {
-    fn drop(&mut self) {
-        {
-            let mut slots = self
-                .gate
-                .slots
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            if let Some(slot) = slots.get_mut(&self.key) {
-                if self.exclusive {
-                    slot.writing = false;
-                } else if slot.readers > 0 {
-                    slot.readers -= 1;
-                }
-                if slot.readers == 0 && !slot.writing {
-                    slots.remove(&self.key);
-                }
-            }
-        }
-        self.gate.changed.notify_waiters();
-    }
-}
 
 /// Facts needed to execute the caller's code surface from inside [`CodeTool`].
 pub struct CodeToolHost {
@@ -253,22 +154,23 @@ impl PermissionSink for PausingSink {
     }
 }
 
-/// Nested-call ledger. The runtime call log has no arguments and no tool outcome;
-/// this record is what the outer `function_call_output` shows.
+/// Host side of one nested call. Merged with the runtime [`crate::ptc::CallRecord`].
 #[derive(Clone)]
 struct LedgerLine {
+    seq: u64,
     tool: String,
-    summary: String,
-    /// Filled when the nested call returns. Empty means it was still in flight
-    /// when the program ended; rendering treats that as cancelled and does not
-    /// replace an outcome that was already stored.
+    args_summary: String,
+    /// `ok` / `partial` / `error` / `cancelled` / `unsettled` once the host call returns.
     outcome: Option<String>,
+    error_code: Option<String>,
+    diagnostics: Vec<Diagnostic>,
 }
 
 struct CallLedger {
     next: AtomicU64,
-    lines: Mutex<Vec<(u64, LedgerLine)>>,
+    lines: Mutex<Vec<LedgerLine>>,
     omitted: AtomicUsize,
+    omitted_diagnostics: AtomicUsize,
 }
 
 impl CallLedger {
@@ -277,6 +179,7 @@ impl CallLedger {
             next: AtomicU64::new(1),
             lines: Mutex::new(Vec::new()),
             omitted: AtomicUsize::new(0),
+            omitted_diagnostics: AtomicUsize::new(0),
         }
     }
 
@@ -290,60 +193,85 @@ impl CallLedger {
             self.omitted.fetch_add(1, Ordering::Relaxed);
             return index;
         }
-        lines.push((
-            index,
-            LedgerLine {
-                tool: tool.to_string(),
-                summary: summary.to_string(),
-                outcome: None,
-            },
-        ));
+        lines.push(LedgerLine {
+            seq: index,
+            tool: tool.to_string(),
+            args_summary: summary.to_string(),
+            outcome: None,
+            error_code: None,
+            diagnostics: Vec::new(),
+        });
         index
     }
 
-    fn record(&self, index: u64, outcome: &str) {
+    fn record(&self, index: u64, result: &ToolCallResult) {
+        let outcome = call_outcome_label(result).to_string();
+        let error_code = call_error_code(result);
+        let diagnostics = result.diagnostics.clone();
         let mut lines = self
             .lines
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if let Some((_, line)) = lines.iter_mut().find(|(slot, _)| *slot == index)
-            && line.outcome.is_none()
-        {
-            line.outcome = Some(outcome.to_string());
+        if let Some(line) = lines.iter_mut().find(|line| line.seq == index) {
+            if line.outcome.is_none() {
+                line.outcome = Some(outcome);
+                line.error_code = error_code;
+                line.diagnostics = diagnostics;
+            }
+        } else {
+            self.omitted_diagnostics
+                .fetch_add(diagnostics.len(), Ordering::Relaxed);
         }
     }
 
-    fn render(&self) -> String {
-        let mut lines = self
+    fn snapshot(&self) -> (Vec<LedgerLine>, usize, usize) {
+        let lines = self
             .lines
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone();
-        lines.sort_by_key(|(index, _)| *index);
-        let mut text = String::new();
-        for (index, line) in lines {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            let outcome = line.outcome.as_deref().unwrap_or("cancelled");
-            if line.summary.is_empty() {
-                text.push_str(&format!("{index}. {} {outcome}", line.tool));
-            } else {
-                text.push_str(&format!(
-                    "{index}. {} {} {outcome}",
-                    line.tool, line.summary
-                ));
-            }
-        }
-        let omitted = self.omitted.load(Ordering::Relaxed);
-        if omitted > 0 {
-            if !text.is_empty() {
-                text.push('\n');
-            }
-            text.push_str(&format!("… {omitted} more calls omitted"));
-        }
-        text
+        (
+            lines,
+            self.omitted.load(Ordering::Relaxed),
+            self.omitted_diagnostics.load(Ordering::Relaxed),
+        )
     }
+}
+
+fn call_outcome_label(result: &ToolCallResult) -> &'static str {
+    if result
+        .error
+        .as_ref()
+        .is_some_and(|error| error.kind == ToolErrorKind::Cancelled)
+    {
+        return "cancelled";
+    }
+    if result.outcome_status == Some(outcome::OutcomeStatus::Partial)
+        && result.error.is_none()
+        && result.level != ToolSignalLevel::Error
+    {
+        return "partial";
+    }
+    if result.error.is_some()
+        || result.level == ToolSignalLevel::Error
+        || result.outcome_status == Some(outcome::OutcomeStatus::Error)
+    {
+        return "error";
+    }
+    "ok"
+}
+
+fn call_error_code(result: &ToolCallResult) -> Option<String> {
+    if call_outcome_label(result) != "error" {
+        return None;
+    }
+    if let Some(code) = &result.error_code {
+        return Some(code.clone());
+    }
+    result
+        .error
+        .as_ref()
+        .map(|error| outcome::error_kind_code(error.kind))
 }
 
 /// A bounded code bundle projected as one model-facing tool.
@@ -383,7 +311,6 @@ impl CodeTool {
         &self,
         ledger: Arc<CallLedger>,
         execution: &ToolExecutionContext,
-        gate: Arc<PathGate>,
     ) -> Vec<HostBinding> {
         self.bundle
             .iter()
@@ -392,7 +319,6 @@ impl CodeTool {
                 let bundle = Arc::clone(&self.bundle);
                 let host = Arc::clone(&self.host);
                 let ledger = Arc::clone(&ledger);
-                let gate = Arc::clone(&gate);
                 let session_id = execution.session_id.clone();
                 let parent_call_id = execution.call_id.clone();
                 HostBinding {
@@ -402,7 +328,6 @@ impl CodeTool {
                         let bundle = Arc::clone(&bundle);
                         let host = Arc::clone(&host);
                         let ledger = Arc::clone(&ledger);
-                        let gate = Arc::clone(&gate);
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
                         async move {
@@ -414,7 +339,6 @@ impl CodeTool {
                                 bundle,
                                 host,
                                 ledger,
-                                gate,
                                 session_id,
                                 parent_call_id,
                             )
@@ -448,12 +372,11 @@ impl CodeTool {
         };
 
         let ledger = Arc::new(CallLedger::new());
-        let gate = Arc::new(PathGate::default());
         let request = ExecuteRequest {
             source: code,
             namespaces: vec![Namespace {
                 name: "tools".to_string(),
-                functions: self.binding(Arc::clone(&ledger), &execution, gate),
+                functions: self.binding(Arc::clone(&ledger), &execution),
             }],
             limits: Limits {
                 output_bytes: MAX_CODE_OUTPUT_BYTES,
@@ -464,8 +387,7 @@ impl CodeTool {
             cancel: execution.cancel,
         };
         let outcome = ptc::execute(request).await;
-        let ledger_text = ledger.render();
-        render_run_output(&ledger_text, &outcome, run_timeout_ms)
+        render_run_output(&ledger, &outcome, run_timeout_ms)
     }
 }
 
@@ -478,62 +400,47 @@ async fn invoke_binding(
     bundle: Arc<Vec<Arc<dyn Tool>>>,
     host: Arc<CodeToolHost>,
     ledger: Arc<CallLedger>,
-    gate: Arc<PathGate>,
     session_id: String,
     parent_call_id: String,
 ) -> Result<Value, crate::ptc::HostError> {
     let decoded = decode_invocation(&args);
     // Drop the runtime JSON before any await. A deep tree stays inside `Json`.
     drop(args);
-    let (arguments, summary, requested_timeout) = match decoded {
-        Ok(decoded) => (decoded.arguments, decoded.summary, decoded.timeout),
-        Err(illegal) => {
+    let (arguments, summary) = match decoded {
+        Ok(decoded) => (decoded.arguments, decoded.summary),
+        Err(DecodeFail::ExtraArgument { summary }) => {
+            let index = ledger.begin(&name, &summary);
+            let result = ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidInput,
+                "tool bindings accept one argument",
+                false,
+            );
+            ledger.record(index, &result);
+            return Ok(tool_result_value(&result));
+        }
+        Err(DecodeFail::Illegal(illegal)) => {
             let index = ledger.begin(&name, &illegal.summary);
             let result = ToolCallResult::error_with_kind(
                 ToolErrorKind::InvalidOutput,
                 illegal.message,
                 false,
             );
-            ledger.record(index, outcome_label(&result));
+            ledger.record(index, &result);
             return Ok(tool_result_value(&result));
         }
     };
     let index = ledger.begin(&name, &summary);
 
-    let Some(tool) = bundle.iter().find(|tool| tool.name() == name) else {
+    if !bundle.iter().any(|tool| tool.name() == name) {
         let result = ToolCallResult::error_with_kind(
             ToolErrorKind::NotFound,
             format!("tool '{name}' not found"),
             false,
         );
-        ledger.record(index, outcome_label(&result));
+        ledger.record(index, &result);
         return Ok(tool_result_value(&result));
-    };
+    }
 
-    let requested_timeout = match requested_timeout {
-        Ok(timeout) => timeout,
-        Err(error) => {
-            let result = ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, error, false);
-            ledger.record(index, outcome_label(&result));
-            return Ok(tool_result_value(&result));
-        }
-    };
-    let declared_timeout_ms = tool.timeout().map(|seconds| seconds.saturating_mul(1_000));
-    let effective_timeout_ms = match (requested_timeout, declared_timeout_ms) {
-        (Some(_), None) => {
-            let result = ToolCallResult::error_with_kind(
-                ToolErrorKind::InvalidInput,
-                format!("tool '{name}' does not support per-call timeout_ms"),
-                false,
-            );
-            ledger.record(index, outcome_label(&result));
-            return Ok(tool_result_value(&result));
-        }
-        (Some(requested), Some(maximum)) => Some(requested.min(maximum)),
-        (None, maximum) => maximum,
-    };
-
-    let claim = path_gate_claim(&host, &name, &arguments);
     let call = FunctionToolCall {
         arguments,
         call_id: format!("{parent_call_id}:code:{index}"),
@@ -546,115 +453,68 @@ async fn invoke_binding(
         inner: host.sink(),
         pause,
     };
-    let call_cancel = cancel.child_token();
-    let _hold = if let Some((key, exclusive)) = claim {
-        match gate.enter(key, exclusive, &call_cancel).await {
-            Ok(hold) => Some(hold),
-            Err(()) => {
-                let result = ToolCallResult::error_with_kind(
-                    ToolErrorKind::Cancelled,
-                    format!("tool '{name}' cancelled"),
-                    false,
-                );
-                ledger.record(index, outcome_label(&result));
-                return Ok(tool_result_value(&result));
-            }
-        }
-    } else {
-        None
-    };
-    let run = host.run_nested(
-        bundle.as_slice(),
-        &call,
-        &session_id,
-        call_cancel.clone(),
-        &parent_call_id,
-        &sink,
-    );
-    let result = match effective_timeout_ms {
-        Some(timeout_ms) => await_with_timeout(run, call_cancel, timeout_ms, &name).await,
-        None => run.await,
-    };
-    ledger.record(index, outcome_label(&result));
+    let result = host
+        .run_nested(
+            bundle.as_slice(),
+            &call,
+            &session_id,
+            cancel.child_token(),
+            &parent_call_id,
+            &sink,
+        )
+        .await;
+    ledger.record(index, &result);
     Ok(tool_result_value(&result))
 }
 
-/// Per-call budget. A result the tool already produced is kept; cancellation is
-/// signaled and then joined, never dropped.
-async fn await_with_timeout(
-    run: impl std::future::Future<Output = ToolCallResult>,
-    call_cancel: CancellationToken,
-    timeout_ms: u64,
-    name: &str,
-) -> ToolCallResult {
-    let mut future = std::pin::pin!(run);
-    tokio::select! {
-        biased;
-        result = &mut future => result,
-        _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
-            call_cancel.cancel();
-            let result = future.await;
-            if result
-                .error
-                .as_ref()
-                .is_some_and(|error| error.kind == ToolErrorKind::Cancelled)
-            {
-                ToolCallResult::error_with_kind(
-                    ToolErrorKind::Timeout,
-                    format!("tool '{name}' timed out after {timeout_ms}ms"),
-                    true,
-                )
-            } else {
-                result
-            }
-        }
-    }
-}
-
+#[derive(Debug)]
 struct DecodedInvocation {
     arguments: String,
     summary: String,
-    timeout: Result<Option<u64>, String>,
 }
 
+#[derive(Debug)]
 struct IllegalInvocation {
     summary: String,
     message: String,
 }
 
-/// Borrow the runtime JSON. A deep argument is rejected here so the tool
-/// pipeline never builds a `serde_json::Value` it would later drop recursively.
-fn decode_invocation(payload: &Json) -> Result<DecodedInvocation, IllegalInvocation> {
-    let (args, options) = split_invocation(payload.as_value());
-    let summary = key_arg_summary(args);
-    if exceeds_owned_depth(args) {
-        return Err(IllegalInvocation {
-            summary,
-            message: "tool arguments are nested too deeply to enter the host pipeline".to_string(),
-        });
-    }
-    let arguments = match encode_json(args) {
-        Ok(arguments) => arguments,
-        Err(message) => {
-            return Err(IllegalInvocation { summary, message });
-        }
-    };
-    let timeout = parse_call_timeout_ms(options);
-    Ok(DecodedInvocation {
-        arguments,
-        summary,
-        timeout,
-    })
+#[derive(Debug)]
+enum DecodeFail {
+    ExtraArgument { summary: String },
+    Illegal(IllegalInvocation),
 }
 
-/// One argument stays that value. Two or more arrive as a JSON array from the runtime.
-fn split_invocation(payload: &Value) -> (&Value, &Value) {
-    match payload {
-        Value::Array(items) if items.len() >= 2 => {
-            (&items[0], items.get(1).unwrap_or(&Value::Null))
-        }
-        other => (other, &Value::Null),
+/// Borrow the runtime JSON. A deep argument is rejected here so the tool
+/// pipeline never builds a `serde_json::Value` it would later drop recursively.
+/// Two or more JavaScript arguments arrive as one JSON array. Bindings accept
+/// exactly one argument.
+fn decode_invocation(payload: &Json) -> Result<DecodedInvocation, DecodeFail> {
+    let value = payload.as_value();
+    if let Value::Array(items) = value
+        && items.len() >= 2
+    {
+        let summary = items
+            .first()
+            .map(key_arg_summary)
+            .filter(|summary| !summary.is_empty())
+            .unwrap_or_else(|| "extra argument".to_string());
+        return Err(DecodeFail::ExtraArgument { summary });
     }
+    let summary = key_arg_summary(value);
+    if exceeds_owned_depth(value) {
+        return Err(DecodeFail::Illegal(IllegalInvocation {
+            summary,
+            message: "tool arguments are nested too deeply to enter the host pipeline".to_string(),
+        }));
+    }
+    let arguments = match encode_json(value) {
+        Ok(arguments) => arguments,
+        Err(message) => {
+            return Err(DecodeFail::Illegal(IllegalInvocation { summary, message }));
+        }
+    };
+    Ok(DecodedInvocation { arguments, summary })
 }
 
 /// Derived `Value` Drop, Clone, and Debug recurse on the thread stack.
@@ -687,127 +547,6 @@ fn exceeds_owned_depth(value: &Value) -> bool {
 fn encode_json(value: &Value) -> Result<String, String> {
     let bytes = crate::ptc::json_bytes(value)?;
     String::from_utf8(bytes).map_err(|error| error.to_string())
-}
-
-fn path_gate_claim(host: &CodeToolHost, name: &str, arguments: &str) -> Option<(String, bool)> {
-    let exclusive = match name {
-        "edit" | "write" => true,
-        "read" => false,
-        _ => return None,
-    };
-    let value: Value = serde_json::from_str(arguments).ok()?;
-    let raw = value
-        .get("path")
-        .or_else(|| value.get("file_path"))
-        .and_then(Value::as_str)?;
-    if raw.is_empty() {
-        return None;
-    }
-    let mode = host.permission.path_mode(name).to_tool_path_mode();
-    let key = crate::workspace::resolve_agent(&host.ctx.cwd, raw, mode)
-        .map(|path| path_gate_key(&path))
-        .unwrap_or_else(|_| raw.to_string());
-    Some((key, exclusive))
-}
-
-/// Identity of one file for [`PathGate`].
-///
-/// `resolve_agent` keeps the caller's spelling when the file does not exist
-/// yet. Rebuild from `components()`: skip `.`, and let `..` pop one preceding
-/// normal component without walking past a root or prefix. Separators agree
-/// because the key is rebuilt. On Windows, each normal component loses
-/// trailing dots and spaces and is case-folded with the file-system uppercase
-/// table. Reads and writes of that file share this key.
-fn path_gate_key(path: &std::path::Path) -> String {
-    use std::path::{Component, PathBuf};
-    let mut rebuilt = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => pop_preceding_normal(&mut rebuilt),
-            Component::Normal(name) => push_normal(&mut rebuilt, name),
-            other => rebuilt.push(other.as_os_str()),
-        }
-    }
-    rebuilt.to_string_lossy().into_owned()
-}
-
-/// `..` pops one normal component. A prefix or root stays put.
-fn pop_preceding_normal(path: &mut std::path::PathBuf) {
-    if matches!(
-        path.components().next_back(),
-        Some(std::path::Component::Normal(_))
-    ) {
-        path.pop();
-    }
-}
-
-fn push_normal(path: &mut std::path::PathBuf, name: &std::ffi::OsStr) {
-    let name = normalize_normal(name);
-    if name.is_empty() || name == std::ffi::OsStr::new(".") {
-        return;
-    }
-    if name == std::ffi::OsStr::new("..") {
-        pop_preceding_normal(path);
-        return;
-    }
-    path.push(name);
-}
-
-#[cfg(not(windows))]
-fn normalize_normal(name: &std::ffi::OsStr) -> std::ffi::OsString {
-    name.to_os_string()
-}
-
-/// Strip trailing dots and spaces, then apply the Windows file-system
-/// uppercase table. `LCMapStringEx` without `LCMAP_LINGUISTIC_CASING` is that
-/// table; it does not open the file.
-#[cfg(windows)]
-fn normalize_normal(name: &std::ffi::OsStr) -> std::ffi::OsString {
-    use std::os::windows::ffi::OsStrExt;
-    let mut wide: Vec<u16> = name.encode_wide().collect();
-    while wide
-        .last()
-        .is_some_and(|unit| *unit == u16::from(b' ') || *unit == u16::from(b'.'))
-    {
-        wide.pop();
-    }
-    windows_fs_upcase(&wide)
-}
-
-#[cfg(windows)]
-fn windows_fs_upcase(wide: &[u16]) -> std::ffi::OsString {
-    use std::os::windows::ffi::OsStringExt;
-    use windows_sys::Win32::Globalization::{
-        LCMAP_UPPERCASE, LCMapStringEx, LOCALE_NAME_INVARIANT,
-    };
-    if wide.is_empty() {
-        return std::ffi::OsString::new();
-    }
-    let Ok(len) = i32::try_from(wide.len()) else {
-        return std::ffi::OsString::from_wide(wide);
-    };
-    let mut mapped = vec![0u16; wide.len()];
-    // File-system uppercase: no LCMAP_LINGUISTIC_CASING, so the mapping does not
-    // follow the user locale and does not open the path.
-    let wrote = unsafe {
-        LCMapStringEx(
-            LOCALE_NAME_INVARIANT,
-            LCMAP_UPPERCASE,
-            wide.as_ptr(),
-            len,
-            mapped.as_mut_ptr(),
-            len,
-            std::ptr::null::<windows_sys::Win32::Globalization::NLSVERSIONINFO>(),
-            std::ptr::null::<core::ffi::c_void>(),
-            0,
-        )
-    };
-    if wrote == len {
-        std::ffi::OsString::from_wide(&mapped)
-    } else {
-        std::ffi::OsString::from_wide(wide)
-    }
 }
 
 fn key_arg_summary(args: &Value) -> String {
@@ -868,66 +607,23 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
-fn outcome_label(result: &ToolCallResult) -> &'static str {
-    if let Some(error) = &result.error {
-        return match error.kind {
-            ToolErrorKind::InvalidInput => "invalid_input",
-            ToolErrorKind::NotFound => "not_found",
-            ToolErrorKind::PermissionDenied => "permission_denied",
-            ToolErrorKind::Conflict => "conflict",
-            ToolErrorKind::Unavailable => "unavailable",
-            ToolErrorKind::Timeout => "timeout",
-            ToolErrorKind::Cancelled => "cancelled",
-            ToolErrorKind::Io => "io",
-            ToolErrorKind::OutputLimit => "output_limit",
-            ToolErrorKind::InvalidOutput => "invalid_output",
-            ToolErrorKind::Internal => "internal",
-        };
-    }
-    match result.level {
-        ToolSignalLevel::Ok => "ok",
-        ToolSignalLevel::Warning => "warning",
-        ToolSignalLevel::Error => "error",
-    }
-}
-
 /// Tool failures resolve. They are not host rejections, so the program can continue.
 fn tool_result_value(result: &ToolCallResult) -> Value {
-    if result.error.is_some() || result.level == ToolSignalLevel::Error {
-        json!({
-            "status": "error",
-            "data": null,
-            "error": result.error,
-        })
-    } else {
-        let status = match result.level {
-            ToolSignalLevel::Ok => "ok",
-            ToolSignalLevel::Warning => "warning",
-            ToolSignalLevel::Error => "error",
-        };
-        json!({
-            "status": status,
-            "data": result.data,
-            "error": null,
-        })
-    }
+    outcome::program_value(result)
 }
 
 fn render_run_output(
-    ledger: &str,
+    ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
     run_timeout_ms: u64,
 ) -> ToolCallResult {
-    let logs: Vec<String> = outcome
-        .logs
-        .iter()
-        .map(|entry| entry.message.clone())
-        .collect();
     let failure_text = outcome.failure.as_ref().map(|failure| match failure.kind {
         FailureKind::Timeout => format!("run_code timed out after {run_timeout_ms}ms"),
         FailureKind::Cancelled => "code execution cancelled".to_string(),
         FailureKind::OutputLimit => failure.message.clone(),
-        FailureKind::IllegalOutput => failure.message.clone(),
+        FailureKind::IllegalOutput => {
+            format!("program result is not JSON: {}", failure.message)
+        }
         FailureKind::Syntax => failure.message.clone(),
         _ => failure.message.clone(),
     });
@@ -936,23 +632,22 @@ fn render_run_output(
         match outcome.value.as_ref().map(present_program_value) {
             Some(Ok(presented)) => Some(presented),
             Some(Err(message)) => {
+                let data = assemble_run_data(ledger, outcome, None);
+                let content = render_text_from_data(&data, Some(&message));
                 return ToolCallResult::error_with_kind(
                     ToolErrorKind::InvalidOutput,
-                    message,
+                    content,
                     false,
-                );
+                )
+                .with_data(data);
             }
             None => None,
         }
     } else {
         None
     };
-    let content = compose_output(
-        ledger,
-        &logs,
-        presented.as_ref().map(|presented| presented.text.as_str()),
-        failure_text.as_deref(),
-    );
+    let data = assemble_run_data(ledger, outcome, presented.as_ref());
+    let content = render_text_from_data(&data, failure_text.as_deref());
 
     if let Some(failure) = &outcome.failure {
         let (kind, retryable) = match failure.kind {
@@ -965,74 +660,234 @@ fn render_run_output(
             FailureKind::IllegalOutput => (ToolErrorKind::InvalidOutput, false),
             FailureKind::Internal => (ToolErrorKind::Internal, false),
         };
-        return ToolCallResult::error_with_kind(kind, content, retryable);
+        return ToolCallResult::error_with_kind(kind, content, retryable).with_data(data);
     }
 
-    let mut data = Map::new();
-    data.insert(
-        "logs".to_string(),
-        Value::Array(logs.into_iter().map(Value::String).collect()),
-    );
-    if let Some(presented) = presented {
-        data.insert("result".to_string(), presented.data);
-    }
-    ToolCallResult::ok(content).with_data(Value::Object(data))
+    ToolCallResult::ok(content).with_data(data)
 }
 
-struct PresentedResult {
-    text: String,
-    /// Shallow JSON. A deep program result is the encoded string, not the tree.
-    data: Value,
-}
-
-fn present_program_value(value: &Json) -> Result<PresentedResult, String> {
-    let raw = value.as_value();
-    if let Value::String(text) = raw {
-        return Ok(PresentedResult {
-            text: text.clone(),
-            data: Value::String(text.clone()),
+fn assemble_run_data(
+    ledger: &CallLedger,
+    outcome: &crate::ptc::Outcome,
+    result: Option<&Value>,
+) -> Value {
+    let (lines, calls_omitted, omitted_diagnostics) = ledger.snapshot();
+    let runtime: HashMap<u64, &crate::ptc::CallRecord> = outcome
+        .calls
+        .iter()
+        .map(|call| (call.seq, call))
+        .collect();
+    let mut calls = Vec::with_capacity(lines.len());
+    for line in &lines {
+        let record = runtime.get(&line.seq).copied();
+        let merged = merge_call_outcome(line.outcome.as_deref(), record.map(|call| call.state));
+        let mut call = json!({
+            "seq": line.seq,
+            "tool": line.tool,
+            "args_summary": line.args_summary,
+            "outcome": merged,
+            "started_ms": record.map(|call| duration_ms(call.started)).unwrap_or(0),
         });
+        if merged == "error" {
+            if let Some(code) = &line.error_code {
+                call["error_code"] = Value::String(code.clone());
+            }
+        }
+        if let Some(ended) = record.and_then(|call| call.ended.map(duration_ms)) {
+            call["ended_ms"] = json!(ended);
+        }
+        calls.push(call);
     }
-    if exceeds_owned_depth(raw) {
-        let text = encode_json(raw)?;
-        return Ok(PresentedResult {
-            text: text.clone(),
-            data: Value::String(text),
-        });
+    let (diagnostics, diagnostics_omitted) =
+        aggregate_diagnostics(&lines, omitted_diagnostics);
+    let logs: Vec<Value> = outcome
+        .logs
+        .iter()
+        .map(|entry| {
+            json!({
+                "level": log_level_name(entry.level),
+                "message": entry.message,
+            })
+        })
+        .collect();
+    let mut data = json!({
+        "calls": calls,
+        "calls_omitted": calls_omitted,
+        "logs": logs,
+        "diagnostics": diagnostics,
+        "diagnostics_omitted": diagnostics_omitted,
+    });
+    if let Some(result) = result {
+        data["result"] = result.clone();
     }
-    // The heap walk above proved this tree is shallow enough for derived Drop.
-    let text = serde_json::to_string_pretty(raw)
-        .or_else(|_| serde_json::to_string(raw))
-        .map_err(|error| error.to_string())?;
-    Ok(PresentedResult {
-        text,
-        data: raw.clone(),
-    })
+    data
 }
 
-fn compose_output(
-    ledger: &str,
-    logs: &[String],
-    result: Option<&str>,
-    failure: Option<&str>,
-) -> String {
+fn aggregate_diagnostics(lines: &[LedgerLine], already_omitted: usize) -> (Vec<Diagnostic>, usize) {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut omitted = already_omitted;
+    for line in lines {
+        for diagnostic in &line.diagnostics {
+            let key = format!(
+                "{}|{}|{}",
+                diagnostic.code,
+                diagnostic.message,
+                diagnostic
+                    .details
+                    .as_ref()
+                    .map(Value::to_string)
+                    .unwrap_or_default()
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            if out.len() >= DIAGNOSTIC_CAP {
+                omitted += 1;
+            } else {
+                out.push(diagnostic.clone());
+            }
+        }
+    }
+    (out, omitted)
+}
+
+/// A call that is still running when the grace period ends is `unsettled`.
+/// A call that returned keeps the host outcome, including a write that
+/// committed after cancellation was signaled.
+fn merge_call_outcome(host: Option<&str>, state: Option<CallState>) -> String {
+    if matches!(state, Some(CallState::CancelledUnfinished)) {
+        return "unsettled".to_string();
+    }
+    match host {
+        Some(outcome @ ("ok" | "partial" | "error" | "cancelled" | "unsettled")) => {
+            outcome.to_string()
+        }
+        _ => "unsettled".to_string(),
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn log_level_name(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Log => "log",
+        LogLevel::Info => "info",
+        LogLevel::Warn => "warn",
+        LogLevel::Error => "error",
+        LogLevel::Debug => "debug",
+    }
+}
+
+fn render_text_from_data(data: &Value, failure: Option<&str>) -> String {
     let mut parts = Vec::new();
-    if !ledger.is_empty() {
-        parts.push(ledger.to_string());
+    let mut ledger = String::new();
+    if let Some(calls) = data.get("calls").and_then(Value::as_array) {
+        for call in calls {
+            let seq = call.get("seq").and_then(Value::as_u64).unwrap_or(0);
+            let tool = call.get("tool").and_then(Value::as_str).unwrap_or("");
+            let summary = call
+                .get("args_summary")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let outcome = call.get("outcome").and_then(Value::as_str).unwrap_or("");
+            if !ledger.is_empty() {
+                ledger.push('\n');
+            }
+            if summary.is_empty() {
+                ledger.push_str(&format!("{seq}. {tool} {outcome}"));
+            } else {
+                ledger.push_str(&format!("{seq}. {tool} {summary} {outcome}"));
+            }
+        }
     }
-    if !logs.is_empty() {
-        parts.push(logs.join("\n"));
+    let calls_omitted = data
+        .get("calls_omitted")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if calls_omitted > 0 {
+        if !ledger.is_empty() {
+            ledger.push('\n');
+        }
+        ledger.push_str(&format!("… {calls_omitted} more calls omitted"));
+    }
+    if !ledger.is_empty() {
+        parts.push(ledger);
+    }
+    if let Some(diagnostics) = data.get("diagnostics").and_then(Value::as_array) {
+        if !diagnostics.is_empty() {
+            let mut block = String::from("diagnostics:");
+            for diagnostic in diagnostics {
+                let code = diagnostic
+                    .get("code")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let message = diagnostic
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                block.push_str(&format!("\n- {code}: {message}"));
+            }
+            let omitted = data
+                .get("diagnostics_omitted")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if omitted > 0 {
+                block.push_str(&format!("\n… {omitted} diagnostics omitted"));
+            }
+            parts.push(block);
+        }
+    }
+    if let Some(logs) = data.get("logs").and_then(Value::as_array) {
+        let text = logs
+            .iter()
+            .filter_map(|entry| {
+                let level = entry.get("level").and_then(Value::as_str)?;
+                let message = entry.get("message").and_then(Value::as_str)?;
+                Some(format!("[{level}] {message}"))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !text.is_empty() {
+            parts.push(text);
+        }
     }
     if let Some(failure) = failure {
         parts.push(failure.to_string());
-    } else if let Some(result) = result {
-        parts.push(result.to_string());
+    } else if let Some(result) = data.get("result") {
+        let text = match result {
+            Value::String(text) => text.clone(),
+            other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+        };
+        if !text.is_empty() {
+            parts.push(text);
+        }
     }
-    if parts.is_empty() {
+    let rendered = if parts.is_empty() {
         "(run_code completed with no output)".to_string()
     } else {
         parts.join("\n\n")
+    };
+    let payload = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());
+    format!(
+        "{rendered}\n\n{}{payload}",
+        crate::tool::outcome::RUN_CODE_DATA_MARK
+    )
+}
+
+fn present_program_value(value: &Json) -> Result<Value, String> {
+    let raw = value.as_value();
+    if let Value::String(text) = raw {
+        return Ok(Value::String(text.clone()));
     }
+    if exceeds_owned_depth(raw) {
+        return Ok(Value::String(encode_json(raw)?));
+    }
+    // The heap walk above proved this tree is shallow enough for derived Drop.
+    serde_json::to_string(raw).map_err(|error| error.to_string())?;
+    Ok(raw.clone())
 }
 
 fn parse_run_timeout_ms(input: &Value) -> Result<u64, String> {
@@ -1050,27 +905,6 @@ fn parse_run_timeout_ms(input: &Value) -> Result<u64, String> {
     }
 }
 
-fn parse_call_timeout_ms(options: &Value) -> Result<Option<u64>, String> {
-    let Value::Object(options) = options else {
-        if options.is_null() {
-            return Ok(None);
-        }
-        return Err("tool call options must be an object".to_string());
-    };
-    match options.get("timeout_ms").filter(|value| !value.is_null()) {
-        None => Ok(None),
-        Some(value) => {
-            let timeout_ms = value.as_u64().ok_or_else(|| {
-                "tool call option 'timeout_ms' expected a positive integer".to_string()
-            })?;
-            if timeout_ms == 0 {
-                return Err("tool call option 'timeout_ms' must be a positive integer".to_string());
-            }
-            Ok(Some(timeout_ms))
-        }
-    }
-}
-
 impl Tool for CodeTool {
     fn name(&self) -> &str {
         CODE_TOOL_NAME
@@ -1082,7 +916,7 @@ impl Tool for CodeTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Async JavaScript function body. Use `tools` for host tools and `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value."
+                    "description": "Async JavaScript function body. Use `tools` for host tools and `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -1093,6 +927,69 @@ impl Tool for CodeTool {
             "required": ["code"],
             "additionalProperties": false
         })
+    }
+
+    fn data_schema(&self) -> Option<Value> {
+        Some(json!({
+            "type": "object",
+            "additionalProperties": false,
+            "description": "One run_code execution. Nested tool facts live on calls, logs, and diagnostics.",
+            "properties": {
+                "calls": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "seq": { "type": "integer", "minimum": 0 },
+                            "tool": { "type": "string" },
+                            "args_summary": { "type": "string" },
+                            "outcome": {
+                                "type": "string",
+                                "enum": ["ok", "partial", "error", "cancelled", "unsettled"]
+                            },
+                            "error_code": { "type": "string" },
+                            "started_ms": { "type": "integer", "minimum": 0 },
+                            "ended_ms": { "type": "integer", "minimum": 0 }
+                        },
+                        "required": ["seq", "tool", "args_summary", "outcome", "started_ms"]
+                    }
+                },
+                "calls_omitted": { "type": "integer", "minimum": 0 },
+                "logs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "level": {
+                                "type": "string",
+                                "enum": ["log", "info", "warn", "error", "debug"]
+                            },
+                            "message": { "type": "string" }
+                        },
+                        "required": ["level", "message"]
+                    }
+                },
+                "diagnostics": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "code": { "type": "string" },
+                            "severity": { "type": "string", "enum": ["info", "warning"] },
+                            "message": { "type": "string" },
+                            "details": {}
+                        },
+                        "required": ["code", "severity", "message"]
+                    }
+                },
+                "diagnostics_omitted": { "type": "integer", "minimum": 0 },
+                "result": {}
+            },
+            "required": ["calls", "logs", "diagnostics", "calls_omitted", "diagnostics_omitted"]
+        }))
     }
 
     fn code_bindings(&self) -> Option<Arc<[String]>> {
@@ -1149,169 +1046,129 @@ impl Tool for CodeTool {
 }
 
 #[cfg(test)]
-mod path_gate_tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+mod outcome_tests {
+    use std::time::Duration;
 
-    use super::PathGate;
-    use tokio_util::sync::CancellationToken;
+    use serde_json::{Value, json};
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn nested_writes_are_exclusive_and_a_write_excludes_a_read_of_the_same_path() {
-        let gate = Arc::new(PathGate::default());
-        let first = gate
-            .enter("a".into(), true, &CancellationToken::new())
-            .await
-            .unwrap();
-        let gate2 = Arc::clone(&gate);
-        let entered = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&entered);
-        let second = tokio::spawn(async move {
-            gate2
-                .enter("a".into(), true, &CancellationToken::new())
-                .await
-                .unwrap();
-            flag.store(true, Ordering::SeqCst);
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert!(!entered.load(Ordering::SeqCst), "two writes overlapped");
-        drop(first);
-        second.await.unwrap();
-        assert!(entered.load(Ordering::SeqCst));
+    use crate::ptc::{CallRecord, CallState, Failure, Json, Outcome};
+    use crate::types::{ToolCallResult, ToolErrorKind};
 
-        let reader = gate
-            .enter("b".into(), false, &CancellationToken::new())
-            .await
-            .unwrap();
-        let other = gate
-            .enter("b".into(), false, &CancellationToken::new())
-            .await
-            .unwrap();
-        drop((reader, other));
+    use super::{assemble_run_data, decode_invocation, merge_call_outcome, render_text_from_data, CallLedger, DecodeFail};
 
-        let reader = gate
-            .enter("c".into(), false, &CancellationToken::new())
-            .await
-            .unwrap();
-        let gate3 = Arc::clone(&gate);
-        let wrote = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&wrote);
-        let writer = tokio::spawn(async move {
-            gate3
-                .enter("c".into(), true, &CancellationToken::new())
-                .await
-                .unwrap();
-            flag.store(true, Ordering::SeqCst);
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
-        assert!(
-            !wrote.load(Ordering::SeqCst),
-            "a write ran beside a read of the same path"
-        );
-        drop(reader);
-        writer.await.unwrap();
-        assert!(wrote.load(Ordering::SeqCst));
-
-        let left = gate
-            .enter("d".into(), true, &CancellationToken::new())
-            .await
-            .unwrap();
-        let right = gate
-            .enter("e".into(), true, &CancellationToken::new())
-            .await
-            .unwrap();
-        drop((left, right));
-    }
-
-    #[test]
-    fn path_gate_key_folds_dot_case_and_separators() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let key = |raw: &str, mode| {
-            let resolved = crate::workspace::resolve_agent(root, raw, mode).unwrap();
-            super::path_gate_key(&resolved)
-        };
-        let all = crate::workspace::ToolPathMode::All;
-        let dot = crate::workspace::resolve_agent(root, "./dot.txt", all).unwrap();
-        let plain = crate::workspace::resolve_agent(root, "dot.txt", all).unwrap();
-        assert_ne!(
-            dot.to_string_lossy(),
-            plain.to_string_lossy(),
-            "All mode keeps the lexical dot; the gate key has to drop it"
-        );
-        assert_eq!(key("./dot.txt", all), key("dot.txt", all));
-        let lexical = root.join("gone").join("..").join("parented.txt");
-        assert!(
-            lexical
-                .components()
-                .any(|component| matches!(component, std::path::Component::ParentDir)),
-            "the lexical path must still contain '..'"
-        );
-        assert_eq!(
-            super::path_gate_key(&lexical),
-            super::path_gate_key(&root.join("parented.txt"))
-        );
-        #[cfg(windows)]
-        {
-            let safe = crate::workspace::ToolPathMode::Safe;
-            for mode in [all, safe] {
-                let lower = crate::workspace::resolve_agent(root, "case.txt", mode).unwrap();
-                let upper = crate::workspace::resolve_agent(root, "Case.txt", mode).unwrap();
-                assert_ne!(
-                    lower.to_string_lossy().into_owned(),
-                    upper.to_string_lossy().into_owned(),
-                    "resolve keeps case; the gate key has to fold it"
-                );
-                assert_eq!(key("case.txt", mode), key("Case.txt", mode));
-                assert_eq!(key("sub/nested.txt", mode), key(r"sub\nested.txt", mode));
-                assert_eq!(key("slash.txt", mode), key(r".\slash.txt", mode));
-                assert_eq!(key("trail.txt", mode), key("trail.txt.", mode));
-                assert_eq!(key("trail.txt", mode), key("trail.txt ", mode));
-                assert_eq!(key("ä.txt", mode), key("Ä.txt", mode));
-                let folded = key("Case.txt", mode);
-                assert!(
-                    folded.chars().all(|ch| !ch.is_ascii_lowercase()),
-                    "file-system case fold uppercases ASCII letters: {folded}"
-                );
-            }
-            let abs = format!(r"{}\gone\..\parented.txt", root.display());
-            let parented = crate::workspace::resolve_agent(root, &abs, all).unwrap();
-            let plain = crate::workspace::resolve_agent(root, "parented.txt", all).unwrap();
-            assert_ne!(
-                parented.to_string_lossy().into_owned(),
-                plain.to_string_lossy().into_owned(),
-                "resolve keeps '..'; the gate key has to pop it"
-            );
-            assert_eq!(
-                super::path_gate_key(&parented),
-                super::path_gate_key(&plain)
-            );
-            assert_eq!(
-                super::path_gate_key(std::path::Path::new(r"C:\..\..\parented.txt")),
-                super::path_gate_key(std::path::Path::new(r"C:\parented.txt"))
-            );
+    fn runtime(state: CallState) -> Outcome {
+        Outcome {
+            logs: Vec::new(),
+            value: None,
+            failure: Some(Failure::cancelled()),
+            calls: vec![CallRecord {
+                seq: 1,
+                namespace: "tools".into(),
+                name: "write".into(),
+                started: Duration::from_millis(1),
+                ended: if state == CallState::CancelledUnfinished {
+                    None
+                } else {
+                    Some(Duration::from_millis(4))
+                },
+                state,
+            }],
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_waiting_write_does_not_start_after_cancel() {
-        let gate = Arc::new(PathGate::default());
-        let hold = gate
-            .enter("a".into(), true, &CancellationToken::new())
-            .await
-            .unwrap();
-        let cancel = CancellationToken::new();
-        let gate2 = Arc::clone(&gate);
-        let cancel2 = cancel.clone();
-        let waiting = tokio::spawn(async move { gate2.enter("a".into(), true, &cancel2).await });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        cancel.cancel();
-        assert!(waiting.await.unwrap().is_err(), "cancelled waiter entered");
-        drop(hold);
-        let again = gate
-            .enter("a".into(), true, &CancellationToken::new())
-            .await
-            .unwrap();
-        drop(again);
+    fn recorded(result: &ToolCallResult, outcome: &Outcome) -> Value {
+        let ledger = CallLedger::new();
+        let index = ledger.begin("write", "path=a.txt");
+        ledger.record(index, result);
+        assemble_run_data(&ledger, outcome, None)
+    }
+
+    #[test]
+    fn unfinished_call_stays_unsettled_even_when_the_host_later_records_ok() {
+        assert_eq!(
+            merge_call_outcome(Some("ok"), Some(CallState::CancelledUnfinished)),
+            "unsettled"
+        );
+        let data = recorded(
+            &ToolCallResult::ok("wrote"),
+            &runtime(CallState::CancelledUnfinished),
+        );
+        assert_eq!(data["calls"][0]["outcome"], "unsettled");
+        let text = render_text_from_data(&data, Some("code execution cancelled"));
+        assert!(
+            text.contains("1. write path=a.txt unsettled"),
+            "{text}"
+        );
+        assert!(!text.contains("1. write path=a.txt cancelled"), "{text}");
+    }
+
+    #[test]
+    fn a_finished_call_keeps_the_host_outcome() {
+        let ok = recorded(
+            &ToolCallResult::ok("wrote"),
+            &runtime(CallState::CancelledFinished),
+        );
+        assert_eq!(ok["calls"][0]["outcome"], "ok");
+        let text = render_text_from_data(&ok, Some("code execution cancelled"));
+        assert!(text.contains("1. write path=a.txt ok"), "{text}");
+
+        let cancelled = recorded(
+            &ToolCallResult::error_with_kind(ToolErrorKind::Cancelled, "write cancelled before write; file was not modified", false),
+            &runtime(CallState::CancelledFinished),
+        );
+        assert_eq!(cancelled["calls"][0]["outcome"], "cancelled");
+        let text = render_text_from_data(&cancelled, None);
+        assert!(text.contains("1. write path=a.txt cancelled"), "{text}");
+    }
+
+    #[test]
+    fn permission_denial_is_an_error_outcome_and_the_ledger_does_not_invent_the_code() {
+        let completed = Outcome {
+            logs: Vec::new(),
+            value: None,
+            failure: None,
+            calls: vec![CallRecord {
+                seq: 1,
+                namespace: "tools".into(),
+                name: "write".into(),
+                started: Duration::from_millis(1),
+                ended: Some(Duration::from_millis(2)),
+                state: CallState::Completed,
+            }],
+        };
+        let data = recorded(
+            &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
+            &completed,
+        );
+        assert_eq!(data["calls"][0]["outcome"], "error");
+        assert_eq!(data["calls"][0]["error_code"], "permission_denied");
+        let text = render_text_from_data(&data, None);
+        let ledger = text
+            .split(crate::tool::outcome::RUN_CODE_DATA_MARK)
+            .next()
+            .unwrap_or(&text);
+        assert!(ledger.contains("1. write path=a.txt error"), "{ledger}");
+        assert!(
+            !ledger.contains("permission_denied"),
+            "the text ledger must not invent an error code: {ledger}"
+        );
+        assert!(text.contains("permission_denied"), "{text}");
+    }
+
+    #[test]
+    fn unknown_host_outcome_is_unsettled() {
+        assert_eq!(merge_call_outcome(None, Some(CallState::Completed)), "unsettled");
+        assert_eq!(merge_call_outcome(Some("timeout"), None), "unsettled");
+    }
+
+    #[test]
+    fn a_second_javascript_argument_is_rejected_before_the_tool_runs() {
+        let payload = Json::new(json!([{"path": "a.txt"}, {"timeout_ms": 1}]));
+        match decode_invocation(&payload) {
+            Err(DecodeFail::ExtraArgument { summary }) => assert_eq!(summary, "path=a.txt"),
+            other => panic!("expected the extra argument to be rejected: {other:?}"),
+        }
+        let one = Json::new(json!({"path": "a.txt"}));
+        assert!(decode_invocation(&one).is_ok());
     }
 }

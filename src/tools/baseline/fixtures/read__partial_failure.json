@@ -1,0 +1,9 @@
+{
+  "tool": "read",
+  "scenario": "partial_failure",
+  "covered": false,
+  "gap": "read 一次调用只有整页成功或整次失败，没有部分成功。现状给不出 partial 的 data/error。",
+  "data": null,
+  "error": null,
+  "content_historical": null
+}

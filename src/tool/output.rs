@@ -3,7 +3,23 @@ use std::path::{Path, PathBuf};
 
 use crate::authority::responses::FunctionCallOutput;
 use crate::session::media::{MAX_MEDIA_BLOB_SIZE, write_media_blob};
+use crate::session::store::Session;
+use crate::tool::trait_::Tool;
 use crate::types::{Item, MediaSource, Result, ToolCallResult, ToolOutputPart};
+
+/// Direct callers still cap model-facing text. Code callers do not consult this.
+pub fn direct_output_limit(tool: &dyn Tool) -> usize {
+    tool.max_result_size()
+}
+
+pub fn cap_direct_content(tool: &dyn Tool, content: &str) -> String {
+    let max = direct_output_limit(tool);
+    if max < usize::MAX {
+        Session::truncated_tool_result(content, max)
+    } else {
+        content.to_string()
+    }
+}
 
 pub const BLOB_PREFIX: &str = "[blob:";
 
@@ -76,6 +92,11 @@ pub fn finalize_tool_call_result(
         warning_status: result.warning_status,
         appendix: result.appendix,
         composed: result.composed,
+        diagnostics: result.diagnostics,
+        page: result.page,
+        outcome_status: result.outcome_status,
+        error_code: result.error_code,
+        error_details: result.error_details,
     })
 }
 

@@ -28,6 +28,17 @@ use common::bindings::binding_all_for;
 
 static LSP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn lsp_error_text(result: &litecode::types::ToolCallResult) -> String {
+    result
+        .diagnostics
+        .iter()
+        .filter(|item| item.code == "lsp_error")
+        .filter_map(|item| item.details.as_ref())
+        .filter_map(|details| details.get("text").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn mock_ls_command() -> String {
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_lsp_server.py");
@@ -600,10 +611,16 @@ fn write_without_lsp_warm_never_appends_diagnostics() {
 
     let tool = write_tool_with_ide(dir.path(), engines);
     let result = tool.call(serde_json::json!({
-        "file_path": path.to_str().unwrap(),
+        "path": path.to_str().unwrap(),
         "content": "fn main() {}\n"
     }));
-    assert!(result.content.starts_with("Created:"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.data.as_ref().unwrap()["file"]["hash"].is_string());
+    assert!(
+        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        "cold LSP must not emit lsp_error: {:?}",
+        result.diagnostics
+    );
     assert!(
         !result.content.contains("LSP"),
         "cold LSP must not pollute write output: {}",
@@ -636,14 +653,15 @@ fn write_with_warm_lsp_but_no_errors_stays_clean() {
 
     let tool = write_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "content": "fn ok() { let _x = 1; }\n"
     }));
-    assert!(result.content.starts_with("Updated:"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.data.as_ref().unwrap()["created"].is_boolean());
     assert!(
-        !result.content.contains("LSP errors"),
-        "empty/no-error diagnostics must not pollute write: {}",
-        result.content
+        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        "empty/no-error diagnostics must not emit lsp_error: {:?}",
+        result.diagnostics
     );
 
     engines.stop_all();
@@ -675,16 +693,18 @@ fn write_with_warm_lsp_appends_only_when_errors_arrive() {
 
     let tool = write_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "content": "fn broken( {}\n"
     }));
-    assert!(result.content.starts_with("Updated:"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.data.as_ref().unwrap()["created"].is_boolean());
+    let lsp = lsp_error_text(&result);
     assert!(
-        result.content.contains("LSP note"),
-        "expected local error feedback: {}",
-        result.content
+        !lsp.is_empty(),
+        "expected lsp_error diagnostic: {:?}",
+        result.diagnostics
     );
-    assert!(result.content.contains("mock error"), "{}", result.content);
+    assert!(lsp.contains("mock error"), "{lsp}");
 
     engines.stop_all();
     clear_mock_ls_env();
@@ -716,14 +736,15 @@ fn write_ignores_slow_diagnostics_past_budget() {
 
     let tool = write_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "content": "fn later() {}\n"
     }));
-    assert!(result.content.starts_with("Updated:"), "{}", result.content);
+    assert!(result.error.is_none(), "{}", result.content);
+    assert!(result.data.as_ref().unwrap()["created"].is_boolean());
     assert!(
-        !result.content.contains("LSP errors"),
-        "late diagnostics must not pollute write output: {}",
-        result.content
+        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        "late diagnostics must not emit lsp_error: {:?}",
+        result.diagnostics
     );
 
     engines.stop_all();
@@ -754,7 +775,7 @@ fn write_ignores_warn_only_diagnostics() {
 
     let tool = write_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "content": "fn warn() {}\n"
     }));
     assert!(
@@ -791,14 +812,14 @@ fn edit_with_warm_lsp_appends_only_when_errors_arrive() {
 
     let tool = edit_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
-            "file_path": lib.to_str().unwrap(),
+            "path": lib.to_str().unwrap(),
             "edits": [{ "old_string": "fn ok() {}", "new_string": "fn ok() { broken }" }]
     }));
-    assert!(result.content.starts_with("Edited "), "{}", result.content);
+    assert!(result.data.as_ref().unwrap()["applied"].as_u64().unwrap() >= 1);
     assert!(
-        result.content.contains("LSP note"),
-        "expected local error feedback on edit: {}",
-        result.content
+        !lsp_error_text(&result).is_empty(),
+        "expected lsp_error diagnostic on edit: {:?}",
+        result.diagnostics
     );
 
     engines.stop_all();
@@ -831,18 +852,18 @@ fn edit_fix_must_not_echo_previous_lsp_error() {
 
     let tool = edit_tool_with_ide(root, engines.clone());
     let broken = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "edits": [{ "old_string": "fn ok() {}", "new_string": "fn BROKEN() {}" }]
     }));
+    let broken_lsp = lsp_error_text(&broken);
     assert!(
-        broken.content.contains("LSP note"),
-        "first edit should surface the live error: {}",
-        broken.content
+        !broken_lsp.is_empty(),
+        "first edit should surface the live error: {:?}",
+        broken.diagnostics
     );
     assert!(
-        broken.content.contains("mock broken marker"),
-        "first edit should include the current diagnostic: {}",
-        broken.content
+        broken_lsp.contains("mock broken marker"),
+        "first edit should include the current diagnostic: {broken_lsp}"
     );
 
     // Next publish is slower than the feedback budget, so the only way to
@@ -851,18 +872,17 @@ fn edit_fix_must_not_echo_previous_lsp_error() {
         std::env::set_var("MOCK_LSP_DIAG_DELAY_MS", "2000");
     }
     let fixed = tool.call(serde_json::json!({
-        "file_path": lib.to_str().unwrap(),
+        "path": lib.to_str().unwrap(),
         "edits": [{ "old_string": "fn BROKEN() {}", "new_string": "fn ok() {}" }]
     }));
+    let fixed_lsp = lsp_error_text(&fixed);
     assert!(
-        !fixed.content.contains("mock broken marker"),
-        "fixed edit must not echo the previous LSP error: {}",
-        fixed.content
+        !fixed_lsp.contains("mock broken marker"),
+        "fixed edit must not echo the previous LSP error: {fixed_lsp}"
     );
     assert!(
-        !fixed.content.contains("LSP note"),
-        "prefer silence over a stale LSP note after the fix: {}",
-        fixed.content
+        fixed_lsp.is_empty(),
+        "prefer silence over a stale LSP note after the fix: {fixed_lsp}"
     );
 
     engines.stop_all();

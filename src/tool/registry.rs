@@ -703,14 +703,16 @@ mod tests {
         assert_eq!(description, tools[0].description(&other));
         assert!(description.contains("declare const tools"));
         assert!(description.contains(
-            "readonly [\"grep\"]: (args: GrepInput, options?: ToolCallOptions) => Promise<ToolResult<GrepData>>;"
+            "readonly [\"grep\"]: (args: GrepInput) => Promise<ToolResult<GrepData>>;"
         ));
         assert!(
             description.contains(
                 "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
             )
         );
-        assert!(!description.contains("timeout_ms") || description.contains("ToolCallOptions"));
+        assert!(!description.contains("ToolCallOptions"));
+        assert!(description.contains("Tool timeouts are internal"));
+        assert!(!description.contains("timeout_ms?:"));
         let bindings = tools[0].code_bindings().expect("whitelist");
         let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
         assert_eq!(names, ["edit", "glob", "grep", "read", "write"]);

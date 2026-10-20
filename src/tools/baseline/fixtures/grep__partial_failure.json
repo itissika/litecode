@@ -1,0 +1,9 @@
+{
+  "tool": "grep",
+  "scenario": "partial_failure",
+  "covered": false,
+  "gap": "grep 的一页要么成功（含零命中或 has_more），要么整次 error，没有部分失败。",
+  "data": null,
+  "error": null,
+  "content_historical": null
+}

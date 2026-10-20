@@ -166,6 +166,7 @@ fn symbol_line(root: &Path, file: &Path, symbol: Option<&str>) -> Option<u32> {
         max_matches: 1,
         before_context: 0,
         after_context: 0,
+        min_line: 0,
     };
     let outcome = lexical_search_with_preset(&query, FilterPreset::Search).ok()?;
     outcome.matches.first().map(|hit| hit.start_line)

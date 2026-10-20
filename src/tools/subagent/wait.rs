@@ -227,7 +227,7 @@ impl Tool for SubagentWaitTool {
         crate::tools::description_text(include_str!("../descriptions/subagent_wait.md"))
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
 

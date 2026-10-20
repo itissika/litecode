@@ -72,6 +72,15 @@ pub struct ToolCallResult {
     pub appendix: Option<String>,
     /// Whether [`Self::finalize_signals`] has already composed wire text.
     pub composed: bool,
+    /// Non-fatal signals for code-surface tools. Direct tools leave this empty.
+    pub diagnostics: Vec<crate::tool::outcome::Diagnostic>,
+    /// Optional page envelope. Unset until a tool fills it.
+    pub page: Option<crate::tool::outcome::Page>,
+    /// `ok` / `partial` / `error` when a code-surface tool set it explicitly.
+    pub outcome_status: Option<crate::tool::outcome::OutcomeStatus>,
+    /// Overrides the program-facing error code when `kind` is coarser.
+    pub error_code: Option<String>,
+    pub error_details: Option<serde_json::Value>,
 }
 
 impl ToolCallResult {
@@ -87,6 +96,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -102,6 +116,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -117,6 +136,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -132,6 +156,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -179,6 +208,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -199,6 +233,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -214,6 +253,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -229,6 +273,11 @@ impl ToolCallResult {
             warning_status: None,
             appendix: None,
             composed: false,
+            diagnostics: Vec::new(),
+            page: None,
+            outcome_status: None,
+            error_code: None,
+            error_details: None,
         }
     }
 
@@ -261,6 +310,26 @@ impl ToolCallResult {
         self.hint = Some(hint.into());
         self.appendix = appendix;
         self.composed = false;
+        self
+    }
+
+    pub fn with_diagnostic(mut self, diagnostic: crate::tool::outcome::Diagnostic) -> Self {
+        self.diagnostics.push(diagnostic);
+        self
+    }
+
+    pub fn with_error_code(mut self, code: impl Into<String>) -> Self {
+        self.error_code = Some(code.into());
+        self
+    }
+
+    pub fn with_error_details(mut self, details: serde_json::Value) -> Self {
+        self.error_details = Some(details);
+        self
+    }
+
+    pub fn with_outcome_status(mut self, status: crate::tool::outcome::OutcomeStatus) -> Self {
+        self.outcome_status = Some(status);
         self
     }
 }

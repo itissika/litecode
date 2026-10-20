@@ -34,9 +34,7 @@ pub fn matches(matcher: &ArgMatcher, args: &Value, ctx: &MatchContext<'_>) -> bo
             .get(name)
             .and_then(Value::as_str)
             .is_some_and(|v| glob_match(pattern, v)),
-        ArgMatcher::PathOutsideWorkspace { name } => args
-            .get(name)
-            .and_then(Value::as_str)
+        ArgMatcher::PathOutsideWorkspace { name } => file_arg(args, name)
             .is_some_and(|path| raw_path_outside_workspace(ctx.workspace_root, path)),
         ArgMatcher::BashReadonlyCommand => args
             .get("command")
@@ -45,6 +43,21 @@ pub fn matches(matcher: &ArgMatcher, args: &Value, ctx: &MatchContext<'_>) -> bo
         ArgMatcher::AllOf { matchers } => matchers.iter().all(|m| matches(m, args, ctx)),
         ArgMatcher::AnyOf { matchers } => matchers.iter().any(|m| matches(m, args, ctx)),
     }
+}
+
+/// Write/edit rules were stored against `file_path` while the tool argument is
+/// `path`. Either name satisfies the same outside-workspace check.
+fn file_arg<'a>(args: &'a Value, name: &str) -> Option<&'a str> {
+    args.get(name)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            let other = match name {
+                "path" => "file_path",
+                "file_path" => "path",
+                _ => return None,
+            };
+            args.get(other).and_then(Value::as_str)
+        })
 }
 
 fn glob_match(pattern: &str, value: &str) -> bool {

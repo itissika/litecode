@@ -71,25 +71,25 @@ const file = await tools.read({
   start_line: 1,
   end_line: 1,
 });
-if (file.status !== "ok" || file.data.kind !== "text") {
+if (file.status !== "ok" || !file.data.file || !file.data.lines || file.data.lines.length !== 1) {
   throw new Error("read failed: " + JSON.stringify(file));
 }
 const bad = await tools.read({});
-if (bad.status !== "error" || !bad.error || bad.error.kind !== "invalid_input") {
+if (bad.status !== "error" || !bad.error || bad.error.code !== "invalid_input") {
   throw new Error("invalid input must be a typed result value: " + JSON.stringify(bad));
 }
 const unsupported = await tools.read(
-  { path: file.data.path },
+  { path: file.data.file.path },
   { timeout_ms: 1 },
 );
-if (unsupported.status !== "error" || unsupported.error.kind !== "invalid_input") {
-  throw new Error("unsupported timeout must fail explicitly: " + JSON.stringify(unsupported));
+if (unsupported.status !== "error" || !unsupported.error || unsupported.error.code !== "invalid_input") {
+  throw new Error("a second argument must be invalid_input: " + JSON.stringify(unsupported));
 }
 return {
-  path: file.data.path,
+  path: file.data.file.path,
   line: file.data.lines[0].text,
-  bad_kind: bad.error.kind,
-  unsupported_kind: unsupported.error.kind,
+  bad_code: bad.error.code,
+  unsupported_code: unsupported.error.code,
   process_absent: typeof process === "undefined",
   require_absent: typeof require === "undefined",
   stats_mean: libs.stats.mean([1, 2, 3, 4]),
@@ -130,8 +130,8 @@ return {
     let value = &data["result"];
     assert_eq!(value["path"], "src/a.rs");
     assert_eq!(value["line"], "fn needle_a() {}");
-    assert_eq!(value["bad_kind"], "invalid_input");
-    assert_eq!(value["unsupported_kind"], "invalid_input");
+    assert_eq!(value["bad_code"], "invalid_input");
+    assert_eq!(value["unsupported_code"], "invalid_input");
     assert_eq!(value["process_absent"], true);
     assert_eq!(value["require_absent"], true);
     assert_eq!(value["stats_mean"], 2.5);
@@ -191,8 +191,8 @@ impl Tool for ProbeTool {
         "Concurrency probe tool for the code runtime test.".to_string()
     }
 
-    fn timeout(&self) -> Option<u64> {
-        Some(5)
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(5))
     }
 
     fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
@@ -228,7 +228,7 @@ impl Tool for ProbeTool {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn code_tool_parallelizes_safe_calls_and_honors_call_timeout() {
+async fn code_tool_parallelizes_safe_calls_and_rejects_a_second_argument() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     let resolved = ConfigManager::resolve_without_catalog(
@@ -308,10 +308,10 @@ return results.map((result) => result.data.id);
 
     let timeout_script = r#"
 const result = await tools.probe({ id: 9 }, { timeout_ms: 1 });
-if (result.status !== "error" || result.error.kind !== "timeout") {
-  throw new Error("expected timeout result: " + JSON.stringify(result));
+if (result.status !== "error" || !result.error || result.error.code !== "invalid_input") {
+  throw new Error("expected invalid_input: " + JSON.stringify(result));
 }
-return result.error.kind;
+return result.error.code;
 "#;
     let call = FunctionToolCall {
         arguments: json!({ "code": timeout_script, "timeout_ms": 5_000 }).to_string(),
@@ -338,8 +338,8 @@ return result.error.kind;
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let data = result.data.expect("timeout result data");
-    assert_eq!(data["result"], json!("timeout"));
+    let data = result.data.expect("second-argument result data");
+    assert_eq!(data["result"], json!("invalid_input"));
 
     let runaway_script = "while (true) {}";
     let call = FunctionToolCall {
@@ -441,8 +441,16 @@ return { ok: true };
     let data = result.data.expect("code result data");
     let logs = data["logs"].as_array().expect("captured logs");
     assert_eq!(logs.len(), 2);
-    assert!(logs.contains(&json!("hello 42")), "{logs:?}");
-    assert!(logs.contains(&json!("warn")), "{logs:?}");
+    assert!(
+        logs.iter()
+            .any(|log| log["level"] == "log" && log["message"] == "hello 42"),
+        "{logs:?}"
+    );
+    assert!(
+        logs.iter()
+            .any(|log| log["level"] == "error" && log["message"] == "warn"),
+        "{logs:?}"
+    );
     assert_eq!(data["result"], json!({ "ok": true }));
     assert!(result.content.contains("hello 42"), "{}", result.content);
 

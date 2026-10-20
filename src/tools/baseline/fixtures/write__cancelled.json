@@ -1,0 +1,13 @@
+{
+  "content_historical": "tool 'write' cancelled",
+  "covered": true,
+  "data": null,
+  "error": {
+    "kind": "cancelled",
+    "message": "tool 'write' cancelled",
+    "retryable": false
+  },
+  "gap": null,
+  "scenario": "cancelled",
+  "tool": "write"
+}

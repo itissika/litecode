@@ -223,7 +223,12 @@ fn builtin_code_tools_pass_admission_and_edit_write_join_the_code_surface() {
     assert!(projected.sdk.contains("path:"));
     assert!(!projected.sdk.contains("file_path"));
     assert!(projected.sdk.contains("type Integer = number;"));
-    assert!(!projected.sdk.contains(": unknown"));
+    assert!(
+        !projected
+            .sdk
+            .replace("details?: unknown", "")
+            .contains(": unknown")
+    );
 }
 
 #[test]

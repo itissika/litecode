@@ -2,12 +2,13 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::types::{ToolCallResult, ToolErrorKind};
+
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::ResourceKey;
 use crate::tools::lsp_feedback;
-use crate::types::ToolCallResult;
 
 pub struct WriteTool {
     ide: Option<Arc<crate::ide_base::IdeBaseHandle>>,
@@ -24,18 +25,23 @@ impl WriteTool {
 
     async fn finish_ok(
         &self,
-        path: &str,
         created: bool,
-        bytes: usize,
+        written: &[u8],
         execution: &ToolExecutionContext,
         raw_path: &str,
         resolved: &Path,
     ) -> ToolCallResult {
-        let status = if created { "Created" } else { "Updated" };
+        let located =
+            crate::tool::file_identity::locate_resolved(&execution.workspace_root, resolved, raw_path);
+        let file = crate::tool::file_identity::file_ref(located, written);
+        let data = serde_json::json!({
+            "file": file,
+            "created": created,
+        });
         let result = lsp_feedback::maybe_append_local_lsp_errors(
             self.ide.as_ref().map(|ide| ide.engines.as_ref()),
-            path,
-            ToolCallResult::ok(format!("{status}: {path} ({bytes} bytes)")),
+            &resolved.to_string_lossy(),
+            crate::tool::outcome::ToolOutcome::ok(data).into_call_result(""),
         )
         .await;
         crate::tools::file_path::with_path_risk_warning(
@@ -45,11 +51,6 @@ impl WriteTool {
             resolved,
             "writing",
         )
-        .with_data(serde_json::json!({
-            "path": path,
-            "bytes": bytes,
-            "created": created,
-        }))
     }
 
     fn test_execution_context(&self) -> ToolExecutionContext {
@@ -84,10 +85,6 @@ impl Tool for WriteTool {
         crate::tool::ToolSurface::Code
     }
 
-    fn accepts_historical_file_path(&self) -> bool {
-        true
-    }
-
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
@@ -100,6 +97,10 @@ impl Tool for WriteTool {
                 "content": {
                     "type": "string",
                     "description": "Content to write to the file"
+                },
+                "expected_hash": {
+                    "type": "string",
+                    "description": "sha256 of the current file bytes. Omit to skip the check. A mismatch returns stale and does not write. Together with create_only, a missing file returns invalid_input."
                 },
                 "create_only": {
                     "type": "boolean",
@@ -116,11 +117,20 @@ impl Tool for WriteTool {
             "additionalProperties": false,
             "description": "File that was written.",
             "properties": {
-                "path": { "type": "string", "description": "Path that was written." },
-                "bytes": { "type": "integer", "description": "Bytes written." },
+                "file": {
+                    "type": "object",
+                    "description": "File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "abs": { "type": "string" },
+                        "hash": { "type": "string", "description": "sha256 hex of the file bytes." },
+                        "bytes": { "type": "integer", "minimum": 0 }
+                    },
+                    "required": ["path", "hash", "bytes"]
+                },
                 "created": { "type": "boolean", "description": "True when the file did not exist before." }
             },
-            "required": ["path", "bytes", "created"]
+            "required": ["file", "created"]
         }))
     }
 
@@ -149,6 +159,11 @@ impl Tool for WriteTool {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         crate::tools::file_path::require_code_path(input)?;
         crate::tool::require_string(input, "content")?;
+        if let Some(value) = input.get("expected_hash").filter(|value| !value.is_null())
+            && !value.is_string()
+        {
+            return Err("parameter 'expected_hash' must be a string".into());
+        }
         Ok(())
     }
 
@@ -164,6 +179,20 @@ impl Tool for WriteTool {
         crate::workspace::resolve_agent(workspace_root, path, path_mode)
             .map(|resolved| resolved.exists())
             .unwrap_or(false)
+    }
+
+    fn effects(
+        &self,
+        input: &Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        match crate::tools::file_path::code_path(input) {
+            Some(path) => crate::tool::resource_gate::ToolEffects::write(
+                crate::tool::resource_gate::lock_key(workspace_root, path, path_mode),
+            ),
+            None => crate::tool::resource_gate::ToolEffects::default(),
+        }
     }
 
     fn resource_keys(
@@ -211,30 +240,35 @@ impl WriteTool {
             Ok(path) => path,
             Err(error) => return ToolCallResult::error(error.to_string()),
         };
+        let create_only = input["create_only"].as_bool().unwrap_or(false);
+        let expected_hash = input.get("expected_hash").and_then(Value::as_str);
         let workspace_relative = self
             .ide
             .as_ref()
             .and_then(|ide| ide.workspace.sandbox().rel_path(&resolved).ok());
+        let current = match self.read_existing(&resolved, workspace_relative.as_deref()) {
+            Ok(bytes) => bytes,
+            Err(error) => return ToolCallResult::error(error),
+        };
+        if let Some(rejected) =
+            write_precondition(&resolved, create_only, expected_hash, current.as_deref())
+        {
+            return rejected;
+        }
+        if execution.cancel.is_cancelled() {
+            return ToolCallResult::error_with_kind(
+                ToolErrorKind::Cancelled,
+                "write cancelled before write; file was not modified",
+                false,
+            );
+        }
+        let created = current.is_none();
         if let (Some(ide), Some(relative)) = (&self.ide, workspace_relative) {
-            let existed = resolved.exists();
-            if input["create_only"].as_bool().unwrap_or(false) && existed {
-                return ToolCallResult::error(format!(
-                    "file already exists and create_only is set: {}. Omit create_only to overwrite, or choose a new path.",
-                    resolved.display()
-                ));
-            }
             return match ide.workspace.write_file(&relative, content) {
                 Ok(_) => {
                     ide.apply_document_if_ready(&resolved, content).await;
-                    self.finish_ok(
-                        &resolved.to_string_lossy(),
-                        !existed,
-                        content.len(),
-                        &execution,
-                        raw_path,
-                        &resolved,
-                    )
-                    .await
+                    self.finish_ok(created, content.as_bytes(), &execution, raw_path, &resolved)
+                        .await
                 }
                 Err(error) => ToolCallResult::error(error.to_string()),
             };
@@ -242,33 +276,37 @@ impl WriteTool {
 
         // ALL-mode absolute paths outside the workspace deliberately stay direct:
         // no workspace broadcast and no editor/LSP document sync.
-        self.call_direct(
-            &resolved,
-            content,
-            input["create_only"].as_bool().unwrap_or(false),
-            &execution,
-            raw_path,
-        )
-        .await
+        self.call_direct(&resolved, content, created, &execution, raw_path)
+            .await
+    }
+
+    fn read_existing(
+        &self,
+        resolved: &Path,
+        workspace_relative: Option<&str>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        if let (Some(ide), Some(relative)) = (&self.ide, workspace_relative) {
+            return match ide.workspace.read_file_bytes(relative) {
+                Ok((_, bytes)) => Ok(Some(bytes)),
+                Err(crate::workspace::WorkspaceError::NotFound(_)) => Ok(None),
+                Err(error) => Err(error.to_string()),
+            };
+        }
+        match std::fs::read(resolved) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     async fn call_direct(
         &self,
         file_path: &Path,
         content: &str,
-        create_only: bool,
+        created: bool,
         execution: &ToolExecutionContext,
         raw_path: &str,
     ) -> ToolCallResult {
-        let path = file_path.to_string_lossy().into_owned();
-        let is_new = !file_path.exists();
-
-        if create_only && !is_new {
-            return ToolCallResult::error(format!(
-                "file already exists and create_only is set: {path}. Omit create_only to overwrite, or choose a new path."
-            ));
-        }
-
         if let Some(parent) = file_path.parent() {
             match std::fs::create_dir_all(parent) {
                 Ok(()) => {}
@@ -281,9 +319,54 @@ impl WriteTool {
             Err(e) => return ToolCallResult::error(e.to_string()),
         }
 
-        self.finish_ok(&path, is_new, content.len(), execution, raw_path, file_path)
+        self.finish_ok(created, content.as_bytes(), execution, raw_path, file_path)
             .await
     }
+}
+
+fn write_precondition(
+    resolved: &Path,
+    create_only: bool,
+    expected_hash: Option<&str>,
+    current: Option<&[u8]>,
+) -> Option<ToolCallResult> {
+    if create_only && expected_hash.is_some() && current.is_none() {
+        let message =
+            "create_only and expected_hash were both set, but the file does not exist";
+        return Some(
+            crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_input", message, false)
+                .into_call_result(message),
+        );
+    }
+    if let Some(expected) = expected_hash {
+        let Some(bytes) = current else {
+            let message = "file does not exist, so expected_hash cannot be checked";
+            return Some(
+                crate::tool::outcome::ToolOutcome::<Value>::failure("not_found", message, false)
+                    .into_call_result(message),
+            );
+        };
+        let current_hash = crate::tool::file_identity::sha256_hex(bytes);
+        if expected != current_hash {
+            let message = "file changed since it was read; expected_hash does not match";
+            return Some(
+                crate::tool::outcome::ToolOutcome::<Value>::failure("stale", message, true)
+                    .with_error_details(serde_json::json!({ "current_hash": current_hash }))
+                    .into_call_result(message),
+            );
+        }
+    }
+    if create_only && current.is_some() {
+        let message = format!(
+            "file already exists and create_only is set: {}. Omit create_only to overwrite, or choose a new path.",
+            resolved.display()
+        );
+        return Some(
+            crate::tool::outcome::ToolOutcome::<Value>::failure("conflict", message.clone(), false)
+                .into_call_result(message),
+        );
+    }
+    None
 }
 
 /// Check if the target path is a sensitive system location (workspace-only floor).
@@ -302,16 +385,16 @@ mod tests {
 
         let tool = WriteTool::new();
         let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
+            "path": file_path.to_str().expect("path"),
             "content": "hello world"
         });
 
         let result = tool.call(input);
-        assert!(
-            result.content.contains("Created"),
-            "should report Created, got: {}",
-            result.content
-        );
+        assert!(result.error.is_none(), "{}", result.content);
+        let data = result.data.expect("write data");
+        assert_eq!(data["created"], true);
+        assert_eq!(data["file"]["bytes"], "hello world".len() as u64);
+        assert_eq!(data["file"]["hash"].as_str().unwrap().len(), 64);
 
         let content = std::fs::read_to_string(&file_path).expect("read back");
         assert_eq!(content, "hello world");
@@ -325,15 +408,17 @@ mod tests {
 
         let tool = WriteTool::new();
         let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
+            "path": file_path.to_str().expect("path"),
             "content": "new content"
         });
 
         let result = tool.call(input);
-        assert!(
-            result.content.contains("Updated"),
-            "should report Updated, got: {}",
-            result.content
+        assert!(result.error.is_none(), "{}", result.content);
+        let data = result.data.expect("write data");
+        assert_eq!(data["created"], false);
+        assert_eq!(
+            data["file"]["hash"],
+            crate::tool::file_identity::sha256_hex(b"new content")
         );
 
         let content = std::fs::read_to_string(&file_path).expect("read back");
@@ -348,17 +433,14 @@ mod tests {
 
         let tool = WriteTool::new();
         let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
+            "path": file_path.to_str().expect("path"),
             "content": "new",
             "create_only": true
         });
 
         let result = tool.call(input);
-        assert!(
-            result.content.contains("create_only"),
-            "error should mention create_only, got: {}",
-            result.content
-        );
+        assert_eq!(result.error_code.as_deref(), Some("conflict"));
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "existing");
     }
 
     #[test]
@@ -368,7 +450,7 @@ mod tests {
 
         let tool = WriteTool::new();
         let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
+            "path": file_path.to_str().expect("path"),
             "content": "deep content"
         });
 
@@ -385,7 +467,7 @@ mod tests {
         let tool = WriteTool::new();
         let expected = "atomic write content\nsecond line\n";
         let input = serde_json::json!({
-            "file_path": file_path.to_str().expect("path"),
+            "path": file_path.to_str().expect("path"),
             "content": expected
         });
 
@@ -407,19 +489,19 @@ mod tests {
 
         // Empty file_path
         assert!(
-            tool.validate_input(&serde_json::json!({"file_path": "", "content": "x"}))
+            tool.validate_input(&serde_json::json!({"path": "", "content": "x"}))
                 .is_err()
         );
 
         // Missing content
         assert!(
-            tool.validate_input(&serde_json::json!({"file_path": "/tmp/x"}))
+            tool.validate_input(&serde_json::json!({"path": "/tmp/x"}))
                 .is_err()
         );
 
         // Valid
         assert!(
-            tool.validate_input(&serde_json::json!({"file_path": "/tmp/x", "content": "hello"}))
+            tool.validate_input(&serde_json::json!({"path": "/tmp/x", "content": "hello"}))
                 .is_ok()
         );
     }
@@ -435,7 +517,7 @@ mod tests {
         // Overwriting existing = destructive
         assert!(tool.is_destructive(
             &serde_json::json!({
-                "file_path": "existing.txt",
+                "path": "existing.txt",
                 "content": "new"
             }),
             crate::workspace::ToolPathMode::All,
@@ -445,7 +527,7 @@ mod tests {
         // Creating new = not destructive
         assert!(!tool.is_destructive(
             &serde_json::json!({
-                "file_path": "missing.txt",
+                "path": "missing.txt",
                 "content": "new"
             }),
             crate::workspace::ToolPathMode::All,
@@ -477,7 +559,7 @@ mod tests {
         let result = tool
             .execute(
                 serde_json::json!({
-                    "file_path": "inner.txt",
+                    "path": "inner.txt",
                     "content": "from agent"
                 }),
                 crate::tool::trait_::ToolExecutionContext {
@@ -491,7 +573,7 @@ mod tests {
                 },
             )
             .await;
-        assert!(result.content.contains("Created"), "{}", result.content);
+        assert_eq!(result.data.as_ref().unwrap()["created"], true, "{}", result.content);
         let change = rx.try_recv().expect("workspace change");
         assert!(change.paths.iter().any(|p| p.contains("inner.txt")));
         assert_eq!(
@@ -517,7 +599,7 @@ mod tests {
         let result = tool
             .execute(
                 serde_json::json!({
-                    "file_path": external_file.to_string_lossy(),
+                    "path": external_file.to_string_lossy(),
                     "content": "external"
                 }),
                 crate::tool::trait_::ToolExecutionContext {
@@ -531,11 +613,7 @@ mod tests {
                 },
             )
             .await;
-        assert!(
-            result.content.contains("Created") || result.content.contains("Updated"),
-            "{}",
-            result.content
-        );
+        assert_eq!(result.data.as_ref().unwrap()["created"], true, "{}", result.content);
         assert!(
             rx.try_recv().is_err(),
             "external ALL must not emit workspace change"
@@ -547,7 +625,7 @@ mod tests {
     fn virtual_session_path_is_read_only() {
         let tool = WriteTool::new();
         let result = tool.call(serde_json::json!({
-            "file_path": ".litecode/sessions/01ABCDEF.md",
+            "path": ".litecode/sessions/01ABCDEF.md",
             "content": "nope"
         }));
         assert_eq!(result.level, crate::types::ToolSignalLevel::Error);

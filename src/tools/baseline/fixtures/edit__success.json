@@ -1,0 +1,24 @@
+{
+  "content_historical": "Edited <ws>a.txt (1 applied / 0 warning / 0 failed). File updated.\n\n[1] applied: exact, 1 replacement (L1)",
+  "covered": true,
+  "data": {
+    "applied": 1,
+    "blocks": [
+      {
+        "index": 1,
+        "ranges": [{ "end_line": 1, "start_line": 1 }],
+        "status": "applied"
+      }
+    ],
+    "failed": 0,
+    "file": {
+      "bytes": 5,
+      "hash": "f2c82decdd7181cf98945929a62598db7e6b477e11f6e0eb0ae97020eff151ad",
+      "path": "a.txt"
+    }
+  },
+  "error": null,
+  "gap": null,
+  "scenario": "success",
+  "tool": "edit"
+}

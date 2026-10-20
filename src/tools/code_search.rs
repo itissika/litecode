@@ -142,8 +142,8 @@ impl Tool for CodeSearchTool {
         crate::tools::description_text(include_str!("descriptions/code_search.md"))
     }
 
-    fn timeout(&self) -> Option<u64> {
-        Some(30)
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(30))
     }
 }
 

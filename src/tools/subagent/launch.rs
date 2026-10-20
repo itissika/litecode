@@ -383,7 +383,7 @@ impl Tool for SubagentLaunchTool {
         true
     }
 
-    fn timeout(&self) -> Option<u64> {
+    fn timeout(&self) -> Option<std::time::Duration> {
         None
     }
 

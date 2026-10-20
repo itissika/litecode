@@ -1,0 +1,172 @@
+{
+  "gates": [
+    {
+      "hits": 0,
+      "id": "content-ok",
+      "item": "ToolCallResult content as the fact source in the five tools",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "hint-warning-appendix",
+      "item": "hint / warning_status / appendix on the five tools",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "warning-level",
+      "item": "warning as an independent result level on the five tools",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "file-path-alias",
+      "item": "historical file_path alias",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "grep-view",
+      "item": "grep.view display parameter",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "grep-context-lines",
+      "item": "grep.context_lines",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "read-line-text",
+      "item": "read line-number text and pagination footer",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "glob-list-text",
+      "item": "glob list text",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "grep-text-view",
+      "item": "grep text view",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "edit-text-status",
+      "item": "edit text status rendering",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "write-text-status",
+      "item": "write text status rendering",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "path-gate",
+      "item": "PathGate / path_gate_key",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "max-result-size",
+      "item": "max_result_size cap on the five-tool path",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 4,
+      "id": "spill-emergency",
+      "item": "spill / emergency cap shared by the five tools",
+      "sample": "src/tool/output.rs:20:pub fn apply_emergency_cap(content: String) -> String {",
+      "status": "red"
+    },
+    {
+      "hits": 0,
+      "id": "concurrency-safe",
+      "item": "is_concurrency_safe special case on the five tools",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "fuzzy",
+      "item": "fuzzy matcher chain",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "read-media",
+      "item": "read image detection / media parts / MAX_MEDIA_BLOB_SIZE",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "token-cap",
+      "item": "read INTERNAL_TOKEN_CAP",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "grep-repair",
+      "item": "grep BraceText / Literal automatic repair",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "per-call-options",
+      "item": "per-call options / split_invocation",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "glob-prefix-strip",
+      "item": "glob path/pattern prefix stripping",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "edit-typography",
+      "item": "edit typography equivalence",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 0,
+      "id": "edit-on-error-match",
+      "item": "edit on_error / match parameter",
+      "sample": "",
+      "status": "green"
+    },
+    {
+      "hits": 21,
+      "id": "schema-minimum-unenforced",
+      "item": "schema minimum declared on the five tools but not executed (D-10 still open; declarations stay, schema_validate now reads minimum)",
+      "sample": "src/tools/edit.rs:161:                        \"bytes\": { \"type\": \"integer\", \"minimum\": 0 }",
+      "status": "green"
+    }
+  ]
+}

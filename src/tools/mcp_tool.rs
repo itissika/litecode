@@ -82,8 +82,10 @@ impl Tool for McpTool {
         }
     }
 
-    fn timeout(&self) -> Option<u64> {
-        Some(self.server_connection.timeout_secs + 15)
+    fn timeout(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(
+            self.server_connection.timeout_secs.saturating_add(15),
+        ))
     }
 
     fn description(&self, _ctx: &Context) -> String {

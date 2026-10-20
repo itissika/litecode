@@ -1,0 +1,19 @@
+{
+  "content_historical": "keep.txt",
+  "covered": true,
+  "data": {
+    "base": "workspace",
+    "page": {
+      "has_more": false,
+      "next": null,
+      "total": 1
+    },
+    "paths": [
+      "keep.txt"
+    ]
+  },
+  "error": null,
+  "gap": null,
+  "scenario": "success",
+  "tool": "glob"
+}

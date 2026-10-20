@@ -85,6 +85,7 @@ pub fn human_search(
         max_matches: top_k,
         before_context: 0,
         after_context: 0,
+        min_line: 0,
     })?;
     let text: Vec<SearchHit> = text_matches
         .iter()

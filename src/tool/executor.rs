@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::FutureExt;
 use tokio_util::sync::CancellationToken;
@@ -14,13 +15,13 @@ use crate::context_pipeline::Context;
 use crate::permission::{PermissionEngine, PermissionSink};
 use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::session::media::resolve_media_artifact_url;
-use crate::session::store::Session;
 use crate::tool::authorize::{AuthResult, authorize};
 use crate::tool::output;
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments, schema_validate,
     unknown_top_level_properties,
 };
+use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
@@ -34,6 +35,11 @@ pub(crate) struct Batch {
     pub blocks: Vec<FunctionToolCall>,
 }
 
+enum Schedule {
+    Effects(ToolEffects),
+    Legacy { keys: Vec<ResourceKey> },
+}
+
 pub(crate) fn partition_tool_calls(
     tool_uses: &[FunctionToolCall],
     tools: &[Arc<dyn Tool>],
@@ -45,17 +51,26 @@ pub(crate) fn partition_tool_calls(
     for tu in tool_uses {
         let tu_input = serde_json::from_str(&tu.arguments).unwrap_or(serde_json::Value::Null);
         let tool = tools.iter().find(|t| t.name() == tu.name);
-        let is_safe = tool
-            .map(|t| t.is_concurrency_safe(&tu_input))
-            .unwrap_or(false);
-        let keys = tool
-            .map(|t| t.resource_keys(&tu_input, path_mode_for(&tu.name), workspace_root))
-            .unwrap_or_default();
+        let (is_safe, schedule) = match tool {
+            Some(tool) => tool_schedule(
+                tool.as_ref(),
+                &tu_input,
+                path_mode_for(&tu.name),
+                workspace_root,
+            ),
+            None => (false, Schedule::Legacy { keys: Vec::new() }),
+        };
 
         if is_safe
             && batches.last().is_some_and(|b| {
                 b.is_concurrency_safe
-                    && !batch_conflicts_with(b, &keys, tools, workspace_root, &path_mode_for)
+                    && !batch_conflicts_with(
+                        b,
+                        &schedule,
+                        tools,
+                        workspace_root,
+                        &path_mode_for,
+                    )
             })
         {
             batches.last_mut().unwrap().blocks.push(tu.clone());
@@ -70,34 +85,92 @@ pub(crate) fn partition_tool_calls(
     batches
 }
 
+fn tool_schedule(
+    tool: &dyn Tool,
+    input: &serde_json::Value,
+    path_mode: crate::workspace::ToolPathMode,
+    workspace_root: &Path,
+) -> (bool, Schedule) {
+    let effects = tool.effects(input, path_mode, workspace_root);
+    if effects.declares() {
+        let safe = effects.writes.is_empty();
+        (safe, Schedule::Effects(effects))
+    } else {
+        (
+            tool.is_concurrency_safe(input),
+            Schedule::Legacy {
+                keys: tool.resource_keys(input, path_mode, workspace_root),
+            },
+        )
+    }
+}
+
 fn batch_conflicts_with(
     batch: &Batch,
-    keys: &[ResourceKey],
+    schedule: &Schedule,
     tools: &[Arc<dyn Tool>],
     workspace_root: &Path,
     path_mode_for: &impl Fn(&str) -> crate::workspace::ToolPathMode,
 ) -> bool {
     for existing in &batch.blocks {
         let input = serde_json::from_str(&existing.arguments).unwrap_or(serde_json::Value::Null);
-        let existing_keys = tools
-            .iter()
-            .find(|t| t.name() == existing.name)
-            .map(|t| t.resource_keys(&input, path_mode_for(&existing.name), workspace_root))
-            .unwrap_or_default();
-        if resource_keys_conflict(keys, &existing_keys) {
+        let Some(tool) = tools.iter().find(|t| t.name() == existing.name) else {
+            continue;
+        };
+        let (_, existing_schedule) = tool_schedule(
+            tool.as_ref(),
+            &input,
+            path_mode_for(&existing.name),
+            workspace_root,
+        );
+        if schedules_conflict(schedule, &existing_schedule) {
             return true;
         }
     }
     false
 }
 
-/// Cross-session process lock is write/edit only. bash and read still expose
-/// `resource_keys` for same-turn partitioning; they must not fail other sessions.
-fn cross_session_lock_keys(tool_name: &str, keys: Vec<ResourceKey>) -> Vec<ResourceKey> {
-    match tool_name {
-        "write" | "edit" => keys,
-        _ => Vec::new(),
+fn schedules_conflict(left: &Schedule, right: &Schedule) -> bool {
+    match (left, right) {
+        (Schedule::Effects(left), Schedule::Effects(right)) => effects_conflict(left, right),
+        (Schedule::Legacy { keys: left }, Schedule::Legacy { keys: right }) => {
+            resource_keys_conflict(left, right)
+        }
+        (Schedule::Effects(effects), Schedule::Legacy { keys })
+        | (Schedule::Legacy { keys }, Schedule::Effects(effects)) => {
+            legacy_effects_conflict(keys, effects)
+        }
     }
+}
+
+fn effects_conflict(left: &ToolEffects, right: &ToolEffects) -> bool {
+    if involves_workspace(left) || involves_workspace(right) {
+        return left.declares() && right.declares();
+    }
+    overlaps(&left.writes, &right.writes)
+        || overlaps(&left.writes, &right.reads)
+        || overlaps(&left.reads, &right.writes)
+}
+
+fn legacy_effects_conflict(keys: &[ResourceKey], effects: &ToolEffects) -> bool {
+    if keys.iter().any(|key| matches!(key, ResourceKey::Workspace)) || involves_workspace(effects)
+    {
+        return !keys.is_empty() && effects.declares();
+    }
+    keys.iter()
+        .any(|key| effects.reads.contains(key) || effects.writes.contains(key))
+}
+
+fn involves_workspace(effects: &ToolEffects) -> bool {
+    effects
+        .reads
+        .iter()
+        .chain(effects.writes.iter())
+        .any(|key| matches!(key, ResourceKey::Workspace))
+}
+
+fn overlaps(left: &[ResourceKey], right: &[ResourceKey]) -> bool {
+    left.iter().any(|key| right.contains(key))
 }
 
 fn resource_keys_conflict(a: &[ResourceKey], b: &[ResourceKey]) -> bool {
@@ -114,17 +187,50 @@ fn resource_keys_conflict(a: &[ResourceKey], b: &[ResourceKey]) -> bool {
     false
 }
 
+fn timeout_budget_label(budget: Duration) -> String {
+    if budget.as_millis() % 1000 == 0 {
+        format!("{} seconds", budget.as_secs())
+    } else {
+        format!("{}ms", budget.as_millis())
+    }
+}
+
 fn cancelled_tool_result(name: &str) -> ToolCallResult {
     ToolCallResult::error_with_kind(
         ToolErrorKind::Cancelled,
         format!("tool '{name}' cancelled"),
         false,
     )
-    .finalize_signals()
 }
 
 fn wire_result(result: ToolCallResult) -> ToolCallResult {
     result.finalize_signals()
+}
+
+/// Direct callers compose wire text. Code callers keep `data` / diagnostics
+/// and skip signal composition, emergency cap, spill, and token truncation.
+fn present_for_caller(origin: &ToolCallOrigin, result: ToolCallResult) -> ToolCallResult {
+    if matches!(origin.caller, ToolCaller::Code { .. }) {
+        result
+    } else {
+        wire_result(result)
+    }
+}
+
+fn attach_unknown_param_diagnostic(mut result: ToolCallResult, extra: &[String]) -> ToolCallResult {
+    if extra.is_empty() || result.level == ToolSignalLevel::Error || result.error.is_some() {
+        return result;
+    }
+    result
+        .diagnostics
+        .push(crate::tool::outcome::Diagnostic::warning(
+            "unknown_parameter",
+            format!(
+                "ignored unknown parameter(s): {}. Not in this tool's schema; the call ran without them",
+                extra.join(", ")
+            ),
+        ).with_details(serde_json::json!({ "parameters": extra })));
+    result
 }
 
 fn attach_unknown_param_warning(result: ToolCallResult, extra: &[String]) -> ToolCallResult {
@@ -398,7 +504,7 @@ pub async fn execute_tool_call(
         if let Some(tool) = callable_tool(tools, &tu_name, &origin) {
             note_settled_call(&origin, tool.as_ref(), tool_use, permission, &ctx.cwd);
         }
-        return cancelled_tool_result(&tu_name);
+        return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
 
     let tool = match callable_tool(tools, &tu_name, &origin) {
@@ -425,22 +531,28 @@ pub async fn execute_tool_call(
     let mut tool_use_input = match parse_tool_arguments(&tool_use.arguments) {
         Ok(value) => value,
         Err(detail) => {
-            return wire_result(ToolCallResult::error_with_kind(
-                ToolErrorKind::InvalidInput,
-                invalid_input_for(&tu_name, detail),
-                false,
-            ));
+            return present_for_caller(
+                &origin,
+                ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidInput,
+                    invalid_input_for(&tu_name, detail),
+                    false,
+                ),
+            );
         }
     };
     tool.prepare_input(&mut tool_use_input);
     let schema_input = tool.schema_arguments(&tool_use_input);
 
     if let Err(msg) = check_tool_input(tool.as_ref(), &schema_input) {
-        return wire_result(ToolCallResult::error_with_kind(
-            ToolErrorKind::InvalidInput,
-            invalid_input_for(&tu_name, msg),
-            false,
-        ));
+        return present_for_caller(
+            &origin,
+            ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidInput,
+                invalid_input_for(&tu_name, msg),
+                false,
+            ),
+        );
     }
 
     // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
@@ -474,7 +586,7 @@ pub async fn execute_tool_call(
             e.error_kind = Some("canceled".into());
             e.error = Some("aborted".into());
         });
-        return cancelled_tool_result(&tu_name);
+        return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
 
     if cancel.is_cancelled() {
@@ -482,7 +594,7 @@ pub async fn execute_tool_call(
             e.ok = Some(false);
             e.error_kind = Some("canceled".into());
         });
-        return cancelled_tool_result(&tu_name);
+        return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
 
     let effective_input = match auth {
@@ -492,27 +604,41 @@ pub async fn execute_tool_call(
                 e.error_kind = Some("denied".into());
                 e.error = Some(audit_truncate(&msg));
             });
-            return wire_result(ToolCallResult::error_with_kind(
-                ToolErrorKind::PermissionDenied,
-                msg,
-                false,
-            ));
+            return present_for_caller(
+                &origin,
+                ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, msg, false),
+            );
         }
         AuthResult::Aborted => {
             emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
                 e.ok = Some(false);
                 e.error_kind = Some("canceled".into());
             });
-            return cancelled_tool_result(&tu_name);
+            return present_for_caller(&origin, cancelled_tool_result(&tu_name));
         }
         AuthResult::Proceed { effective_input } => effective_input,
     };
 
     let path_mode = permission.path_mode(&tu_name).to_tool_path_mode();
-    let resource_keys = cross_session_lock_keys(
-        &tu_name,
-        tool.resource_keys(&effective_input, path_mode, &ctx.cwd),
-    );
+    let effects = tool.effects(&effective_input, path_mode, &ctx.cwd);
+    let _effect_guard = match process_resource_gate().acquire(&effects, &cancel).await {
+        Ok(guard) => guard,
+        Err(()) => {
+            emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+                e.ok = Some(false);
+                e.error_kind = Some("canceled".into());
+            });
+            return present_for_caller(&origin, cancelled_tool_result(&tu_name));
+        }
+    };
+    if cancel.is_cancelled() {
+        emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
+            e.ok = Some(false);
+            e.error_kind = Some("canceled".into());
+        });
+        return present_for_caller(&origin, cancelled_tool_result(&tu_name));
+    }
+    let resource_keys = effects.writes.clone();
     let _lock_guard = if !resource_keys.is_empty() {
         match write_lock.try_acquire(&resource_keys, session_id) {
             Ok(()) => Some(WriteLockGuard {
@@ -528,11 +654,10 @@ pub async fn execute_tool_call(
                     e.error_kind = Some("other".into());
                     e.error = Some(audit_truncate(&msg));
                 });
-                return wire_result(ToolCallResult::error_with_kind(
-                    ToolErrorKind::Conflict,
-                    msg,
-                    true,
-                ));
+                return present_for_caller(
+                    &origin,
+                    ToolCallResult::error_with_kind(ToolErrorKind::Conflict, msg, true),
+                );
             }
         }
     } else {
@@ -544,7 +669,7 @@ pub async fn execute_tool_call(
             e.ok = Some(false);
             e.error_kind = Some("canceled".into());
         });
-        return cancelled_tool_result(&tu_name);
+        return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
 
     let tool_clone = tool.clone();
@@ -558,7 +683,11 @@ pub async fn execute_tool_call(
         workspace_root: ctx.cwd.clone(),
         call_id: tu_id.clone(),
         cancel: execution_cancel.clone(),
-        output_limit: tool.max_result_size(),
+        output_limit: if matches!(origin.caller, ToolCaller::Code { .. }) {
+            usize::MAX
+        } else {
+            output::direct_output_limit(tool.as_ref())
+        },
         session_id: session_id.to_string(),
         session,
     };
@@ -566,10 +695,10 @@ pub async fn execute_tool_call(
     let tool_fut = AssertUnwindSafe(tool_clone.execute(input, execution)).catch_unwind();
     tokio::pin!(tool_fut);
 
-    // Wrap with timeout if the tool specifies one. On expiry, ask the tool to
-    // stop and wait for it to settle before returning the timeout result.
-    let raw_result = if let Some(secs) = tool.timeout() {
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(secs));
+    // The tool's own budget is a safety net. On expiry, ask the tool to stop
+    // and wait for it to settle before returning the timeout result.
+    let raw_result = if let Some(budget) = tool.timeout() {
+        let timeout = tokio::time::sleep(budget);
         tokio::pin!(timeout);
         tokio::select! {
             result = &mut tool_fut => result,
@@ -579,7 +708,8 @@ pub async fn execute_tool_call(
                 Ok(ToolCallResult::error_with_kind(
                     ToolErrorKind::Timeout,
                     format!(
-                        "tool '{name}' timed out after {secs} seconds. Retry with a narrower scope, or use bash run_in_background for long commands"
+                        "tool '{name}' timed out after {}. Retry with a narrower scope, or use bash run_in_background for long commands",
+                        timeout_budget_label(budget)
                     ),
                     true,
                 ))
@@ -594,7 +724,7 @@ pub async fn execute_tool_call(
     // post-write sync/feedback; replacing that result would hide committed
     // side effects and invite an unsafe retry.
     let mut panicked = false;
-    let mut output = match raw_result {
+    let output = match raw_result {
         Ok(r) => r,
         Err(panic_payload) => {
             let msg = panic_payload_to_string(panic_payload);
@@ -613,28 +743,24 @@ pub async fn execute_tool_call(
         }
     };
     let unknown = unknown_top_level_properties(&tool.schema(), &effective_input);
-    output = attach_unknown_param_warning(output, &unknown);
-    // Compose Error/Warning/Hint before truncation so the wire text is stable.
-    output = wire_result(output);
-    if tool.max_result_size() < usize::MAX {
-        output.content = Session::truncated_tool_result(&output.content, tool.max_result_size());
-    }
-
-    let output = match output::finalize_tool_call_result(output, data_root, spill_threshold) {
-        Ok(processed) => processed,
-        Err(e) => {
-            tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");
-            wire_result(ToolCallResult::error_with_kind(
-                ToolErrorKind::Io,
-                format!("output processing failed: {e}"),
-                false,
-            ))
-        }
-    };
     let output = if matches!(origin.caller, ToolCaller::Code { .. }) {
+        let output = attach_unknown_param_diagnostic(output, &unknown);
         enforce_code_output(tool.as_ref(), output)
     } else {
-        output
+        let mut output = attach_unknown_param_warning(output, &unknown);
+        output = wire_result(output);
+        output.content = output::cap_direct_content(tool.as_ref(), &output.content);
+        match output::finalize_tool_call_result(output, data_root, spill_threshold) {
+            Ok(processed) => processed,
+            Err(e) => {
+                tracing::error!(tool = %tu_name, error = %e, "tool output processing failed");
+                wire_result(ToolCallResult::error_with_kind(
+                    ToolErrorKind::Io,
+                    format!("output processing failed: {e}"),
+                    false,
+                ))
+            }
+        }
     };
     tracing::info!(
         tool = %tu_name,
@@ -708,11 +834,10 @@ fn surface_or_missing(
         _ => None,
     };
     let message = routed.unwrap_or_else(|| format!("tool '{name}' not found"));
-    wire_result(ToolCallResult::error_with_kind(
-        ToolErrorKind::NotFound,
-        message,
-        false,
-    ))
+    present_for_caller(
+        origin,
+        ToolCallResult::error_with_kind(ToolErrorKind::NotFound, message, false),
+    )
 }
 
 fn code_route_message(name: &str) -> String {
@@ -743,29 +868,17 @@ fn enforce_code_output(tool: &dyn Tool, result: ToolCallResult) -> ToolCallResul
     let Some(data) = result.data.as_ref() else {
         let reason = format!("tool '{name}' returned success without data");
         tracing::error!(tool = %name, "{reason}");
-        return wire_result(ToolCallResult::error_with_kind(
-            ToolErrorKind::Internal,
-            reason,
-            false,
-        ));
+        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
     };
     let Some(schema) = tool.data_schema() else {
         let reason = format!("tool '{name}' is on the code surface without a data schema");
         tracing::error!(tool = %name, "{reason}");
-        return wire_result(ToolCallResult::error_with_kind(
-            ToolErrorKind::Internal,
-            reason,
-            false,
-        ));
+        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
     };
     if let Err(error) = schema_validate(&schema, data) {
         let reason = format!("tool '{name}' returned data that does not match its schema: {error}");
         tracing::error!(tool = %name, "{reason}");
-        return wire_result(ToolCallResult::error_with_kind(
-            ToolErrorKind::Internal,
-            reason,
-            false,
-        ));
+        return ToolCallResult::error_with_kind(ToolErrorKind::Internal, reason, false);
     }
     result
 }
@@ -890,12 +1003,27 @@ mod tests {
     use crate::types::{MediaArtifact, MediaSource, ToolOutputPart};
 
     #[test]
-    fn cross_session_lock_is_write_edit_only() {
-        let file = vec![ResourceKey::File("/a".into())];
-        assert_eq!(cross_session_lock_keys("write", file.clone()), file);
-        assert_eq!(cross_session_lock_keys("edit", file.clone()), file);
-        assert!(cross_session_lock_keys("bash", file.clone()).is_empty());
-        assert!(cross_session_lock_keys("read", file).is_empty());
+    fn cross_session_lock_follows_effect_writes() {
+        let root = Path::new("/proj");
+        let mode = crate::workspace::ToolPathMode::All;
+        let write = crate::tools::write::WriteTool::new().effects(
+            &serde_json::json!({"path": "a.txt", "content": "x"}),
+            mode,
+            root,
+        );
+        let edit = crate::tools::edit::EditTool::new().effects(
+            &serde_json::json!({"path": "a.txt", "edits": []}),
+            mode,
+            root,
+        );
+        let read = crate::tools::read::ReadTool::default().effects(
+            &serde_json::json!({"path": "a.txt"}),
+            mode,
+            root,
+        );
+        assert!(!write.writes.is_empty());
+        assert_eq!(write.writes, edit.writes);
+        assert!(read.writes.is_empty());
     }
 
     #[test]
@@ -1041,8 +1169,8 @@ mod tests {
             fn description(&self, _ctx: &Context) -> String {
                 "blocks for a while".into()
             }
-            fn timeout(&self) -> Option<u64> {
-                Some(1)
+            fn timeout(&self) -> Option<Duration> {
+                Some(Duration::from_secs(1))
             }
             fn execute(
                 &self,
@@ -1155,7 +1283,7 @@ mod tests {
             fc(
                 "w1",
                 "write",
-                serde_json::json!({"file_path": "a.txt", "content": "x"}),
+                serde_json::json!({"path": "a.txt", "content": "x"}),
             ),
         ];
         let batches =

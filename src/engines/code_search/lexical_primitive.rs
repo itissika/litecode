@@ -43,6 +43,7 @@ mod tests {
             max_matches: 10,
             before_context: 0,
             after_context: 0,
+            min_line: 0,
         })
         .unwrap();
 
