@@ -813,7 +813,7 @@ mod tests {
             "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
         ));
         assert!(page.contains("declare class ToolError"));
-        assert!(!page.contains("ToolResult<"));
+        assert!(!page.contains("ToolResult"));
         assert!(!page.contains("status: \"partial\""));
         assert!(!page.contains("retryable: boolean"));
         assert!(page.contains("`undefined` is not JSON"));

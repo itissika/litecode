@@ -1542,25 +1542,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn glob_wrong_pattern_type_is_unified_error() {
-        let result =
-            run_schema_tool(Arc::new(crate::tools::glob::GlobTool), r#"{"pattern": 1}"#).await;
+    async fn direct_tool_wrong_parameter_type_is_unified_error() {
+        let result = run_schema_tool(direct_bash(), r#"{"command": 1}"#).await;
         assert_eq!(
             result.content,
-            "Error: invalid input for 'glob': parameter 'pattern' expected string, got integer 1"
+            "Error: invalid input for 'bash': parameter 'command' expected string, got integer 1"
         );
     }
 
     #[tokio::test]
     async fn invalid_json_arguments_are_not_swallowed() {
-        let result = run_schema_tool(Arc::new(crate::tools::glob::GlobTool), "{not json").await;
+        let result = run_schema_tool(direct_bash(), "{not json").await;
         assert!(
             result
                 .content
-                .starts_with("Error: invalid input for 'glob': arguments were not valid JSON"),
+                .starts_with("Error: invalid input for 'bash': arguments were not valid JSON"),
             "{}",
             result.content
         );
+    }
+
+    fn direct_bash() -> Arc<dyn Tool> {
+        Arc::new(crate::tools::bash::BashTool::new(Arc::new(
+            crate::terminal::TerminalHub::new(),
+        )))
     }
 
     struct CustomShapeTool;

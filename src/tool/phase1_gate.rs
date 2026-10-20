@@ -90,7 +90,6 @@ fn host(root: &Path) -> Arc<CodeToolHost> {
         "default",
         deny_permission_sink(),
         root.join(".litecode"),
-        usize::MAX,
         Arc::new(WorkspaceWriteLock::new()),
         None,
     ))

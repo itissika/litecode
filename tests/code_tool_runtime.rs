@@ -60,7 +60,6 @@ async fn code_tool_runs_real_bundle_with_data_only_results() {
         "default",
         deny_permission_sink(),
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     ));
@@ -267,7 +266,6 @@ async fn code_tool_parallelizes_safe_calls_and_rejects_a_second_argument() {
         "default",
         deny_permission_sink(),
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     ));
@@ -416,7 +414,6 @@ async fn code_tool_captures_logs_and_enforces_output_ledger() {
         "default",
         deny_permission_sink(),
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     ));
@@ -519,7 +516,6 @@ async fn code_tool_has_no_process_filesystem_or_module_surface() {
         "default",
         deny_permission_sink(),
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     ));

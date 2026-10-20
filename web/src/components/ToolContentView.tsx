@@ -48,9 +48,13 @@ export function ToolContentView({
   sessionId,
 }: ToolContentViewProps) {
   const resultContent = output ? functionCallOutputText(output) : undefined;
-  const resourceBusy = detectResourceBusy(
-    typeof resultContent === "string" ? resultContent : undefined,
-  );
+  // run_code shows its text as written, including a "resource busy" phrase.
+  const resourceBusy =
+    name === "run_code"
+      ? null
+      : detectResourceBusy(
+          typeof resultContent === "string" ? resultContent : undefined,
+        );
 
   if (resourceBusy) {
     return (

@@ -320,7 +320,6 @@ fn run_code_description_is_a_pure_function_of_the_code_surface() {
             "default",
             litecode::permission::deny_permission_sink(),
             PathBuf::from("."),
-            1024,
             process_write_lock(),
             None,
         )),
@@ -666,7 +665,6 @@ async fn code_transport_is_allowed_by_identity_not_by_name() {
         "default",
         litecode::permission::deny_permission_sink(),
         dir.path().to_path_buf(),
-        1024,
         process_write_lock(),
         None,
     ));

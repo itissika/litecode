@@ -54,7 +54,6 @@ impl PtcHarness {
             "default",
             deny_permission_sink(),
             data_root.clone(),
-            32_768,
             process_write_lock(),
             None,
         ));

@@ -399,7 +399,6 @@ async fn run_program(root: &Path, code: &str) -> ToolCallResult {
         "default",
         crate::permission::deny_permission_sink(),
         root.join(".litecode"),
-        usize::MAX,
         Arc::new(WorkspaceWriteLock::new()),
         None,
     ));
@@ -956,7 +955,6 @@ async fn nested_cancel(root: &Path) -> ToolCallResult {
         "default",
         Arc::clone(&ask) as Arc<dyn PermissionSink>,
         root.join(".litecode"),
-        usize::MAX,
         Arc::new(WorkspaceWriteLock::new()),
         None,
     ));

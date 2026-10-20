@@ -66,7 +66,6 @@ async fn run_program(root: &Path, code: &str) -> ToolCallResult {
         "default",
         deny_permission_sink(),
         root.join(".litecode"),
-        usize::MAX,
         Arc::new(WorkspaceWriteLock::new()),
         None,
     ));

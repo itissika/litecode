@@ -63,7 +63,6 @@ pub struct CodeToolHost {
     agent_name: String,
     permission_sink: Arc<dyn PermissionSink>,
     data_root: std::path::PathBuf,
-    spill_threshold: usize,
     write_lock: Arc<WorkspaceWriteLock>,
     session: Option<crate::session::SessionDataReader>,
     #[allow(clippy::type_complexity)]
@@ -72,14 +71,12 @@ pub struct CodeToolHost {
 }
 
 impl CodeToolHost {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         permission: PermissionEngine,
         ctx: Context,
         agent_name: impl Into<String>,
         permission_sink: Arc<dyn PermissionSink>,
         data_root: std::path::PathBuf,
-        spill_threshold: usize,
         write_lock: Arc<WorkspaceWriteLock>,
         session: Option<crate::session::SessionDataReader>,
     ) -> Self {
@@ -89,7 +86,6 @@ impl CodeToolHost {
             agent_name: agent_name.into(),
             permission_sink,
             data_root,
-            spill_threshold,
             write_lock,
             session,
             file_note: None,
@@ -134,7 +130,8 @@ impl CodeToolHost {
             sink,
             cancel,
             &self.data_root,
-            self.spill_threshold,
+            // Nested output stays in the program. The outer render owns the byte budget.
+            0,
             None,
             Arc::clone(&self.write_lock),
             self.session.clone(),
@@ -844,7 +841,7 @@ fn render_run_output(
             failure.kind == FailureKind::Cancelled
         });
     let presented = if keep_value {
-        match outcome.value.as_ref().map(present_program_value) {
+        match outcome.value.as_ref().map(present_returned_value) {
             Some(Ok(presented)) => Some(presented),
             Some(Err(message)) => {
                 let content = render::render_model_view(&run_report(
@@ -1057,7 +1054,7 @@ fn log_level_name(level: LogLevel) -> &'static str {
     }
 }
 
-fn present_program_value(value: &Json) -> Result<Value, String> {
+fn present_returned_value(value: &Json) -> Result<Value, String> {
     let raw = value.as_value();
     if let Value::String(text) = raw {
         return Ok(Value::String(text.clone()));

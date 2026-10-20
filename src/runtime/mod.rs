@@ -1005,7 +1005,6 @@ impl AgentRuntime {
                     params.agent_name.to_string(),
                     Arc::clone(&permission_sink),
                     data_root.clone(),
-                    spill_threshold,
                     Arc::clone(&write_lock),
                     Some(session_reader.clone()),
                 )

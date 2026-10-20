@@ -115,7 +115,6 @@ fn hosted_with(
         "default",
         sink,
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     );
@@ -767,7 +766,6 @@ fn hosted_unrestricted(root: &Path, sink: Arc<dyn PermissionSink>) -> Hosted {
         "default",
         sink,
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     );

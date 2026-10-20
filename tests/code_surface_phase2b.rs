@@ -112,7 +112,6 @@ fn hosted(
         "default",
         sink,
         data_root.clone(),
-        32_768,
         process_write_lock(),
         None,
     ));

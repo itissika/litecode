@@ -679,7 +679,6 @@ mod tests {
             "default",
             deny_permission_sink(),
             dir.path().join(".litecode"),
-            32_768,
             crate::tool::write_lock::process_write_lock(),
             None,
         ));
@@ -746,7 +745,6 @@ mod tests {
             "default",
             deny_permission_sink(),
             dir.path().join(".litecode"),
-            32_768,
             crate::tool::write_lock::process_write_lock(),
             None,
         ));
@@ -775,7 +773,6 @@ mod tests {
             "default",
             deny_permission_sink(),
             dir.path().join(".litecode"),
-            32_768,
             crate::tool::write_lock::process_write_lock(),
             None,
         ));
@@ -832,7 +829,6 @@ mod tests {
             "default",
             deny_permission_sink(),
             dir.path().join(".litecode"),
-            32_768,
             crate::tool::write_lock::process_write_lock(),
             None,
         ));
@@ -896,7 +892,6 @@ mod tests {
             "default",
             deny_permission_sink(),
             dir.path().join(".litecode"),
-            32_768,
             crate::tool::write_lock::process_write_lock(),
             None,
         ));
