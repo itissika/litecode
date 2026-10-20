@@ -67,21 +67,69 @@ impl Default for Limits {
     }
 }
 
+/// How a host failure is thrown into the program.
+///
+/// The runtime does not interpret tool codes. `Tool` is a host failure that
+/// carries a code; `Type` is a protocol failure; `Error` is a plain exception.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HostErrorKind {
+    Error,
+    Type,
+    Tool {
+        code: String,
+        details: Option<serde_json::Value>,
+        retryable: bool,
+    },
+}
+
 /// Error returned by a host function.
 ///
-/// The runtime does not interpret the message. The call is still "completed":
-/// the promise rejects, and the program may catch it.
-#[derive(Debug, Clone)]
+/// The call is still completed: the promise rejects, and the program may catch it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct HostError {
+    pub kind: HostErrorKind,
     pub message: String,
 }
 
 impl HostError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: HostErrorKind::Error,
             message: message.into(),
         }
     }
+
+    pub fn type_error(message: impl Into<String>) -> Self {
+        Self {
+            kind: HostErrorKind::Type,
+            message: message.into(),
+        }
+    }
+
+    pub fn tool(
+        code: impl Into<String>,
+        message: impl Into<String>,
+        details: Option<serde_json::Value>,
+        retryable: bool,
+    ) -> Self {
+        Self {
+            kind: HostErrorKind::Tool {
+                code: code.into(),
+                details,
+                retryable,
+            },
+            message: message.into(),
+        }
+    }
+}
+
+/// Identity of an uncaught `ToolError`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolErrorInfo {
+    pub code: String,
+    pub tool: String,
+    pub seq: u64,
+    pub details: Option<serde_json::Value>,
 }
 
 pub type HostFuture = BoxFuture<'static, Result<serde_json::Value, HostError>>;
@@ -227,7 +275,7 @@ pub struct SourceLocation {
     pub column: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Failure {
     pub kind: FailureKind,
     pub resource: Option<ResourceKind>,
@@ -236,6 +284,10 @@ pub struct Failure {
     pub location: Option<SourceLocation>,
     /// The syntax site was outside the user's source.
     pub at_end_of_input: bool,
+    /// Set when the program let a `ToolError` escape.
+    pub tool_error: Option<ToolErrorInfo>,
+    /// Set when the program let a `TypeError` escape.
+    pub uncaught_type_error: bool,
 }
 
 impl Failure {
@@ -252,6 +304,8 @@ impl Failure {
             resource,
             location: None,
             at_end_of_input: false,
+            tool_error: None,
+            uncaught_type_error: false,
         }
     }
 
@@ -360,7 +414,8 @@ fn program_js_site(text: &str) -> Option<(u32, u32)> {
 ///
 /// `value` is kept when the program has returned. `failure` coexists with
 /// `value` only for [`FailureKind::Cancelled`] (the user cancelled after the
-/// return). Other close events after a return become warnings on `logs`.
+/// return). A later [`FailureKind::Timeout`] or [`FailureKind::Internal`]
+/// during drain is a warning on `logs`.
 ///
 /// `value` is [`Json`], so dropping, cloning, comparing, or debugging an
 /// outcome does not overflow the stack on a deep tree.
@@ -427,7 +482,7 @@ fn validate(request: &ExecuteRequest) -> Result<(), String> {
         if !is_ident(&namespace.name) {
             return Err(format!("invalid namespace '{}'", namespace.name));
         }
-        if matches!(namespace.name.as_str(), "libs" | "console") {
+        if matches!(namespace.name.as_str(), "libs" | "console" | "ToolError") {
             return Err(format!("'{}' is reserved", namespace.name));
         }
         if !namespaces.insert(namespace.name.as_str()) {

@@ -10,7 +10,6 @@ use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
 use crate::config::schema::GlobalSettings;
 use crate::context_pipeline::Context;
 use crate::permission::{PermissionEngine, deny_permission_sink};
-use crate::tool::outcome::OutcomeStatus;
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code::{CodeTool, CodeToolHost};
@@ -239,7 +238,6 @@ fn phase3_edit_ten_blocks_one_failure_is_partial() {
         dir.path(),
         json!({"path": "many.txt", "edits": edits}),
     );
-    assert_eq!(result.outcome_status, Some(OutcomeStatus::Partial));
     assert!(result.error.is_none());
     let data = result.data.unwrap();
     assert_eq!(data["applied"], 9);
@@ -284,7 +282,7 @@ fn phase3_edit_all_fail_keeps_file_and_exposes_blocks() {
             ]
         }),
     );
-    assert_eq!(result.outcome_status, Some(OutcomeStatus::Error));
+    assert!(result.error.is_some());
     assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
     assert!(result.data.is_none());
     let blocks = result.error_details.as_ref().unwrap()["blocks"]
@@ -342,7 +340,8 @@ fn phase3_edit_failure_codes_are_stable() {
             ]
         }),
     );
-    assert_eq!(chained.outcome_status, Some(OutcomeStatus::Partial));
+    assert!(chained.error.is_none());
+    assert_eq!(chained.data.as_ref().unwrap()["failed"], 1);
     assert_eq!(block_code(&chained, 2), "chained");
     assert_eq!(std::fs::read_to_string(root.join("note.txt")).unwrap(), "alpha\nBETA\nalpha\n");
 

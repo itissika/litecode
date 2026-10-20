@@ -143,7 +143,7 @@ const MATRIX: &[Row] = &[
     Row {
         tool: "edit",
         scenario: "10 块 1 失败",
-        status: "partial",
+        status: "ok",
         data: "file/blocks/applied/failed",
         page: "—",
         diagnostics: "edit_block_failed",
@@ -170,7 +170,7 @@ const MATRIX: &[Row] = &[
     Row {
         tool: "edit",
         scenario: "LSP 错误",
-        status: "ok/partial",
+        status: "ok",
         data: "file/blocks",
         page: "—",
         diagnostics: "lsp_error",
@@ -248,7 +248,6 @@ use crate::permission::{
     AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink, ToolPolicy,
 };
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
-use crate::tool::outcome::OutcomeStatus;
 use crate::tool::trait_::{Tool, ToolExecutionContext};
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::tools::code::{CodeTool, CodeToolHost};
@@ -359,16 +358,15 @@ fn assert_run_schema(_tool: &CodeTool, result: &ToolCallResult) {
 }
 
 fn status_of(result: &ToolCallResult) -> &'static str {
-    if result.error.is_some()
-        || result.level == ToolSignalLevel::Error
-        || result.outcome_status == Some(OutcomeStatus::Error)
-    {
+    if result.error.is_some() || result.level == ToolSignalLevel::Error {
         "error"
-    } else if result.outcome_status == Some(OutcomeStatus::Partial) {
-        "partial"
     } else {
         "ok"
     }
+}
+
+fn data_page<'a>(result: &'a ToolCallResult) -> Option<&'a Value> {
+    result.data.as_ref().and_then(|data| data.get("page"))
 }
 
 fn assert_cells(result: &ToolCallResult, row: &Row) {
@@ -420,20 +418,26 @@ fn assert_cells(result: &ToolCallResult, row: &Row) {
     match row.page {
         "—" => {}
         "完成" => {
-            let page = result.page.as_ref().expect(&scene);
-            assert!(!page.has_more, "{scene}");
-            assert!(page.next.is_none(), "{scene}");
+            let page = data_page(result).expect(&scene);
+            assert_eq!(page["has_more"], false, "{scene}");
+            assert!(
+                page.get("next").is_none_or(|next| next.is_null()),
+                "{scene}"
+            );
         }
         "has_more" => {
-            assert!(result.page.is_some(), "{scene}");
+            assert!(data_page(result).is_some(), "{scene}");
         }
         "has_more=true,next" | "has_more=true" | "next" => {
-            let page = result.page.as_ref().expect(&scene);
+            let page = data_page(result).expect(&scene);
             if row.page.contains("has_more=true") {
-                assert!(page.has_more, "{scene}");
+                assert_eq!(page["has_more"], true, "{scene}");
             }
             if row.page.contains("next") {
-                assert!(page.next.as_ref().is_some_and(|next| !next.is_empty()), "{scene}");
+                assert!(
+                    page["next"].as_str().is_some_and(|next| !next.is_empty()),
+                    "{scene}"
+                );
             }
         }
         other => panic!("{scene}: unhandled page cell {other}"),
@@ -622,7 +626,7 @@ async fn live_row(row: &Row) {
             write_file(root, "note.txt", "alpha\n");
             run_program(
                 root,
-                r#"const page = await tools.read({ path: "note.txt" }); return page.data.file.hash;"#,
+                r#"const page = await tools.read({ path: "note.txt" }); return page.file.hash;"#,
             )
             .await
         }
@@ -638,7 +642,7 @@ async fn live_row(row: &Row) {
                     { old_string: "missing", new_string: "nope" }
                   ]
                 });
-                return edited.status;
+                return edited.failed;
                 "#,
             )
             .await

@@ -227,7 +227,7 @@ async fn run_code_calls_match_the_text_ledger_and_logs_keep_level() {
         const out = await tools.read({ path: "a.txt" });
         console.info("seen");
         console.warn("careful");
-        return out.data.lines[0].text;
+        return out.lines[0].text;
         "#,
     )
     .await;
@@ -243,4 +243,23 @@ async fn run_code_calls_match_the_text_ledger_and_logs_keep_level() {
     assert!(result.content.contains("[warn] careful"), "{}", result.content);
     assert!(result.content.contains("hello"), "{}", result.content);
     assert!(!result.content.contains("@@run_code_data"), "{}", result.content);
+}
+
+#[tokio::test]
+async fn uncaught_tool_error_keeps_the_outer_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run_program(
+        dir.path(),
+        r#"await tools.read({ path: "missing.txt" });"#,
+    )
+    .await;
+    assert_eq!(result.error_code.as_deref(), Some("not_found"));
+    assert!(
+        result
+            .content
+            .contains("uncaught ToolError not_found from call #1 read path=missing.txt"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains("not_found:"), "{}", result.content);
 }

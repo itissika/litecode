@@ -49,7 +49,7 @@ impl Tool for GlobTool {
                 },
                 "cursor": {
                     "type": "string",
-                    "description": "Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query returns stale_cursor."
+                    "description": "Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor."
                 }
             },
             "required": ["pattern"]
@@ -366,7 +366,7 @@ fn finish_glob(
         "paths": page_hits,
         "page": page,
     });
-    let mut result = crate::tool::outcome::ok_data(data, Some(page));
+    let mut result = crate::tool::outcome::ok_data(data);
     if let Some(warning) = pattern_warning {
         let mut message = warning.to_string();
         message.push_str(

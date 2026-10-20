@@ -1,21 +1,14 @@
 //! Code-surface result contract.
 //!
 //! `Tool::execute` still returns [`ToolCallResult`] because direct tools share
-//! that pipeline. Code-surface tools project this envelope onto it. The program
-//! sees [`program_value`], not markdown.
+//! that pipeline. A program sees [`program_result`]: success is the tool's
+//! data, and a domain failure is a [`crate::ptc::HostError`].
 
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
+use crate::ptc::HostError;
 use crate::types::{ToolCallResult, ToolErrorKind, ToolSignalLevel};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum OutcomeStatus {
-    Ok,
-    Partial,
-    Error,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,30 +82,16 @@ pub struct FileRef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToolOutcome<T> {
-    pub status: OutcomeStatus,
     pub data: Option<T>,
     pub diagnostics: Vec<Diagnostic>,
-    pub page: Option<Page>,
     pub error: Option<ToolError>,
 }
 
 impl<T> ToolOutcome<T> {
     pub fn ok(data: T) -> Self {
         Self {
-            status: OutcomeStatus::Ok,
             data: Some(data),
             diagnostics: Vec::new(),
-            page: None,
-            error: None,
-        }
-    }
-
-    pub fn partial(data: T) -> Self {
-        Self {
-            status: OutcomeStatus::Partial,
-            data: Some(data),
-            diagnostics: Vec::new(),
-            page: None,
             error: None,
         }
     }
@@ -124,10 +103,8 @@ impl<T> ToolOutcome<T> {
     ) -> Self {
         let message = message.into();
         Self {
-            status: OutcomeStatus::Error,
             data: None,
             diagnostics: Vec::new(),
-            page: None,
             error: Some(ToolError {
                 code: code.into(),
                 message,
@@ -148,11 +125,6 @@ impl<T> ToolOutcome<T> {
         }
         self
     }
-
-    pub fn with_page(mut self, page: Page) -> Self {
-        self.page = Some(page);
-        self
-    }
 }
 
 impl<T: Serialize> ToolOutcome<T> {
@@ -160,42 +132,28 @@ impl<T: Serialize> ToolOutcome<T> {
     pub fn into_call_result(self, content: impl Into<String>) -> ToolCallResult {
         let content = content.into();
         let ToolOutcome {
-            status,
             data,
             diagnostics,
-            page,
             error,
         } = self;
-        let mut result = match status {
-            OutcomeStatus::Error => {
-                let error = error.unwrap_or(ToolError {
-                    code: "internal".into(),
-                    message: content.clone(),
-                    details: None,
-                    retryable: false,
-                });
-                let mut result = ToolCallResult::error_with_kind(
-                    kind_for_code(&error.code),
-                    error.message,
-                    error.retryable,
-                );
-                result.content = content;
-                result.error_code = Some(error.code);
-                result.error_details = error.details;
-                result.outcome_status = Some(OutcomeStatus::Error);
-                result
+        let mut result = if let Some(error) = error {
+            let mut result = ToolCallResult::error_with_kind(
+                kind_for_code(&error.code),
+                error.message,
+                error.retryable,
+            );
+            result.content = content;
+            result.error_code = Some(error.code);
+            result.error_details = error.details;
+            result
+        } else {
+            let mut result = ToolCallResult::ok(content);
+            if let Some(data) = data {
+                result.data = serde_json::to_value(data).ok();
             }
-            OutcomeStatus::Ok | OutcomeStatus::Partial => {
-                let mut result = ToolCallResult::ok(content);
-                if let Some(data) = data {
-                    result.data = serde_json::to_value(data).ok();
-                }
-                result.outcome_status = Some(status);
-                result
-            }
+            result
         };
         result.diagnostics = diagnostics;
-        result.page = page;
         result
     }
 }
@@ -217,11 +175,9 @@ pub fn kind_for_code(code: &str) -> ToolErrorKind {
 }
 
 /// Success result whose facts live in `data`. `content` stays empty.
-pub fn ok_data(data: impl Serialize, page: Option<Page>) -> ToolCallResult {
+pub fn ok_data(data: impl Serialize) -> ToolCallResult {
     let mut result = ToolCallResult::ok(String::new());
     result.data = Some(serde_json::to_value(data).unwrap_or(Value::Null));
-    result.page = page;
-    result.outcome_status = Some(OutcomeStatus::Ok);
     result
 }
 
@@ -232,90 +188,105 @@ pub fn error_kind_code(kind: ToolErrorKind) -> String {
         .unwrap_or_else(|| "internal".into())
 }
 
-/// JSON object the code program receives.
-pub fn program_value(result: &ToolCallResult) -> Value {
-    let status = if result.error.is_some()
-        || result.level == ToolSignalLevel::Error
-        || result.outcome_status == Some(OutcomeStatus::Error)
-    {
-        "error"
-    } else if result.outcome_status == Some(OutcomeStatus::Partial) {
-        "partial"
-    } else {
-        "ok"
-    };
-    let error = if status == "error" {
-        contract_error(result)
-    } else {
-        None
-    };
-    let data = if status == "error" {
-        Value::Null
-    } else {
-        result.data.clone().unwrap_or(Value::Null)
-    };
-    let mut value = json!({
-        "status": status,
-        "data": data,
-        "diagnostics": result.diagnostics,
-        "error": error,
-    });
-    if let Some(page) = &result.page {
-        value["page"] = serde_json::to_value(page).unwrap_or(Value::Null);
+/// Data the program receives, or the `ToolError` it should see.
+///
+/// `retryable` is true only when the code is `conflict` or `timeout` and the
+/// pipeline marked the error retryable.
+pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
+    let failed = result.error.is_some() || result.level == ToolSignalLevel::Error;
+    if !failed {
+        return Ok(result.data.clone().unwrap_or(Value::Null));
     }
-    value
-}
-
-fn contract_error(result: &ToolCallResult) -> Option<Value> {
-    let error = result.error.as_ref()?;
-    let code = result
-        .error_code
-        .clone()
-        .unwrap_or_else(|| error_kind_code(error.kind));
-    let mut value = json!({
-        "code": code,
-        "message": error.message,
-        "retryable": error.retryable,
+    let code = result.error_code.clone().unwrap_or_else(|| {
+        result
+            .error
+            .as_ref()
+            .map(|error| error_kind_code(error.kind))
+            .unwrap_or_else(|| "internal".into())
     });
-    if let Some(details) = &result.error_details {
-        value["details"] = details.clone();
-    }
-    Some(value)
+    let message = result
+        .error
+        .as_ref()
+        .map(|error| error.message.clone())
+        .filter(|message| !message.is_empty())
+        .unwrap_or_else(|| result.content.clone());
+    let retryable = matches!(code.as_str(), "conflict" | "timeout")
+        && result
+            .error
+            .as_ref()
+            .is_some_and(|error| error.retryable);
+    Err(HostError::tool(
+        code,
+        message,
+        result.error_details.clone(),
+        retryable,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ptc::HostErrorKind;
+    use serde_json::json;
 
     #[test]
-    fn envelope_keeps_partial_data_and_diagnostics() {
-        let outcome = ToolOutcome::partial(json!({"applied": 1}))
-            .with_diagnostic(
-                Diagnostic::warning("edit_block_failed", "block 1 failed")
-                    .with_details(json!({"index": 1})),
-            );
+    fn success_resolves_data_and_keeps_diagnostics_off_the_value() {
+        let outcome = ToolOutcome::ok(json!({"applied": 9, "failed": 1})).with_diagnostic(
+            Diagnostic::warning("edit_block_failed", "block 1 failed")
+                .with_details(json!({"index": 1})),
+        );
         let result = outcome.into_call_result("body");
-        let value = program_value(&result);
-        assert_eq!(value["status"], "partial");
-        assert_eq!(value["data"]["applied"], 1);
-        assert!(value["error"].is_null());
-        assert_eq!(value["diagnostics"][0]["code"], "edit_block_failed");
-        assert_eq!(value["diagnostics"][0]["severity"], "warning");
+        let value = program_result(&result).expect("success");
+        assert_eq!(value["applied"], 9);
+        assert_eq!(value["failed"], 1);
+        assert!(value.get("status").is_none());
+        assert_eq!(result.diagnostics[0].code, "edit_block_failed");
     }
 
     #[test]
-    fn invalid_regex_error_keeps_code_and_details() {
+    fn invalid_regex_rejects_with_code_and_details_and_is_not_retryable() {
         let outcome = ToolOutcome::<serde_json::Value>::failure("invalid_regex", "bad pattern", true)
-            .with_error_details(
-            json!({"pattern": "(", "regex_error": "unclosed"}),
-        );
+            .with_error_details(json!({"pattern": "(", "regex_error": "unclosed"}));
         let result = outcome.into_call_result("bad pattern");
-        let value = program_value(&result);
-        assert_eq!(value["status"], "error");
-        assert!(value["data"].is_null());
-        assert_eq!(value["error"]["code"], "invalid_regex");
-        assert_eq!(value["error"]["retryable"], true);
-        assert_eq!(value["error"]["details"]["pattern"], "(");
+        let error = program_result(&result).expect_err("domain failure");
+        let HostErrorKind::Tool {
+            code,
+            details,
+            retryable,
+        } = error.kind
+        else {
+            panic!("expected a tool error, got {error:?}");
+        };
+        assert_eq!(code, "invalid_regex");
+        assert!(!retryable);
+        assert_eq!(error.message, "bad pattern");
+        assert_eq!(details.unwrap()["pattern"], "(");
+    }
+
+    #[test]
+    fn retryable_is_only_conflict_and_timeout() {
+        let timeout = ToolOutcome::<serde_json::Value>::failure("timeout", "slow", true)
+            .into_call_result("slow");
+        let conflict = ToolOutcome::<serde_json::Value>::failure("conflict", "busy", true)
+            .into_call_result("busy");
+        let stale = ToolOutcome::<serde_json::Value>::failure("stale", "changed", true)
+            .into_call_result("changed");
+        let quiet = ToolOutcome::<serde_json::Value>::failure("timeout", "slow", false)
+            .into_call_result("slow");
+        assert!(tool_retryable(&timeout));
+        assert!(tool_retryable(&conflict));
+        assert!(!tool_retryable(&stale));
+        assert!(!tool_retryable(&quiet));
+    }
+
+    fn tool_retryable(result: &ToolCallResult) -> bool {
+        match program_result(result) {
+            Err(error) => matches!(
+                error.kind,
+                HostErrorKind::Tool { retryable: true, .. }
+            ),
+            Ok(_) => false,
+        }
     }
 
     #[test]

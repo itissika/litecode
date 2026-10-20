@@ -102,7 +102,7 @@ impl Tool for GrepTool {
                 },
                 "cursor": {
                     "type": "string",
-                    "description": "Continuation from data.page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query returns stale_cursor."
+                    "description": "Continuation from data.page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor."
                 },
                 "limit": {
                     "type": "integer",
@@ -365,7 +365,7 @@ fn invalid_regex_result(pattern: &str, error: &regex::Error) -> ToolCallResult {
         "suggested_pattern": regex::escape(pattern),
     });
     let message = format!("invalid regular expression: {error}");
-    crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_regex", message.clone(), true)
+    crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_regex", message.clone(), false)
         .with_error_details(details)
         .into_call_result(message)
 }
@@ -975,7 +975,7 @@ fn finish_result(
     if let Some(reason) = reason {
         data["reason"] = serde_json::json!(reason);
     }
-    let mut result = crate::tool::outcome::ok_data(data, Some(page));
+    let mut result = crate::tool::outcome::ok_data(data);
     if let Some(diagnostic) = diagnostic {
         result.diagnostics.push(diagnostic);
     }
@@ -1470,7 +1470,7 @@ mod tests {
     fn assert_invalid_regex(pattern: &str, result: &ToolCallResult) {
         assert_eq!(result.error_code.as_deref(), Some("invalid_regex"));
         assert!(result.data.is_none());
-        assert!(result.error.as_ref().is_some_and(|error| error.retryable));
+        assert!(result.error.as_ref().is_some_and(|error| !error.retryable));
         let details = result.error_details.as_ref().expect("details");
         assert_eq!(details["pattern"], pattern);
         assert!(details["regex_error"].as_str().is_some_and(|text| !text.is_empty()));

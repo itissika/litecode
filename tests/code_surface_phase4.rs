@@ -219,7 +219,9 @@ async fn approval_pending_does_not_preclaim_the_same_path() {
     );
     let cancel = CancellationToken::new();
     let script = r#"
-await tools.write({ path: "same.txt", content: "from-nested" });
+try {
+  await tools.write({ path: "same.txt", content: "from-nested" });
+} catch (e) {}
 return "done";
 "#;
     let run = tokio::spawn(async move {
@@ -241,13 +243,15 @@ return "done";
         litecode::permission::deny_permission_sink(),
     );
     let other = r#"
-const read = await tools.read({ path: "same.txt" });
-if (read.status === "ok") {
+try {
+  await tools.read({ path: "same.txt" });
   throw new Error("read saw a file before the pending write was approved");
+} catch (e) {
+  if (!(e instanceof ToolError)) throw e;
 }
 const write = await tools.write({ path: "same.txt", content: "from-direct" });
-if (write.status !== "ok") {
-  throw new Error("write failed while approval was pending: " + JSON.stringify(write));
+if (!write.file) {
+  throw new Error("write failed while approval was pending");
 }
 return "wrote";
 "#;
@@ -405,8 +409,15 @@ async fn a_second_binding_argument_is_invalid_input_and_does_not_write() {
         litecode::permission::deny_permission_sink(),
     );
     let script = r#"
-const denied = await tools.write({ path: "extra.txt", content: "no" }, { timeout_ms: 1 });
-return { status: denied.status, code: denied.error && denied.error.code };
+let status = "ok";
+let code = "";
+try {
+  await tools.write({ path: "extra.txt", content: "no" }, { timeout_ms: 1 });
+} catch (e) {
+  status = "error";
+  code = e instanceof ToolError ? e.code : e.name;
+}
+return { status, code };
 "#;
     let result = execute(
         &hosted,
@@ -420,7 +431,7 @@ return { status: denied.status, code: denied.error && denied.error.code };
     assert!(result.error.is_none(), "{}", result.content);
     let value = run_code_result(&result.content);
     assert_eq!(value["status"], "error");
-    assert_eq!(value["code"], "invalid_input");
+    assert_eq!(value["code"], "TypeError");
     let ledger = result
         .content
         .lines()

@@ -180,6 +180,10 @@ async fn code_mode_tool_list_prefix_stays_stable_across_the_turn() {
         .collect();
     let sdk = descriptions[0];
     assert!(sdk.contains("declare const tools"), "{sdk}");
+    assert!(sdk.contains("declare class ToolError"), "{sdk}");
+    assert!(!sdk.contains("ToolResult<"), "{sdk}");
+    assert!(!sdk.contains("status: \"partial\""), "{sdk}");
+    assert!(!sdk.contains("retryable: boolean"), "{sdk}");
     assert!(sdk.contains("[\"edit\"]"), "{sdk}");
     assert!(sdk.contains("[\"write\"]"), "{sdk}");
     assert!(sdk.contains("[\"read\"]"), "{sdk}");

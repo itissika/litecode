@@ -93,8 +93,6 @@ pub fn finalize_tool_call_result(
         appendix: result.appendix,
         composed: result.composed,
         diagnostics: result.diagnostics,
-        page: result.page,
-        outcome_status: result.outcome_status,
         error_code: result.error_code,
         error_details: result.error_details,
     })

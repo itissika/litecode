@@ -38,6 +38,16 @@ pub(super) struct LedgerSnap {
     pub session_read: bool,
 }
 
+/// An uncaught `ToolError`, used for the header and the failure section.
+pub(super) struct UncaughtToolError {
+    pub seq: u64,
+    pub tool: String,
+    pub code: String,
+    pub message: String,
+    pub summary: String,
+    pub details: Option<Value>,
+}
+
 /// Facts the renderer needs. Built from the in-memory execution report.
 pub(super) struct RunReport {
     pub logs: Vec<(String, String)>,
@@ -60,6 +70,8 @@ pub(super) struct RunReport {
     pub failure_at_end: bool,
     pub failure_stack: Option<String>,
     pub source: String,
+    pub tool_error: Option<UncaughtToolError>,
+    pub uncaught_type_error: bool,
 }
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
@@ -190,6 +202,17 @@ fn unsettled_total(report: &RunReport) -> usize {
 }
 
 fn header_line(report: &RunReport) -> String {
+    if let Some(error) = &report.tool_error {
+        let mut line = format!(
+            "run_code failed: uncaught ToolError {} from call #{} {} {}",
+            error.code, error.seq, error.tool, error.summary
+        );
+        if let Some(rejected) = rejected_clause(report) {
+            line.push_str(" · ");
+            line.push_str(&rejected);
+        }
+        return line;
+    }
     let total = call_total(report);
     let Some(kind) = report.failure_kind else {
         let mut line = format!("run_code ok · {total} calls");
@@ -204,7 +227,11 @@ fn header_line(report: &RunReport) -> String {
         }
         return line;
     };
-    let label = failure_label(kind, report);
+    let label = if report.uncaught_type_error {
+        "uncaught TypeError".to_string()
+    } else {
+        failure_label(kind, report)
+    };
     let unsettled = unsettled_total(report);
     let finished = total.saturating_sub(unsettled);
     format!("run_code failed: {label} · {finished}/{total} calls finished, {unsettled} unsettled")
@@ -242,10 +269,7 @@ fn failure_label(kind: FailureKind, report: &RunReport) -> String {
 fn rejected_clause(report: &RunReport) -> Option<String> {
     if !report.error_counts.is_empty() {
         let total: usize = report.error_counts.values().copied().sum();
-        return Some(format!(
-            "{total} rejected, handled by the program ({})",
-            format_counts(&report.error_counts)
-        ));
+        return Some(rejection_sentence(report, total, &format_counts(&report.error_counts)));
     }
     if report.calls_omitted > 0 {
         return None;
@@ -268,9 +292,15 @@ fn rejected_clause(report: &RunReport) -> Option<String> {
         .map(|(code, count)| format!("{code}×{count}"))
         .collect::<Vec<_>>()
         .join(", ");
-    Some(format!(
-        "{total} rejected, handled by the program ({breakdown})"
-    ))
+    Some(rejection_sentence(report, total, &breakdown))
+}
+
+fn rejection_sentence(report: &RunReport, total: usize, breakdown: &str) -> String {
+    if report.tool_error.is_some() {
+        format!("{total} rejected ({breakdown}), 1 uncaught")
+    } else {
+        format!("{total} rejected ({breakdown}), handled by the program")
+    }
 }
 
 fn error_state_code(state: &str) -> Option<&str> {
@@ -298,6 +328,17 @@ fn format_counts(counts: &BTreeMap<String, usize>) -> String {
 }
 
 fn render_failure(report: &RunReport) -> Option<String> {
+    if let Some(error) = &report.tool_error {
+        let mut body = format!("{}: {}", error.code, error.message);
+        if let Some(details) = &error.details {
+            let encoded = serde_json::to_string(details).unwrap_or_default();
+            if !encoded.is_empty() && encoded != "null" {
+                body.push(' ');
+                body.push_str(prefix_utf8(&encoded, 300));
+            }
+        }
+        return nonempty(explained_cut(&body, FAILURE_CAP));
+    }
     let mut parts = Vec::new();
     if let Some(message) = report.failure_text.as_deref().filter(|text| !text.is_empty()) {
         let message = prefix_utf8(message, 1024);
@@ -352,16 +393,16 @@ fn present_stack(stack: &str) -> String {
     stack
         .lines()
         .filter(|line| !line.trim().is_empty())
+        .filter_map(adjust_program_frame)
         .take(8)
-        .map(adjust_program_frame)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-fn adjust_program_frame(line: &str) -> String {
+fn adjust_program_frame(line: &str) -> Option<String> {
     let marker = "program.js:";
     let Some(start) = line.find(marker) else {
-        return line.to_string();
+        return Some(line.to_string());
     };
     let digits_at = start + marker.len();
     let digits = line[digits_at..]
@@ -369,36 +410,65 @@ fn adjust_program_frame(line: &str) -> String {
         .take_while(u8::is_ascii_digit)
         .count();
     if digits == 0 {
-        return line.to_string();
+        return Some(line.to_string());
     }
     let Ok(number) = line[digits_at..digits_at + digits].parse::<u32>() else {
-        return line.to_string();
+        return Some(line.to_string());
     };
-    let adjusted = number.saturating_sub(1).max(1);
-    format!(
+    let adjusted = number.saturating_sub(1);
+    if adjusted == 0 {
+        return None;
+    }
+    Some(format!(
         "{}{adjusted}{}",
         &line[..digits_at],
         &line[digits_at + digits..]
-    )
+    ))
 }
 
 fn render_error_details(report: &RunReport) -> Option<String> {
-    let denied: Vec<&LedgerSnap> = report
-        .calls
-        .iter()
-        .filter(|call| call.error_code.as_deref() == Some("permission_denied"))
-        .collect();
-    if denied.is_empty() {
-        return None;
+    let uncaught = report.tool_error.as_ref().map(|error| error.seq);
+    let mut picked: Vec<&LedgerSnap> = Vec::new();
+    if let Some(seq) = uncaught
+        && let Some(call) = report.calls.iter().find(|call| call.seq == seq)
+    {
+        picked.push(call);
     }
-    let shown = denied.len().min(ERROR_DETAIL_LIMIT);
+    for call in &report.calls {
+        if Some(call.seq) == uncaught {
+            continue;
+        }
+        if call.error_code.as_deref() == Some("permission_denied")
+            || call.state == "error:permission_denied"
+        {
+            picked.push(call);
+        }
+    }
     let mut lines = Vec::new();
-    for call in denied.iter().take(shown) {
-        lines.push(format_error_detail(call));
+    if picked.is_empty() {
+        if let Some(error) = &report.tool_error {
+            let summary = if error.summary.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", error.summary)
+            };
+            lines.push(format!(
+                "#{} {}{}: {}: {}",
+                error.seq, error.tool, summary, error.code, error.message
+            ));
+        }
+    } else {
+        let shown = picked.len().min(ERROR_DETAIL_LIMIT);
+        for call in picked.iter().take(shown) {
+            lines.push(format_error_detail(call));
+        }
+        let hidden = picked.len() - shown;
+        if hidden > 0 {
+            lines.push(format!("… {hidden} more errors not listed"));
+        }
     }
-    let hidden = denied.len() - shown;
-    if hidden > 0 {
-        lines.push(format!("… {hidden} more errors not listed"));
+    if lines.is_empty() {
+        return None;
     }
     nonempty(explained_cut(&lines.join("\n"), ERRORS_CAP))
 }
@@ -818,6 +888,8 @@ mod tests {
             failure_at_end: false,
             failure_stack: None,
             source: String::new(),
+            tool_error: None,
+            uncaught_type_error: false,
         }
     }
 
@@ -886,6 +958,12 @@ mod tests {
     }
 
     #[test]
+    fn wrapper_frame_on_line_zero_is_dropped() {
+        let stack = "at program.js:1:1\n    at boom (program.js:3:5)";
+        assert_eq!(present_stack(stack), "    at boom (program.js:2:5)");
+    }
+
+    #[test]
     fn success_header_counts_rejections_only_when_the_ledger_is_complete() {
         let mut report = report();
         report.calls = vec![
@@ -896,7 +974,7 @@ mod tests {
         let text = render_model_view(&report);
         assert!(
             text.starts_with(
-                "run_code ok · 3 calls (grep×2, read×1) · 2 rejected, handled by the program (not_found×2)"
+                "run_code ok · 3 calls (grep×2, read×1) · 2 rejected (not_found×2), handled by the program"
             ),
             "{text}"
         );

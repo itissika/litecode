@@ -15,8 +15,14 @@ use crate::tool::trait_::Tool;
 
 const PRELUDE: &str = r#"`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
-Each tool returns a `ToolResult`. `status: "ok"` and `status: "partial"` include `data`. `partial` means some of the work was committed; `diagnostics` name what failed. `status: "error"` has `data: null` and `error.code`. Non-fatal signals are `diagnostics`, not a separate status. Runtime or protocol failures reject. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
+A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `edit_failed`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+Permission denial is a catchable `ToolError` whose `code` is `permission_denied`.
+An edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.
+Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
+LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
+The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
+Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
 
 ```ts
 "#;
@@ -206,10 +212,7 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
     let mut out = String::new();
     out.push_str(PRELUDE);
     out.push_str(
-        "type Diagnostic = {\n  code: string;\n  severity: \"info\" | \"warning\";\n  message: string;\n  details?: unknown;\n};\n\
-         type ToolError = {\n  code: string;\n  message: string;\n  details?: unknown;\n  retryable: boolean;\n};\n\
-         type Page = {\n  has_more: boolean;\n  next: string | null;\n  total?: number;\n};\n\
-         type ToolResult<T> =\n  | { status: \"ok\" | \"partial\"; data: T; diagnostics: Diagnostic[]; page?: Page; error: null }\n  | { status: \"error\"; data: null; diagnostics: Diagnostic[]; page?: Page; error: ToolError };\n\n\
+        "declare class ToolError extends Error {\n  readonly name: \"ToolError\";\n  readonly code: string;\n  readonly details?: unknown;\n  readonly retryable?: true;\n  readonly tool: string;\n  readonly seq: number;\n}\n\n\
          /** Whole JSON number. The host rejects fractional values. */\n\
          type Integer = number;\n\n",
     );
@@ -238,7 +241,7 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         let key = serde_json::to_string(&declaration.name)
             .map_err(|error| format!("serialize tool name: {error}"))?;
         out.push_str(&format!(
-            "  readonly [{key}]: (args: {}) => Promise<ToolResult<{}>>;\n",
+            "  readonly [{key}]: (args: {}) => Promise<{}>;\n",
             declaration.input_type, declaration.data_type
         ));
     }
@@ -775,7 +778,7 @@ mod tests {
         assert!(page.contains("bytes: Integer;"));
         assert!(
             page.contains(
-                "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
+                "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
             )
         );
         assert!(!page.contains("ToolCallOptions"));
@@ -802,12 +805,15 @@ mod tests {
             assert!(!line.contains("options"), "{line}");
         }
         assert!(page.contains(
-            "readonly [\"timed\"]: (args: TimedInput) => Promise<ToolResult<TimedData>>;"
+            "readonly [\"timed\"]: (args: TimedInput) => Promise<TimedData>;"
         ));
         assert!(page.contains(
-            "readonly [\"demo\"]: (args: DemoInput) => Promise<ToolResult<DemoData>>;"
+            "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
         ));
-        assert!(page.contains("status: \"ok\" | \"partial\""));
+        assert!(page.contains("declare class ToolError"));
+        assert!(!page.contains("ToolResult<"));
+        assert!(!page.contains("status: \"partial\""));
+        assert!(!page.contains("retryable: boolean"));
         assert!(page.contains("`undefined` is not JSON"));
         let timed = page.find("[\"timed\"]").unwrap();
         let demo = page.find("[\"demo\"]").unwrap();

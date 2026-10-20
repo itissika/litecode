@@ -307,7 +307,11 @@ async fn direct_code_tools_are_refused_and_succeed_through_run_code() {
 const read = await tools.read({ path: "probe.txt" });
 const glob = await tools.glob({ pattern: "probe.txt" });
 const grep = await tools.grep({ pattern: "zz", path: "probe.txt" });
-return { read: read.status, glob: glob.status, grep: grep.status };
+return {
+  read: read.file ? "ok" : "missing",
+  glob: Array.isArray(glob.paths) ? "ok" : "missing",
+  grep: Array.isArray(grep.matches) ? "ok" : "missing"
+};
 "#;
     let result = execute(
         &hosted,
@@ -427,7 +431,7 @@ async fn approval_wait_does_not_consume_the_program_budget() {
         &hosted,
         "run_code",
         json!({
-            "code": "const read = await tools.read({ path: \"probe.txt\" }); return read.status;",
+            "code": "const read = await tools.read({ path: \"probe.txt\" }); return read.file ? \"ok\" : \"missing\";",
             "timeout_ms": 600
         }),
         sink.as_ref(),

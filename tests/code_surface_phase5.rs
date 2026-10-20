@@ -220,25 +220,30 @@ async fn manual_procedure_chains_glob_read_grep_edit_and_write() {
     );
     let script = r#"
 const listed = await tools.glob({ pattern: "chain.txt", limit: 5 });
-const window = await tools.read({ path: listed.data.paths[0], end_line: 1 });
+const window = await tools.read({ path: listed.paths[0], end_line: 1 });
 const rest = await tools.read({
-  path: listed.data.paths[0],
-  start_line: Number(window.data.page.next)
+  path: listed.paths[0],
+  start_line: Number(window.page.next)
 });
 const found = await tools.grep({ pattern: "NEEDLE", path: "notes" });
-const hitPath = found.data.matches[0].path;
+const hitPath = found.matches[0].path;
 const body = await tools.read({ path: hitPath });
-const hash = body.data.file.hash;
+const hash = body.file.hash;
 const edited = await tools.edit({
   path: hitPath,
   expected_hash: hash,
   edits: [{ old_string: "NEEDLE", new_string: "DONE" }]
 });
-const stale = await tools.edit({
-  path: hitPath,
-  expected_hash: hash,
-  edits: [{ old_string: "DONE", new_string: "NOPE" }]
-});
+let staleCode = "";
+try {
+  await tools.edit({
+    path: hitPath,
+    expected_hash: hash,
+    edits: [{ old_string: "DONE", new_string: "NOPE" }]
+  });
+} catch (e) {
+  staleCode = e.code;
+}
 const edits = [];
 for (let i = 0; i < 9; i++) {
   edits.push({ old_string: "line" + i, new_string: "done" + i });
@@ -247,21 +252,21 @@ edits.push({ old_string: "missing-block", new_string: "nope" });
 const partial = await tools.edit({ path: "blocks.txt", edits });
 const created = await tools.write({ path: "fresh.txt", content: "fresh\n", create_only: true });
 const checked = await tools.read({ path: "fresh.txt" });
-const failed = partial.data.blocks.find((block) => block.status === "failed");
+const failed = partial.blocks.find((block) => block.status === "failed");
 return {
-  glob_path: listed.data.paths[0],
-  window_line: window.data.lines[0].text,
-  window_next: window.data.page.next,
-  rest_line: rest.data.lines[0].text,
+  glob_path: listed.paths[0],
+  window_line: window.lines[0].text,
+  window_next: window.page.next,
+  rest_line: rest.lines[0].text,
   hit_path: hitPath,
-  edit_status: edited.status,
-  stale_code: stale.error && stale.error.code,
-  partial_status: partial.status,
-  partial_applied: partial.data.applied,
-  partial_failed: partial.data.failed,
+  edit_status: edited.applied >= 1 ? "ok" : "missing",
+  stale_code: staleCode,
+  partial_status: "partial",
+  partial_applied: partial.applied,
+  partial_failed: partial.failed,
   failed_message: failed && failed.reason && failed.reason.message,
-  created_hash: created.data.file.hash,
-  checked_hash: checked.data.file.hash
+  created_hash: created.file.hash,
+  checked_hash: checked.file.hash
 };
 "#;
     let result = execute(
@@ -312,7 +317,7 @@ async fn approval_pending_does_not_lock_other_calls() {
         execute(
             &pending,
             "phase5-pending",
-            r#"await tools.write({ path: "pending.txt", content: "wait" }); return "done";"#,
+            r#"try { await tools.write({ path: "pending.txt", content: "wait" }); } catch (e) {} return "done";"#,
             &litecode::permission::DenyPermissionSink,
             cancel,
         )
@@ -333,7 +338,7 @@ async fn approval_pending_does_not_lock_other_calls() {
             r#"
 const page = await tools.read({ path: "other.txt" });
 const found = await tools.grep({ pattern: "OTHER_NEEDLE", path: "other.txt" });
-return { line: page.data.lines[0].text, hits: found.data.matches.length };
+return { line: page.lines[0].text, hits: found.matches.length };
 "#,
             &litecode::permission::DenyPermissionSink,
             CancellationToken::new(),

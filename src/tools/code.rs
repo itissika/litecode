@@ -408,15 +408,11 @@ fn call_outcome_label(result: &ToolCallResult) -> String {
     }
     if result.error.is_none()
         && result.level != ToolSignalLevel::Error
-        && result.outcome_status != Some(outcome::OutcomeStatus::Error)
         && let Some((applied, total)) = edit_counts(result)
     {
         return format!("ok({applied}/{total})");
     }
-    if result.error.is_some()
-        || result.level == ToolSignalLevel::Error
-        || result.outcome_status == Some(outcome::OutcomeStatus::Error)
-    {
+    if result.error.is_some() || result.level == ToolSignalLevel::Error {
         let code = call_error_code(result).unwrap_or_else(|| "error".to_string());
         return format!("error:{code}");
     }
@@ -424,7 +420,7 @@ fn call_outcome_label(result: &ToolCallResult) -> String {
 }
 
 fn edit_counts(result: &ToolCallResult) -> Option<(u64, u64)> {
-    if result.outcome_status != Some(outcome::OutcomeStatus::Partial) {
+    if result.error.is_some() || result.level == ToolSignalLevel::Error {
         return None;
     }
     let data = result.data.as_ref()?;
@@ -438,9 +434,7 @@ fn edit_counts(result: &ToolCallResult) -> Option<(u64, u64)> {
 }
 
 fn call_error_code(result: &ToolCallResult) -> Option<String> {
-    let failed = result.error.is_some()
-        || result.level == ToolSignalLevel::Error
-        || result.outcome_status == Some(outcome::OutcomeStatus::Error);
+    let failed = result.error.is_some() || result.level == ToolSignalLevel::Error;
     if !failed {
         return None;
     }
@@ -636,37 +630,25 @@ async fn invoke_binding(
         Err(DecodeFail::ExtraArgument { summary }) => {
             ledger.begin(seq, &name, &summary);
             let index = seq;
-            let result = ToolCallResult::error_with_kind(
-                ToolErrorKind::InvalidInput,
+            ledger.record(index, &protocol_failure("tool bindings accept one argument"));
+            return Err(crate::ptc::HostError::type_error(
                 "tool bindings accept one argument",
-                false,
-            );
-            ledger.record(index, &result);
-            return Ok(tool_result_value(&result));
+            ));
         }
         Err(DecodeFail::Illegal(illegal)) => {
             ledger.begin(seq, &name, &illegal.summary);
             let index = seq;
-            let result = ToolCallResult::error_with_kind(
-                ToolErrorKind::InvalidOutput,
-                illegal.message,
-                false,
-            );
-            ledger.record(index, &result);
-            return Ok(tool_result_value(&result));
+            ledger.record(index, &protocol_failure(&illegal.message));
+            return Err(crate::ptc::HostError::type_error(illegal.message));
         }
     };
     ledger.begin(seq, &name, &summary);
     let index = seq;
 
     if !bundle.iter().any(|tool| tool.name() == name) {
-        let result = ToolCallResult::error_with_kind(
-            ToolErrorKind::NotFound,
-            format!("tool '{name}' not found"),
-            false,
-        );
-        ledger.record(index, &result);
-        return Ok(tool_result_value(&result));
+        let message = format!("tool '{name}' not found");
+        ledger.record(index, &protocol_failure(&message));
+        return Err(crate::ptc::HostError::type_error(message));
     }
 
     let call = FunctionToolCall {
@@ -692,7 +674,17 @@ async fn invoke_binding(
         )
         .await;
     ledger.record(index, &result);
-    Ok(tool_result_value(&result))
+    outcome::program_result(&result)
+}
+
+fn protocol_failure(message: &str) -> ToolCallResult {
+    let mut result = ToolCallResult::error_with_kind(
+        ToolErrorKind::InvalidInput,
+        message.to_string(),
+        false,
+    );
+    result.error_code = Some("invalid_input".to_string());
+    result
 }
 
 #[derive(Debug)]
@@ -835,11 +827,6 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     out
 }
 
-/// Tool failures resolve. They are not host rejections, so the program can continue.
-fn tool_result_value(result: &ToolCallResult) -> Value {
-    outcome::program_value(result)
-}
-
 fn render_run_output(
     ledger: &CallLedger,
     outcome: &crate::ptc::Outcome,
@@ -899,17 +886,29 @@ fn render_run_output(
     ));
 
     if let Some(failure) = &outcome.failure {
-        let (kind, retryable) = match failure.kind {
-            FailureKind::Syntax => (ToolErrorKind::InvalidInput, false),
-            FailureKind::Exception => (ToolErrorKind::Internal, false),
-            FailureKind::Timeout => (ToolErrorKind::Timeout, true),
-            FailureKind::Cancelled => (ToolErrorKind::Cancelled, false),
-            FailureKind::ResourceLimit => (ToolErrorKind::Internal, false),
-            FailureKind::OutputLimit => (ToolErrorKind::OutputLimit, true),
-            FailureKind::IllegalOutput => (ToolErrorKind::InvalidOutput, false),
-            FailureKind::Internal => (ToolErrorKind::Internal, false),
+        let (kind, retryable, code) = if let Some(info) = &failure.tool_error {
+            (
+                outcome::kind_for_code(&info.code),
+                false,
+                Some(info.code.clone()),
+            )
+        } else {
+            match failure.kind {
+                FailureKind::Syntax => (ToolErrorKind::InvalidInput, false, None),
+                FailureKind::Exception => {
+                    (ToolErrorKind::Internal, false, Some("exception".to_string()))
+                }
+                FailureKind::Timeout => (ToolErrorKind::Timeout, true, None),
+                FailureKind::Cancelled => (ToolErrorKind::Cancelled, false, None),
+                FailureKind::ResourceLimit => (ToolErrorKind::Internal, false, None),
+                FailureKind::OutputLimit => (ToolErrorKind::OutputLimit, true, None),
+                FailureKind::IllegalOutput => (ToolErrorKind::InvalidOutput, false, None),
+                FailureKind::Internal => (ToolErrorKind::Internal, false, None),
+            }
         };
-        return ToolCallResult::error_with_kind(kind, content, retryable);
+        let mut result = ToolCallResult::error_with_kind(kind, content, retryable);
+        result.error_code = code;
+        return result;
     }
 
     ToolCallResult::ok(content)
@@ -983,6 +982,34 @@ fn run_report(
             .as_ref()
             .and_then(|failure| failure.stack.clone()),
         source: source.to_string(),
+        tool_error: outcome.failure.as_ref().and_then(|failure| {
+            let info = failure.tool_error.as_ref()?;
+            let summary = lines
+                .iter()
+                .find(|line| line.seq == info.seq)
+                .map(|line| line.args_summary.clone())
+                .unwrap_or_default();
+            Some(render::UncaughtToolError {
+                seq: info.seq,
+                tool: if info.tool.is_empty() {
+                    lines
+                        .iter()
+                        .find(|line| line.seq == info.seq)
+                        .map(|line| line.tool.clone())
+                        .unwrap_or_default()
+                } else {
+                    info.tool.clone()
+                },
+                code: info.code.clone(),
+                message: failure.message.clone(),
+                summary,
+                details: info.details.clone(),
+            })
+        }),
+        uncaught_type_error: outcome
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.uncaught_type_error),
     }
 }
 
@@ -1077,7 +1104,7 @@ impl Tool for CodeTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Async JavaScript function body. Use `tools` for host tools and `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property."
+                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data. A domain failure rejects ToolError; a protocol failure throws TypeError. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -1290,7 +1317,6 @@ mod outcome_tests {
 
         let mut result = ToolCallResult::ok("edited");
         result.data = Some(json!({"applied": 9, "failed": 1}));
-        result.outcome_status = Some(crate::tool::outcome::OutcomeStatus::Partial);
         let edit = CallLedger::new();
         edit.begin(1, "edit", "path=note.txt");
         edit.record(1, &result);

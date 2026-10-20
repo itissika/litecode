@@ -239,6 +239,7 @@ impl ReadTool {
             let relative = ide.workspace.sandbox().rel_path(&path).ok()?;
             match ide.workspace.read_file_bytes(&relative) {
                 Ok((_, bytes)) => Some(Ok(bytes)),
+                Err(crate::workspace::WorkspaceError::NotFound(_)) => None,
                 Err(
                     crate::workspace::WorkspaceError::NotFile(p)
                     | crate::workspace::WorkspaceError::IsDir(p),
@@ -525,7 +526,7 @@ fn finish_read(
         page: page.clone(),
     })
     .unwrap_or(Value::Null);
-    attach_read_signals(crate::tool::outcome::ok_data(data, Some(page)), warnings)
+    attach_read_signals(crate::tool::outcome::ok_data(data), warnings)
 }
 
 fn data_line_text(line: &str) -> (String, bool) {

@@ -703,11 +703,11 @@ mod tests {
         assert_eq!(description, tools[0].description(&other));
         assert!(description.contains("declare const tools"));
         assert!(description.contains(
-            "readonly [\"grep\"]: (args: GrepInput) => Promise<ToolResult<GrepData>>;"
+            "readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;"
         ));
         assert!(
             description.contains(
-                "readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;"
+                "readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;"
             )
         );
         assert!(!description.contains("ToolCallOptions"));

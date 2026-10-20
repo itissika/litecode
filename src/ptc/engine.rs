@@ -20,7 +20,7 @@ use futures_util::future::{Either, select};
 use rquickjs::context::EvalOptions;
 use rquickjs::prelude::{Async, Rest};
 use rquickjs::{
-    AsyncContext, AsyncRuntime, Ctx, Error, Function, Object, Persistent, Promise, Value,
+    AsyncContext, AsyncRuntime, Ctx, Error, Exception, Function, Object, Persistent, Promise, Value,
 };
 use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
@@ -57,6 +57,7 @@ impl Faults {
     const CANCEL: u8 = 1;
     const TIMEOUT: u8 = 2;
     const OUTPUT: u8 = 3;
+    const STACK: u8 = 4;
 
     fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -97,6 +98,8 @@ struct Protos {
     internal: Persistent<Object<'static>>,
     range: Persistent<Object<'static>>,
     syntax: Persistent<Object<'static>>,
+    type_error: Persistent<Object<'static>>,
+    tool: Persistent<Object<'static>>,
 }
 
 struct Flags {
@@ -192,6 +195,13 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     faults.record(Faults::TIMEOUT);
                     return true;
                 }
+                // QuickJS's own stack overflow is a catchable RangeError. Abort
+                // here so the program cannot catch it. The same interrupt that
+                // notices the native stack is past the limit throws.
+                if faults.stack_fault() {
+                    faults.record(Faults::STACK);
+                    return true;
+                }
                 false
             })))
             .await;
@@ -224,8 +234,6 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             let protos = Rc::clone(&protos);
             let handle = handle.clone();
             async move |ctx| {
-                let saved = save_prototypes(&ctx)?;
-                *protos.borrow_mut() = Some(saved);
                 install(
                     &ctx,
                     &namespaces,
@@ -236,7 +244,10 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     &flags,
                     &faults,
                     &output,
-                )
+                )?;
+                let saved = save_prototypes(&ctx)?;
+                *protos.borrow_mut() = Some(saved);
+                Ok(())
             }
         })
         .await;
@@ -554,6 +565,7 @@ fn install(
     faults: &Arc<Faults>,
     output: &Rc<RefCell<OutputLedger>>,
 ) -> Result<(), Failure> {
+    install_tool_error(ctx)?;
     install_libs(ctx)?;
     install_console(ctx, output, flags, faults)?;
     let shared = Shared {
@@ -568,6 +580,35 @@ fn install(
         install_namespace(ctx, namespace, &shared)?;
     }
     hide_blocking_intrinsics(ctx)
+}
+
+fn install_tool_error(ctx: &Ctx<'_>) -> Result<(), Failure> {
+    const SOURCE: &str = r#"
+        (function () {
+            class ToolError extends Error {
+                constructor(message) {
+                    super(message);
+                    Object.defineProperty(this, "name", {
+                        value: "ToolError",
+                        writable: false,
+                        enumerable: false,
+                        configurable: false
+                    });
+                }
+            }
+            Object.defineProperty(globalThis, "ToolError", {
+                value: ToolError,
+                writable: false,
+                enumerable: false,
+                configurable: false
+            });
+        })()
+    "#;
+    match ctx.eval::<(), _>(SOURCE) {
+        Ok(()) => Ok(()),
+        Err(Error::Exception) => Err(Failure::internal(boundary::take_exception(ctx).message)),
+        Err(error) => Err(Failure::internal(error.to_string())),
+    }
 }
 
 fn install_libs(ctx: &Ctx<'_>) -> Result<(), Failure> {
@@ -748,15 +789,16 @@ async fn invoke<'js>(
     let finish_calls = Arc::clone(&calls);
     let finish_clock = Arc::clone(&clock);
     let idx = ticket.idx;
+    let seq = ticket.seq;
     handle.spawn(async move {
         let info = super::CallInfo { seq: ticket.seq };
-    let result = AssertUnwindSafe(host.call(json_args, token, pause, info))
+        let result = AssertUnwindSafe(host.call(json_args, token, pause, info))
             .catch_unwind()
             .await;
         let mapped = match result {
             Ok(Ok(value)) => Ok(Json::new(value)),
-            Ok(Err(error)) => Err(error.message),
-            Err(_) => Err("host function panicked".into()),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(super::HostError::new("host function panicked")),
         };
         finish_calls.finish(idx, finish_clock.wall_elapsed());
         let _ = tx.send(mapped);
@@ -780,11 +822,68 @@ async fn invoke<'js>(
             Ok(js) => Ok(js),
             Err(message) => Err(boundary::throw_type(&ctx, &message)),
         },
-        Ok(Err(message)) => Err(boundary::throw_message(&ctx, &message)),
+        Ok(Err(error)) => Err(raise_host_error(&ctx, error, &name, seq)),
         Err(_) => Err(boundary::throw_message(
             &ctx,
             "host call ended without a result",
         )),
+    }
+}
+
+fn raise_host_error(ctx: &Ctx<'_>, error: super::HostError, tool: &str, seq: u64) -> Error {
+    match error.kind {
+        super::HostErrorKind::Type => boundary::throw_type(ctx, &error.message),
+        super::HostErrorKind::Error => boundary::throw_message(ctx, &error.message),
+        super::HostErrorKind::Tool {
+            code,
+            details,
+            retryable,
+        } => throw_tool_error(ctx, &error.message, &code, details.as_ref(), retryable, tool, seq),
+    }
+}
+
+fn throw_tool_error(
+    ctx: &Ctx<'_>,
+    message: &str,
+    code: &str,
+    details: Option<&serde_json::Value>,
+    retryable: bool,
+    tool: &str,
+    seq: u64,
+) -> Error {
+    const FACTORY: &str = r#"
+        (function (message, code, details, retryable, tool, seq) {
+            const error = new ToolError(message);
+            const define = (key, value) => Object.defineProperty(error, key, {
+                value: value,
+                writable: false,
+                enumerable: true,
+                configurable: false
+            });
+            define("code", code);
+            define("tool", tool);
+            define("seq", seq);
+            if (details !== undefined && details !== null) define("details", details);
+            if (retryable === true) define("retryable", true);
+            return error;
+        })
+    "#;
+    let factory = match ctx.eval::<Function<'_>, _>(FACTORY) {
+        Ok(factory) => factory,
+        Err(error) => return error,
+    };
+    let details = match details {
+        Some(value) => match boundary::to_js(ctx, Json::new(value.clone())) {
+            Ok(js) => js,
+            Err(message) => return boundary::throw_type(ctx, &message),
+        },
+        None => Value::new_undefined(ctx.clone()),
+    };
+    match factory.call::<_, Object<'_>>((message, code, details, retryable, tool, seq as f64)) {
+        Ok(error) => Exception::from_object(error)
+            .map(Exception::throw)
+            .unwrap_or_else(|| boundary::throw_message(ctx, message)),
+        Err(error) => error,
     }
 }
 
@@ -921,6 +1020,7 @@ fn classify_value<'js>(
             Faults::CANCEL => Failure::cancelled(),
             Faults::OUTPUT => Failure::output(output_limit),
             Faults::TIMEOUT => Failure::timeout(),
+            Faults::STACK => Failure::resource(ResourceKind::Stack, "stack overflow", None),
             _ if user.is_cancelled() => Failure::cancelled(),
             _ if flags.output.load(Ordering::Relaxed) => Failure::output(output_limit),
             _ if clock.exhausted() => Failure::timeout(),
@@ -967,7 +1067,55 @@ fn classify_value<'js>(
     {
         return ProgramEnd::Failure(Failure::syntax(thrown.message, thrown.stack, source_lines));
     }
+    if saved
+        .as_ref()
+        .is_some_and(|protos| proto_is(ctx, value, &protos.tool))
+    {
+        let mut failure = Failure::exception(thrown.message, thrown.stack);
+        failure.tool_error = tool_error_info(ctx, value, saved.as_ref().unwrap());
+        return ProgramEnd::Failure(failure);
+    }
+    if saved
+        .as_ref()
+        .is_some_and(|protos| proto_is(ctx, value, &protos.type_error))
+    {
+        let mut failure = Failure::exception(thrown.message, thrown.stack);
+        failure.uncaught_type_error = true;
+        return ProgramEnd::Failure(failure);
+    }
     ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
+}
+
+fn tool_error_info<'js>(
+    ctx: &Ctx<'js>,
+    value: &Value<'js>,
+    protos: &Protos,
+) -> Option<super::ToolErrorInfo> {
+    if !proto_is(ctx, value, &protos.tool) {
+        return None;
+    }
+    let object = value.as_object()?;
+    let code = object.get::<_, String>("code").unwrap_or_else(|_| "internal".into());
+    let tool = object.get::<_, String>("tool").unwrap_or_default();
+    let seq = object
+        .get::<_, f64>("seq")
+        .ok()
+        .map(|number| number as u64)
+        .unwrap_or(0);
+    let details = object.get::<_, Value<'_>>("details").ok().and_then(|details| {
+        if details.is_undefined() || details.is_null() {
+            return None;
+        }
+        boundary::from_js(&details)
+            .ok()
+            .map(|json| json.into_value())
+    });
+    Some(super::ToolErrorInfo {
+        code,
+        tool,
+        seq,
+        details,
+    })
 }
 
 fn proto_is<'js>(
@@ -985,8 +1133,9 @@ fn proto_is<'js>(
 }
 
 /// QuickJS throws a catchable `RangeError` for stack overflow and keeps no flag.
-/// Sample the native stack from the interrupt handler, which we re-arm so it
-/// runs often enough to observe the overflow before the engine unwinds it.
+/// Sample the native stack from the interrupt handler. The same call that sees
+/// the stack past the limit returns true, and QuickJS marks that interrupt
+/// uncatchable, so `try/catch` cannot swallow the seal.
 const STACK_NEAR_BYTES: usize = 48 * 1024;
 const STACK_POLL_FAR: i32 = 32;
 const STACK_POLL_NEAR: i32 = 1;
@@ -1128,6 +1277,8 @@ fn save_prototypes(ctx: &Ctx<'_>) -> Result<Protos, Failure> {
         internal: Persistent::save(ctx, eval_object(ctx, "InternalError.prototype")?),
         range: Persistent::save(ctx, eval_object(ctx, "RangeError.prototype")?),
         syntax: Persistent::save(ctx, eval_object(ctx, "SyntaxError.prototype")?),
+        type_error: Persistent::save(ctx, eval_object(ctx, "TypeError.prototype")?),
+        tool: Persistent::save(ctx, eval_object(ctx, "ToolError.prototype")?),
     })
 }
 
@@ -1201,6 +1352,23 @@ fn format_console(args: &[Value<'_>]) -> String {
         .join(" ")
 }
 
+fn format_error(value: &Value<'_>) -> Option<String> {
+    let object = value.as_object()?;
+    let name = object.get::<_, String>("name").ok()?;
+    if !name.ends_with("Error") {
+        return None;
+    }
+    let message = object.get::<_, String>("message").unwrap_or_default();
+    let mut text = format!("{name}: {message}");
+    if name == "ToolError"
+        && let Ok(code) = object.get::<_, String>("code")
+        && !code.is_empty()
+    {
+        text.push_str(&format!(" [{code}]"));
+    }
+    Some(text)
+}
+
 fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> String {
     if value.is_null() {
         return "null".into();
@@ -1226,7 +1394,13 @@ fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> Stri
     if value.is_function() {
         return "[Function]".into();
     }
-    if !value.is_object() || depth >= 4 {
+    if let Some(text) = format_error(value) {
+        return text;
+    }
+    if depth >= 4 && value.is_object() {
+        return "[Object …]".into();
+    }
+    if !value.is_object() {
         return "[Object]".into();
     }
     let ptr = unsafe { rquickjs::qjs::JS_VALUE_GET_PTR(value.as_raw()) as usize };
@@ -1235,22 +1409,39 @@ fn format_debug(value: &Value<'_>, depth: usize, stack: &mut Vec<usize>) -> Stri
     }
     stack.push(ptr);
     let text = if let Some(array) = value.as_array() {
+        let total = array.len();
+        let shown = total.min(20);
         let mut parts = Vec::new();
-        let len = array.len().min(20);
-        for index in 0..len {
+        for index in 0..shown {
             let element = array.get::<Value<'_>>(index).ok();
             parts.push(match element {
                 Some(element) => format_debug(&element, depth + 1, stack),
                 None => "[?]".into(),
             });
         }
-        format!("[{}]", parts.join(", "))
+        if total > shown {
+            format!("[{}, … {} more]", parts.join(", "), total - shown)
+        } else {
+            format!("[{}]", parts.join(", "))
+        }
     } else if let Some(object) = value.as_object() {
         let mut parts = Vec::new();
-        for (key, child) in object.props::<String, Value<'_>>().take(20).flatten() {
-            parts.push(format!("{key}: {}", format_debug(&child, depth + 1, stack)));
+        let mut extra = 0usize;
+        for (index, (key, child)) in object.props::<String, Value<'_>>().flatten().enumerate() {
+            if index < 20 {
+                parts.push(format!(
+                    "{key}: {}",
+                    format_debug(&child, depth + 1, stack)
+                ));
+            } else {
+                extra += 1;
+            }
         }
-        format!("{{{}}}", parts.join(", "))
+        if extra > 0 {
+            format!("{{{}, … {extra} more}}", parts.join(", "))
+        } else {
+            format!("{{{}}}", parts.join(", "))
+        }
     } else {
         "[Object]".into()
     };

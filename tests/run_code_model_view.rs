@@ -189,8 +189,8 @@ async fn partial_edit_is_ok_fraction_and_a_diagnostic() {
                     edits.push({ old_string: "line-" + i, new_string: "LINE-" + i });
                 }
                 edits.push({ old_string: "missing-line", new_string: "NOPE" });
-                await tools.edit({ path: "many.txt", edits });
-                return "done";
+                const r = await tools.edit({ path: "many.txt", edits });
+                return { failed: r.failed, has_status: Object.prototype.hasOwnProperty.call(r, "status") };
             "#
         }),
         |root| {
@@ -201,4 +201,61 @@ async fn partial_edit_is_ok_fraction_and_a_diagnostic() {
     .await;
     assert!(text.contains("ok(9/10)"), "{text}");
     assert!(text.contains("edit_block_failed"), "{text}");
+    assert!(text.contains("\"failed\": 1"), "{text}");
+    assert!(text.contains("\"has_status\": false"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caught_tool_error_is_counted_and_not_listed() {
+    let text = captured_run_code(
+        r#"
+        try {
+          await tools.read({ path: "missing.txt" });
+        } catch (e) {
+          return [e instanceof ToolError, e.code, e.tool, typeof e.seq];
+        }
+        "#,
+    )
+    .await;
+    assert!(text.contains("true"), "{text}");
+    assert!(text.contains("\"not_found\""), "{text}");
+    assert!(text.contains("\"read\""), "{text}");
+    assert!(text.contains("\"number\""), "{text}");
+    assert!(
+        text.contains("1 rejected (not_found×1), handled by the program"),
+        "{text}"
+    );
+    assert!(!text.contains("#1 "), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn uncaught_tool_error_names_the_call() {
+    let text = captured_run_code(r#"await tools.read({ path: "missing.txt" });"#).await;
+    assert!(
+        text.contains("uncaught ToolError not_found from call #1 read path=missing.txt"),
+        "{text}"
+    );
+    assert!(text.contains("not_found:"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_second_argument_is_a_catchable_type_error() {
+    let text = captured_run(
+        json!({
+            "code": r#"
+                try {
+                  await tools.read({ path: "a.txt" }, {});
+                  return "resolved";
+                } catch (e) {
+                  return e.name;
+                }
+            "#
+        }),
+        |root| {
+            std::fs::write(root.join("a.txt"), "hi\n").unwrap();
+        },
+    )
+    .await;
+    assert!(text.contains("result:\nTypeError") || text.contains("\"TypeError\""), "{text}");
+    assert!(text.starts_with("run_code ok"), "{text}");
 }

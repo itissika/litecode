@@ -426,10 +426,37 @@ async fn stack_limit() {
     assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
     assert_eq!(failure.resource, Some(ResourceKind::Stack));
     assert!(
-        failure.message.contains("Maximum call stack size exceeded"),
+        failure.message.contains("stack overflow")
+            || failure.message.contains("Maximum call stack size exceeded"),
         "{}",
         failure.message
     );
+}
+
+#[tokio::test]
+async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
+    let mut limits = limits();
+    limits.stack_bytes = 64 * 1024;
+    let outcome = run_with(
+        r#"
+        try {
+          function f(){ return 1 + f(); }
+          return f();
+        } catch (e) {
+          return "caught";
+        }
+        "#,
+        Vec::new(),
+        limits,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    let failure = outcome.failure.expect("stack overflow is not catchable");
+    assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
+    assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
 }
 
 #[tokio::test]
@@ -816,6 +843,108 @@ async fn cold_start_median() {
     assert!(
         median < Duration::from_millis(250),
         "cold start median {median:?}"
+    );
+}
+
+#[tokio::test]
+async fn tool_error_is_catchable_and_instanceof() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::tool("not_found", "missing", None, false))
+    });
+    let outcome = run(
+        r#"
+        try {
+          await tools.read(null);
+          return "resolved";
+        } catch (e) {
+          return [e instanceof ToolError, e.name, e.code, e.tool, typeof e.seq, e.message];
+        }
+        "#,
+        tools(vec![("read", host)]),
+    )
+    .await;
+    assert_eq!(
+        value_of(&outcome),
+        &json!([true, "ToolError", "not_found", "read", "number", "missing"])
+    );
+}
+
+#[tokio::test]
+async fn uncaught_tool_error_keeps_code() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::tool("not_found", "missing", None, false))
+    });
+    let outcome = run("await tools.read(null);", tools(vec![("read", host)])).await;
+    let failure = outcome.failure.expect("uncaught tool error");
+    let info = failure.tool_error.expect("tool error identity");
+    assert_eq!(info.code, "not_found");
+    assert_eq!(info.tool, "read");
+    assert_eq!(info.seq, 1);
+    assert_eq!(failure.message, "missing");
+}
+
+#[tokio::test]
+async fn second_argument_is_type_error() {
+    let host = HostFn::new(|args, _, _, _| async move {
+        if args.as_value().is_array() {
+            Err(HostError::type_error("tool bindings accept one argument"))
+        } else {
+            Ok(json!(null))
+        }
+    });
+    let outcome = run(
+        r#"
+        try {
+          await tools.f(1, 2);
+          return "resolved";
+        } catch (e) {
+          return [e.name, e instanceof TypeError, e.message];
+        }
+        "#,
+        tools(vec![("f", host)]),
+    )
+    .await;
+    assert_eq!(
+        value_of(&outcome),
+        &json!(["TypeError", true, "tool bindings accept one argument"])
+    );
+}
+
+#[tokio::test]
+async fn type_error_from_host_is_catchable() {
+    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::type_error("bad call")) });
+    let outcome = run(
+        r#"try { await tools.f(null); return "resolved"; } catch (e) { return [e.name, e.message]; }"#,
+        tools(vec![("f", host)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!(["TypeError", "bad call"]));
+}
+
+#[tokio::test]
+async fn console_formats_errors() {
+    let host = HostFn::new(|_, _, _, _| async move {
+        Err(HostError::tool("not_found", "missing", None, false))
+    });
+    let outcome = run(
+        r#"
+        console.log(new Error("x"));
+        try {
+          await tools.read(null);
+        } catch (e) {
+          console.log(e);
+        }
+        return "ok";
+        "#,
+        tools(vec![("read", host)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!("ok"));
+    let logs: Vec<&str> = outcome.logs.iter().map(|entry| entry.message.as_str()).collect();
+    assert!(logs.iter().any(|line| *line == "Error: x"), "{logs:?}");
+    assert!(
+        logs.iter().any(|line| *line == "ToolError: missing [not_found]"),
+        "{logs:?}"
     );
 }
 

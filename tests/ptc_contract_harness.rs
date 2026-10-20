@@ -132,8 +132,9 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     let page = harness.code_description();
 
     assert!(page.contains("do not copy type annotations"));
-    assert!(page.contains("type ToolResult<T> ="));
-    assert!(page.contains("type Diagnostic = {"));
+    assert!(page.contains("declare class ToolError"));
+    assert!(!page.contains("ToolResult<"));
+    assert!(!page.contains("type Diagnostic = {"));
     assert!(!page.contains("type ToolCallOptions"));
     assert!(
         page.lines()
@@ -170,13 +171,13 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains("type Integer = number;"));
 
     assert!(page.contains(
-        "readonly [\"glob\"]: (args: GlobInput) => Promise<ToolResult<GlobData>>;"
+        "readonly [\"glob\"]: (args: GlobInput) => Promise<GlobData>;"
     ));
     assert!(page.contains(
-        "readonly [\"grep\"]: (args: GrepInput) => Promise<ToolResult<GrepData>>;"
+        "readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;"
     ));
     assert!(
-        page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ToolResult<ReadData>>;")
+        page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;")
     );
     assert!(!page.contains("options?: ToolCallOptions"));
     assert!(!page.replace("details?: unknown", "").contains(": unknown"));
@@ -197,15 +198,15 @@ async fn embedded_runtime_runs_read_glob_grep() {
 
     let script = r#"
 const files = await tools.glob({ pattern: "src/**/*.rs" });
-if (files.status !== "ok" || !Array.isArray(files.data.paths)) {
+if (!Array.isArray(files.paths)) {
   throw new Error("glob contract failed");
 }
 
 const first = await tools.grep({ pattern: "needle", path: "src", limit: 1 });
-if (!first.data || first.data.matches.length !== 1 || !first.data.page.has_more) {
+if (!first.matches || first.matches.length !== 1 || !first.page.has_more) {
   throw new Error("grep first page contract failed: " + JSON.stringify(first));
 }
-if (!first.data.page.next) {
+if (!first.page.next) {
   throw new Error("grep must expose page.next");
 }
 
@@ -213,28 +214,28 @@ const second = await tools.grep({
   pattern: "needle",
   path: "src",
   limit: 1,
-  cursor: first.data.page.next,
+  cursor: first.page.next,
 });
-if (!second.data || second.data.matches.length !== 1 || second.data.page.has_more) {
+if (!second.matches || second.matches.length !== 1 || second.page.has_more) {
   throw new Error("grep continuation contract failed: " + JSON.stringify(second));
 }
 
 const read = await tools.read({
-  path: first.data.matches[0].path,
+  path: first.matches[0].path,
   start_line: 1,
   end_line: 1,
 });
-if (!read.data || !read.data.file || !read.data.file.hash || read.data.lines.length !== 1 || !read.data.page.has_more) {
+if (!read.file || !read.file.hash || read.lines.length !== 1 || !read.page.has_more) {
   throw new Error("read contract failed: " + JSON.stringify(read));
 }
 
 return {
-  file_paths: files.data.paths,
-  second_has_more: second.data.page.has_more,
-  read_has_more: read.data.page.has_more,
-  read_path: read.data.file.path,
-  first_path: first.data.matches[0].path,
-  first_line: read.data.lines[0].text,
+  file_paths: files.paths,
+  second_has_more: second.page.has_more,
+  read_has_more: read.page.has_more,
+  read_path: read.file.path,
+  first_path: first.matches[0].path,
+  first_line: read.lines[0].text,
 };
 "#;
 
@@ -260,10 +261,10 @@ async fn literal_true_searches_the_pattern_as_text() {
 
     let script = r#"
 const hit = await tools.grep({ pattern: "a.b", path: "src/a.rs", literal: true });
-if (!hit.data || hit.data.matches.length !== 1 || !hit.data.matches[0].line_text.includes("a.b")) {
+if (!hit.matches || hit.matches.length !== 1 || !hit.matches[0].line_text.includes("a.b")) {
   throw new Error("literal search failed: " + JSON.stringify(hit));
 }
-return { hits: hit.data.matches.length };
+return { hits: hit.matches.length };
 "#;
 
     let value = harness

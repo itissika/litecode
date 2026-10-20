@@ -111,7 +111,7 @@ impl Tool for EditTool {
                 },
                 "expected_hash": {
                     "type": "string",
-                    "description": "sha256 of the file bytes from a previous read. Omit to skip the check. A mismatch returns stale and does not write."
+                    "description": "sha256 of the file bytes from a previous read. Omit to skip the check. A mismatch rejects stale and does not write."
                 },
                 "edits": {
                     "type": "array",
@@ -360,7 +360,7 @@ impl EditTool {
                 return crate::tool::outcome::ToolOutcome::<Value>::failure(
                     "stale",
                     message,
-                    true,
+                    false,
                 )
                 .with_error_details(serde_json::json!({ "current_hash": current }))
                 .into_call_result(message);
@@ -393,7 +393,7 @@ impl EditTool {
             let mut outcome = crate::tool::outcome::ToolOutcome::<Value>::failure(
                 "edit_failed",
                 message,
-                true,
+                false,
             )
             .with_error_details(serde_json::json!({ "blocks": edit_report.blocks }));
             for diagnostic in edit_report.diagnostics {
@@ -439,11 +439,7 @@ impl EditTool {
             "applied": edit_report.applied,
             "failed": edit_report.failed,
         });
-        let mut outcome = if edit_report.failed > 0 {
-            crate::tool::outcome::ToolOutcome::partial(data)
-        } else {
-            crate::tool::outcome::ToolOutcome::ok(data)
-        };
+        let mut outcome = crate::tool::outcome::ToolOutcome::ok(data);
         for diagnostic in edit_report.diagnostics {
             outcome = outcome.with_diagnostic(diagnostic);
         }

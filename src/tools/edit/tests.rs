@@ -4,7 +4,6 @@ use tokio_util::sync::CancellationToken;
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tools::edit::EditTool;
-use crate::tool::outcome::OutcomeStatus;
 use crate::types::ToolSignalLevel;
 
 fn tool() -> EditTool {
@@ -50,7 +49,7 @@ fn edit_tool_roundtrips_bom_and_matches_first_line() {
 fn single_success_reports_summary_and_indexed_outcome() {
     let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
     let result = call_edits(&path, one("fn main() {}", "fn start() {}"));
-    assert_eq!(result.outcome_status, Some(OutcomeStatus::Ok));
+    assert!(result.error.is_none());
     let data = result.data.expect("edit data");
     assert_eq!(data["applied"], 1);
     assert_eq!(data["failed"], 0);
@@ -149,8 +148,8 @@ fn edit_tool_partial_success_writes_once_and_warns() {
             {"old_string": "missing_token_zz", "new_string": "nope"}
         ]),
     );
-    assert_eq!(result.outcome_status, Some(OutcomeStatus::Partial));
     assert!(result.error.is_none());
+    assert_eq!(result.data.as_ref().unwrap()["failed"], 1);
     assert!(
         result
             .diagnostics

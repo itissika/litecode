@@ -264,7 +264,7 @@ const edited = await tools.edit({
   path: "note.txt",
   edits: [{ old_string: "alpha", new_string: "beta" }]
 });
-return { written: written.status, edited: edited.status };
+return { written: written.file ? "ok" : "missing", edited: edited.applied >= 1 ? "ok" : "missing" };
 "#;
     let result = execute(
         &hosted,
@@ -335,8 +335,13 @@ async fn nested_write_approval_denial_does_not_apply_the_edit() {
     let hosted = hosted(dir.path(), PermissionAction::Ask, Arc::new(sink));
     let outer = RecordingPermissionSink::from_reply(true, false);
     let script = r#"
-const denied = await tools.write({ path: "nope.txt", content: "secret-nope" });
-return { status: denied.status };
+let status = "ok";
+try {
+  await tools.write({ path: "nope.txt", content: "secret-nope" });
+} catch (e) {
+  status = "error";
+}
+return { status };
 "#;
     let result = execute(
         &hosted,
@@ -369,7 +374,12 @@ return { status: denied.status };
         "the ledger line prints the error code: {ledger}"
     );
     assert!(
-        result.content.contains("permission_denied"),
+        result.content.contains("1 rejected (permission_denied×1), handled by the program"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("#1 write path=nope.txt: permission_denied:"),
         "{}",
         result.content
     );
@@ -393,8 +403,13 @@ async fn nested_write_sensitive_path_is_denied_by_the_same_floor() {
     let target = r"C:\Windows\litecode-phase3-no-write.txt";
     let script = format!(
         r#"
-const denied = await tools.write({{ path: {target:?}, content: "no" }});
-return {{ status: denied.status }};
+let status = "ok";
+try {{
+  await tools.write({{ path: {target:?}, content: "no" }});
+}} catch (e) {{
+  status = "error";
+}}
+return {{ status }};
 "#
     );
     let result = execute(
@@ -432,7 +447,7 @@ async fn two_nested_writes_leave_one_complete_file_and_sequential_writes_both_ap
     );
     let sink = RecordingPermissionSink::from_reply(true, false);
     let script = r#"
-await Promise.all([
+await Promise.allSettled([
   tools.write({ path: "same.txt", content: "AAAA" }),
   tools.write({ path: "same.txt", content: "BBBB" }),
   tools.write({ path: "other.txt", content: "CCCC" })
@@ -569,7 +584,7 @@ async fn nested_write_is_visible_to_the_same_turn_level_effects() {
     let sink = RecordingPermissionSink::from_reply(true, false);
     let script = r#"
 const written = await tools.write({ path: "noted.txt", content: "v1" });
-return written.status;
+return written.file ? "ok" : "missing";
 "#;
     let result = execute(
         &hosted,
@@ -842,24 +857,27 @@ const spelled = [
 const bodyX = "x".repeat(512 * 1024);
 const bodyY = "y".repeat(512 * 1024);
 async function race(name, a, b) {
-  const results = await Promise.all([
+  const results = await Promise.allSettled([
     tools.write({ path: a, content: bodyX, create_only: true }),
     tools.write({ path: b, content: bodyY, create_only: true })
   ]);
   return {
     name,
-    statuses: results.map(result => result.status),
-    messages: results.map(result => (result.error && result.error.message) || ""),
-    bytes: results.map(result => (result.data && result.data.file && result.data.file.bytes) || 0)
+    statuses: results.map(result => result.status === "fulfilled" ? "ok" : "error"),
+    messages: results.map(result => result.status === "rejected" ? ((result.reason && result.reason.message) || "") : ""),
+    bytes: results.map(result => result.status === "fulfilled" && result.value.file ? result.value.file.bytes : 0)
   };
 }
 async function lineText(result) {
-  const line = result.data && result.data.lines && result.data.lines[0];
+  const line = result && result.lines && result.lines[0];
   return line ? line.text : "";
 }
 async function markerText(path) {
-  const ready = await tools.read({ path });
-  return ready.status === "ok" ? await lineText(ready) : "";
+  try {
+    return await lineText(await tools.read({ path }));
+  } catch (e) {
+    return "";
+  }
 }
 async function readsDuringWrite(paths) {
   const writing = tools.write({
@@ -869,33 +887,32 @@ async function readsDuringWrite(paths) {
   });
   let saw = false;
   for (let i = 0; i < 40; i++) {
-    const ready = await tools.read({ path: "held.ready" });
-    if (ready.status === "ok") {
+    if (await markerText("held.ready")) {
       saw = true;
       break;
     }
   }
   const reads = await Promise.all(paths.map(async (path) => {
-    const result = await tools.read({ path });
-    return {
-      path,
-      status: result.status,
-      text: await lineText(result),
-      message: (result.error && result.error.message) || ""
-    };
-  }));
-  const written = await writing;
-  const afterRead = await tools.read({ path: "held.txt" });
-  return {
-    saw,
-    write: written.status,
-    writeMessage: (written.error && written.error.message) || "",
-    reads,
-    after: {
-      status: afterRead.status,
-      text: await lineText(afterRead)
+    try {
+      const result = await tools.read({ path });
+      return { path, status: "ok", text: await lineText(result), message: "" };
+    } catch (e) {
+      return { path, status: "error", text: "", message: (e && e.message) || "" };
     }
-  };
+  }));
+  let write = "ok";
+  let writeMessage = "";
+  try {
+    await writing;
+  } catch (e) {
+    write = "error";
+    writeMessage = (e && e.message) || "";
+  }
+  let after = { status: "error", text: "" };
+  try {
+    after = { status: "ok", text: await lineText(await tools.read({ path: "held.txt" })) };
+  } catch (e) {}
+  return { saw, write, writeMessage, reads, after };
 }
 async function readAfterWrite(writePath, readPath, marker, prior) {
   const writing = tools.write({ path: writePath, content: "exclusive-body\n" });
@@ -907,22 +924,28 @@ async function readAfterWrite(writePath, readPath, marker, prior) {
       break;
     }
   }
-  const during = await tools.read({ path: readPath });
-  const written = await writing;
-  const after = await tools.read({ path: readPath });
+  let during = { status: "error", text: "" };
+  try {
+    during = { status: "ok", text: await lineText(await tools.read({ path: readPath })) };
+  } catch (e) {}
+  let write = "ok";
+  let writeMessage = "";
+  try {
+    await writing;
+  } catch (e) {
+    write = "error";
+    writeMessage = (e && e.message) || "";
+  }
+  let after = { status: "error", text: "" };
+  try {
+    after = { status: "ok", text: await lineText(await tools.read({ path: readPath })) };
+  } catch (e) {}
   return {
     saw: saw !== "",
-    write: written.status,
-    writeMessage: (written.error && written.error.message) || "",
-    during: {
-      path: readPath,
-      status: during.status,
-      text: await lineText(during)
-    },
-    after: {
-      status: after.status,
-      text: await lineText(after)
-    }
+    write,
+    writeMessage,
+    during: { path: readPath, status: during.status, text: during.text },
+    after
   };
 }
 const races = [

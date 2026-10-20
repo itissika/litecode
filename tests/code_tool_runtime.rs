@@ -69,36 +69,37 @@ async fn code_tool_runs_real_bundle_with_data_only_results() {
 
     let script = r#"
 const matches = await tools.grep({ pattern: "needle", path: "src", limit: 1 });
-if (matches.status !== "ok") {
+if (!matches.matches) {
   throw new Error("grep failed: " + JSON.stringify(matches));
 }
 if (Object.prototype.hasOwnProperty.call(matches, "text")) {
   throw new Error("inner result must not expose text");
 }
 const file = await tools.read({
-  path: matches.data.matches[0].path,
+  path: matches.matches[0].path,
   start_line: 1,
   end_line: 1,
 });
-if (file.status !== "ok" || !file.data.file || !file.data.lines || file.data.lines.length !== 1) {
+if (!file.file || !file.lines || file.lines.length !== 1) {
   throw new Error("read failed: " + JSON.stringify(file));
 }
-const bad = await tools.read({});
-if (bad.status !== "error" || !bad.error || bad.error.code !== "invalid_input") {
-  throw new Error("invalid input must be a typed result value: " + JSON.stringify(bad));
+let badCode = "";
+try {
+  await tools.read({});
+} catch (e) {
+  badCode = e instanceof ToolError ? e.code : e.name;
 }
-const unsupported = await tools.read(
-  { path: file.data.file.path },
-  { timeout_ms: 1 },
-);
-if (unsupported.status !== "error" || !unsupported.error || unsupported.error.code !== "invalid_input") {
-  throw new Error("a second argument must be invalid_input: " + JSON.stringify(unsupported));
+let unsupportedCode = "";
+try {
+  await tools.read({ path: file.file.path }, { timeout_ms: 1 });
+} catch (e) {
+  unsupportedCode = e instanceof ToolError ? e.code : e.name;
 }
 return {
-  path: file.data.file.path,
-  line: file.data.lines[0].text,
-  bad_code: bad.error.code,
-  unsupported_code: unsupported.error.code,
+  path: file.file.path,
+  line: file.lines[0].text,
+  bad_code: badCode,
+  unsupported_code: unsupportedCode,
   process_absent: typeof process === "undefined",
   require_absent: typeof require === "undefined",
   stats_mean: libs.stats.mean([1, 2, 3, 4]),
@@ -140,7 +141,7 @@ return {
     assert_eq!(value["path"], "src/a.rs");
     assert_eq!(value["line"], "fn needle_a() {}");
     assert_eq!(value["bad_code"], "invalid_input");
-    assert_eq!(value["unsupported_code"], "invalid_input");
+    assert_eq!(value["unsupported_code"], "TypeError");
     assert_eq!(value["process_absent"], true);
     assert_eq!(value["require_absent"], true);
     assert_eq!(value["stats_mean"], 2.5);
@@ -279,10 +280,10 @@ const results = await Promise.all([
   tools.probe({ id: 2 }),
   tools.probe({ id: 3 }),
 ]);
-if (results.some((result) => result.status !== "ok")) {
+if (results.some((result) => !result || result.id == null)) {
   throw new Error("parallel probe failed: " + JSON.stringify(results));
 }
-return results.map((result) => result.data.id);
+return results.map((result) => result.id);
 "#;
     let call = FunctionToolCall {
         arguments: json!({ "code": parallel_script }).to_string(),
@@ -316,11 +317,12 @@ return results.map((result) => result.data.id);
     );
 
     let timeout_script = r#"
-const result = await tools.probe({ id: 9 }, { timeout_ms: 1 });
-if (result.status !== "error" || !result.error || result.error.code !== "invalid_input") {
-  throw new Error("expected invalid_input: " + JSON.stringify(result));
+try {
+  await tools.probe({ id: 9 }, { timeout_ms: 1 });
+  return "resolved";
+} catch (e) {
+  return e instanceof ToolError ? e.code : e.name;
 }
-return result.error.code;
 "#;
     let call = FunctionToolCall {
         arguments: json!({ "code": timeout_script, "timeout_ms": 5_000 }).to_string(),
@@ -349,7 +351,7 @@ return result.error.code;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     assert!(result.data.is_none(), "{}", result.content);
     assert!(
-        result.content.contains("result:\ninvalid_input"),
+        result.content.contains("result:\nTypeError"),
         "{}",
         result.content
     );
