@@ -191,6 +191,8 @@ struct LedgerSnapshot {
     omitted: usize,
     omitted_diagnostics: usize,
     tool_counts: BTreeMap<String, usize>,
+    /// Settled per-tool ok/fail (unsettled & host-cancelled excluded).
+    by_tool: BTreeMap<String, (usize, usize)>,
     error_counts: BTreeMap<String, usize>,
     session_read_hidden: bool,
 }
@@ -202,6 +204,8 @@ struct CallLedger {
     omitted_diagnostics: AtomicUsize,
     priority_used: AtomicUsize,
     per_tool: Mutex<BTreeMap<String, usize>>,
+    /// Settled ok/fail per tool name. Host `cancelled` and unsettled are excluded.
+    by_tool: Mutex<BTreeMap<String, (usize, usize)>>,
     per_error: Mutex<BTreeMap<String, usize>>,
     session_read_hidden: AtomicBool,
 }
@@ -215,8 +219,28 @@ impl CallLedger {
             omitted_diagnostics: AtomicUsize::new(0),
             priority_used: AtomicUsize::new(0),
             per_tool: Mutex::new(BTreeMap::new()),
+            by_tool: Mutex::new(BTreeMap::new()),
             per_error: Mutex::new(BTreeMap::new()),
             session_read_hidden: AtomicBool::new(false),
+        }
+    }
+
+    /// Count a settled call into `by_tool`. Unsettled / host-cancelled stay out.
+    fn note_settled(&self, tool: &str, outcome: &str) {
+        let ok = outcome == "ok" || outcome.starts_with("ok(");
+        let fail = outcome.starts_with("error");
+        if !ok && !fail {
+            return;
+        }
+        let mut counts = self
+            .by_tool
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let entry = counts.entry(tool.to_string()).or_insert((0, 0));
+        if ok {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
         }
     }
 
@@ -280,6 +304,7 @@ impl CallLedger {
             .unwrap_or_else(|poison| poison.into_inner());
         if let Some(line) = lines.iter_mut().find(|line| line.seq == seq) {
             if line.outcome.is_none() {
+                self.note_settled(&line.tool, &outcome);
                 line.outcome = Some(outcome);
                 line.error_code = error_code;
                 line.error_message = error_message;
@@ -302,6 +327,7 @@ impl CallLedger {
         {
             self.priority_used.fetch_add(1, Ordering::Relaxed);
             self.omitted.fetch_sub(1, Ordering::Relaxed);
+            self.note_settled(&pending.tool, &outcome);
             self.lines
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
@@ -318,6 +344,8 @@ impl CallLedger {
                 });
             return;
         }
+        // Settled but not retained in the snap: still count for human by_tool.
+        self.note_settled(&pending.tool, &outcome);
         if pending.session_read {
             self.session_read_hidden.store(true, Ordering::Relaxed);
         }
@@ -366,6 +394,11 @@ impl CallLedger {
             omitted_diagnostics: self.omitted_diagnostics.load(Ordering::Relaxed),
             tool_counts: self
                 .per_tool
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .clone(),
+            by_tool: self
+                .by_tool
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clone(),
@@ -848,7 +881,7 @@ fn render_run_output(
         match outcome.value.as_ref().map(present_returned_value) {
             Some(Ok(presented)) => Some(presented),
             Some(Err(message)) => {
-                let content = render::render_model_view(&run_report(
+                let report = run_report(
                     ledger,
                     outcome,
                     None,
@@ -857,11 +890,10 @@ fn render_run_output(
                     None,
                     run_timeout_ms,
                     source,
-                ));
-                return ToolCallResult::error_with_kind(
-                    ToolErrorKind::InvalidOutput,
-                    content,
-                    false,
+                );
+                return finish_run_result(
+                    &report,
+                    Some((ToolErrorKind::InvalidOutput, false, None)),
                 );
             }
             None => None,
@@ -874,7 +906,7 @@ fn render_run_output(
         .failure
         .as_ref()
         .and_then(|failure| failure.resource);
-    let content = render::render_model_view(&run_report(
+    let report = run_report(
         ledger,
         outcome,
         presented,
@@ -883,10 +915,10 @@ fn render_run_output(
         resource,
         run_timeout_ms,
         source,
-    ));
+    );
 
-    if let Some(failure) = &outcome.failure {
-        let (kind, retryable, code) = if let Some(info) = &failure.tool_error {
+    let error = outcome.failure.as_ref().map(|failure| {
+        if let Some(info) = &failure.tool_error {
             (
                 outcome::kind_for_code(&info.code),
                 false,
@@ -907,13 +939,29 @@ fn render_run_output(
                 FailureKind::IllegalOutput => (ToolErrorKind::InvalidOutput, false, None),
                 FailureKind::Internal => (ToolErrorKind::Internal, false, None),
             }
-        };
+        }
+    });
+    finish_run_result(&report, error)
+}
+
+/// Compose model `content` + human/FE `data` aggregate (WP-201).
+fn finish_run_result(
+    report: &render::RunReport,
+    error: Option<(ToolErrorKind, bool, Option<String>)>,
+) -> ToolCallResult {
+    let content = render::render_model_view(report);
+    let data = render::human_data(report);
+    let mut result = if let Some((kind, retryable, code)) = error {
         let mut result = ToolCallResult::error_with_kind(kind, content, retryable);
         result.error_code = code;
-        return result;
+        result
+    } else {
+        ToolCallResult::ok(content)
+    };
+    if let Some(data) = data {
+        result.data = Some(data);
     }
-
-    ToolCallResult::ok(content)
+    result
 }
 
 fn run_report(
@@ -967,6 +1015,7 @@ fn run_report(
         diagnostics,
         diagnostics_omitted,
         tool_counts: snapshot.tool_counts.clone(),
+        by_tool: snapshot.by_tool.clone(),
         error_counts: snapshot.error_counts.clone(),
         call_total: Some(outcome.calls.len()),
         unsettled_total: Some(
@@ -1400,5 +1449,96 @@ mod outcome_tests {
         ));
         assert!(!text.contains("calls ("), "{text}");
         assert!(!text.contains("diagnostics:"), "{text}");
+        let data = render_run_output(&ledger, &outcome, 120_000, "")
+            .data
+            .expect("human data");
+        assert_eq!(data["succeeded"], 466);
+        assert_eq!(data["failed"], 0);
+        assert_eq!(data["duration_ms"], 25);
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["by_tool"]["read"]["ok"], 466);
+        assert_eq!(data["by_tool"]["read"]["fail"], 0);
+        assert!(data.get("unsettled").is_none());
+    }
+
+    #[test]
+    fn render_run_output_attaches_by_tool_data_without_leaking_into_content() {
+        let ledger = CallLedger::new();
+        ledger.begin(1, "read", "path=a.txt");
+        ledger.record(1, &ToolCallResult::ok("ok"));
+        ledger.begin(2, "write", "path=b.txt");
+        ledger.record(
+            2,
+            &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
+        );
+        let outcome = Outcome {
+            logs: Vec::new(),
+            value: Some(Json::new(json!("done"))),
+            failure: None,
+            duration_ms: 42,
+            calls: vec![
+                CallRecord {
+                    seq: 1,
+                    namespace: "tools".into(),
+                    name: "read".into(),
+                    started: Duration::from_millis(1),
+                    ended: Some(Duration::from_millis(2)),
+                    state: CallState::Completed,
+                },
+                CallRecord {
+                    seq: 2,
+                    namespace: "tools".into(),
+                    name: "write".into(),
+                    started: Duration::from_millis(3),
+                    ended: Some(Duration::from_millis(4)),
+                    state: CallState::Completed,
+                },
+            ],
+        };
+        let result = render_run_output(&ledger, &outcome, 120_000, "");
+        assert!(result.error.is_none(), "{}", result.content);
+        assert!(
+            result.content.starts_with("run_code ok · 1 succeeded, 1 failed · 42ms"),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("by_tool"), "{}", result.content);
+        assert!(!result.content.contains("calls ("), "{}", result.content);
+        assert!(!result.content.contains("@@run_code_data"), "{}", result.content);
+        let data = result.data.expect("data");
+        assert_eq!(data["succeeded"], 1);
+        assert_eq!(data["failed"], 1);
+        assert_eq!(data["duration_ms"], 42);
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["by_tool"]["read"]["ok"], 1);
+        assert_eq!(data["by_tool"]["read"]["fail"], 0);
+        assert_eq!(data["by_tool"]["write"]["ok"], 0);
+        assert_eq!(data["by_tool"]["write"]["fail"], 1);
+    }
+
+    #[test]
+    fn wont_start_data_is_minimal_without_by_tool() {
+        let ledger = CallLedger::new();
+        let outcome = Outcome {
+            logs: Vec::new(),
+            value: None,
+            failure: Some(Failure::syntax(
+                "Unexpected token `)`",
+                None,
+                1,
+            )),
+            duration_ms: 1,
+            calls: Vec::new(),
+        };
+        let result = render_run_output(&ledger, &outcome, 120_000, "return (;");
+        assert!(result.error.is_some());
+        assert!(result.content.starts_with("run_code failed: syntax"), "{}", result.content);
+        assert!(!result.content.contains("by_tool"), "{}", result.content);
+        let data = result.data.expect("minimal data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "syntax");
+        assert!(data.get("succeeded").is_none());
+        assert!(data.get("by_tool").is_none());
+        assert!(data.get("duration_ms").is_none());
     }
 }

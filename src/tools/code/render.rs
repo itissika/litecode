@@ -60,6 +60,8 @@ pub(super) struct RunReport {
     pub diagnostics: Vec<Diagnostic>,
     pub diagnostics_omitted: usize,
     pub tool_counts: BTreeMap<String, usize>,
+    /// Settled ok/fail per tool (human/FE aggregate; not rendered into content).
+    pub by_tool: BTreeMap<String, (usize, usize)>,
     pub error_counts: BTreeMap<String, usize>,
     pub call_total: Option<usize>,
     pub unsettled_total: Option<usize>,
@@ -106,6 +108,70 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
         text = explained_cut(&text, RUN_CODE_VIEW_MAX_BYTES);
     }
     text
+}
+
+/// Human / FE aggregate for `ToolCallResult.data`. Never mirrored into model content.
+///
+/// - Program started: full `{succeeded,failed,duration_ms,by_tool}` (+ optional ok /
+///   failure_kind / unsettled). Counts match the head (settled only).
+/// - Won't-start (syntax / setup): ultra-minimal `{ok:false, failure_kind}` only.
+pub(super) fn human_data(report: &RunReport) -> Option<Value> {
+    if did_not_start(report) {
+        let mut map = serde_json::Map::new();
+        map.insert("ok".into(), Value::Bool(false));
+        if let Some(kind) = report.failure_kind {
+            map.insert(
+                "failure_kind".into(),
+                Value::String(failure_kind_slug(kind).into()),
+            );
+        }
+        return Some(Value::Object(map));
+    }
+
+    let (succeeded, failed) = success_failure_counts(report);
+    let unsettled = unsettled_total(report);
+    let by_tool = by_tool_json(report);
+    let mut map = serde_json::Map::new();
+    map.insert("succeeded".into(), Value::from(succeeded as u64));
+    map.insert("failed".into(), Value::from(failed as u64));
+    map.insert("duration_ms".into(), Value::from(report.duration_ms));
+    map.insert("by_tool".into(), by_tool);
+    let ok = report.failure_kind.is_none();
+    map.insert("ok".into(), Value::Bool(ok));
+    if let Some(kind) = report.failure_kind {
+        map.insert(
+            "failure_kind".into(),
+            Value::String(failure_kind_slug(kind).into()),
+        );
+    }
+    if unsettled > 0 {
+        map.insert("unsettled".into(), Value::from(unsettled as u64));
+    }
+    Some(Value::Object(map))
+}
+
+fn by_tool_json(report: &RunReport) -> Value {
+    let mut map = serde_json::Map::new();
+    for (tool, (ok, fail)) in &report.by_tool {
+        map.insert(
+            tool.clone(),
+            serde_json::json!({ "ok": ok, "fail": fail }),
+        );
+    }
+    Value::Object(map)
+}
+
+fn failure_kind_slug(kind: FailureKind) -> &'static str {
+    match kind {
+        FailureKind::Syntax => "syntax",
+        FailureKind::Exception => "exception",
+        FailureKind::Timeout => "timeout",
+        FailureKind::Cancelled => "cancelled",
+        FailureKind::ResourceLimit => "resource_limit",
+        FailureKind::OutputLimit => "output_limit",
+        FailureKind::IllegalOutput => "illegal_output",
+        FailureKind::Internal => "internal",
+    }
 }
 
 fn assemble(fixed: &[String], logs: &Option<String>, result: &Option<String>) -> String {
@@ -546,6 +612,7 @@ mod tests {
             diagnostics: Vec::new(),
             diagnostics_omitted: 0,
             tool_counts: BTreeMap::new(),
+            by_tool: BTreeMap::new(),
             error_counts: BTreeMap::new(),
             call_total: None,
             unsettled_total: None,
@@ -738,5 +805,73 @@ mod tests {
         let text = render_model_view(&report);
         assert!(text.contains("result:\npartial-kept"), "{text}");
         assert!(text.starts_with("run_code failed: exception"), "{text}");
+    }
+
+    #[test]
+    fn human_data_matches_head_counts_and_stays_out_of_content() {
+        let mut report = report();
+        report.duration_ms = 42;
+        report.calls = vec![
+            snap(1, "read", "path=a.txt", "ok", None),
+            snap(2, "write", "path=b.txt", "error:permission_denied", Some("permission_denied")),
+            snap(3, "read", "path=c.txt", "ok", None),
+        ];
+        report.error_counts.insert("permission_denied".into(), 1);
+        report.by_tool.insert("read".into(), (2, 0));
+        report.by_tool.insert("write".into(), (0, 1));
+        report.call_total = Some(3);
+        let text = render_model_view(&report);
+        assert!(text.contains("2 succeeded, 1 failed"), "{text}");
+        assert!(!text.contains("by_tool"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        let data = human_data(&report).expect("data");
+        assert_eq!(data["succeeded"], 2);
+        assert_eq!(data["failed"], 1);
+        assert_eq!(data["duration_ms"], 42);
+        assert_eq!(data["ok"], true);
+        assert!(data.get("failure_kind").is_none());
+        assert_eq!(data["by_tool"]["read"]["ok"], 2);
+        assert_eq!(data["by_tool"]["read"]["fail"], 0);
+        assert_eq!(data["by_tool"]["write"]["ok"], 0);
+        assert_eq!(data["by_tool"]["write"]["fail"], 1);
+        assert!(data.get("unsettled").is_none());
+    }
+
+    #[test]
+    fn human_data_wont_start_is_minimal() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Syntax);
+        report.failure_text = Some("Unexpected token".into());
+        report.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        let data = human_data(&report).expect("minimal data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "syntax");
+        assert!(data.get("succeeded").is_none());
+        assert!(data.get("by_tool").is_none());
+        assert!(data.get("duration_ms").is_none());
+    }
+
+    #[test]
+    fn human_data_includes_unsettled_and_failure_kind() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Timeout);
+        report.duration_ms = 300;
+        report.calls = vec![
+            snap(1, "write", "path=a.txt", "ok", None),
+            snap(2, "write", "path=b.txt", "unsettled", None),
+        ];
+        report.by_tool.insert("write".into(), (1, 0));
+        report.call_total = Some(2);
+        report.unsettled_total = Some(1);
+        let data = human_data(&report).expect("data");
+        assert_eq!(data["succeeded"], 1);
+        assert_eq!(data["failed"], 0);
+        assert_eq!(data["unsettled"], 1);
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "timeout");
+        assert_eq!(data["duration_ms"], 300);
+        let text = render_model_view(&report);
+        assert!(!text.contains("by_tool"), "{text}");
+        assert!(!text.contains("\"unsettled\":"), "{text}");
     }
 }
