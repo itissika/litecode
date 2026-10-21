@@ -4,7 +4,7 @@
 **分支：** `feat/tool-contract-ptc`（实验；**不合 main**）  
 **方案：** `plan.md`（Q1A 软失败 / Q2A fake-ip / Q3 名不变 / Q4A 结构化 data / Q5B 硬错 ToolError）  
 **基线：** `b38ebc4`（WP-202 tip）  
-**本 tip：** `PLACEHOLDER`
+**本 tip：** `4f7b755ed3a8e1c3e323e4c41fb99c40db7ebc53`
 
 | # | done_when | 结果 |
 |---|-----------|------|
