@@ -2,7 +2,7 @@
 //!
 //! Two spaces, kept distinct:
 //! - **File lines** are 1-based inclusive. Same number in `read` `start_line` /
-//!   `end_line`, `lsp` `line`, and `L12` / `L12-15` labels.
+//!   `end_line`, LSP tools' `line`/`character`, and `L12` / `L12-15` labels.
 //! - **Hit offset** is a 0-based index into an agent result list (`grep`,
 //!   `session_search`). It is never a file line.
 //!

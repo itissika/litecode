@@ -29,9 +29,58 @@ fn format_locations(result: &Value) -> String {
         .join("\n")
 }
 
+/// One location for Code-surface LSP tools (1-based line/character).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LocationItem {
+    pub path: String,
+    pub line: u64,
+    pub character: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_character: Option<u64>,
+}
+
+/// Symbol row for document_symbol / workspace_symbol (1-based).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SymbolItem {
+    pub name: String,
+    pub kind: String,
+    pub line: u64,
+    pub character: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_character: Option<u64>,
+    /// Required for workspace_symbol; omitted for document_symbol when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// One diagnostic item (1-based). `path` is the queried file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DiagnosticItem {
+    pub severity: String,
+    pub path: String,
+    pub line: u64,
+    pub character: u64,
+    pub message: String,
+}
+
+pub(crate) const MAX_LOCATIONS: usize = 100;
+pub(crate) const MAX_DIAGNOSTIC_ITEMS: usize = 100;
+pub(crate) const MAX_SYMBOLS: usize = 200;
+
 pub(crate) fn extract_locations(result: &Value) -> Vec<(String, u64, u64)> {
+    extract_location_items(result)
+        .into_iter()
+        .map(|loc| (loc.path, loc.line, loc.character))
+        .collect()
+}
+
+pub(crate) fn extract_location_items(result: &Value) -> Vec<LocationItem> {
     let mut out = Vec::new();
-    fn parse_one(val: &Value) -> Option<(String, u64, u64)> {
+    fn parse_one(val: &Value) -> Option<LocationItem> {
         let uri = val
             .get("uri")
             .or_else(|| val.get("targetUri"))
@@ -43,10 +92,19 @@ pub(crate) fn extract_locations(result: &Value) -> Vec<(String, u64, u64)> {
         let start = range.get("start")?;
         let line = start["line"].as_u64()? + 1;
         let character = start["character"].as_u64()? + 1;
+        let end = range.get("end");
+        let end_line = end.and_then(|e| e["line"].as_u64()).map(|l| l + 1);
+        let end_character = end.and_then(|e| e["character"].as_u64()).map(|c| c + 1);
         let path = uri_to_path(uri)
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| uri.to_string());
-        Some((path, line, character))
+        Some(LocationItem {
+            path,
+            line,
+            character,
+            end_line,
+            end_character,
+        })
     }
     if let Some(arr) = result.as_array() {
         for item in arr {
@@ -60,7 +118,104 @@ pub(crate) fn extract_locations(result: &Value) -> Vec<(String, u64, u64)> {
     out
 }
 
-fn format_hover(result: &Value) -> String {
+pub(crate) fn extract_hover_markdown(result: &Value) -> String {
+    format_hover(result)
+}
+
+pub(crate) fn extract_diagnostic_items(result: &Value, file_path: &str) -> Vec<DiagnosticItem> {
+    let Some(diags) = result.as_array() else {
+        return Vec::new();
+    };
+    diags.iter()
+        .filter_map(|diag| {
+            let severity = match diag["severity"].as_u64().unwrap_or(0) {
+                1 => "Error",
+                2 => "Warning",
+                3 => "Information",
+                4 => "Hint",
+                _ => "Unknown",
+            };
+            let message = diag["message"].as_str()?.to_string();
+            let start = diag.get("range").and_then(|r| r.get("start"));
+            let line = start.and_then(|s| s["line"].as_u64()).map(|l| l + 1).unwrap_or(1);
+            let character = start
+                .and_then(|s| s["character"].as_u64())
+                .map(|c| c + 1)
+                .unwrap_or(1);
+            Some(DiagnosticItem {
+                severity: severity.into(),
+                path: file_path.to_string(),
+                line,
+                character,
+                message,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn extract_symbol_items(result: &Value, require_path: bool) -> Vec<SymbolItem> {
+    let mut out = Vec::new();
+    fn walk(val: &Value, require_path: bool, out: &mut Vec<SymbolItem>) {
+        if let Some(arr) = val.as_array() {
+            for item in arr {
+                walk(item, require_path, out);
+            }
+            return;
+        }
+        let Some(name) = val.get("name").and_then(|n| n.as_str()) else {
+            return;
+        };
+        let kind = val
+            .get("kind")
+            .and_then(|k| k.as_u64())
+            .map(symbol_kind_name)
+            .unwrap_or("Symbol")
+            .to_string();
+        let loc = val
+            .get("location")
+            .or_else(|| val.get("selectionRange").map(|_| val));
+        let range = loc
+            .and_then(|l| l.get("range").or_else(|| l.get("selectionRange")))
+            .or_else(|| val.get("selectionRange").or_else(|| val.get("range")));
+        let start = range.and_then(|r| r.get("start"));
+        let end = range.and_then(|r| r.get("end"));
+        let line = start.and_then(|s| s["line"].as_u64()).map(|l| l + 1).unwrap_or(1);
+        let character = start
+            .and_then(|s| s["character"].as_u64())
+            .map(|c| c + 1)
+            .unwrap_or(1);
+        let end_line = end.and_then(|e| e["line"].as_u64()).map(|l| l + 1);
+        let end_character = end.and_then(|e| e["character"].as_u64()).map(|c| c + 1);
+        let path = loc
+            .and_then(|l| l.get("uri").and_then(|u| u.as_str()))
+            .or_else(|| val.get("uri").and_then(|u| u.as_str()))
+            .map(|uri| {
+                uri_to_path(uri)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| uri.to_string())
+            });
+        if require_path && path.is_none() {
+            // skip workspace rows without a path
+        } else {
+            out.push(SymbolItem {
+                name: name.to_string(),
+                kind,
+                line,
+                character,
+                end_line,
+                end_character,
+                path,
+            });
+        }
+        if let Some(children) = val.get("children") {
+            walk(children, require_path, out);
+        }
+    }
+    walk(result, require_path, &mut out);
+    out
+}
+
+pub(crate) fn format_hover(result: &Value) -> String {
     if result.is_null() {
         return "No hover information available".to_string();
     }
@@ -196,7 +351,7 @@ fn format_symbols(result: &Value) -> String {
     }
 }
 
-fn symbol_kind_name(kind: u64) -> &'static str {
+pub(crate) fn symbol_kind_name(kind: u64) -> &'static str {
     // LSP SymbolKind
     match kind {
         1 => "File",

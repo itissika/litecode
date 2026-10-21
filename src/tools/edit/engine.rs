@@ -130,6 +130,8 @@ impl EditEngine {
         };
 
         // Fold LSP / path-risk notes into message (no structured details tree).
+        // lsp_feedback attaches `lsp_error` as diagnostics (content stays empty
+        // until finalize); pull those into message for the EditResult contract.
         if let Some(engines) = self.ide.as_ref().map(|ide| ide.engines.as_ref()) {
             let stub = crate::types::ToolCallResult::ok(String::new());
             let annotated = crate::tools::lsp_feedback::maybe_append_local_lsp_errors(
@@ -138,9 +140,26 @@ impl EditEngine {
                 stub,
             )
             .await;
-            if !annotated.content.is_empty() {
+            for diag in &annotated.diagnostics {
+                if diag.code != "lsp_error" {
+                    continue;
+                }
                 message.push('\n');
-                message.push_str(annotated.content.trim());
+                message.push_str(&diag.message);
+                if let Some(text) = diag
+                    .details
+                    .as_ref()
+                    .and_then(|d| d.get("text"))
+                    .and_then(|t| t.as_str())
+                {
+                    message.push('\n');
+                    message.push_str(text);
+                }
+            }
+            let finalized = annotated.finalize_signals();
+            if !finalized.content.is_empty() {
+                message.push('\n');
+                message.push_str(finalized.content.trim());
             }
         }
         let risk = crate::tools::file_path::with_path_risk_warning(

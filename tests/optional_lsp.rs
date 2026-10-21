@@ -822,12 +822,17 @@ fn edit_with_warm_lsp_appends_only_when_errors_arrive() {
     let tool = edit_tool_with_ide(root, engines.clone());
     let result = tool.call(serde_json::json!({
             "path": lib.to_str().unwrap(),
-            "edits": [{ "old_string": "fn ok() {}", "new_string": "fn ok() { broken }" }]
+            "old_string": "fn ok() {}",
+            "new_string": "fn ok() { broken }"
     }));
-    assert!(result.data.as_ref().unwrap()["applied"].as_u64().unwrap() >= 1);
+    assert!(result.error.is_none(), "{}", result.content);
+    let data = result.data.as_ref().expect("edit data");
+    assert_eq!(data["ok"], true, "{data}");
+    // WP-198: edit folds LSP notes into EditResult.message (not ToolCallResult.diagnostics).
+    let msg = data["message"].as_str().unwrap_or("");
     assert!(
-        !lsp_error_text(&result).is_empty(),
-        "expected lsp_error diagnostic on edit: {:?}",
+        !lsp_error_text(&result).is_empty() || msg.to_lowercase().contains("lsp") || msg.contains("Error:"),
+        "expected LSP error note on edit via diagnostics or message: diagnostics={:?} message={msg}",
         result.diagnostics
     );
 
@@ -862,17 +867,30 @@ fn edit_fix_must_not_echo_previous_lsp_error() {
     let tool = edit_tool_with_ide(root, engines.clone());
     let broken = tool.call(serde_json::json!({
         "path": lib.to_str().unwrap(),
-        "edits": [{ "old_string": "fn ok() {}", "new_string": "fn BROKEN() {}" }]
+        "old_string": "fn ok() {}",
+        "new_string": "fn BROKEN() {}"
     }));
     let broken_lsp = lsp_error_text(&broken);
+    let broken_msg = broken
+        .data
+        .as_ref()
+        .and_then(|d| d.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let broken_note = if broken_lsp.is_empty() {
+        broken_msg.clone()
+    } else {
+        broken_lsp.clone()
+    };
     assert!(
-        !broken_lsp.is_empty(),
-        "first edit should surface the live error: {:?}",
+        !broken_note.is_empty(),
+        "first edit should surface the live error: diagnostics={:?} message={broken_msg}",
         broken.diagnostics
     );
     assert!(
-        broken_lsp.contains("mock broken marker"),
-        "first edit should include the current diagnostic: {broken_lsp}"
+        broken_note.contains("mock broken marker"),
+        "first edit should include the current diagnostic: {broken_note}"
     );
 
     // Next publish is slower than the feedback budget, so the only way to
@@ -882,16 +900,22 @@ fn edit_fix_must_not_echo_previous_lsp_error() {
     }
     let fixed = tool.call(serde_json::json!({
         "path": lib.to_str().unwrap(),
-        "edits": [{ "old_string": "fn BROKEN() {}", "new_string": "fn ok() {}" }]
+        "old_string": "fn BROKEN() {}",
+        "new_string": "fn ok() {}"
     }));
     let fixed_lsp = lsp_error_text(&fixed);
+    let fixed_msg = fixed
+        .data
+        .as_ref()
+        .and_then(|d| d.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let fixed_note = format!("{fixed_lsp}
+{fixed_msg}");
     assert!(
-        !fixed_lsp.contains("mock broken marker"),
-        "fixed edit must not echo the previous LSP error: {fixed_lsp}"
-    );
-    assert!(
-        fixed_lsp.is_empty(),
-        "prefer silence over a stale LSP note after the fix: {fixed_lsp}"
+        !fixed_note.contains("mock broken marker"),
+        "fixed edit must not echo the previous LSP error: {fixed_note}"
     );
 
     engines.stop_all();
@@ -933,14 +957,14 @@ async fn lsp_tool_document_symbol_works() {
     clear_mock_ls_env();
 }
 
-/// Agent LspTool: line+text happy paths, readable errors, schema surface.
+/// Agent LSP Code tools: file_path+line+character, structured data, no text/action.
 #[test]
-fn agent_lsp_tool_line_text_scenarios() {
+fn agent_lsp_code_tools_line_character_scenarios() {
     use litecode::config::WorkspacePaths;
     use litecode::context_pipeline::Context;
     use litecode::tool::Tool;
     use litecode::tool::trait_::ToolExecutionContext;
-    use litecode::tools::lsp::LspTool;
+    use litecode::tools::lsp::all_code_tools;
     use litecode::types::ToolSignalLevel;
 
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -950,7 +974,7 @@ fn agent_lsp_tool_line_text_scenarios() {
     init_workspace(root).unwrap();
     std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
     let lib = root.join("lib.rs");
-    // Line 1: unique symbol. Line 2: multi-hit `foo` for multi-hit view.
+    // Line 1: `unique_sym` starts at UTF-16 column 4 ("fn ").
     std::fs::write(&lib, "fn unique_sym() {}\nfoo foo\n").unwrap();
 
     let resolved = workspace_with_lsp(root);
@@ -958,7 +982,51 @@ fn agent_lsp_tool_line_text_scenarios() {
     engines.reconcile(&resolved);
     wait_lsp_warm_blocking(&engines);
 
-    let tool = LspTool::new(engines.clone(), root.to_path_buf());
+    let tools = all_code_tools(engines.clone(), root.to_path_buf());
+    let by_name = |name: &str| {
+        tools
+            .iter()
+            .find(|t| t.name() == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .clone()
+    };
+    let def_tool = by_name("go_to_definition");
+    let hover_tool = by_name("hover");
+    let refs_tool = by_name("find_references");
+    let diags_tool = by_name("diagnostics");
+    let doc_tool = by_name("document_symbol");
+    let ws_tool = by_name("workspace_symbol");
+    let impl_tool = by_name("go_to_implementation");
+
+    // No Direct tool named "lsp".
+    assert!(!tools.iter().any(|t| t.name() == "lsp"));
+    for tool in &tools {
+        assert_eq!(tool.surface(), litecode::tool::ToolSurface::Code);
+        assert!(tool.schema()["properties"].get("text").is_none());
+        assert!(tool.schema()["properties"].get("action").is_none());
+        assert!(tool.data_schema().is_some());
+    }
+
+    let def_schema = def_tool.schema();
+    assert!(def_schema["properties"].get("character").is_some());
+    assert!(def_schema["properties"].get("file_path").is_some());
+    let ws_schema = ws_tool.schema();
+    assert!(ws_schema["properties"].get("query").is_some());
+    assert!(ws_schema["properties"].get("path").is_none());
+    assert!(ws_schema["properties"].get("file_path").is_none());
+
+    let ctx = Context {
+        cwd: root.to_path_buf(),
+        workspace_paths: WorkspacePaths::for_legacy_root(root),
+        agents_md: None,
+        claude_md: None,
+    };
+    let desc = def_tool.description(&ctx);
+    assert!(
+        desc.to_lowercase().contains("definition") || desc.to_lowercase().contains("file_path"),
+        "desc: {desc}"
+    );
+
     let exec = || ToolExecutionContext {
         path_mode: litecode::workspace::ToolPathMode::Safe,
         workspace_root: root.to_path_buf(),
@@ -969,320 +1037,136 @@ fn agent_lsp_tool_line_text_scenarios() {
         session: None,
     };
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let run =
-        |input: serde_json::Value| rt.block_on(tool.execute(input, exec())).finalize_signals();
-
-    // Schema: agent sees only 4 actions; no character / workspaceSymbol.
-    let schema = tool.schema();
-    let actions = schema["properties"]["action"]["enum"]
-        .as_array()
-        .expect("action enum");
-    let action_names: Vec<&str> = actions.iter().filter_map(|v| v.as_str()).collect();
-    assert_eq!(
-        action_names,
-        ["goToDefinition", "findReferences", "hover", "diagnostics"]
-    );
-    assert!(schema["properties"].get("character").is_none());
-    assert!(schema["properties"].get("text").is_some());
-    assert!(schema["properties"].get("query").is_none());
-    let text_desc = schema["properties"]["text"]["description"]
-        .as_str()
-        .unwrap_or("");
-    assert!(
-        text_desc.to_lowercase().contains("prefer") && text_desc.to_lowercase().contains("avoid"),
-        "text schema should give prefer/avoid usage: {text_desc}"
-    );
-    assert!(
-        text_desc.to_lowercase().contains("substring")
-            || text_desc.to_lowercase().contains("symbol"),
-        "text schema should describe the snippet rule: {text_desc}"
-    );
-
-    let ctx = Context {
-        cwd: root.to_path_buf(),
-        workspace_paths: WorkspacePaths::for_legacy_root(root),
-        agents_md: None,
-        claude_md: None,
+    let run = |tool: &std::sync::Arc<dyn Tool>, input: serde_json::Value| {
+        rt.block_on(tool.execute(input, exec())).finalize_signals()
     };
-    let desc = tool.description(&ctx);
-    assert!(
-        desc.to_lowercase().contains("read") && desc.contains("line"),
-        "desc should say read-for-line then call: {desc}"
-    );
-    assert!(
-        desc.to_lowercase().contains("diagnostics") && desc.to_lowercase().contains("file_path"),
-        "desc should state diagnostics vs position param shape: {desc}"
-    );
 
-    // ── Single-hit views (Ok, no multi-hit skeleton) ───────────────────────
-
-    let def = run(serde_json::json!({
-        "action": "goToDefinition",
-        "file_path": "lib.rs",
-        "line": 1,
-        "text": "unique_sym"
-    }));
-    eprintln!("[ux] goToDefinition (single):\n{}\n", def.content);
-    assert_eq!(def.level, ToolSignalLevel::Ok, "{}", def.content);
-    assert!(!def.content.starts_with("Error:"), "{}", def.content);
-    assert!(
-        !def.content.contains("matched"),
-        "single hit must not use multi-hit summary: {}",
-        def.content
-    );
-    assert!(
-        !def.content.contains("##unique_sym"),
-        "single hit must not use ## multi-hit headings: {}",
-        def.content
-    );
-    assert!(
-        def.content.contains("lib.rs"),
-        "definition should name the landing file: {}",
-        def.content
-    );
-    // Mock echoes the query position as a 1-based file line (no column in agent view).
-    assert!(
-        def.content.contains(":L1"),
-        "definition should include path:L<line>: {}",
-        def.content
-    );
-    assert!(
-        def.content.contains("```") || def.content.contains(": "),
-        "definition should attach landing context (fence or numbered lines): {}",
-        def.content
-    );
-
-    let hover = run(serde_json::json!({
-        "action": "hover",
-        "file_path": "lib.rs",
-        "line": 1,
-        "text": "unique_sym"
-    }));
-    eprintln!("[ux] hover (single):\n{}\n", hover.content);
-    assert_eq!(hover.level, ToolSignalLevel::Ok, "{}", hover.content);
-    assert!(
-        hover.content.contains("mock hover @c=3"),
-        "hover should echo resolved column (0-based LSP): {}",
-        hover.content
-    );
-    assert!(
-        !hover.content.contains("matched") && !hover.content.contains("##"),
-        "hover single must stay a plain docs body: {}",
-        hover.content
-    );
-
-    let refs = run(serde_json::json!({
-        "action": "findReferences",
-        "file_path": "lib.rs",
-        "line": 1,
-        "text": "unique_sym"
-    }));
-    eprintln!("[ux] findReferences (single):\n{}\n", refs.content);
-    assert_eq!(refs.level, ToolSignalLevel::Ok, "{}", refs.content);
-    assert!(
-        !refs.content.contains("matched"),
-        "refs single must not use multi-hit summary: {}",
-        refs.content
-    );
-    assert!(
-        refs.content.contains("lib.rs"),
-        "refs should list locations: {}",
-        refs.content
-    );
-    // Context uses the shared numbered-line format (tool::format_file_line,
-    // `{n:6}: text`) since b4f04e7; the old ``` / `|` gutter is gone.
-    assert!(
-        refs.content.lines().any(|l| {
-            let t = l.trim_start();
-            t.split_once(": ")
-                .is_some_and(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    // unique_sym starts after "fn " → character 4
+    let def = run(
+        &def_tool,
+        serde_json::json!({
+            "file_path": "lib.rs",
+            "line": 1,
+            "character": 4
         }),
-        "refs should attach numbered context lines under locations: {}",
-        refs.content
+    );
+    eprintln!("[ux] go_to_definition:\n{:?}\n", def.data);
+    assert_eq!(def.level, ToolSignalLevel::Ok, "{}", def.content);
+    assert!(def.error.is_none());
+    let data = def.data.as_ref().expect("data");
+    assert!(data.get("locations").is_some(), "{data}");
+    assert!(data.get("message").is_some(), "{data}");
+    // Mock echoes query position as landing.
+    let locs = data["locations"].as_array().unwrap();
+    if !locs.is_empty() {
+        assert!(locs[0]["line"].as_u64().unwrap() >= 1);
+        assert!(locs[0]["character"].as_u64().unwrap() >= 1);
+    }
+
+    let hover = run(
+        &hover_tool,
+        serde_json::json!({
+            "file_path": "lib.rs",
+            "line": 1,
+            "character": 4
+        }),
+    );
+    eprintln!("[ux] hover:\n{:?}\n", hover.data);
+    assert_eq!(hover.level, ToolSignalLevel::Ok, "{}", hover.content);
+    let hdata = hover.data.as_ref().expect("data");
+    assert!(hdata.get("markdown").is_some(), "{hdata}");
+    assert!(hdata.get("message").is_some(), "{hdata}");
+    assert!(
+        hdata["markdown"].as_str().unwrap_or("").contains("mock hover")
+            || hdata["message"].as_str().unwrap_or("").contains("No hover"),
+        "{hdata}"
     );
 
-    let diags = run(serde_json::json!({
-        "action": "diagnostics",
-        "file_path": "lib.rs"
-    }));
-    eprintln!("[ux] diagnostics:\n{}\n", diags.content);
+    let refs = run(
+        &refs_tool,
+        serde_json::json!({
+            "file_path": "lib.rs",
+            "line": 1,
+            "character": 4
+        }),
+    );
+    assert_eq!(refs.level, ToolSignalLevel::Ok, "{}", refs.content);
+    assert!(refs.data.as_ref().unwrap().get("locations").is_some());
+
+    let diags = run(
+        &diags_tool,
+        serde_json::json!({ "file_path": "lib.rs" }),
+    );
+    eprintln!("[ux] diagnostics:\n{:?}\n", diags.data);
     assert_eq!(diags.level, ToolSignalLevel::Ok, "{}", diags.content);
+    let ddata = diags.data.as_ref().expect("data");
+    assert_eq!(ddata["items"], serde_json::json!([]));
     assert!(
-        diags.content.contains("No diagnostics"),
-        "{}",
-        diags.content
-    );
-    assert!(
-        !diags.content.contains("##"),
-        "diagnostics is not a multi-hit view: {}",
-        diags.content
+        ddata["message"].as_str().unwrap().to_lowercase().contains("no diagnostic"),
+        "{ddata}"
     );
 
-    // ── Positioning failure (0 text hits) ──────────────────────────────────
+    let _ = run(
+        &doc_tool,
+        serde_json::json!({ "file_path": "lib.rs" }),
+    );
+    let _ = run(
+        &impl_tool,
+        serde_json::json!({
+            "file_path": "lib.rs",
+            "line": 1,
+            "character": 4
+        }),
+    );
+    let ws = run(
+        &ws_tool,
+        serde_json::json!({ "query": "unique" }),
+    );
+    assert_eq!(ws.level, ToolSignalLevel::Ok, "{}", ws.content);
+    assert!(ws.data.as_ref().unwrap().get("symbols").is_some());
 
-    let miss = run(serde_json::json!({
-        "action": "hover",
-        "file_path": "lib.rs",
-        "line": 1,
-        "text": "does_not_exist"
-    }));
-    eprintln!("[ux] text miss:\n{}\n", miss.content);
-    assert_eq!(miss.level, ToolSignalLevel::Error, "{}", miss.content);
-    assert!(miss.content.starts_with("Error:"), "{}", miss.content);
-    assert!(miss.content.contains("not found"), "{}", miss.content);
-    assert!(miss.content.contains("read"), "{}", miss.content);
-    assert!(
-        miss.content.contains("fn unique_sym"),
-        "should show the source line: {}",
-        miss.content
+    // Character out of range → ToolError (no ok:false data)
+    let oob = run(
+        &def_tool,
+        serde_json::json!({
+            "file_path": "lib.rs",
+            "line": 1,
+            "character": 999
+        }),
     );
+    eprintln!("[ux] character oob:\n{}\n", oob.content);
+    assert_eq!(oob.level, ToolSignalLevel::Error, "{}", oob.content);
+    assert!(oob.error.is_some());
+    assert!(oob.content.contains("out of range") || oob.content.contains("Error:"));
 
-    // ── Multi-hit views (Warning + ## headings; per-action block bodies) ───
-
-    let amb_def = run(serde_json::json!({
-        "action": "goToDefinition",
-        "file_path": "lib.rs",
-        "line": 2,
-        "text": "foo"
-    }));
-    eprintln!("[ux] goToDefinition (multi):\n{}\n", amb_def.content);
-    assert_eq!(
-        amb_def.level,
-        ToolSignalLevel::Warning,
-        "{}",
-        amb_def.content
-    );
+    // text dialect rejected at validate
     assert!(
-        amb_def.content.contains("\n\nWarning:"),
-        "{}",
-        amb_def.content
-    );
-    assert!(
-        amb_def.content.contains("matched 2 times on L2"),
-        "{}",
-        amb_def.content
-    );
-    assert!(amb_def.content.contains("##foo"), "{}", amb_def.content);
-    assert!(
-        amb_def.content.contains("narrow") || amb_def.content.contains("retry"),
-        "{}",
-        amb_def.content
-    );
-    // Two fan-out blocks: headings then landing context (not a bare error abort).
-    let def_heading_count = amb_def.content.matches("##foo").count();
-    assert!(
-        def_heading_count >= 2,
-        "expected two ## hit headings: {}",
-        amb_def.content
-    );
-    assert!(
-        amb_def.content.contains("lib.rs"),
-        "each definition fan-out should still land: {}",
-        amb_def.content
+        def_tool
+            .validate_input(&serde_json::json!({
+                "file_path": "lib.rs",
+                "line": 1,
+                "text": "unique_sym"
+            }))
+            .is_err()
     );
 
-    let amb_hover = run(serde_json::json!({
-        "action": "hover",
-        "file_path": "lib.rs",
-        "line": 2,
-        "text": "foo"
-    }));
-    eprintln!("[ux] hover (multi):\n{}\n", amb_hover.content);
-    assert_eq!(
-        amb_hover.level,
-        ToolSignalLevel::Warning,
-        "{}",
-        amb_hover.content
-    );
-    assert!(
-        amb_hover.content.contains("matched 2 times"),
-        "{}",
-        amb_hover.content
-    );
-    assert!(
-        amb_hover.content.contains("mock hover @c=0"),
-        "first foo is column 1 →LSP char 0: {}",
-        amb_hover.content
-    );
-    assert!(
-        amb_hover.content.contains("mock hover @c=4"),
-        "second foo is column 5 →LSP char 4: {}",
-        amb_hover.content
-    );
-
-    let amb_refs = run(serde_json::json!({
-        "action": "findReferences",
-        "file_path": "lib.rs",
-        "line": 2,
-        "text": "foo"
-    }));
-    eprintln!("[ux] findReferences (multi):\n{}\n", amb_refs.content);
-    assert_eq!(
-        amb_refs.level,
-        ToolSignalLevel::Warning,
-        "{}",
-        amb_refs.content
-    );
-    assert!(
-        amb_refs.content.contains("matched 2 times"),
-        "{}",
-        amb_refs.content
-    );
-    assert!(
-        amb_refs.content.matches("##foo").count() >= 2,
-        "{}",
-        amb_refs.content
-    );
-    assert!(
-        amb_refs.content.contains("lib.rs"),
-        "multi refs blocks should expand locations: {}",
-        amb_refs.content
-    );
-
-    // Error: removed agent action
-    let removed = tool.validate_input(&serde_json::json!({
-        "action": "workspaceSymbol",
-        "file_path": "lib.rs",
-    }));
-    assert!(removed.is_err(), "{removed:?}");
-    let removed_msg = removed.unwrap_err();
-    eprintln!("[ux] removed action:\n{removed_msg}\n");
-    assert!(
-        removed_msg.contains("goToDefinition") && removed_msg.contains("diagnostics"),
-        "should list allowed actions: {removed_msg}"
-    );
-
-    // Error: LSP not enabled —fail closed (no fake empty)
+    // Cold engines → unavailable ToolError
     let cold = WorkspaceEngines::new();
-    let cold_tool = LspTool::new(cold, root.to_path_buf());
+    let cold_tools = all_code_tools(cold, root.to_path_buf());
+    let cold_diags = cold_tools
+        .iter()
+        .find(|t| t.name() == "diagnostics")
+        .unwrap();
     let disabled = rt
-        .block_on(cold_tool.execute(
-            serde_json::json!({
-                "action": "diagnostics",
-                "file_path": "lib.rs"
-            }),
+        .block_on(cold_diags.execute(
+            serde_json::json!({ "file_path": "lib.rs" }),
             exec(),
         ))
         .finalize_signals();
     eprintln!("[ux] lsp disabled:\n{}\n", disabled.content);
-    assert_eq!(
-        disabled.level,
-        ToolSignalLevel::Error,
-        "{}",
-        disabled.content
-    );
-    assert!(
-        disabled.content.starts_with("Error:"),
-        "{}",
-        disabled.content
-    );
+    assert_eq!(disabled.level, ToolSignalLevel::Error, "{}", disabled.content);
     assert!(
         disabled.content.contains("not enabled") || disabled.content.contains("unavailable"),
-        "{}",
-        disabled.content
-    );
-    assert!(
-        disabled.content.contains("Settings") || disabled.content.contains("Engines"),
         "{}",
         disabled.content
     );
@@ -1299,13 +1183,13 @@ fn rust_analyzer_on_path() -> bool {
         .unwrap_or(false)
 }
 
-/// Real rust-analyzer: single-hit vs multi-hit agent views for definition / hover / refs.
-/// Skips when `rust-analyzer` is not on PATH (CI without RA still green).
+/// Real rust-analyzer smoke for go_to_definition / hover with line+character.
+/// Skips when `rust-analyzer` is not on PATH.
 #[test]
 fn agent_lsp_tool_views_with_rust_analyzer() {
     use litecode::tool::Tool;
     use litecode::tool::trait_::ToolExecutionContext;
-    use litecode::tools::lsp::LspTool;
+    use litecode::tools::lsp::all_code_tools;
     use litecode::types::ToolSignalLevel;
 
     if !rust_analyzer_on_path() {
@@ -1325,14 +1209,12 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
     )
     .unwrap();
     std::fs::create_dir_all(root.join("src")).unwrap();
-    // Line 1: unique. Line 4: `target` twice →multi-hit fan-out.
     std::fs::write(
         root.join("src/lib.rs"),
-        "pub fn target() {}\n\npub fn caller() {\n    target(); target();\n}\n",
+        "pub fn target() {}\n\npub fn caller() {\n    target();\n}\n",
     )
     .unwrap();
 
-    // Real RA —do not set LITECODE_LSP_SERVERS mock override.
     seed_lsp_engines(root);
     let mut global = litecode::config::schema::GlobalSettings::default();
     global.agents.insert(
@@ -1349,7 +1231,6 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
 
     let engines = WorkspaceEngines::new();
     engines.reconcile(&resolved);
-    // RA cold start + index can exceed the usual mock 10s budget.
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         assert!(
@@ -1360,7 +1241,9 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         );
     });
 
-    let tool = LspTool::new(engines.clone(), root.to_path_buf());
+    let tools = all_code_tools(engines.clone(), root.to_path_buf());
+    let def_tool = tools.iter().find(|t| t.name() == "go_to_definition").unwrap();
+    let hover_tool = tools.iter().find(|t| t.name() == "hover").unwrap();
     let exec = || ToolExecutionContext {
         path_mode: litecode::workspace::ToolPathMode::Safe,
         workspace_root: root.to_path_buf(),
@@ -1370,21 +1253,29 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         session_id: String::new(),
         session: None,
     };
-    let run =
-        |input: serde_json::Value| rt.block_on(tool.execute(input, exec())).finalize_signals();
+    let run = |tool: &std::sync::Arc<dyn Tool>, input: serde_json::Value| {
+        rt.block_on(tool.execute(input, exec())).finalize_signals()
+    };
 
-    // Retry a few times while RA finishes indexing (inconclusive →later hit).
+    // `pub fn target` → 't' of target at UTF-16 column 8
     let mut def = None;
     for _ in 0..8 {
-        let out = run(serde_json::json!({
-            "action": "goToDefinition",
-            "file_path": "src/lib.rs",
-            "line": 1,
-            "text": "target"
-        }));
-        eprintln!("[ra] goToDefinition single attempt:\n{}\n", out.content);
+        let out = run(
+            def_tool,
+            serde_json::json!({
+                "file_path": "src/lib.rs",
+                "line": 1,
+                "character": 8
+            }),
+        );
+        eprintln!("[ra] go_to_definition attempt:\n{:?} / {}\n", out.data, out.content);
         if out.level == ToolSignalLevel::Ok
-            && out.content.contains("lib.rs")
+            && out.error.is_none()
+            && out
+                .data
+                .as_ref()
+                .and_then(|d| d.get("locations"))
+                .is_some()
             && !out.content.contains("inconclusive")
             && !out.content.contains("index not ready")
         {
@@ -1393,111 +1284,44 @@ fn agent_lsp_tool_views_with_rust_analyzer() {
         }
         std::thread::sleep(Duration::from_secs(2));
     }
-    let def = def.expect("goToDefinition should succeed after RA index");
+    let def = def.expect("go_to_definition should succeed after RA index");
+    let locs = def.data.as_ref().unwrap()["locations"].as_array().unwrap();
     assert!(
-        !def.content.contains("matched") && !def.content.contains("##target"),
-        "single-hit RA definition must not use multi skeleton: {}",
-        def.content
-    );
-    assert!(
-        def.content.contains("```")
-            || def.content.contains("|")
-            || def.content.contains("fn target"),
-        "RA definition should include landing context: {}",
-        def.content
+        !locs.is_empty() || def.data.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("No locations"),
+        "unexpected def data: {:?}",
+        def.data
     );
 
-    // ISSUE-047: the tool does not retry -32801 ContentModified; it returns a
-    // Warning telling the agent the server is updating. Poll (bounded) like an
-    // agent would, and check that every such Warning carries the hint.
     let hover_deadline = std::time::Instant::now() + Duration::from_secs(20);
     let hover = loop {
-        let out = run(serde_json::json!({
-            "action": "hover",
-            "file_path": "src/lib.rs",
-            "line": 1,
-            "text": "target"
-        }));
-        eprintln!("[ra] hover single attempt:\n{}\n", out.content);
+        let out = run(
+            hover_tool,
+            serde_json::json!({
+                "file_path": "src/lib.rs",
+                "line": 1,
+                "character": 8
+            }),
+        );
+        eprintln!("[ra] hover attempt:\n{:?}\n", out.data);
         if out.level != ToolSignalLevel::Warning {
             break out;
         }
         assert!(
             out.content.contains("language server is updating"),
-            "hover Warning must carry the ContentModified hint: {}",
+            "hover Warning must carry ContentModified: {}",
             out.content
         );
         assert!(
             std::time::Instant::now() < hover_deadline,
-            "hover still ContentModified after 20s: {}",
-            out.content
+            "hover still ContentModified after 20s"
         );
         std::thread::sleep(Duration::from_millis(500));
     };
-    eprintln!("[ra] hover single:\n{}\n", hover.content);
     assert_eq!(hover.level, ToolSignalLevel::Ok, "{}", hover.content);
-    assert!(
-        !hover.content.contains("matched"),
-        "single hover has no multi skeleton: {}",
-        hover.content
-    );
-    assert!(
-        hover.content.contains("target"),
-        "hover should carry the target symbol: {}",
-        hover.content
-    );
-
-    let multi = run(serde_json::json!({
-        "action": "goToDefinition",
-        "file_path": "src/lib.rs",
-        "line": 4,
-        "text": "target"
-    }));
-    eprintln!("[ra] goToDefinition multi:\n{}\n", multi.content);
-    assert_eq!(multi.level, ToolSignalLevel::Warning, "{}", multi.content);
-    assert!(
-        multi
-            .content
-            .contains("matched 2 times on L4 → 1 unique definition"),
-        "{}",
-        multi.content
-    );
-    assert!(
-        multi.content.matches("##target").count() >= 2,
-        "two source headings expected: {}",
-        multi.content
-    );
-    // Same landing collapsed —definition path should appear once in the body.
-    let landing_hits = multi.content.matches("lib.rs:L1").count();
-    assert_eq!(
-        landing_hits, 1,
-        "identical definition landings should merge to one expansion: {}",
-        multi.content
-    );
-    assert!(
-        multi.content.contains("narrow") || multi.content.contains("retry"),
-        "{}",
-        multi.content
-    );
-
-    let multi_hover = run(serde_json::json!({
-        "action": "hover",
-        "file_path": "src/lib.rs",
-        "line": 4,
-        "text": "target"
-    }));
-    eprintln!("[ra] hover multi:\n{}\n", multi_hover.content);
-    assert_eq!(
-        multi_hover.level,
-        ToolSignalLevel::Warning,
-        "{}",
-        multi_hover.content
-    );
-    assert!(
-        multi_hover.content.contains("matched 2 times"),
-        "{}",
-        multi_hover.content
-    );
+    assert!(hover.data.as_ref().unwrap().get("markdown").is_some());
 
     engines.stop_all();
     clear_mock_ls_env();

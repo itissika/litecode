@@ -1,1 +1,0 @@
-Language-server navigation and diagnostics: goToDefinition, findReferences, hover, diagnostics. The diagnostics action needs file_path only; the others need file_path + line + text. Waits briefly if the language server is still loading.

@@ -58,19 +58,22 @@ pub(crate) fn short_feedback_reason(err: &str) -> String {
 }
 
 /// Tool action result plus the ContentModified signal (ISSUE-047).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LspToolOutput {
     /// Formatted result (the empty-result text when `content_modified`).
     pub text: String,
+    /// Raw LSP JSON used to build structured Code-surface `data`.
+    pub raw: Value,
     /// The server answered `-32801 ContentModified` for at least one request:
     /// it is updating and the result may be incomplete. Retry later.
     pub content_modified: bool,
 }
 
 impl LspToolOutput {
-    pub fn new(text: String, content_modified: bool) -> Self {
+    pub fn new(text: String, raw: Value, content_modified: bool) -> Self {
         Self {
             text,
+            raw,
             content_modified,
         }
     }
@@ -896,6 +899,50 @@ impl LspHub {
             .await
     }
 
+    /// `workspace/symbol` without a file hint: use any Running language server.
+    /// Agent `workspace_symbol` only takes `{ query }` (no path scope — hub has none).
+    pub async fn workspace_symbol_outcome(
+        self: &Arc<Self>,
+        query: &str,
+    ) -> Result<LspToolOutput> {
+        let _ = self.ensure_probed().await;
+        if !self.is_active() {
+            return Err(LitecodeError::ToolExecution("LSP hub not active".into()));
+        }
+        let server = {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|e| LitecodeError::Config(format!("lsp hub lock: {e}")))?;
+            inner
+                .servers
+                .values()
+                .find(|s| s.is_running())
+                .cloned()
+                .ok_or_else(|| {
+                    LitecodeError::ToolExecution(
+                        "no language server is running for workspace symbol search;                          open a source file or wait for Settings → Engines → LSP"
+                            .into(),
+                    )
+                })?
+        };
+        let mut modified = false;
+        let result = take_reply(
+            server
+                .send_request_outcome(
+                    "workspace/symbol",
+                    serde_json::json!({ "query": query }),
+                )
+                .await?,
+            &mut modified,
+        );
+        Ok(LspToolOutput::new(
+            format_action_result("workspaceSymbol", &result),
+            result,
+            modified,
+        ))
+    }
+
     /// Post-write/edit feedback: **only** file-local Error diagnostics, and only when
     /// the hub is already active and the language server returns at least one Error.
     ///
@@ -1118,6 +1165,7 @@ impl LspHub {
                 let Some(item) = items.as_array().and_then(|a| a.first()).cloned() else {
                     return Ok(LspToolOutput::new(
                         "No call hierarchy item at position".into(),
+                        Value::Null,
                         modified,
                     ));
                 };
@@ -1147,6 +1195,7 @@ impl LspHub {
 
         Ok(LspToolOutput::new(
             format_action_result(action, &result),
+            result,
             modified,
         ))
     }

@@ -26,7 +26,7 @@ use crate::tools::{
     grep::GrepTool,
     knowledge::KnowledgeTool,
     litecode_workspace::LitecodeWorkspaceTool,
-    lsp::LspTool,
+    lsp::{self, LSP_CARD_ID},
     mcp_tool::McpTool,
     plan::PlanTool,
     read::ReadTool,
@@ -169,11 +169,12 @@ fn instantiate_tool(
         ))];
     }
 
-    if tool_id == "lsp" {
-        return vec![Arc::new(LspTool::new(
+    if tool_id == LSP_CARD_ID {
+        // One settings card → seven Code tools (Direct never sees name "lsp").
+        return lsp::all_code_tools(
             workspace_engines.clone(),
             resolved.workspace_root().to_path_buf(),
-        ))];
+        );
     }
 
     vec![]
@@ -811,6 +812,7 @@ mod tests {
             Arc::new(GrepTool),
             Arc::new(ReadTool::default()),
             Arc::new(crate::tools::edit::EditTool::new()),
+            Arc::new(ApplyEditsTool::new()),
             Arc::new(crate::tools::write::WriteTool::new()),
         ];
 
