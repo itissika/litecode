@@ -1,0 +1,778 @@
+   Compiling litecode v0.2.6 (/workspace/litecode)
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2015:13
+     |
+2015 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1052:19
+     |
+1052 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1064:4
+     |
+1064 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1090:15
+     |
+1090 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1109:4
+     |
+1109 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1124:15
+     |
+1124 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1191:4
+     |
+1191 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `seq`, `tool`, `summary`, `error_code`, and `error_message` are never read
+  --> src/tools/code/render.rs:28:9
+   |
+27 | pub(super) struct LedgerSnap {
+   |                   ---------- fields in this struct
+28 |     pub seq: u64,
+   |         ^^^
+29 |     pub tool: String,
+   |         ^^^^
+30 |     pub summary: String,
+   |         ^^^^^^^
+31 |     pub state: String,
+32 |     pub error_code: Option<String>,
+   |         ^^^^^^^^^^
+33 |     pub error_message: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: fields `message` and `details` are never read
+  --> src/tools/code/render.rs:42:9
+   |
+38 | pub(super) struct UncaughtToolError {
+   |                   ----------------- fields in this struct
+...
+42 |     pub message: String,
+   |         ^^^^^^^
+43 |     pub summary: String,
+44 |     pub details: Option<Value>,
+   |         ^^^^^^^
+
+warning: fields `diagnostics_omitted`, `tool_counts`, and `failure_stack` are never read
+  --> src/tools/code/render.rs:61:9
+   |
+48 | pub(super) struct RunReport {
+   |                   --------- fields in this struct
+...
+61 |     pub diagnostics_omitted: usize,
+   |         ^^^^^^^^^^^^^^^^^^^
+62 |     pub tool_counts: BTreeMap<String, usize>,
+   |         ^^^^^^^^^^^
+...
+71 |     pub failure_stack: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 42 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 53.17s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 21 tests
+test tools::webfetch::tests::client_for_literal_ip_needs_no_pin ... ok
+test tools::webfetch::tests::client_pins_hostname_to_fake_ip ... ok
+test tools::webfetch::tests::empty_url_is_hard_invalid_input ... ok
+test tools::webfetch::tests::gate_hard_ssrf_uses_permission_denied_code ... ok
+test tools::webfetch::tests::client_pins_hostname_to_validated_public_ips ... ok
+test tools::webfetch::tests::non_http_scheme_is_hard_invalid_input ... ok
+test tools::webfetch::tests::not_warmed_is_hard_unavailable ... ok
+test tools::webfetch::tests::ok_data_helper_still_resolves ... ok
+test tools::webfetch::tests::private_ip_is_hard_permission_denied ... ok
+test tools::webfetch::tests::resolve_allows_literal_fake_ip_through_gate ... ok
+test tools::webfetch::tests::resolve_returns_literal_public_ips ... ok
+test tools::webfetch::tests::soft_fail_shape_has_ok_false_without_error_level ... ok
+test tools::webfetch::tests::ssrf_allows_benchmarking_fake_ip_range ... ok
+test tools::webfetch::tests::ssrf_allows_public_http_urls ... ok
+test tools::webfetch::tests::ssrf_rejects_loopback_and_private_ips ... ok
+test tools::webfetch::tests::ssrf_rejects_non_http_schemes ... ok
+test tools::webfetch::tests::ssrf_shared_cgnat_still_non_public ... ok
+test tools::webfetch::tests::strip_html_tags_removes_markup ... ok
+test tools::webfetch::tests::success_shape_has_ok_true_body ... ok
+test tools::webfetch::tests::surface_is_code ... ok
+test tools::webfetch::tests::html_to_markdown_preserves_heading ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 2178 filtered out; finished in 0.02s
+
+   Compiling litecode v0.2.6 (/workspace/litecode)
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2015:13
+     |
+2015 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1052:19
+     |
+1052 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1064:4
+     |
+1064 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1090:15
+     |
+1090 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1109:4
+     |
+1109 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1124:15
+     |
+1124 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1191:4
+     |
+1191 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `seq`, `tool`, `summary`, `error_code`, and `error_message` are never read
+  --> src/tools/code/render.rs:28:9
+   |
+27 | pub(super) struct LedgerSnap {
+   |                   ---------- fields in this struct
+28 |     pub seq: u64,
+   |         ^^^
+29 |     pub tool: String,
+   |         ^^^^
+30 |     pub summary: String,
+   |         ^^^^^^^
+31 |     pub state: String,
+32 |     pub error_code: Option<String>,
+   |         ^^^^^^^^^^
+33 |     pub error_message: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: fields `message` and `details` are never read
+  --> src/tools/code/render.rs:42:9
+   |
+38 | pub(super) struct UncaughtToolError {
+   |                   ----------------- fields in this struct
+...
+42 |     pub message: String,
+   |         ^^^^^^^
+43 |     pub summary: String,
+44 |     pub details: Option<Value>,
+   |         ^^^^^^^
+
+warning: fields `diagnostics_omitted`, `tool_counts`, and `failure_stack` are never read
+  --> src/tools/code/render.rs:61:9
+   |
+48 | pub(super) struct RunReport {
+   |                   --------- fields in this struct
+...
+61 |     pub diagnostics_omitted: usize,
+   |         ^^^^^^^^^^^^^^^^^^^
+62 |     pub tool_counts: BTreeMap<String, usize>,
+   |         ^^^^^^^^^^^
+...
+71 |     pub failure_stack: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 42 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.89s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 1 test
+test tools::webfetch::tests::ssrf_allows_hostname_resolved_to_fake_ip ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2199 filtered out; finished in 0.00s
+

@@ -651,10 +651,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing {id}"))
                 .surface
         };
-        for id in ["read", "glob", "grep", "edit", "write", "plan"] {
+        for id in [
+            "read",
+            "glob",
+            "grep",
+            "edit",
+            "write",
+            "plan",
+            "webfetch",
+            "websearch",
+        ] {
             assert_eq!(surface(id), CallSurface::Code, "{id}");
         }
-        for id in ["webfetch", "todo", "code_search", "demo", "mcp_echo"] {
+        for id in ["todo", "code_search", "demo", "mcp_echo"] {
             assert_eq!(surface(id), CallSurface::Direct, "{id}");
         }
         assert!(

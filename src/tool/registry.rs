@@ -402,6 +402,12 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(KillTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
+        // WP-203: network tools are Code-only (cold stubs for settings admission).
+        Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None)))),
+        Arc::new(WebSearchTool::new(
+            Arc::new(std::sync::RwLock::new(None)),
+            Arc::new(std::sync::RwLock::new(None)),
+        )),
     ]
 }
 
@@ -1031,6 +1037,80 @@ mod tests {
         fn description(&self, _: &Context) -> String {
             "missing data schema".into()
         }
+    }
+
+    #[test]
+    #[test]
+    fn webfetch_websearch_project_to_code_not_direct() {
+        use crate::permission::{PermissionEngine, deny_permission_sink};
+        use crate::tool::project::project_tools;
+        use crate::tools::code::CodeToolHost;
+
+        assert_eq!(
+            WebFetchTool::new(Arc::new(std::sync::RwLock::new(None))).surface(),
+            crate::tool::ToolSurface::Code
+        );
+        assert_eq!(
+            WebSearchTool::new(
+                Arc::new(std::sync::RwLock::new(None)),
+                Arc::new(std::sync::RwLock::new(None)),
+            )
+            .surface(),
+            crate::tool::ToolSurface::Code
+        );
+
+        let projected = project_tools(vec![
+            Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None)))) as Arc<dyn Tool>,
+            Arc::new(WebSearchTool::new(
+                Arc::new(std::sync::RwLock::new(None)),
+                Arc::new(std::sync::RwLock::new(None)),
+            )) as Arc<dyn Tool>,
+        ]);
+        let direct_names: Vec<&str> = projected.direct.iter().map(|t| t.name()).collect();
+        assert!(
+            direct_names.is_empty(),
+            "Direct must be empty for webfetch/websearch-only set: {direct_names:?}"
+        );
+        assert!(
+            projected.whitelist.iter().any(|n| n == "webfetch")
+                && projected.whitelist.iter().any(|n| n == "websearch"),
+            "Code whitelist must admit both: {:?}",
+            projected.whitelist
+        );
+        assert!(
+            projected.rejected.is_empty(),
+            "admission must pass: {:?}",
+            projected.rejected
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = test_resolved(default_bindings());
+        let permission = PermissionEngine::resolver(resolved, "default", 0);
+        let host = Arc::new(CodeToolHost::new(
+            permission,
+            dummy_ctx(),
+            "default",
+            deny_permission_sink(),
+            dir.path().join(".litecode"),
+            crate::tool::write_lock::process_write_lock(),
+            None,
+        ));
+        let assembled = assemble_projected_tools(
+            vec![
+                Arc::new(WebFetchTool::new(Arc::new(std::sync::RwLock::new(None))))
+                    as Arc<dyn Tool>,
+                Arc::new(WebSearchTool::new(
+                    Arc::new(std::sync::RwLock::new(None)),
+                    Arc::new(std::sync::RwLock::new(None)),
+                )) as Arc<dyn Tool>,
+            ],
+            Some(host),
+        );
+        let top: Vec<&str> = assembled.iter().map(|t| t.name()).collect();
+        assert_eq!(top, ["run_code"], "only transport on Direct: {top:?}");
+        let bindings = assembled[0].code_bindings().expect("run_code bindings");
+        assert!(bindings.iter().any(|n| n == "webfetch"));
+        assert!(bindings.iter().any(|n| n == "websearch"));
     }
 
     #[test]

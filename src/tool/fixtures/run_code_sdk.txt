@@ -3,6 +3,7 @@ The bundled tools declared below are reachable only through the generated `tools
 A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
 Permission denial is a catchable `ToolError` whose `code` is `permission_denied`.
 `tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
+`tools.webfetch` and `tools.websearch` likewise resolve `{ok,…,message}` for network/provider outcomes: HTTP/DNS/timeout and Exa business failures set `ok: false` and still resolve (branch on `ok`; no try/catch required for those). Empty or invalid input, true private SSRF targets, and an unwarmed or unconfigured engine reject catchable `ToolError`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
 For code navigation (when the LSP engine is ready and these bindings appear below) use `go_to_definition`, `find_references`, `hover`, `diagnostics`, `document_symbol`, `workspace_symbol`, and `go_to_implementation` — never a single `lsp` tool, `action` bag, or row-inline `text` locator.
@@ -220,6 +221,36 @@ type WaitData = {
   output: string;
 };
 
+type WebfetchInput = {
+  // The URL to fetch content from
+  url: string;
+  // Desired output format (default: markdown)
+  format?: "text" | "markdown" | "html";
+};
+
+// webfetch outcome. Soft failures (HTTP/DNS/timeout/body) resolve with ok=false; hard failures reject ToolError.
+type WebfetchData = {
+  message: string;
+  ok: boolean;
+  body?: string;
+  format?: "text" | "markdown" | "html";
+  status?: Integer;
+  url?: string;
+};
+
+type WebsearchInput = {
+  // The search query
+  query: string;
+};
+
+// websearch outcome. Soft failures (provider HTTP/business/parse/timeout) resolve with ok=false; hard failures reject ToolError.
+type WebsearchData = {
+  message: string;
+  ok: boolean;
+  query?: string;
+  text?: string;
+};
+
 type WriteInput = {
   // Content to write to the file
   content: string;
@@ -399,6 +430,42 @@ declare const tools: {
   // const done = await tools.wait({id:job.id, sec:60});
   // return {exit_code:done.exit_code, output:done.output};
   readonly ["wait"]: (args: WaitInput) => Promise<WaitData>;
+  // Fetch one http(s) URL inside `run_code` when you already know the address (docs page, raw file, API HTML). Prefer `tools.websearch` when you still need to discover URLs. Pass an object bag: required `url` (string); optional `format` as `text` | `markdown` | `html` (default `markdown`). Code-only — there is no Direct `webfetch`.
+  //
+  // Resolves structured data (never a content-only string):
+  // - success: `{ ok: true, url, status, format, body, message }` — `message` is the short fixed confirmation `Fetched.`
+  // - soft failure: `{ ok: false, url?, status?, format?, message }` — **still resolves**; does **not** reject `ToolError`. Soft failure **tries to return** the request `url` and `format`; `status` is present **only when** the server answered with an HTTP response. Treat those fields as optional when reading. Soft failures have no `body`.
+  //
+  // Soft failure (branch on `ok` in the same program; no try/catch required for these): HTTP 4xx/5xx, DNS failure, request/body/redirect read failure, timeout. `message` is a short human reason. Long bodies are truncated inside `body` at **50000** bytes with a size note (no separate truncated field).
+  //
+  // Hard failure — rejects `ToolError` (catchable; uncaught fails the whole `run_code`): empty/invalid `url`, non-http(s) scheme, SSRF block for true private/non-public targets (RFC1918, loopback, link-local, unique-local; CGNAT `100.64/10` still blocked), engine not warmed / unavailable — short Settings-oriented retry hint, **no hardcoded seconds**. Malformed args / protocol / budget failures are program-level errors, not soft `ok:false`. Fake-IP / TUN ranges such as `198.18.0.0/15` are **allowed** through the public gate when the hostname resolves there; teaching does not ask you to use literal IPs to bypass TUN.
+  //
+  // Example (search then fetch; soft-fail safe):
+  // const found = await tools.websearch({ query: "litecode webfetch SSRF" });
+  // if (!found.ok) return { ok: false, step: "search", message: found.message };
+  // const page = await tools.webfetch({ url: "https://example.com/docs", format: "markdown" });
+  // if (!page.ok) return { ok: false, step: "fetch", status: page.status, message: page.message };
+  // // page.message === "Fetched."
+  // return { ok: true, chars: page.body.length, status: page.status };
+  readonly ["webfetch"]: (args: WebfetchInput) => Promise<WebfetchData>;
+  // Search the public web inside `run_code` for current titles, URLs, and snippets when the answer is outside the workspace. Use this for discovery; follow a specific URL with `tools.webfetch`. Pass an object bag: required `query` (string). Code-only — there is no Direct `websearch`. Requires a configured search engine (Exa) that is warmed.
+  //
+  // Resolves structured data (never a content-only string):
+  // - success: `{ ok: true, query, text, message }` — `text` is the provider’s flattened body; `message` is the short fixed confirmation `Search completed.`. There is **no** `results` array — read titles/URLs/snippets from `text`.
+  // - soft failure: `{ ok: false, query?, message }` — **still resolves**; does **not** reject `ToolError`
+  //
+  // Soft failure (branch on `ok`; no try/catch required for these): provider HTTP/business errors, timeouts, unparseable provider responses. `message` is a short human reason.
+  //
+  // Hard failure — rejects `ToolError`: empty/invalid `query`, engine not warmed / Exa not configured — short Exa/Settings-oriented retry hint, **no hardcoded seconds**. Malformed args / protocol / budget failures are program-level errors, not soft `ok:false`. This tool has no URL SSRF gate (outbound is to the search provider only).
+  //
+  // Example (discover then fetch; soft-fail safe):
+  // const hit = await tools.websearch({ query: "example.com docs webfetch" });
+  // if (!hit.ok) return { ok: false, message: hit.message };
+  // // hit.message === "Search completed."
+  // const page = await tools.webfetch({ url: "https://example.com/docs", format: "markdown" });
+  // if (!page.ok) return { ok: false, status: page.status, message: page.message };
+  // return { ok: true, snippet: page.body.slice(0, 200), search_chars: hit.text.length };
+  readonly ["websearch"]: (args: WebsearchInput) => Promise<WebsearchData>;
   // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. LSP errors from the written file are not in the resolved data—log or return them if you need them visible.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;
 };
