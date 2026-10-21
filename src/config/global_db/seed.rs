@@ -13,7 +13,7 @@ use super::tools::{
     core_configurable_tools, core_none_tools, default_bound_optional_builtins, network_core_tools,
 };
 
-pub const SEED_REVISION: &str = "15";
+pub const SEED_REVISION: &str = "16";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
@@ -21,6 +21,8 @@ pub fn seed(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
+    // WP-196: 默认 agent 不暴露 Direct bash 三件套（实现保留；人工绑逃生）。
+    strip_default_direct_shell_bindings(conn)?;
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
     seed_orchestrator_agent_bindings(conn)?;
@@ -277,33 +279,21 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    let (bash_policy, bash_path) = binding_for_tool("bash", ToolPreset::Safe);
+    // WP-196: Code 短前台命令；Direct bash 三件套默认不绑。
+    let (run_command_policy, run_command_path) =
+        binding_for_tool("run_command", ToolPreset::Safe);
     store::upsert_agent_tool(
         conn,
         "explore",
-        "bash",
+        "run_command",
         &AgentToolBinding {
             enabled: true,
-            policy: bash_policy,
-            path_mode: bash_path,
+            policy: run_command_policy,
+            path_mode: run_command_path,
             last_applied_preset: Some(ToolPreset::Safe),
             allowed_tools: None,
         },
     )?;
-    for tool in ["wait_shell", "kill_shell"] {
-        store::upsert_agent_tool(
-            conn,
-            "explore",
-            tool,
-            &AgentToolBinding {
-                enabled: true,
-                policy: crate::permission::ToolPolicy::allow_all(),
-                path_mode: crate::permission::BindingPathMode::default(),
-                last_applied_preset: None,
-                allowed_tools: None,
-            },
-        )?;
-    }
 
     for tool in network_core_tools() {
         store::upsert_agent_tool(
@@ -403,6 +393,21 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+
+/// WP-196: 从默认种子 agent 上删除 Direct bash / wait_shell / kill_shell 绑定。
+/// 实现与 preset/floor 仍保留；模型默认走不到。自定义 agent 不受影响。
+fn strip_default_direct_shell_bindings(conn: &Connection) -> Result<()> {
+    for tool in ["bash", "wait_shell", "kill_shell"] {
+        conn.execute(
+            "DELETE FROM agent_tools
+             WHERE tool_id = ?1
+               AND agent_id IN ('default', 'explore', 'general', 'orchestrator')",
+            [tool],
+        )?;
+    }
+    Ok(())
+}
+
 pub fn needs_seed(conn: &Connection) -> Result<bool> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
     Ok(count == 0)
@@ -417,6 +422,8 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
+    // WP-196: 清 default/explore/general/orchestrator 上残留 Direct bash 绑定。
+    strip_default_direct_shell_bindings(conn)?;
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
     ensure_general_agent(conn)?;
@@ -535,6 +542,14 @@ fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
             "explore",
             "litecode_workspace",
             &binding_seeded("litecode_workspace", ToolPreset::All),
+        )?;
+    }
+    if !agent_has_tool(conn, "explore", "run_command")? {
+        store::upsert_agent_tool(
+            conn,
+            "explore",
+            "run_command",
+            &binding_seeded("run_command", ToolPreset::Safe),
         )?;
     }
     for tool in subagent_none_tools() {
@@ -752,14 +767,26 @@ mod tests {
             .unwrap();
         assert_eq!(write, 0);
 
-        let bash_preset: Option<String> = conn
+        // WP-196: explore 默认无 Direct bash 家族；有 run_command SAFE。
+        for tool in ["bash", "wait_shell", "kill_shell"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = ?1",
+                    [tool],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "explore must not bind {tool}");
+        }
+
+        let run_command_preset: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bash_preset.as_deref(), Some("SAFE"));
+        assert_eq!(run_command_preset.as_deref(), Some("SAFE"));
 
         let (general_role, general_prompt): (String, String) = conn
             .query_row(
@@ -836,14 +863,27 @@ mod tests {
             .unwrap();
         assert_eq!(general_launch, 0);
 
-        let general_bash: Option<String> = conn
-            .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'bash'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(general_bash.as_deref(), Some("ALL"));
+        // WP-196: general/default/orchestrator 默认无 Direct bash 家族；有 run_command。
+        for agent in ["general", "default", "orchestrator"] {
+            for tool in ["bash", "wait_shell", "kill_shell"] {
+                let n: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                        rusqlite::params![agent, tool],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 0, "{agent} must not bind {tool}");
+            }
+            let run_n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run_command'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(run_n, 1, "{agent} should bind run_command");
+        }
     }
 
     #[test]
@@ -1066,18 +1106,26 @@ mod tests {
             .unwrap();
         assert_eq!(session_preset, None);
 
-        let bash_preset: Option<String> = conn
+        let run_command_preset: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bash_preset.as_deref(), Some("SAFE"));
+        assert_eq!(run_command_preset.as_deref(), Some("SAFE"));
 
         conn.execute(
             "UPDATE agent_tools SET last_applied_preset = 'SAFE', policy_json = '{\"default\":\"ask\",\"default_id\":\"__default\",\"rules\":[]}', path_mode = 'workspace_only' WHERE agent_id = 'explore' AND tool_id = 'webfetch'",
             [],
+        )
+        .unwrap();
+        // 模拟旧 DB 残留 Direct bash；ensure 应清掉。
+        store::upsert_agent_tool(
+            &conn,
+            "explore",
+            "bash",
+            &binding_seeded("bash", ToolPreset::Safe),
         )
         .unwrap();
         ensure_core_bindings(&conn).unwrap();
@@ -1093,14 +1141,23 @@ mod tests {
         assert_eq!(path, "unrestricted");
         assert!(policy.contains("\"allow\""));
 
-        let bash_after: Option<String> = conn
+        let run_after: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bash_after.as_deref(), Some("SAFE"));
+        assert_eq!(run_after.as_deref(), Some("SAFE"));
+
+        let bash_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'bash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bash_after, 0, "ensure strips residual explore bash");
     }
 
     // ---- WP-149: primary agents bind code_search by default ----

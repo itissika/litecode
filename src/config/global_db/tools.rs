@@ -1,18 +1,24 @@
 //! Core tool id sets shared by seed (CONFIG §2.5).
 
 pub fn core_configurable_tools() -> &'static [&'static str] {
+    // WP-196: Direct bash 三件套不在此列 → 默认 seed/bind 不会绑上；
+    // 模块与 preset/floor 仍认它们，见 direct_shell_tools()。
     &[
         "read",
         "grep",
         "glob",
         "write",
         "edit",
-        "bash",
-        "kill_shell",
-        "wait_shell",
+        "run_command",
         "session_search",
         "litecode_workspace",
     ]
+}
+
+/// Direct `bash` / `wait_shell` / `kill_shell`：实现与 registry 保留，
+/// 不进默认 agent 绑定；人工/逃生绑定时仍算 core（防自定义同名）。
+pub fn direct_shell_tools() -> &'static [&'static str] {
+    &["bash", "wait_shell", "kill_shell"]
 }
 
 pub fn network_core_tools() -> &'static [&'static str] {
@@ -37,6 +43,7 @@ pub fn core_none_tools() -> &'static [&'static str] {
 pub fn core_tool_ids() -> Vec<String> {
     core_configurable_tools()
         .iter()
+        .chain(direct_shell_tools().iter())
         .chain(core_none_tools().iter())
         .chain(network_core_tools().iter())
         .map(|s| (*s).to_string())
@@ -45,6 +52,7 @@ pub fn core_tool_ids() -> Vec<String> {
 
 pub fn is_core_tool(id: &str) -> bool {
     core_configurable_tools().contains(&id)
+        || direct_shell_tools().contains(&id)
         || core_none_tools().contains(&id)
         || network_core_tools().contains(&id)
 }

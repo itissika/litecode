@@ -573,12 +573,10 @@ mod tests {
             claude_md: None,
         };
         let d = test_tool().description(&ctx);
+        assert!(d.contains("Deprecated") || d.contains("deprecated"));
+        assert!(d.contains("escape") || d.contains("Escape"));
+        assert!(d.contains("run_command"));
         assert!(d.contains("do not persist"));
-        assert!(d.contains("read"));
-        assert!(d.contains("grep"));
-        assert!(d.contains("wait_shell"));
-        assert!(d.contains("kill_shell"));
-        assert!(d.contains("timeout"));
         assert!(
             !d.contains("head+tail")
                 && !d.contains(".litecode/bash")

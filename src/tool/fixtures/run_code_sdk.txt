@@ -250,6 +250,35 @@ type ReadData = {
   reason?: "in_context_window";
 };
 
+type RunCommandInput = {
+  // Shell command to run once in the workspace root (not a persistent session). Chain with && when you need cd or env for this call only.
+  command: string;
+  // Seconds to wait for exit before killing the process group (1-120, default 30). On timeout the call rejects ToolError timeout; it does not background.
+  timeout_sec?: Integer;
+};
+
+// Foreground command result. Non-zero exit_code is still a successful resolve; cancellation and timeout reject ToolError.
+type RunCommandData = {
+  // Process exit code. null when terminated by signal without a code.
+  exit_code: Integer | null;
+  // Always exited on success. Running/background is not part of this tool.
+  status: "exited";
+  stderr: {
+    bytes: Integer;
+    head: string;
+    tail: string;
+    truncated: boolean;
+  };
+  stdout: {
+    bytes: Integer;
+    head: string;
+    tail: string;
+    truncated: boolean;
+  };
+  // Workspace-relative path to the stdout log when output was truncated or large. Use tools.read to page. Omitted for small results.
+  output_file?: string;
+};
+
 type WriteInput = {
   // Content to write to the file
   content: string;
@@ -299,6 +328,22 @@ declare const tools: {
   //
   // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
   readonly ["read"]: (args: ReadInput) => Promise<ReadData>;
+  // Run one foreground shell command inside `run_code`. The call resolves structured data: `status`, `exit_code`, bounded `stdout`/`stderr` (`head`, `tail`, `bytes`, `truncated`), and optional `output_file` when output was truncated or large. Non-zero `exit_code` still resolves — treat it as a domain result and branch on `exit_code` in the same program. Cancellation rejects `ToolError` with `code` `cancelled`. Timeout rejects `timeout` (details may include `timeout_sec` / `output_file`); the process group is killed and the command is not backgrounded. There is no `bash_id`. cwd is always the workspace root (not a persistent session); chain with `&&` in one `command` when you need `cd` or env for that call only. Pass `timeout_sec` as an integer 1–120 (default 30).
+  //
+  // This is the command path for builds, tests, git, and scripts next to `tools.edit` / `tools.write`. When `output_file` is set, page it with `tools.read` instead of re-running the command.
+  //
+  // Example (edit then test in one program):
+  // const edited = await tools.edit({path:"src/a.rs", edits:[{old_string:"fn start()", new_string:"fn main()"}]});
+  // if (edited.failed > 0) return {ok:false, edited};
+  // const test = await tools.run_command({command:"cargo test -q --lib a"});
+  // if (test.exit_code !== 0) return {ok:false, exit_code:test.exit_code, stderr:test.stderr, output_file:test.output_file ?? null};
+  // return {ok:true, hash:edited.file.hash, exit_code:test.exit_code};
+  //
+  // Example (write then check):
+  // await tools.write({path:"src/b.rs", content:"pub fn ok() -> bool { true }"});
+  // const check = await tools.run_command({command:"cargo check -q", timeout_sec:60});
+  // return {exit_code:check.exit_code, status:check.status};
+  readonly ["run_command"]: (args: RunCommandInput) => Promise<RunCommandData>;
   // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;
 };

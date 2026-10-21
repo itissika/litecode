@@ -1,5 +1,5 @@
 use crate::config::global_db::tools::{
-    core_configurable_tools, network_core_tools, optional_builtin_ids,
+    core_configurable_tools, direct_shell_tools, network_core_tools, optional_builtin_ids,
 };
 use crate::config::schema::{PermissionSurface, ToolPreset};
 
@@ -16,6 +16,7 @@ const PRESET_TOOL_IDS: &[&str] = &[
     "write",
     "edit",
     "bash",
+    "run_command",
     "litecode_workspace",
 ];
 
@@ -42,6 +43,7 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
     let mut out = Vec::new();
     for tool in core_configurable_tools()
         .iter()
+        .chain(direct_shell_tools().iter())
         .chain(network_core_tools().iter())
         .chain(optional_builtin_ids().iter())
     {
@@ -56,7 +58,7 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
 
 fn policy_all(tool_id: &str) -> ToolPolicy {
     match tool_id {
-        "bash" => ToolPolicy::allow_all(),
+        "bash" | "run_command" => ToolPolicy::allow_all(),
         "write" | "edit" => ToolPolicy::allow_all(),
         _ => ToolPolicy::allow_all(),
     }
@@ -116,7 +118,7 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 action: PermissionAction::Deny,
             }],
         },
-        "bash" => ToolPolicy {
+        "bash" | "run_command" => ToolPolicy {
             default: PermissionAction::Deny,
             default_id: super::policy::DEFAULT_RULE_ID.into(),
             rules: vec![PolicyRule {
@@ -161,6 +163,7 @@ mod tests {
             "write",
             "edit",
             "bash",
+            "run_command",
             "litecode_workspace",
         ] {
             assert!(has_permission_preset(id), "{id}");

@@ -24,7 +24,7 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
         });
     }
 
-    if tool_name == "bash"
+    if matches!(tool_name, "bash" | "run_command")
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
         let action = check_dangerous_command(command);

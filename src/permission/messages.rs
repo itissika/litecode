@@ -18,7 +18,7 @@ pub fn permission_denied_message(tool_name: &str, rule_id: &str, input: &Value) 
             "blocked: '{file_path}' is outside the workspace. Use a workspace-relative path, or enable unrestricted path mode (ALL preset) for paths outside the workspace."
         ),
         // Safety floor: destructive patterns are hard-denied under every preset.
-        ("bash", "floor_dangerous_command") => format!(
+        ("bash" | "run_command", "floor_dangerous_command") => format!(
             "blocked: command '{}' matches a hard-deny safety rule (e.g. rm -rf /, fork bomb, \
              mkfs/dd or redirection to a raw block device). This applies under every permission \
              preset — do not retry or obfuscate it; ask the user to run it manually if it is \
@@ -26,11 +26,11 @@ pub fn permission_denied_message(tool_name: &str, rule_id: &str, input: &Value) 
             bash_command(input)
         ),
         // SAFE preset: bash defaults to Deny and only auto-allows read-only commands.
-        ("bash", DEFAULT_RULE_ID) => format!(
-            "permission denied for bash: the current policy denies non-read-only commands by \
+        ("bash" | "run_command", DEFAULT_RULE_ID) => format!(
+            "permission denied for {tool_name}: the current policy denies non-read-only commands by \
              default (the SAFE preset only auto-allows read-only commands such as ls, cat, \
              git status, cargo check, and pipelines ending in head/less/more). Command: '{}'. \
-             Ask the user to switch the bash tool preset to ALL, or to run the command themselves.",
+             Ask the user to switch the {tool_name} tool preset to ALL, or to run the command themselves.",
             bash_command(input)
         ),
         (_, _) => format!("permission denied for '{tool_name}'"),

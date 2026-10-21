@@ -18,6 +18,7 @@ pub mod lsp_feedback;
 pub mod mcp_tool;
 pub mod plan;
 pub mod read;
+pub mod run_command;
 pub mod session_search;
 pub mod subagent;
 pub mod todo;

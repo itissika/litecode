@@ -28,6 +28,7 @@ use crate::tools::{
     mcp_tool::McpTool,
     plan::PlanTool,
     read::ReadTool,
+    run_command::RunCommandTool,
     session_search::SessionSearchTool,
     subagent::{
         SUBAGENT_MAX_DEPTH, SubagentDeleteTool, SubagentLaunchTool, SubagentListTool,
@@ -50,6 +51,7 @@ fn builtin_tool(
         "bash" => Arc::new(BashTool::new(Arc::clone(&ide.terminal))),
         "kill_shell" => Arc::new(KillShellTool::new(Arc::clone(&ide.terminal))),
         "wait_shell" => Arc::new(WaitShellTool::new(Arc::clone(&ide.terminal))),
+        "run_command" => Arc::new(RunCommandTool),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
         "edit" => Arc::new(EditTool::with_ide(Arc::clone(&ide))),
@@ -360,6 +362,7 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GrepTool),
         Arc::new(EditTool::new()),
         Arc::new(WriteTool::new()),
+        Arc::new(RunCommandTool),
     ]
 }
 
@@ -482,8 +485,11 @@ mod tests {
             "expected all core tools from DB bindings, got {}",
             tools.len()
         );
-        assert!(names.contains(&"bash"));
-        assert!(names.contains(&"wait_shell"));
+        // WP-196: 默认绑定无 Direct bash 三件套；有 run_command。
+        assert!(!names.contains(&"bash"));
+        assert!(!names.contains(&"wait_shell"));
+        assert!(!names.contains(&"kill_shell"));
+        assert!(names.contains(&"run_command"));
         assert!(names.contains(&"todo"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
@@ -513,7 +519,8 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"todo"));
         assert!(!names.contains(&"plan"));
-        assert!(names.contains(&"bash"));
+        assert!(names.contains(&"run_command"));
+        assert!(!names.contains(&"bash"));
     }
 
     #[test]
@@ -550,15 +557,16 @@ mod tests {
     fn does_not_read_agent_config_tools_whitelist() {
         let resolved = test_resolved({
             let mut bindings = default_bindings();
-            bindings.get_mut("bash").unwrap().enabled = false;
+            bindings.get_mut("run_command").unwrap().enabled = false;
             bindings
         });
         let tools = list_tools(&resolved, 0);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(
-            !names.contains(&"bash"),
+            !names.contains(&"run_command"),
             "AgentConfig must not override DB tool binding"
         );
+        assert!(!names.contains(&"bash"));
     }
 
     #[test]
@@ -756,7 +764,9 @@ mod tests {
         assert!(!child_names.contains(&"edit"));
         assert!(!child_names.contains(&"write"));
         assert!(child_names.contains(&"run_code"));
-        assert!(child_names.contains(&"bash"));
+        // WP-196: 默认绑定无 Direct bash；run_command 为 Code-only，不进 Direct 列表。
+        assert!(!child_names.contains(&"bash"));
+        assert!(!child_names.contains(&"run_command"));
         let child_sdk = child
             .iter()
             .find(|tool| tool.name() == "run_code")
@@ -795,7 +805,8 @@ mod tests {
             .code_bindings()
             .unwrap();
         let names: Vec<&str> = whitelist.iter().map(String::as_str).collect();
-        assert_eq!(names, ["edit", "glob", "read", "write"]);
+        assert_eq!(names, ["edit", "glob", "read", "run_command", "write"]);
+        assert!(narrow_sdk.contains("[\"run_command\"]"));
     }
 
     struct Impostor;
