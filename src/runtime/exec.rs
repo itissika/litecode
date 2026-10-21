@@ -262,7 +262,7 @@ impl AgentRuntime {
     fn append_seam_reminders(&mut self, step: u64) -> Result<bool> {
         use crate::reminder::{BashExitEntry, PlanPointer, RunningBash, SettledChild, TodoSnap};
         use crate::reminder::{Facts, ReminderKind, SeamCtx, TaskFacts, sync};
-        use crate::tools::bash_status::display_output_path;
+        use crate::terminal::display_output_path;
 
         let mut stages = latency::Stages::new("seam.sources", Some(step));
         let cwd = self.base_ctx.cwd.clone();
@@ -275,18 +275,9 @@ impl AgentRuntime {
             cwd: cwd.clone(),
         };
 
-        let bash_notices = self
-            .runtime_ctx
-            .as_ref()
-            .and_then(|runtime| runtime.tools.iter().find_map(|tool| tool.agent_terminal()))
-            .map(|hub| hub.jobs.take_mailbox(&self.session_id))
-            .unwrap_or_default();
-        let bash_running = self
-            .runtime_ctx
-            .as_ref()
-            .and_then(|runtime| runtime.tools.iter().find_map(|tool| tool.agent_terminal()))
-            .map(|hub| hub.jobs.running(&self.session_id))
-            .unwrap_or_default();
+        let jobs = &self.runtime_handle.ide.terminal.jobs;
+        let bash_notices = jobs.take_mailbox(&self.session_id);
+        let bash_running = jobs.running(&self.session_id);
         stages.mark("bash");
         let completions = self
             .runtime_handle
@@ -578,13 +569,11 @@ impl AgentRuntime {
         if notices.is_empty() {
             return;
         }
-        let Some(runtime) = &self.runtime_ctx else {
-            return;
-        };
-        let Some(hub) = runtime.tools.iter().find_map(|tool| tool.agent_terminal()) else {
-            return;
-        };
-        hub.jobs.restore_mailbox(&self.session_id, notices.to_vec());
+        self.runtime_handle
+            .ide
+            .terminal
+            .jobs
+            .restore_mailbox(&self.session_id, notices.to_vec());
     }
 
     fn emit_llm_request_built(

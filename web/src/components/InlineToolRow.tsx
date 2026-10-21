@@ -11,13 +11,11 @@ import {
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
-import { KillShellToolView } from "./toolviews/KillShellToolView";
 import { SubagentLaunchToolView } from "./toolviews/SubagentLaunchToolView";
 import { SubagentListToolView } from "./toolviews/SubagentListToolView";
 import { SubagentSendToolView } from "./toolviews/SubagentSendToolView";
 import { SubagentStopToolView } from "./toolviews/SubagentStopToolView";
 import { SubagentWaitToolView } from "./toolviews/SubagentWaitToolView";
-import { WaitShellToolView } from "./toolviews/WaitShellToolView";
 import { deriveToolStatus } from "./toolCallStatus";
 import { toolTitle } from "./toolviews/toolTitle";
 import { ToolIcon } from "./ToolIcon";
@@ -30,9 +28,8 @@ interface InlineToolRowProps {
 }
 
 /**
- * Single-line auxiliary tool row (wait_shell / kill_shell / subagent_* /
- * todo / plan / background bash). No FoldCard — state and text
- * fit on one line beside the status icon.
+ * Single-line auxiliary tool row (subagent_* / todo / plan / background bash).
+ * No FoldCard — state and text fit on one line beside the status icon.
  */
 export function InlineToolRow({
   call,
@@ -47,16 +44,7 @@ export function InlineToolRow({
   return (
     <div className="flex items-center gap-1.5 py-1 pl-(--_dk-indent-card-head) text-xs text-(--_dk-text-muted)">
       <ToolIcon name={toolName} status={status} streaming={streaming} />
-      {toolName === "wait_shell" ? (
-        <WaitShellToolView
-          name={toolName}
-          status={status}
-          input={input}
-          output={output}
-          call_id={call.call_id}
-          sessionId={sessionId}
-        />
-      ) : toolName === "subagent_wait" ? (
+      {toolName === "subagent_wait" ? (
         <SubagentWaitToolView
           name={toolName}
           status={status}
@@ -115,16 +103,7 @@ export function InlineToolRow({
           output={output}
           sessionId={sessionId}
         />
-      ) : (
-        <KillShellToolView
-          name={toolName}
-          status={status}
-          input={input}
-          output={output}
-          call_id={call.call_id}
-          sessionId={sessionId}
-        />
-      )}
+      ) : null}
     </div>
   );
 }

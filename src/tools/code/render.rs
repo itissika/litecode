@@ -269,7 +269,11 @@ fn failure_label(kind: FailureKind, report: &RunReport) -> String {
 fn rejected_clause(report: &RunReport) -> Option<String> {
     if !report.error_counts.is_empty() {
         let total: usize = report.error_counts.values().copied().sum();
-        return Some(rejection_sentence(report, total, &format_counts(&report.error_counts)));
+        return Some(rejection_sentence(
+            report,
+            total,
+            &format_counts(&report.error_counts),
+        ));
     }
     if report.calls_omitted > 0 {
         return None;
@@ -340,7 +344,11 @@ fn render_failure(report: &RunReport) -> Option<String> {
         return nonempty(explained_cut(&body, FAILURE_CAP));
     }
     let mut parts = Vec::new();
-    if let Some(message) = report.failure_text.as_deref().filter(|text| !text.is_empty()) {
+    if let Some(message) = report
+        .failure_text
+        .as_deref()
+        .filter(|text| !text.is_empty())
+    {
         let message = prefix_utf8(message, 1024);
         if !message.is_empty() {
             parts.push(message.to_string());
@@ -953,7 +961,10 @@ mod tests {
             .find("\n\n")
             .map(|index| failure_at + index)
             .unwrap_or(text.len());
-        assert!(failure_end - failure_at <= FAILURE_CAP, "failure section grew");
+        assert!(
+            failure_end - failure_at <= FAILURE_CAP,
+            "failure section grew"
+        );
         assert!(text.matches("\n- code").count() <= DIAGNOSTIC_RENDER_CAP);
     }
 
@@ -988,7 +999,13 @@ mod tests {
     #[test]
     fn ledger_line_prints_the_error_code_and_detail_message() {
         let mut report = report();
-        let mut call = snap(1, "write", "path=a.txt", "error:permission_denied", Some("permission_denied"));
+        let mut call = snap(
+            1,
+            "write",
+            "path=a.txt",
+            "error:permission_denied",
+            Some("permission_denied"),
+        );
         call.error_message = Some("denied".into());
         report.calls = vec![call];
         let text = render_model_view(&report);

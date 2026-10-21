@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::global_db::tools::{mcp_catalog_id, non_transport_name_rejection};
+use crate::config::global_db::tools::{
+    mcp_catalog_id, non_transport_name_rejection, reserved_command_name_rejection,
+};
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
 use crate::ide_base::IdeBaseHandle;
@@ -14,14 +16,14 @@ use crate::tool::project::project_tools;
 use crate::tool::trait_::Tool;
 use crate::tools::{
     ask_user::AskUserTool,
-    bash::BashTool,
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
+    command_kill::CommandKillTool,
+    command_output::CommandOutputTool,
     custom::CustomTool,
     edit::EditTool,
     glob::GlobTool,
     grep::GrepTool,
-    kill_shell::KillShellTool,
     knowledge::KnowledgeTool,
     litecode_workspace::LitecodeWorkspaceTool,
     lsp::LspTool,
@@ -35,7 +37,6 @@ use crate::tools::{
         SubagentSendTool, SubagentStopTool, SubagentWaitTool,
     },
     todo::TodoWriteTool,
-    wait_shell::WaitShellTool,
     webfetch::WebFetchTool,
     websearch::WebSearchTool,
     write::WriteTool,
@@ -48,10 +49,7 @@ fn builtin_tool(
     ide: Arc<IdeBaseHandle>,
 ) -> Option<Arc<dyn Tool>> {
     let tool: Arc<dyn Tool> = match id {
-        "bash" => Arc::new(BashTool::new(Arc::clone(&ide.terminal))),
-        "kill_shell" => Arc::new(KillShellTool::new(Arc::clone(&ide.terminal))),
-        "wait_shell" => Arc::new(WaitShellTool::new(Arc::clone(&ide.terminal))),
-        "run_command" => Arc::new(RunCommandTool),
+        "run_command" => Arc::new(RunCommandTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
         "edit" => Arc::new(EditTool::with_ide(Arc::clone(&ide))),
@@ -105,7 +103,16 @@ fn instantiate_tool(
             .and_then(|binding| binding.allowed_tools.as_ref());
         return tool_schemas
             .iter()
-            .filter(|tool| allowed_tools.map_or(true, |allowed| allowed.contains(&tool.name)))
+            .filter(|tool| {
+                if !mcp_inner_name_allowed(&tool.name) {
+                    tracing::warn!(
+                        tool = %tool.name,
+                        "dropping MCP tool that uses a reserved name"
+                    );
+                    return false;
+                }
+                allowed_tools.map_or(true, |allowed| allowed.contains(&tool.name))
+            })
             .map(|tool| {
                 Arc::new(McpTool::new(
                     server_id,
@@ -293,6 +300,14 @@ pub async fn build_tool_list(
         tools.extend(new_tools);
     }
 
+    // Code companions of run_command. They are not settings cards. A caller
+    // that cannot see run_command does not get either tool.
+    if tools.iter().any(|tool| tool.name() == "run_command") {
+        let jobs = Arc::clone(&runtime.ide.terminal.jobs);
+        tools.push(Arc::new(CommandOutputTool::new(Arc::clone(&jobs))));
+        tools.push(Arc::new(CommandKillTool::new(jobs)));
+    }
+
     // One projection from this caller's visible set. A missing host cannot
     // publish `run_code` or drop the code tools.
     tools = assemble_projected_tools(tools, code_host);
@@ -333,6 +348,12 @@ fn assemble_projected_tools(
     direct
 }
 
+/// MCP publishes `mcp_{server}_{inner}`. The inner name still must not be a
+/// command-job name, a retired shell name, or the code transport.
+fn mcp_inner_name_allowed(name: &str) -> bool {
+    non_transport_name_rejection(name).is_none() && reserved_command_name_rejection(name).is_none()
+}
+
 /// A non-transport tool must not keep the transport's name. Drop the impostor
 /// and keep the code surface; the transport is appended afterwards.
 fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool>> {
@@ -362,7 +383,15 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GrepTool),
         Arc::new(EditTool::new()),
         Arc::new(WriteTool::new()),
-        Arc::new(RunCommandTool),
+        Arc::new(RunCommandTool::new(Arc::new(
+            crate::terminal::AgentJobRegistry::new(),
+        ))),
+        Arc::new(CommandOutputTool::new(Arc::new(
+            crate::terminal::AgentJobRegistry::new(),
+        ))),
+        Arc::new(CommandKillTool::new(Arc::new(
+            crate::terminal::AgentJobRegistry::new(),
+        ))),
     ]
 }
 
@@ -490,6 +519,10 @@ mod tests {
         assert!(!names.contains(&"wait_shell"));
         assert!(!names.contains(&"kill_shell"));
         assert!(names.contains(&"run_command"));
+        // Injected with run_command. Without a code host they stay on this list;
+        // a host bundles them into run_code and they are not Direct names.
+        assert!(names.contains(&"command_output"));
+        assert!(names.contains(&"command_kill"));
         assert!(names.contains(&"todo"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
@@ -566,7 +599,75 @@ mod tests {
             !names.contains(&"run_command"),
             "AgentConfig must not override DB tool binding"
         );
+        assert!(!names.contains(&"command_output"));
+        assert!(!names.contains(&"command_kill"));
         assert!(!names.contains(&"bash"));
+    }
+
+    #[test]
+    fn command_tools_have_no_settings_cards() {
+        let resolved = test_resolved(default_bindings());
+        let cards = available_tools(&resolved);
+        let ids: Vec<&str> = cards.iter().map(|tool| tool.id.as_str()).collect();
+        assert!(!ids.contains(&"command_output"));
+        assert!(!ids.contains(&"command_kill"));
+        assert!(!ids.contains(&"bash"));
+        assert!(!ids.contains(&"wait_shell"));
+        assert!(!ids.contains(&"kill_shell"));
+    }
+
+    #[test]
+    fn custom_tools_cannot_take_command_or_retired_shell_names() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+        use crate::config::settings_writer::validate_custom_definition;
+
+        for name in [
+            "command_output",
+            "command_kill",
+            "bash",
+            "wait_shell",
+            "kill_shell",
+        ] {
+            let mut def = custom_def(name);
+            let err = validate_custom_definition(name, &mut def).unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("reserved"), "{name}: {message}");
+        }
+        let mut ok = custom_def("my_echo");
+        assert!(validate_custom_definition("my_echo", &mut ok).is_ok());
+
+        fn custom_def(name: &str) -> CustomToolDefinition {
+            CustomToolDefinition {
+                name: name.into(),
+                description: String::new(),
+                schema: ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo hi".into(),
+                args: Vec::new(),
+                timeout: 30,
+                rules: Vec::new(),
+                suite: None,
+                suite_label: None,
+            }
+        }
+    }
+
+    #[test]
+    fn mcp_inner_names_cannot_use_reserved_command_names() {
+        for name in [
+            "command_output",
+            "command_kill",
+            "bash",
+            "wait_shell",
+            "kill_shell",
+            "run_code",
+        ] {
+            assert!(!mcp_inner_name_allowed(name), "{name}");
+        }
+        assert!(mcp_inner_name_allowed("list_files"));
     }
 
     #[test]
@@ -709,13 +810,11 @@ mod tests {
         };
         assert_eq!(description, tools[0].description(&other));
         assert!(description.contains("declare const tools"));
-        assert!(description.contains(
-            "readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;"
-        ));
         assert!(
-            description.contains(
-                "readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;"
-            )
+            description.contains("readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;")
+        );
+        assert!(
+            description.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;")
         );
         assert!(!description.contains("ToolCallOptions"));
         assert!(description.contains("Tool timeouts are internal"));
@@ -764,14 +863,24 @@ mod tests {
         assert!(!child_names.contains(&"edit"));
         assert!(!child_names.contains(&"write"));
         assert!(child_names.contains(&"run_code"));
-        // WP-196: 默认绑定无 Direct bash；run_command 为 Code-only，不进 Direct 列表。
         assert!(!child_names.contains(&"bash"));
+        assert!(!child_names.contains(&"wait_shell"));
+        assert!(!child_names.contains(&"kill_shell"));
         assert!(!child_names.contains(&"run_command"));
+        assert!(!child_names.contains(&"command_output"));
+        assert!(!child_names.contains(&"command_kill"));
         let child_sdk = child
             .iter()
             .find(|tool| tool.name() == "run_code")
             .unwrap()
             .description(&dummy_ctx());
+        assert!(child_sdk.contains("declare const tools"));
+        assert!(child_sdk.contains("[\"run_command\"]"));
+        assert!(child_sdk.contains("[\"command_output\"]"));
+        assert!(child_sdk.contains("[\"command_kill\"]"));
+        assert!(!child_sdk.contains("[\"bash\"]"));
+        assert!(!child_sdk.contains("[\"wait_shell\"]"));
+        assert!(!child_sdk.contains("[\"kill_shell\"]"));
 
         let mut bindings = default_bindings();
         bindings.get_mut("grep").unwrap().enabled = false;
@@ -805,8 +914,21 @@ mod tests {
             .code_bindings()
             .unwrap();
         let names: Vec<&str> = whitelist.iter().map(String::as_str).collect();
-        assert_eq!(names, ["edit", "glob", "read", "run_command", "write"]);
+        assert_eq!(
+            names,
+            [
+                "command_kill",
+                "command_output",
+                "edit",
+                "glob",
+                "read",
+                "run_command",
+                "write"
+            ]
+        );
         assert!(narrow_sdk.contains("[\"run_command\"]"));
+        assert!(narrow_sdk.contains("[\"command_output\"]"));
+        assert!(narrow_sdk.contains("[\"command_kill\"]"));
     }
 
     struct Impostor;

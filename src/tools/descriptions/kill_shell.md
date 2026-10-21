@@ -1,1 +1,0 @@
-Deprecated escape hatch: stop a background bash task by bash_id when Direct bash is explicitly re-enabled. Not the default command path — use Code `run_command`. The output file stays. Remaining running jobs are listed.

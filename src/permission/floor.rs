@@ -24,7 +24,7 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
         });
     }
 
-    if matches!(tool_name, "bash" | "run_command")
+    if tool_name == "run_command"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
         let action = check_dangerous_command(command);
@@ -37,6 +37,39 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::permission::BindingPathMode;
+
+    fn ctx() -> MatchContext<'static> {
+        MatchContext {
+            workspace_root: std::path::Path::new("."),
+            path_mode: BindingPathMode::Unrestricted,
+        }
+    }
+
+    #[test]
+    fn run_command_hits_the_dangerous_command_floor() {
+        let hit = check_floor(
+            "run_command",
+            &serde_json::json!({"command": "rm -rf /"}),
+            &ctx(),
+        )
+        .expect("floor");
+        assert_eq!(hit.rule_id, "floor_dangerous_command");
+        assert_eq!(hit.action, PermissionAction::Deny);
+        assert!(
+            check_floor("run_command", &serde_json::json!({"command": "ls"}), &ctx()).is_none()
+        );
+    }
+
+    #[test]
+    fn retired_direct_shell_name_does_not_hit_the_command_floor() {
+        assert!(check_floor("bash", &serde_json::json!({"command": "rm -rf /"}), &ctx()).is_none());
+    }
 }
 
 /// `path` is the code-tool argument. `file_path` is still denied when a caller

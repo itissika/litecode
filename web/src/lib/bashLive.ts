@@ -120,3 +120,45 @@ export function bashCallMetaByCallId(
   }
   return meta;
 }
+
+const NESTED_CODE_SUFFIX = /:code:\d+$/;
+
+/** Parent `run_code` call id for a nested code call (`parent:code:0`). */
+export function parentRunCodeCallId(callId: string): string | undefined {
+  const match = NESTED_CODE_SUFFIX.exec(callId);
+  if (!match || match.index === 0) return undefined;
+  return callId.slice(0, match.index);
+}
+
+function hasFunctionCall(
+  rows: HumanRow[],
+  callId: string,
+  name?: string,
+): boolean {
+  for (const row of rows) {
+    const item = itemFromRow(row);
+    if (!item || !isFunctionCall(item) || item.call_id !== callId) continue;
+    if (name !== undefined && item.name !== name) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Transcript target for the terminal panel's Reveal control.
+ *
+ * Jobs are listed from the snapshot, not from this lookup. Reveal is hidden
+ * when the transcript has no row that can be scrolled to. A nested `call_id`
+ * jumps to the parent `run_code` call and is never itself the DOM id.
+ * A historical `bash` call reveals that call.
+ */
+export function terminalRevealCallId(
+  callId: string,
+  rows: HumanRow[],
+): string | undefined {
+  const parent = parentRunCodeCallId(callId);
+  if (parent) {
+    return hasFunctionCall(rows, parent, "run_code") ? parent : undefined;
+  }
+  return hasFunctionCall(rows, callId, "bash") ? callId : undefined;
+}

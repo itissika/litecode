@@ -483,7 +483,8 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["page"]["has_more"], true, "{data}");
         assert!(
-            data["page"]["total"].as_u64().unwrap() > data["paths"].as_array().unwrap().len() as u64
+            data["page"]["total"].as_u64().unwrap()
+                > data["paths"].as_array().unwrap().len() as u64
         );
     }
     if case.tool == "grep" && case.scenario == "truncation" {

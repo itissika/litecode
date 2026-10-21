@@ -8,6 +8,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { BashToolView } from "./BashToolView";
+import { getToolView } from "./registry";
 import { useBashStore } from "../../stores/bashStore";
 import { useConnectionStore } from "../../stores/connectionStore";
 
@@ -229,5 +230,14 @@ describe("BashToolView parses the real backend result document", () => {
 
     expect(screen.getByTestId("bash-footer").textContent).toBe("exit_code: 0");
     expect(screen.getByTestId("bash-footer").className).not.toContain("amber");
+  });
+});
+
+describe("retired shell cards", () => {
+  it("replays an old bash item and leaves wait_shell and kill_shell on the default card", () => {
+    expect(typeof getToolView("bash")).toBe("function");
+    expect(getToolView("wait_shell")).toBeUndefined();
+    expect(getToolView("kill_shell")).toBeUndefined();
+    expect(getToolView("run_code")).toBeUndefined();
   });
 });

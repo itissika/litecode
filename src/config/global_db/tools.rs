@@ -1,8 +1,6 @@
 //! Core tool id sets shared by seed (CONFIG §2.5).
 
 pub fn core_configurable_tools() -> &'static [&'static str] {
-    // WP-196: Direct bash 三件套不在此列 → 默认 seed/bind 不会绑上；
-    // 模块与 preset/floor 仍认它们，见 direct_shell_tools()。
     &[
         "read",
         "grep",
@@ -13,12 +11,6 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
         "session_search",
         "litecode_workspace",
     ]
-}
-
-/// Direct `bash` / `wait_shell` / `kill_shell`：实现与 registry 保留，
-/// 不进默认 agent 绑定；人工/逃生绑定时仍算 core（防自定义同名）。
-pub fn direct_shell_tools() -> &'static [&'static str] {
-    &["bash", "wait_shell", "kill_shell"]
 }
 
 pub fn network_core_tools() -> &'static [&'static str] {
@@ -43,7 +35,6 @@ pub fn core_none_tools() -> &'static [&'static str] {
 pub fn core_tool_ids() -> Vec<String> {
     core_configurable_tools()
         .iter()
-        .chain(direct_shell_tools().iter())
         .chain(core_none_tools().iter())
         .chain(network_core_tools().iter())
         .map(|s| (*s).to_string())
@@ -52,7 +43,6 @@ pub fn core_tool_ids() -> Vec<String> {
 
 pub fn is_core_tool(id: &str) -> bool {
     core_configurable_tools().contains(&id)
-        || direct_shell_tools().contains(&id)
         || core_none_tools().contains(&id)
         || network_core_tools().contains(&id)
 }
@@ -71,17 +61,35 @@ pub fn is_optional_builtin(id: &str) -> bool {
 }
 
 pub fn is_reserved_builtin(id: &str) -> bool {
-    is_core_tool(id) || is_optional_builtin(id)
+    is_core_tool(id) || is_optional_builtin(id) || reserved_command_name_rejection(id).is_some()
 }
 
 /// `run_code` belongs to the code transport. Every create, write, and load path
 /// for a custom tool — and any other non-transport source that would publish a
 /// tool name — must reject with this function. `None` means the name is free.
+///
+/// Command-job names are not listed here. [`crate::tool::registry`] strips this
+/// function's hits before projection, and the real `command_output` /
+/// `command_kill` tools must survive that strip. Those names use
+/// [`reserved_command_name_rejection`].
 pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
     if name == "run_code" {
         Some("run_code is reserved for the code transport")
     } else {
         None
+    }
+}
+
+/// Names a custom tool or an MCP tool must not publish. The built-in
+/// `command_output` / `command_kill` tools are registered separately and are
+/// not rejected by this check at projection time.
+pub fn reserved_command_name_rejection(name: &str) -> Option<&'static str> {
+    match name {
+        "command_output" | "command_kill" => Some("name is reserved for a code command tool"),
+        "bash" | "wait_shell" | "kill_shell" => {
+            Some("name is reserved and is not a custom or MCP tool")
+        }
+        _ => None,
     }
 }
 

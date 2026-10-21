@@ -91,17 +91,11 @@ pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
     "subagent_delete",
 ];
 
-/// Bash closed loop: enable/disable together on Agents (one card).
-pub const BASH_SERIES_TOOL_IDS: &[&str] = &["bash", "wait_shell", "kill_shell"];
-
 /// Server-declared enable series for Agents one-card binding.
 /// `(series_id, series_label, tool_ids)`.
 pub fn core_tool_enable_series() -> &'static [(&'static str, &'static str, &'static [&'static str])]
 {
-    &[
-        ("bash", "Bash", BASH_SERIES_TOOL_IDS),
-        ("subagent", "Subagent", SUBAGENT_SERIES_TOOL_IDS),
-    ]
+    &[("subagent", "Subagent", SUBAGENT_SERIES_TOOL_IDS)]
 }
 
 /// Task-board / human-Ask tools. Subagent role does not bind these (tool-set gate).

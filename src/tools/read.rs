@@ -221,7 +221,6 @@ impl Tool for ReadTool {
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         ReadTool::validate_input(self, input)
     }
-
 }
 
 impl ReadTool {
@@ -323,7 +322,10 @@ impl ReadTool {
                 &located.path,
                 mime_type,
                 bytes.len() as u64,
-                &format!("unsupported file: {path_display} ({mime_type}, {} bytes)", bytes.len()),
+                &format!(
+                    "unsupported file: {path_display} ({mime_type}, {} bytes)",
+                    bytes.len()
+                ),
             );
         }
         let content = match crate::workspace::text_codec::decode_utf8_bytes(&bytes) {
@@ -352,7 +354,6 @@ impl ReadTool {
         }
         Ok(())
     }
-
 }
 
 fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
@@ -452,16 +453,15 @@ fn render_projection_page(
         );
     }
     render_line_window(identity, start, end, total_lines, None, |i| {
-            let line_no = (i + 1) as u32;
-            if file
-                .seq_at(line_no)
-                .is_some_and(|seq| hidden_seqs.contains(&seq))
-            {
-                return None;
-            }
-            Some((i + 1, file.lines.get(i).map(String::as_str).unwrap_or("")))
-        },
-    )
+        let line_no = (i + 1) as u32;
+        if file
+            .seq_at(line_no)
+            .is_some_and(|seq| hidden_seqs.contains(&seq))
+        {
+            return None;
+        }
+        Some((i + 1, file.lines.get(i).map(String::as_str).unwrap_or("")))
+    })
 }
 
 fn render_text_page(content: &str, input: &Value, file: FileRef) -> ToolCallResult {
@@ -888,7 +888,10 @@ mod tests {
         assert_eq!(result.error_code.as_deref(), Some("unsupported"));
         assert!(result.parts.is_empty());
         assert!(result.data.is_none());
-        assert_eq!(result.error_details.as_ref().unwrap()["mime"], "text/utf-16");
+        assert_eq!(
+            result.error_details.as_ref().unwrap()["mime"],
+            "text/utf-16"
+        );
         assert!(result.content.contains("UTF-16"));
     }
 
@@ -944,7 +947,10 @@ mod tests {
         }));
         assert!(result.error.is_none(), "{}", result.content);
         let lines = result.data.unwrap()["lines"].as_array().unwrap().len();
-        assert_eq!(lines, 200, "page size follows the line limit, not a token budget");
+        assert_eq!(
+            lines, 200,
+            "page size follows the line limit, not a token budget"
+        );
     }
 
     #[test]
@@ -1027,7 +1033,10 @@ mod tests {
             .data
             .unwrap();
         assert_eq!(data["lines"][0]["line_truncated"], true);
-        assert_eq!(data["lines"][0]["text"].as_str().unwrap().chars().count(), MAX_LINE_CHARS);
+        assert_eq!(
+            data["lines"][0]["text"].as_str().unwrap().chars().count(),
+            MAX_LINE_CHARS
+        );
         assert_eq!(data["lines"][1]["text"], "short");
     }
 
@@ -1049,7 +1058,11 @@ mod tests {
         });
 
         let result = tool.call(input);
-        assert!(result.error.is_none(), "large text is paged, not a media cap: {}", result.content);
+        assert!(
+            result.error.is_none(),
+            "large text is paged, not a media cap: {}",
+            result.content
+        );
         assert!(result.data.as_ref().unwrap()["file"]["hash"].is_string());
         assert_eq!(result.data.as_ref().unwrap()["page"]["has_more"], true);
         assert!(result.parts.is_empty());
@@ -1115,7 +1128,11 @@ mod tests {
             "start_line": -5
         }));
         assert_eq!(start.error_code.as_deref(), Some("invalid_input"));
-        assert!(start.content.contains("start_line"), "got: {}", start.content);
+        assert!(
+            start.content.contains("start_line"),
+            "got: {}",
+            start.content
+        );
         assert!(start.data.is_none());
     }
 
@@ -1194,20 +1211,22 @@ mod tests {
             other.content
         );
         let other_text = page_text(&other);
-        assert!(
-            other_text.contains("VIRTUAL_READ_NEEDLE"),
-            "{other_text}"
-        );
-        let needle_line = other
-            .data
-            .as_ref()
-            .unwrap()["lines"]
+        assert!(other_text.contains("VIRTUAL_READ_NEEDLE"), "{other_text}");
+        let needle_line = other.data.as_ref().unwrap()["lines"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|line| line["text"].as_str().unwrap_or("").contains("VIRTUAL_READ_NEEDLE"))
+            .find(|line| {
+                line["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("VIRTUAL_READ_NEEDLE")
+            })
             .expect("needle line");
-        assert_eq!(needle_line["number"], 3, "canonical body line should stay numbered, got: {needle_line}");
+        assert_eq!(
+            needle_line["number"], 3,
+            "canonical body line should stay numbered, got: {needle_line}"
+        );
 
         let self_read = read_virtual(root, &path, serde_json::json!({}), &sid);
         assert_eq!(
@@ -1217,7 +1236,8 @@ mod tests {
             self_read.content
         );
         assert_eq!(
-            self_read.data.as_ref().unwrap()["reason"], "in_context_window",
+            self_read.data.as_ref().unwrap()["reason"],
+            "in_context_window",
             "live surface should be filtered: {:?}",
             self_read.data
         );
@@ -1304,7 +1324,8 @@ mod tests {
             &current,
         );
         assert_eq!(
-            live_only.data.as_ref().unwrap()["reason"], "in_context_window",
+            live_only.data.as_ref().unwrap()["reason"],
+            "in_context_window",
             "offset into the live surface must stay in-window: {:?}",
             live_only.data
         );
@@ -1437,9 +1458,8 @@ mod tests {
             "path": text_path.to_str().expect("path"),
         }));
         let data = result.data.expect("read must return data");
-        crate::tool::schema_validate(&schema, &data).unwrap_or_else(|error| {
-            panic!("read data does not match its schema: {error}: {data}")
-        });
+        crate::tool::schema_validate(&schema, &data)
+            .unwrap_or_else(|error| panic!("read data does not match its schema: {error}: {data}"));
         let image = tool.call(serde_json::json!({
             "path": image_path.to_str().expect("path"),
         }));

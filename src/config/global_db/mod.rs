@@ -580,7 +580,9 @@ pub mod store {
         let mut tools = Vec::new();
         for row in rows {
             let tool = row?;
-            if let Some(reason) = super::tools::non_transport_name_rejection(&tool.name) {
+            if let Some(reason) = super::tools::non_transport_name_rejection(&tool.name)
+                .or_else(|| super::tools::reserved_command_name_rejection(&tool.name))
+            {
                 tracing::warn!(
                     tool = %tool.name,
                     reason,

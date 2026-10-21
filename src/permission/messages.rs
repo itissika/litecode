@@ -18,15 +18,15 @@ pub fn permission_denied_message(tool_name: &str, rule_id: &str, input: &Value) 
             "blocked: '{file_path}' is outside the workspace. Use a workspace-relative path, or enable unrestricted path mode (ALL preset) for paths outside the workspace."
         ),
         // Safety floor: destructive patterns are hard-denied under every preset.
-        ("bash" | "run_command", "floor_dangerous_command") => format!(
+        ("run_command", "floor_dangerous_command") => format!(
             "blocked: command '{}' matches a hard-deny safety rule (e.g. rm -rf /, fork bomb, \
              mkfs/dd or redirection to a raw block device). This applies under every permission \
              preset — do not retry or obfuscate it; ask the user to run it manually if it is \
              genuinely needed.",
             bash_command(input)
         ),
-        // SAFE preset: bash defaults to Deny and only auto-allows read-only commands.
-        ("bash" | "run_command", DEFAULT_RULE_ID) => format!(
+        // SAFE preset: run_command defaults to Deny and only auto-allows read-only commands.
+        ("run_command", DEFAULT_RULE_ID) => format!(
             "permission denied for {tool_name}: the current policy denies non-read-only commands by \
              default (the SAFE preset only auto-allows read-only commands such as ls, cat, \
              git status, cargo check, and pipelines ending in head/less/more). Command: '{}'. \
@@ -59,9 +59,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bash_safe_default_deny_explains_readonly_policy() {
+    fn run_command_safe_default_deny_explains_readonly_policy() {
         let msg = permission_denied_message(
-            "bash",
+            "run_command",
             DEFAULT_RULE_ID,
             &serde_json::json!({"command": "cargo run"}),
         );
@@ -71,9 +71,9 @@ mod tests {
     }
 
     #[test]
-    fn bash_floor_deny_explains_safety_rule() {
+    fn run_command_floor_deny_explains_safety_rule() {
         let msg = permission_denied_message(
-            "bash",
+            "run_command",
             "floor_dangerous_command",
             &serde_json::json!({"command": "rm -rf /"}),
         );
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn user_denial_mentions_no_retry() {
-        let msg = permission_denied_by_user_message("bash", "cargo build");
+        let msg = permission_denied_by_user_message("run_command", "cargo build");
         assert!(msg.contains("user denied"), "{msg}");
         assert!(msg.contains("cargo build"), "{msg}");
         assert!(msg.contains("Do not retry"), "{msg}");

@@ -332,11 +332,10 @@ mod tests {
                 .permission_surface
         };
         assert_eq!(surface("read"), PermissionSurface::Preset);
-        assert_eq!(surface("bash"), PermissionSurface::Preset);
+        assert_eq!(surface("run_command"), PermissionSurface::Preset);
         assert_eq!(surface("litecode_workspace"), PermissionSurface::Preset);
         assert_eq!(surface("webfetch"), PermissionSurface::Fixed);
         assert_eq!(surface("session_search"), PermissionSurface::Fixed);
-        assert_eq!(surface("kill_shell"), PermissionSurface::Fixed);
         assert_eq!(surface("plan"), PermissionSurface::Fixed);
     }
 
@@ -390,17 +389,18 @@ mod tests {
     }
 
     #[test]
-    fn bash_and_subagent_series_declared_on_available_tools() {
+    fn subagent_series_declared_on_available_tools() {
         let resolved = ConfigManager::resolve_without_catalog(
             GlobalSettings::default(),
             WorkspaceState::new("/tmp/series"),
         );
         let tools = available_tools(&resolved);
-        let bash = tools.iter().find(|t| t.id == "bash").expect("bash");
-        assert_eq!(bash.series_id.as_deref(), Some("bash"));
-        assert_eq!(bash.series_label.as_deref(), Some("Bash"));
-        let wait = tools.iter().find(|t| t.id == "wait_shell").expect("wait");
-        assert_eq!(wait.series_id.as_deref(), Some("bash"));
+        for id in ["bash", "wait_shell", "kill_shell"] {
+            assert!(
+                tools.iter().all(|tool| tool.id != id),
+                "{id} is not a catalog tool"
+            );
+        }
         let launch = tools
             .iter()
             .find(|t| t.id == "subagent_launch")
@@ -635,7 +635,7 @@ mod tests {
             surface: ToolSurface::Code,
         }));
         candidates.push(Arc::new(Declared {
-            name: "bash",
+            name: "todo",
             surface: ToolSurface::Direct,
         }));
         candidates.push(Arc::new(Declared {
@@ -654,14 +654,7 @@ mod tests {
         for id in ["read", "glob", "grep", "edit", "write", "plan"] {
             assert_eq!(surface(id), CallSurface::Code, "{id}");
         }
-        for id in [
-            "bash",
-            "webfetch",
-            "todo",
-            "code_search",
-            "demo",
-            "mcp_echo",
-        ] {
+        for id in ["webfetch", "todo", "code_search", "demo", "mcp_echo"] {
             assert_eq!(surface(id), CallSurface::Direct, "{id}");
         }
         assert!(
@@ -700,6 +693,6 @@ mod tests {
                 .clone()
         };
         assert_eq!(json_surface("edit"), "code");
-        assert_eq!(json_surface("bash"), "direct");
+        assert_eq!(json_surface("todo"), "direct");
     }
 }

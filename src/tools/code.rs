@@ -24,9 +24,9 @@ use crate::ptc::{
 };
 use crate::tool::Tool;
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
+use crate::tool::outcome::{self, Diagnostic};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::WorkspaceWriteLock;
-use crate::tool::outcome::{self, Diagnostic};
 use crate::types::utf8::prefix_utf8;
 use crate::types::{FunctionToolCall, ToolCallResult, ToolErrorKind, ToolSignalLevel};
 
@@ -298,8 +298,7 @@ impl CallLedger {
                 .fetch_add(diagnostics.len(), Ordering::Relaxed);
             return;
         };
-        if is_priority_state(&outcome)
-            && self.priority_used.load(Ordering::Relaxed) < PRIORITY_CAP
+        if is_priority_state(&outcome) && self.priority_used.load(Ordering::Relaxed) < PRIORITY_CAP
         {
             self.priority_used.fetch_add(1, Ordering::Relaxed);
             self.omitted.fetch_sub(1, Ordering::Relaxed);
@@ -627,7 +626,10 @@ async fn invoke_binding(
         Err(DecodeFail::ExtraArgument { summary }) => {
             ledger.begin(seq, &name, &summary);
             let index = seq;
-            ledger.record(index, &protocol_failure("tool bindings accept one argument"));
+            ledger.record(
+                index,
+                &protocol_failure("tool bindings accept one argument"),
+            );
             return Err(crate::ptc::HostError::type_error(
                 "tool bindings accept one argument",
             ));
@@ -675,11 +677,8 @@ async fn invoke_binding(
 }
 
 fn protocol_failure(message: &str) -> ToolCallResult {
-    let mut result = ToolCallResult::error_with_kind(
-        ToolErrorKind::InvalidInput,
-        message.to_string(),
-        false,
-    );
+    let mut result =
+        ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, message.to_string(), false);
     result.error_code = Some("invalid_input".to_string());
     result
 }
@@ -837,9 +836,10 @@ fn render_run_output(
     });
     // A failed program does not present its value. `Json` drops that tree on the heap.
     let keep_value = outcome.value.is_some()
-        && outcome.failure.as_ref().is_none_or(|failure| {
-            failure.kind == FailureKind::Cancelled
-        });
+        && outcome
+            .failure
+            .as_ref()
+            .is_none_or(|failure| failure.kind == FailureKind::Cancelled);
     let presented = if keep_value {
         match outcome.value.as_ref().map(present_returned_value) {
             Some(Ok(presented)) => Some(presented),
@@ -854,7 +854,11 @@ fn render_run_output(
                     run_timeout_ms,
                     source,
                 ));
-                return ToolCallResult::error_with_kind(ToolErrorKind::InvalidOutput, content, false);
+                return ToolCallResult::error_with_kind(
+                    ToolErrorKind::InvalidOutput,
+                    content,
+                    false,
+                );
             }
             None => None,
         }
@@ -862,7 +866,10 @@ fn render_run_output(
         None
     };
     let failure_kind = outcome.failure.as_ref().map(|failure| failure.kind);
-    let resource = outcome.failure.as_ref().and_then(|failure| failure.resource);
+    let resource = outcome
+        .failure
+        .as_ref()
+        .and_then(|failure| failure.resource);
     let content = render::render_model_view(&run_report(
         ledger,
         outcome,
@@ -884,9 +891,11 @@ fn render_run_output(
         } else {
             match failure.kind {
                 FailureKind::Syntax => (ToolErrorKind::InvalidInput, false, None),
-                FailureKind::Exception => {
-                    (ToolErrorKind::Internal, false, Some("exception".to_string()))
-                }
+                FailureKind::Exception => (
+                    ToolErrorKind::Internal,
+                    false,
+                    Some("exception".to_string()),
+                ),
                 FailureKind::Timeout => (ToolErrorKind::Timeout, true, None),
                 FailureKind::Cancelled => (ToolErrorKind::Cancelled, false, None),
                 FailureKind::ResourceLimit => (ToolErrorKind::Internal, false, None),
@@ -935,7 +944,12 @@ fn run_report(
         logs: outcome
             .logs
             .iter()
-            .map(|entry| (log_level_name(entry.level).to_string(), entry.message.clone()))
+            .map(|entry| {
+                (
+                    log_level_name(entry.level).to_string(),
+                    entry.message.clone(),
+                )
+            })
             .collect(),
         value,
         failure_text,
@@ -1167,7 +1181,7 @@ mod outcome_tests {
     use crate::ptc::{CallRecord, CallState, Failure, Json, Outcome};
     use crate::types::{ToolCallResult, ToolErrorKind};
 
-    use super::{decode_invocation, merge_call_outcome, render_run_output, CallLedger, DecodeFail};
+    use super::{CallLedger, DecodeFail, decode_invocation, merge_call_outcome, render_run_output};
 
     fn runtime(state: CallState) -> Outcome {
         Outcome {
@@ -1254,7 +1268,10 @@ mod outcome_tests {
             .lines()
             .find(|line| line.starts_with("1. write"))
             .unwrap_or("");
-        assert_eq!(ledger, "1. write path=a.txt error:permission_denied", "{text}");
+        assert_eq!(
+            ledger, "1. write path=a.txt error:permission_denied",
+            "{text}"
+        );
         assert!(
             text.contains("#1 write path=a.txt: permission_denied: denied"),
             "{text}"
@@ -1264,7 +1281,10 @@ mod outcome_tests {
 
     #[test]
     fn unknown_host_outcome_is_unsettled() {
-        assert_eq!(merge_call_outcome(None, Some(CallState::Completed)), "unsettled");
+        assert_eq!(
+            merge_call_outcome(None, Some(CallState::Completed)),
+            "unsettled"
+        );
         assert_eq!(merge_call_outcome(Some(""), None), "unsettled");
         assert_eq!(
             merge_call_outcome(Some("error:timeout"), None),
@@ -1341,15 +1361,20 @@ mod outcome_tests {
             calls,
         };
         let text = render_run_output(&ledger, &outcome, 120_000, "").content;
-        let ledger_text = text
-            .split_once("calls (")
-            .expect("ledger")
-            .1;
-        let ledger_section = ledger_text.split_once("\n\n").map(|(head, _)| head).unwrap_or(ledger_text);
+        let ledger_text = text.split_once("calls (").expect("ledger").1;
+        let ledger_section = ledger_text
+            .split_once("\n\n")
+            .map(|(head, _)| head)
+            .unwrap_or(ledger_text);
         assert!(ledger_section.len() <= 8 * 1024, "{}", ledger_section.len());
         assert!(text.contains("of 466"), "{text}");
         assert!(text.contains("read×466"), "{text}");
-        assert!(text.contains(crate::session::transcript_file::RUN_CODE_SESSION_NOTE), "{text}");
-        assert!(crate::session::transcript_file::ledger_reads_sessions(&text));
+        assert!(
+            text.contains(crate::session::transcript_file::RUN_CODE_SESSION_NOTE),
+            "{text}"
+        );
+        assert!(crate::session::transcript_file::ledger_reads_sessions(
+            &text
+        ));
     }
 }

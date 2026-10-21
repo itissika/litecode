@@ -23,8 +23,7 @@ fn run_code_result(content: &str) -> Value {
         .split_once("result:\n")
         .unwrap_or_else(|| panic!("missing result section in {content}"))
         .1;
-    serde_json::from_str(rest.trim())
-        .unwrap_or_else(|_| Value::String(rest.trim().to_string()))
+    serde_json::from_str(rest.trim()).unwrap_or_else(|_| Value::String(rest.trim().to_string()))
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -451,8 +450,16 @@ return { ok: true };
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
     assert!(result.data.is_none(), "{}", result.content);
-    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
-    assert!(result.content.contains("[error] warn"), "{}", result.content);
+    assert!(
+        result.content.contains("[log] hello 42"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("[error] warn"),
+        "{}",
+        result.content
+    );
     assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
     assert!(result.content.contains("hello 42"), "{}", result.content);
 

@@ -10,7 +10,7 @@ import type { ToolViewProps } from "./registry";
 /**
 
 /**
- * The REAL backend shapes (see `src/tools/bash_status.rs`):
+ * Historical `bash` result text:
  *
  *  - running view   — `status: running` / `bash_id: …` / `output_file: …` /
  *                     the running list / guidance. NO captured output.

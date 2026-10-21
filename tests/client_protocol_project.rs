@@ -275,6 +275,7 @@ fn bash_jobs_projects_to_bash_jobs_notification() {
                     call_id: "call_a".into(),
                     command_preview: "sleep 8".into(),
                     output_file: ".litecode/bash/bg_a.output".into(),
+                    stderr_file: None,
                     started_at_ms: 42,
                 }],
                 waits: vec![litecode::terminal::BashWaitWire {
@@ -305,6 +306,7 @@ fn session_snapshot_includes_bash_when_set() {
             call_id: "call_a".into(),
             command_preview: "sleep".into(),
             output_file: ".litecode/bash/bg_a.output".into(),
+            stderr_file: None,
             started_at_ms: 1,
         }],
         waits: vec![],

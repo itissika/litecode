@@ -12,9 +12,9 @@ use litecode::context_pipeline::Context;
 use litecode::permission::{
     AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink, ToolPolicy,
 };
+use litecode::tool::Tool;
 use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tool::Tool;
 use litecode::tools::code::{CodeTool, CodeToolHost};
 use litecode::tools::read::ReadTool;
 use litecode::tools::write::WriteTool;
@@ -286,7 +286,11 @@ return "wrote";
         .find(|line| line.starts_with("1. write"))
         .unwrap_or("");
     assert!(ledger.ends_with(" error:permission_denied"), "{ledger}");
-    assert!(result.content.contains("permission_denied"), "{}", result.content);
+    assert!(
+        result.content.contains("permission_denied"),
+        "{}",
+        result.content
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("same.txt")).unwrap(),
         "from-direct"

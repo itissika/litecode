@@ -533,7 +533,7 @@ export interface SessionSnapshot {
    * Absent / null = no file-level revert available.
    */
   max_file_revert_seq?: number | null;
-  /** Running agent bash jobs + wait_shell waiters (reconnect hydrate). */
+  /** Live command jobs and in-flight waits (reconnect hydrate). */
   bash?: BashJobsSnapshot | null;
   /** Session-scoped todos (reconnect hydrate; not derived from the transcript). */
   todos?: {
@@ -580,6 +580,8 @@ export interface BashJob {
   call_id: string;
   command_preview: string;
   output_file: string;
+  /** Stderr log. Older snapshots omit it; the tail poll reads stdout. */
+  stderr_file?: string;
   started_at_ms: number;
 }
 

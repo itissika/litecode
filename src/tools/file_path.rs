@@ -120,11 +120,8 @@ pub fn with_path_risk_warning(
     let resolved_display = resolved.to_string_lossy();
     if is_sensitive_system_path(raw_path) || is_sensitive_system_path(&resolved_display) {
         result.diagnostics.push(
-            Diagnostic::warning(
-                "sensitive_path",
-                "target is a sensitive system location",
-            )
-            .with_details(serde_json::json!({ "path": raw_path })),
+            Diagnostic::warning("sensitive_path", "target is a sensitive system location")
+                .with_details(serde_json::json!({ "path": raw_path })),
         );
     }
     result
@@ -177,10 +174,19 @@ mod tests {
         assert_eq!(code(WorkspaceError::TooLarge).as_deref(), Some("io"));
         assert_eq!(code(WorkspaceError::Binary).as_deref(), Some("unsupported"));
         assert_eq!(code(WorkspaceError::Utf16).as_deref(), Some("unsupported"));
-        assert_eq!(code(WorkspaceError::NotUtf8).as_deref(), Some("unsupported"));
-        assert_eq!(code(WorkspaceError::PreviewTooLarge).as_deref(), Some("internal"));
+        assert_eq!(
+            code(WorkspaceError::NotUtf8).as_deref(),
+            Some("unsupported")
+        );
+        assert_eq!(
+            code(WorkspaceError::PreviewTooLarge).as_deref(),
+            Some("internal")
+        );
         assert_eq!(code(WorkspaceError::NotSqlite).as_deref(), Some("internal"));
-        assert_eq!(code(WorkspaceError::UnknownTable).as_deref(), Some("internal"));
+        assert_eq!(
+            code(WorkspaceError::UnknownTable).as_deref(),
+            Some("internal")
+        );
     }
 }
 

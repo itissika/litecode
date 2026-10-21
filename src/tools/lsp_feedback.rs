@@ -13,7 +13,8 @@ use crate::lsp::LspDiagFeedback;
 use crate::tool::outcome::Diagnostic;
 use crate::types::ToolCallResult;
 
-const LSP_ERROR_MESSAGE: &str = "LSP reported errors in this file. Safe to ignore if intentional — fix when convenient.";
+const LSP_ERROR_MESSAGE: &str =
+    "LSP reported errors in this file. Safe to ignore if intentional — fix when convenient.";
 
 #[cfg(test)]
 static LSP_ERROR_HOOK: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);

@@ -8,9 +8,7 @@ describe("processToolBucket", () => {
     expect(processToolBucket("edit")).toBe("edit");
   });
 
-  it("excludes wait_shell and kill_shell from header counts", () => {
-    expect(processToolBucket("wait_shell")).toBeNull();
-    expect(processToolBucket("kill_shell")).toBeNull();
+  it("excludes subagent rows from header counts", () => {
     expect(processToolBucket("subagent_wait")).toBeNull();
     expect(processToolBucket("subagent_stop")).toBeNull();
     expect(processToolBucket("subagent_launch")).toBeNull();
@@ -25,13 +23,15 @@ describe("processToolBucket", () => {
   it("groups remaining tools under tool", () => {
     expect(processToolBucket("read")).toBe("tool");
     expect(processToolBucket("grep")).toBe("tool");
+    expect(processToolBucket("wait_shell")).toBe("tool");
+    expect(processToolBucket("kill_shell")).toBe("tool");
   });
 });
 
 describe("isInlineTool", () => {
-  it("identifies auxiliary bash-series tools", () => {
-    expect(isInlineTool("wait_shell")).toBe(true);
-    expect(isInlineTool("kill_shell")).toBe(true);
+  it("identifies auxiliary subagent tools", () => {
+    expect(isInlineTool("wait_shell")).toBe(false);
+    expect(isInlineTool("kill_shell")).toBe(false);
     expect(isInlineTool("subagent_wait")).toBe(true);
     expect(isInlineTool("subagent_stop")).toBe(true);
     expect(isInlineTool("bash")).toBe(false);
@@ -56,7 +56,7 @@ describe("isInlineCall", () => {
   it("delegates every name-only family to isInlineTool", () => {
     expect(isInlineCall("todo")).toBe(true);
     expect(isInlineCall("plan")).toBe(true);
-    expect(isInlineCall("wait_shell")).toBe(true);
+    expect(isInlineCall("wait_shell")).toBe(false);
     expect(isInlineCall("subagent_send")).toBe(true);
     expect(isInlineCall("subagent_list")).toBe(true);
     expect(isInlineCall("read")).toBe(false);

@@ -5,7 +5,6 @@ import type { ToolStatus } from "../ToolIcon";
 import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
-import { KillShellToolView } from "./KillShellToolView";
 import { CodeSearchToolView } from "./CodeSearchToolView";
 import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
@@ -13,7 +12,6 @@ import { SubagentListToolView } from "./SubagentListToolView";
 import { SubagentSendToolView } from "./SubagentSendToolView";
 import { SubagentStopToolView } from "./SubagentStopToolView";
 import { SubagentWaitToolView } from "./SubagentWaitToolView";
-import { WaitShellToolView } from "./WaitShellToolView";
 import { WorkspaceToolView } from "./WorkspaceToolView";
 import { WriteToolView } from "./WriteToolView";
 
@@ -41,8 +39,6 @@ const TOOL_VIEWS: Record<
   write: WriteToolView,
   edit: EditToolView,
   bash: BashToolView,
-  wait_shell: WaitShellToolView,
-  kill_shell: KillShellToolView,
   subagent_launch: SubagentLaunchToolView,
   subagent_wait: SubagentWaitToolView,
   subagent_stop: SubagentStopToolView,
@@ -68,8 +64,6 @@ export function getToolView(
  */
 const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "bash",
-  "wait_shell",
-  "kill_shell",
   "subagent_launch",
   "subagent_wait",
   "subagent_stop",

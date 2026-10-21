@@ -104,21 +104,23 @@ fn config_global_db_migration_and_seed() {
             .is_empty()
     );
 
+    let default_tools = &settings.agents.get("default").unwrap().tools;
+    assert!(default_tools.contains_key("read"));
     assert!(
-        settings
-            .agents
-            .get("default")
-            .unwrap()
-            .tools
-            .contains_key("read")
+        default_tools.contains_key("run_command"),
+        "default seed must bind run_command"
     );
     assert!(
-        settings
-            .agents
-            .get("default")
-            .unwrap()
-            .tools
-            .contains_key("wait_shell")
+        !default_tools.contains_key("bash"),
+        "default seed must not bind bash"
+    );
+    assert!(
+        !default_tools.contains_key("wait_shell"),
+        "default seed must not bind wait_shell"
+    );
+    assert!(
+        !default_tools.contains_key("kill_shell"),
+        "default seed must not bind kill_shell"
     );
 
     let conn = Connection::open(&db).unwrap();

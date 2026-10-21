@@ -70,14 +70,13 @@ fn phase2_read_explicit_window_reports_more() {
 #[test]
 fn phase2_read_page_size_ignores_token_budget() {
     let dir = tempfile::tempdir().unwrap();
-    let line = (0..80).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+    let line = (0..80)
+        .map(|i| format!("w{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let body: String = (0..200).map(|_| format!("{line}\n")).collect();
     std::fs::write(dir.path().join("big.txt"), body).unwrap();
-    let result = safe(
-        &ReadTool::default(),
-        dir.path(),
-        json!({"path": "big.txt"}),
-    );
+    let result = safe(&ReadTool::default(), dir.path(), json!({"path": "big.txt"}));
     assert!(result.error.is_none(), "{}", result.content);
     assert_eq!(result.data.unwrap()["lines"].as_array().unwrap().len(), 200);
 }
@@ -112,7 +111,10 @@ fn phase2_glob_over_limit_has_more_and_read_consumes_path() {
     let path = data["paths"][0].as_str().unwrap().to_string();
     let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
     assert!(read.error.is_none(), "{}", read.content);
-    let text = read.data.unwrap()["lines"][0]["text"].as_str().unwrap().to_string();
+    let text = read.data.unwrap()["lines"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(text.contains(&path), "read {path} returned {text}");
 }
 
@@ -120,11 +122,7 @@ fn phase2_glob_over_limit_has_more_and_read_consumes_path() {
 fn phase2_grep_cursor_rejects_changed_pattern() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "one\nthree\n").unwrap();
-    let first = safe(
-        &GrepTool,
-        dir.path(),
-        json!({"pattern": "e", "limit": 1}),
-    );
+    let first = safe(&GrepTool, dir.path(), json!({"pattern": "e", "limit": 1}));
     let cursor = first.data.unwrap()["page"]["next"]
         .as_str()
         .unwrap()
@@ -239,15 +237,14 @@ fn phase2_grep_reason_binary_file() {
 fn phase2_grep_invalid_regex_details() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "ModelRequest {\n").unwrap();
-    let result = safe(
-        &GrepTool,
-        dir.path(),
-        json!({"pattern": "ModelRequest {"}),
-    );
+    let result = safe(&GrepTool, dir.path(), json!({"pattern": "ModelRequest {"}));
     assert_eq!(result.error_code.as_deref(), Some("invalid_regex"));
     let details = result.error_details.unwrap();
     assert_eq!(details["pattern"], "ModelRequest {");
-    assert!(details["regex_error"].as_str().unwrap().contains('^') || details["regex_error"].is_string());
+    assert!(
+        details["regex_error"].as_str().unwrap().contains('^')
+            || details["regex_error"].is_string()
+    );
     assert!(
         details["position"].is_number(),
         "position should be the caret column, got {}",
@@ -305,7 +302,10 @@ fn phase2_chain_glob_read() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("src.txt"), "glob-chain\n").unwrap();
     let listed = safe(&GlobTool, dir.path(), json!({"pattern": "*.txt"}));
-    let path = listed.data.unwrap()["paths"][0].as_str().unwrap().to_string();
+    let path = listed.data.unwrap()["paths"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
     let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
     assert_eq!(read.data.unwrap()["lines"][0]["text"], "glob-chain");
 }
@@ -334,8 +334,15 @@ fn phase2_chain_read_edit_expected_hash() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("note.txt");
     std::fs::write(&file, "alpha\n").unwrap();
-    let read = safe(&ReadTool::default(), dir.path(), json!({"path": "note.txt"}));
-    let hash = read.data.unwrap()["file"]["hash"].as_str().unwrap().to_string();
+    let read = safe(
+        &ReadTool::default(),
+        dir.path(),
+        json!({"path": "note.txt"}),
+    );
+    let hash = read.data.unwrap()["file"]["hash"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let edited = safe(
         &EditTool::default(),
         dir.path(),
@@ -369,10 +376,7 @@ fn phase2_chain_read_edit_expected_hash() {
         .as_str()
         .unwrap()
         .to_string();
-    assert_eq!(
-        current,
-        crate::tool::file_identity::sha256_hex(b"beta\n")
-    );
+    assert_eq!(current, crate::tool::file_identity::sha256_hex(b"beta\n"));
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
 }
 

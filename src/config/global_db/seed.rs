@@ -21,8 +21,8 @@ pub fn seed(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
-    // WP-196: 默认 agent 不暴露 Direct bash 三件套（实现保留；人工绑逃生）。
-    strip_default_direct_shell_bindings(conn)?;
+    // Direct bash / wait_shell / kill_shell are gone. Drop leftover rows for every agent.
+    strip_direct_shell_bindings(conn)?;
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
     seed_orchestrator_agent_bindings(conn)?;
@@ -280,8 +280,7 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
     }
 
     // WP-196: Code 短前台命令；Direct bash 三件套默认不绑。
-    let (run_command_policy, run_command_path) =
-        binding_for_tool("run_command", ToolPreset::Safe);
+    let (run_command_policy, run_command_path) = binding_for_tool("run_command", ToolPreset::Safe);
     store::upsert_agent_tool(
         conn,
         "explore",
@@ -393,17 +392,10 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-
-/// WP-196: 从默认种子 agent 上删除 Direct bash / wait_shell / kill_shell 绑定。
-/// 实现与 preset/floor 仍保留；模型默认走不到。自定义 agent 不受影响。
-fn strip_default_direct_shell_bindings(conn: &Connection) -> Result<()> {
+/// Drop leftover Direct `bash` / `wait_shell` / `kill_shell` bindings for every agent.
+fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
     for tool in ["bash", "wait_shell", "kill_shell"] {
-        conn.execute(
-            "DELETE FROM agent_tools
-             WHERE tool_id = ?1
-               AND agent_id IN ('default', 'explore', 'general', 'orchestrator')",
-            [tool],
-        )?;
+        conn.execute("DELETE FROM agent_tools WHERE tool_id = ?1", [tool])?;
     }
     Ok(())
 }
@@ -422,8 +414,8 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
-    // WP-196: 清 default/explore/general/orchestrator 上残留 Direct bash 绑定。
-    strip_default_direct_shell_bindings(conn)?;
+    // Direct bash / wait_shell / kill_shell are gone. Drop leftover rows for every agent.
+    strip_direct_shell_bindings(conn)?;
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
     ensure_general_agent(conn)?;
@@ -1120,12 +1112,40 @@ mod tests {
             [],
         )
         .unwrap();
-        // 模拟旧 DB 残留 Direct bash；ensure 应清掉。
+        // 模拟旧 DB 残留 Direct bash；ensure 应清掉，包括自定义 agent。
         store::upsert_agent_tool(
             &conn,
             "explore",
             "bash",
             &binding_seeded("bash", ToolPreset::Safe),
+        )
+        .unwrap();
+        store::upsert_agent(
+            &conn,
+            "reviewer",
+            AgentRole::Primary,
+            "",
+            "",
+            0.7,
+            50,
+            "custom",
+            &[] as &[String],
+        )
+        .unwrap();
+        for tool in ["bash", "wait_shell", "kill_shell"] {
+            store::upsert_agent_tool(
+                &conn,
+                "reviewer",
+                tool,
+                &binding_seeded(tool, ToolPreset::Safe),
+            )
+            .unwrap();
+        }
+        store::upsert_agent_tool(
+            &conn,
+            "reviewer",
+            "run_command",
+            &binding_seeded("run_command", ToolPreset::All),
         )
         .unwrap();
         ensure_core_bindings(&conn).unwrap();
@@ -1158,6 +1178,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bash_after, 0, "ensure strips residual explore bash");
+
+        for tool in ["bash", "wait_shell", "kill_shell"] {
+            let left: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'reviewer' AND tool_id = ?1",
+                    [tool],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(left, 0, "ensure strips {tool} from a custom agent");
+        }
+        let reviewer_command: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'reviewer' AND tool_id = 'run_command'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(reviewer_command.as_deref(), Some("ALL"));
     }
 
     // ---- WP-149: primary agents bind code_search by default ----

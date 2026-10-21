@@ -169,15 +169,9 @@ fn bundle_interface_is_generated_from_tool_contracts() {
     assert!(page.contains("next: string | null;"));
     assert!(page.contains("type Integer = number;"));
 
-    assert!(page.contains(
-        "readonly [\"glob\"]: (args: GlobInput) => Promise<GlobData>;"
-    ));
-    assert!(page.contains(
-        "readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;"
-    ));
-    assert!(
-        page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;")
-    );
+    assert!(page.contains("readonly [\"glob\"]: (args: GlobInput) => Promise<GlobData>;"));
+    assert!(page.contains("readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;"));
+    assert!(page.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;"));
     assert!(!page.contains("options?: ToolCallOptions"));
     assert!(!page.replace("details?: unknown", "").contains(": unknown"));
     assert!(!page.contains("tools.call"));

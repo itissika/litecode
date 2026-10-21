@@ -5,15 +5,12 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use portable_pty::{Child, CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 
 use super::error::{TerminalError, TerminalResult};
 use super::shell::ShellSpec;
-
-pub(crate) const DEFAULT_COLS: u16 = 80;
-pub(crate) const DEFAULT_ROWS: u16 = 24;
 
 /// Env injected only into agent-driven PTY sessions (foreground exec + background
 /// tasks) so TTY-interactive programs — git pager (`less`), git HTTPS credential
@@ -278,7 +275,7 @@ impl PtySession {
 impl Drop for PtySession {
     fn drop(&mut self) {
         // 2.7: joining the reader prevents thread leaks on every close path
-        // (interactive close, background kill, exec_once timeout).
+        // (interactive close and kill).
         self.wait_join();
     }
 }
@@ -403,85 +400,6 @@ fn spawn_inner(
         output_path: None,
         _reader: Some(reader),
     })
-}
-
-pub(crate) enum ExecFinish {
-    Exited(Option<u32>),
-    TimedOut,
-    Cancelled,
-}
-
-/// One-shot: spawn shell -c / -Command, wait for exit (with timeout).
-/// Output is teed through `sink` on the reader thread (no unbounded PTY buffer).
-pub(crate) fn exec_once(
-    shell: &ShellSpec,
-    cwd: &Path,
-    timeout: Duration,
-    cancel: Option<&tokio_util::sync::CancellationToken>,
-    sink: Arc<Mutex<super::tee::BoundedTee>>,
-) -> TerminalResult<ExecFinish> {
-    let id = "exec-once".to_string();
-    let sink_data = Arc::clone(&sink);
-    let on_data: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(move |chunk: &str| {
-        if let Ok(mut tee) = sink_data.lock() {
-            tee.push_raw(chunk);
-        }
-    });
-    let session = spawn_inner(
-        id,
-        shell,
-        cwd,
-        DEFAULT_COLS,
-        DEFAULT_ROWS,
-        Some(on_data),
-        None,
-        AGENT_NON_INTERACTIVE_ENV,
-        false,
-        true,
-    )?;
-    let start = Instant::now();
-    loop {
-        if cancel.is_some_and(|c| c.is_cancelled()) {
-            let _ = session.kill();
-            for _ in 0..50 {
-                session.try_reap();
-                if !session.is_alive() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            return Ok(ExecFinish::Cancelled);
-        }
-        session.try_reap();
-        if !session.is_alive() {
-            // The reader can hit EOF a hair before the child status is
-            // collectable; wait briefly for the reap so callers never see a
-            // spurious `None`/`-1` exit code for a successful command (3.3).
-            for _ in 0..50 {
-                session.try_reap();
-                if session.exit_code().is_some() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            return Ok(ExecFinish::Exited(session.exit_code()));
-        }
-        if start.elapsed() > timeout {
-            // 2.7: kill the process group and wait for it to be reaped so no
-            // descendant or zombie survives the timeout. `session`'s Drop then
-            // joins the reader thread.
-            let _ = session.kill();
-            for _ in 0..50 {
-                session.try_reap();
-                if !session.is_alive() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            return Ok(ExecFinish::TimedOut);
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 #[cfg(test)]

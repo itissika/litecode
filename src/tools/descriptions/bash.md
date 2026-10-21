@@ -1,1 +1,0 @@
-Deprecated escape hatch. Not the default command path — run shell commands with Code `run_command` inside `run_code`. This Direct tool stays only for rare recovery when explicitly re-enabled. cwd and environment do not persist across calls; chain with && in one command.

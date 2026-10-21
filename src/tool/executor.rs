@@ -17,11 +17,11 @@ use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
 use crate::session::media::resolve_media_artifact_url;
 use crate::tool::authorize::{AuthResult, authorize};
 use crate::tool::output;
+use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::schema_validate::{
     check_tool_input, invalid_input_for, parse_tool_arguments, schema_validate,
     unknown_top_level_properties,
 };
-use crate::tool::resource_gate::{ToolEffects, process_resource_gate};
 use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
@@ -64,13 +64,7 @@ pub(crate) fn partition_tool_calls(
         if is_safe
             && batches.last().is_some_and(|b| {
                 b.is_concurrency_safe
-                    && !batch_conflicts_with(
-                        b,
-                        &schedule,
-                        tools,
-                        workspace_root,
-                        &path_mode_for,
-                    )
+                    && !batch_conflicts_with(b, &schedule, tools, workspace_root, &path_mode_for)
             })
         {
             batches.last_mut().unwrap().blocks.push(tu.clone());
@@ -153,8 +147,7 @@ fn effects_conflict(left: &ToolEffects, right: &ToolEffects) -> bool {
 }
 
 fn legacy_effects_conflict(keys: &[ResourceKey], effects: &ToolEffects) -> bool {
-    if keys.iter().any(|key| matches!(key, ResourceKey::Workspace)) || involves_workspace(effects)
-    {
+    if keys.iter().any(|key| matches!(key, ResourceKey::Workspace)) || involves_workspace(effects) {
         return !keys.is_empty() && effects.declares();
     }
     keys.iter()
@@ -529,15 +522,15 @@ pub async fn execute_tool_call(
     let schema_input = tool.schema_arguments(&tool_use_input);
 
     if let Err(msg) = check_tool_input(tool.as_ref(), &schema_input) {
-            return present_for_caller(
-                &origin,
-                ToolCallResult::error_with_kind(
-                    ToolErrorKind::InvalidInput,
-                    invalid_input_for(&tu_name, msg),
-                    false,
-                )
-                .with_error_code("invalid_input"),
-            );
+        return present_for_caller(
+            &origin,
+            ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidInput,
+                invalid_input_for(&tu_name, msg),
+                false,
+            )
+            .with_error_code("invalid_input"),
+        );
     }
 
     // WP-188 observe-only: start → auth_ask → authorize → auth_done (no AskOutcome change).
@@ -647,9 +640,9 @@ pub async fn execute_tool_call(
                 let mut result =
                     ToolCallResult::error_with_kind(ToolErrorKind::Conflict, msg, true);
                 if code_caller {
-                    result = result.with_error_code("conflict").with_error_details(
-                        serde_json::json!({ "holder": holder }),
-                    );
+                    result = result
+                        .with_error_code("conflict")
+                        .with_error_details(serde_json::json!({ "holder": holder }));
                 }
                 return present_for_caller(&origin, result);
             }
@@ -1425,28 +1418,6 @@ mod tests {
     }
 
     #[test]
-    fn partition_splits_same_path_read_and_readonly_bash() {
-        let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(crate::tools::read::ReadTool::default()),
-            Arc::new(crate::tools::bash::BashTool::new(Arc::new(
-                crate::terminal::TerminalHub::new(),
-            ))),
-        ];
-        let root = Path::new("/proj");
-        let uses = vec![
-            fc("r1", "read", serde_json::json!({"path": "a.txt"})),
-            fc("b1", "bash", serde_json::json!({"command": "cat a.txt"})),
-        ];
-        let batches =
-            partition_tool_calls(&uses, &tools, root, |_| crate::workspace::ToolPathMode::All);
-        assert!(
-            batches.len() >= 2,
-            "same-path read and bash must not share a concurrent batch, got {} batches",
-            batches.len()
-        );
-    }
-
-    #[test]
     fn partition_keeps_different_path_reads_concurrent() {
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::read::ReadTool::default())];
         let root = Path::new("/proj");
@@ -1462,9 +1433,13 @@ mod tests {
     }
 
     #[test]
-    fn bash_is_cancellable_other_tools_are_not_by_default() {
-        let bash = crate::tools::bash::BashTool::new(Arc::new(crate::terminal::TerminalHub::new()));
-        assert!(bash.is_cancellable());
+    fn cancellable_tools_opt_in_and_the_default_is_off() {
+        assert!(
+            crate::tools::run_command::RunCommandTool::new(std::sync::Arc::new(
+                crate::terminal::AgentJobRegistry::new(),
+            ))
+            .is_cancellable()
+        );
         struct Dummy;
         impl Tool for Dummy {
             fn name(&self) -> &str {
@@ -1543,29 +1518,45 @@ mod tests {
 
     #[tokio::test]
     async fn direct_tool_wrong_parameter_type_is_unified_error() {
-        let result = run_schema_tool(direct_bash(), r#"{"command": 1}"#).await;
+        let result = run_schema_tool(direct_command_shape(), r#"{"command": 1}"#).await;
         assert_eq!(
             result.content,
-            "Error: invalid input for 'bash': parameter 'command' expected string, got integer 1"
+            "Error: invalid input for 'command_shape': parameter 'command' expected string, got integer 1"
         );
     }
 
     #[tokio::test]
     async fn invalid_json_arguments_are_not_swallowed() {
-        let result = run_schema_tool(direct_bash(), "{not json").await;
+        let result = run_schema_tool(direct_command_shape(), "{not json").await;
         assert!(
-            result
-                .content
-                .starts_with("Error: invalid input for 'bash': arguments were not valid JSON"),
+            result.content.starts_with(
+                "Error: invalid input for 'command_shape': arguments were not valid JSON"
+            ),
             "{}",
             result.content
         );
     }
 
-    fn direct_bash() -> Arc<dyn Tool> {
-        Arc::new(crate::tools::bash::BashTool::new(Arc::new(
-            crate::terminal::TerminalHub::new(),
-        )))
+    struct CommandShapeTool;
+
+    impl Tool for CommandShapeTool {
+        fn name(&self) -> &str {
+            "command_shape"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            })
+        }
+        fn description(&self, _ctx: &Context) -> String {
+            "schema probe".into()
+        }
+    }
+
+    fn direct_command_shape() -> Arc<dyn Tool> {
+        Arc::new(CommandShapeTool)
     }
 
     struct CustomShapeTool;
@@ -1739,29 +1730,22 @@ mod tests {
         result
     }
 
-    fn wait_job_exit(hub: &crate::terminal::TerminalHub, id: &str) {
-        let started = std::time::Instant::now();
-        while started.elapsed() < std::time::Duration::from_secs(8) {
-            if hub.jobs.get(id).is_some_and(|(alive, _, _, _)| !alive) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        panic!("job {id} did not exit");
-    }
-
     #[tokio::test]
     async fn mailbox_stays_pending_for_the_next_seam() {
         let dir = tempfile::tempdir().unwrap();
-        let hub = Arc::new(crate::terminal::TerminalHub::new());
-        let spawned = hub
-            .spawn_command("echo hi", None, dir.path(), "sess", "")
+        let hub = crate::terminal::TerminalHub::new();
+        hub.jobs
+            .insert_finished_pipe_job(
+                "bg_ec000003",
+                "sess",
+                "",
+                "echo hi",
+                dir.path(),
+                Some(0),
+                false,
+            )
             .unwrap();
-        wait_job_exit(&hub, &spawned.id);
-        let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(EchoTool),
-            Arc::new(crate::tools::bash::BashTool::new(Arc::clone(&hub))),
-        ];
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(EchoTool)];
         let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
         assert_eq!(result.content, "echo-ok");
         assert!(!result.content.contains("<system-reminder>"));
@@ -1771,27 +1755,23 @@ mod tests {
     #[tokio::test]
     async fn wait_shell_exit_does_not_wrap_reminder() {
         let dir = tempfile::tempdir().unwrap();
-        let hub = Arc::new(crate::terminal::TerminalHub::new());
-        let spawned = hub
-            .spawn_command("echo hi", None, dir.path(), "sess", "")
+        let hub = crate::terminal::TerminalHub::new();
+        hub.jobs
+            .insert_finished_pipe_job(
+                "bg_ec000004",
+                "sess",
+                "",
+                "echo hi",
+                dir.path(),
+                Some(0),
+                false,
+            )
             .unwrap();
-        wait_job_exit(&hub, &spawned.id);
-        let notice = hub.jobs.notice_snapshot(&spawned.id).expect("notice");
-        let expected = crate::tools::bash_status::format_exited_status(
-            &notice,
-            dir.path(),
-            &hub.jobs.running("sess"),
-        );
-        let tools: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(crate::tools::wait_shell::WaitShellTool::new(Arc::clone(
-                &hub,
-            ))),
-            Arc::new(crate::tools::bash::BashTool::new(Arc::clone(&hub))),
-        ];
-        let args = serde_json::json!({ "bash_id": spawned.id }).to_string();
-        let result = run_named(tools, "wait_shell", &args, "sess", dir.path()).await;
-        assert_eq!(result.content, expected);
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(EchoTool)];
+        let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
+        assert_eq!(result.content, "echo-ok");
         assert!(!result.content.contains("<system-reminder>"));
-        assert!(hub.jobs.take_mailbox("sess").is_empty());
+        // command_output asserts it can take this notice without wrapping a reminder.
+        assert!(hub.jobs.mailbox_pending("sess"));
     }
 }

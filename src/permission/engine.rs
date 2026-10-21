@@ -108,7 +108,7 @@ impl PermissionEngine {
     /// `None` means the name is not a custom tool.
     ///
     /// A catalog key owns these rules only when it is that tool's body name and
-    /// not a builtin. Reserved names (`bash`, `write`, …) always keep the binding.
+    /// not a builtin. Reserved names (`run_command`, `write`, …) always keep the binding.
     fn custom_tool_rules(&self, tool_name: &str) -> Option<Vec<crate::permission::PolicyRule>> {
         if let Some(tool) = self.resolved.workspace_custom_tools().get(tool_name)
             && crate::config::global_db::tools::is_custom_tool_identity(tool_name, &tool.name)
@@ -320,7 +320,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut global = GlobalSettings::default();
         let mut profile = AgentProfile::default();
-        for id in ["bash", "write"] {
+        for id in ["run_command", "write"] {
             let (policy, path_mode) =
                 crate::permission::presets::binding_for_tool(id, ToolPreset::Safe);
             profile.tools.insert(
@@ -354,19 +354,22 @@ mod tests {
             action: PermissionAction::Allow,
         };
         for tools in [
-            vec![named_tool("bash", vec![]), named_tool("write", vec![])],
             vec![
-                named_tool("bash", vec![open.clone()]),
+                named_tool("run_command", vec![]),
+                named_tool("write", vec![]),
+            ],
+            vec![
+                named_tool("run_command", vec![open.clone()]),
                 named_tool("write", vec![open]),
             ],
         ] {
             let (engine, dir) = safe_builtin_engine(tools, vec![]);
-            let bash = engine.evaluate_tool(
-                "bash",
+            let command = engine.evaluate_tool(
+                "run_command",
                 &serde_json::json!({ "command": "mkdir scratch" }),
                 dir.path(),
             );
-            assert_eq!(bash.action, PermissionAction::Deny);
+            assert_eq!(command.action, PermissionAction::Deny);
             let write = engine.evaluate_tool(
                 "write",
                 &serde_json::json!({ "file_path": "notes.txt" }),
@@ -375,13 +378,13 @@ mod tests {
             assert_eq!(write.action, PermissionAction::Ask);
         }
 
-        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("bash", vec![])]);
-        let bash = engine.evaluate_tool(
-            "bash",
+        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("run_command", vec![])]);
+        let command = engine.evaluate_tool(
+            "run_command",
             &serde_json::json!({ "command": "mkdir scratch" }),
             dir.path(),
         );
-        assert_eq!(bash.action, PermissionAction::Deny);
+        assert_eq!(command.action, PermissionAction::Deny);
     }
 
     #[test]

@@ -184,11 +184,6 @@ pub trait Tool: Send + Sync {
     /// Inject the turn's permission Ask sink (plan create approval, etc.).
     /// Default no-op for tools that do not Ask the human themselves.
     fn set_permission_sink(&self, _sink: std::sync::Arc<dyn crate::permission::PermissionSink>) {}
-
-    /// Shared TerminalHub for agent bash jobs (bash / wait_shell / kill_shell).
-    fn agent_terminal(&self) -> Option<std::sync::Arc<crate::terminal::TerminalHub>> {
-        None
-    }
 }
 
 #[cfg(test)]

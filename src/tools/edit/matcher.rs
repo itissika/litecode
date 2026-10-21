@@ -119,16 +119,13 @@ impl RejectReason {
             Self::NoOp {
                 kind: NoOpKind::ReplacementUnchanged,
             } => "replacement does not change the matched text".into(),
-            Self::ReadLinePrefix { .. } => {
-                "old_string includes a read line-number prefix".into()
-            }
+            Self::ReadLinePrefix { .. } => "old_string includes a read line-number prefix".into(),
             Self::WhitespaceOnly { .. } => {
                 "old_string differs from the file only by whitespace".into()
             }
             Self::WhitespaceOnlyInput => "old_string is only whitespace".into(),
             Self::MultipleExact { .. } => {
-                "old_string matched more than once; set replace_all or add surrounding lines"
-                    .into()
+                "old_string matched more than once; set replace_all or add surrounding lines".into()
             }
             Self::NoMatch => "old_string was not found".into(),
             Self::Chained { prior_index } => format!(
@@ -151,7 +148,9 @@ impl RejectReason {
             Self::ReadLinePrefix { ranges } if !ranges.is_empty() => {
                 Some(json!({ "lines": ranges.iter().map(|(start, _)| start).collect::<Vec<_>>() }))
             }
-            Self::WhitespaceOnly { kind, file_preview, .. } => Some(json!({
+            Self::WhitespaceOnly {
+                kind, file_preview, ..
+            } => Some(json!({
                 "kind": match kind {
                     WhitespaceKind::LeadingTrailing => "leading_trailing",
                     WhitespaceKind::InternalSpacing => "internal_spacing",
@@ -198,7 +197,10 @@ pub(super) enum ResolveOutcome {
     Reject(RejectReason),
 }
 
-pub(super) fn resolve_block(content: &str, block: &EditBlock) -> Result<ResolveOutcome, RequestFail> {
+pub(super) fn resolve_block(
+    content: &str,
+    block: &EditBlock,
+) -> Result<ResolveOutcome, RequestFail> {
     if block.old_string.is_empty() {
         return Ok(ResolveOutcome::Reject(RejectReason::EmptyOldString));
     }
@@ -207,10 +209,12 @@ pub(super) fn resolve_block(content: &str, block: &EditBlock) -> Result<ResolveO
             kind: NoOpKind::IdenticalStrings,
         }));
     }
-    Ok(match text_codec::find_exact_spans(content, &block.old_string) {
-        ExactSpans::Hits(spans) => resolve_exact(content, block, &spans),
-        ExactSpans::NotFound => resolve_exact_miss(content, block),
-    })
+    Ok(
+        match text_codec::find_exact_spans(content, &block.old_string) {
+            ExactSpans::Hits(spans) => resolve_exact(content, block, &spans),
+            ExactSpans::NotFound => resolve_exact_miss(content, block),
+        },
+    )
 }
 
 fn resolve_exact(content: &str, block: &EditBlock, spans: &[ByteSpan]) -> ResolveOutcome {

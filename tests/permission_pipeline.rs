@@ -90,14 +90,23 @@ fn all_tools(ids: &[&str]) -> HashMap<String, litecode::config::schema::AgentToo
 fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
     let _grants = grant_lock();
     let dir = TempDir::new().unwrap();
-    let engine = engine_for("default", AgentRole::Primary, 0, safe_tools(&["bash"]));
+    let engine = engine_for(
+        "default",
+        AgentRole::Primary,
+        0,
+        safe_tools(&["run_command"]),
+    );
 
-    let ls = engine.evaluate_tool("bash", &serde_json::json!({"command": "ls"}), dir.path());
+    let ls = engine.evaluate_tool(
+        "run_command",
+        &serde_json::json!({"command": "ls"}),
+        dir.path(),
+    );
     assert_eq!(ls.action, PermissionAction::Allow);
     assert_eq!(ls.rule_id, "readonly_command");
 
     let rm = engine.evaluate_tool(
-        "bash",
+        "run_command",
         &serde_json::json!({"command": "rm -rf ./node_modules"}),
         dir.path(),
     );
@@ -105,7 +114,7 @@ fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
     assert_eq!(rm.rule_id, DEFAULT_RULE_ID);
 
     let root = engine.evaluate_tool(
-        "bash",
+        "run_command",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );
@@ -159,11 +168,19 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
     // All preset → Unrestricted path mode (presets.rs ALL→Unrestricted). The floor
     // (G4) must still hard-deny sensitive commands unconditionally — a user
     // configurable preset must never weaken it.
-    let engine = engine_for("default", AgentRole::Primary, 0, all_tools(&["bash"]));
-    assert_eq!(engine.path_mode("bash"), BindingPathMode::Unrestricted);
+    let engine = engine_for(
+        "default",
+        AgentRole::Primary,
+        0,
+        all_tools(&["run_command"]),
+    );
+    assert_eq!(
+        engine.path_mode("run_command"),
+        BindingPathMode::Unrestricted
+    );
 
     let eval = engine.evaluate_tool(
-        "bash",
+        "run_command",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );
@@ -173,12 +190,12 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
     // Preset switch: even an explicit runtime grant cannot lift the floor.
     grant_runtime(
         "default",
-        "bash",
+        "run_command",
         "floor_preset_switch",
         PermissionAction::Allow,
     );
     let eval2 = engine.evaluate_tool(
-        "bash",
+        "run_command",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );

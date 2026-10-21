@@ -179,14 +179,10 @@ impl GlobTool {
             Err(error) => return coded("invalid_input", error),
         };
         let outside = path_arg.is_some_and(|path| {
-            crate::workspace::resolve_agent(
-                &execution.workspace_root,
-                path,
-                execution.path_mode,
-            )
-            .is_ok_and(|resolved| {
-                !crate::config::path::is_under(&resolved, &execution.workspace_root)
-            })
+            crate::workspace::resolve_agent(&execution.workspace_root, path, execution.path_mode)
+                .is_ok_and(|resolved| {
+                    !crate::config::path::is_under(&resolved, &execution.workspace_root)
+                })
         });
 
         if let Some(path) = path_arg
@@ -333,7 +329,10 @@ fn finish_glob(
         &fingerprint(&[
             ("pattern", pattern),
             ("path", path_arg.unwrap_or("")),
-            ("include_ignored", if include_ignored { "true" } else { "false" }),
+            (
+                "include_ignored",
+                if include_ignored { "true" } else { "false" },
+            ),
         ]),
         &version,
     ) {
@@ -355,7 +354,10 @@ fn finish_glob(
             fp: fingerprint(&[
                 ("pattern", pattern),
                 ("path", path_arg.unwrap_or("")),
-                ("include_ignored", if include_ignored { "true" } else { "false" }),
+                (
+                    "include_ignored",
+                    if include_ignored { "true" } else { "false" },
+                ),
             ]),
             ver: version,
             offset: end as u64,
@@ -743,7 +745,9 @@ mod tests {
         let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "../*" }));
         assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
         assert!(
-            result.content.contains("pattern '../*' reaches outside the search directory"),
+            result
+                .content
+                .contains("pattern '../*' reaches outside the search directory"),
             "{}",
             result.content
         );
@@ -859,7 +863,8 @@ mod tests {
         assert_eq!(data["reason"], "no_match");
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(
-            !result.content.contains("excludes.json") && !result.content.contains("include_ignored"),
+            !result.content.contains("excludes.json")
+                && !result.content.contains("include_ignored"),
             "{}",
             result.content
         );

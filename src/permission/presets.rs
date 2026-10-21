@@ -1,5 +1,5 @@
 use crate::config::global_db::tools::{
-    core_configurable_tools, direct_shell_tools, network_core_tools, optional_builtin_ids,
+    core_configurable_tools, network_core_tools, optional_builtin_ids,
 };
 use crate::config::schema::{PermissionSurface, ToolPreset};
 
@@ -15,7 +15,6 @@ const PRESET_TOOL_IDS: &[&str] = &[
     "glob",
     "write",
     "edit",
-    "bash",
     "run_command",
     "litecode_workspace",
 ];
@@ -43,7 +42,6 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
     let mut out = Vec::new();
     for tool in core_configurable_tools()
         .iter()
-        .chain(direct_shell_tools().iter())
         .chain(network_core_tools().iter())
         .chain(optional_builtin_ids().iter())
     {
@@ -58,7 +56,7 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
 
 fn policy_all(tool_id: &str) -> ToolPolicy {
     match tool_id {
-        "bash" | "run_command" => ToolPolicy::allow_all(),
+        "run_command" => ToolPolicy::allow_all(),
         "write" | "edit" => ToolPolicy::allow_all(),
         _ => ToolPolicy::allow_all(),
     }
@@ -109,7 +107,9 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 id: "outside_workspace".into(),
                 when: ArgMatcher::AnyOf {
                     matchers: vec![
-                        ArgMatcher::PathOutsideWorkspace { name: "path".into() },
+                        ArgMatcher::PathOutsideWorkspace {
+                            name: "path".into(),
+                        },
                         ArgMatcher::PathOutsideWorkspace {
                             name: "file_path".into(),
                         },
@@ -118,7 +118,7 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 action: PermissionAction::Deny,
             }],
         },
-        "bash" | "run_command" => ToolPolicy {
+        "run_command" => ToolPolicy {
             default: PermissionAction::Deny,
             default_id: super::policy::DEFAULT_RULE_ID.into(),
             rules: vec![PolicyRule {
@@ -162,7 +162,6 @@ mod tests {
             "glob",
             "write",
             "edit",
-            "bash",
             "run_command",
             "litecode_workspace",
         ] {
@@ -175,8 +174,11 @@ mod tests {
             "lsp",
             "websearch",
             "webfetch",
+            "bash",
             "kill_shell",
             "wait_shell",
+            "command_output",
+            "command_kill",
             "plan",
             "todo",
             "knowledge",
@@ -220,8 +222,13 @@ mod tests {
         ));
         let (write, _) = binding_for_tool("write", ToolPreset::Safe);
         assert_eq!(write.default, PermissionAction::Ask);
-        let (bash, _) = binding_for_tool("bash", ToolPreset::Safe);
-        assert_eq!(bash.default, PermissionAction::Deny);
-        assert_eq!(bash.rules[0].id, "readonly_command");
+        let (command, _) = binding_for_tool("run_command", ToolPreset::Safe);
+        assert_eq!(command.default, PermissionAction::Deny);
+        assert_eq!(command.rules.len(), 1);
+        assert_eq!(command.rules[0].id, "readonly_command");
+        assert!(matches!(
+            &command.rules[0].when,
+            ArgMatcher::BashReadonlyCommand
+        ));
     }
 }

@@ -137,7 +137,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `item/tool_result` | 追加 | 按工具名 | 原样 | `function_call_output`（含 `call_id`） |
 
 权威里 `role=user` 的 `message` 只来自 `item/user`。`truncate` 锚点也只许这个 kind。  
-工具卡片：bash / kill_shell / wait_shell → 命令；edit / write → diff；mcp → MCP；subagent → 子会话；其余 → 通用行。
+工具卡片：新会话不发出名为 `bash`、`wait_shell`、`kill_shell` 的 function call。旧 Item 仍可回放（`bash` 仍是命令卡片，另外两个走通用行）。edit / write → diff；mcp → MCP；subagent → 子会话；其余 → 通用行。
 
 #### `compacted` — 改脊骨
 
@@ -158,7 +158,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
 | `reminder/plan_changed` | Diff（按 revision） | 隐藏 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
-| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 bash 退出。`wait_shell` 自己消费的不进这里 |
+| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run_command` 作业退出。`command_output` 或 `command_kill` 已消费的通知不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/step_budget` | 每 turn 最多一次 | 隐藏 | 剩余步数不超过 3 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
@@ -209,7 +209,7 @@ bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn �
 | 职责 | 模型原子 |
 | 身份 | 无（`ItemId` / `CallId` 都不是 `LogSeq`） |
 | 形状 | SDK `message` / `reasoning` / `function_call` / `function_call_output` |
-| 规则 | 人键入的 user `message` 记 `item/user`。提醒记 `reminder/<kind>`，body 是冻结的 `Reminder` JSON；AgentView 再投影成带 `<system-reminder>` 的 user `Item`。bash、websearch 仍是 `function_call` |
+| 规则 | 人键入的 user `message` 记 `item/user`。提醒记 `reminder/<kind>`，body 是冻结的 `Reminder` JSON；AgentView 再投影成带 `<system-reminder>` 的 user `Item`。新会话不单独发 `bash` / `wait_shell` / `kill_shell`；旧的这类 Item 仍是 `function_call`，可以回放。websearch 仍是 `function_call` |
 
 ---
 

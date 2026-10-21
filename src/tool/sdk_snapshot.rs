@@ -40,7 +40,10 @@ fn phase0_run_code_sdk_snapshot() {
     assert!(sdk.contains("declare const tools:"));
     assert!(hash.len() == 64);
     assert!(!sdk.contains("view"), "sdk snapshot still contains view");
-    assert!(!sdk.contains("file_path"), "sdk snapshot still contains file_path");
+    assert!(
+        !sdk.contains("file_path"),
+        "sdk snapshot still contains file_path"
+    );
     assert!(
         !sdk.contains("context_lines"),
         "sdk snapshot still contains context_lines"
@@ -49,9 +52,9 @@ fn phase0_run_code_sdk_snapshot() {
 
 #[test]
 fn sdk_hash_is_stable_for_the_same_tool_set_under_different_cwd_and_permission() {
+    use crate::config::ConfigManager;
     use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
     use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings};
-    use crate::config::ConfigManager;
     use crate::context_pipeline::Context;
     use crate::permission::{PermissionAction, PermissionEngine, ToolPolicy};
     use crate::tool::project::project_tools;

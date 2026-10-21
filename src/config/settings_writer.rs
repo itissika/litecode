@@ -1225,7 +1225,9 @@ fn restore_workspace_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
 /// `timeout: 0` → 120) and rejects ids the runtime could not bind.
 pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinition) -> Result<()> {
     validate_tool_id(id)?;
-    if let Some(reason) = tools::non_transport_name_rejection(id) {
+    if let Some(reason) = tools::non_transport_name_rejection(id)
+        .or_else(|| tools::reserved_command_name_rejection(id))
+    {
         return Err(LitecodeError::Config(reason.to_string()));
     }
     if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
@@ -1243,7 +1245,9 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
             )));
         }
     }
-    if let Some(reason) = tools::non_transport_name_rejection(&def.name) {
+    if let Some(reason) = tools::non_transport_name_rejection(&def.name)
+        .or_else(|| tools::reserved_command_name_rejection(&def.name))
+    {
         return Err(LitecodeError::Config(reason.to_string()));
     }
     if def.command.trim().is_empty() {

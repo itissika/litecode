@@ -52,23 +52,6 @@ fn controller(
     SessionController::with_turn_guard(runtime, None, sessions).expect("controller")
 }
 
-/// Mirror of `find_git_bash` in src/terminal/shell.rs — used to pick
-/// shell-appropriate commands for the Windows branches below.
-#[cfg(windows)]
-fn windows_uses_git_bash() -> bool {
-    use std::path::PathBuf;
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(pf) = std::env::var_os("ProgramFiles") {
-        candidates.push(PathBuf::from(pf).join("Git").join("bin").join("bash.exe"));
-    }
-    if let Some(pf) = std::env::var_os("ProgramFiles(x86)") {
-        candidates.push(PathBuf::from(pf).join("Git").join("bin").join("bash.exe"));
-    }
-    candidates.push(PathBuf::from(r"C:\Program Files\Git\bin\bash.exe"));
-    candidates.push(PathBuf::from(r"C:\Program Files (x86)\Git\bin\bash.exe"));
-    candidates.iter().any(|p| p.exists())
-}
-
 fn snapshot_frame(frames: &[serde_json::Value], sid: &str) -> serde_json::Value {
     frames
         .iter()
@@ -85,21 +68,13 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
     let root = fixture.dir.path();
     let mut ctrl = controller(sessions, root);
 
-    #[cfg(windows)]
-    let command: &str = if windows_uses_git_bash() {
-        "echo LITECODE_HYDRATE; sleep 30"
-    } else {
-        "Write-Output 'LITECODE_HYDRATE'; Start-Sleep -Seconds 30"
-    };
-    #[cfg(not(windows))]
-    let command = "echo LITECODE_HYDRATE; sleep 30";
-
-    let spawned = ctrl
-        .runtime
+    let job_id = "bg_a1b2c3d4";
+    ctrl.runtime
         .ide
         .terminal
-        .spawn_command(command, Some(root), root, &sid, "call_hydrate")
-        .expect("spawn background job");
+        .jobs
+        .insert_live_pipe_job(job_id, &sid, "call_hydrate", "echo LITECODE_HYDRATE", root)
+        .expect("pipe job");
 
     // 1. (Re)subscribe must carry the live bash + subagent hub state.
     ctrl.subscribe_checked(&sid).await.unwrap();
@@ -111,7 +86,7 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
         .unwrap_or_else(|| panic!("bash.jobs should be an array: {snap:?}"));
     assert!(
         jobs.iter()
-            .any(|j| j["id"] == spawned.id && j["call_id"] == "call_hydrate"),
+            .any(|j| j["id"] == job_id && j["call_id"] == "call_hydrate"),
         "hydrated bash.jobs must contain the spawned job: {jobs:?}"
     );
     // The wire snapshot has no `subagent.jobs` field (transient bash state is
@@ -126,7 +101,7 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
     ctrl.runtime
         .ide
         .terminal
-        .kill(&spawned.id)
+        .kill(job_id)
         .expect("kill background job");
     ctrl.unsubscribe(&sid);
     ctrl.subscribe_checked(&sid).await.unwrap();
@@ -136,7 +111,7 @@ async fn subscribe_hydrates_bash_jobs_and_clears_after_kill() {
         .as_array()
         .unwrap_or_else(|| panic!("bash.jobs should be an array: {snap:?}"));
     assert!(
-        !jobs.iter().any(|j| j["id"] == spawned.id),
+        !jobs.iter().any(|j| j["id"] == job_id),
         "killed job must not be hydrated again: {jobs:?}"
     );
 }

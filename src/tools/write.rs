@@ -31,8 +31,11 @@ impl WriteTool {
         raw_path: &str,
         resolved: &Path,
     ) -> ToolCallResult {
-        let located =
-            crate::tool::file_identity::locate_resolved(&execution.workspace_root, resolved, raw_path);
+        let located = crate::tool::file_identity::locate_resolved(
+            &execution.workspace_root,
+            resolved,
+            raw_path,
+        );
         let file = crate::tool::file_identity::file_ref(located, written);
         let data = serde_json::json!({
             "file": file,
@@ -300,7 +303,10 @@ impl WriteTool {
         match std::fs::read(resolved) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(crate::tools::file_path::coded_error("io", error.to_string())),
+            Err(error) => Err(crate::tools::file_path::coded_error(
+                "io",
+                error.to_string(),
+            )),
         }
     }
 
@@ -336,8 +342,7 @@ fn write_precondition(
     current: Option<&[u8]>,
 ) -> Option<ToolCallResult> {
     if create_only && expected_hash.is_some() && current.is_none() {
-        let message =
-            "create_only and expected_hash were both set, but the file does not exist";
+        let message = "create_only and expected_hash were both set, but the file does not exist";
         return Some(
             crate::tool::outcome::ToolOutcome::<Value>::failure("invalid_input", message, false)
                 .into_call_result(message),
@@ -586,7 +591,12 @@ mod tests {
                 },
             )
             .await;
-        assert_eq!(result.data.as_ref().unwrap()["created"], true, "{}", result.content);
+        assert_eq!(
+            result.data.as_ref().unwrap()["created"],
+            true,
+            "{}",
+            result.content
+        );
         let change = rx.try_recv().expect("workspace change");
         assert!(change.paths.iter().any(|p| p.contains("inner.txt")));
         assert_eq!(
@@ -626,7 +636,12 @@ mod tests {
                 },
             )
             .await;
-        assert_eq!(result.data.as_ref().unwrap()["created"], true, "{}", result.content);
+        assert_eq!(
+            result.data.as_ref().unwrap()["created"],
+            true,
+            "{}",
+            result.content
+        );
         assert!(
             rx.try_recv().is_err(),
             "external ALL must not emit workspace change"

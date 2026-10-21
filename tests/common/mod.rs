@@ -1,7 +1,7 @@
 pub mod bindings;
 pub mod fake_deps;
-pub mod recording_provider;
 pub mod permission;
+pub mod recording_provider;
 pub mod responses_replay;
 pub mod runtime;
 pub mod scripted_provider;
@@ -13,8 +13,8 @@ pub mod workspace_fixture;
 pub use session_data_fixture::SessionDataFixture;
 
 pub use fake_deps::{FakeAgentDeps, assistant_text_item, function_call_item};
-pub use recording_provider::{CapturedLlmRequest, RecordingProvider, capture_request};
 pub use permission::{recording_sink, test_auto_approve_sink};
+pub use recording_provider::{CapturedLlmRequest, RecordingProvider, capture_request};
 pub use responses_replay::{
     fixture_responses_sse, serve_responses_queue, text_only_completed_sse, tool_call_completed_sse,
 };

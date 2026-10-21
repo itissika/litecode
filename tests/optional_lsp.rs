@@ -617,7 +617,10 @@ fn write_without_lsp_warm_never_appends_diagnostics() {
     assert!(result.error.is_none(), "{}", result.content);
     assert!(result.data.as_ref().unwrap()["file"]["hash"].is_string());
     assert!(
-        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        result
+            .diagnostics
+            .iter()
+            .all(|item| item.code != "lsp_error"),
         "cold LSP must not emit lsp_error: {:?}",
         result.diagnostics
     );
@@ -659,7 +662,10 @@ fn write_with_warm_lsp_but_no_errors_stays_clean() {
     assert!(result.error.is_none(), "{}", result.content);
     assert!(result.data.as_ref().unwrap()["created"].is_boolean());
     assert!(
-        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        result
+            .diagnostics
+            .iter()
+            .all(|item| item.code != "lsp_error"),
         "empty/no-error diagnostics must not emit lsp_error: {:?}",
         result.diagnostics
     );
@@ -742,7 +748,10 @@ fn write_ignores_slow_diagnostics_past_budget() {
     assert!(result.error.is_none(), "{}", result.content);
     assert!(result.data.as_ref().unwrap()["created"].is_boolean());
     assert!(
-        result.diagnostics.iter().all(|item| item.code != "lsp_error"),
+        result
+            .diagnostics
+            .iter()
+            .all(|item| item.code != "lsp_error"),
         "late diagnostics must not emit lsp_error: {:?}",
         result.diagnostics
     );

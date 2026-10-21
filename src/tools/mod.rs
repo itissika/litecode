@@ -1,16 +1,16 @@
 pub mod ask_user;
-pub mod bash;
 pub mod bash_safety;
-pub mod bash_status;
 pub mod code;
 pub mod code_search;
+pub mod command_job;
+pub mod command_kill;
+pub mod command_output;
 pub mod custom;
 pub mod custom_hub;
 pub mod edit;
 pub mod file_path;
 pub mod glob;
 pub mod grep;
-pub mod kill_shell;
 pub mod knowledge;
 pub mod litecode_workspace;
 pub mod lsp;
@@ -22,7 +22,6 @@ pub mod run_command;
 pub mod session_search;
 pub mod subagent;
 pub mod todo;
-pub mod wait_shell;
 pub mod webfetch;
 pub mod websearch;
 pub mod write;
@@ -33,8 +32,6 @@ mod baseline;
 mod phase2_gate;
 #[cfg(test)]
 mod phase3_gate;
-#[cfg(test)]
-mod bash_jobs_contract;
 
 /// Model-facing description of a built-in tool.
 ///

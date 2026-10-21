@@ -209,7 +209,6 @@ mod tests {
     use crate::optional::EngineManager;
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
-    use std::time::{Duration, Instant};
 
     fn test_runtime(
         root: &std::path::Path,
@@ -246,30 +245,24 @@ mod tests {
         (runtime, sessions, hub)
     }
 
-    fn wait_job_exit(hub: &TerminalHub, id: &str) {
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(8) {
-            if hub.jobs.get(id).is_some_and(|(alive, _, _, _)| !alive) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("job {id} did not exit");
+    fn finish_echo(hub: &TerminalHub, root: &std::path::Path, sid: &str) {
+        hub.jobs
+            .insert_finished_pipe_job("bg_ec000001", sid, "", "echo hi", root, Some(0), false)
+            .expect("finished pipe job");
     }
 
-    fn spawn_echo(hub: &TerminalHub, root: &std::path::Path, sid: &str) -> String {
-        let cmd = if cfg!(windows) { "echo hi" } else { "echo hi" };
-        hub.spawn_command(cmd, None, root, sid, "")
-            .expect("spawn")
-            .id
-    }
-
-    fn sleep_cmd() -> &'static str {
-        if cfg!(windows) {
-            "Start-Sleep -Seconds 20"
-        } else {
-            "sleep 20"
-        }
+    fn finish_user_killed(hub: &TerminalHub, root: &std::path::Path, sid: &str) {
+        hub.jobs
+            .insert_finished_pipe_job(
+                "bg_ec000002",
+                sid,
+                "",
+                "sleep 20",
+                root,
+                Some(1),
+                true,
+            )
+            .expect("user-killed pipe job");
     }
 
     #[test]
@@ -279,8 +272,7 @@ mod tests {
         let sid = sessions
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
-        let id = spawn_echo(&hub, dir.path(), &sid);
-        wait_job_exit(&hub, &id);
+        finish_echo(&hub, dir.path(), &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::SkippedNoUi => {}
             _ => panic!("expected no UI"),
@@ -306,8 +298,7 @@ mod tests {
                 &dir.path().display().to_string(),
             )
             .unwrap();
-        let id = spawn_echo(&hub, dir.path(), &sid);
-        wait_job_exit(&hub, &id);
+        finish_echo(&hub, dir.path(), &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::SkippedBusy => {}
             _ => panic!("expected busy"),
@@ -323,8 +314,7 @@ mod tests {
             .open_session_sync(&dir.path().display().to_string(), "default", None)
             .unwrap();
         let _ = sessions.attach(&sid);
-        let id = spawn_echo(&hub, dir.path(), &sid);
-        wait_job_exit(&hub, &id);
+        finish_echo(&hub, dir.path(), &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::Prepared {
                 turn_id,
@@ -361,11 +351,7 @@ mod tests {
                 &dir.path().display().to_string(),
             )
             .unwrap();
-        let spawned = hub
-            .spawn_command(sleep_cmd(), None, dir.path(), &sid, "")
-            .expect("spawn");
-        hub.kill_from_ui(&spawned.id).expect("ui kill");
-        let _ = hub.close_agent(&spawned.id);
+        finish_user_killed(&hub, dir.path(), &sid);
         match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
             IdleAutoTurn::SkippedBusy => {}
             _ => panic!("expected busy while turn reserved"),

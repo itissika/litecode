@@ -149,20 +149,14 @@ fn underindented_old_substring_matches_deeper_line() {
     // 4 spaces, file has 8. "    unique_token = 1" is a suffix of the 8-space line.
     let old = "    unique_token = 1";
     let batch_keep = plan_of(content, &[(old, "    unique_token = 2", false)]);
-    assert!(matches!(
-        &batch_keep.decisions[0],
-        BlockDecision::Accept(_)
-    ));
+    assert!(matches!(&batch_keep.decisions[0], BlockDecision::Accept(_)));
     assert_eq!(
         batch_keep.edited.as_deref(),
         Some("def foo():\n        unique_token = 2\n")
     );
 
     let batch_drop = plan_of(content, &[(old, "unique_token = 2", false)]);
-    assert!(matches!(
-        &batch_drop.decisions[0],
-        BlockDecision::Accept(_)
-    ));
+    assert!(matches!(&batch_drop.decisions[0], BlockDecision::Accept(_)));
     assert_eq!(
         batch_drop.edited.as_deref(),
         Some("def foo():\n    unique_token = 2\n"),
@@ -346,10 +340,7 @@ fn literal_backslash_n_does_not_match_newlines() {
     let old = "def process(items):\\n    result = []";
     let batch = plan_of(PY, &[(old, "x", false)]);
     assert!(
-        matches!(
-            rejected(&batch, 0).reason,
-            RejectReason::NoMatch
-        ),
+        matches!(rejected(&batch, 0).reason, RejectReason::NoMatch),
         "{:?}",
         rejected(&batch, 0).reason
     );
@@ -410,11 +401,21 @@ fn whitespace_only_feedback_does_not_show_the_indented_line() {
         &[("def foo():\nunique_name_here = 1", "x", false)],
     );
     let reported = report(&planned);
-    let failed = reported.blocks.iter().find(|block| block.status == "failed").unwrap();
+    let failed = reported
+        .blocks
+        .iter()
+        .find(|block| block.status == "failed")
+        .unwrap();
     let reason = failed.reason.as_ref().unwrap();
     assert_eq!(reason.code, "whitespace_only");
-    assert!(!reason.message.contains("unique_name_here"), "{}", reason.message);
-    let preview = reason.details.as_ref().unwrap()["excerpt"].as_str().unwrap();
+    assert!(
+        !reason.message.contains("unique_name_here"),
+        "{}",
+        reason.message
+    );
+    let preview = reason.details.as_ref().unwrap()["excerpt"]
+        .as_str()
+        .unwrap();
     assert_eq!(preview, "def foo():");
     assert!(!preview.contains("unique_name_here"));
 }

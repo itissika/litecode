@@ -372,9 +372,7 @@ impl EditTool {
             if expected != current {
                 let message = "file changed since it was read; expected_hash does not match";
                 return crate::tool::outcome::ToolOutcome::<Value>::failure(
-                    "stale",
-                    message,
-                    false,
+                    "stale", message, false,
                 )
                 .with_error_details(serde_json::json!({ "current_hash": current }))
                 .into_call_result(message);
@@ -409,12 +407,9 @@ impl EditTool {
         let edit_report = report(&planned);
         if edit_report.applied == 0 {
             let message = "no edits applied; file was not modified";
-            let mut outcome = crate::tool::outcome::ToolOutcome::<Value>::failure(
-                "edit_failed",
-                message,
-                false,
-            )
-            .with_error_details(serde_json::json!({ "blocks": edit_report.blocks }));
+            let mut outcome =
+                crate::tool::outcome::ToolOutcome::<Value>::failure("edit_failed", message, false)
+                    .with_error_details(serde_json::json!({ "blocks": edit_report.blocks }));
             for diagnostic in edit_report.diagnostics {
                 outcome = outcome.with_diagnostic(diagnostic);
             }
@@ -448,8 +443,11 @@ impl EditTool {
         } else {
             raw_bytes
         };
-        let located =
-            crate::tool::file_identity::locate_resolved(&execution.workspace_root, &path, &raw_path);
+        let located = crate::tool::file_identity::locate_resolved(
+            &execution.workspace_root,
+            &path,
+            &raw_path,
+        );
         let file = crate::tool::file_identity::file_ref(located, &written_bytes);
         let data = serde_json::json!({
             "file": file,

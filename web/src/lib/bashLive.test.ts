@@ -10,6 +10,7 @@ import {
   isRunningStatusText,
   matchJob,
   parseBashId,
+  terminalRevealCallId,
 } from "./bashLive";
 
 describe("formatElapsed", () => {
@@ -190,5 +191,35 @@ describe("bashCallMetaByCallId", () => {
       outputRow("c1", "file body"),
     ]);
     expect(meta.size).toBe(0);
+  });
+});
+
+describe("terminalRevealCallId", () => {
+  it("hides reveal when the transcript has no bash row", () => {
+    expect(terminalRevealCallId("c1", [])).toBeUndefined();
+    expect(
+      terminalRevealCallId("c1", [callRow("c1", "read", { path: "a.ts" })]),
+    ).toBeUndefined();
+  });
+
+  it("reveals a historical bash call by its own id", () => {
+    expect(
+      terminalRevealCallId("c1", [
+        callRow("c1", "bash", { command: "sleep 1" }),
+      ]),
+    ).toBe("c1");
+  });
+
+  it("jumps a nested id to the parent run_code call", () => {
+    expect(
+      terminalRevealCallId("parent:code:0", [
+        callRow("parent", "run_code", { code: "await tools.run_command({})" }),
+      ]),
+    ).toBe("parent");
+    expect(
+      terminalRevealCallId("parent:code:12", [
+        callRow("parent", "bash", { command: "echo" }),
+      ]),
+    ).toBeUndefined();
   });
 });

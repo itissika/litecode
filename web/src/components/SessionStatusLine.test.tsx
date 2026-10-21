@@ -94,12 +94,13 @@ function stubRenderedHeight(panel: HTMLElement, height: number) {
   });
 }
 
-/** Transcript rows for a bash call — the capsule's background verdict and the
- *  full command come from these (the job wire only carries a preview). */
+/** Transcript rows for a tool call. Historical `bash` rows still supply the
+ *  full command; the job list itself comes from the snapshot. */
 function bashCallRow(
   callId: string,
   args: Record<string, unknown>,
   seq = 1,
+  name = "bash",
 ): HumanRow {
   return {
     seq,
@@ -109,7 +110,7 @@ function bashCallRow(
       type: "function_call",
       id: `fc_${callId}`,
       call_id: callId,
-      name: "bash",
+      name,
       arguments: JSON.stringify(args),
       status: "completed",
     },
@@ -379,10 +380,8 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
     expect(screen.getByTestId("capsule-plan").dataset.expanded).toBe("false");
   });
 
-  it("keeps a foreground bash call out of the capsule and the slot", () => {
+  it("lists a snapshot job when the transcript has no bash call", () => {
     vi.useFakeTimers();
-    // No `run_in_background`: a foreground call stays in the message list.
-    seedRows("s1", [bashCallRow("c1", { command: "ls" })]);
     render(<SessionStatusLine sessionId="s1" />);
 
     act(() => {
@@ -391,13 +390,13 @@ describe("SessionStatusLine — level 1 horizontal expansion", () => {
         .applySnapshot("s1", { jobs: [bashJob], waits: [] });
     });
     act(() => {
-      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS * 3);
+      vi.advanceTimersByTime(BASH_CLAIM_GRACE_MS + 1);
     });
 
-    expect(screen.getByTestId("capsule-todo").dataset.expanded).toBe("true");
     const terminal = screen.getByTestId("capsule-terminal");
-    expect(within(terminal).getByText("×0")).toBeTruthy();
-    expect(within(terminal).getByText("No active terminals")).toBeTruthy();
+    expect(terminal.dataset.expanded).toBe("true");
+    expect(within(terminal).getByText("×1")).toBeTruthy();
+    expect(within(terminal).getByText("sleep 1")).toBeTruthy();
   });
 
   it("never claims for a background job that dies inside the grace window", () => {
@@ -775,10 +774,13 @@ describe("SessionStatusLine — vertical expand", () => {
     // Auto height: no fixed initial height, whatever the capsule (the terminal
     // panel is no exception — its console brings its own height).
     expect(panel.style.height).toBe("");
-    // The alive job's compact header still carries the reveal affordance.
+    // The alive job is listed from the snapshot. Reveal stays hidden until
+    // the transcript has a bash row or a parent run_code call.
+    expect(screen.getByTestId("terminal-job-bg_a")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Kill$/ })).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Reveal terminal: sleep 1" }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: "Reveal terminal: sleep 1" }),
+    ).toBeNull();
   });
 
   it("renders the shared bash view with the live tail for a background job", async () => {
@@ -820,17 +822,44 @@ describe("SessionStatusLine — vertical expand", () => {
     });
   });
 
-  it("lists only background jobs in the terminal panel", () => {
-    // A foreground call of the same session must not lease a panel slot.
-    seedRows("s1", [bashCallRow("c1", { command: "ls" })]);
+  it("polls bash/tail for a snapshot job with no bash function call", async () => {
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "bash/tail") {
+        return {
+          text: "stdout-tail",
+          truncated_on_disk: false,
+          alive: true,
+          exit_code: null,
+        };
+      }
+      throw new Error(`unexpected rpc ${method}`);
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+    useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
+    render(<SessionStatusLine sessionId="s1" />);
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+
+    expect(await screen.findByText("stdout-tail")).toBeTruthy();
+    await waitFor(() => {
+      expect(sendRpc).toHaveBeenCalledWith("bash/tail", { bash_id: "bg_a" });
+    });
+  });
+
+  it("lists a snapshot job that has no matching bash function call", () => {
+    seedRows("s1", [bashCallRow("other", { command: "ls" })]);
     useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
     render(<SessionStatusLine sessionId="s1" />);
 
     fireEvent.click(screen.getByTestId("capsule-terminal"));
 
     const panel = screen.getByTestId("status-capsule-panel");
-    expect(within(panel).getByText("No active terminals")).toBeTruthy();
-    expect(screen.queryByTestId("terminal-job-bg_a")).toBeNull();
+    expect(within(panel).getByTestId("terminal-job-bg_a")).toBeTruthy();
+    expect(within(panel).queryByText("No active terminals")).toBeNull();
+    expect(
+      within(panel).queryByRole("button", { name: "Reveal terminal: sleep 1" }),
+    ).toBeNull();
+    expect(within(panel).getByRole("button", { name: /^Kill$/ })).toBeTruthy();
   });
 
   it("kills a live terminal from the panel", () => {
@@ -1092,8 +1121,11 @@ describe("SessionStatusLine — drag handle", () => {
 });
 
 describe("SessionStatusLine — migrated chip content", () => {
-  it("reveals a bash job from the terminal panel", () => {
+  it("reveals a historical bash call from the terminal panel", () => {
     const onRevealBash = vi.fn();
+    seedRows("s1", [
+      bashCallRow("c2", { command: "sleep 2", run_in_background: true }),
+    ]);
     useBashStore
       .getState()
       .applySnapshot("s1", { jobs: [bashJob, bashJob2], waits: [] });
@@ -1104,6 +1136,34 @@ describe("SessionStatusLine — migrated chip content", () => {
       screen.getByRole("button", { name: "Reveal terminal: sleep 2" }),
     );
     expect(onRevealBash).toHaveBeenCalledWith("c2");
+  });
+
+  it("reveals the parent run_code call for a nested job", () => {
+    const onRevealBash = vi.fn();
+    seedRows("s1", [bashCallRow("parent", {}, 1, "run_code")]);
+    useBashStore.getState().applySnapshot("s1", {
+      jobs: [
+        {
+          ...bashJob,
+          id: "bg_nest",
+          call_id: "parent:code:0",
+          command_preview: "npm test",
+          stderr_file: ".litecode/run_command/bg_nest.stderr",
+        },
+      ],
+      waits: [],
+    });
+    render(<SessionStatusLine sessionId="s1" onRevealBash={onRevealBash} />);
+
+    fireEvent.click(screen.getByTestId("capsule-terminal"));
+    expect(screen.getByTestId("terminal-stderr-bg_nest").textContent).toBe(
+      ".litecode/run_command/bg_nest.stderr",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Reveal terminal: npm test" }),
+    );
+    expect(onRevealBash).toHaveBeenCalledWith("parent");
+    expect(onRevealBash).not.toHaveBeenCalledWith("parent:code:0");
   });
 
   it("lists every bound subagent session in the subagent panel", () => {
@@ -1460,6 +1520,7 @@ describe("SessionStatusLine — subagent variant", () => {
       state: "connected",
       sendRpc: vi.fn(async () => ({ ok: true })),
     } as never);
+    seedRows("s1", [bashCallRow("c1", { command: "sleep 1" })]);
     useBashStore.getState().applySnapshot("s1", { jobs: [bashJob], waits: [] });
 
     render(<SessionStatusLine sessionId="s1" variant="subagent" />);

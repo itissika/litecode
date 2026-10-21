@@ -82,7 +82,9 @@ fn edit_tool_does_not_equate_curly_quotes() {
     let (_dir, path) = write_temp("doc.md", "say \u{201C}hello\u{201D}\n");
     let result = call_edits(&path, one("\"hello\"", "\"hi\""));
     assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    let blocks = result.error_details.as_ref().unwrap()["blocks"].as_array().unwrap();
+    let blocks = result.error_details.as_ref().unwrap()["blocks"]
+        .as_array()
+        .unwrap();
     assert_eq!(blocks[0]["reason"]["code"], "no_match");
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -194,7 +196,9 @@ fn edit_tool_all_fail_does_not_write() {
     );
     assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
     assert!(result.data.is_none());
-    let blocks = result.error_details.as_ref().unwrap()["blocks"].as_array().unwrap();
+    let blocks = result.error_details.as_ref().unwrap()["blocks"]
+        .as_array()
+        .unwrap();
     assert_eq!(blocks.len(), 2);
     assert!(blocks.iter().all(|block| block["status"] == "failed"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");

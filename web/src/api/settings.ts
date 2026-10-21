@@ -665,16 +665,8 @@ export function isSubagentBindableTool(entry: AvailableTool): boolean {
   return entry.id !== "plan" && entry.id !== "todo" && entry.id !== "ask_user";
 }
 
-/** Tools that form one closed loop: enable/disable together. */
-export const BASH_SERIES_TOOL_IDS = [
-  "bash",
-  "wait_shell",
-  "kill_shell",
-] as const;
-
 /** Fallback core series when available-tools has no series_id yet. */
 const TOOL_ENABLE_SERIES_FALLBACK: readonly (readonly string[])[] = [
-  BASH_SERIES_TOOL_IDS,
   SUBAGENT_SERIES_TOOL_IDS,
 ];
 

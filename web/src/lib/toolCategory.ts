@@ -4,7 +4,6 @@ type ProcessToolBucket = "bash" | "edit" | "tool";
 export function processToolBucket(name: string): ProcessToolBucket | null {
   if (name === "bash") return "bash";
   if (name === "edit") return "edit";
-  if (name === "wait_shell" || name === "kill_shell") return null;
   // Session-mount capsules: a single-line row carries no card, so it must not
   // inflate the process-group header either.
   if (name === "todo" || name === "plan") return null;
@@ -22,8 +21,6 @@ export function processToolBucket(name: string): ProcessToolBucket | null {
 export function isInlineTool(name: string): boolean {
   return (
     name === "subagent_launch" ||
-    name === "wait_shell" ||
-    name === "kill_shell" ||
     name === "subagent_wait" ||
     name === "subagent_stop" ||
     name === "subagent_send" ||

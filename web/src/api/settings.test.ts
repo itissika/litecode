@@ -134,69 +134,6 @@ describe("settings helpers", () => {
     ).toBe(true);
   });
 
-  it("links bash wait_shell kill_shell as one enable series", async () => {
-    const {
-      BASH_SERIES_TOOL_IDS,
-      applyToolEnabled,
-      syncToolEnableSeries,
-      toolEnableSeries,
-      withSyncedToolSeries,
-    } = await import("./settings");
-    expect([...BASH_SERIES_TOOL_IDS]).toEqual([
-      "bash",
-      "wait_shell",
-      "kill_shell",
-    ]);
-    expect(toolEnableSeries("wait_shell")).toEqual([
-      "bash",
-      "wait_shell",
-      "kill_shell",
-    ]);
-    expect(toolEnableSeries("read")).toBeNull();
-
-    const presetIds = new Set(["bash"]);
-    const enabled = applyToolEnabled({}, "kill_shell", true, presetIds);
-    expect(enabled.bash.enabled).toBe(true);
-    expect(enabled.bash.last_applied_preset).toBe("ALL");
-    expect(enabled.wait_shell.enabled).toBe(true);
-    expect(enabled.wait_shell.last_applied_preset).toBeNull();
-    expect(enabled.kill_shell.enabled).toBe(true);
-    expect(enabled.kill_shell.last_applied_preset).toBeNull();
-
-    const disabled = applyToolEnabled(enabled, "bash", false);
-    expect(disabled.bash.enabled).toBe(false);
-    expect(disabled.wait_shell.enabled).toBe(false);
-    expect(disabled.kill_shell.enabled).toBe(false);
-
-    const mixed = syncToolEnableSeries({
-      bash: { enabled: true, last_applied_preset: "ALL" },
-      read: { enabled: true, last_applied_preset: "SAFE" },
-    });
-    expect(mixed.bash.enabled).toBe(true);
-    expect(mixed.wait_shell.enabled).toBe(true);
-    expect(mixed.kill_shell.enabled).toBe(true);
-    expect(mixed.read.enabled).toBe(true);
-    expect(mixed.read.last_applied_preset).toBe("SAFE");
-
-    const profile = withSyncedToolSeries(
-      {
-        role: "primary",
-        model_ref: "",
-        system_prompt: "",
-        temperature: 0.7,
-        max_steps: 50,
-        description: "",
-        allowed_subagents: [],
-        tools: { bash: { enabled: true, last_applied_preset: "ALL" } },
-      },
-      presetIds,
-    );
-    expect(profile.tools.wait_shell?.enabled).toBe(true);
-    expect(profile.tools.wait_shell?.last_applied_preset).toBeNull();
-    expect(profile.tools.kill_shell?.enabled).toBe(true);
-    expect(profile.tools.kill_shell?.last_applied_preset).toBeNull();
-  });
-
   it("links subagent launch wait stop as one enable series", async () => {
     const {
       SUBAGENT_SERIES_TOOL_IDS,
@@ -273,12 +210,7 @@ describe("settings helpers", () => {
     expect(seriesFromAvailableTools(available)).toEqual([["suite_a", "suite_b"]]);
     expect(toolEnableSeries("suite_a", available)).toEqual(["suite_a", "suite_b"]);
     expect(toolEnableSeries("solo", available)).toBeNull();
-    // Fallback bash series still works alongside declared suites.
-    expect(toolEnableSeries("bash", available)).toEqual([
-      "bash",
-      "wait_shell",
-      "kill_shell",
-    ]);
+    expect(toolEnableSeries("bash", available)).toBeNull();
 
     const enabled = applyToolEnabled({}, "suite_b", true, new Set(), available);
     expect(enabled.suite_a.enabled).toBe(true);

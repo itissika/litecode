@@ -646,7 +646,7 @@ describe("MessageList queued-batch in-flight bubble", () => {
 });
 
 describe("ProcessGroup header buckets", () => {
-  it("shows icon counts per category and excludes wait_shell from bash bucket", () => {
+  it("shows icon counts per category", () => {
     const rows: HumanRow[] = [
       liveReasoning,
       {
@@ -676,33 +676,8 @@ describe("ProcessGroup header buckets", () => {
         },
       },
       liveTool,
-      {
-        seq: 12,
-        kind: "item/tool_call",
-        state: "final",
-        body: {
-          type: "function_call",
-          id: "fc_wait",
-          call_id: "call_wait",
-          name: "wait_shell",
-          arguments: JSON.stringify({ id: "bg_a", sec: 5 }),
-          status: "completed",
-        },
-      },
     ];
     const nodes = rowsToNodes(rows);
-    const now = Date.now();
-    useBashStore.getState().applySnapshot("session-1", {
-      jobs: [],
-      waits: [
-        {
-          call_id: "call_wait",
-          watching_id: "bg_a",
-          started_at_ms: now,
-          deadline_ms: now + 5_000,
-        },
-      ],
-    });
     render(
       <ProcessGroup
         nodes={nodes}
@@ -719,8 +694,6 @@ describe("ProcessGroup header buckets", () => {
     });
     expect(header).toBeTruthy();
     expect(header.textContent).toContain("×1");
-    expect(screen.queryByRole("button", { name: /wait_shell/i })).toBeNull();
-    expect(screen.getByTestId("wait-elapsed")).toBeTruthy();
   });
 });
 

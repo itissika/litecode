@@ -217,7 +217,9 @@ fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
                 tool.name
             )));
         }
-        if let Some(reason) = tools::non_transport_name_rejection(&tool.name) {
+        if let Some(reason) = tools::non_transport_name_rejection(&tool.name)
+            .or_else(|| tools::reserved_command_name_rejection(&tool.name))
+        {
             return Err(LitecodeError::Config(reason.to_string()));
         }
         if tools::is_core_tool(&tool.name) || tools::is_optional_builtin(&tool.name) {

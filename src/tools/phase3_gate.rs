@@ -288,7 +288,11 @@ fn phase3_edit_all_fail_keeps_file_and_exposes_blocks() {
         .as_array()
         .unwrap();
     assert_eq!(blocks.len(), 2);
-    assert!(blocks.iter().all(|block| block["reason"]["code"] == "no_match"));
+    assert!(
+        blocks
+            .iter()
+            .all(|block| block["reason"]["code"] == "no_match")
+    );
     assert!(
         result
             .diagnostics
@@ -342,7 +346,10 @@ fn phase3_edit_failure_codes_are_stable() {
     assert!(chained.error.is_none());
     assert_eq!(chained.data.as_ref().unwrap()["failed"], 1);
     assert_eq!(block_code(&chained, 2), "chained");
-    assert_eq!(std::fs::read_to_string(root.join("note.txt")).unwrap(), "alpha\nBETA\nalpha\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("note.txt")).unwrap(),
+        "alpha\nBETA\nalpha\n"
+    );
 
     std::fs::write(root.join("note.txt"), "alpha\nbeta\n").unwrap();
     let overlap = call(
@@ -378,7 +385,10 @@ fn phase3_edit_failure_codes_are_stable() {
         .as_array()
         .unwrap();
     assert_eq!(ranges[0]["start_line"], 1);
-    assert_eq!(std::fs::read_to_string(root.join("note.txt")).unwrap(), "fn unique_name() {}\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("note.txt")).unwrap(),
+        "fn unique_name() {}\n"
+    );
 }
 
 #[tokio::test]
@@ -396,11 +406,13 @@ async fn phase3_edit_block_failed_reaches_run_code_diagnostics() {
         ));
     }
     edits.push_str(", {old_string: \"missing-line\", new_string: \"NOPE\"}]");
-    let code = format!(
-        "await tools.edit({{ path: \"many.txt\", edits: {edits} }}); return null;"
-    );
+    let code = format!("await tools.edit({{ path: \"many.txt\", edits: {edits} }}); return null;");
     let nested = run_program(dir.path(), &code).await;
-    assert!(nested.error.is_none(), "run_code failed: {}", nested.content);
+    assert!(
+        nested.error.is_none(),
+        "run_code failed: {}",
+        nested.content
+    );
     assert!(nested.data.is_none(), "run_code no longer returns data");
     assert!(
         nested.content.contains("edit_block_failed")

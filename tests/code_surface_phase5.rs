@@ -12,9 +12,9 @@ use litecode::context_pipeline::Context;
 use litecode::permission::{
     AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink, ToolPolicy,
 };
+use litecode::tool::Tool;
 use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use litecode::tool::write_lock::process_write_lock;
-use litecode::tool::Tool;
 use litecode::tools::code::{CodeTool, CodeToolHost};
 use litecode::tools::edit::EditTool;
 use litecode::tools::glob::GlobTool;
@@ -283,7 +283,11 @@ return {
     assert_eq!(value["window_next"], "2");
     assert_eq!(value["rest_line"], "two");
     assert!(
-        value["hit_path"].as_str().unwrap().replace('\\', "/").ends_with("notes/hit.txt"),
+        value["hit_path"]
+            .as_str()
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with("notes/hit.txt"),
         "{value}"
     );
     assert_eq!(value["edit_status"], "ok");
@@ -291,13 +295,25 @@ return {
     assert_eq!(value["partial_status"], "partial");
     assert_eq!(value["partial_applied"], 9);
     assert_eq!(value["partial_failed"], 1);
-    assert!(value["failed_message"].as_str().unwrap().len() > 0, "{value}");
+    assert!(
+        value["failed_message"].as_str().unwrap().len() > 0,
+        "{value}"
+    );
     assert_eq!(value["created_hash"], value["checked_hash"]);
-    assert_eq!(std::fs::read_to_string(root.join("notes/hit.txt")).unwrap(), "DONE\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("notes/hit.txt")).unwrap(),
+        "DONE\n"
+    );
     let written = std::fs::read_to_string(root.join("blocks.txt")).unwrap();
-    assert!(written.contains("done0") && written.contains("line9"), "{written}");
+    assert!(
+        written.contains("done0") && written.contains("line9"),
+        "{written}"
+    );
     assert!(!written.contains("nope"), "{written}");
-    assert_eq!(std::fs::read_to_string(root.join("fresh.txt")).unwrap(), "fresh\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("fresh.txt")).unwrap(),
+        "fresh\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -357,7 +373,10 @@ return { line: page.lines[0].text, hits: found.matches.length };
         .unwrap();
     assert!(pending_result.error.is_none(), "{}", pending_result.content);
     assert!(!root.join("pending.txt").exists());
-    assert_eq!(std::fs::read_to_string(root.join("other.txt")).unwrap(), "OTHER_NEEDLE\n");
+    assert_eq!(
+        std::fs::read_to_string(root.join("other.txt")).unwrap(),
+        "OTHER_NEEDLE\n"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -395,5 +414,8 @@ async fn cancel_before_approval_does_not_write_later() {
     );
     assert!(!root.join("gone.txt").exists());
     tokio::time::sleep(Duration::from_millis(400)).await;
-    assert!(!root.join("gone.txt").exists(), "a write landed after cancellation");
+    assert!(
+        !root.join("gone.txt").exists(),
+        "a write landed after cancellation"
+    );
 }

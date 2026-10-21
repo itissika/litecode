@@ -411,12 +411,16 @@ return { status };
         "the ledger line prints the error code: {ledger}"
     );
     assert!(
-        result.content.contains("1 rejected (permission_denied×1), handled by the program"),
+        result
+            .content
+            .contains("1 rejected (permission_denied×1), handled by the program"),
         "{}",
         result.content
     );
     assert!(
-        result.content.contains("#1 write path=nope.txt: permission_denied:"),
+        result
+            .content
+            .contains("#1 write path=nope.txt: permission_denied:"),
         "{}",
         result.content
     );
@@ -470,7 +474,11 @@ return {{ status }};
         ledger.contains("error:permission_denied"),
         "the ledger line prints the error code: {ledger}"
     );
-    assert!(result.content.contains("permission_denied"), "{}", result.content);
+    assert!(
+        result.content.contains("permission_denied"),
+        "{}",
+        result.content
+    );
     assert!(!Path::new(target).exists());
 }
 

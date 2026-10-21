@@ -20,7 +20,7 @@ pub enum AuthResult {
 
 fn permission_summary(tool_name: &str, input: &Value) -> String {
     match tool_name {
-        "bash" | "run_command" => input
+        "run_command" => input
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("")

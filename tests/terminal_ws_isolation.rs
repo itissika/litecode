@@ -274,27 +274,19 @@ async fn websocket_terminals_are_owner_isolated_and_disconnect_cleaned() {
     );
     assert_no_terminal_event(&mut b, &[terminal_a]).await;
 
-    let background = hub
-        .spawn_command(
-            "echo LITECODE_AGENT_BG",
-            Some(project.path()),
-            project.path(),
+    let job_id = "bg_aabbccdd";
+    hub.jobs
+        .insert_live_pipe_job(
+            job_id,
             "test",
-            "",
+            "call_ws",
+            "echo LITECODE_AGENT_BG",
+            project.path(),
         )
-        .expect("agent background");
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while hub.session_info(&background.id).is_ok() {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    })
-    .await
-    .expect("background natural cleanup");
-    let background_output =
-        std::fs::read_to_string(&background.output_path).expect("background output file");
-    assert!(background_output.contains("LITECODE_AGENT_BG"));
-    assert_no_terminal_event(&mut a, &[&background.id]).await;
-    assert_no_terminal_event(&mut b, &[&background.id]).await;
+        .expect("pipe job");
+    assert_no_terminal_event(&mut a, &[job_id]).await;
+    assert_no_terminal_event(&mut b, &[job_id]).await;
+    hub.kill(job_id).expect("seal pipe job");
 
     let (close_response, queued_close) =
         rpc(&mut a, 6, "terminal/close", json!({ "id": terminal_a })).await;

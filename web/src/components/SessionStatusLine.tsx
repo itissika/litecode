@@ -14,9 +14,13 @@ import {
 } from "@phosphor-icons/react";
 
 import { normalizeToolFilePath } from "../api/adapter";
-import type { BashJob } from "../api/types";
+import type { BashJob, HumanRow } from "../api/types";
 import { readFile } from "../api/workspace";
-import { bashCallMetaByCallId, type BashCallMeta } from "../lib/bashLive";
+import {
+  bashCallMetaByCallId,
+  terminalRevealCallId,
+  type BashCallMeta,
+} from "../lib/bashLive";
 import { paintDragCursor, viewOf } from "../lib/domView";
 import { bashKill } from "../lib/litecodeBash";
 import { useBashStore } from "../stores/bashStore";
@@ -95,9 +99,8 @@ const EMPTY_TODO_ITEMS: TodoItem[] = [];
  *     time. The expanded capsule stretches to fill the row (width animated
  *     from its collapsed icon-only size, content cross-fading) and shows
  *     icon + label + rich detail + count (todo: current task + progress,
- *     plan: active path, subagent: running count, bash: latest background
- *     command — background terminals only, a foreground call stays in the
- *     transcript). The slot is public mutable state: hovering a capsule claims
+ *     plan: active path, subagent: running count, bash: latest live
+ *     command from the job snapshot). The slot is public mutable state: hovering a capsule claims
  *     it (sticky — it stays after the mouse leaves), and while idle (no hover,
  *     no panel open) a data change in any capsule's domain claims the slot for
  *     that capsule (attention cue); a background terminal claims only once it
@@ -134,25 +137,14 @@ export function SessionStatusLine({
   const bashJobs = useBashStore(
     (s) => s.bySession.get(sessionId)?.jobs ?? EMPTY_BASH_JOBS,
   );
-  // Transcript-derived bash call metadata (loaded rows only): the background
-  // verdict, the full command and the sealed result for the terminal views.
+  // Loaded transcript rows. They supply the full command for an old `bash`
+  // card and the Reveal target. They do not decide which jobs are listed.
   const messageRows = useMessageStore(
     (s) => s.bySession.get(sessionId)?.display,
   );
   const bashCallMeta = useMemo(
     () => bashCallMetaByCallId(messageRows ?? []),
     [messageRows],
-  );
-  // Only background terminals own the capsule: a foreground call — even a long
-  // one — stays in the transcript and never claims the slot or lists here. A
-  // call outside the loaded window has no verdict and stays visible (safe
-  // direction: hiding a real terminal is worse than showing one redundantly).
-  const backgroundJobs = useMemo(
-    () =>
-      bashJobs.filter(
-        (job) => bashCallMeta.get(job.call_id)?.background ?? true,
-      ),
-    [bashJobs, bashCallMeta],
   );
   // Minimal worker summary: total children and the live running count.
   // Children are counted from the session list (durable — the roster panel
@@ -338,7 +330,7 @@ export function SessionStatusLine({
   // for a real body (see isPlanBodyReady) so Approve's `# Plan` stub only
   // bounces the icon. A rewrite under a fresh slug is a revision — slot only.
   //
-  // Background terminals are the one delayed case: a new job claims only after
+  // Live jobs are the one delayed case: a new job claims only after
   // it survives BASH_CLAIM_GRACE_MS, and a job leaving never claims at all —
   // short calls must not flash the capsule. The pending claim is dropped by the
   // effect's own cleanup (any later domain change, panel open, or unmount).
@@ -353,7 +345,7 @@ export function SessionStatusLine({
   } | null>(null);
   useEffect(() => {
     const cur = {
-      bash: backgroundJobs.map((j) => j.id).join(","),
+      bash: bashJobs.map((j) => j.id).join(","),
       sub: `${childSessions.map((session) => `${session.id}:${session.status}:${session.running}`).join(",")}|${subagentTotal}`,
       plan: activePlanPath ?? "",
       todo: todoItems.map((i) => `${i.id}:${i.status}:${i.content}`).join("|"),
@@ -392,7 +384,7 @@ export function SessionStatusLine({
     }, BASH_CLAIM_GRACE_MS);
     return () => window.clearTimeout(timer);
   }, [
-    backgroundJobs,
+    bashJobs,
     childSessions,
     subagentTotal,
     activePlanPath,
@@ -491,8 +483,9 @@ export function SessionStatusLine({
     (openId ?? closingId) === "terminal" ? (
       <TerminalPanel
         sessionId={sessionId}
-        jobs={backgroundJobs}
+        jobs={bashJobs}
         callMeta={bashCallMeta}
+        rows={messageRows ?? []}
         onRevealBash={onRevealBash}
         allowKill={!subagentView}
       />
@@ -706,15 +699,15 @@ export function SessionStatusLine({
               weight="fill"
               aria-hidden
               className={
-                backgroundJobs.length > 0 ? "terminal-status-icon" : ""
+                bashJobs.length > 0 ? "terminal-status-icon" : ""
               }
             />
           }
           label="Terminals"
           detail={
-            backgroundJobs.length > 0 ? (
+            bashJobs.length > 0 ? (
               <span className="truncate">
-                {backgroundJobs[backgroundJobs.length - 1]?.command_preview}
+                {bashJobs[bashJobs.length - 1]?.command_preview}
               </span>
             ) : (
               <span className="italic text-(--_dk-text-disabled)">
@@ -722,8 +715,8 @@ export function SessionStatusLine({
               </span>
             )
           }
-          count={`×${backgroundJobs.length}`}
-          ariaLabel={`Terminal status, ${backgroundJobs.length} active`}
+          count={`×${bashJobs.length}`}
+          ariaLabel={`Terminal status, ${bashJobs.length} active`}
         />
       </div>
     </div>
@@ -830,20 +823,22 @@ function PanelEmpty({ children }: { children: ReactNode }) {
   );
 }
 
-/** Live background terminals. Each job renders the shared `BashToolView` body
- *  (command + the tee-tail poll), so this panel is where a background process
- *  is watched — the transcript keeps its single-line row. The compact header
- *  carries the Kill action and a reveal-in-transcript jump. */
+/** Live jobs from the session snapshot. Each job renders the shared
+ *  `BashToolView` body, which polls `bash/tail` for the stdout tail. The
+ *  compact header carries Kill and, when the transcript has a row to scroll
+ *  to, Reveal. A missing `bash` card does not hide the job. */
 function TerminalPanel({
   sessionId,
   jobs,
   callMeta,
+  rows,
   onRevealBash,
   allowKill,
 }: {
   sessionId: string;
   jobs: BashJob[];
   callMeta: ReadonlyMap<string, BashCallMeta>;
+  rows: HumanRow[];
   onRevealBash?: (callId: string) => void;
   /** `false` in the subagent variant: Kill is a write on the parent's own
    *  machine state, so a child panel only reveals. */
@@ -858,6 +853,7 @@ function TerminalPanel({
           job={job}
           sessionId={sessionId}
           meta={callMeta.get(job.call_id)}
+          revealCallId={terminalRevealCallId(job.call_id, rows)}
           onRevealBash={onRevealBash}
           allowKill={allowKill}
         />
@@ -872,17 +868,19 @@ function TerminalJob({
   job,
   sessionId,
   meta,
+  revealCallId,
   onRevealBash,
   allowKill,
 }: {
   job: BashJob;
   sessionId: string;
   meta?: BashCallMeta;
+  revealCallId?: string;
   onRevealBash?: (callId: string) => void;
   allowKill: boolean;
 }) {
-  // Full command from the loaded call arguments; the wire's collapsed preview
-  // is the fallback when the call row is outside the transcript window.
+  // Full command from a loaded historical bash call; the wire's collapsed
+  // preview is the command when that call is not in the transcript.
   const command = meta?.command ?? job.command_preview;
   return (
     <div data-testid={`terminal-job-${job.id}`} className="flex flex-col gap-1">
@@ -895,8 +893,19 @@ function TerminalJob({
           aria-hidden
           className="terminal-status-icon shrink-0"
         />
-        <span title={command} className="min-w-0 flex-1 truncate font-mono">
-          {job.command_preview}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span title={command} className="truncate font-mono">
+            {job.command_preview}
+          </span>
+          {job.stderr_file ? (
+            <span
+              data-testid={`terminal-stderr-${job.id}`}
+              title={job.stderr_file}
+              className="truncate font-mono text-(--_dk-text-disabled)"
+            >
+              {job.stderr_file}
+            </span>
+          ) : null}
         </span>
         {allowKill && (
           <button
@@ -907,14 +916,16 @@ function TerminalJob({
             Kill
           </button>
         )}
-        <button
-          type="button"
-          aria-label={`Reveal terminal: ${job.command_preview}`}
-          onClick={() => onRevealBash?.(job.call_id)}
-          className="btn-ghost btn-icon btn-xs shrink-0"
-        >
-          <CrosshairIcon size={13} aria-hidden />
-        </button>
+        {revealCallId && (
+          <button
+            type="button"
+            aria-label={`Reveal terminal: ${job.command_preview}`}
+            onClick={() => onRevealBash?.(revealCallId)}
+            className="btn-ghost btn-icon btn-xs shrink-0"
+          >
+            <CrosshairIcon size={13} aria-hidden />
+          </button>
+        )}
       </div>
       <BashToolView
         name="bash"

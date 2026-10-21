@@ -1,1 +1,0 @@
-Deprecated escape hatch for a background job from Direct bash when that tool is explicitly re-enabled. Pass bash_id (one job), sec (pure wait), or both (whichever happens first). Not the default command workflow — use Code `run_command`. Does not kill the process.

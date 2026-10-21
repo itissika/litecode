@@ -67,10 +67,7 @@ async fn captured_with(build: impl FnOnce(&std::path::Path) -> Value) -> String 
         ),
         Arc::new(provider),
     );
-    runtime
-        .run("show the run")
-        .await
-        .expect("turn completes");
+    runtime.run("show the run").await.expect("turn completes");
     let captured = captured_handle.captured();
     assert!(
         captured.len() >= 2,
@@ -149,7 +146,8 @@ async fn many_reads_budget_the_ledger_and_mark_a_hidden_session_read() {
         let db = root.join(".litecode").join("sessions.db");
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         let session_id = {
-            let lease = litecode::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+            let lease =
+                litecode::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
             let data = litecode::session::SessionData::open(&lease, &db).unwrap();
             let id = data
                 .create_session(root.to_str().unwrap(), "default", None)
@@ -173,9 +171,14 @@ async fn many_reads_budget_the_ledger_and_mark_a_hidden_session_read() {
     assert!(text.contains("of 466"), "{text}");
     assert!(text.contains("read×466"), "{text}");
     assert!(text.contains("· reads session store"), "{text}");
-    assert!(litecode::session::transcript_file::ledger_reads_sessions(&text));
+    assert!(litecode::session::transcript_file::ledger_reads_sessions(
+        &text
+    ));
     let ledger = text.split_once("calls (").expect("ledger").1;
-    let ledger = ledger.split_once("\n\n").map(|(head, _)| head).unwrap_or(ledger);
+    let ledger = ledger
+        .split_once("\n\n")
+        .map(|(head, _)| head)
+        .unwrap_or(ledger);
     assert!(ledger.len() <= 8 * 1024, "{}", ledger.len());
 }
 
@@ -256,7 +259,10 @@ async fn a_second_argument_is_a_catchable_type_error() {
         },
     )
     .await;
-    assert!(text.contains("result:\nTypeError") || text.contains("\"TypeError\""), "{text}");
+    assert!(
+        text.contains("result:\nTypeError") || text.contains("\"TypeError\""),
+        "{text}"
+    );
     assert!(text.starts_with("run_code ok"), "{text}");
 }
 
@@ -329,8 +335,14 @@ async fn parent_glob_and_blank_grep_glob_are_invalid_input() {
     )
     .await;
     assert!(text.contains("invalid_input"), "{text}");
-    assert!(text.contains("reaches outside the search directory"), "{text}");
-    assert!(text.contains("parameter 'glob' must not be blank"), "{text}");
+    assert!(
+        text.contains("reaches outside the search directory"),
+        "{text}"
+    );
+    assert!(
+        text.contains("parameter 'glob' must not be blank"),
+        "{text}"
+    );
     assert!(text.contains("error:invalid_input"), "{text}");
 }
 
