@@ -55,6 +55,7 @@ impl BudgetClock {
         lock(&self.inner).origin.elapsed()
     }
 
+
     pub(crate) fn exhausted(&self) -> bool {
         let guard = lock(&self.inner);
         let now = Instant::now();

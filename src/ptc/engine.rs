@@ -339,24 +339,28 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
 
     let logs = output.borrow().logs().to_vec();
     let calls = calls.snapshot();
+    let duration_ms = clock.wall_elapsed().as_millis() as u64;
     match end {
         ProgramEnd::Success(value) => Outcome {
             logs,
             value: Some(value),
             failure: None,
             calls,
+            duration_ms,
         },
         ProgramEnd::CancelledAfterReturn(value) => Outcome {
             logs,
             value: Some(value),
             failure: Some(Failure::cancelled()),
             calls,
+            duration_ms,
         },
         ProgramEnd::Failure(failure) => Outcome {
             logs,
             value: None,
             failure: Some(failure),
             calls,
+            duration_ms,
         },
     }
 }

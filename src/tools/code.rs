@@ -843,13 +843,8 @@ fn render_run_output(
         FailureKind::Syntax => failure.message.clone(),
         _ => failure.message.clone(),
     });
-    // A failed program does not present its value. `Json` drops that tree on the heap.
-    let keep_value = outcome.value.is_some()
-        && outcome
-            .failure
-            .as_ref()
-            .is_none_or(|failure| failure.kind == FailureKind::Cancelled);
-    let presented = if keep_value {
+    // Keep any returned value even on failure (pi-style: don't blank wipe partial).
+    let presented = if outcome.value.is_some() {
         match outcome.value.as_ref().map(present_returned_value) {
             Some(Ok(presented)) => Some(presented),
             Some(Err(message)) => {
@@ -965,6 +960,7 @@ fn run_report(
         failure_kind,
         resource,
         timeout_ms,
+        duration_ms: outcome.duration_ms,
         output_limited: failure_kind == Some(FailureKind::OutputLimit),
         calls,
         calls_omitted,
@@ -1197,6 +1193,7 @@ mod outcome_tests {
             logs: Vec::new(),
             value: None,
             failure: Some(Failure::cancelled()),
+            duration_ms: 0,
             calls: vec![CallRecord {
                 seq: 1,
                 namespace: "tools".into(),
@@ -1230,18 +1227,30 @@ mod outcome_tests {
             &ToolCallResult::ok("wrote"),
             &runtime(CallState::CancelledUnfinished),
         );
-        assert!(text.contains("1. write path=a.txt unsettled"), "{text}");
-        assert!(!text.contains("1. write path=a.txt cancelled"), "{text}");
+        // Unsettled is a head aside, not a ledger row; it is not counted as failed.
+        assert!(text.contains("calls were still running"), "{text}");
+        assert!(text.contains("0 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
 
     #[test]
     fn a_finished_call_keeps_the_host_outcome() {
+        assert_eq!(
+            merge_call_outcome(Some("ok"), Some(CallState::CancelledFinished)),
+            "ok"
+        );
+        assert_eq!(
+            merge_call_outcome(Some("cancelled"), Some(CallState::CancelledFinished)),
+            "cancelled"
+        );
         let text = rendered(
             &ToolCallResult::ok("wrote"),
             &runtime(CallState::CancelledFinished),
         );
-        assert!(text.contains("1. write path=a.txt ok"), "{text}");
+        // Cancelled program + settled ok call → 1 succeeded on the head.
+        assert!(text.contains("1 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
 
         let text = rendered(
             &ToolCallResult::error_with_kind(
@@ -1251,15 +1260,18 @@ mod outcome_tests {
             ),
             &runtime(CallState::CancelledFinished),
         );
-        assert!(text.contains("1. write path=a.txt cancelled"), "{text}");
+        // Host "cancelled" is settled but neither ok nor error:* — not counted.
+        assert!(text.contains("0 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
     }
 
     #[test]
-    fn permission_denial_is_an_error_outcome_and_the_ledger_does_not_invent_the_code() {
+    fn permission_denial_is_counted_as_a_failed_settled_call() {
         let completed = Outcome {
             logs: Vec::new(),
             value: None,
             failure: None,
+            duration_ms: 0,
             calls: vec![CallRecord {
                 seq: 1,
                 namespace: "tools".into(),
@@ -1273,18 +1285,9 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
             &completed,
         );
-        let ledger = text
-            .lines()
-            .find(|line| line.starts_with("1. write"))
-            .unwrap_or("");
-        assert_eq!(
-            ledger, "1. write path=a.txt error:permission_denied",
-            "{text}"
-        );
-        assert!(
-            text.contains("#1 write path=a.txt: permission_denied: denied"),
-            "{text}"
-        );
+        assert!(text.contains("0 succeeded, 1 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("#1 "), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
 
@@ -1381,16 +1384,13 @@ mod outcome_tests {
             value: Some(Json::new(json!("done"))),
             failure: None,
             calls,
+            duration_ms: 25,
         };
         let text = render_run_output(&ledger, &outcome, 120_000, "").content;
-        let ledger_text = text.split_once("calls (").expect("ledger").1;
-        let ledger_section = ledger_text
-            .split_once("\n\n")
-            .map(|(head, _)| head)
-            .unwrap_or(ledger_text);
-        assert!(ledger_section.len() <= 8 * 1024, "{}", ledger_section.len());
-        assert!(text.contains("of 466"), "{text}");
-        assert!(text.contains("read×466"), "{text}");
+        assert!(
+            text.starts_with("run_code ok · 466 succeeded, 0 failed · 25ms"),
+            "{text}"
+        );
         assert!(
             text.contains(crate::session::transcript_file::RUN_CODE_SESSION_NOTE),
             "{text}"
@@ -1398,5 +1398,7 @@ mod outcome_tests {
         assert!(crate::session::transcript_file::ledger_reads_sessions(
             &text
         ));
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("diagnostics:"), "{text}");
     }
 }

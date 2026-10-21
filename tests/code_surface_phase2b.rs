@@ -369,22 +369,12 @@ return {
     assert_eq!(value["glob"], "ok", "{}", result.content);
     assert_eq!(value["grep"], "ok", "{}", result.content);
     assert!(
-        result.content.contains("1. read path=probe.txt ok"),
+        result.content.contains("3 succeeded, 0 failed"),
         "{}",
         result.content
     );
-    assert!(
-        result.content.contains("2. glob pattern=probe.txt ok"),
-        "{}",
-        result.content
-    );
-    assert!(
-        result
-            .content
-            .contains("3. grep path=probe.txt pattern=zz ok"),
-        "{}",
-        result.content
-    );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
+    assert!(!result.content.contains("diagnostics:"), "{}", result.content);
     assert!(
         !result.content.contains(SECRET),
         "ledger must not include the result body: {}",

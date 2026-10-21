@@ -425,6 +425,8 @@ pub struct Outcome {
     pub value: Option<Json>,
     pub failure: Option<Failure>,
     pub calls: Vec<CallRecord>,
+    /// Active program time when the run settled (excludes approval pauses).
+    pub duration_ms: u64,
 }
 
 impl Outcome {
@@ -434,6 +436,7 @@ impl Outcome {
             value: None,
             failure: Some(failure),
             calls: Vec::new(),
+            duration_ms: 0,
         }
     }
 }

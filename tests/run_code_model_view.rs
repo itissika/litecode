@@ -60,6 +60,7 @@ async fn captured_with(build: impl FnOnce(&std::path::Path) -> Value) -> String 
                 "grep".into(),
                 "glob".into(),
                 "edit".into(),
+                "apply_edits".into(),
                 "write".into(),
             ],
             "workspace",
@@ -124,6 +125,8 @@ async fn syntax_error_shows_the_source_line() {
     let text = captured_run(json!({ "code": "const x = 1;\nreturn (;" }), |_| {}).await;
     assert!(text.contains("line 2, column"), "{text}");
     assert!(text.contains("return (;"), "{text}");
+    assert!(text.contains("run_code failed: syntax error"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -136,7 +139,11 @@ async fn exception_shows_boom_and_the_adjusted_frame() {
     )
     .await;
     assert!(text.contains("boom"), "{text}");
-    assert!(text.contains("program.js:3"), "{text}");
+    assert!(text.contains("run_code failed: exception"), "{text}");
+    // Default face: no stack dump / program.js frames.
+    assert!(!text.contains("at boom ("), "{text}");
+    assert!(!text.contains("program.js:"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -168,18 +175,16 @@ async fn many_reads_budget_the_ledger_and_mark_a_hidden_session_read() {
         json!({ "code": code })
     })
     .await;
-    assert!(text.contains("of 466"), "{text}");
-    assert!(text.contains("read×466"), "{text}");
+    assert!(
+        text.contains("466 succeeded, 0 failed"),
+        "{text}"
+    );
     assert!(text.contains("· reads session store"), "{text}");
     assert!(litecode::session::transcript_file::ledger_reads_sessions(
         &text
     ));
-    let ledger = text.split_once("calls (").expect("ledger").1;
-    let ledger = ledger
-        .split_once("\n\n")
-        .map(|(head, _)| head)
-        .unwrap_or(ledger);
-    assert!(ledger.len() <= 8 * 1024, "{}", ledger.len());
+    assert!(!text.contains("calls ("), "{text}");
+    assert!(!text.contains("diagnostics:"), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -189,11 +194,13 @@ async fn partial_edit_is_ok_fraction_and_a_diagnostic() {
             "code": r#"
                 const edits = [];
                 for (let i = 0; i < 9; i++) {
-                    edits.push({ old_string: "line-" + i, new_string: "LINE-" + i });
+                    edits.push({ path: "many.txt", old_string: "line-" + i, new_string: "LINE-" + i });
                 }
-                edits.push({ old_string: "missing-line", new_string: "NOPE" });
-                const r = await tools.edit({ path: "many.txt", edits });
-                return { failed: r.failed, has_status: Object.prototype.hasOwnProperty.call(r, "status") };
+                edits.push({ path: "many.txt", old_string: "missing-line", new_string: "NOPE" });
+                const r = await tools.apply_edits({ edits });
+                const failed = r.results.filter((row) => !row.ok).length;
+                const ok = r.results.filter((row) => row.ok).length;
+                return { failed, ok, n: r.results.length };
             "#
         }),
         |root| {
@@ -202,10 +209,13 @@ async fn partial_edit_is_ok_fraction_and_a_diagnostic() {
         },
     )
     .await;
-    assert!(text.contains("ok(9/10)"), "{text}");
-    assert!(text.contains("edit_block_failed"), "{text}");
+    // apply_edits result is script data; default view has no ledger / diagnostics.
     assert!(text.contains("\"failed\": 1"), "{text}");
-    assert!(text.contains("\"has_status\": false"), "{text}");
+    assert!(text.contains("\"ok\": 9"), "{text}");
+    assert!(text.contains("1 succeeded, 0 failed"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
+    assert!(!text.contains("diagnostics:"), "{text}");
+    assert!(!text.contains("edit_block_failed"), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -225,10 +235,12 @@ async fn caught_tool_error_is_counted_and_not_listed() {
     assert!(text.contains("\"read\""), "{text}");
     assert!(text.contains("\"number\""), "{text}");
     assert!(
-        text.contains("1 rejected (not_found×1), handled by the program"),
+        text.contains("0 succeeded, 1 failed"),
         "{text}"
     );
+    assert!(!text.contains("rejected"), "{text}");
     assert!(!text.contains("#1 "), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -238,7 +250,8 @@ async fn uncaught_tool_error_names_the_call() {
         text.contains("uncaught ToolError not_found from call #1 read path=missing.txt"),
         "{text}"
     );
-    assert!(text.contains("not_found:"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
+    assert!(!text.contains("diagnostics:"), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -286,8 +299,8 @@ async fn start_line_zero_is_invalid_input() {
     .await;
     assert!(text.contains("\"invalid_input\""), "{text}");
     assert!(text.contains("start_line"), "{text}");
-    assert!(text.contains("error:invalid_input"), "{text}");
     assert!(!text.contains("resolved"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -310,8 +323,8 @@ async fn file_path_alias_is_rejected_without_reading() {
     .await;
     assert!(text.contains("\"invalid_input\""), "{text}");
     assert!(text.contains("file_path"), "{text}");
-    assert!(text.contains("error:invalid_input"), "{text}");
     assert!(!text.contains("SENTINEL_NOT_READ"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -343,13 +356,18 @@ async fn parent_glob_and_blank_grep_glob_are_invalid_input() {
         text.contains("parameter 'glob' must not be blank"),
         "{text}"
     );
-    assert!(text.contains("error:invalid_input"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
+    assert!(!text.contains("diagnostics:"), "{text}");
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn missing_file_message_has_no_discovery_hint() {
     let text = captured_run_code(r#"await tools.read({ path: "nope.rs" });"#).await;
-    assert!(text.contains("file not found:"), "{text}");
+    assert!(
+        text.contains("uncaught ToolError not_found from call #1 read path=nope.rs"),
+        "{text}"
+    );
     assert!(!text.contains("Similar files"), "{text}");
     assert!(!text.contains("verify"), "{text}");
+    assert!(!text.contains("calls ("), "{text}");
 }

@@ -283,15 +283,11 @@ return { written: written.file ? "ok" : "missing", edited: edited.applied >= 1 ?
         "beta\n"
     );
     assert!(
-        result.content.contains("1. write path=note.txt ok"),
+        result.content.contains("2 succeeded, 0 failed"),
         "{}",
         result.content
     );
-    assert!(
-        result.content.contains("2. edit path=note.txt ok"),
-        "{}",
-        result.content
-    );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -397,33 +393,12 @@ return { status };
     let value = run_code_result(&result.content);
     assert_eq!(value["status"], "error");
     assert!(
-        result.content.contains("1. write path=nope.txt error"),
+        result.content.contains("0 succeeded, 1 failed"),
         "{}",
         result.content
     );
-    let ledger = result
-        .content
-        .lines()
-        .find(|line| line.contains("1. write path=nope.txt"))
-        .unwrap_or("");
-    assert!(
-        ledger.contains("error:permission_denied"),
-        "the ledger line prints the error code: {ledger}"
-    );
-    assert!(
-        result
-            .content
-            .contains("1 rejected (permission_denied×1), handled by the program"),
-        "{}",
-        result.content
-    );
-    assert!(
-        result
-            .content
-            .contains("#1 write path=nope.txt: permission_denied:"),
-        "{}",
-        result.content
-    );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
+    assert!(!result.content.contains("#1 "), "{}", result.content);
     assert!(
         !result.content.contains("secret-nope"),
         "{}",
@@ -465,20 +440,12 @@ return {{ status }};
     assert!(result.error.is_none(), "{}", result.content);
     let value = run_code_result(&result.content);
     assert_eq!(value["status"], "error");
-    let ledger = result
-        .content
-        .lines()
-        .find(|line| line.starts_with("1. write"))
-        .unwrap_or("");
     assert!(
-        ledger.contains("error:permission_denied"),
-        "the ledger line prints the error code: {ledger}"
-    );
-    assert!(
-        result.content.contains("permission_denied"),
+        result.content.contains("0 succeeded, 1 failed"),
         "{}",
         result.content
     );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
     assert!(!Path::new(target).exists());
 }
 
@@ -566,15 +533,16 @@ throw new Error("stop-after-two");
         result.content
     );
     assert!(
-        result.content.contains("1. write path=a.txt ok"),
+        result.content.contains("2 succeeded, 0 failed"),
         "{}",
         result.content
     );
     assert!(
-        result.content.contains("2. write path=b.txt ok"),
+        result.content.starts_with("run_code failed: exception"),
         "{}",
         result.content
     );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
     assert!(!result.content.contains("BODY_A"), "{}", result.content);
     assert!(!result.content.contains("BODY_B"), "{}", result.content);
     assert_eq!(
@@ -705,11 +673,14 @@ return "done";
             }
         }
     };
+    // Default face no longer lists per-call ledger rows; assert head + file seal.
     assert!(
-        result.content.contains("1. write"),
-        "the started write stays in the ledger: {}",
+        result.content.starts_with("run_code failed:")
+            || result.content.starts_with("run_code ok"),
+        "{}",
         result.content
     );
+    assert!(!result.content.contains("calls ("), "{}", result.content);
     if path.exists() {
         let body = std::fs::read(&path).unwrap();
         assert!(
@@ -718,16 +689,6 @@ return "done";
             body.len()
         );
         assert_eq!(body.len(), 80_000);
-    }
-    if result.content.contains("2. edit") {
-        assert!(
-            result.content.contains("2. edit path=seal.txt ok")
-                || result.content.contains("2. edit path=seal.txt cancelled")
-                || result.content.contains("2. edit path=seal.txt unsettled")
-                || result.content.contains("2. edit path=seal.txt timeout"),
-            "{}",
-            result.content
-        );
     }
 }
 

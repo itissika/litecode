@@ -4,9 +4,9 @@ A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `c
 Permission denial is a catchable `ToolError` whose `code` is `permission_denied`.
 `tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
-LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
+LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
 A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. Continue a long read with a larger `start_line`; do not pass a cursor or `page.next`.
-The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
+After a run you normally see a short head (settled tool-call success and failure counts and how long the run took in ms, or a precise line/error if the program never started; unsettled in-flight calls, if any, are noted in that same head and are not counted in those totals; a session-store read may appear as a short note there too), optional logs you printed yourself, and your returned result (kept within the run window; failures keep partial output when possible). Labels follow the host render (for example `logs:` / `result:`). Successful nested tool calls are not auto-listed. The model sees about 64KB of this run—prefer keeping the returned result. Tool contract errors stay on the tool (`{ok,message}` or `ToolError`)—do not expect a second copy outside. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
 
@@ -81,7 +81,7 @@ type ApplyEditsInput = {
   edits: Array<{
     // Replacement text. Use an empty string to delete old_string.
     new_string: string;
-    // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place.
+    // Exact file text to find. Do not include line-number prefixes pasted from transcript or read output. Must match exactly one place.
     old_string: string;
     // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
     path: string;
@@ -100,7 +100,7 @@ type ApplyEditsData = {
 type EditInput = {
   // Replacement text. Use an empty string to delete old_string.
   new_string: string;
-  // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place; add surrounding lines if it appears more than once.
+  // Exact file text to find. Do not include line-number prefixes pasted from transcript or read output. Must match exactly one place; add surrounding lines if it appears more than once.
   old_string: string;
   // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
   path: string;
@@ -398,7 +398,7 @@ declare const tools: {
   // const done = await tools.wait({id:job.id, sec:60});
   // return {exit_code:done.exit_code, output:done.output};
   readonly ["wait"]: (args: WaitInput) => Promise<WaitData>;
-  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.
+  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. LSP errors from the written file are not in the resolved data—log or return them if you need them visible.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;
 };
 ```
