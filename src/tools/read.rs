@@ -110,7 +110,7 @@ impl Tool for ReadTool {
                             },
                             "text": {
                                 "type": "string",
-                                "description": "Line text without a line-number prefix."
+                                "description": "Bare line text (no line-number prefix)."
                             },
                             "line_truncated": {
                                 "type": "boolean",

@@ -7,6 +7,7 @@ Use `Promise.allSettled` for a batch. One uncaught rejection ends the program an
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
 A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
 A glob that matches nothing returns `reason` `"no_match"`. A glob whose path is hidden by the default filters returns `reason` `"path_excluded"`.
+Pagination dialect: for read, pass `page.next` back as `start_line`; for glob and grep, pass `page.next` back as `cursor`.
 The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
@@ -82,7 +83,7 @@ type EditInput = {
   edits: Array<{
     // Replacement text. Use an empty string to delete old_string.
     new_string: string;
-    // File text to find. Do not include read's line-number prefix. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.
+    // File text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.
     old_string: string;
     // Replace every exact occurrence (default: false).
     replace_all?: boolean;
@@ -170,7 +171,7 @@ type GrepInput = {
   pattern: string;
   // Default true. Set false to ignore case.
   case_sensitive?: boolean;
-  // Continuation from data.page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor.
+  // Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor.
   cursor?: string;
   // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.
   glob?: string;
@@ -234,7 +235,7 @@ type ReadData = {
     line_truncated: boolean;
     // 1-based line number.
     number: Integer;
-    // Line text without a line-number prefix.
+    // Bare line text (no line-number prefix).
     text: string;
   }>;
   page: {
@@ -275,30 +276,30 @@ type WriteData = {
 };
 
 declare const tools: {
-  // Replace text in one file. The result is `data.file`, `data.blocks`, `data.applied`, and `data.failed`. `data.file` is the identity after the successful blocks are written (`path`, `hash`, `bytes`, and `abs` outside the workspace). Each block is `index`, `status` (`applied` or `failed`), `ranges` (`start_line`, `end_line`), and `reason` (`code`, `message`, optional `details`) when it failed. Optional `expected_hash` is the sha256 of the file bytes. Omit it to skip the check. A mismatch rejects `stale` with `details.current_hash` and does not write. All blocks match the file before any of them apply. A partial failure resolves: check `failed` and `blocks`. The blocks that matched are written. No block applied rejects `ToolError` with `code` `edit_failed` and `details.blocks`; the file is not modified.
+  // Replace text in one file. The result is `file`, `blocks`, `applied`, and `failed`. `file` is the identity after the successful blocks are written (`path`, `hash`, `bytes`, and `abs` outside the workspace). Each block is `index`, `status` (`applied` or `failed`), `ranges` (`start_line`, `end_line`), and `reason` (`code`, `message`, optional `details`) when it failed. Optional `expected_hash` is the sha256 of the file bytes. Omit it to skip the check. A mismatch rejects `stale` with `details.current_hash` and does not write. All blocks match the file before any of them apply. A partial failure resolves: check `failed` and `blocks`. The blocks that matched are written. No block applied rejects `ToolError` with `code` `edit_failed` and `details.blocks`; the file is not modified.
   //
   // Multiple files means multiple calls, one path each. Pass `path` and a non-empty `edits` array; each item is `old_string`, `new_string`, and optional `replace_all` (default false). Empty `new_string` deletes `old_string`. Matching is exact. CRLF and LF compare equal, and a leading UTF-8 BOM is preserved. `replace_all` replaces every exact occurrence. A block that matches more than once without `replace_all` fails only that block. When other blocks are written the call still resolves, and the failed block's `reason.code` is `multiple_matches`. When no block is written the call rejects `ToolError` with `code` `edit_failed`.
   // All edits in one call match the file before any of them apply. Independent edits can share a call; if a later old_string depends on an earlier new_string, submit it in a later edit call.
   // Example (one edit): {"path":"src/a.rs","edits":[{"old_string":"fn start() {}","new_string":"fn main() {}"}]}
   // Example (several): {"path":"src/a.rs","edits":[{"old_string":"foo","new_string":"bar"},{"old_string":"old_api(","new_string":"new_api(","replace_all":true}]}
   readonly ["edit"]: (args: EditInput) => Promise<EditData>;
-  // Find files by path glob. The result is `data.base`, `data.paths`, and `data.page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative. When `base` is `"absolute"`, each path is absolute.
+  // Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative. When `base` is `"absolute"`, each path is absolute.
   //
-  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `data.reason` to `no_match`. A path hidden by those filters sets `data.reason` to `path_excluded`.
+  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `reason` to `no_match`. A path hidden by those filters sets `reason` to `path_excluded`.
   readonly ["glob"]: (args: GlobInput) => Promise<GlobData>;
-  // Search file contents. The result is `data.base`, `data.matches`, `data.page`, `data.searched`, and sometimes `data.reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.
+  // Search file contents. The result is `base`, `matches`, `page`, `searched`, and sometimes `reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.
   //
   // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.
   //
-  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `data.page.has_more` is true, pass `data.page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `data.reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.
+  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.
   //
   // Example: {"pattern":"fn main","path":"src"}
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData>;
-  // Read one workspace file as structured data. Use `data.file` and `data.lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
+  // Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
   //
-  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `data.page.has_more` is true when any line remains after this page, including after an explicit window. `data.page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `data.file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
+  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
   readonly ["read"]: (args: ReadInput) => Promise<ReadData>;
-  // Create a new file or overwrite an existing one. The result is `data.file` and `data.created`. `data.file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `data.created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.
+  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;
 };
 ```

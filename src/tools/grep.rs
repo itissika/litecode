@@ -1,7 +1,7 @@
 //! Agent `grep` tool.
 //!
-//! One page of matches: `data.base`, `data.matches`, `data.page`, `data.searched`,
-//! and `data.reason` when nothing matched. A cursor is the documented D-07
+//! One page of matches: `base`, `matches`, `page`, `searched`,
+//! and `reason` when nothing matched. A cursor is the documented D-07
 //! recommendation — query fingerprint plus a corpus version — not a stored copy
 //! of the hits. D-07 itself stays undecided. Each call examines at most one page
 //! of new matches, or `GREP_EXAMINE_CAP` when a test tightens that bound.
@@ -102,7 +102,7 @@ impl Tool for GrepTool {
                 },
                 "cursor": {
                     "type": "string",
-                    "description": "Continuation from data.page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor."
+                    "description": "Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor."
                 },
                 "limit": {
                     "type": "integer",

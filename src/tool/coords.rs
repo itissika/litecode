@@ -10,8 +10,11 @@
 //! prints a line number next to source text (`     N: text`). Hits and headings
 //! use `L12`. Locations with a path use `{path}:L12`.
 
-/// How `read` prefixes each source line. Edit must not copy this into old_string.
-pub const FILE_LINE_PREFIX_HINT: &str = "read's line-number prefix";
+/// Outer ledger / transcript file-body form that prefixes each source line (`     N: text`).
+/// Code-surface `read` resolves bare `lines[].text` with no prefix; do not paste prefixed
+/// outer text into edit `old_string`.
+pub const FILE_LINE_PREFIX_HINT: &str =
+    "line-number prefixes pasted from outer ledger or transcript text";
 
 /// Numbered source line: the only file-body form the agent sees.
 pub fn format_file_line(num: u32, text: &str) -> String {
