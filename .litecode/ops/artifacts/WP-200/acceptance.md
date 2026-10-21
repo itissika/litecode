@@ -4,7 +4,7 @@
 **分支：** `feat/tool-contract-ptc`（实验；**不合 main**）  
 **方案：** `plan.md`（Q1–Q5 全认）  
 **基线：** `c688b0a`（WP-199 tip）  
-**本 tip：** 本 commit（`feat/tool-contract-ptc` tip；以 push 后 `git rev-parse HEAD` 为准）
+**本 tip：** `8905deff3c840544ecaab9bfd52773512b4f2ba7`
 
 | # | done_when | 结果 |
 |---|-----------|------|
