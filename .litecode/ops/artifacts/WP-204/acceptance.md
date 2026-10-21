@@ -3,7 +3,8 @@
 **口径：** Andy + GM；只读审阅 agent 可见提示词文本面（五轴）。  
 **分支：** `feat/tool-contract-ptc`（**不合 main**；**本包不改产品码**）  
 **方案：** `plan.md`（Q1–Q5 全认）  
-**基线 / tip：** `62ccead`（WP-203；本包无产品 tip 变更，仅入库 artifacts）
+**基线：** `62ccead`（WP-203 产品 tip）  
+**本 tip（artifacts）：** `8f37382`
 
 | # | done_when | 结果 |
 |---|-----------|------|
