@@ -1,8 +1,8 @@
 `code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
-A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `edit_failed`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
 Permission denial is a catchable `ToolError` whose `code` is `permission_denied`.
-An edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.
+`tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
 A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
@@ -78,124 +78,41 @@ declare const libs: {
   };
 };
 
-type CommandKillInput = {
-  // job_id from a background or promoted run_command in this session.
-  job_id: string;
-};
-
-// The process tree was killed and the exit notice was consumed.
-type CommandKillData = {
-  kind: "killed";
-  exit_code: Integer | null;
-  job_id: string;
-  output_file: string;
-  stderr_file: string;
-};
-
-type CommandOutputInput = {
-  // job_id from a background or promoted run_command in this session.
-  job_id: string;
-  // Seconds to wait for the process to exit. 0 returns the current snapshot.
-  wait_sec?: Integer;
-};
-
-type CommandOutputData =
-  | {
-      kind: "running";
-      job_id: string;
-      output_file: string;
-      stderr: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      stderr_file: string;
-      stdout: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-    }
-  | {
-      kind: "exited";
-      exit_code: Integer | null;
-      job_id: string;
-      output_file: string;
-      stderr: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      stderr_file: string;
-      stdout: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-    };
-
-type EditInput = {
-  // Replacements to apply to this file.
+type ApplyEditsInput = {
+  // Replacements to apply serially. A failed item is skipped; later items still run. results matches this array length.
   edits: Array<{
     // Replacement text. Use an empty string to delete old_string.
     new_string: string;
-    // File text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.
+    // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place.
     old_string: string;
-    // Replace every exact occurrence (default: false).
-    replace_all?: boolean;
+    // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
+    path: string;
   }>;
-  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
-  path: string;
-  // sha256 of the file bytes. Omit to skip the check. A mismatch rejects stale and does not write.
-  expected_hash?: string;
 };
 
-// Blocks applied to one file. file is the identity after the successful blocks were written.
-type EditData = {
-  // Number of blocks written.
-  applied: Integer;
-  // One result per edit, in input order. Failed blocks do not roll back applied blocks.
-  blocks: Array<{
-    // 1-based index in edits.
-    index: Integer;
-    ranges: Array<{
-      end_line: Integer;
-      start_line: Integer;
-    }>;
-    status: "applied" | "failed";
-    // Present when status is failed.
-    reason?: {
-      code: string;
-      message: string;
-      // Structured cause. Fields appear only for the reason that produced them.
-      details?: {
-        kind?: "identical_strings" | "replacement_unchanged" | "leading_trailing" | "internal_spacing" | "input";
-        // One line of the file the whitespace difference pointed at.
-        excerpt?: string;
-        lines?: Array<Integer>;
-        other_index?: Integer;
-        other_range?: {
-          end_line: Integer;
-          start_line: Integer;
-        };
-        prior_index?: Integer;
-      };
-    };
-  }>;
-  // Number of blocks not written.
-  failed: Integer;
-  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.
-  file: {
-    bytes: Integer;
-    // sha256 hex of the file bytes.
-    hash: string;
+// Serial batch outcomes. results is the same length as the input edits array.
+type ApplyEditsData = {
+  results: Array<{
+    message: string;
+    ok: boolean;
     path: string;
-    abs?: string;
-  };
+  }>;
+};
+
+type EditInput = {
+  // Replacement text. Use an empty string to delete old_string.
+  new_string: string;
+  // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place; add surrounding lines if it appears more than once.
+  old_string: string;
+  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed.
+  path: string;
+};
+
+// One replacement outcome. Failures resolve with ok=false; guidance lives only in message.
+type EditData = {
+  message: string;
+  ok: boolean;
+  path: string;
 };
 
 type GlobInput = {
@@ -268,6 +185,21 @@ type GrepData = {
   reason?: "no_match" | "corpus_empty" | "glob_empty" | "path_excluded" | "binary_file" | "file_not_searched";
 };
 
+type KillInput = {
+  // Command.id from tools.run or tools.wait in this session.
+  id: string;
+};
+
+// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.
+type KillData = {
+  // Process exit code when finished; null when still running or no code is available.
+  exit_code: Integer | null;
+  // Handle for later wait / kill in the same session.
+  id: string;
+  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).
+  output: string;
+};
+
 type ReadInput = {
   // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
   path: string;
@@ -310,73 +242,37 @@ type ReadData = {
   reason?: "in_context_window";
 };
 
-type RunCommandInput = {
+type RunInput = {
   // Shell command to run once in the workspace root (not a persistent session). Chain with && when you need cd or env for this call only.
   command: string;
-  // Default false. When true, timeout_sec is ignored. If the process is still running, detach and return kind background with job_id. If it has already exited, return kind exited and no job_id.
-  run_in_background?: boolean;
-  // Foreground wait in seconds (1-120, default 30). Ignored when run_in_background is true. When it elapses and the process is still running, the call returns kind promoted and leaves the process running.
-  timeout_sec?: Integer;
 };
 
-type RunCommandData =
-  | {
-      kind: "exited";
-      // Process exit code. null when the status has no code.
-      exit_code: Integer | null;
-      stderr: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      stdout: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      // Workspace-relative stdout log. Omitted when both streams are small.
-      output_file?: string;
-      // Workspace-relative stderr log. Omitted when both streams are small.
-      stderr_file?: string;
-    }
-  | {
-      kind: "background";
-      job_id: string;
-      output_file: string;
-      stderr: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      stderr_file: string;
-      stdout: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-    }
-  | {
-      kind: "promoted";
-      job_id: string;
-      output_file: string;
-      stderr: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-      stderr_file: string;
-      stdout: {
-        bytes: Integer;
-        head: string;
-        tail: string;
-        truncated: boolean;
-      };
-    };
+// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.
+type RunData = {
+  // Process exit code when finished; null when still running or no code is available.
+  exit_code: Integer | null;
+  // Handle for later wait / kill in the same session.
+  id: string;
+  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).
+  output: string;
+};
+
+type WaitInput = {
+  // Command.id from tools.run in this session.
+  id: string;
+  // Seconds to block waiting for exit. Required. Values above 300 are silently clamped to 300.
+  sec: Integer;
+};
+
+// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.
+type WaitData = {
+  // Process exit code when finished; null when still running or no code is available.
+  exit_code: Integer | null;
+  // Handle for later wait / kill in the same session.
+  id: string;
+  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).
+  output: string;
+};
 
 type WriteInput = {
   // Content to write to the file
@@ -404,26 +300,56 @@ type WriteData = {
 };
 
 declare const tools: {
-  // Stop a `run_command` job in this session from inside `run_code`. Pass the `job_id` returned with `kind: background` or `kind: promoted`.
+  // Apply several independent `{path, old_string, new_string}` replacements in one call inside `run_code`. Pass an object bag with `edits`: a non-empty array. Runs **truly serially** in array order: each successful item is written before the next item runs, so later items on the **same `path` see earlier successful `new_string` values**. Resolves `{ results: EditResult[] }` — `results.length` equals `edits.length`. Each `EditResult` is `ok`, `path`, and `message` (same shape as `tools.edit`).
   //
-  // The process tree is killed. The result is `kind: killed` with `exit_code` (integer or null), `output_file`, and `stderr_file`. This consumes the exit, so it does not also arrive as a user-stopped `reminder/bash_exit`.
+  // A failed item is **skipped**; later items still run. Even when every item fails, the call still **resolves** with `results` full of `ok: false` — it does **not** reject `ToolError` / `edit_failed`. There is no `replace_all`, no `expected_hash`, no shared multi-block same-file plan, and no aggregate `applied` / `failed` / `blocks` / `details` — count or filter `results` yourself (`results.some(r => !r.ok)`). Empty `new_string` deletes that item's `old_string`. Exact match, unique-hit, CRLF/LF, and BOM rules match `edit`. Path missing, permission denied, miss, or multiple matches for an item → that item's `ok: false` with the reason in `message` only. On success, that item's `message` is a short confirmation such as `applied` (never empty, never structured).
   //
-  // An unknown `job_id`, or a job from another session, rejects `not_found`. This does not stop the human terminal.
-  readonly ["command_kill"]: (args: CommandKillInput) => Promise<CommandKillData>;
-  // Read a `run_command` job in this session from inside `run_code`. Pass the `job_id` returned with `kind: background` or `kind: promoted`.
+  // If a later `old_string` depends on an earlier change that failed (`ok: false`), that later item will typically miss and resolve `ok: false` with a not-found style `message` — fix the earlier failure or split into another call. Only a malformed bag / empty `edits` / bad item types reject `invalid_input`; cancellation rejects `cancelled`. Example:
+  // const batch = await tools.apply_edits({
+  //   edits: [
+  //     { path: "src/a.rs", old_string: "fn start()", new_string: "fn main()" },
+  //     { path: "src/b.rs", old_string: "old_api(", new_string: "new_api(" },
+  //   ],
+  // });
+  // if (batch.results.some((r) => !r.ok)) {
+  //   return { ok: false, results: batch.results };
+  // }
+  // // each ok item: message === "applied" (short confirm)
+  // await tools.write({
+  //   path: "src/c.rs",
+  //   content: "pub fn ok() -> bool { true }\n",
+  // });
+  // const check = await tools.run({ command: "cargo check -q" });
+  // const done =
+  //   check.exit_code === null
+  //     ? await tools.wait({ id: check.id, sec: 120 })
+  //     : check;
+  // return {
+  //   ok: done.exit_code === 0,
+  //   results: batch.results,
+  //   exit_code: done.exit_code,
+  //   output: done.output,
+  // };
+  readonly ["apply_edits"]: (args: ApplyEditsInput) => Promise<ApplyEditsData>;
+  // Replace one exact string in one file inside `run_code`. Pass `path`, `old_string`, and `new_string` (object bag). Resolves an `EditResult`: `ok` (boolean), `path` (string), and `message` (string). There is no `replace_all`, no `expected_hash`, no `edits` array on this tool, and no `blocks` / `applied` / `failed` / `details` / `file.hash` report.
   //
-  // `wait_sec` is an integer from 0 to 120 and defaults to 0. `0` returns the current snapshot and does not wait. A positive value waits until the process exits or the time runs out.
+  // Matching is exact and must hit exactly one place in the file. Empty `new_string` deletes `old_string`. CRLF and LF compare equal; a leading UTF-8 BOM is preserved. On success, `ok` is true and `message` is a short confirmation such as `replaced` (never empty, never a structured payload). When the path is missing, permission is denied, the string is missing, it matches more than once, or the write otherwise cannot proceed, this call still **resolves** with `ok: false` and a short `message` that says what to fix (add surrounding lines, re-read, check the path, etc.) — it does **not** reject `ToolError` for those cases, including when this single replacement fully fails, and it does not partially write. Branch on `ok` in the same program; do not look for a structured details tree.
   //
-  // `kind: running` means the process is still going. The job is left running. `kind: exited` means it finished, with `exit_code` an integer or null. Both kinds include `stdout` and `stderr` windows (`head`, `tail`, `bytes`, `truncated`) plus `output_file` and `stderr_file`. An exited result consumes that exit, so the same exit does not also arrive as `reminder/bash_exit`.
-  //
-  // An unknown `job_id`, or a job from another session, rejects `not_found`. Cancelling this wait rejects `cancelled` and does not kill the job. Stop the job with `tools.command_kill`.
-  readonly ["command_output"]: (args: CommandOutputInput) => Promise<CommandOutputData>;
-  // Replace text in one file. The result is `file`, `blocks`, `applied`, and `failed`. `file` is the identity after the successful blocks are written (`path`, `hash`, `bytes`, and `abs` outside the workspace). Each block is `index`, `status` (`applied` or `failed`), `ranges` (`start_line`, `end_line`), and `reason` (`code`, `message`, optional `details`) when it failed. Optional `expected_hash` is the sha256 of the file bytes. Omit it to skip the check. A mismatch rejects `stale` with `details.current_hash` and does not write. All blocks match the file before any of them apply. A partial failure resolves: check `failed` and `blocks`. The blocks that matched are written. No block applied rejects `ToolError` with `code` `edit_failed` and `details.blocks`; the file is not modified.
-  //
-  // Multiple files means multiple calls, one path each. Pass `path` and a non-empty `edits` array; each item is `old_string`, `new_string`, and optional `replace_all` (default false). Empty `new_string` deletes `old_string`. Matching is exact. CRLF and LF compare equal, and a leading UTF-8 BOM is preserved. `replace_all` replaces every exact occurrence. A block that matches more than once without `replace_all` fails only that block. When other blocks are written the call still resolves, and the failed block's `reason.code` is `multiple_matches`. When no block is written the call rejects `ToolError` with `code` `edit_failed`.
-  // All edits in one call match the file before any of them apply. Independent edits can share a call; if a later old_string depends on an earlier new_string, submit it in a later edit call.
-  // Example (one edit): {"path":"src/a.rs","edits":[{"old_string":"fn start() {}","new_string":"fn main() {}"}]}
-  // Example (several): {"path":"src/a.rs","edits":[{"old_string":"foo","new_string":"bar"},{"old_string":"old_api(","new_string":"new_api(","replace_all":true}]}
+  // Only malformed input (missing fields, wrong types) rejects `invalid_input`, and cancellation rejects `cancelled`. Multiple independent replacements: use `tools.apply_edits`, or call `edit` again. Example (edit then test in one program):
+  // const edited = await tools.edit({
+  //   path: "src/a.rs",
+  //   old_string: "fn start() {}",
+  //   new_string: "fn main() {}",
+  // });
+  // if (!edited.ok) return { ok: false, path: edited.path, message: edited.message };
+  // // edited.message === "replaced" (short confirm)
+  // const test = await tools.run({ command: "cargo test -q --lib a" });
+  // const done =
+  //   test.exit_code === null
+  //     ? await tools.wait({ id: test.id, sec: 60 })
+  //     : test;
+  // if (done.exit_code !== 0) return { ok: false, edited, done };
+  // return { ok: true, path: edited.path, message: edited.message, exit_code: done.exit_code };
   readonly ["edit"]: (args: EditInput) => Promise<EditData>;
   // Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative. When `base` is `"absolute"`, each path is absolute.
   //
@@ -437,44 +363,56 @@ declare const tools: {
   //
   // Example: {"pattern":"fn main","path":"src"}
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData>;
+  // Stop a shell command started with `tools.run` in this `run_code` program. Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group. Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run` / `wait`.
+  //
+  // `output` always includes a short note that the process was killed (plus any truncated logs or spill path). `exit_code` is an integer or `null` when no code is available. This consumes the job: do not expect a later natural-exit reminder for the same id.
+  //
+  // An unknown `id`, or an id from another session / program, rejects `not_found`. Cancelling before the signal rejects `cancelled`. This does not stop the human terminal. Example:
+  // const job = await tools.run({command:"npm test"});
+  // if (job.exit_code === null) {
+  //   const stopped = await tools.kill({id:job.id});
+  //   return {exit_code:stopped.exit_code, output:stopped.output};
+  // }
+  // return {exit_code:job.exit_code, output:job.output};
+  readonly ["kill"]: (args: KillInput) => Promise<KillData>;
   // Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
   //
   // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
   readonly ["read"]: (args: ReadInput) => Promise<ReadData>;
-  // Run one shell command inside `run_code`. The call resolves structured data with `kind` `exited`, `background`, or `promoted`. `stdout` and `stderr` are `{head, tail, bytes, truncated}`. Non-zero `exit_code` still resolves — branch on `exit_code` in the same program. cwd is always the workspace root (not a persistent session); chain with `&&` in one `command` when you need `cd` or env for that call only.
+  // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, and `output`. `id` is the handle for later `tools.wait` / `tools.kill` in the same program. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is always present (may be empty): combined process text plus any truncation note, on-disk spill path, or status line the runtime appends. There is no `kind`, no separate stdout/stderr windows, and no wait-budget or background-mode parameters on this call.
   //
-  // `kind: exited` means the process had already finished when the call decided. It includes `exit_code` (integer or null). A fast command is `exited` even when you pass `run_in_background: true`, and that result has no `job_id`. Small output omits `output_file` and `stderr_file`. When either is set, page it with `tools.read`.
+  // cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.
   //
-  // `run_in_background` defaults to false. `true` ignores `timeout_sec`. If the process is still running, the call detaches first and returns `kind: background` with `job_id`, both log paths, and a snapshot of each stream. The process keeps running.
-  //
-  // `timeout_sec` is an integer from 1 to 120 (default 30) and only limits the foreground wait. When it elapses and the process is still running, the call returns `kind: promoted` and leaves the process running. It does not kill the process. If the process has already exited at that check, the kind is `exited`.
-  //
-  // Commands that may run longer than a few seconds should pass `run_in_background`. Do not rely on promote to beat the `run_code` budget: if that budget cancels the call before it returns, the process is killed and no job survives. Cancellation before a `job_id` is returned also kills the process and rejects `cancelled`. After `background` or `promoted`, stopping the turn does not kill the job. A later natural exit arrives as `reminder/bash_exit`.
-  //
-  // Read or stop that job in the same program with the `job_id` from `background` or `promoted`. `tools.command_output` takes `job_id` and optional `wait_sec` (integer 0–120, default 0). `0` returns the current stdout and stderr windows plus `output_file` and `stderr_file` and does not wait. A positive `wait_sec` waits until the process exits or the time runs out. `kind: running` means it is still going; the job is not killed and is not promoted again. `kind: exited` includes `exit_code` and consumes that exit, so the same exit does not also arrive as `reminder/bash_exit`. Cancelling the wait rejects `cancelled` and does not kill the job.
-  //
-  // `tools.command_kill` takes `job_id`, kills the process tree, and returns `kind: killed` with `exit_code`, `output_file`, and `stderr_file`. That consumes the exit, so it does not arrive as a user-stopped reminder. An unknown `job_id`, or a job from another session, rejects `not_found` from either tool.
-  //
-  // Example (edit then test in one program):
-  // const edited = await tools.edit({path:"src/a.rs", edits:[{old_string:"fn start()", new_string:"fn main()"}]});
-  // if (edited.failed > 0) return {ok:false, edited};
-  // const test = await tools.run_command({command:"cargo test -q --lib a"});
-  // if (test.kind !== "exited" || test.exit_code !== 0) return {ok:false, test};
-  // return {ok:true, hash:edited.file.hash, exit_code:test.exit_code};
+  // If the process is still running when this call returns, `exit_code` is `null` and `output` holds whatever is available so far (or a short status note). Keep waiting with `tools.wait({id, sec})`. Stop it with `tools.kill({id})`. Example (edit then test in one program):
+  // const edited = await tools.edit({path:"src/a.rs", old_string:"fn start()", new_string:"fn main()"});
+  // if (!edited.ok) return {ok:false, edited};
+  // const test = await tools.run({command:"cargo test -q --lib a"});
+  // if (test.exit_code === null) {
+  //   const done = await tools.wait({id:test.id, sec:60});
+  //   if (done.exit_code !== 0) return {ok:false, done};
+  //   return {ok:true, path:edited.path, exit_code:done.exit_code, output:done.output};
+  // }
+  // if (test.exit_code !== 0) return {ok:false, test};
+  // return {ok:true, path:edited.path, exit_code:test.exit_code, output:test.output};
   //
   // Example (write then check):
   // await tools.write({path:"src/b.rs", content:"pub fn ok() -> bool { true }"});
-  // const check = await tools.run_command({command:"cargo check -q", timeout_sec:60});
-  // return {kind:check.kind, exit_code:check.exit_code ?? null};
+  // const check = await tools.run({command:"cargo check -q"});
+  // const done = check.exit_code === null
+  //   ? await tools.wait({id:check.id, sec:120})
+  //   : check;
+  // return {exit_code:done.exit_code, output:done.output};
+  readonly ["run"]: (args: RunInput) => Promise<RunData>;
+  // Wait on a shell command started with `tools.run` in this `run_code` program. Pass `id` (the `Command.id` from `run`) and `sec` (required positive number of seconds to block). Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run`.
   //
-  // Example (long job):
-  // const job = await tools.run_command({command:"npm test", run_in_background:true});
-  // if (job.kind === "exited") return {exit_code:job.exit_code};
-  // const done = await tools.command_output({job_id:job.job_id, wait_sec:60});
-  // if (done.kind === "exited") return {exit_code:done.exit_code, output_file:done.output_file};
-  // await tools.command_kill({job_id:job.job_id});
-  // return {stopped:job.job_id};
-  readonly ["run_command"]: (args: RunCommandInput) => Promise<RunCommandData>;
+  // `sec` is required. Values above the built-in maximum of **300** are silently clamped to 300 (no error). After clamping, this call blocks until the process exits or the wait budget elapses. If it exits, `exit_code` is set and `output` holds the accumulated text (plus any truncation / spill notes). If the budget elapses and the process is still running, the call still resolves: `exit_code` stays `null` and `output` is the current snapshot — the job is not killed and is not promoted. Call `wait` again or `tools.kill({id})`.
+  //
+  // An unknown `id`, or an id from another session / program, rejects `not_found`. Cancelling this wait rejects `cancelled` and does not kill the job. Example:
+  // const job = await tools.run({command:"npm test"});
+  // if (job.exit_code !== null) return {exit_code:job.exit_code, output:job.output};
+  // const done = await tools.wait({id:job.id, sec:60});
+  // return {exit_code:done.exit_code, output:done.output};
+  readonly ["wait"]: (args: WaitInput) => Promise<WaitData>;
   // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData>;
 };

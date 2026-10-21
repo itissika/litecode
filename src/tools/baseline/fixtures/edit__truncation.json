@@ -1,9 +1,9 @@
 {
-  "tool": "edit",
-  "scenario": "truncation",
+  "content_historical": null,
   "covered": false,
-  "gap": "edit 一次调用写入成功块或整次失败，data 是 file、blocks、applied、failed，没有截断或分页字段。截断场景仍然无法表达，套件保留这条缺口。",
   "data": null,
   "error": null,
-  "content_historical": null
+  "gap": "edit returns EditResult{ok,path,message} with no truncation or pagination fields. Truncation scenario remains unexpressible; suite keeps this gap.",
+  "scenario": "truncation",
+  "tool": "edit"
 }

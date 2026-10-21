@@ -332,7 +332,7 @@ mod tests {
                 .permission_surface
         };
         assert_eq!(surface("read"), PermissionSurface::Preset);
-        assert_eq!(surface("run_command"), PermissionSurface::Preset);
+        assert_eq!(surface("run"), PermissionSurface::Preset);
         assert_eq!(surface("litecode_workspace"), PermissionSurface::Preset);
         assert_eq!(surface("webfetch"), PermissionSurface::Fixed);
         assert_eq!(surface("session_search"), PermissionSurface::Fixed);
@@ -395,7 +395,7 @@ mod tests {
             WorkspaceState::new("/tmp/series"),
         );
         let tools = available_tools(&resolved);
-        for id in ["bash", "wait_shell", "kill_shell"] {
+        for id in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill", "wait", "kill", "apply_edits"] {
             assert!(
                 tools.iter().all(|tool| tool.id != id),
                 "{id} is not a catalog tool"

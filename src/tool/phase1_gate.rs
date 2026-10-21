@@ -127,7 +127,8 @@ async fn edit_lsp_error_reaches_outcome_and_run_code_data() {
         "edit",
         json!({
             "path": "hooked.rs",
-            "edits": [{ "old_string": "alpha", "new_string": "beta" }]
+            "old_string": "alpha",
+            "new_string": "beta"
         }),
     )
     .await;

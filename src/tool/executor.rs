@@ -1028,7 +1028,7 @@ mod tests {
             root,
         );
         let edit = crate::tools::edit::EditTool::new().effects(
-            &serde_json::json!({"path": "a.txt", "edits": []}),
+            &serde_json::json!({"path": "a.txt", "old_string": "a", "new_string": "b"}),
             mode,
             root,
         );
@@ -1435,7 +1435,7 @@ mod tests {
     #[test]
     fn cancellable_tools_opt_in_and_the_default_is_off() {
         assert!(
-            crate::tools::run_command::RunCommandTool::new(std::sync::Arc::new(
+            crate::tools::run::RunTool::new(std::sync::Arc::new(
                 crate::terminal::AgentJobRegistry::new(),
             ))
             .is_cancellable()
@@ -1753,7 +1753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_shell_exit_does_not_wrap_reminder() {
+    async fn shell_exit_does_not_wrap_reminder() {
         let dir = tempfile::tempdir().unwrap();
         let hub = crate::terminal::TerminalHub::new();
         hub.jobs
@@ -1771,7 +1771,7 @@ mod tests {
         let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
         assert_eq!(result.content, "echo-ok");
         assert!(!result.content.contains("<system-reminder>"));
-        // command_output asserts it can take this notice without wrapping a reminder.
+        // wait asserts it can take this notice without wrapping a reminder.
         assert!(hub.jobs.mailbox_pending("sess"));
     }
 }

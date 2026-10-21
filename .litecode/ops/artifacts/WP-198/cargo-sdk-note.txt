@@ -1,0 +1,1 @@
+SDK verify log shared with WP-197: .litecode/ops/artifacts/WP-197/cargo-sdk-tools.txt

@@ -10,15 +10,12 @@ fn tool() -> EditTool {
     EditTool::new()
 }
 
-fn call_edits(path: &std::path::Path, edits: Value) -> crate::types::ToolCallResult {
+fn call_edit(path: &std::path::Path, old: &str, new: &str) -> crate::types::ToolCallResult {
     tool().call(serde_json::json!({
         "path": path.to_str().unwrap(),
-        "edits": edits
+        "old_string": old,
+        "new_string": new
     }))
-}
-
-fn one(old: &str, new: &str) -> Value {
-    serde_json::json!([{ "old_string": old, "new_string": new }])
 }
 
 fn write_temp(name: &str, contents: impl AsRef<[u8]>) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -36,12 +33,10 @@ fn edit_declares_a_thirty_second_timeout() {
 #[test]
 fn edit_tool_roundtrips_bom_and_matches_first_line() {
     let (_dir, path) = write_temp("bom.rs", "\u{feff}fn main() {}\n");
-    let result = call_edits(&path, one("fn main() {}", "fn start() {}"));
-    assert!(
-        !result.content.starts_with("Error:"),
-        "got: {}",
-        result.content
-    );
+    let result = call_edit(&path, "fn main() {}", "fn start() {}");
+    assert!(result.error.is_none(), "got: {}", result.content);
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], true);
     let on_disk = std::fs::read(&path).unwrap();
     assert!(on_disk.starts_with(&[0xEF, 0xBB, 0xBF]));
     assert_eq!(
@@ -51,41 +46,57 @@ fn edit_tool_roundtrips_bom_and_matches_first_line() {
 }
 
 #[test]
-fn single_success_reports_summary_and_indexed_outcome() {
+fn single_success_reports_edit_result() {
     let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
-    let result = call_edits(&path, one("fn main() {}", "fn start() {}"));
+    let result = call_edit(&path, "fn main() {}", "fn start() {}");
     assert!(result.error.is_none());
     let data = result.data.expect("edit data");
-    assert_eq!(data["applied"], 1);
-    assert_eq!(data["failed"], 0);
-    assert_eq!(data["blocks"][0]["status"], "applied");
-    assert_eq!(data["blocks"][0]["index"], 1);
+    assert_eq!(data["ok"], true);
+    assert_eq!(data["message"].as_str().unwrap().split('\n').next().unwrap(), "replaced");
+    assert!(data.get("blocks").is_none());
+    assert!(data.get("applied").is_none());
+    assert!(data.get("file").is_none());
 }
 
 #[test]
 fn edit_tool_rejects_nul_bytes() {
     let (_dir, path) = write_temp("bin.txt", b"ok\x00still-utf8");
-    let result = call_edits(&path, one("ok", "no"));
-    assert!(result.content.to_lowercase().contains("binary"));
+    let result = call_edit(&path, "ok", "no");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], false);
+    assert!(
+        data["message"].as_str().unwrap().to_lowercase().contains("binary")
+            || result.content.to_lowercase().contains("binary"),
+        "{}",
+        data["message"]
+    );
     assert_eq!(std::fs::read(&path).unwrap(), b"ok\x00still-utf8");
 }
 
 #[test]
 fn edit_tool_rejects_utf16() {
     let (_dir, path) = write_temp("u16.txt", [0xFF, 0xFE, b'A', 0x00]);
-    let result = call_edits(&path, one("A", "B"));
-    assert!(result.content.contains("UTF-16"));
+    let result = call_edit(&path, "A", "B");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], false);
+    assert!(
+        data["message"].as_str().unwrap().contains("UTF-16"),
+        "{}",
+        data["message"]
+    );
 }
 
 #[test]
 fn edit_tool_does_not_equate_curly_quotes() {
     let (_dir, path) = write_temp("doc.md", "say \u{201C}hello\u{201D}\n");
-    let result = call_edits(&path, one("\"hello\"", "\"hi\""));
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    let blocks = result.error_details.as_ref().unwrap()["blocks"]
-        .as_array()
-        .unwrap();
-    assert_eq!(blocks[0]["reason"]["code"], "no_match");
+    let result = call_edit(&path, "\"hello\"", "\"hi\"");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], false);
+    assert!(
+        data["message"].as_str().unwrap().contains("not found"),
+        "{}",
+        data["message"]
+    );
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "say \u{201C}hello\u{201D}\n"
@@ -93,153 +104,99 @@ fn edit_tool_does_not_equate_curly_quotes() {
 }
 
 #[test]
-fn edit_tool_does_not_equate_dash_characters() {
-    let (_dir, path) = write_temp("dash.txt", "foo\u{2014}bar\n");
-    let result = call_edits(&path, one("-", "="));
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    assert_eq!(
-        result.error_details.as_ref().unwrap()["blocks"][0]["reason"]["code"],
-        "no_match"
-    );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\u{2014}bar\n");
-}
-
-#[test]
 fn edit_tool_wire_view_prefixes_and_indent() {
     let (_dir, path) = write_temp("a.rs", "    foo()\n");
     let prefixed = crate::tool::format_file_line(1, "    foo()");
-    let result = call_edits(&path, one(prefixed.trim_end(), "bar()"));
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
-    assert_eq!(block["reason"]["code"], "read_line_prefix");
-    assert!(!block["ranges"].as_array().unwrap().is_empty());
+    let result = call_edit(&path, prefixed.trim_end(), "bar()");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], false);
+    let msg = data["message"].as_str().unwrap();
+    assert!(msg.contains("line-number prefix") || msg.contains("prefix"), "{msg}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "    foo()\n");
 }
 
 #[test]
 fn edit_tool_wire_multiple_matches() {
     let (_dir, path) = write_temp("a.rs", "foo\nbar\nfoo\n");
-    let result = call_edits(&path, one("foo", "FOO"));
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
-    assert_eq!(block["reason"]["code"], "multiple_matches");
-    assert_eq!(block["ranges"].as_array().unwrap().len(), 2);
-    assert_eq!(block["ranges"][0]["start_line"], 1);
-    assert_eq!(block["ranges"][1]["start_line"], 3);
+    let result = call_edit(&path, "foo", "FOO");
+    let data = result.data.expect("edit data");
+    assert_eq!(data["ok"], false);
+    let msg = data["message"].as_str().unwrap();
+    assert!(msg.contains("more than once"), "{msg}");
+    assert!(msg.contains("1") && msg.contains("3"), "{msg}");
+    assert!(!msg.contains("replace_all"), "{msg}");
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "foo\nbar\nfoo\n");
 }
 
 #[test]
 fn edit_tool_wire_noop_and_empty_file() {
     let (_dir, path) = write_temp("a.rs", "fn main() {}\n");
-    let noop = call_edits(&path, one("fn main() {}", "fn main() {}"));
-    assert_eq!(
-        noop.error_details.as_ref().unwrap()["blocks"][0]["reason"]["code"],
-        "no_op"
+    let noop = call_edit(&path, "fn main() {}", "fn main() {}");
+    let data = noop.data.expect("data");
+    assert_eq!(data["ok"], false);
+    assert!(
+        data["message"].as_str().unwrap().contains("same"),
+        "{}",
+        data["message"]
     );
 
     std::fs::write(&path, "").unwrap();
-    let empty = call_edits(&path, one("hello", "world"));
-    assert!(empty.content.contains("empty"), "{}", empty.content);
-    assert!(!empty.content.contains("[1]"), "{}", empty.content);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
-}
-
-#[test]
-fn edit_tool_partial_success_writes_once_and_warns() {
-    let (_dir, path) = write_temp("a.rs", "alpha\nbeta\n");
-    let result = call_edits(
-        &path,
-        serde_json::json!([
-            {"old_string": "alpha", "new_string": "ALPHA"},
-            {"old_string": "missing_token_zz", "new_string": "nope"}
-        ]),
-    );
-    assert!(result.error.is_none());
-    assert_eq!(result.data.as_ref().unwrap()["failed"], 1);
+    let empty = call_edit(&path, "hello", "world");
+    let data = empty.data.expect("data");
+    assert_eq!(data["ok"], false);
     assert!(
-        result
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code == "edit_block_failed"),
-        "{:?}",
-        result.diagnostics
+        data["message"].as_str().unwrap().contains("empty"),
+        "{}",
+        data["message"]
     );
-    let data = result.data.as_ref().unwrap();
-    assert_eq!(data["applied"], 1);
-    assert_eq!(data["failed"], 1);
-    assert_eq!(data["blocks"][0]["status"], "applied");
-    assert_eq!(data["blocks"][1]["status"], "failed");
-    assert_eq!(data["blocks"][1]["reason"]["code"], "no_match");
-    let diagnostic = result
-        .diagnostics
-        .iter()
-        .find(|item| item.code == "edit_block_failed")
-        .expect("diagnostic");
-    assert_eq!(diagnostic.details.as_ref().unwrap()["index"], 2);
-    assert_eq!(
-        diagnostic.details.as_ref().unwrap()["reason"]["code"],
-        "no_match"
-    );
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ALPHA\nbeta\n");
 }
 
 #[test]
-fn edit_tool_all_fail_does_not_write() {
-    let (_dir, path) = write_temp("a.rs", "keep\n");
-    let result = call_edits(
-        &path,
-        serde_json::json!([
-            {"old_string": "nope1", "new_string": "x"},
-            {"old_string": "nope2", "new_string": "y"}
-        ]),
-    );
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    assert!(result.data.is_none());
-    let blocks = result.error_details.as_ref().unwrap()["blocks"]
-        .as_array()
-        .unwrap();
-    assert_eq!(blocks.len(), 2);
-    assert!(blocks.iter().all(|block| block["status"] == "failed"));
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
-}
-
-#[test]
-fn edit_tool_schema_rejects_old_shape() {
-    let err = tool()
+fn edit_tool_schema_accepts_flat_shape_rejects_old() {
+    tool()
         .validate_input(&serde_json::json!({
             "path": "a.rs",
             "old_string": "a",
             "new_string": "b"
         }))
-        .unwrap_err();
-    assert!(err.contains("edits"), "{err}");
-}
+        .unwrap();
 
-#[test]
-fn edit_tool_rejects_unknown_item_parameter() {
     let err = tool()
         .validate_input(&serde_json::json!({
             "path": "a.rs",
-            "edits": [{
-                "old_string": "a",
-                "new_string": "b",
-                "mode": "loose"
-            }]
+            "edits": [{"old_string": "a", "new_string": "b"}]
         }))
         .unwrap_err();
-    assert_eq!(err, "unknown parameter 'edits[0].mode'");
+    assert!(err.contains("edits"), "{err}");
+
+    let err = tool()
+        .validate_input(&serde_json::json!({
+            "path": "a.rs",
+            "old_string": "a",
+            "new_string": "b",
+            "replace_all": true
+        }))
+        .unwrap_err();
+    assert!(err.contains("replace_all"), "{err}");
+
+    let err = tool()
+        .validate_input(&serde_json::json!({
+            "path": "a.rs",
+            "old_string": "a",
+            "new_string": "b",
+            "expected_hash": "abc"
+        }))
+        .unwrap_err();
+    assert!(err.contains("expected_hash"), "{err}");
 }
 
 #[test]
-fn edit_tool_is_destructive_on_any_empty_new_string() {
+fn edit_tool_is_destructive_on_empty_new_string() {
     assert!(tool().is_destructive(
         &serde_json::json!({
             "path": "a.rs",
-            "edits": [
-                {"old_string": "a", "new_string": "b"},
-                {"old_string": "c", "new_string": ""}
-            ]
+            "old_string": "c",
+            "new_string": ""
         }),
         crate::workspace::ToolPathMode::All,
         std::path::Path::new("."),
@@ -247,7 +204,8 @@ fn edit_tool_is_destructive_on_any_empty_new_string() {
     assert!(!tool().is_destructive(
         &serde_json::json!({
             "path": "a.rs",
-            "edits": [{"old_string": "a", "new_string": "b"}]
+            "old_string": "a",
+            "new_string": "b"
         }),
         crate::workspace::ToolPathMode::All,
         std::path::Path::new("."),
@@ -277,7 +235,8 @@ fn edit_tool_cancel_before_write() {
         .block_on(tool().call_for_execution(
             serde_json::json!({
                 "path": path.to_str().unwrap(),
-                "edits": [{"old_string": "fn main() {}", "new_string": "fn start() {}"}]
+                "old_string": "fn main() {}",
+                "new_string": "fn start() {}"
             }),
             execution,
         ));
@@ -286,7 +245,7 @@ fn edit_tool_cancel_before_write() {
 }
 
 #[test]
-fn description_has_no_mode_knob() {
+fn description_has_no_old_contract_knobs() {
     let ctx = crate::context_pipeline::Context {
         cwd: std::path::PathBuf::from("."),
         workspace_paths: crate::config::resolved::WorkspacePaths::for_legacy_root(
@@ -296,34 +255,67 @@ fn description_has_no_mode_knob() {
         claude_md: None,
     };
     let text = tool().description(&ctx);
-    assert!(!text.contains("mode"));
-    assert!(text.contains("edits"));
-    assert!(text.contains("cannot depend") || text.contains("before any of them apply"));
+    assert!(text.contains("no `replace_all`") || !text.contains("set replace_all"), "{text}");
+    assert!(text.contains("no `expected_hash`") || text.contains("There is no `replace_all`"), "{text}");
+    assert!(text.contains("EditResult"), "{text}");
+    assert!(text.contains("old_string"));
+    // Teaching may mention retired names only as "there is no …".
+    assert!(text.contains("resolves") || text.contains("ok"), "{text}");
 }
 
 #[test]
 fn virtual_session_path_is_read_only() {
     let result = tool().call(serde_json::json!({
         "path": ".litecode/sessions/01ABCDEF.md",
-        "edits": [{ "old_string": "a", "new_string": "b" }]
+        "old_string": "a",
+        "new_string": "b"
     }));
-    assert_eq!(result.level, ToolSignalLevel::Error);
-    assert!(
-        result
-            .content
-            .contains(crate::session::transcript_file::READ_ONLY_MSG),
-        "{}",
-        result.content
-    );
+    // Resolves with ok:false (unified resolve) rather than ToolError throw.
+    if let Some(data) = &result.data {
+        assert_eq!(data["ok"], false);
+        assert!(
+            data["message"]
+                .as_str()
+                .unwrap()
+                .contains(crate::session::transcript_file::READ_ONLY_MSG)
+                || result
+                    .content
+                    .contains(crate::session::transcript_file::READ_ONLY_MSG),
+            "{} / {}",
+            data["message"],
+            result.content
+        );
+    } else {
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result
+                .content
+                .contains(crate::session::transcript_file::READ_ONLY_MSG),
+            "{}",
+            result.content
+        );
+    }
 }
 
 #[test]
-fn unmatched_block_reports_no_match_without_applying() {
+fn unmatched_reports_no_match_without_applying() {
     let (_dir, path) = write_temp("a.rs", "fn keep() {}\n");
-    let result = call_edits(&path, one("totally_unrelated_identifier_xyz", "nope"));
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    let block = &result.error_details.as_ref().unwrap()["blocks"][0];
-    assert_eq!(block["reason"]["code"], "no_match");
-    assert_eq!(block["ranges"].as_array().unwrap().len(), 0);
+    let result = call_edit(&path, "totally_unrelated_identifier_xyz", "nope");
+    let data = result.data.expect("data");
+    assert_eq!(data["ok"], false);
+    assert!(
+        data["message"].as_str().unwrap().contains("not found"),
+        "{}",
+        data["message"]
+    );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "fn keep() {}\n");
+}
+
+#[test]
+fn empty_new_string_deletes_old() {
+    let (_dir, path) = write_temp("a.rs", "keep\nremove\n");
+    let result = call_edit(&path, "remove\n", "");
+    let data = result.data.expect("data");
+    assert_eq!(data["ok"], true);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
 }

@@ -28,7 +28,7 @@ fn output_file_rel(path: &Path, workspace_root: &Path) -> String {
 }
 
 fn pipe_log_dir(workspace_root: &Path) -> PathBuf {
-    workspace_root.join(".litecode").join("run_command")
+    workspace_root.join(".litecode").join("run")
 }
 
 fn pipe_log_paths(workspace_root: &Path, id: &str) -> (PathBuf, PathBuf) {
@@ -1403,7 +1403,7 @@ mod tests {
         let path_a = dir
             .path()
             .join(".litecode")
-            .join("run_command")
+            .join("run")
             .join("bg_a.stdout");
         std::fs::create_dir_all(path_a.parent().unwrap()).unwrap();
         let path_b = dir.path().join("b.output");
@@ -1432,11 +1432,11 @@ mod tests {
         assert_eq!(snap.jobs[0].call_id, "call_a");
         assert_eq!(
             snap.jobs[0].output_file,
-            ".litecode/run_command/bg_a.stdout"
+            ".litecode/run/bg_a.stdout"
         );
         assert_eq!(
             snap.jobs[0].stderr_file.as_deref(),
-            Some(".litecode/run_command/bg_a.stderr")
+            Some(".litecode/run/bg_a.stderr")
         );
         assert!(snap.jobs[0].started_at_ms > 0);
         assert_eq!(snap.waits.len(), 1);
@@ -1524,7 +1524,7 @@ mod tests {
         let stdout = dir
             .path()
             .join(".litecode")
-            .join("run_command")
+            .join("run")
             .join(format!("{taken}.stdout"));
         std::fs::create_dir_all(stdout.parent().unwrap()).unwrap();
         std::fs::write(&stdout, b"").unwrap();
@@ -1570,7 +1570,7 @@ mod tests {
         assert!(!alive);
         assert_eq!(code, Some(0));
         let rendered = crate::terminal::display_output_path(&path, dir.path());
-        assert!(rendered.starts_with(".litecode/run_command/"), "{rendered}");
+        assert!(rendered.starts_with(".litecode/run/"), "{rendered}");
         assert!(rendered.ends_with(".stdout"), "{rendered}");
         assert!(!rendered.contains(call_id), "{rendered}");
         assert!(!rendered.contains(':'), "{rendered}");

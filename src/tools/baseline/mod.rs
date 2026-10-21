@@ -206,7 +206,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Allow,
             &[("a.txt", "alpha\n")],
             Bulk::None,
-            json!({"path":"a.txt","edits":[{"old_string":"alpha","new_string":"beta"}]}),
+            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
         ),
         live(
             "edit",
@@ -214,7 +214,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Allow,
             &[("empty.txt", "")],
             Bulk::None,
-            json!({"path":"empty.txt","edits":[{"old_string":"alpha","new_string":"beta"}]}),
+            json!({"path":"empty.txt","old_string":"alpha","new_string":"beta"}),
         ),
         live(
             "edit",
@@ -230,7 +230,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[("a.txt", "alpha\n")],
             Bulk::None,
-            json!({"path":"a.txt","edits":[{"old_string":"alpha","new_string":"beta"}]}),
+            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
         ),
         live(
             "edit",
@@ -238,7 +238,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Cancel,
             &[("a.txt", "alpha\n")],
             Bulk::None,
-            json!({"path":"a.txt","edits":[{"old_string":"alpha","new_string":"beta"}]}),
+            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
         ),
         live(
             "edit",
@@ -246,7 +246,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Allow,
             &[("a.txt", "alpha\nbeta\n")],
             Bulk::None,
-            json!({"path":"a.txt","edits":[{"old_string":"alpha","new_string":"ALPHA"},{"old_string":"missing_token_zz","new_string":"nope"}]}),
+            json!({"path":"a.txt","old_string":"missing_token_zz","new_string":"nope"}),
         ),
         live(
             "write",

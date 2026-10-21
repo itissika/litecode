@@ -579,11 +579,11 @@ mod tests {
         let root = Path::new("C:/proj");
         let path = root
             .join(".litecode")
-            .join("run_command")
+            .join("run")
             .join("bg_aaa.stdout");
         assert_eq!(
             display_output_path(&path, root),
-            ".litecode/run_command/bg_aaa.stdout"
+            ".litecode/run/bg_aaa.stdout"
         );
     }
 
@@ -613,7 +613,7 @@ mod tests {
         let stdout = dir
             .path()
             .join(".litecode")
-            .join("run_command")
+            .join("run")
             .join(format!("{taken}.stdout"));
         std::fs::create_dir_all(stdout.parent().unwrap()).unwrap();
         std::fs::write(&stdout, b"").unwrap();

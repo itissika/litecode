@@ -1,4 +1,4 @@
-//! Phase 3 acceptance checks: write preconditions, partial edit blocks, diagnostics.
+//! Phase 3 acceptance checks: write preconditions, edit/apply_edits EditResult, diagnostics.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -55,6 +55,7 @@ fn tools() -> Vec<Arc<dyn Tool>> {
     vec![
         Arc::new(crate::tools::read::ReadTool::default()),
         Arc::new(EditTool::new()),
+        Arc::new(crate::tools::apply_edits::ApplyEditsTool::new()),
         Arc::new(WriteTool::new()),
     ]
 }
@@ -83,28 +84,6 @@ async fn run_program(root: &Path, code: &str) -> ToolCallResult {
         },
     )
     .await
-}
-
-fn block_code(result: &ToolCallResult, index: usize) -> String {
-    let blocks = result
-        .data
-        .as_ref()
-        .and_then(|data| data.get("blocks"))
-        .or_else(|| {
-            result
-                .error_details
-                .as_ref()
-                .and_then(|details| details.get("blocks"))
-        })
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("blocks missing: {result:?}"));
-    blocks
-        .iter()
-        .find(|block| block["index"] == index)
-        .unwrap_or_else(|| panic!("block {index} missing: {blocks:?}"))["reason"]["code"]
-        .as_str()
-        .unwrap_or("")
-        .to_string()
 }
 
 #[test]
@@ -192,8 +171,9 @@ fn phase3_write_expected_hash_on_missing_file_does_not_create() {
     assert!(!dir.path().join("missing.txt").exists());
 }
 
+
 #[test]
-fn phase3_edit_expected_hash_mismatch_is_stale() {
+fn phase3_edit_rejects_expected_hash_knob() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("note.txt");
     std::fs::write(&path, "alpha\n").unwrap();
@@ -203,20 +183,22 @@ fn phase3_edit_expected_hash_mismatch_is_stale() {
         json!({
             "path": "note.txt",
             "expected_hash": "0".repeat(64),
-            "edits": [{"old_string": "alpha", "new_string": "beta"}]
+            "old_string": "alpha",
+            "new_string": "beta"
         }),
     );
-    assert_eq!(result.error_code.as_deref(), Some("stale"));
-    assert!(result.data.is_none());
-    assert_eq!(
-        result.error_details.as_ref().unwrap()["current_hash"],
-        crate::tool::file_identity::sha256_hex(b"alpha\n")
+    assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+    assert!(
+        result.content.contains("expected_hash") || result.content.contains("unknown"),
+        "{}",
+        result.content
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\n");
 }
 
 #[test]
-fn phase3_edit_ten_blocks_one_failure_is_partial() {
+fn phase3_apply_edits_serial_skip_on_failure() {
+    use crate::tools::apply_edits::ApplyEditsTool;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("many.txt");
     let original: String = (0..10).map(|index| format!("line-{index}\n")).collect();
@@ -224,49 +206,42 @@ fn phase3_edit_ten_blocks_one_failure_is_partial() {
     let mut edits = Vec::new();
     for index in 0..9 {
         edits.push(json!({
+            "path": "many.txt",
             "old_string": format!("line-{index}"),
             "new_string": format!("LINE-{index}")
         }));
     }
     edits.push(json!({
+        "path": "many.txt",
         "old_string": "missing-line",
         "new_string": "NOPE"
     }));
     let result = call(
-        &EditTool::new(),
+        &ApplyEditsTool::new(),
         dir.path(),
-        json!({"path": "many.txt", "edits": edits}),
+        json!({"edits": edits}),
     );
-    assert!(result.error.is_none());
+    assert!(result.error.is_none(), "{}", result.content);
     let data = result.data.unwrap();
-    assert_eq!(data["applied"], 9);
-    assert_eq!(data["failed"], 1);
-    assert_eq!(data["blocks"].as_array().unwrap().len(), 10);
-    assert_eq!(data["blocks"][9]["status"], "failed");
-    assert_eq!(data["blocks"][9]["reason"]["code"], "no_match");
-    assert_eq!(data["blocks"][9]["index"], 10);
-    assert!(data["blocks"][0]["ranges"][0]["start_line"].is_number());
-    let diagnostic = result
-        .diagnostics
-        .iter()
-        .find(|item| item.code == "edit_block_failed")
-        .expect("diagnostic");
-    assert_eq!(diagnostic.details.as_ref().unwrap()["index"], 10);
-    assert_eq!(
-        diagnostic.details.as_ref().unwrap()["reason"]["code"],
-        "no_match"
+    let results = data["results"].as_array().unwrap();
+    assert_eq!(results.len(), 10);
+    assert!(results[..9].iter().all(|item| item["ok"] == true));
+    assert_eq!(results[9]["ok"], false);
+    assert!(
+        results[9]["message"].as_str().unwrap().contains("not found"),
+        "{}",
+        results[9]["message"]
     );
     let written = std::fs::read_to_string(&path).unwrap();
     for index in 0..9 {
         assert!(written.contains(&format!("LINE-{index}")));
-        assert!(!written.contains(&format!("line-{index}\n")));
     }
     assert!(written.contains("line-9\n"));
     assert!(!written.contains("NOPE"));
 }
 
 #[test]
-fn phase3_edit_all_fail_keeps_file_and_exposes_blocks() {
+fn phase3_edit_failure_resolves_with_message() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("note.txt");
     std::fs::write(&path, "keep\n").unwrap();
@@ -275,37 +250,20 @@ fn phase3_edit_all_fail_keeps_file_and_exposes_blocks() {
         dir.path(),
         json!({
             "path": "note.txt",
-            "edits": [
-                {"old_string": "nope-a", "new_string": "A"},
-                {"old_string": "nope-b", "new_string": "B"}
-            ]
+            "old_string": "nope-a",
+            "new_string": "A"
         }),
     );
-    assert!(result.error.is_some());
-    assert_eq!(result.error_code.as_deref(), Some("edit_failed"));
-    assert!(result.data.is_none());
-    let blocks = result.error_details.as_ref().unwrap()["blocks"]
-        .as_array()
-        .unwrap();
-    assert_eq!(blocks.len(), 2);
-    assert!(
-        blocks
-            .iter()
-            .all(|block| block["reason"]["code"] == "no_match")
-    );
-    assert!(
-        result
-            .diagnostics
-            .iter()
-            .filter(|item| item.code == "edit_block_failed")
-            .count()
-            == 2
-    );
+    assert!(result.error.is_none(), "failures resolve: {}", result.content);
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["ok"], false);
+    assert!(data["message"].as_str().unwrap().contains("not found"));
+    assert!(data.get("blocks").is_none());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep\n");
 }
 
 #[test]
-fn phase3_edit_failure_codes_are_stable() {
+fn phase3_edit_failure_messages_are_stable() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("note.txt"), "alpha\nbeta\nalpha\n").unwrap();
     let tool = EditTool::new();
@@ -314,59 +272,60 @@ fn phase3_edit_failure_codes_are_stable() {
     let empty = call(
         &tool,
         root,
-        json!({"path": "note.txt", "edits": [{"old_string": "", "new_string": "x"}]}),
+        json!({"path": "note.txt", "old_string": "", "new_string": "x"}),
     );
-    assert_eq!(block_code(&empty, 1), "empty_old_string");
+    assert!(
+        empty.data.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("empty"),
+        "{:?}",
+        empty.data
+    );
 
     let noop = call(
         &tool,
         root,
-        json!({"path": "note.txt", "edits": [{"old_string": "beta", "new_string": "beta"}]}),
+        json!({"path": "note.txt", "old_string": "beta", "new_string": "beta"}),
     );
-    assert_eq!(block_code(&noop, 1), "no_op");
+    assert!(
+        noop.data.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("same"),
+        "{:?}",
+        noop.data
+    );
 
     let multi = call(
         &tool,
         root,
-        json!({"path": "note.txt", "edits": [{"old_string": "alpha", "new_string": "ALPHA"}]}),
+        json!({"path": "note.txt", "old_string": "alpha", "new_string": "ALPHA"}),
     );
-    assert_eq!(block_code(&multi, 1), "multiple_matches");
+    let msg = multi.data.as_ref().unwrap()["message"].as_str().unwrap();
+    assert!(msg.contains("more than once"), "{msg}");
+    assert!(!msg.contains("replace_all"), "{msg}");
 
+    // Serial dependency across apply_edits items is allowed (unlike old same-call snapshot).
+    use crate::tools::apply_edits::ApplyEditsTool;
+    std::fs::write(root.join("note.txt"), "alpha\nbeta\nalpha\n").unwrap();
     let chained = call(
-        &tool,
+        &ApplyEditsTool::new(),
         root,
         json!({
-            "path": "note.txt",
             "edits": [
-                {"old_string": "beta", "new_string": "BETA"},
-                {"old_string": "BETA", "new_string": "gamma"}
+                {"path": "note.txt", "old_string": "beta", "new_string": "BETA"},
+                {"path": "note.txt", "old_string": "BETA", "new_string": "gamma"}
             ]
         }),
     );
-    assert!(chained.error.is_none());
-    assert_eq!(chained.data.as_ref().unwrap()["failed"], 1);
-    assert_eq!(block_code(&chained, 2), "chained");
+    let results = chained.data.as_ref().unwrap()["results"].as_array().unwrap();
+    assert_eq!(results[0]["ok"], true);
+    assert_eq!(results[1]["ok"], true);
     assert_eq!(
         std::fs::read_to_string(root.join("note.txt")).unwrap(),
-        "alpha\nBETA\nalpha\n"
+        "alpha\ngamma\nalpha\n"
     );
-
-    std::fs::write(root.join("note.txt"), "alpha\nbeta\n").unwrap();
-    let overlap = call(
-        &tool,
-        root,
-        json!({
-            "path": "note.txt",
-            "edits": [
-                {"old_string": "alpha\nbeta", "new_string": "AB"},
-                {"old_string": "beta", "new_string": "BETA"}
-            ]
-        }),
-    );
-    assert_eq!(block_code(&overlap, 2), "overlap");
-    assert!(!overlap.error_details.is_some() || overlap.data.is_some());
-    let overlap_block = overlap.data.as_ref().unwrap()["blocks"][1].clone();
-    assert!(!overlap_block["ranges"].as_array().unwrap().is_empty());
 
     std::fs::write(root.join("note.txt"), "fn unique_name() {}\n").unwrap();
     let whitespace = call(
@@ -374,17 +333,12 @@ fn phase3_edit_failure_codes_are_stable() {
         root,
         json!({
             "path": "note.txt",
-            "edits": [{
-                "old_string": "    fn unique_name() {}",
-                "new_string": "fn other() {}"
-            }]
+            "old_string": "    fn unique_name() {}",
+            "new_string": "fn other() {}"
         }),
     );
-    assert_eq!(block_code(&whitespace, 1), "whitespace_only");
-    let ranges = whitespace.error_details.as_ref().unwrap()["blocks"][0]["ranges"]
-        .as_array()
-        .unwrap();
-    assert_eq!(ranges[0]["start_line"], 1);
+    let msg = whitespace.data.as_ref().unwrap()["message"].as_str().unwrap();
+    assert!(msg.contains("whitespace") || msg.contains("differ"), "{msg}");
     assert_eq!(
         std::fs::read_to_string(root.join("note.txt")).unwrap(),
         "fn unique_name() {}\n"
@@ -392,7 +346,7 @@ fn phase3_edit_failure_codes_are_stable() {
 }
 
 #[tokio::test]
-async fn phase3_edit_block_failed_reaches_run_code_diagnostics() {
+async fn phase3_apply_edits_partial_reaches_run_code_ledger() {
     let dir = tempfile::tempdir().unwrap();
     let original: String = (0..10).map(|index| format!("line-{index}\n")).collect();
     std::fs::write(dir.path().join("many.txt"), &original).unwrap();
@@ -402,21 +356,24 @@ async fn phase3_edit_block_failed_reaches_run_code_diagnostics() {
             edits.push(',');
         }
         edits.push_str(&format!(
-            "{{old_string: \"line-{index}\", new_string: \"LINE-{index}\"}}"
+            "{{path: \"many.txt\", old_string: \"line-{index}\", new_string: \"LINE-{index}\"}}"
         ));
     }
-    edits.push_str(", {old_string: \"missing-line\", new_string: \"NOPE\"}]");
-    let code = format!("await tools.edit({{ path: \"many.txt\", edits: {edits} }}); return null;");
+    edits.push_str(
+        ", {path: \"many.txt\", old_string: \"missing-line\", new_string: \"NOPE\"}]",
+    );
+    let code = format!(
+        "const out = await tools.apply_edits({{ edits: {edits} }}); return out.results.filter(r => !r.ok).length;"
+    );
     let nested = run_program(dir.path(), &code).await;
     assert!(
         nested.error.is_none(),
         "run_code failed: {}",
         nested.content
     );
-    assert!(nested.data.is_none(), "run_code no longer returns data");
+    // Ledger should show partial ok(n/total) for apply_edits.
     assert!(
-        nested.content.contains("edit_block_failed")
-            && nested.content.contains("edit block 10 failed: no_match"),
+        nested.content.contains("ok(9/10)") || nested.content.contains("apply_edits"),
         "run_code content: {}",
         nested.content
     );

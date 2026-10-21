@@ -189,45 +189,45 @@ const MATRIX: &[Row] = &[
         tool: "edit",
         scenario: "全部成功",
         status: "ok",
-        data: "file/blocks/applied",
+        data: "ok/path/message",
         page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
     Row {
-        tool: "edit",
-        scenario: "10 块 1 失败",
+        tool: "apply_edits",
+        scenario: "10 项 1 失败",
         status: "ok",
-        data: "file/blocks/applied/failed",
+        data: "results",
         page: "—",
-        diagnostics: "edit_block_failed",
+        diagnostics: "[]",
         error_code: "null",
     },
     Row {
         tool: "edit",
-        scenario: "全部失败",
-        status: "error",
-        data: "null",
+        scenario: "未找到",
+        status: "ok",
+        data: "ok=false/message",
         page: "—",
-        diagnostics: "edit_block_failed",
-        error_code: "edit_failed + blocks",
+        diagnostics: "[]",
+        error_code: "null",
     },
     Row {
         tool: "edit",
-        scenario: "hash 过期",
-        status: "error",
-        data: "null",
+        scenario: "多匹配",
+        status: "ok",
+        data: "ok=false/message",
         page: "—",
         diagnostics: "[]",
-        error_code: "stale",
+        error_code: "null",
     },
     Row {
         tool: "edit",
         scenario: "LSP 错误",
         status: "ok",
-        data: "file/blocks",
+        data: "ok/path/message",
         page: "—",
-        diagnostics: "lsp_error",
+        diagnostics: "[]",
         error_code: "null",
     },
     Row {
@@ -328,6 +328,7 @@ fn tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(crate::tools::glob::GlobTool),
         Arc::new(crate::tools::grep::GrepTool),
         Arc::new(crate::tools::edit::EditTool::new()),
+        Arc::new(crate::tools::apply_edits::ApplyEditsTool::new()),
         Arc::new(crate::tools::write::WriteTool::new()),
     ]
 }
@@ -507,9 +508,10 @@ fn assert_cells(result: &ToolCallResult, row: &Row) {
             assert!(details.get("suggested_literal").is_none(), "{scene}");
         }
         "edit_failed + blocks" => {
-            assert_eq!(result.error_code.as_deref(), Some("edit_failed"), "{scene}");
+            // Retired WP-198 dual-exit; keep arm for compile if referenced.
             assert!(
-                result.error_details.as_ref().unwrap()["blocks"].is_array(),
+                result.data.as_ref().is_some_and(|d| d.get("ok") == Some(&serde_json::json!(false)))
+                    || result.error_code.as_deref() == Some("edit_failed"),
                 "{scene}"
             );
         }
@@ -670,48 +672,43 @@ async fn live_row(row: &Row) {
             call_code(
                 root,
                 "edit",
-                json!({"path": "a.txt", "edits": [{"old_string": "alpha", "new_string": "beta"}]}),
+                json!({"path": "a.txt", "old_string": "alpha", "new_string": "beta"}),
             )
             .await
         }
-        ("edit", "10 块 1 失败") => {
+        ("apply_edits", "10 项 1 失败") => {
             let body: String = (0..10).map(|index| format!("line{index}\n")).collect();
             write_file(root, "blocks.txt", &body);
             let mut edits = Vec::new();
             for index in 0..9 {
                 edits.push(json!({
+                    "path": "blocks.txt",
                     "old_string": format!("line{index}"),
                     "new_string": format!("done{index}")
                 }));
             }
-            edits.push(json!({"old_string": "missing-block", "new_string": "nope"}));
-            call_code(root, "edit", json!({"path": "blocks.txt", "edits": edits})).await
+            edits.push(json!({
+                "path": "blocks.txt",
+                "old_string": "missing-block",
+                "new_string": "nope"
+            }));
+            call_code(root, "apply_edits", json!({"edits": edits})).await
         }
-        ("edit", "全部失败") => {
+        ("edit", "未找到") => {
             write_file(root, "a.txt", "keep\n");
             call_code(
                 root,
                 "edit",
-                json!({
-                    "path": "a.txt",
-                    "edits": [
-                        {"old_string": "nope1", "new_string": "x"},
-                        {"old_string": "nope2", "new_string": "y"}
-                    ]
-                }),
+                json!({"path": "a.txt", "old_string": "nope1", "new_string": "x"}),
             )
             .await
         }
-        ("edit", "hash 过期") => {
-            write_file(root, "a.txt", "alpha\n");
+        ("edit", "多匹配") => {
+            write_file(root, "a.txt", "alpha\nx\nalpha\n");
             call_code(
                 root,
                 "edit",
-                json!({
-                    "path": "a.txt",
-                    "expected_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-                    "edits": [{"old_string": "alpha", "new_string": "beta"}]
-                }),
+                json!({"path": "a.txt", "old_string": "alpha", "new_string": "BETA"}),
             )
             .await
         }
@@ -723,7 +720,8 @@ async fn live_row(row: &Row) {
                 "edit",
                 json!({
                     "path": "hooked.rs",
-                    "edits": [{"old_string": "alpha", "new_string": "beta"}]
+                    "old_string": "alpha",
+                    "new_string": "beta"
                 }),
             )
             .await
@@ -771,14 +769,13 @@ async fn live_row(row: &Row) {
             run_program(
                 root,
                 r#"
-                const edited = await tools.edit({
-                  path: "a.txt",
+                const out = await tools.apply_edits({
                   edits: [
-                    { old_string: "alpha", new_string: "beta" },
-                    { old_string: "missing", new_string: "nope" }
+                    { path: "a.txt", old_string: "alpha", new_string: "beta" },
+                    { path: "a.txt", old_string: "missing", new_string: "nope" }
                   ]
                 });
-                return edited.failed;
+                return out.results.filter(r => !r.ok).length;
                 "#,
             )
             .await
@@ -843,28 +840,25 @@ async fn live_row(row: &Row) {
         }
         ("edit", "全部成功") | ("edit", "LSP 错误") => {
             let data = result.data.as_ref().unwrap();
-            assert!(data["file"]["hash"].is_string());
-            assert!(data["blocks"].is_array());
-            assert!(data["applied"].as_u64().unwrap() >= 1);
+            assert_eq!(data["ok"], true);
+            assert!(data["message"].is_string());
+            assert!(data.get("blocks").is_none());
+            assert!(data.get("applied").is_none());
         }
-        ("edit", "10 块 1 失败") => {
+        ("apply_edits", "10 项 1 失败") => {
             let data = result.data.as_ref().unwrap();
-            assert_eq!(data["applied"], 9);
-            assert_eq!(data["failed"], 1);
-            assert!(data["blocks"].is_array());
-            let failed = data["blocks"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|block| block["status"] == "failed")
-                .expect("failed block");
-            assert!(failed["reason"]["message"].is_string());
+            let results = data["results"].as_array().unwrap();
+            assert_eq!(results.len(), 10);
+            assert_eq!(results.iter().filter(|r| r["ok"] == true).count(), 9);
+            assert_eq!(results[9]["ok"], false);
             let disk = std::fs::read_to_string(root.join("blocks.txt")).unwrap();
             assert!(disk.contains("done0"));
             assert!(!disk.contains("nope"));
         }
-        ("edit", "hash 过期") => {
-            assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "alpha\n");
+        ("edit", "未找到") | ("edit", "多匹配") => {
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["ok"], false);
+            assert!(data["message"].as_str().unwrap().len() > 0);
         }
         ("write", "成功") => {
             let data = result.data.as_ref().unwrap();

@@ -2,29 +2,9 @@
   "content_historical": "Edited <ws>a.txt (1 applied / 0 warning / 1 failed). File updated.\nFailed edits: 2.\n\n[1] applied: exact, 1 replacement (L1)\n\n[2] failed: no_useful_match\nNo sufficiently similar region was found. This edit was not applied.\nRe-read the file and include enough unique context.\n\nFile was modified. Re-read it, then retry only failed edits. Do not resubmit already applied ones.",
   "covered": true,
   "data": {
-    "applied": 1,
-    "blocks": [
-      {
-        "index": 1,
-        "ranges": [{ "end_line": 1, "start_line": 1 }],
-        "status": "applied"
-      },
-      {
-        "index": 2,
-        "ranges": [],
-        "reason": {
-          "code": "no_match",
-          "message": "old_string was not found"
-        },
-        "status": "failed"
-      }
-    ],
-    "failed": 1,
-    "file": {
-      "bytes": 11,
-      "hash": "95bf16eedd9777373f37c55341fb87d46ed6d3c184953579dc313bc84e7e0834",
-      "path": "a.txt"
-    }
+    "ok": false,
+    "path": "a.txt",
+    "message": "old_string was not found"
   },
   "error": null,
   "gap": null,

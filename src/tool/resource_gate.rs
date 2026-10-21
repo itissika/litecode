@@ -682,7 +682,7 @@ mod tests {
             root,
         );
         let edit = crate::tools::edit::EditTool::new().effects(
-            &serde_json::json!({"path": "a.txt", "edits": []}),
+            &serde_json::json!({"path": "a.txt", "old_string": "a", "new_string": "b"}),
             mode,
             root,
         );

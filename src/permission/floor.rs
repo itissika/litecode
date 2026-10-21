@@ -24,7 +24,25 @@ pub fn check_floor(tool_name: &str, args: &Value, _ctx: &MatchContext<'_>) -> Op
         });
     }
 
-    if tool_name == "run_command"
+    if tool_name == "apply_edits"
+        && let Some(edits) = args.get("edits").and_then(Value::as_array)
+    {
+        for item in edits {
+            if let Some(path) = item
+                .get("path")
+                .and_then(Value::as_str)
+                .or_else(|| item.get("file_path").and_then(Value::as_str))
+                && is_sensitive_system_path(path)
+            {
+                return Some(EvalResult {
+                    rule_id: "floor_sensitive_write".into(),
+                    action: PermissionAction::Deny,
+                });
+            }
+        }
+    }
+
+    if tool_name == "run"
         && let Some(command) = args.get("command").and_then(Value::as_str)
     {
         let action = check_dangerous_command(command);
@@ -52,9 +70,9 @@ mod tests {
     }
 
     #[test]
-    fn run_command_hits_the_dangerous_command_floor() {
+    fn run_hits_the_dangerous_command_floor() {
         let hit = check_floor(
-            "run_command",
+            "run",
             &serde_json::json!({"command": "rm -rf /"}),
             &ctx(),
         )
@@ -62,7 +80,7 @@ mod tests {
         assert_eq!(hit.rule_id, "floor_dangerous_command");
         assert_eq!(hit.action, PermissionAction::Deny);
         assert!(
-            check_floor("run_command", &serde_json::json!({"command": "ls"}), &ctx()).is_none()
+            check_floor("run", &serde_json::json!({"command": "ls"}), &ctx()).is_none()
         );
     }
 

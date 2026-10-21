@@ -21,7 +21,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
-    // Direct bash / wait_shell / kill_shell are gone. Drop leftover rows for every agent.
+    // Retired shell names are gone. Drop leftover rows for every agent.
     strip_direct_shell_bindings(conn)?;
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
@@ -279,16 +279,16 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // WP-196: Code 短前台命令；Direct bash 三件套默认不绑。
-    let (run_command_policy, run_command_path) = binding_for_tool("run_command", ToolPreset::Safe);
+    // WP-197: Code shell 三动作；仅绑 `run`（wait/kill 由 registry 注入）。
+    let (run_policy, run_path) = binding_for_tool("run", ToolPreset::Safe);
     store::upsert_agent_tool(
         conn,
         "explore",
-        "run_command",
+        "run",
         &AgentToolBinding {
             enabled: true,
-            policy: run_command_policy,
-            path_mode: run_command_path,
+            policy: run_policy,
+            path_mode: run_path,
             last_applied_preset: Some(ToolPreset::Safe),
             allowed_tools: None,
         },
@@ -392,9 +392,16 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Drop leftover Direct `bash` / `wait_shell` / `kill_shell` bindings for every agent.
+/// Drop leftover retired shell bindings for every agent (Direct triad + WP-196 run_command suite).
 fn strip_direct_shell_bindings(conn: &Connection) -> Result<()> {
-    for tool in ["bash", "wait_shell", "kill_shell"] {
+    for tool in [
+        "bash",
+        "wait_shell",
+        "kill_shell",
+        "run_command",
+        "command_output",
+        "command_kill",
+    ] {
         conn.execute("DELETE FROM agent_tools WHERE tool_id = ?1", [tool])?;
     }
     Ok(())
@@ -414,7 +421,7 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
         [],
     );
-    // Direct bash / wait_shell / kill_shell are gone. Drop leftover rows for every agent.
+    // Retired shell names are gone. Drop leftover rows for every agent.
     strip_direct_shell_bindings(conn)?;
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
@@ -536,12 +543,12 @@ fn ensure_explore_shared_tools(conn: &Connection) -> Result<()> {
             &binding_seeded("litecode_workspace", ToolPreset::All),
         )?;
     }
-    if !agent_has_tool(conn, "explore", "run_command")? {
+    if !agent_has_tool(conn, "explore", "run")? {
         store::upsert_agent_tool(
             conn,
             "explore",
-            "run_command",
-            &binding_seeded("run_command", ToolPreset::Safe),
+            "run",
+            &binding_seeded("run", ToolPreset::Safe),
         )?;
     }
     for tool in subagent_none_tools() {
@@ -759,8 +766,8 @@ mod tests {
             .unwrap();
         assert_eq!(write, 0);
 
-        // WP-196: explore 默认无 Direct bash 家族；有 run_command SAFE。
-        for tool in ["bash", "wait_shell", "kill_shell"] {
+        // WP-197: explore 默认无旧 shell；有 run SAFE。
+        for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
             let n: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = ?1",
@@ -771,14 +778,14 @@ mod tests {
             assert_eq!(n, 0, "explore must not bind {tool}");
         }
 
-        let run_command_preset: Option<String> = conn
+        let run_preset: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(run_command_preset.as_deref(), Some("SAFE"));
+        assert_eq!(run_preset.as_deref(), Some("SAFE"));
 
         let (general_role, general_prompt): (String, String) = conn
             .query_row(
@@ -855,9 +862,9 @@ mod tests {
             .unwrap();
         assert_eq!(general_launch, 0);
 
-        // WP-196: general/default/orchestrator 默认无 Direct bash 家族；有 run_command。
+        // WP-197: general/default/orchestrator 默认无旧 shell；有 run。
         for agent in ["general", "default", "orchestrator"] {
-            for tool in ["bash", "wait_shell", "kill_shell"] {
+            for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
                 let n: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
@@ -869,12 +876,12 @@ mod tests {
             }
             let run_n: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run_command'",
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run'",
                     [agent],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(run_n, 1, "{agent} should bind run_command");
+            assert_eq!(run_n, 1, "{agent} should bind run");
         }
     }
 
@@ -1098,14 +1105,14 @@ mod tests {
             .unwrap();
         assert_eq!(session_preset, None);
 
-        let run_command_preset: Option<String> = conn
+        let run_preset: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(run_command_preset.as_deref(), Some("SAFE"));
+        assert_eq!(run_preset.as_deref(), Some("SAFE"));
 
         conn.execute(
             "UPDATE agent_tools SET last_applied_preset = 'SAFE', policy_json = '{\"default\":\"ask\",\"default_id\":\"__default\",\"rules\":[]}', path_mode = 'workspace_only' WHERE agent_id = 'explore' AND tool_id = 'webfetch'",
@@ -1132,7 +1139,14 @@ mod tests {
             &[] as &[String],
         )
         .unwrap();
-        for tool in ["bash", "wait_shell", "kill_shell"] {
+        for tool in [
+            "bash",
+            "wait_shell",
+            "kill_shell",
+            "run_command",
+            "command_output",
+            "command_kill",
+        ] {
             store::upsert_agent_tool(
                 &conn,
                 "reviewer",
@@ -1144,8 +1158,8 @@ mod tests {
         store::upsert_agent_tool(
             &conn,
             "reviewer",
-            "run_command",
-            &binding_seeded("run_command", ToolPreset::All),
+            "run",
+            &binding_seeded("run", ToolPreset::All),
         )
         .unwrap();
         ensure_core_bindings(&conn).unwrap();
@@ -1163,7 +1177,7 @@ mod tests {
 
         let run_after: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run_command'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
                 [],
                 |r| r.get(0),
             )
@@ -1177,9 +1191,16 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(bash_after, 0, "ensure strips residual explore bash");
+        assert_eq!(bash_after, 0, "ensure strips residual explore retired shell");
 
-        for tool in ["bash", "wait_shell", "kill_shell"] {
+        for tool in [
+            "bash",
+            "wait_shell",
+            "kill_shell",
+            "run_command",
+            "command_output",
+            "command_kill",
+        ] {
             let left: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'reviewer' AND tool_id = ?1",
@@ -1191,7 +1212,7 @@ mod tests {
         }
         let reviewer_command: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'reviewer' AND tool_id = 'run_command'",
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'reviewer' AND tool_id = 'run'",
                 [],
                 |r| r.get(0),
             )

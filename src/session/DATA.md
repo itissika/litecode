@@ -158,7 +158,7 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
 | `reminder/plan_changed` | Diff（按 revision） | 隐藏 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
-| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run_command` 作业退出。`command_output` 或 `command_kill` 已消费的通知不进这里 |
+| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run` 作业退出。`wait` 或 `kill` 已消费的通知不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/step_budget` | 每 turn 最多一次 | 隐藏 | 剩余步数不超过 3 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |

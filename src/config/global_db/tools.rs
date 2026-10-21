@@ -7,7 +7,7 @@ pub fn core_configurable_tools() -> &'static [&'static str] {
         "glob",
         "write",
         "edit",
-        "run_command",
+        "run",
         "session_search",
         "litecode_workspace",
     ]
@@ -68,9 +68,9 @@ pub fn is_reserved_builtin(id: &str) -> bool {
 /// for a custom tool — and any other non-transport source that would publish a
 /// tool name — must reject with this function. `None` means the name is free.
 ///
-/// Command-job names are not listed here. [`crate::tool::registry`] strips this
-/// function's hits before projection, and the real `command_output` /
-/// `command_kill` tools must survive that strip. Those names use
+/// Command-job companion names are not listed here. [`crate::tool::registry`]
+/// strips this function's hits before projection, and the real `wait` /
+/// `kill` / `apply_edits` tools must survive that strip. Those names use
 /// [`reserved_command_name_rejection`].
 pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
     if name == "run_code" {
@@ -81,14 +81,15 @@ pub fn non_transport_name_rejection(name: &str) -> Option<&'static str> {
 }
 
 /// Names a custom tool or an MCP tool must not publish. The built-in
-/// `command_output` / `command_kill` tools are registered separately and are
-/// not rejected by this check at projection time.
+/// `wait` / `kill` / `apply_edits` tools are registered separately and are not
+/// rejected by this check at projection time. Retired shell names stay reserved so custom
+/// tools cannot reclaim them.
 pub fn reserved_command_name_rejection(name: &str) -> Option<&'static str> {
     match name {
-        "command_output" | "command_kill" => Some("name is reserved for a code command tool"),
-        "bash" | "wait_shell" | "kill_shell" => {
-            Some("name is reserved and is not a custom or MCP tool")
-        }
+        "wait" | "kill" => Some("name is reserved for a code command tool"),
+        "apply_edits" => Some("name is reserved for a code edit tool"),
+        "run_command" | "command_output" | "command_kill" | "bash" | "wait_shell"
+        | "kill_shell" => Some("name is reserved and is not a custom or MCP tool"),
         _ => None,
     }
 }

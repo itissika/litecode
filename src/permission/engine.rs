@@ -64,7 +64,12 @@ impl PermissionEngine {
     }
 
     pub fn path_mode(&self, tool_name: &str) -> BindingPathMode {
-        self.binding(tool_name)
+        let name = if tool_name == "apply_edits" {
+            "edit"
+        } else {
+            tool_name
+        };
+        self.binding(name)
             .map(|b| b.path_mode)
             .unwrap_or_default()
     }
@@ -108,7 +113,7 @@ impl PermissionEngine {
     /// `None` means the name is not a custom tool.
     ///
     /// A catalog key owns these rules only when it is that tool's body name and
-    /// not a builtin. Reserved names (`run_command`, `write`, …) always keep the binding.
+    /// not a builtin. Reserved names (`run`, `write`, …) always keep the binding.
     fn custom_tool_rules(&self, tool_name: &str) -> Option<Vec<crate::permission::PolicyRule>> {
         if let Some(tool) = self.resolved.workspace_custom_tools().get(tool_name)
             && crate::config::global_db::tools::is_custom_tool_identity(tool_name, &tool.name)
@@ -134,8 +139,13 @@ impl PermissionEngine {
             }
             return (ToolPolicy::allow_all(), BindingPathMode::Unrestricted);
         }
+        let bind_name = if tool_name == "apply_edits" {
+            "edit"
+        } else {
+            tool_name
+        };
         let policy = self
-            .binding(tool_name)
+            .binding(bind_name)
             .map(|b| b.policy.clone())
             .unwrap_or_default();
         (policy, self.path_mode(tool_name))
@@ -320,7 +330,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut global = GlobalSettings::default();
         let mut profile = AgentProfile::default();
-        for id in ["run_command", "write"] {
+        for id in ["run", "write"] {
             let (policy, path_mode) =
                 crate::permission::presets::binding_for_tool(id, ToolPreset::Safe);
             profile.tools.insert(
@@ -355,17 +365,17 @@ mod tests {
         };
         for tools in [
             vec![
-                named_tool("run_command", vec![]),
+                named_tool("run", vec![]),
                 named_tool("write", vec![]),
             ],
             vec![
-                named_tool("run_command", vec![open.clone()]),
+                named_tool("run", vec![open.clone()]),
                 named_tool("write", vec![open]),
             ],
         ] {
             let (engine, dir) = safe_builtin_engine(tools, vec![]);
             let command = engine.evaluate_tool(
-                "run_command",
+                "run",
                 &serde_json::json!({ "command": "mkdir scratch" }),
                 dir.path(),
             );
@@ -378,9 +388,9 @@ mod tests {
             assert_eq!(write.action, PermissionAction::Ask);
         }
 
-        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("run_command", vec![])]);
+        let (engine, dir) = safe_builtin_engine(vec![], vec![named_tool("run", vec![])]);
         let command = engine.evaluate_tool(
-            "run_command",
+            "run",
             &serde_json::json!({ "command": "mkdir scratch" }),
             dir.path(),
         );

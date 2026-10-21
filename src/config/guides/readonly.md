@@ -13,7 +13,7 @@
 | `sessions.db` | 会话日志真源（SQLite，可能还有 `-wal`/`-shm`）。打开工作区不预建。查历史用 `session_search`。不要删 |
 | `logs/` | 进程日志 `logs/litecode.log`。排障可读 |
 | `plan/` | 工作区计划稿。创建/结束走 `plan` 工具，正文只改该文件（不要 `rm` 或重命名；`finish` 只清会话指针，不删文件） |
-| `run_command/` | 后台命令日志：`run_command/{job_id}.stdout|stderr`（job_id 形如 `bg_` + 8 位 hex）。不要改正在写的文件 |
+| `run/` | 后台命令日志：`run/{job_id}.stdout|stderr`（job_id 形如 `bg_` + 8 位 hex）。不要改正在写的文件 |
 | `index/` | `code_search` 语义索引产物。不要手编 |
 | `session-index/` | 会话语料的语义索引。字面检索走 `sessions.db` |
 | `sessions/` | **虚拟**，磁盘上通常没有。投影为 `sessions/<完整 session_id>.md`。`path` 指到 `sessions` 或某个 `.md`。不要 `mkdir` |

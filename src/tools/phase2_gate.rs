@@ -330,7 +330,7 @@ fn phase2_chain_grep_read() {
 }
 
 #[test]
-fn phase2_chain_read_edit_expected_hash() {
+fn phase2_chain_read_edit() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("note.txt");
     std::fs::write(&file, "alpha\n").unwrap();
@@ -339,45 +339,32 @@ fn phase2_chain_read_edit_expected_hash() {
         dir.path(),
         json!({"path": "note.txt"}),
     );
-    let hash = read.data.unwrap()["file"]["hash"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    assert!(read.error.is_none(), "{}", read.content);
     let edited = safe(
         &EditTool::default(),
         dir.path(),
         json!({
             "path": "note.txt",
-            "expected_hash": hash,
-            "edits": [{"old_string": "alpha", "new_string": "beta"}]
+            "old_string": "alpha",
+            "new_string": "beta"
         }),
     );
     assert!(edited.error.is_none(), "{}", edited.content);
     let edited_data = edited.data.as_ref().unwrap();
-    assert_eq!(edited_data["applied"], 1);
-    assert_eq!(edited_data["failed"], 0);
-    assert_eq!(edited_data["blocks"][0]["status"], "applied");
-    assert_eq!(
-        edited_data["file"]["hash"],
-        crate::tool::file_identity::sha256_hex(b"beta\n")
-    );
+    assert_eq!(edited_data["ok"], true);
+    assert!(edited_data.get("blocks").is_none());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
-    let stale = safe(
+    let again = safe(
         &EditTool::default(),
         dir.path(),
         json!({
             "path": "note.txt",
-            "expected_hash": hash,
-            "edits": [{"old_string": "beta", "new_string": "gamma"}]
+            "old_string": "beta",
+            "new_string": "gamma"
         }),
     );
-    assert_eq!(stale.error_code.as_deref(), Some("stale"));
-    let current = stale.error_details.unwrap()["current_hash"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert_eq!(current, crate::tool::file_identity::sha256_hex(b"beta\n"));
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
+    assert_eq!(again.data.as_ref().unwrap()["ok"], true);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "gamma\n");
 }
 
 fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {

@@ -1,46 +1,45 @@
-//! Shared read/kill helpers for the code-surface command jobs.
+//! Shared helpers for Code-surface shell jobs (`run` / `wait` / `kill`).
 //!
-//! These tools do not spawn a process and do not put `call_id` in a path.
-//! A wait goes through [`AgentJobRegistry::wait_async`]. The blocking registry
-//! wait is not used.
+//! These helpers do not register tools. A wait goes through
+//! [`AgentJobRegistry::wait_async`]. The blocking registry wait is not used.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use serde::Serialize;
 
-use crate::terminal::{AgentJobRegistry, TeeCapture, display_output_path};
+use crate::terminal::{AgentJobRegistry, INLINE_FULL, TeeCapture, display_output_path};
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
+/// Sole success shape for `run` / `wait` / `kill`.
 #[derive(Debug, Serialize)]
-pub(crate) struct StreamView {
-    head: String,
-    tail: String,
-    bytes: u64,
-    truncated: bool,
+pub(crate) struct CommandData {
+    pub id: String,
+    pub exit_code: Option<i32>,
+    pub output: String,
 }
 
-pub(crate) fn stream_view(capture: &TeeCapture) -> StreamView {
-    StreamView {
-        head: capture.head.clone(),
-        tail: capture.tail.clone(),
-        bytes: capture.total_bytes as u64,
-        truncated: capture.frozen || capture.truncated_on_disk,
-    }
-}
-
-pub(crate) fn stream_schema() -> serde_json::Value {
+pub(crate) fn command_data_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
+        "description": "Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.",
         "properties": {
-            "head": { "type": "string" },
-            "tail": { "type": "string" },
-            "bytes": { "type": "integer", "minimum": 0 },
-            "truncated": { "type": "boolean" }
+            "id": {
+                "type": "string",
+                "description": "Handle for later wait / kill in the same session."
+            },
+            "exit_code": {
+                "type": ["integer", "null"],
+                "description": "Process exit code when finished; null when still running or no code is available."
+            },
+            "output": {
+                "type": "string",
+                "description": "Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty)."
+            }
         },
-        "required": ["head", "tail", "bytes", "truncated"]
+        "required": ["id", "exit_code", "output"]
     })
 }
 
@@ -66,32 +65,166 @@ pub(crate) fn not_found(jobs: &AgentJobRegistry, session_id: &str, job_id: &str)
     coded_error("not_found", message)
 }
 
-pub(crate) struct JobLogs {
-    pub stdout: StreamView,
-    pub stderr: StreamView,
-    pub output_file: String,
-    pub stderr_file: String,
-}
-
-pub(crate) fn job_logs(
-    jobs: &AgentJobRegistry,
-    job_id: &str,
-    workspace_root: &Path,
-) -> Option<JobLogs> {
-    let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
-    Some(JobLogs {
-        stdout: stream_view(&stdout),
-        stderr: stream_view(&stderr),
-        output_file: display_output_path(&stdout_path, workspace_root),
-        stderr_file: display_output_path(&stderr_path, workspace_root),
-    })
-}
-
 pub(crate) fn code_i32(code: Option<u32>) -> Option<i32> {
     code.map(|code| code as i32)
 }
 
-/// Drops the `BashJobsSnapshot` waiter registered for one `command_output` call.
+/// Build `Command.output` from pipe streams plus optional status lines.
+pub(crate) fn format_job_output(
+    jobs: &AgentJobRegistry,
+    job_id: &str,
+    workspace_root: &Path,
+    exit_code: Option<i32>,
+    extra_notes: &[&str],
+) -> Option<String> {
+    let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
+    let stdout_file = display_output_path(&stdout_path, workspace_root);
+    let stderr_file = display_output_path(&stderr_path, workspace_root);
+    Some(compose_output(
+        &stdout,
+        &stderr,
+        Some(&stdout_file),
+        Some(&stderr_file),
+        exit_code,
+        extra_notes,
+    ))
+}
+
+/// Like [`format_job_output`], but may discard small attached logs after exit.
+pub(crate) fn format_exited_output(
+    jobs: &AgentJobRegistry,
+    job_id: &str,
+    workspace_root: &Path,
+    exit_code: Option<i32>,
+    extra_notes: &[&str],
+) -> Option<String> {
+    let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
+    let need_file = stream_needs_file(&stdout) || stream_needs_file(&stderr);
+    let (stdout_file, stderr_file) = if need_file {
+        (
+            Some(display_output_path(&stdout_path, workspace_root)),
+            Some(display_output_path(&stderr_path, workspace_root)),
+        )
+    } else if jobs.discard_attached(job_id) {
+        let _ = std::fs::remove_file(&stdout_path);
+        let _ = std::fs::remove_file(&stderr_path);
+        (None, None)
+    } else {
+        (None, None)
+    };
+    Some(compose_output(
+        &stdout,
+        &stderr,
+        stdout_file.as_deref(),
+        stderr_file.as_deref(),
+        exit_code,
+        extra_notes,
+    ))
+}
+
+fn stream_needs_file(capture: &TeeCapture) -> bool {
+    capture.frozen
+        || capture.truncated_on_disk
+        || capture.total_bytes > INLINE_FULL
+}
+
+fn stream_text(capture: &TeeCapture) -> String {
+    let body = capture.snapshot();
+    if capture.frozen && (!capture.head.is_empty() || !capture.tail.is_empty()) {
+        // Keep head/tail readable when the in-memory window is frozen.
+        let mut out = String::new();
+        out.push_str(&capture.head);
+        out.push_str("\n... (truncated)\n");
+        out.push_str(&capture.tail);
+        if out.trim().is_empty() { body } else { out }
+    } else {
+        body
+    }
+}
+
+fn compose_output(
+    stdout: &TeeCapture,
+    stderr: &TeeCapture,
+    stdout_file: Option<&str>,
+    stderr_file: Option<&str>,
+    exit_code: Option<i32>,
+    extra_notes: &[&str],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let out_text = stream_text(stdout);
+    let err_text = stream_text(stderr);
+    if !out_text.is_empty() {
+        parts.push(out_text);
+    }
+    if !err_text.is_empty() {
+        if !parts.is_empty() {
+            parts.push(String::new());
+        }
+        parts.push(format!("[stderr]\n{err_text}"));
+    }
+
+    let mut notes: Vec<String> = Vec::new();
+    if stdout.frozen || stdout.truncated_on_disk {
+        notes.push(format!(
+            "stdout truncated ({} bytes{})",
+            stdout.total_bytes,
+            stdout_file
+                .map(|p| format!("; full log: {p}"))
+                .unwrap_or_default()
+        ));
+    } else if let Some(path) = stdout_file {
+        if stdout.total_bytes > INLINE_FULL {
+            notes.push(format!("stdout log: {path}"));
+        }
+    }
+    if stderr.frozen || stderr.truncated_on_disk {
+        notes.push(format!(
+            "stderr truncated ({} bytes{})",
+            stderr.total_bytes,
+            stderr_file
+                .map(|p| format!("; full log: {p}"))
+                .unwrap_or_default()
+        ));
+    } else if let Some(path) = stderr_file {
+        if stderr.total_bytes > INLINE_FULL {
+            notes.push(format!("stderr log: {path}"));
+        }
+    }
+    if exit_code.is_none() && parts.is_empty() && extra_notes.is_empty() {
+        notes.push("still running; no output yet".into());
+    }
+    for note in extra_notes {
+        if !note.is_empty() {
+            notes.push((*note).to_string());
+        }
+    }
+    for note in notes {
+        if !parts.is_empty() {
+            parts.push(String::new());
+        }
+        parts.push(format!("[{note}]"));
+    }
+    parts.join("\n")
+}
+
+pub(crate) fn present_command(
+    id: impl Into<String>,
+    exit_code: Option<i32>,
+    output: String,
+) -> ToolCallResult {
+    let id = id.into();
+    let shown = exit_code
+        .map(|code| code.to_string())
+        .unwrap_or_else(|| "null".into());
+    crate::tool::outcome::ToolOutcome::ok(CommandData {
+        id: id.clone(),
+        exit_code,
+        output,
+    })
+    .into_call_result(format!("id: {id}\nexit_code: {shown}\n"))
+}
+
+/// Drops the snapshot waiter registered for one `wait` call.
 pub(crate) struct EndWait {
     jobs: Arc<AgentJobRegistry>,
     call_id: String,

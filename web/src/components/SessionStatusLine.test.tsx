@@ -1148,7 +1148,7 @@ describe("SessionStatusLine — migrated chip content", () => {
           id: "bg_nest",
           call_id: "parent:code:0",
           command_preview: "npm test",
-          stderr_file: ".litecode/run_command/bg_nest.stderr",
+          stderr_file: ".litecode/run/bg_nest.stderr",
         },
       ],
       waits: [],
@@ -1157,7 +1157,7 @@ describe("SessionStatusLine — migrated chip content", () => {
 
     fireEvent.click(screen.getByTestId("capsule-terminal"));
     expect(screen.getByTestId("terminal-stderr-bg_nest").textContent).toBe(
-      ".litecode/run_command/bg_nest.stderr",
+      ".litecode/run/bg_nest.stderr",
     );
     fireEvent.click(
       screen.getByRole("button", { name: "Reveal terminal: npm test" }),

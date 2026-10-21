@@ -424,7 +424,7 @@ pub struct SessionSnapshot {
     /// `row.seq + 1 <= this`. `None` = no file-level revert available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_file_revert_seq: Option<i64>,
-    /// Running agent bash jobs and wait_shell waiters for this session.
+    /// Running agent shell jobs and wait waiters for this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash: Option<crate::terminal::BashJobsSnapshot>,
     /// Session-scoped todo list (reconnect / snapshot hydrate). Compact does

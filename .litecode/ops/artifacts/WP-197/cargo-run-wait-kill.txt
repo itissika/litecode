@@ -1,0 +1,1047 @@
+=== WP-197 retest4 2026-10-22T00:59:15+08:00 ===
+   Compiling litecode v0.2.6 (/workspace/litecode)
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2015:13
+     |
+2015 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1052:19
+     |
+1052 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1064:4
+     |
+1064 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1090:15
+     |
+1090 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1109:4
+     |
+1109 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1124:15
+     |
+1124 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1191:4
+     |
+1191 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 39 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.20s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 15 tests
+test tools::run::tests::effects_and_safe_policy_match_readonly_dial ... ok
+test tools::run::tests::cancel_before_spawn_rejects ... ok
+test tools::kill::tests::unknown_id_is_not_found ... ok
+test tools::kill::tests::permission_is_fixed_allow_without_command_policy ... ok
+test tools::kill::tests::surface_schema_and_admission ... ok
+test tools::run::tests::surface_schema_and_command_shape ... ok
+test tools::run::tests::validate_rejects_empty_command ... ok
+test tools::wait::tests::surface_schema_and_clamp ... ok
+test tools::wait::tests::unknown_id_is_not_found ... ok
+test tools::run::tests::wait_yields_so_cancel_can_run ... ok
+test tools::run::tests::fast_command_returns_exit_code ... ok
+test tools::run::tests::long_command_returns_null_exit_and_keeps_job ... ok
+test tools::wait::tests::wait_until_exit_sets_code ... ok
+test tools::wait::tests::wait_timeout_keeps_null_exit ... ok
+test tools::kill::tests::kill_stops_process_and_notes_output ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 2187 filtered out; finished in 2.51s
+
+EXIT_tools:0
+=== seed / registry (no sdk fixture assert in filter still includes sdk) ===
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2015:13
+     |
+2015 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1052:19
+     |
+1052 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1064:4
+     |
+1064 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1090:15
+     |
+1090 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1109:4
+     |
+1109 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1124:15
+     |
+1124 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1191:4
+     |
+1191 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 39 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.26s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 6 tests
+test permission::presets::tests::preset_surface_is_opt_in ... ok
+test tool::registry::tests::command_tools_have_no_settings_cards ... ok
+test config::global_db::seed::tests::seed_plants_default_orchestrator_explore_and_general ... ok
+test tool::registry::tests::core_bindings_produce_full_builtin_list ... ok
+test tool::registry::tests::binding_filter_excludes_disabled_tools ... ok
+test tool::registry::tests::code_gate_projects_every_depth_from_that_callers_visible_set ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 2196 filtered out; finished in 0.03s
+
+EXIT_seed_reg:0
+=== sdk_snapshot (expect fixture drift until Tools) ===
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2015:13
+     |
+2015 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1052:19
+     |
+1052 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1064:4
+     |
+1064 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1090:15
+     |
+1090 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1109:4
+     |
+1109 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1124:15
+     |
+1124 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1191:4
+     |
+1191 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 39 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.23s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 2 tests
+test tool::sdk_snapshot::phase0_run_code_sdk_snapshot ... FAILED
+test tool::sdk_snapshot::sdk_hash_is_stable_for_the_same_tool_set_under_different_cwd_and_permission ... ok
+
+failures:
+
+---- tool::sdk_snapshot::phase0_run_code_sdk_snapshot stdout ----
+
+thread 'tool::sdk_snapshot::phase0_run_code_sdk_snapshot' (242278) panicked at src/tool/sdk_snapshot.rs:38:5:
+assertion `left == right` failed: run_code SDK text drifted
+  left: "`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.\nThe bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.\nA call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `edit_failed`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.\nPermission denial is a catchable `ToolError` whose `code` is `permission_denied`.\nAn edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.\nUse `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.\nLSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.\nA read of session lines already in the context window returns empty `lines` with `reason` `\"in_context_window\"`.\nA glob that matches nothing returns `reason` `\"no_match\"`. A glob whose path is hidden by the default filters returns `reason` `\"path_excluded\"`.\nPagination dialect: for read, pass `page.next` back as `start_line`; for glob and grep, pass `page.next` back as `cursor`.\nThe model sees about 64KB of this run. Return a summary, not a raw bulk of data.\nCall each binding as `tools[\"name\"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.\nReturn a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.\n\n```ts\ndeclare class ToolError extends Error {\n  readonly name: \"ToolError\";\n  readonly code: string;\n  readonly details?: unknown;\n  readonly retryable?: true;\n  readonly tool: string;\n  readonly seq: number;\n}\n\n/** Whole JSON number. The host rejects fractional values. */\ntype Integer = number;\n\n\ntype CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\ntype ApplyEditsInput = {\n  // Replacements to apply serially. A failed item is skipped; later items still run. results matches this array length.\n  edits: Array<{\n    // Replacement text. Use an empty string to delete old_string.\n    new_string: string;\n    // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place.\n    old_string: string;\n    // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed.\n    path: string;\n  }>;\n};\n\n// Serial batch outcomes. results is the same length as the input edits array.\ntype ApplyEditsData = {\n  results: Array<{\n    message: string;\n    ok: boolean;\n    path: string;\n  }>;\n};\n\ntype EditInput = {\n  // Replacement text. Use an empty string to delete old_string.\n  new_string: string;\n  // Exact file text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match exactly one place; add surrounding lines if it appears more than once.\n  old_string: string;\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed.\n  path: string;\n};\n\n// One replacement outcome. Failures resolve with ok=false; guidance lives only in message.\ntype EditData = {\n  message: string;\n  ok: boolean;\n  path: string;\n};\n\ntype GlobInput = {\n  // Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'.\n  pattern: string;\n  // Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor.\n  cursor?: string;\n  // Also search gitignored and workspace-excluded paths. Default false.\n  include_ignored?: boolean;\n  // Maximum paths in this page. Default 1000, maximum 5000.\n  limit?: Integer;\n  // Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`.\n  path?: string;\n};\n\n// One page of matching paths.\ntype GlobData = {\n  // workspace: paths are workspace-relative. absolute: paths are absolute.\n  base: \"workspace\" | \"absolute\";\n  page: {\n    has_more: boolean;\n    next: string | null;\n    total?: Integer;\n  };\n  // Matching paths sorted by depth, then parent directory, then name.\n  paths: Array<string>;\n  // no_match: nothing matched. path_excluded: the path is hidden by the default filters.\n  reason?: \"no_match\" | \"path_excluded\";\n};\n\ntype GrepInput = {\n  // Regular expression over file contents, unless literal is true.\n  pattern: string;\n  // Default true. Set false to ignore case.\n  case_sensitive?: boolean;\n  // Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor.\n  cursor?: string;\n  // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.\n  glob?: string;\n  // Also search gitignored and workspace-excluded paths. Default false.\n  include_ignored?: boolean;\n  // Maximum matches in this page. Default 20, maximum 100.\n  limit?: Integer;\n  // Search for pattern as plain text. Default false.\n  literal?: boolean;\n  // File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute.\n  path?: string;\n};\n\n// One page of content matches.\ntype GrepData = {\n  base: \"workspace\" | \"absolute\";\n  matches: Array<{\n    end_line: Integer;\n    line_text: string;\n    line_truncated: boolean;\n    path: string;\n    start_line: Integer;\n  }>;\n  page: {\n    has_more: boolean;\n    next: string | null;\n    total?: Integer | null;\n  };\n  searched: {\n    // True when default exclusion filters were active, or the path itself was excluded.\n    excluded: boolean;\n    files: Integer;\n  };\n  reason?: \"no_match\" | \"corpus_empty\" | \"glob_empty\" | \"path_excluded\" | \"binary_file\" | \"file_not_searched\";\n};\n\ntype KillInput = {\n  // Command.id from tools.run or tools.wait in this session.\n  id: string;\n};\n\n// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.\ntype KillData = {\n  // Process exit code when finished; null when still running or no code is available.\n  exit_code: Integer | null;\n  // Handle for later wait / kill in the same session.\n  id: string;\n  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).\n  output: string;\n};\n\ntype ReadInput = {\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.\n  path: string;\n  // Last line to read, 1-based, inclusive. The page ends at min(end_line, start_line + limit - 1).\n  end_line?: Integer;\n  // Maximum lines in this page. Default 2000, maximum 5000.\n  limit?: Integer;\n  // First line to read, 1-based, inclusive. Default 1.\n  start_line?: Integer;\n};\n\n// One page of a text file, with the file's sha256 identity.\ntype ReadData = {\n  // File identity. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.\n  file: {\n    bytes: Integer;\n    // sha256 hex of the file bytes.\n    hash: string;\n    path: string;\n    abs?: string;\n  };\n  // Lines in this page, in file order.\n  lines: Array<{\n    // True when text was capped at the per-line character limit.\n    line_truncated: boolean;\n    // 1-based line number.\n    number: Integer;\n    // Bare line text (no line-number prefix).\n    text: string;\n  }>;\n  page: {\n    // True when any line remains after this page, including after an explicit window.\n    has_more: boolean;\n    // Next 1-based line number, or null when the file is finished.\n    next: string | null;\n    // Total lines in the file.\n    total?: Integer;\n  };\n  // Set when lines is empty because those session lines are already in the context window.\n  reason?: \"in_context_window\";\n};\n\ntype RunInput = {\n  // Shell command to run once in the workspace root (not a persistent session). Chain with && when you need cd or env for this call only.\n  command: string;\n};\n\n// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.\ntype RunData = {\n  // Process exit code when finished; null when still running or no code is available.\n  exit_code: Integer | null;\n  // Handle for later wait / kill in the same session.\n  id: string;\n  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).\n  output: string;\n};\n\ntype WaitInput = {\n  // Command.id from tools.run in this session.\n  id: string;\n  // Seconds to block waiting for exit. Required. Values above 300 are silently clamped to 300.\n  sec: Integer;\n};\n\n// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.\ntype WaitData = {\n  // Process exit code when finished; null when still running or no code is available.\n  exit_code: Integer | null;\n  // Handle for later wait / kill in the same session.\n  id: string;\n  // Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty).\n  output: string;\n};\n\ntype WriteInput = {\n  // Content to write to the file\n  content: string;\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed.\n  path: string;\n  // If true, refuse to overwrite an existing file (default: false)\n  create_only?: boolean;\n  // sha256 of the current file bytes. Omit to skip the check. A mismatch rejects stale and does not write. Together with create_only, a missing file rejects invalid_input.\n  expected_hash?: string;\n};\n\n// File that was written.\ntype WriteData = {\n  // True when the file did not exist before.\n  created: boolean;\n  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.\n  file: {\n    bytes: Integer;\n    // sha256 hex of the file bytes.\n    hash: string;\n    path: string;\n    abs?: string;\n  };\n};\n\ndeclare const tools: {\n  // Apply several independent `{path, old_string, new_string}` replacements in one call inside `run_code`. Pass an object bag with `edits`: a non-empty array. Runs **truly serially** in array order: each successful item is written before the next item runs, so later items on the **same `path` see earlier successful `new_string` values**. Resolves `{ results: EditResult[] }` — `results.length` equals `edits.length`. Each `EditResult` is `ok`, `path`, and `message` (same shape as `tools.edit`).\n  //\n  // A failed item is **skipped**; later items still run. Even when every item fails, the call still **resolves** with `results` full of `ok: false` — it does **not** reject `ToolError` / `edit_failed`. There is no `replace_all`, no `expected_hash`, no shared multi-block same-file plan, and no aggregate `applied` / `failed` / `blocks` / `details` — count or filter `results` yourself (`results.some(r => !r.ok)`). Empty `new_string` deletes that item's `old_string`. Exact match, unique-hit, CRLF/LF, and BOM rules match `edit`. Path missing, permission denied, miss, or multiple matches for an item → that item's `ok: false` with the reason in `message` only. On success, that item's `message` is a short confirmation such as `applied` (never empty, never structured).\n  //\n  // If a later `old_string` depends on an earlier change that failed (`ok: false`), that later item will typically miss and resolve `ok: false` with a not-found style `message` — fix the earlier failure or split into another call. Only a malformed bag / empty `edits` / bad item types reject `invalid_input`; cancellation rejects `cancelled`. Example:\n  // const batch = await tools.apply_edits({\n  //   edits: [\n  //     { path: \"src/a.rs\", old_string: \"fn start()\", new_string: \"fn main()\" },\n  //     { path: \"src/b.rs\", old_string: \"old_api(\", new_string: \"new_api(\" },\n  //   ],\n  // });\n  // if (batch.results.some((r) => !r.ok)) {\n  //   return { ok: false, results: batch.results };\n  // }\n  // // each ok item: message === \"applied\" (short confirm)\n  // await tools.write({\n  //   path: \"src/c.rs\",\n  //   content: \"pub fn ok() -> bool { true }\\n\",\n  // });\n  // const check = await tools.run({ command: \"cargo check -q\" });\n  // const done =\n  //   check.exit_code === null\n  //     ? await tools.wait({ id: check.id, sec: 120 })\n  //     : check;\n  // return {\n  //   ok: done.exit_code === 0,\n  //   results: batch.results,\n  //   exit_code: done.exit_code,\n  //   output: done.output,\n  // };\n  readonly [\"apply_edits\"]: (args: ApplyEditsInput) => Promise<ApplyEditsData>;\n  // Replace one exact string in one file inside `run_code`. Pass `path`, `old_string`, and `new_string` (object bag). Resolves an `EditResult`: `ok` (boolean), `path` (string), and `message` (string). There is no `replace_all`, no `expected_hash`, no `edits` array on this tool, and no `blocks` / `applied` / `failed` / `details` / `file.hash` report.\n  //\n  // Matching is exact and must hit exactly one place in the file. Empty `new_string` deletes `old_string`. CRLF and LF compare equal; a leading UTF-8 BOM is preserved. On success, `ok` is true and `message` is a short confirmation such as `replaced` (never empty, never a structured payload). When the path is missing, permission is denied, the string is missing, it matches more than once, or the write otherwise cannot proceed, this call still **resolves** with `ok: false` and a short `message` that says what to fix (add surrounding lines, re-read, check the path, etc.) — it does **not** reject `ToolError` for those cases, including when this single replacement fully fails, and it does not partially write. Branch on `ok` in the same program; do not look for a structured details tree.\n  //\n  // Only malformed input (missing fields, wrong types) rejects `invalid_input`, and cancellation rejects `cancelled`. Multiple independent replacements: use `tools.apply_edits`, or call `edit` again. Example (edit then test in one program):\n  // const edited = await tools.edit({\n  //   path: \"src/a.rs\",\n  //   old_string: \"fn start() {}\",\n  //   new_string: \"fn main() {}\",\n  // });\n  // if (!edited.ok) return { ok: false, path: edited.path, message: edited.message };\n  // // edited.message === \"replaced\" (short confirm)\n  // const test = await tools.run({ command: \"cargo test -q --lib a\" });\n  // const done =\n  //   test.exit_code === null\n  //     ? await tools.wait({ id: test.id, sec: 60 })\n  //     : test;\n  // if (done.exit_code !== 0) return { ok: false, edited, done };\n  // return { ok: true, path: edited.path, message: edited.message, exit_code: done.exit_code };\n  readonly [\"edit\"]: (args: EditInput) => Promise<EditData>;\n  // Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `\"workspace\"`, each path is workspace-relative. When `base` is `\"absolute\"`, each path is absolute.\n  //\n  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `reason` to `no_match`. A path hidden by those filters sets `reason` to `path_excluded`.\n  readonly [\"glob\"]: (args: GlobInput) => Promise<GlobData>;\n  // Search file contents. The result is `base`, `matches`, `page`, `searched`, and sometimes `reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.\n  //\n  // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.\n  //\n  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.\n  //\n  // Example: {\"pattern\":\"fn main\",\"path\":\"src\"}\n  readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;\n  // Stop a shell command started with `tools.run` in this `run_code` program. Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group. Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run` / `wait`.\n  //\n  // `output` always includes a short note that the process was killed (plus any truncated logs or spill path). `exit_code` is an integer or `null` when no code is available. This consumes the job: do not expect a later natural-exit reminder for the same id.\n  //\n  // An unknown `id`, or an id from another session / program, rejects `not_found`. Cancelling before the signal rejects `cancelled`. This does not stop the human terminal. Example:\n  // const job = await tools.run({command:\"npm test\"});\n  // if (job.exit_code === null) {\n  //   const stopped = await tools.kill({id:job.id});\n  //   return {exit_code:stopped.exit_code, output:stopped.output};\n  // }\n  // return {exit_code:job.exit_code, output:job.output};\n  readonly [\"kill\"]: (args: KillInput) => Promise<KillData>;\n  // Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.\n  //\n  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.\n  readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;\n  // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, and `output`. `id` is the handle for later `tools.wait` / `tools.kill` in the same program. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is always present (may be empty): combined process text plus any truncation note, on-disk spill path, or status line the runtime appends. There is no `kind`, no separate stdout/stderr windows, and no wait-budget or background-mode parameters on this call.\n  //\n  // cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.\n  //\n  // If the process is still running when this call returns, `exit_code` is `null` and `output` holds whatever is available so far (or a short status note). Keep waiting with `tools.wait({id, sec})`. Stop it with `tools.kill({id})`. Example (edit then test in one program):\n  // const edited = await tools.edit({path:\"src/a.rs\", old_string:\"fn start()\", new_string:\"fn main()\"});\n  // if (!edited.ok) return {ok:false, edited};\n  // const test = await tools.run({command:\"cargo test -q --lib a\"});\n  // if (test.exit_code === null) {\n  //   const done = await tools.wait({id:test.id, sec:60});\n  //   if (done.exit_code !== 0) return {ok:false, done};\n  //   return {ok:true, path:edited.path, exit_code:done.exit_code, output:done.output};\n  // }\n  // if (test.exit_code !== 0) return {ok:false, test};\n  // return {ok:true, path:edited.path, exit_code:test.exit_code, output:test.output};\n  //\n  // Example (write then check):\n  // await tools.write({path:\"src/b.rs\", content:\"pub fn ok() -> bool { true }\"});\n  // const check = await tools.run({command:\"cargo check -q\"});\n  // const done = check.exit_code === null\n  //   ? await tools.wait({id:check.id, sec:120})\n  //   : check;\n  // return {exit_code:done.exit_code, output:done.output};\n  readonly [\"run\"]: (args: RunInput) => Promise<RunData>;\n  // Wait on a shell command started with `tools.run` in this `run_code` program. Pass `id` (the `Command.id` from `run`) and `sec` (required positive number of seconds to block). Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run`.\n  //\n  // `sec` is required. Values above the built-in maximum of **300** are silently clamped to 300 (no error). After clamping, this call blocks until the process exits or the wait budget elapses. If it exits, `exit_code` is set and `output` holds the accumulated text (plus any truncation / spill notes). If the budget elapses and the process is still running, the call still resolves: `exit_code` stays `null` and `output` is the current snapshot — the job is not killed and is not promoted. Call `wait` again or `tools.kill({id})`.\n  //\n  // An unknown `id`, or an id from another session / program, rejects `not_found`. Cancelling this wait rejects `cancelled` and does not kill the job. Example:\n  // const job = await tools.run({command:\"npm test\"});\n  // if (job.exit_code !== null) return {exit_code:job.exit_code, output:job.output};\n  // const done = await tools.wait({id:job.id, sec:60});\n  // return {exit_code:done.exit_code, output:done.output};\n  readonly [\"wait\"]: (args: WaitInput) => Promise<WaitData>;\n  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.\n  readonly [\"write\"]: (args: WriteInput) => Promise<WriteData>;\n};\n```\n"
+ right: "`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.\nThe bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.\nA call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `edit_failed`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.\nPermission denial is a catchable `ToolError` whose `code` is `permission_denied`.\nAn edit that writes some blocks and fails others resolves. Check `failed` and `blocks`. An edit that writes nothing rejects `ToolError` with `code` `edit_failed`.\nUse `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.\nLSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.\nA read of session lines already in the context window returns empty `lines` with `reason` `\"in_context_window\"`.\nA glob that matches nothing returns `reason` `\"no_match\"`. A glob whose path is hidden by the default filters returns `reason` `\"path_excluded\"`.\nPagination dialect: for read, pass `page.next` back as `start_line`; for glob and grep, pass `page.next` back as `cursor`.\nThe model sees about 64KB of this run. Return a summary, not a raw bulk of data.\nCall each binding as `tools[\"name\"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.\nReturn a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.\n\n```ts\ndeclare class ToolError extends Error {\n  readonly name: \"ToolError\";\n  readonly code: string;\n  readonly details?: unknown;\n  readonly retryable?: true;\n  readonly tool: string;\n  readonly seq: number;\n}\n\n/** Whole JSON number. The host rejects fractional values. */\ntype Integer = number;\n\n\ntype CsvOptions = {\n  /** Field separator; one character. Default \",\". */\n  delimiter?: string;\n  /** Quote character; one character. Default is a double quote. */\n  quote?: string;\n  /** Trim fields while parsing. Default false. */\n  trim?: boolean;\n};\n\ntype HistogramBin = {\n  start: number;\n  end: number;\n  count: number;\n};\n\ntype DiffLine = {\n  kind: \"equal\" | \"insert\" | \"delete\";\n  text: string;\n};\n\ndeclare const libs: {\n  stats: {\n    sum(values: number[]): number;\n    mean(values: number[]): number;\n    median(values: number[]): number;\n    variance(values: number[], sample?: boolean): number;\n    stddev(values: number[], sample?: boolean): number;\n    quantile(values: number[], q: number): number;\n    histogram(values: number[], bins?: number): HistogramBin[];\n    min(values: number[]): number;\n    max(values: number[]): number;\n  };\n  csv: {\n    parse(text: string, options?: CsvOptions): string[][];\n    format(rows: Array<Array<unknown>>, options?: CsvOptions): string;\n  };\n  text: {\n    lines(text: string): string[];\n    words(text: string): string[];\n    count(text: string, needle: string): number;\n    normalizeNewlines(text: string): string;\n    truncate(text: string, maxChars: number, suffix?: string): string;\n    diffLines(left: string, right: string): DiffLine[];\n  };\n  data: {\n    groupBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, T[]>;\n    countBy<T>(rows: T[], key: string | ((row: T) => unknown)): Record<string, number>;\n    unique<T>(values: T[]): T[];\n    sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: \"asc\" | \"desc\"): T[];\n  };\n};\n\ntype CommandKillInput = {\n  // job_id from a background or promoted run_command in this session.\n  job_id: string;\n};\n\n// The process tree was killed and the exit notice was consumed.\ntype CommandKillData = {\n  kind: \"killed\";\n  exit_code: Integer | null;\n  job_id: string;\n  output_file: string;\n  stderr_file: string;\n};\n\ntype CommandOutputInput = {\n  // job_id from a background or promoted run_command in this session.\n  job_id: string;\n  // Seconds to wait for the process to exit. 0 returns the current snapshot.\n  wait_sec?: Integer;\n};\n\ntype CommandOutputData =\n  | {\n      kind: \"running\";\n      job_id: string;\n      output_file: string;\n      stderr: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      stderr_file: string;\n      stdout: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n    }\n  | {\n      kind: \"exited\";\n      exit_code: Integer | null;\n      job_id: string;\n      output_file: string;\n      stderr: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      stderr_file: string;\n      stdout: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n    };\n\ntype EditInput = {\n  // Replacements to apply to this file.\n  edits: Array<{\n    // Replacement text. Use an empty string to delete old_string.\n    new_string: string;\n    // File text to find. Do not include line-number prefixes pasted from outer ledger or transcript text. Must match one place unless replace_all is true; add surrounding lines if it appears more than once.\n    old_string: string;\n    // Replace every exact occurrence (default: false).\n    replace_all?: boolean;\n  }>;\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed.\n  path: string;\n  // sha256 of the file bytes. Omit to skip the check. A mismatch rejects stale and does not write.\n  expected_hash?: string;\n};\n\n// Blocks applied to one file. file is the identity after the successful blocks were written.\ntype EditData = {\n  // Number of blocks written.\n  applied: Integer;\n  // One result per edit, in input order. Failed blocks do not roll back applied blocks.\n  blocks: Array<{\n    // 1-based index in edits.\n    index: Integer;\n    ranges: Array<{\n      end_line: Integer;\n      start_line: Integer;\n    }>;\n    status: \"applied\" | \"failed\";\n    // Present when status is failed.\n    reason?: {\n      code: string;\n      message: string;\n      // Structured cause. Fields appear only for the reason that produced them.\n      details?: {\n        kind?: \"identical_strings\" | \"replacement_unchanged\" | \"leading_trailing\" | \"internal_spacing\" | \"input\";\n        // One line of the file the whitespace difference pointed at.\n        excerpt?: string;\n        lines?: Array<Integer>;\n        other_index?: Integer;\n        other_range?: {\n          end_line: Integer;\n          start_line: Integer;\n        };\n        prior_index?: Integer;\n      };\n    };\n  }>;\n  // Number of blocks not written.\n  failed: Integer;\n  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.\n  file: {\n    bytes: Integer;\n    // sha256 hex of the file bytes.\n    hash: string;\n    path: string;\n    abs?: string;\n  };\n};\n\ntype GlobInput = {\n  // Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'.\n  pattern: string;\n  // Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor.\n  cursor?: string;\n  // Also search gitignored and workspace-excluded paths. Default false.\n  include_ignored?: boolean;\n  // Maximum paths in this page. Default 1000, maximum 5000.\n  limit?: Integer;\n  // Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`.\n  path?: string;\n};\n\n// One page of matching paths.\ntype GlobData = {\n  // workspace: paths are workspace-relative. absolute: paths are absolute.\n  base: \"workspace\" | \"absolute\";\n  page: {\n    has_more: boolean;\n    next: string | null;\n    total?: Integer;\n  };\n  // Matching paths sorted by depth, then parent directory, then name.\n  paths: Array<string>;\n  // no_match: nothing matched. path_excluded: the path is hidden by the default filters.\n  reason?: \"no_match\" | \"path_excluded\";\n};\n\ntype GrepInput = {\n  // Regular expression over file contents, unless literal is true.\n  pattern: string;\n  // Default true. Set false to ignore case.\n  case_sensitive?: boolean;\n  // Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor.\n  cursor?: string;\n  // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.\n  glob?: string;\n  // Also search gitignored and workspace-excluded paths. Default false.\n  include_ignored?: boolean;\n  // Maximum matches in this page. Default 20, maximum 100.\n  limit?: Integer;\n  // Search for pattern as plain text. Default false.\n  literal?: boolean;\n  // File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute.\n  path?: string;\n};\n\n// One page of content matches.\ntype GrepData = {\n  base: \"workspace\" | \"absolute\";\n  matches: Array<{\n    end_line: Integer;\n    line_text: string;\n    line_truncated: boolean;\n    path: string;\n    start_line: Integer;\n  }>;\n  page: {\n    has_more: boolean;\n    next: string | null;\n    total?: Integer | null;\n  };\n  searched: {\n    // True when default exclusion filters were active, or the path itself was excluded.\n    excluded: boolean;\n    files: Integer;\n  };\n  reason?: \"no_match\" | \"corpus_empty\" | \"glob_empty\" | \"path_excluded\" | \"binary_file\" | \"file_not_searched\";\n};\n\ntype ReadInput = {\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.\n  path: string;\n  // Last line to read, 1-based, inclusive. The page ends at min(end_line, start_line + limit - 1).\n  end_line?: Integer;\n  // Maximum lines in this page. Default 2000, maximum 5000.\n  limit?: Integer;\n  // First line to read, 1-based, inclusive. Default 1.\n  start_line?: Integer;\n};\n\n// One page of a text file, with the file's sha256 identity.\ntype ReadData = {\n  // File identity. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.\n  file: {\n    bytes: Integer;\n    // sha256 hex of the file bytes.\n    hash: string;\n    path: string;\n    abs?: string;\n  };\n  // Lines in this page, in file order.\n  lines: Array<{\n    // True when text was capped at the per-line character limit.\n    line_truncated: boolean;\n    // 1-based line number.\n    number: Integer;\n    // Bare line text (no line-number prefix).\n    text: string;\n  }>;\n  page: {\n    // True when any line remains after this page, including after an explicit window.\n    has_more: boolean;\n    // Next 1-based line number, or null when the file is finished.\n    next: string | null;\n    // Total lines in the file.\n    total?: Integer;\n  };\n  // Set when lines is empty because those session lines are already in the context window.\n  reason?: \"in_context_window\";\n};\n\ntype RunCommandInput = {\n  // Shell command to run once in the workspace root (not a persistent session). Chain with && when you need cd or env for this call only.\n  command: string;\n  // Default false. When true, timeout_sec is ignored. If the process is still running, detach and return kind background with job_id. If it has already exited, return kind exited and no job_id.\n  run_in_background?: boolean;\n  // Foreground wait in seconds (1-120, default 30). Ignored when run_in_background is true. When it elapses and the process is still running, the call returns kind promoted and leaves the process running.\n  timeout_sec?: Integer;\n};\n\ntype RunCommandData =\n  | {\n      kind: \"exited\";\n      // Process exit code. null when the status has no code.\n      exit_code: Integer | null;\n      stderr: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      stdout: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      // Workspace-relative stdout log. Omitted when both streams are small.\n      output_file?: string;\n      // Workspace-relative stderr log. Omitted when both streams are small.\n      stderr_file?: string;\n    }\n  | {\n      kind: \"background\";\n      job_id: string;\n      output_file: string;\n      stderr: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      stderr_file: string;\n      stdout: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n    }\n  | {\n      kind: \"promoted\";\n      job_id: string;\n      output_file: string;\n      stderr: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n      stderr_file: string;\n      stdout: {\n        bytes: Integer;\n        head: string;\n        tail: string;\n        truncated: boolean;\n      };\n    };\n\ntype WriteInput = {\n  // Content to write to the file\n  content: string;\n  // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\\...; Unix-style /paths map under Git for Windows when installed.\n  path: string;\n  // If true, refuse to overwrite an existing file (default: false)\n  create_only?: boolean;\n  // sha256 of the current file bytes. Omit to skip the check. A mismatch rejects stale and does not write. Together with create_only, a missing file rejects invalid_input.\n  expected_hash?: string;\n};\n\n// File that was written.\ntype WriteData = {\n  // True when the file did not exist before.\n  created: boolean;\n  // File identity after the write. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.\n  file: {\n    bytes: Integer;\n    // sha256 hex of the file bytes.\n    hash: string;\n    path: string;\n    abs?: string;\n  };\n};\n\ndeclare const tools: {\n  // Stop a `run_command` job in this session from inside `run_code`. Pass the `job_id` returned with `kind: background` or `kind: promoted`.\n  //\n  // The process tree is killed. The result is `kind: killed` with `exit_code` (integer or null), `output_file`, and `stderr_file`. This consumes the exit, so it does not also arrive as a user-stopped `reminder/bash_exit`.\n  //\n  // An unknown `job_id`, or a job from another session, rejects `not_found`. This does not stop the human terminal.\n  readonly [\"command_kill\"]: (args: CommandKillInput) => Promise<CommandKillData>;\n  // Read a `run_command` job in this session from inside `run_code`. Pass the `job_id` returned with `kind: background` or `kind: promoted`.\n  //\n  // `wait_sec` is an integer from 0 to 120 and defaults to 0. `0` returns the current snapshot and does not wait. A positive value waits until the process exits or the time runs out.\n  //\n  // `kind: running` means the process is still going. The job is left running. `kind: exited` means it finished, with `exit_code` an integer or null. Both kinds include `stdout` and `stderr` windows (`head`, `tail`, `bytes`, `truncated`) plus `output_file` and `stderr_file`. An exited result consumes that exit, so the same exit does not also arrive as `reminder/bash_exit`.\n  //\n  // An unknown `job_id`, or a job from another session, rejects `not_found`. Cancelling this wait rejects `cancelled` and does not kill the job. Stop the job with `tools.command_kill`.\n  readonly [\"command_output\"]: (args: CommandOutputInput) => Promise<CommandOutputData>;\n  // Replace text in one file. The result is `file`, `blocks`, `applied`, and `failed`. `file` is the identity after the successful blocks are written (`path`, `hash`, `bytes`, and `abs` outside the workspace). Each block is `index`, `status` (`applied` or `failed`), `ranges` (`start_line`, `end_line`), and `reason` (`code`, `message`, optional `details`) when it failed. Optional `expected_hash` is the sha256 of the file bytes. Omit it to skip the check. A mismatch rejects `stale` with `details.current_hash` and does not write. All blocks match the file before any of them apply. A partial failure resolves: check `failed` and `blocks`. The blocks that matched are written. No block applied rejects `ToolError` with `code` `edit_failed` and `details.blocks`; the file is not modified.\n  //\n  // Multiple files means multiple calls, one path each. Pass `path` and a non-empty `edits` array; each item is `old_string`, `new_string`, and optional `replace_all` (default false). Empty `new_string` deletes `old_string`. Matching is exact. CRLF and LF compare equal, and a leading UTF-8 BOM is preserved. `replace_all` replaces every exact occurrence. A block that matches more than once without `replace_all` fails only that block. When other blocks are written the call still resolves, and the failed block's `reason.code` is `multiple_matches`. When no block is written the call rejects `ToolError` with `code` `edit_failed`.\n  // All edits in one call match the file before any of them apply. Independent edits can share a call; if a later old_string depends on an earlier new_string, submit it in a later edit call.\n  // Example (one edit): {\"path\":\"src/a.rs\",\"edits\":[{\"old_string\":\"fn start() {}\",\"new_string\":\"fn main() {}\"}]}\n  // Example (several): {\"path\":\"src/a.rs\",\"edits\":[{\"old_string\":\"foo\",\"new_string\":\"bar\"},{\"old_string\":\"old_api(\",\"new_string\":\"new_api(\",\"replace_all\":true}]}\n  readonly [\"edit\"]: (args: EditInput) => Promise<EditData>;\n  // Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `\"workspace\"`, each path is workspace-relative. When `base` is `\"absolute\"`, each path is absolute.\n  //\n  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `reason` to `no_match`. A path hidden by those filters sets `reason` to `path_excluded`.\n  readonly [\"glob\"]: (args: GlobInput) => Promise<GlobData>;\n  // Search file contents. The result is `base`, `matches`, `page`, `searched`, and sometimes `reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.\n  //\n  // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.\n  //\n  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.\n  //\n  // Example: {\"pattern\":\"fn main\",\"path\":\"src\"}\n  readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;\n  // Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.\n  //\n  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.\n  readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;\n  // Run one shell command inside `run_code`. The call resolves structured data with `kind` `exited`, `background`, or `promoted`. `stdout` and `stderr` are `{head, tail, bytes, truncated}`. Non-zero `exit_code` still resolves — branch on `exit_code` in the same program. cwd is always the workspace root (not a persistent session); chain with `&&` in one `command` when you need `cd` or env for that call only.\n  //\n  // `kind: exited` means the process had already finished when the call decided. It includes `exit_code` (integer or null). A fast command is `exited` even when you pass `run_in_background: true`, and that result has no `job_id`. Small output omits `output_file` and `stderr_file`. When either is set, page it with `tools.read`.\n  //\n  // `run_in_background` defaults to false. `true` ignores `timeout_sec`. If the process is still running, the call detaches first and returns `kind: background` with `job_id`, both log paths, and a snapshot of each stream. The process keeps running.\n  //\n  // `timeout_sec` is an integer from 1 to 120 (default 30) and only limits the foreground wait. When it elapses and the process is still running, the call returns `kind: promoted` and leaves the process running. It does not kill the process. If the process has already exited at that check, the kind is `exited`.\n  //\n  // Commands that may run longer than a few seconds should pass `run_in_background`. Do not rely on promote to beat the `run_code` budget: if that budget cancels the call before it returns, the process is killed and no job survives. Cancellation before a `job_id` is returned also kills the process and rejects `cancelled`. After `background` or `promoted`, stopping the turn does not kill the job. A later natural exit arrives as `reminder/bash_exit`.\n  //\n  // Read or stop that job in the same program with the `job_id` from `background` or `promoted`. `tools.command_output` takes `job_id` and optional `wait_sec` (integer 0–120, default 0). `0` returns the current stdout and stderr windows plus `output_file` and `stderr_file` and does not wait. A positive `wait_sec` waits until the process exits or the time runs out. `kind: running` means it is still going; the job is not killed and is not promoted again. `kind: exited` includes `exit_code` and consumes that exit, so the same exit does not also arrive as `reminder/bash_exit`. Cancelling the wait rejects `cancelled` and does not kill the job.\n  //\n  // `tools.command_kill` takes `job_id`, kills the process tree, and returns `kind: killed` with `exit_code`, `output_file`, and `stderr_file`. That consumes the exit, so it does not arrive as a user-stopped reminder. An unknown `job_id`, or a job from another session, rejects `not_found` from either tool.\n  //\n  // Example (edit then test in one program):\n  // const edited = await tools.edit({path:\"src/a.rs\", edits:[{old_string:\"fn start()\", new_string:\"fn main()\"}]});\n  // if (edited.failed > 0) return {ok:false, edited};\n  // const test = await tools.run_command({command:\"cargo test -q --lib a\"});\n  // if (test.kind !== \"exited\" || test.exit_code !== 0) return {ok:false, test};\n  // return {ok:true, hash:edited.file.hash, exit_code:test.exit_code};\n  //\n  // Example (write then check):\n  // await tools.write({path:\"src/b.rs\", content:\"pub fn ok() -> bool { true }\"});\n  // const check = await tools.run_command({command:\"cargo check -q\", timeout_sec:60});\n  // return {kind:check.kind, exit_code:check.exit_code ?? null};\n  //\n  // Example (long job):\n  // const job = await tools.run_command({command:\"npm test\", run_in_background:true});\n  // if (job.kind === \"exited\") return {exit_code:job.exit_code};\n  // const done = await tools.command_output({job_id:job.job_id, wait_sec:60});\n  // if (done.kind === \"exited\") return {exit_code:done.exit_code, output_file:done.output_file};\n  // await tools.command_kill({job_id:job.job_id});\n  // return {stopped:job.job_id};\n  readonly [\"run_command\"]: (args: RunCommandInput) => Promise<RunCommandData>;\n  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. A path outside the workspace, and LSP errors in the written file, appear only in this run's outer text.\n  readonly [\"write\"]: (args: WriteInput) => Promise<WriteData>;\n};\n```\n"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tool::sdk_snapshot::phase0_run_code_sdk_snapshot
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2200 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`
+EXIT_sdk:101

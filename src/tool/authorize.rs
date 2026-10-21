@@ -20,7 +20,7 @@ pub enum AuthResult {
 
 fn permission_summary(tool_name: &str, input: &Value) -> String {
     match tool_name {
-        "run_command" => input
+        "run" => input
             .get("command")
             .and_then(Value::as_str)
             .unwrap_or("")
@@ -36,6 +36,21 @@ fn permission_summary(tool_name: &str, input: &Value) -> String {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        "apply_edits" => input
+            .get("edits")
+            .and_then(Value::as_array)
+            .map(|edits| {
+                edits
+                    .iter()
+                    .filter_map(|item| {
+                        item.get("path")
+                            .or_else(|| item.get("file_path"))
+                            .and_then(Value::as_str)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
         "glob" => input
             .get("path")
             .and_then(Value::as_str)

@@ -1,10 +1,9 @@
+pub mod apply_edits;
 pub mod ask_user;
 pub mod bash_safety;
 pub mod code;
 pub mod code_search;
 pub mod command_job;
-pub mod command_kill;
-pub mod command_output;
 pub mod custom;
 pub mod custom_hub;
 pub mod edit;
@@ -18,7 +17,9 @@ pub mod lsp_feedback;
 pub mod mcp_tool;
 pub mod plan;
 pub mod read;
-pub mod run_command;
+pub mod run;
+pub mod wait;
+pub mod kill;
 pub mod session_search;
 pub mod subagent;
 pub mod todo;
@@ -37,7 +38,6 @@ mod phase3_gate;
 ///
 /// Prose lives in `descriptions/<name>.md` and is embedded with `include_str!`.
 /// Trailing whitespace, including the file's final newline, is not part of the string sent to the model.
-/// `edit` replaces `{{SNAPSHOT_RULE}}` with the planner constant.
 /// `subagent_launch` appends the live agent catalog when one is configured.
 pub(crate) fn description_text(embedded: &str) -> String {
     embedded.trim_end().to_string()

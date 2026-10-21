@@ -420,13 +420,22 @@ fn edit_counts(result: &ToolCallResult) -> Option<(u64, u64)> {
         return None;
     }
     let data = result.data.as_ref()?;
-    let applied = data.get("applied")?.as_u64()?;
-    let failed = data.get("failed").and_then(Value::as_u64).unwrap_or(0);
-    let total = applied.saturating_add(failed);
-    if failed == 0 || total == 0 {
+    // apply_edits: { results: EditResult[] }
+    if let Some(results) = data.get("results").and_then(Value::as_array) {
+        let total = results.len() as u64;
+        if total == 0 {
+            return None;
+        }
+        let ok = results
+            .iter()
+            .filter(|item| item.get("ok").and_then(Value::as_bool) == Some(true))
+            .count() as u64;
+        if ok < total {
+            return Some((ok, total));
+        }
         return None;
     }
-    Some((applied, total))
+    None
 }
 
 fn call_error_code(result: &ToolCallResult) -> Option<String> {
@@ -1325,7 +1334,20 @@ mod outcome_tests {
         assert_eq!(snapshot.error_counts.get("not_found").copied(), Some(1));
 
         let mut result = ToolCallResult::ok("edited");
-        result.data = Some(json!({"applied": 9, "failed": 1}));
+        result.data = Some(json!({
+            "results": [
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": false, "path": "b", "message": "no"}
+            ]
+        }));
         let edit = CallLedger::new();
         edit.begin(1, "edit", "path=note.txt");
         edit.record(1, &result);

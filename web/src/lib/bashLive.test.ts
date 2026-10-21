@@ -213,7 +213,7 @@ describe("terminalRevealCallId", () => {
   it("jumps a nested id to the parent run_code call", () => {
     expect(
       terminalRevealCallId("parent:code:0", [
-        callRow("parent", "run_code", { code: "await tools.run_command({})" }),
+        callRow("parent", "run_code", { code: "await tools.run({})" }),
       ]),
     ).toBe("parent");
     expect(

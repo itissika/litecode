@@ -18,9 +18,9 @@ use crate::tools::{
     ask_user::AskUserTool,
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
-    command_kill::CommandKillTool,
-    command_output::CommandOutputTool,
+    kill::KillTool,
     custom::CustomTool,
+    apply_edits::ApplyEditsTool,
     edit::EditTool,
     glob::GlobTool,
     grep::GrepTool,
@@ -30,7 +30,8 @@ use crate::tools::{
     mcp_tool::McpTool,
     plan::PlanTool,
     read::ReadTool,
-    run_command::RunCommandTool,
+    run::RunTool,
+    wait::WaitTool,
     session_search::SessionSearchTool,
     subagent::{
         SUBAGENT_MAX_DEPTH, SubagentDeleteTool, SubagentLaunchTool, SubagentListTool,
@@ -49,10 +50,11 @@ fn builtin_tool(
     ide: Arc<IdeBaseHandle>,
 ) -> Option<Arc<dyn Tool>> {
     let tool: Arc<dyn Tool> = match id {
-        "run_command" => Arc::new(RunCommandTool::new(Arc::clone(&ide.terminal.jobs))),
+        "run" => Arc::new(RunTool::new(Arc::clone(&ide.terminal.jobs))),
         "read" => Arc::new(ReadTool::with_ide(Arc::clone(&ide))),
         "write" => Arc::new(WriteTool::with_ide(Arc::clone(&ide))),
         "edit" => Arc::new(EditTool::with_ide(Arc::clone(&ide))),
+        "apply_edits" => Arc::new(ApplyEditsTool::with_ide(Arc::clone(&ide))),
         "grep" => Arc::new(GrepTool),
         "knowledge" => Arc::new(KnowledgeTool::new(Arc::clone(&ide))),
         "glob" => Arc::new(GlobTool),
@@ -300,12 +302,18 @@ pub async fn build_tool_list(
         tools.extend(new_tools);
     }
 
-    // Code companions of run_command. They are not settings cards. A caller
-    // that cannot see run_command does not get either tool.
-    if tools.iter().any(|tool| tool.name() == "run_command") {
+    // Code companions of run. They are not settings cards. A caller
+    // that cannot see run does not get either tool.
+    if tools.iter().any(|tool| tool.name() == "run") {
         let jobs = Arc::clone(&runtime.ide.terminal.jobs);
-        tools.push(Arc::new(CommandOutputTool::new(Arc::clone(&jobs))));
-        tools.push(Arc::new(CommandKillTool::new(jobs)));
+        tools.push(Arc::new(WaitTool::new(Arc::clone(&jobs))));
+        tools.push(Arc::new(KillTool::new(jobs)));
+    }
+
+    // Code companion of edit. Not a settings card; shares edit's dial via
+    // permission engine alias. Hidden when edit is unbound/disabled.
+    if tools.iter().any(|tool| tool.name() == "edit") {
+        tools.push(Arc::new(ApplyEditsTool::with_ide(Arc::clone(&runtime.ide))));
     }
 
     // One projection from this caller's visible set. A missing host cannot
@@ -382,14 +390,15 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         Arc::new(GlobTool),
         Arc::new(GrepTool),
         Arc::new(EditTool::new()),
+        Arc::new(ApplyEditsTool::new()),
         Arc::new(WriteTool::new()),
-        Arc::new(RunCommandTool::new(Arc::new(
+        Arc::new(RunTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
-        Arc::new(CommandOutputTool::new(Arc::new(
+        Arc::new(WaitTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
-        Arc::new(CommandKillTool::new(Arc::new(
+        Arc::new(KillTool::new(Arc::new(
             crate::terminal::AgentJobRegistry::new(),
         ))),
     ]
@@ -514,15 +523,15 @@ mod tests {
             "expected all core tools from DB bindings, got {}",
             tools.len()
         );
-        // WP-196: 默认绑定无 Direct bash 三件套；有 run_command。
+        // WP-197: 默认绑定无旧 shell；有 run / wait / kill。
         assert!(!names.contains(&"bash"));
         assert!(!names.contains(&"wait_shell"));
         assert!(!names.contains(&"kill_shell"));
-        assert!(names.contains(&"run_command"));
-        // Injected with run_command. Without a code host they stay on this list;
+        assert!(names.contains(&"run"));
+        // Injected with run. Without a code host they stay on this list;
         // a host bundles them into run_code and they are not Direct names.
-        assert!(names.contains(&"command_output"));
-        assert!(names.contains(&"command_kill"));
+        assert!(names.contains(&"wait"));
+        assert!(names.contains(&"kill"));
         assert!(names.contains(&"todo"));
         assert!(names.contains(&"plan"));
         assert!(names.contains(&"subagent_launch"));
@@ -552,7 +561,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"todo"));
         assert!(!names.contains(&"plan"));
-        assert!(names.contains(&"run_command"));
+        assert!(names.contains(&"run"));
         assert!(!names.contains(&"bash"));
     }
 
@@ -590,17 +599,17 @@ mod tests {
     fn does_not_read_agent_config_tools_whitelist() {
         let resolved = test_resolved({
             let mut bindings = default_bindings();
-            bindings.get_mut("run_command").unwrap().enabled = false;
+            bindings.get_mut("run").unwrap().enabled = false;
             bindings
         });
         let tools = list_tools(&resolved, 0);
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(
-            !names.contains(&"run_command"),
+            !names.contains(&"run"),
             "AgentConfig must not override DB tool binding"
         );
-        assert!(!names.contains(&"command_output"));
-        assert!(!names.contains(&"command_kill"));
+        assert!(!names.contains(&"wait"));
+        assert!(!names.contains(&"kill"));
         assert!(!names.contains(&"bash"));
     }
 
@@ -609,8 +618,8 @@ mod tests {
         let resolved = test_resolved(default_bindings());
         let cards = available_tools(&resolved);
         let ids: Vec<&str> = cards.iter().map(|tool| tool.id.as_str()).collect();
-        assert!(!ids.contains(&"command_output"));
-        assert!(!ids.contains(&"command_kill"));
+        assert!(!ids.contains(&"wait"));
+        assert!(!ids.contains(&"kill"));
         assert!(!ids.contains(&"bash"));
         assert!(!ids.contains(&"wait_shell"));
         assert!(!ids.contains(&"kill_shell"));
@@ -622,11 +631,14 @@ mod tests {
         use crate::config::settings_writer::validate_custom_definition;
 
         for name in [
-            "command_output",
-            "command_kill",
+            "wait",
+            "kill",
             "bash",
             "wait_shell",
             "kill_shell",
+            "run_command",
+            "command_output",
+            "command_kill",
         ] {
             let mut def = custom_def(name);
             let err = validate_custom_definition(name, &mut def).unwrap_err();
@@ -658,11 +670,14 @@ mod tests {
     #[test]
     fn mcp_inner_names_cannot_use_reserved_command_names() {
         for name in [
-            "command_output",
-            "command_kill",
+            "wait",
+            "kill",
             "bash",
             "wait_shell",
             "kill_shell",
+            "run_command",
+            "command_output",
+            "command_kill",
             "run_code",
         ] {
             assert!(!mcp_inner_name_allowed(name), "{name}");
@@ -821,7 +836,7 @@ mod tests {
         assert!(!description.contains("timeout_ms?:"));
         let bindings = tools[0].code_bindings().expect("whitelist");
         let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
-        assert_eq!(names, ["edit", "glob", "grep", "read", "write"]);
+        assert_eq!(names, ["apply_edits", "edit", "glob", "grep", "read", "write"]);
         assert!(description.contains("[\"edit\"]"));
         assert!(description.contains("[\"write\"]"));
         assert!(description.contains("path:"));
@@ -861,23 +876,26 @@ mod tests {
         assert!(!child_names.contains(&"glob"));
         assert!(!child_names.contains(&"grep"));
         assert!(!child_names.contains(&"edit"));
+        assert!(!child_names.contains(&"apply_edits"));
         assert!(!child_names.contains(&"write"));
         assert!(child_names.contains(&"run_code"));
         assert!(!child_names.contains(&"bash"));
         assert!(!child_names.contains(&"wait_shell"));
         assert!(!child_names.contains(&"kill_shell"));
-        assert!(!child_names.contains(&"run_command"));
-        assert!(!child_names.contains(&"command_output"));
-        assert!(!child_names.contains(&"command_kill"));
+        assert!(!child_names.contains(&"run"));
+        assert!(!child_names.contains(&"wait"));
+        assert!(!child_names.contains(&"kill"));
         let child_sdk = child
             .iter()
             .find(|tool| tool.name() == "run_code")
             .unwrap()
             .description(&dummy_ctx());
         assert!(child_sdk.contains("declare const tools"));
-        assert!(child_sdk.contains("[\"run_command\"]"));
-        assert!(child_sdk.contains("[\"command_output\"]"));
-        assert!(child_sdk.contains("[\"command_kill\"]"));
+        assert!(child_sdk.contains("[\"run\"]"));
+        assert!(child_sdk.contains("[\"wait\"]"));
+        assert!(child_sdk.contains("[\"kill\"]"));
+        assert!(child_sdk.contains("[\"edit\"]"));
+        assert!(child_sdk.contains("[\"apply_edits\"]"));
         assert!(!child_sdk.contains("[\"bash\"]"));
         assert!(!child_sdk.contains("[\"wait_shell\"]"));
         assert!(!child_sdk.contains("[\"kill_shell\"]"));
@@ -917,18 +935,20 @@ mod tests {
         assert_eq!(
             names,
             [
-                "command_kill",
-                "command_output",
+                "apply_edits",
                 "edit",
                 "glob",
+                "kill",
                 "read",
-                "run_command",
+                "run",
+                "wait",
                 "write"
             ]
         );
-        assert!(narrow_sdk.contains("[\"run_command\"]"));
-        assert!(narrow_sdk.contains("[\"command_output\"]"));
-        assert!(narrow_sdk.contains("[\"command_kill\"]"));
+        assert!(narrow_sdk.contains("[\"run\"]"));
+        assert!(narrow_sdk.contains("[\"wait\"]"));
+        assert!(narrow_sdk.contains("[\"kill\"]"));
+        assert!(narrow_sdk.contains("[\"apply_edits\"]"));
     }
 
     struct Impostor;

@@ -15,7 +15,7 @@ const PRESET_TOOL_IDS: &[&str] = &[
     "glob",
     "write",
     "edit",
-    "run_command",
+    "run",
     "litecode_workspace",
 ];
 
@@ -56,7 +56,7 @@ pub fn apply_preset_to_tools(preset: ToolPreset) -> Vec<(String, ToolPolicy, Bin
 
 fn policy_all(tool_id: &str) -> ToolPolicy {
     match tool_id {
-        "run_command" => ToolPolicy::allow_all(),
+        "run" => ToolPolicy::allow_all(),
         "write" | "edit" => ToolPolicy::allow_all(),
         _ => ToolPolicy::allow_all(),
     }
@@ -118,7 +118,7 @@ fn policy_safe(tool_id: &str) -> ToolPolicy {
                 action: PermissionAction::Deny,
             }],
         },
-        "run_command" => ToolPolicy {
+        "run" => ToolPolicy {
             default: PermissionAction::Deny,
             default_id: super::policy::DEFAULT_RULE_ID.into(),
             rules: vec![PolicyRule {
@@ -162,7 +162,7 @@ mod tests {
             "glob",
             "write",
             "edit",
-            "run_command",
+            "run",
             "litecode_workspace",
         ] {
             assert!(has_permission_preset(id), "{id}");
@@ -177,8 +177,12 @@ mod tests {
             "bash",
             "kill_shell",
             "wait_shell",
+            "wait",
+            "kill",
+            "apply_edits",
             "command_output",
             "command_kill",
+            "run_command",
             "plan",
             "todo",
             "knowledge",
@@ -222,7 +226,7 @@ mod tests {
         ));
         let (write, _) = binding_for_tool("write", ToolPreset::Safe);
         assert_eq!(write.default, PermissionAction::Ask);
-        let (command, _) = binding_for_tool("run_command", ToolPreset::Safe);
+        let (command, _) = binding_for_tool("run", ToolPreset::Safe);
         assert_eq!(command.default, PermissionAction::Deny);
         assert_eq!(command.rules.len(), 1);
         assert_eq!(command.rules[0].id, "readonly_command");
