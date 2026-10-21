@@ -4,7 +4,7 @@
 **分支：** `feat/tool-contract-ptc`（实验；**不合 main**）  
 **方案：** `plan.md`（Q1–Q5 全认）  
 **基线：** `7dd9617`（WP-200 tip-backfill）  
-**本 tip：** `TIP_SHA_PLACEHOLDER`
+**本 tip：** `b3e82f71a08f50bb064584c12370926f9eb4ca1e`
 
 | # | done_when | 结果 |
 |---|-----------|------|
