@@ -1,29 +1,14 @@
 {
-  "content_historical": "alpha\nbeta",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "file": {
-      "bytes": 11,
-      "hash": "e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee",
-      "path": "note.txt"
-    },
+    "path": "note.txt",
+    "start_line": 1,
     "lines": [
-      {
-        "line_truncated": false,
-        "number": 1,
-        "text": "alpha"
-      },
-      {
-        "line_truncated": false,
-        "number": 2,
-        "text": "beta"
-      }
+      "alpha",
+      "beta"
     ],
-    "page": {
-      "has_more": false,
-      "next": null,
-      "total": 2
-    }
+    "message": ""
   },
   "error": null,
   "gap": null,

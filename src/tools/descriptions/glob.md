@@ -1,3 +1,17 @@
-Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative. When `base` is `"absolute"`, each path is absolute.
+Find files by path glob inside `run_code`. Pass an object bag: `pattern` (required), optional `path`, and `limit`. Resolves `{ paths, message }`. `paths` is a string array of **workspace-relative** file paths only (sorted by depth, then parent, then name) — never absolute. There is no `base` workspace|absolute dual mode, no `page`/`cursor`/`stale_cursor`, no `include_ignored`, and no enum `reason` — “no files”, “hit the limit”, or a short why go in `message` only.
 
-`pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `reason` to `no_match`. A path hidden by those filters sets `reason` to `path_excluded`.
+`pattern` is matched relative to `path` exactly as given. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that walks outside the search directory (including `..`) rejects `ToolError` `invalid_input`. Omit `path` to search from the workspace root. `limit` defaults to **1000** and is at most **5000** (one bounded call). When more would match, `paths` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `paths` with an explanatory `message` means nothing matched (including under default ignore rules) — do not look for a `reason` enum, a `base` flag, or `include_ignored`.
+
+**Hard vs soft:** a bad bag (missing `pattern`, wrong types) or an out-of-root pattern rejects `ToolError` `invalid_input`. Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `paths` + `message`. Example (list then read in one program):
+const listed = await tools.glob({ pattern: "**/*.rs", path: "src" });
+if (listed.paths.length === 0) return { ok: false, message: listed.message };
+const first = listed.paths[0];
+const chunk = await tools.read({ path: first, start_line: 1 });
+return {
+  ok: true,
+  path: first,
+  start_line: chunk.start_line,
+  lines: chunk.lines,
+  glob_message: listed.message,
+  read_message: chunk.message,
+};

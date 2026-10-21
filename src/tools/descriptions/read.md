@@ -1,3 +1,18 @@
-Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
+Read one workspace file inside `run_code`. Pass an object bag: `path` (required), optional `start_line`, and `limit`. Resolves `{ path, start_line, lines, message }`. `path` echoes the file (**workspace-relative**). `start_line` is the **1-based** line where this window began (same name on the way in and out — not `offset`). `lines` is a string array of that window’s line contents (plain strings). If one line is too long, shorten it **inside that `lines[]` string** — there is no `line_truncated` / `truncated` field and no `{line_number, …}` objects. Put “end of file”, “hit the limit”, session lines already in context, or a short why into `message` only. There is no `end_line`, no `file.hash` / `expected_hash` (write’s `expected_hash` is out of this package), no `page` / `cursor`, and no `reason` enum.
 
-`path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
+Omit `start_line` (or pass `1`) to start at the first line. `limit` defaults to **2000** and is at most **5000** (one bounded call). To continue, call again with a larger `start_line` (typically previous `start_line + lines.length`); do **not** pass a cursor. When the window reaches the end of the file, `lines` may be shorter than `limit` and `message` can note that. When the call hits the line bound with more remaining, say so in `message` (not a separate truncated flag). Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
+
+**Hard vs soft:** a bad bag (missing `path`, wrong types, non-integer `start_line` / `limit`) rejects `ToolError` `invalid_input`. A **missing path** rejects `not_found`. An **unsupported / non-text** file (image, non-UTF-8) rejects `unsupported`. Cancellation rejects `cancelled`. Past-EOF empty windows, hit-the-limit, and session lines already in the context window still **resolve** with `lines` + `message` (branch on `lines.length` / `message`). Example (paged read then edit in one program):
+const page1 = await tools.read({ path: "src/a.rs", start_line: 1 });
+if (page1.lines.length === 0) return { ok: false, message: page1.message };
+const next = page1.start_line + page1.lines.length;
+const page2 = await tools.read({ path: "src/a.rs", start_line: next });
+const needle = "fn start() {}";
+const blob = page1.lines.join("\n");
+if (!blob.includes(needle)) return { ok: false, message: "needle not in first page", page1 };
+const edited = await tools.edit({
+  path: "src/a.rs",
+  old_string: needle,
+  new_string: "fn main() {}",
+});
+return { ok: edited.ok, edited, page1_message: page1.message, page2_len: page2.lines.length };

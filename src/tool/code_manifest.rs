@@ -20,9 +20,7 @@ Permission denial is a catchable `ToolError` whose `code` is `permission_denied`
 `tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
-A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
-A glob that matches nothing returns `reason` `"no_match"`. A glob whose path is hidden by the default filters returns `reason` `"path_excluded"`.
-Pagination dialect: for read, pass `page.next` back as `start_line`; for glob and grep, pass `page.next` back as `cursor`.
+A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. Continue a long read with a larger `start_line`; do not pass a cursor or `page.next`.
 The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.

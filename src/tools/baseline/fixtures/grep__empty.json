@@ -1,18 +1,9 @@
 {
-  "content_historical": "No matches found (searched 1 file). Default filters may hide paths (.gitignore, files_exclude, search_exclude). Workspace exclude lists are in .litecode/excludes.json.",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "base": "workspace",
-    "matches": [],
-    "page": {
-      "has_more": false,
-      "next": null
-    },
-    "reason": "no_match",
-    "searched": {
-      "excluded": true,
-      "files": 1
-    }
+    "hits": [],
+    "message": "No matches found."
   },
   "error": null,
   "gap": null,

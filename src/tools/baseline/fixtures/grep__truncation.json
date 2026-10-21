@@ -1,25 +1,15 @@
 {
-  "content_historical": "hits.txt: hit one",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "base": "workspace",
-    "matches": [
+    "hits": [
       {
-        "end_line": 1,
-        "line_text": "hit one",
-        "line_truncated": false,
         "path": "hits.txt",
-        "start_line": 1
+        "line": 1,
+        "text": "hit one"
       }
     ],
-    "page": {
-      "has_more": true,
-      "next": "<cursor>"
-    },
-    "searched": {
-      "excluded": true,
-      "files": 1
-    }
+    "message": "Showing first 1 hits; more matches exist. Raise limit to see more."
   },
   "error": null,
   "gap": null,

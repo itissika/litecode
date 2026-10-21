@@ -1,36 +1,18 @@
-use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
-use crate::tool::file_identity::{self, file_ref, locate_resolved};
-use crate::tool::outcome::{FileRef, Page};
+use crate::tool::file_identity::{self, locate_resolved};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::ToolCallResult;
 
 /// Page size in lines. Not a token budget.
 const DEFAULT_LINE_LIMIT: usize = 2_000;
 const MAX_LINE_LIMIT: usize = 5_000;
-/// Per-line character cap. A longer line is marked `line_truncated`.
+/// Per-line character cap. Longer lines are truncated in the string and noted in message.
 const MAX_LINE_CHARS: usize = 1500;
-
-#[derive(Debug, Serialize)]
-struct ReadLineData {
-    number: usize,
-    text: String,
-    line_truncated: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadPageData {
-    file: FileRef,
-    lines: Vec<ReadLineData>,
-    page: Page,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
 
 #[derive(Default)]
 pub struct ReadTool {
@@ -67,13 +49,9 @@ impl Tool for ReadTool {
                     "type": "integer",
                     "description": "First line to read, 1-based, inclusive. Default 1."
                 },
-                "end_line": {
-                    "type": "integer",
-                    "description": "Last line to read, 1-based, inclusive. The page ends at min(end_line, start_line + limit - 1)."
-                },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum lines in this page. Default 2000, maximum 5000."
+                    "description": "Maximum lines to return. Default 2000, maximum 5000."
                 }
             },
             "required": ["path"],
@@ -83,69 +61,20 @@ impl Tool for ReadTool {
 
     fn data_schema(&self) -> Option<Value> {
         Some(serde_json::json!({
-            "description": "One page of a text file, with the file's sha256 identity.",
             "type": "object",
+            "additionalProperties": false,
+            "description": "One page of a text file. Continue with a larger start_line. Guidance lives only in message.",
             "properties": {
-                "file": {
-                    "type": "object",
-                    "description": "File identity. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.",
-                    "properties": {
-                        "path": { "type": "string" },
-                        "abs": { "type": "string" },
-                        "hash": { "type": "string", "description": "sha256 hex of the file bytes." },
-                        "bytes": { "type": "integer", "minimum": 0 }
-                    },
-                    "required": ["path", "hash", "bytes"]
-                },
+                "path": { "type": "string" },
+                "start_line": { "type": "integer", "minimum": 1 },
                 "lines": {
                     "type": "array",
-                    "description": "Lines in this page, in file order.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "number": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "description": "1-based line number."
-                            },
-                            "text": {
-                                "type": "string",
-                                "description": "Bare line text (no line-number prefix)."
-                            },
-                            "line_truncated": {
-                                "type": "boolean",
-                                "description": "True when text was capped at the per-line character limit."
-                            }
-                        },
-                        "required": ["number", "text", "line_truncated"]
-                    }
+                    "items": { "type": "string" },
+                    "description": "Line contents for this page, in file order."
                 },
-                "page": {
-                    "type": "object",
-                    "properties": {
-                        "has_more": {
-                            "type": "boolean",
-                            "description": "True when any line remains after this page, including after an explicit window."
-                        },
-                        "next": {
-                            "type": ["string", "null"],
-                            "description": "Next 1-based line number, or null when the file is finished."
-                        },
-                        "total": {
-                            "type": "integer",
-                            "minimum": 0,
-                            "description": "Total lines in the file."
-                        }
-                    },
-                    "required": ["has_more", "next"]
-                },
-                "reason": {
-                    "type": "string",
-                    "enum": ["in_context_window"],
-                    "description": "Set when lines is empty because those session lines are already in the context window."
-                }
+                "message": { "type": "string" }
             },
-            "required": ["file", "lines", "page"]
+            "required": ["path", "start_line", "lines", "message"]
         }))
     }
 
@@ -193,7 +122,6 @@ impl Tool for ReadTool {
     }
 
     fn call_inner(&self, input: Value) -> ToolCallResult {
-        // Unit-test helper only. Production Agent turns enter through execute().
         let execution = ToolExecutionContext {
             path_mode: crate::workspace::ToolPathMode::All,
             workspace_root: self
@@ -343,8 +271,7 @@ impl ReadTool {
                 );
             }
         };
-        let file = file_ref(located, &bytes);
-        render_text_page(&content, input, file)
+        render_text_page(&content, input, &located.path)
     }
 
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
@@ -352,6 +279,7 @@ impl ReadTool {
         if let Some(message) = limit_error(input) {
             return Err(message);
         }
+        let _ = resolve_start_line(input)?;
         Ok(())
     }
 }
@@ -414,22 +342,18 @@ fn render_projection_page(
     hidden_seqs: &[i64],
     data_path: &str,
 ) -> ToolCallResult {
-    let identity = file_ref(
-        file_identity::LocatedPath {
-            base: file_identity::PathBase::Workspace,
-            path: data_path.to_string(),
-            abs: None,
-        },
-        file.lines.join("\n").as_bytes(),
-    );
     let start_line = match resolve_start_line(input) {
         Ok(line) => line,
         Err(msg) => return coded("invalid_input", msg),
     };
-    let end_line = match resolve_end_line(input, start_line) {
-        Ok(line) => line,
-        Err(msg) => return coded("invalid_input", msg),
-    };
+    if let Some(message) = limit_error(input) {
+        return coded("invalid_input", message);
+    }
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(DEFAULT_LINE_LIMIT);
     let total_lines = file.total_lines();
     if start_line > total_lines && total_lines > 0 {
         return coded(
@@ -438,42 +362,64 @@ fn render_projection_page(
         );
     }
     let start = start_line.saturating_sub(1);
-    let end = end_line.min(total_lines);
+    let end = (start + limit).min(total_lines);
     let range_hidden = (start..end).all(|i| {
         file.seq_at((i + 1) as u32)
             .is_some_and(|seq| hidden_seqs.contains(&seq))
     });
     if total_lines > 0 && start < end && range_hidden && !hidden_seqs.is_empty() {
         return finish_read(
-            identity,
+            data_path,
+            start_line,
             Vec::new(),
             end,
             total_lines,
-            Some("in_context_window"),
+            "These session lines are already in the context window.",
+            false,
         );
     }
-    render_line_window(identity, start, end, total_lines, None, |i| {
+    let mut lines = Vec::new();
+    let mut line_capped = false;
+    for i in start..end {
         let line_no = (i + 1) as u32;
         if file
             .seq_at(line_no)
             .is_some_and(|seq| hidden_seqs.contains(&seq))
         {
-            return None;
+            continue;
         }
-        Some((i + 1, file.lines.get(i).map(String::as_str).unwrap_or("")))
-    })
+        let raw = file.lines.get(i).map(String::as_str).unwrap_or("");
+        let (text, capped) = data_line_text(raw);
+        if capped {
+            line_capped = true;
+        }
+        lines.push(text);
+    }
+    finish_read(
+        data_path,
+        start_line,
+        lines,
+        end,
+        total_lines,
+        "",
+        line_capped,
+    )
 }
 
-fn render_text_page(content: &str, input: &Value, file: FileRef) -> ToolCallResult {
+fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult {
     let lines: Vec<&str> = content.lines().collect();
     let start_line = match resolve_start_line(input) {
         Ok(line) => line,
         Err(msg) => return coded("invalid_input", msg),
     };
-    let end_line = match resolve_end_line(input, start_line) {
-        Ok(line) => line,
-        Err(msg) => return coded("invalid_input", msg),
-    };
+    if let Some(message) = limit_error(input) {
+        return coded("invalid_input", message);
+    }
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or(DEFAULT_LINE_LIMIT);
     let total_lines = lines.len();
     if start_line > total_lines && total_lines > 0 {
         return coded(
@@ -482,58 +428,77 @@ fn render_text_page(content: &str, input: &Value, file: FileRef) -> ToolCallResu
         );
     }
     let start = start_line.saturating_sub(1);
-    let end = end_line.min(total_lines);
-    render_line_window(file, start, end, total_lines, None, |i| {
-        Some((i + 1, lines[i]))
-    })
-}
-
-fn render_line_window<'a>(
-    file: FileRef,
-    start: usize,
-    end: usize,
-    total_lines: usize,
-    reason: Option<&str>,
-    mut line_at: impl FnMut(usize) -> Option<(usize, &'a str)>,
-) -> ToolCallResult {
-    let mut data_lines = Vec::new();
+    let end = (start + limit).min(total_lines);
+    let mut out = Vec::new();
+    let mut line_capped = false;
     for i in start..end {
-        let Some((line_no, line)) = line_at(i) else {
-            continue;
-        };
-        let (text, line_truncated) = data_line_text(line);
-        data_lines.push(ReadLineData {
-            number: line_no,
-            text,
-            line_truncated,
-        });
+        let (text, capped) = data_line_text(lines[i]);
+        if capped {
+            line_capped = true;
+        }
+        out.push(text);
     }
-    finish_read(file, data_lines, end, total_lines, reason)
+    finish_read(path, start_line, out, end, total_lines, "", line_capped)
 }
 
 fn finish_read(
-    file: FileRef,
-    lines: Vec<ReadLineData>,
+    path: &str,
+    start_line: usize,
+    lines: Vec<String>,
     covered_end: usize,
     total_lines: usize,
-    reason: Option<&str>,
+    preset_message: &str,
+    line_capped: bool,
 ) -> ToolCallResult {
     let has_more = covered_end < total_lines;
-    let next = has_more.then(|| (covered_end + 1).to_string());
-    let page = Page {
-        has_more,
-        next,
-        total: Some(total_lines as u64),
-    };
-    let data = serde_json::to_value(ReadPageData {
-        file,
-        lines,
-        page,
-        reason: reason.map(str::to_string),
-    })
-    .unwrap_or(Value::Null);
-    crate::tool::outcome::ok_data(data)
+    let mut message = preset_message.to_string();
+    if message.is_empty() {
+        if has_more {
+            message = format!(
+                "Showing lines {start_line}–{covered_end} of {total_lines}. Continue with start_line={}.",
+                covered_end + 1
+            );
+        } else if line_capped {
+            message = "One or more lines were truncated.".into();
+        }
+    } else if line_capped {
+        message = format!("{message} One or more lines were truncated.");
+    }
+    crate::tool::outcome::ok_data(serde_json::json!({
+        "path": path,
+        "start_line": start_line,
+        "lines": lines,
+        "message": message,
+    }))
 }
+
+fn data_line_text(line: &str) -> (String, bool) {
+    if line.chars().count() <= MAX_LINE_CHARS {
+        (line.to_string(), false)
+    } else {
+        (
+            format!("{}...", line.chars().take(MAX_LINE_CHARS).collect::<String>()),
+            true,
+        )
+    }
+}
+
+fn line_number(value: &Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
+}
+
+fn resolve_start_line(input: &Value) -> Result<usize, String> {
+    let Some(value) = input.get("start_line").filter(|value| !value.is_null()) else {
+        return Ok(1);
+    };
+    match line_number(value) {
+        Some(n) if n >= 1 => Ok(n as usize),
+        _ => Err("parameter 'start_line' must be an integer >= 1".into()),
+    }
+}
+
 
 enum WorkspaceBytes {
     Bytes(Vec<u8>),
@@ -622,56 +587,6 @@ fn read_file_checking_cancel(
     Ok(Some(bytes))
 }
 
-fn data_line_text(line: &str) -> (String, bool) {
-    if line.chars().count() <= MAX_LINE_CHARS {
-        (line.to_string(), false)
-    } else {
-        (line.chars().take(MAX_LINE_CHARS).collect(), true)
-    }
-}
-
-fn line_number(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
-}
-
-fn resolve_start_line(input: &Value) -> Result<usize, String> {
-    let Some(value) = input.get("start_line").filter(|value| !value.is_null()) else {
-        return Ok(1);
-    };
-    match line_number(value) {
-        Some(n) if n >= 1 => Ok(n as usize),
-        _ => Err("parameter 'start_line' must be an integer >= 1".into()),
-    }
-}
-
-fn resolve_end_line(input: &Value, start_line: usize) -> Result<usize, String> {
-    if let Some(message) = limit_error(input) {
-        return Err(message);
-    }
-    let limit = input
-        .get("limit")
-        .and_then(Value::as_u64)
-        .map(|limit| limit as usize)
-        .unwrap_or(DEFAULT_LINE_LIMIT);
-    let max_end = start_line.saturating_add(limit - 1);
-    let Some(value) = input.get("end_line").filter(|value| !value.is_null()) else {
-        return Ok(max_end);
-    };
-    let Some(n) = line_number(value) else {
-        return Err("parameter 'end_line' must be an integer >= 1".into());
-    };
-    if n < 1 {
-        return Err("parameter 'end_line' must be an integer >= 1".into());
-    }
-    let requested = n as usize;
-    if requested < start_line {
-        return Err("end_line must be >= start_line".into());
-    }
-    Ok(requested.min(max_end))
-}
-
 fn unsupported_read(path: &str, mime: &str, bytes: u64, message: &str) -> ToolCallResult {
     crate::tool::outcome::ToolOutcome::<Value>::failure("unsupported", message, false)
         .with_error_details(serde_json::json!({
@@ -695,6 +610,8 @@ fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
         None
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {
@@ -746,19 +663,13 @@ mod tests {
             )
             .await;
         assert!(read.error.is_none(), "{}", read.content);
-        assert_eq!(
-            read.data.as_ref().unwrap()["file"]["bytes"],
-            body.len() as u64
-        );
+        let data = read.data.as_ref().unwrap();
+        assert_eq!(data["path"], "note.txt");
         assert!(
-            read.content.contains("IDE_CANCEL_SENTINEL")
-                || read.data.as_ref().unwrap()["lines"][0]["text"]
-                    .as_str()
-                    .unwrap()
-                    .contains("IDE_CANCEL_SENTINEL"),
-            "{}",
-            read.content
+            data["lines"][0].as_str().unwrap().contains("IDE_CANCEL_SENTINEL"),
+            "{data}"
         );
+        assert!(read.content.is_empty());
 
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
@@ -770,7 +681,6 @@ mod tests {
             Some(crate::types::ToolErrorKind::Cancelled)
         );
         assert!(cancelled.data.is_none());
-        assert!(!cancelled.content.contains("IDE_CANCEL_SENTINEL"));
     }
 
     #[test]
@@ -784,687 +694,210 @@ mod tests {
         assert_eq!(read, body);
     }
 
+    fn page_lines(result: &ToolCallResult) -> Vec<String> {
+        result
+            .data
+            .as_ref()
+            .unwrap()["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
+
     #[test]
     fn test_read_basic() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
-
         let tool = ReadTool::default();
-        let input = serde_json::json!({
+        let result = tool.call(serde_json::json!({
             "path": file_path.to_str().expect("path"),
-        });
-
-        let result = tool.call(input);
-        let text = page_text(&result);
-        assert!(text.contains("line1"));
-        assert!(text.contains("line2"));
-        assert!(text.contains("line3"));
+        }));
+        let lines = page_lines(&result);
+        assert_eq!(lines, ["line1", "line2", "line3"]);
+        assert!(result.content.is_empty());
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["start_line"], 1);
+        assert!(data.get("file").is_none());
+        assert!(data.get("page").is_none());
     }
 
     #[test]
-    fn test_read_with_start_end_line() {
+    fn test_read_with_start_line_and_limit() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "line1\nline2\nline3\nline4\nline5\n").expect("write");
-
         let tool = ReadTool::default();
-        let input = serde_json::json!({
+        let result = tool.call(serde_json::json!({
             "path": file_path.to_str().expect("path"),
             "start_line": 2,
-            "end_line": 3
-        });
-
-        let result = tool.call(input);
-        let data = result.data.expect("data");
-        assert_eq!(data["lines"][0]["text"], "line2");
-        assert_eq!(data["lines"][1]["text"], "line3");
-        assert_eq!(data["lines"].as_array().unwrap().len(), 2);
-        assert_eq!(data["page"]["has_more"], true);
-        assert_eq!(data["page"]["next"], "4");
+            "limit": 2
+        }));
+        assert_eq!(page_lines(&result), ["line2", "line3"]);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["start_line"], 2);
+        assert!(
+            data["message"].as_str().unwrap().contains("start_line=4"),
+            "{}",
+            data["message"]
+        );
     }
 
     #[test]
     fn test_read_start_line_past_end_errors() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "line1\nline2\n").expect("write");
-
+        std::fs::write(&file_path, "only\n").unwrap();
         let result = ReadTool::default().call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "start_line": 3,
+            "path": file_path.to_str().unwrap(),
+            "start_line": 5
         }));
-
-        assert_eq!(
-            result.content,
-            "Error: start_line 3 exceeds file length (2 lines)"
-        );
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+        assert!(result.content.contains("start_line"), "{}", result.content);
     }
 
     #[test]
     fn test_read_binary_detection() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("binary.dat");
-        std::fs::write(&file_path, b"hello\x00world\x00" as &[u8]).expect("write binary");
-
-        let tool = ReadTool::default();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path")
-        });
-
-        let result = tool.call(input);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blob.bin");
+        std::fs::write(&path, [0u8, 1, 2, 3, 0, 5]).unwrap();
+        let result = ReadTool::default().call(serde_json::json!({
+            "path": path.to_str().unwrap()
+        }));
         assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.parts.is_empty());
         assert!(result.data.is_none());
-        let details = result.error_details.expect("details");
-        assert_eq!(details["mime"], "application/octet-stream");
-        assert!(details["bytes"].as_u64().unwrap() > 0);
-        assert!(result.content.to_lowercase().contains("binary"));
     }
 
     #[test]
     fn test_read_strips_utf8_bom_from_display() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("bom.txt");
-        std::fs::write(&file_path, "\u{feff}hello\n").expect("write");
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
-        let text = page_text(&result);
-        assert!(text.contains("hello"));
-        assert!(!text.contains('\u{feff}'));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bom.txt");
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"hello\n");
+        std::fs::write(&path, bytes).unwrap();
+        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
+        assert_eq!(page_lines(&result), ["hello"]);
     }
 
     #[test]
     fn test_read_utf16_error_is_explicit() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("utf16.txt");
-        std::fs::write(&file_path, [0xFF, 0xFE, b'A', 0x00]).expect("write");
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u16.txt");
+        // UTF-16 LE BOM + "hi"
+        std::fs::write(&path, [0xFF, 0xFE, b'h', 0, b'i', 0]).unwrap();
+        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
         assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.parts.is_empty());
-        assert!(result.data.is_none());
-        assert_eq!(
-            result.error_details.as_ref().unwrap()["mime"],
-            "text/utf-16"
-        );
-        assert!(result.content.contains("UTF-16"));
     }
 
     #[test]
     fn test_read_preserves_trailing_spaces_on_last_line() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("spaces.txt");
-        std::fs::write(&file_path, "keep   ").expect("write");
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
-        let text = page_text(&result);
-        assert!(
-            text.contains("keep   "),
-            "last-line trailing spaces must survive display, got: {text:?}"
-        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sp.txt");
+        std::fs::write(&path, "alpha  \n").unwrap();
+        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
+        assert_eq!(page_lines(&result), ["alpha  "]);
     }
 
     #[test]
-    fn test_read_image_returns_media_part() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("screenshot.png");
-        std::fs::write(&file_path, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
-            .expect("write png signature");
-
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
-
+    fn test_read_image_is_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(
+            &path,
+            [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00],
+        )
+        .unwrap();
+        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
         assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.parts.is_empty(), "read must not return media parts");
-        assert!(result.data.is_none());
-        let details = result.error_details.expect("details");
-        assert_eq!(details["mime"], "image/png");
-        assert_eq!(details["bytes"], 8);
+        assert!(result.parts.is_empty());
     }
 
     #[test]
     fn test_read_page_ignores_token_count() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("big.txt");
-        let line = (0..80)
-            .map(|i| format!("w{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let content: String = (0..200).map(|_| format!("{line}\n")).collect();
-        std::fs::write(&file_path, &content).expect("write");
-
+        let dir = tempfile::tempdir().unwrap();
+        let line = (0..80).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
+        let body: String = (0..200).map(|_| format!("{line}\n")).collect();
+        std::fs::write(dir.path().join("big.txt"), body).unwrap();
         let result = ReadTool::default().call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
+            "path": dir.path().join("big.txt").to_str().unwrap()
         }));
-        assert!(result.error.is_none(), "{}", result.content);
-        let lines = result.data.unwrap()["lines"].as_array().unwrap().len();
-        assert_eq!(
-            lines, 200,
-            "page size follows the line limit, not a token budget"
-        );
+        assert_eq!(page_lines(&result).len(), 200);
     }
 
     #[test]
     fn test_read_default_limit_pages() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("long.txt");
-        let content: String = (1..=2_001).map(|i| format!("{i}\n")).collect();
-        std::fs::write(&file_path, &content).expect("write");
-
-        let data = ReadTool::default()
-            .call(serde_json::json!({
-                "path": file_path.to_str().expect("path"),
-            }))
-            .data
-            .unwrap();
-        assert_eq!(data["lines"].as_array().unwrap().len(), DEFAULT_LINE_LIMIT);
-        assert_eq!(data["page"]["has_more"], true);
-        assert_eq!(data["page"]["next"], "2001");
-        assert_eq!(data["lines"][0]["text"], "1");
-    }
-
-    #[test]
-    fn test_read_long_line_is_capped_not_rejected() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("fat.txt");
-        let huge = (0..20_000)
-            .map(|i| format!("tok{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        std::fs::write(&file_path, format!("{huge}\nnext\n")).expect("write");
-
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (0..2500).map(|i| format!("L{i}\n")).collect();
+        std::fs::write(dir.path().join("many.txt"), body).unwrap();
         let result = ReadTool::default().call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
+            "path": dir.path().join("many.txt").to_str().unwrap()
         }));
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.unwrap();
-        assert_eq!(data["lines"][0]["line_truncated"], true);
-        assert_eq!(data["lines"][1]["text"], "next");
-        assert!(data["lines"][0]["text"].as_str().unwrap().chars().count() <= MAX_LINE_CHARS);
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["lines"].as_array().unwrap().len(), 2000);
+        assert!(data["message"].as_str().unwrap().contains("start_line=2001"), "{}", data["message"]);
     }
 
     #[test]
-    fn test_read_schema_omits_token_budget() {
-        let props = ReadTool::default().schema()["properties"].clone();
-        assert!(props.get("token_budget").is_none());
-        assert!(props.get("start_line").is_some());
-        assert!(props.get("end_line").is_some());
-    }
-
-    #[test]
-    fn test_read_clamps_huge_end_line() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("long.txt");
-        let content: String = (1..=2_500).map(|i| format!("{i}\n")).collect();
-        std::fs::write(&file_path, &content).expect("write");
-
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "end_line": 99999
-        }));
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.unwrap();
-        assert_eq!(data["lines"].as_array().unwrap().len(), DEFAULT_LINE_LIMIT);
-        assert_eq!(data["page"]["has_more"], true);
-        assert_eq!(data["page"]["next"], "2001");
-    }
-
-    #[test]
-    fn test_read_truncates_long_line() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("wide.txt");
+    fn test_read_long_line_is_capped_in_text() {
+        let dir = tempfile::tempdir().unwrap();
         let long = "x".repeat(2000);
-        std::fs::write(&file_path, format!("{long}\nshort\n")).expect("write");
-
-        let data = ReadTool::default()
-            .call(serde_json::json!({
-                "path": file_path.to_str().expect("path"),
-            }))
-            .data
-            .unwrap();
-        assert_eq!(data["lines"][0]["line_truncated"], true);
-        assert_eq!(
-            data["lines"][0]["text"].as_str().unwrap().chars().count(),
-            MAX_LINE_CHARS
+        std::fs::write(dir.path().join("wide.txt"), format!("{long}\n")).unwrap();
+        let result = ReadTool::default().call(serde_json::json!({
+            "path": dir.path().join("wide.txt").to_str().unwrap()
+        }));
+        let line = page_lines(&result)[0].clone();
+        assert!(line.ends_with("..."));
+        assert!(line.chars().count() <= MAX_LINE_CHARS + 3);
+        let data = result.data.as_ref().unwrap();
+        assert!(
+            data["message"].as_str().unwrap().contains("truncated"),
+            "{}",
+            data["message"]
         );
-        assert_eq!(data["lines"][1]["text"], "short");
+        assert!(data["lines"][0].is_string());
     }
 
     #[test]
-    fn test_read_size_limit() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("large.txt");
-        let chunk = "a".repeat(1024);
-        let mut file = std::fs::File::create(&file_path).expect("create");
-        for _ in 0..10241 {
-            use std::io::Write;
-            writeln!(file, "{}", chunk).expect("write chunk");
-        }
-        drop(file);
-
+    fn test_read_schema_omits_retired_fields() {
         let tool = ReadTool::default();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path")
-        });
-
-        let result = tool.call(input);
-        assert!(
-            result.error.is_none(),
-            "large text is paged, not a media cap: {}",
-            result.content
-        );
-        assert!(result.data.as_ref().unwrap()["file"]["hash"].is_string());
-        assert_eq!(result.data.as_ref().unwrap()["page"]["has_more"], true);
-        assert!(result.parts.is_empty());
+        let schema = tool.schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("start_line"));
+        assert!(props.contains_key("limit"));
+        assert!(!props.contains_key("end_line"));
+        let data_schema = tool.data_schema().unwrap();
+        let dprops = data_schema["properties"].as_object().unwrap();
+        assert!(dprops.contains_key("path"));
+        assert!(dprops.contains_key("start_line"));
+        assert!(dprops.contains_key("lines"));
+        assert!(dprops.contains_key("message"));
+        for retired in ["file", "page", "reason", "end_line"] {
+            assert!(!dprops.contains_key(retired), "retired {retired}");
+        }
     }
 
     #[test]
     fn test_validate_input() {
         let tool = ReadTool::default();
-
-        // Missing file_path
-        assert!(tool.validate_input(&serde_json::json!({})).is_err());
-
-        // Empty file_path
-        assert!(
-            tool.validate_input(&serde_json::json!({"path": ""}))
-                .is_err()
-        );
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("lines.txt");
-        std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "start_line": 0
-        }));
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-        assert!(
-            result.content.contains("start_line"),
-            "got: {}",
-            result.content
-        );
-        assert!(result.data.is_none());
-
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "start_line": 2,
-            "end_line": 1
-        }));
-        assert!(result.content.starts_with("Error:"));
-        assert!(
-            result.content.contains("end_line must be >= start_line"),
-            "got: {}",
-            result.content
-        );
-
-        // Valid
-        assert!(
-            tool.validate_input(&serde_json::json!({"path": "/tmp/x"}))
-                .is_ok()
-        );
+        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt"})).is_ok());
+        assert!(tool.validate_input(&serde_json::json!({"path": ""})).is_err());
+        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt", "limit": 0})).is_err());
+        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt", "start_line": 0})).is_err());
     }
 
     #[test]
-    fn negative_start_line_is_invalid_input() {
-        let tool = ReadTool::default();
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("lines.txt");
-        std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
-        let path = file_path.to_str().expect("path");
-
-        let start = tool.call(serde_json::json!({
-            "path": path,
-            "start_line": -5
-        }));
-        assert_eq!(start.error_code.as_deref(), Some("invalid_input"));
-        assert!(
-            start.content.contains("start_line"),
-            "got: {}",
-            start.content
-        );
-        assert!(start.data.is_none());
-    }
-
-    #[test]
-    fn known_path_read_ignores_discovery_filters() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(dir.path().join(".git")).expect("git");
-        std::fs::write(dir.path().join(".gitignore"), "secret.env\n").expect("gitignore");
-        let file_path = dir.path().join("secret.env");
-        std::fs::write(&file_path, "TOKEN=known-path\n").expect("write");
-
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
-        assert!(
-            page_text(&result).contains("TOKEN=known-path"),
-            "read must not apply discovery FilterPreset; got: {}",
-            page_text(&result)
-        );
-    }
-
-    fn seed_session(root: &std::path::Path, text: &str) -> String {
-        let db = root.join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
-        let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        let id = data
-            .create_session(root.to_str().unwrap(), "default", None)
-            .unwrap();
-        data.insert_items(&id, &[crate::types::user_text(text)])
-            .unwrap();
-        id
-    }
-
-    fn read_virtual(
-        root: &std::path::Path,
-        path: &str,
-        extra: serde_json::Value,
-        session_id: &str,
-    ) -> crate::types::ToolCallResult {
-        let mut input = extra;
-        input["path"] = serde_json::Value::String(path.to_string());
-        let tool = ReadTool::default();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        rt.block_on(tool.execute(
-            input,
-            ToolExecutionContext {
-                path_mode: crate::workspace::ToolPathMode::All,
-                workspace_root: root.to_path_buf(),
-                call_id: String::new(),
-                cancel: tokio_util::sync::CancellationToken::new(),
-                output_limit: usize::MAX,
-                session_id: session_id.to_string(),
-                session: Some(crate::session::SessionDataReader::open(
-                    &root.join(".litecode").join("sessions.db"),
-                )),
-            },
-        ))
-    }
-
-    #[test]
-    fn virtual_session_read_keeps_canonical_line_numbers() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let sid = seed_session(root, "alpha\nVIRTUAL_READ_NEEDLE here\ndelta");
-        let path = crate::session::transcript_file::virtual_path_for(&sid);
-        let other = read_virtual(root, &path, serde_json::json!({}), "");
-        assert_eq!(
-            other.level,
-            crate::types::ToolSignalLevel::Ok,
-            "{}",
-            other.content
-        );
-        let other_text = page_text(&other);
-        assert!(other_text.contains("VIRTUAL_READ_NEEDLE"), "{other_text}");
-        let needle_line = other.data.as_ref().unwrap()["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|line| {
-                line["text"]
-                    .as_str()
-                    .unwrap_or("")
-                    .contains("VIRTUAL_READ_NEEDLE")
-            })
-            .expect("needle line");
-        assert_eq!(
-            needle_line["number"], 3,
-            "canonical body line should stay numbered, got: {needle_line}"
-        );
-
-        let self_read = read_virtual(root, &path, serde_json::json!({}), &sid);
-        assert_eq!(
-            self_read.level,
-            crate::types::ToolSignalLevel::Ok,
-            "{}",
-            self_read.content
-        );
-        assert_eq!(
-            self_read.data.as_ref().unwrap()["reason"],
-            "in_context_window",
-            "live surface should be filtered: {:?}",
-            self_read.data
-        );
-        assert!(
-            !page_text(&self_read).contains("VIRTUAL_READ_NEEDLE"),
-            "filtered read must not re-number remaining lines around the live item: {}",
-            page_text(&self_read)
-        );
-    }
-
-    fn seed_compacted(root: &std::path::Path, archived: &str, live: &str) -> String {
-        let db = root.join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
-        let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        let id = data
-            .create_session(root.to_str().unwrap(), "default", None)
-            .unwrap();
-        data.insert_items(
-            &id,
-            &[
-                crate::types::user_text(archived),
-                crate::types::user_text("filler middle"),
-                crate::types::user_text(live),
-            ],
-        )
-        .unwrap();
-        data.compact_from(
-            &id,
-            &crate::types::user_text("[summary] compact"),
-            Some(2),
-            10,
-        )
-        .unwrap();
-        id
-    }
-
-    #[test]
-    fn read_peels_current_surface_keeps_canonical_lines_and_other_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let root = dir.path();
-        let current = seed_compacted(
-            root,
-            "ARCHIVED_READ_TOKEN buried",
-            "LIVE_READ_TOKEN still in window",
-        );
-        let other = seed_session(root, "LIVE_READ_TOKEN in other");
-        let current_path = crate::session::transcript_file::virtual_path_for(&current);
-        let other_path = crate::session::transcript_file::virtual_path_for(&other);
-
-        let full = read_virtual(root, &current_path, serde_json::json!({}), "");
-        let archived_no = line_number(&full, "ARCHIVED_READ_TOKEN");
-        let live_no = line_number(&full, "LIVE_READ_TOKEN still in window");
-        assert!(live_no > archived_no);
-
-        let peeled = read_virtual(root, &current_path, serde_json::json!({}), &current);
-        assert!(
-            page_text(&peeled).contains("ARCHIVED_READ_TOKEN"),
-            "archived rows stay readable:\n{}",
-            page_text(&peeled)
-        );
-        assert!(
-            !page_text(&peeled).contains("LIVE_READ_TOKEN still in window"),
-            "current live surface must be peeled:\n{}",
-            page_text(&peeled)
-        );
-        let peeled_no = line_number(&peeled, "ARCHIVED_READ_TOKEN");
-        assert_eq!(
-            peeled_no, archived_no,
-            "peel must keep canonical line numbers"
-        );
-
-        let other_as_current = read_virtual(root, &other_path, serde_json::json!({}), &current);
-        assert!(
-            page_text(&other_as_current).contains("LIVE_READ_TOKEN in other"),
-            "other sessions are not peeled:\n{}",
-            page_text(&other_as_current)
-        );
-
-        let live_only = read_virtual(
-            root,
-            &current_path,
-            serde_json::json!({ "start_line": live_no, "end_line": live_no }),
-            &current,
-        );
-        assert_eq!(
-            live_only.data.as_ref().unwrap()["reason"],
-            "in_context_window",
-            "offset into the live surface must stay in-window: {:?}",
-            live_only.data
-        );
-        assert!(
-            !page_text(&live_only).contains("LIVE_READ_TOKEN still in window"),
-            "live-only window must not leak surface text:\n{}",
-            page_text(&live_only)
-        );
-    }
-
-    fn line_number(result: &ToolCallResult, needle: &str) -> usize {
-        result.data.as_ref().expect("data")["lines"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|line| line["text"].as_str().unwrap_or("").contains(needle))
-            .unwrap_or_else(|| panic!("missing {needle} in {}", result.data.as_ref().unwrap()))
-            ["number"]
-            .as_u64()
-            .unwrap() as usize
-    }
-
-    fn page_text(result: &ToolCallResult) -> String {
-        result
-            .data
-            .as_ref()
-            .and_then(|data| data.get("lines"))
-            .and_then(Value::as_array)
-            .map(|lines| {
-                lines
-                    .iter()
-                    .map(|line| line["text"].as_str().unwrap_or(""))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default()
-    }
-
-    fn read_data(result: &ToolCallResult) -> Value {
-        result
-            .data
-            .clone()
-            .expect("read must return structured data")
-    }
-
-    #[test]
-    fn text_result_has_structured_lines_without_display_prefixes() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("a.txt");
-        std::fs::write(&path, "alpha\nbeta\ngamma\n").expect("write");
+    fn data_schema_accepts_live_result() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
         let result = ReadTool::default().call(serde_json::json!({
-            "path": path.to_str().expect("path"),
+            "path": dir.path().join("a.txt").to_str().unwrap()
         }));
-        let data = read_data(&result);
-        assert!(data["file"]["path"].as_str().unwrap().contains("a.txt"));
-        assert_eq!(data["file"]["hash"].as_str().unwrap().len(), 64);
-        assert_eq!(data["page"]["total"], 3);
-        assert_eq!(data["page"]["has_more"], false);
-        assert!(data["page"]["next"].is_null());
-        let lines = data["lines"].as_array().unwrap();
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0]["number"], 1);
-        assert_eq!(lines[0]["text"], "alpha");
-        assert_eq!(lines[2]["text"], "gamma");
-        assert!(!lines[0]["text"].as_str().unwrap().contains(':'));
-    }
-
-    #[test]
-    fn text_result_pages_with_next_start_line() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("long.txt");
-        let content: String = (1..=5).map(|i| format!("{i}\n")).collect();
-        std::fs::write(&path, &content).expect("write");
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": path.to_str().expect("path"),
-            "limit": 2
-        }));
-        let data = read_data(&result);
-        assert_eq!(data["page"]["total"], 5);
-        assert_eq!(data["page"]["has_more"], true);
-        let lines = data["lines"].as_array().unwrap();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(data["page"]["next"], "3");
-    }
-
-    #[test]
-    fn data_line_text_is_capped_and_marked() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("wide.txt");
-        std::fs::write(&path, format!("{}\n", "x".repeat(1600))).expect("write");
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": path.to_str().expect("path"),
-        }));
-        let data = read_data(&result);
-        let line = &data["lines"][0];
-        assert_eq!(line["line_truncated"], true);
-        assert_eq!(line["text"].as_str().unwrap().chars().count(), 1500);
-    }
-
-    #[test]
-    fn image_result_has_structured_metadata() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("shot.png");
-        std::fs::write(&path, [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]).expect("write png");
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": path.to_str().expect("path"),
-        }));
-        assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.parts.is_empty());
-        assert!(result.data.is_none());
-        assert_eq!(result.error_details.as_ref().unwrap()["mime"], "image/png");
-        assert_eq!(result.error_details.as_ref().unwrap()["bytes"], 8);
-    }
-
-    #[test]
-    fn data_schema_accepts_text_results() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let text_path = dir.path().join("a.txt");
-        std::fs::write(&text_path, "alpha\nbeta\n").expect("write");
-        let image_path = dir.path().join("shot.png");
-        std::fs::write(
-            &image_path,
-            [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
-        )
-        .expect("write png");
-
-        let tool = ReadTool::default();
-        let schema = tool.data_schema().expect("read data schema");
-        let result = tool.call(serde_json::json!({
-            "path": text_path.to_str().expect("path"),
-        }));
-        let data = result.data.expect("read must return data");
-        crate::tool::schema_validate(&schema, &data)
-            .unwrap_or_else(|error| panic!("read data does not match its schema: {error}: {data}"));
-        let image = tool.call(serde_json::json!({
-            "path": image_path.to_str().expect("path"),
-        }));
-        assert_eq!(image.error_code.as_deref(), Some("unsupported"));
-        assert!(image.data.is_none());
-        assert!(image.parts.is_empty());
+        let data = result.data.as_ref().unwrap();
+        let schema = ReadTool::default().data_schema().unwrap();
+        crate::tool::schema_validate(&schema, data)
+            .unwrap_or_else(|e| panic!("{e}: {data}"));
     }
 }

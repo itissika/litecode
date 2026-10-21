@@ -18,8 +18,8 @@ const MATRIX: &[Row] = &[
         tool: "read",
         scenario: "正常文本",
         status: "ok",
-        data: "file.hash/lines",
-        page: "has_more",
+        data: "path/lines/message",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -28,7 +28,7 @@ const MATRIX: &[Row] = &[
         scenario: "空文件",
         status: "ok",
         data: "lines=[]",
-        page: "完成",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -36,8 +36,8 @@ const MATRIX: &[Row] = &[
         tool: "read",
         scenario: "显式窗口未读完",
         status: "ok",
-        data: "lines",
-        page: "has_more=true,next",
+        data: "lines+message",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -45,7 +45,7 @@ const MATRIX: &[Row] = &[
         tool: "read",
         scenario: "单行超长",
         status: "ok",
-        data: "lines[].line_truncated=true",
+        data: "lines string truncated",
         page: "—",
         diagnostics: "[]",
         error_code: "null",
@@ -73,9 +73,9 @@ const MATRIX: &[Row] = &[
         scenario: "上下文窗口",
         status: "ok",
         data: "lines=[]",
-        page: "完成",
+        page: "—",
         diagnostics: "[]",
-        error_code: "reason=in_context_window",
+        error_code: "message=in_context",
     },
     Row {
         tool: "read",
@@ -99,8 +99,8 @@ const MATRIX: &[Row] = &[
         tool: "glob",
         scenario: "正常",
         status: "ok",
-        data: "base/paths",
-        page: "next",
+        data: "paths/message",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -108,8 +108,8 @@ const MATRIX: &[Row] = &[
         tool: "glob",
         scenario: "超 limit",
         status: "ok",
-        data: "paths",
-        page: "has_more=true",
+        data: "paths+message",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -117,8 +117,8 @@ const MATRIX: &[Row] = &[
         tool: "grep",
         scenario: "有命中",
         status: "ok",
-        data: "base/matches",
-        page: "next",
+        data: "hits/message",
+        page: "—",
         diagnostics: "[]",
         error_code: "null",
     },
@@ -136,18 +136,18 @@ const MATRIX: &[Row] = &[
         scenario: "路径被排除",
         status: "ok",
         data: "paths=[]",
-        page: "完成",
+        page: "—",
         diagnostics: "[]",
-        error_code: "reason=path_excluded",
+        error_code: "message=path_excluded",
     },
     Row {
         tool: "grep",
         scenario: "零命中",
         status: "ok",
-        data: "matches=[]",
-        page: "完成",
+        data: "hits=[]",
+        page: "—",
         diagnostics: "[]",
-        error_code: "reason=no_match",
+        error_code: "message=no_match",
     },
     Row {
         tool: "grep",
@@ -171,19 +171,10 @@ const MATRIX: &[Row] = &[
         tool: "grep",
         scenario: "literal 命中",
         status: "ok",
-        data: "matches",
+        data: "hits",
         page: "—",
         diagnostics: "[]",
         error_code: "null",
-    },
-    Row {
-        tool: "grep",
-        scenario: "cursor 过期",
-        status: "error",
-        data: "null",
-        page: "—",
-        diagnostics: "[]",
-        error_code: "stale_cursor",
     },
     Row {
         tool: "edit",
@@ -472,24 +463,31 @@ fn assert_cells(result: &ToolCallResult, row: &Row) {
     match row.error_code {
         "null" => assert!(result.error_code.is_none(), "{scene}: {:?}", result.error_code),
         "—" => {}
-        "reason=no_match" => {
+        "message=no_match" => {
             assert!(result.error_code.is_none(), "{scene}");
-            assert_eq!(result.data.as_ref().unwrap()["reason"], "no_match", "{scene}");
-        }
-        "reason=path_excluded" => {
-            assert!(result.error_code.is_none(), "{scene}");
-            assert_eq!(
-                result.data.as_ref().unwrap()["reason"],
-                "path_excluded",
+            let msg = result.data.as_ref().unwrap()["message"].as_str().unwrap_or("");
+            assert!(msg.contains("No matches") || msg.contains("No matching"), "{scene}: {msg}");
+            assert!(
+                result.data.as_ref().unwrap()["hits"]
+                    .as_array()
+                    .is_some_and(|hits| hits.is_empty()),
                 "{scene}"
             );
         }
-        "reason=in_context_window" => {
+        "message=path_excluded" => {
             assert!(result.error_code.is_none(), "{scene}");
-            assert_eq!(
-                result.data.as_ref().unwrap()["reason"],
-                "in_context_window",
-                "{scene}"
+            let msg = result.data.as_ref().unwrap()["message"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase();
+            assert!(msg.contains("hidden") || msg.contains("filter"), "{scene}: {msg}");
+        }
+        "message=in_context" => {
+            assert!(result.error_code.is_none(), "{scene}");
+            let msg = result.data.as_ref().unwrap()["message"].as_str().unwrap_or("");
+            assert!(
+                msg.to_lowercase().contains("context"),
+                "{scene}: {msg}"
             );
             assert!(
                 result.data.as_ref().unwrap()["lines"]
@@ -579,7 +577,7 @@ async fn live_row(row: &Row) {
         }
         ("read", "显式窗口未读完") => {
             write_file(root, "window.txt", "one\ntwo\nthree\n");
-            call_code(root, "read", json!({"path": "window.txt", "end_line": 1})).await
+            call_code(root, "read", json!({"path": "window.txt", "limit": 1})).await
         }
         ("read", "单行超长") => {
             write_file(root, "wide.txt", &format!("{}\n", "x".repeat(1600)));
@@ -655,15 +653,6 @@ async fn live_row(row: &Row) {
                 root,
                 "grep",
                 json!({"pattern": "a.b", "literal": true}),
-            )
-            .await
-        }
-        ("grep", "cursor 过期") => {
-            write_file(root, "a.txt", "needle\n");
-            call_code(
-                root,
-                "grep",
-                json!({"pattern": "needle", "cursor": "not-a-cursor"}),
             )
             .await
         }
@@ -760,7 +749,7 @@ async fn live_row(row: &Row) {
             write_file(root, "note.txt", "alpha\n");
             run_program(
                 root,
-                r#"const page = await tools.read({ path: "note.txt" }); return page.file.hash;"#,
+                r#"const page = await tools.read({ path: "note.txt" }); return page.lines.length;"#,
             )
             .await
         }
@@ -787,20 +776,27 @@ async fn live_row(row: &Row) {
     match (row.tool, row.scenario) {
         ("read", "正常文本") => {
             let data = result.data.as_ref().unwrap();
-            assert!(data["file"]["hash"].as_str().unwrap().len() == 64);
+            assert!(data["path"].is_string());
             assert!(!data["lines"].as_array().unwrap().is_empty());
+            assert!(data["lines"][0].is_string());
+            assert!(data.get("file").is_none());
+            assert!(data.get("page").is_none());
         }
         ("read", "空文件") => {
             assert!(result.data.as_ref().unwrap()["lines"].as_array().unwrap().is_empty());
         }
         ("read", "显式窗口未读完") => {
-            assert_eq!(result.data.as_ref().unwrap()["lines"].as_array().unwrap().len(), 1);
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["lines"].as_array().unwrap().len(), 1);
+            assert!(
+                data["message"].as_str().unwrap().contains("start_line="),
+                "{}",
+                data["message"]
+            );
         }
         ("read", "单行超长") => {
-            assert_eq!(
-                result.data.as_ref().unwrap()["lines"][0]["line_truncated"],
-                true
-            );
+            let line = result.data.as_ref().unwrap()["lines"][0].as_str().unwrap();
+            assert!(line.ends_with("...") || line.chars().count() <= 1500);
         }
         ("read", "start_line 非法") => {
             assert!(result.content.contains("start_line"), "{}", result.content);
@@ -827,16 +823,27 @@ async fn live_row(row: &Row) {
         }
         ("glob", "正常") | ("glob", "超 limit") => {
             let data = result.data.as_ref().unwrap();
-            assert!(data["base"].is_string());
+            assert!(data.get("base").is_none());
+            assert!(data.get("page").is_none());
             assert!(!data["paths"].as_array().unwrap().is_empty());
+            if row.scenario == "超 limit" {
+                assert!(
+                    data["message"].as_str().unwrap().contains("Raise limit"),
+                    "{}",
+                    data["message"]
+                );
+            }
         }
         ("grep", "有命中") | ("grep", "literal 命中") => {
             let data = result.data.as_ref().unwrap();
-            assert!(data["base"].is_string());
-            assert!(!data["matches"].as_array().unwrap().is_empty());
+            assert!(data.get("base").is_none());
+            assert!(data.get("matches").is_none());
+            assert!(!data["hits"].as_array().unwrap().is_empty());
+            assert!(data["hits"][0]["line"].as_u64().unwrap() >= 1);
+            assert!(data["hits"][0]["text"].is_string());
         }
         ("grep", "零命中") => {
-            assert!(result.data.as_ref().unwrap()["matches"].as_array().unwrap().is_empty());
+            assert!(result.data.as_ref().unwrap()["hits"].as_array().unwrap().is_empty());
         }
         ("edit", "全部成功") | ("edit", "LSP 错误") => {
             let data = result.data.as_ref().unwrap();
@@ -1007,7 +1014,7 @@ async fn probe_file_not_searched(root: &Path) -> ToolCallResult {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn phase5_contract_matrix_asserts_live_output() {
-    assert_eq!(MATRIX.len(), 30);
+    assert_eq!(MATRIX.len(), 29);
     let mut seen = std::collections::BTreeSet::new();
     for row in MATRIX {
         assert!(
@@ -1021,18 +1028,29 @@ async fn phase5_contract_matrix_asserts_live_output() {
 
     let dir = tempfile::tempdir().unwrap();
     let probed = probe_file_not_searched(dir.path()).await;
-    let reason = probed
+    let msg = probed
         .data
         .as_ref()
-        .and_then(|data| data.get("reason"))
+        .and_then(|data| data.get("message"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    // Unreachable from the late-NUL probe. `looks_binary` only scans the first
-    // 8KiB, so a later NUL is not rejected up front. ripgrep still opens the
-    // file (`scan.opened`), and grep then reports `no_match`. `file_not_searched`
-    // requires a file-scoped candidate whose searcher never opens the file.
+    // Late-NUL probe: ripgrep still opens the file; grep reports empty hits.
     assert_eq!(status_of(&probed), "ok");
-    assert_eq!(reason, "no_match", "data={:?}", probed.data);
+    assert!(
+        probed
+            .data
+            .as_ref()
+            .and_then(|d| d.get("hits"))
+            .and_then(Value::as_array)
+            .is_some_and(|h| h.is_empty()),
+        "data={:?}",
+        probed.data
+    );
+    assert!(
+        msg.contains("No matches") || msg.contains("File could not"),
+        "message={msg} data={:?}",
+        probed.data
+    );
     assert!(
         probed
             .diagnostics

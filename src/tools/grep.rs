@@ -1,10 +1,9 @@
 //! Agent `grep` tool.
 //!
-//! One page of matches: `base`, `matches`, `page`, `searched`,
-//! and `reason` when nothing matched. A cursor is the documented D-07
-//! recommendation — query fingerprint plus a corpus version — not a stored copy
-//! of the hits. D-07 itself stays undecided. Each call examines at most one page
-//! of new matches, or `GREP_EXAMINE_CAP` when a test tightens that bound.
+//! Bounded content search. Result shape is only `{ hits, message }`.
+//! Hits are `{ path, line, text }` with 1-based line numbers. Truncation
+//! and empty-result guidance live in `message` only — no cursor, page,
+//! searched, base, or multi-enum reason fields.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -16,8 +15,7 @@ use serde_json::Value;
 use crate::context_pipeline::Context;
 use crate::engines::code_search::{LexicalQuery, lexical_search_for_agent_cancellable};
 use crate::tool::Tool;
-use crate::tool::file_identity::{self, QueryCursor, encode_cursor, fingerprint};
-use crate::tool::outcome::Page;
+use crate::tool::file_identity;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{LitecodeError, Result, ToolCallResult};
 use crate::workspace::filter::{
@@ -29,17 +27,15 @@ use crate::workspace::filter::{
 const DEFAULT_GREP_LIMIT: usize = 20;
 const MAX_GREP_LIMIT: usize = 100;
 const MAX_MATCH_LINE_CHARS: usize = 500;
-/// Backstop on matches examined while filling one page. Production pages ask
-/// for at most `limit + 1` (101), so this fires only when a caller tightens it.
+/// Backstop on matches examined while filling one call. Production asks for
+/// at most `limit + 1`, so this fires only when a caller tightens it.
 const GREP_EXAMINE_CAP: usize = 10_000;
 
 #[derive(Debug, Clone, Serialize)]
-struct GrepMatchData {
+struct GrepHit {
     path: String,
-    start_line: u32,
-    end_line: u32,
-    line_text: String,
-    line_truncated: bool,
+    line: u32,
+    text: String,
 }
 
 struct GrepOptions {
@@ -47,18 +43,14 @@ struct GrepOptions {
     glob: Option<String>,
     include: Option<Vec<PathGlobMatcher>>,
     exclude: Option<Vec<PathGlobMatcher>>,
-    case_sensitive: bool,
-    include_ignored: bool,
+    ignore_case: bool,
     literal: bool,
-    cursor: Option<String>,
     limit: usize,
 }
 
 struct Candidate {
     abs: PathBuf,
     display: String,
-    len: u64,
-    mtime: u64,
 }
 
 pub struct GrepTool;
@@ -82,33 +74,25 @@ impl Tool for GrepTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute."
+                    "description": "File or directory to search. Defaults to the workspace."
                 },
                 "glob": {
                     "type": "string",
                     "description": "Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path."
                 },
-                "include_ignored": {
-                    "type": "boolean",
-                    "description": "Also search gitignored and workspace-excluded paths. Default false."
-                },
-                "case_sensitive": {
-                    "type": "boolean",
-                    "description": "Default true. Set false to ignore case."
-                },
                 "literal": {
                     "type": "boolean",
                     "description": "Search for pattern as plain text. Default false."
                 },
-                "cursor": {
-                    "type": "string",
-                    "description": "Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor."
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Ignore case when matching. Default false."
                 },
                 "limit": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 100,
-                    "description": "Maximum matches in this page. Default 20, maximum 100."
+                    "description": "Maximum hits to return. Default 20, maximum 100."
                 }
             },
             "required": ["pattern"],
@@ -119,52 +103,25 @@ impl Tool for GrepTool {
     fn data_schema(&self) -> Option<Value> {
         Some(serde_json::json!({
             "type": "object",
-            "description": "One page of content matches.",
+            "additionalProperties": false,
+            "description": "Bounded content matches. Guidance lives only in message.",
             "properties": {
-                "base": {
-                    "type": "string",
-                    "enum": ["workspace", "absolute"]
-                },
-                "matches": {
+                "hits": {
                     "type": "array",
                     "items": {
                         "type": "object",
+                        "additionalProperties": false,
                         "properties": {
                             "path": { "type": "string" },
-                            "start_line": { "type": "integer", "minimum": 1 },
-                            "end_line": { "type": "integer", "minimum": 1 },
-                            "line_text": { "type": "string" },
-                            "line_truncated": { "type": "boolean" }
+                            "line": { "type": "integer", "minimum": 1 },
+                            "text": { "type": "string" }
                         },
-                        "required": ["path", "start_line", "end_line", "line_text", "line_truncated"]
+                        "required": ["path", "line", "text"]
                     }
                 },
-                "page": {
-                    "type": "object",
-                    "properties": {
-                        "has_more": { "type": "boolean" },
-                        "next": { "type": ["string", "null"] },
-                        "total": { "type": ["integer", "null"], "minimum": 0 }
-                    },
-                    "required": ["has_more", "next"]
-                },
-                "searched": {
-                    "type": "object",
-                    "properties": {
-                        "files": { "type": "integer", "minimum": 0 },
-                        "excluded": {
-                            "type": "boolean",
-                            "description": "True when default exclusion filters were active, or the path itself was excluded."
-                        }
-                    },
-                    "required": ["files", "excluded"]
-                },
-                "reason": {
-                    "type": "string",
-                    "enum": ["no_match", "corpus_empty", "glob_empty", "path_excluded", "binary_file", "file_not_searched"]
-                }
+                "message": { "type": "string" }
             },
-            "required": ["base", "matches", "page", "searched"]
+            "required": ["hits", "message"]
         }))
     }
 
@@ -257,8 +214,7 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
     let pattern = crate::tool::require_nonempty_string(input, "pattern")
         .map_err(LitecodeError::ToolExecution)?
         .to_string();
-    let case_sensitive = optional_bool(input, "case_sensitive")?.unwrap_or(true);
-    let include_ignored = optional_bool(input, "include_ignored")?.unwrap_or(false);
+    let ignore_case = optional_bool(input, "ignore_case")?.unwrap_or(false);
     let literal = optional_bool(input, "literal")?.unwrap_or(false);
     let glob = optional_string(input, "glob")?;
     let (include, exclude) = match glob.as_deref() {
@@ -268,24 +224,13 @@ fn parse_grep_options(input: &Value) -> Result<GrepOptions> {
         }
         None => (None, None),
     };
-    let cursor = match input.get("cursor") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(value)) => Some(value.clone()),
-        Some(_) => {
-            return Err(LitecodeError::ToolExecution(
-                "parameter 'cursor' expected a string".into(),
-            ));
-        }
-    };
     Ok(GrepOptions {
         pattern,
         glob,
         include,
         exclude,
-        case_sensitive,
-        include_ignored,
+        ignore_case,
         literal,
-        cursor,
         limit: parse_limit(input)?,
     })
 }
@@ -343,13 +288,13 @@ fn reject_invalid_regex(input: &Value) -> Option<ToolCallResult> {
     if pattern.is_empty() {
         return None;
     }
-    let case_sensitive = match input.get("case_sensitive") {
-        None | Some(Value::Null) => true,
+    let ignore_case = match input.get("ignore_case") {
+        None | Some(Value::Null) => false,
         Some(Value::Bool(value)) => *value,
         Some(_) => return None,
     };
     match regex::RegexBuilder::new(pattern)
-        .case_insensitive(!case_sensitive)
+        .case_insensitive(ignore_case)
         .build()
     {
         Ok(_) => None,
@@ -387,31 +332,6 @@ fn regex_error_position(rendered: &str) -> Option<usize> {
     None
 }
 
-fn query_fingerprint(options: &GrepOptions, path: &str) -> String {
-    fingerprint(&[
-        ("pattern", &options.pattern),
-        ("path", path),
-        ("glob", options.glob.as_deref().unwrap_or("")),
-        (
-            "case_sensitive",
-            if options.case_sensitive {
-                "true"
-            } else {
-                "false"
-            },
-        ),
-        (
-            "include_ignored",
-            if options.include_ignored {
-                "true"
-            } else {
-                "false"
-            },
-        ),
-        ("literal", if options.literal { "true" } else { "false" }),
-    ])
-}
-
 fn search(
     input: &Value,
     options: &GrepOptions,
@@ -443,7 +363,6 @@ fn search(
         None => crate::config::path::canon_abs_lossy(workspace),
     };
     let outside = !crate::config::path::is_under(&resolved, workspace);
-    let base = if outside { "absolute" } else { "workspace" };
     let file_scoped = resolved.is_file();
     if !file_scoped && !resolved.is_dir() {
         return Ok(crate::tools::file_path::coded_error(
@@ -452,25 +371,22 @@ fn search(
         ));
     }
     if file_scoped && looks_binary(&resolved) {
-        return Ok(empty_result(
-            base,
-            0,
-            !options.include_ignored,
-            "binary_file",
+        return Ok(finish_hits(
+            Vec::new(),
+            "Binary file skipped; grep only searches text files.",
         ));
     }
     if !file_scoped
         && raw_path.is_some()
         && ignored_discovery_message(workspace, &resolved).is_some()
     {
-        return Ok(empty_result(base, 0, true, "path_excluded"));
+        return Ok(finish_hits(
+            Vec::new(),
+            "Path is hidden by default search filters (.gitignore / workspace excludes).",
+        ));
     }
 
-    let preset = if options.include_ignored {
-        FilterPreset::NoIgnore
-    } else {
-        FilterPreset::Search
-    };
+    let preset = FilterPreset::Search;
     let candidates = list_candidates(
         workspace,
         &resolved,
@@ -481,33 +397,11 @@ fn search(
         preset,
         &execution.cancel,
     )?;
-    let version = file_identity::version_hash(candidates.iter().map(|candidate| {
-        format!(
-            "{}\n{}\n{}",
-            candidate.display, candidate.len, candidate.mtime
-        )
-    }));
-    let fp = query_fingerprint(options, raw_path.unwrap_or(""));
-    let bound = match file_identity::bind_cursor(options.cursor.as_deref(), &fp, &version) {
-        Ok(bound) => bound,
-        Err(stale) => return Ok(stale),
-    };
-    if let Some(path) = bound
-        .as_ref()
-        .and_then(|cursor| cursor.resume_path.as_ref())
-        && !candidates
-            .iter()
-            .any(|candidate| candidate.display == *path)
-    {
-        return Ok(file_identity::stale_cursor_result("offset"));
-    }
 
     if options.glob.is_some() && candidates.is_empty() {
-        return Ok(empty_result(
-            base,
-            0,
-            !options.include_ignored,
-            "glob_empty",
+        return Ok(finish_hits(
+            Vec::new(),
+            "No files matched the glob filter.",
         ));
     }
 
@@ -517,51 +411,40 @@ fn search(
         &candidates,
         options,
         preset,
-        bound.as_ref(),
         examine_cap,
         &execution.cancel,
     )?;
-    if scan.matches.is_empty() && !scan.has_more {
+    if scan.hits.is_empty() && !scan.truncated {
         if file_scoped && !scan.opened {
-            return Ok(empty_result(
-                base,
-                0,
-                !options.include_ignored,
-                "file_not_searched",
+            return Ok(finish_hits(
+                Vec::new(),
+                "File could not be searched.",
             ));
         }
         if scan.opened || !candidates.is_empty() {
-            return Ok(empty_result(
-                base,
-                candidates.len() as u64,
-                !options.include_ignored,
-                "no_match",
-            ));
+            return Ok(finish_hits(Vec::new(), "No matches found."));
         }
-        return Ok(empty_result(
-            base,
-            0,
-            !options.include_ignored,
-            "corpus_empty",
-        ));
+        return Ok(finish_hits(Vec::new(), "No files to search."));
     }
 
-    Ok(page_result(
-        &scan.matches,
-        base,
-        scan.has_more,
-        &fp,
-        &version,
-        candidates.len() as u64,
-        !options.include_ignored,
-        None,
-    ))
+    let message = if scan.truncated {
+        format!(
+            "Showing first {} hits; more matches exist. Raise limit to see more.",
+            scan.hits.len()
+        )
+    } else if scan.line_capped {
+        "One or more match lines were truncated in text.".into()
+    } else {
+        String::new()
+    };
+    Ok(finish_hits(scan.hits, message))
 }
 
 struct Scan {
-    matches: Vec<GrepMatchData>,
-    has_more: bool,
+    hits: Vec<GrepHit>,
+    truncated: bool,
     opened: bool,
+    line_capped: bool,
 }
 
 fn collect_matches(
@@ -570,40 +453,33 @@ fn collect_matches(
     candidates: &[Candidate],
     options: &GrepOptions,
     preset: FilterPreset,
-    cursor: Option<&QueryCursor>,
     examine_cap: usize,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<Scan> {
     let limit = options.limit;
     let target = (limit + 1).min(examine_cap.max(1));
-    let resume_path = cursor.and_then(|cursor| cursor.resume_path.clone());
-    let resume_line = cursor.and_then(|cursor| cursor.resume_line).unwrap_or(0);
     let mut kept = Vec::new();
     let mut opened = false;
-    let mut skipping = resume_path.is_some();
     let mut last_file_full = false;
     let mut files_left = false;
+    let mut line_capped = false;
     for (index, candidate) in candidates.iter().enumerate() {
         if cancel.is_cancelled() {
             return Err(LitecodeError::ToolExecution("search cancelled".into()));
         }
-        if skipping {
-            if resume_path.as_deref() != Some(candidate.display.as_str()) {
-                continue;
-            }
-        }
-        let floor = if skipping { resume_line } else { 0 };
-        skipping = false;
         if kept.len() >= target {
             files_left = true;
             break;
         }
         let fetch = target - kept.len();
-        let (hits, file_opened) = search_file(
-            workspace, outside, candidate, options, preset, floor, fetch, cancel,
+        let (hits, file_opened, capped) = search_file(
+            workspace, outside, candidate, options, preset, 0, fetch, cancel,
         )?;
         if file_opened {
             opened = true;
+        }
+        if capped {
+            line_capped = true;
         }
         last_file_full = hits.len() == fetch;
         kept.extend(hits);
@@ -616,11 +492,12 @@ fn collect_matches(
     if has_extra {
         kept.truncate(limit);
     }
-    let has_more = has_extra || (hit_cap && (last_file_full || files_left));
+    let truncated = has_extra || (hit_cap && (last_file_full || files_left));
     Ok(Scan {
-        matches: kept,
-        has_more,
+        hits: kept,
+        truncated,
         opened,
+        line_capped,
     })
 }
 
@@ -633,7 +510,7 @@ fn search_file(
     min_line: u64,
     fetch: usize,
     cancel: &tokio_util::sync::CancellationToken,
-) -> Result<(Vec<GrepMatchData>, bool)> {
+) -> Result<(Vec<GrepHit>, bool, bool)> {
     let root = if outside {
         candidate
             .abs
@@ -647,7 +524,7 @@ fn search_file(
         pattern: options.pattern.clone(),
         root,
         path: Some(candidate.abs.clone()),
-        case_sensitive: options.case_sensitive,
+        case_sensitive: !options.ignore_case,
         whole_word: false,
         is_regex: !options.literal,
         include: None,
@@ -660,23 +537,24 @@ fn search_file(
     };
     let outcome = lexical_search_for_agent_cancellable(&query, preset, workspace, Some(cancel))?;
     let opened = outcome.files_searched > 0 || !outcome.matches.is_empty();
-    let matches = outcome
+    let mut line_capped = false;
+    let hits = outcome
         .matches
         .into_iter()
         .map(|hit| {
-            let (line_text, line_truncated) = cap_match_line(&hit.line_text);
-            GrepMatchData {
+            let (text, capped) = cap_match_line(&hit.line_text);
+            if capped {
+                line_capped = true;
+            }
+            GrepHit {
                 path: candidate.display.clone(),
-                start_line: hit.start_line,
-                end_line: hit.end_line,
-                line_text,
-                line_truncated,
+                line: hit.start_line,
+                text,
             }
         })
         .collect();
-    Ok((matches, opened))
+    Ok((hits, opened, line_capped))
 }
-
 fn list_candidates(
     workspace: &Path,
     search_root: &Path,
@@ -807,12 +685,9 @@ fn push_candidate(
     if !seen.insert(display.clone()) {
         return;
     }
-    let (len, mtime) = file_stamp(abs);
     found.push(Candidate {
         abs: abs.to_path_buf(),
         display,
-        len,
-        mtime,
     });
 }
 
@@ -836,18 +711,6 @@ fn glob_allows(
     }
 }
 
-fn file_stamp(path: &Path) -> (u64, u64) {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return (0, 0);
-    };
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    (meta.len(), mtime)
-}
 
 fn cap_match_line(text: &str) -> (String, bool) {
     let without_newline = text.trim_end_matches(['\n', '\r']);
@@ -860,68 +723,12 @@ fn cap_match_line(text: &str) -> (String, bool) {
     }
 }
 
-fn page_result(
-    matches: &[GrepMatchData],
-    base: &str,
-    has_more: bool,
-    fp: &str,
-    version: &str,
-    files: u64,
-    excluded: bool,
-    reason: Option<&str>,
-) -> ToolCallResult {
-    let next = has_more.then(|| {
-        matches.last().map(|hit| {
-            encode_cursor(&QueryCursor {
-                fp: fp.to_string(),
-                ver: version.to_string(),
-                offset: 0,
-                resume_path: Some(hit.path.clone()),
-                resume_line: Some(u64::from(hit.start_line)),
-            })
-        })
-    });
-    let next = next.flatten();
-    let has_more = next.is_some();
-    finish_result(
-        base,
-        matches.to_vec(),
-        has_more,
-        next,
-        files,
-        excluded,
-        reason,
-    )
-}
-
-fn empty_result(base: &str, files: u64, excluded: bool, reason: &str) -> ToolCallResult {
-    finish_result(base, Vec::new(), false, None, files, excluded, Some(reason))
-}
-
-fn finish_result(
-    base: &str,
-    matches: Vec<GrepMatchData>,
-    has_more: bool,
-    next: Option<String>,
-    files: u64,
-    excluded: bool,
-    reason: Option<&str>,
-) -> ToolCallResult {
-    let page = Page {
-        has_more,
-        next,
-        total: None,
-    };
-    let mut data = serde_json::json!({
-        "base": base,
-        "matches": matches,
-        "page": &page,
-        "searched": {"files": files, "excluded": excluded},
-    });
-    if let Some(reason) = reason {
-        data["reason"] = serde_json::json!(reason);
-    }
-    crate::tool::outcome::ok_data(data)
+fn finish_hits(hits: Vec<GrepHit>, message: impl Into<String>) -> ToolCallResult {
+    // Code surface: facts in data; content empty (same as write/edit present).
+    crate::tool::outcome::ok_data(serde_json::json!({
+        "hits": hits,
+        "message": message.into(),
+    }))
 }
 
 fn grep_virtual_file(
@@ -938,8 +745,8 @@ fn grep_virtual_file(
     let file = reader
         .transcript_file_blocking(&session_id)
         .map_err(|error| LitecodeError::ToolExecution(error.to_string()))?;
-    let matches = grep_transcript(reader, &file, options, &execution.session_id)?;
-    finish_virtual(raw_path, matches, true, options, execution, examine_cap)
+    let hits = grep_transcript(reader, &file, options, &execution.session_id)?;
+    finish_virtual(hits, true, options, examine_cap)
 }
 
 fn grep_virtual_dir(
@@ -951,7 +758,7 @@ fn grep_virtual_dir(
     let listed = crate::session::transcript_file::list_virtual_paths(
         reader.list_session_ids_blocking().unwrap_or_default(),
     );
-    let mut matches = Vec::new();
+    let mut hits = Vec::new();
     for virtual_path in &listed {
         if !glob_allows(
             virtual_path,
@@ -971,39 +778,31 @@ fn grep_virtual_dir(
                 continue;
             }
         };
-        matches.extend(grep_transcript(
+        hits.extend(grep_transcript(
             reader,
             &file,
             options,
             &execution.session_id,
         )?);
     }
-    let empty_reason = if listed.is_empty() {
-        "corpus_empty"
-    } else if options.glob.is_some() && matches.is_empty() {
-        "glob_empty"
+    let empty_message = if listed.is_empty() {
+        "No files to search."
+    } else if options.glob.is_some() && hits.is_empty() {
+        "No files matched the glob filter."
     } else {
-        "no_match"
+        "No matches found."
     };
-    finish_virtual(
-        ".litecode/sessions",
-        matches,
-        false,
-        options,
-        execution,
-        examine_cap,
-    )
-    .map(|result| {
+    finish_virtual(hits, false, options, examine_cap).map(|result| {
         if result
             .data
             .as_ref()
-            .and_then(|data| data.get("matches"))
+            .and_then(|data| data.get("hits"))
             .and_then(Value::as_array)
-            .is_some_and(|matches| matches.is_empty())
+            .is_some_and(|hits| hits.is_empty())
         {
             let mut result = result;
             if let Some(data) = result.data.as_mut() {
-                data["reason"] = serde_json::json!(empty_reason);
+                data["message"] = serde_json::json!(empty_message);
             }
             result
         } else {
@@ -1013,76 +812,40 @@ fn grep_virtual_dir(
 }
 
 fn finish_virtual(
-    path_key: &str,
-    mut matches: Vec<GrepMatchData>,
+    mut hits: Vec<GrepHit>,
     file_scoped: bool,
     options: &GrepOptions,
-    _execution: &ToolExecutionContext,
     examine_cap: usize,
 ) -> Result<ToolCallResult> {
-    matches.sort_by(|a, b| {
+    hits.sort_by(|a, b| {
         crate::workspace::glob_hit_key(&a.path)
             .cmp(&crate::workspace::glob_hit_key(&b.path))
-            .then(a.start_line.cmp(&b.start_line))
+            .then(a.line.cmp(&b.line))
     });
-    let version = file_identity::version_hash(
-        matches
-            .iter()
-            .map(|hit| format!("{}:{}:{}", hit.path, hit.start_line, hit.line_text)),
-    );
-    let fp = query_fingerprint(options, path_key);
-    let bound = match file_identity::bind_cursor(options.cursor.as_deref(), &fp, &version) {
-        Ok(bound) => bound,
-        Err(stale) => return Ok(stale),
-    };
-    if matches.is_empty() {
-        let reason = if file_scoped {
-            "no_match"
+    if hits.is_empty() {
+        let message = if file_scoped {
+            "No matches found."
         } else {
-            "corpus_empty"
+            "No files to search."
         };
-        return Ok(empty_result(
-            "workspace",
-            u64::from(file_scoped),
-            !options.include_ignored,
-            reason,
-        ));
+        return Ok(finish_hits(Vec::new(), message));
     }
-    let resume_path = bound.as_ref().and_then(|cursor| cursor.resume_path.clone());
-    let resume_line = bound.and_then(|cursor| cursor.resume_line).unwrap_or(0);
-    let target = (options.limit + 1).min(examine_cap.max(1));
-    let mut page = Vec::new();
-    let mut started = resume_path.is_none();
-    for hit in matches {
-        if !started {
-            if resume_path.as_deref() != Some(hit.path.as_str()) {
-                continue;
-            }
-            if u64::from(hit.start_line) <= resume_line {
-                continue;
-            }
-            started = true;
-        }
-        page.push(hit);
-        if page.len() >= target {
-            break;
-        }
+    let truncated = hits.len() > options.limit
+        || (examine_cap < options.limit + 1 && hits.len() >= examine_cap);
+    if examine_cap < options.limit + 1 && hits.len() > examine_cap {
+        hits.truncate(examine_cap);
+    } else if hits.len() > options.limit {
+        hits.truncate(options.limit);
     }
-    let hit_cap = examine_cap < options.limit + 1 && page.len() >= examine_cap;
-    let has_extra = page.len() > options.limit;
-    if has_extra {
-        page.truncate(options.limit);
-    }
-    Ok(page_result(
-        &page,
-        "workspace",
-        has_extra || hit_cap,
-        &fp,
-        &version,
-        1,
-        !options.include_ignored,
-        None,
-    ))
+    let message = if truncated {
+        format!(
+            "Showing first {} hits; more matches exist. Raise limit to see more.",
+            hits.len()
+        )
+    } else {
+        String::new()
+    };
+    Ok(finish_hits(hits, message))
 }
 
 fn grep_transcript(
@@ -1090,14 +853,14 @@ fn grep_transcript(
     file: &crate::session::transcript_file::TranscriptFile,
     options: &GrepOptions,
     caller_session_id: &str,
-) -> Result<Vec<GrepMatchData>> {
+) -> Result<Vec<GrepHit>> {
     let source = if options.literal {
         regex::escape(&options.pattern)
     } else {
         options.pattern.clone()
     };
     let re = regex::RegexBuilder::new(&source)
-        .case_insensitive(!options.case_sensitive)
+        .case_insensitive(options.ignore_case)
         .build()
         .map_err(|error| {
             LitecodeError::ToolExecution(format!("invalid regular expression: {error}"))
@@ -1108,7 +871,7 @@ fn grep_transcript(
     } else {
         Vec::new()
     };
-    let mut matches = Vec::new();
+    let mut hits = Vec::new();
     for (index, line) in file.lines.iter().enumerate() {
         let line_no = (index + 1) as u32;
         if file
@@ -1118,18 +881,17 @@ fn grep_transcript(
             continue;
         }
         if re.is_match(line) {
-            let (line_text, line_truncated) = cap_match_line(line);
-            matches.push(GrepMatchData {
+            let (text, _) = cap_match_line(line);
+            hits.push(GrepHit {
                 path: file.virtual_path.clone(),
-                start_line: line_no,
-                end_line: line_no,
-                line_text,
-                line_truncated,
+                line: line_no,
+                text,
             });
         }
     }
-    Ok(matches)
+    Ok(hits)
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1206,8 +968,8 @@ mod tests {
             .expect("grep must return structured data")
     }
 
-    fn match_blob(result: &ToolCallResult) -> String {
-        grep_data(result)["matches"]
+    fn hit_blob(result: &ToolCallResult) -> String {
+        grep_data(result)["hits"]
             .as_array()
             .into_iter()
             .flatten()
@@ -1215,7 +977,7 @@ mod tests {
                 format!(
                     "{} {}",
                     hit["path"].as_str().unwrap_or(""),
-                    hit["line_text"].as_str().unwrap_or("")
+                    hit["text"].as_str().unwrap_or("")
                 )
             })
             .collect::<Vec<_>>()
@@ -1223,82 +985,60 @@ mod tests {
     }
 
     #[test]
-    fn schema_exposes_pagination_and_literal() {
+    fn schema_exposes_simple_contract() {
         assert_eq!(GrepTool.timeout(), Some(Duration::from_secs(30)));
         assert!(GrepTool.is_cancellable());
         let schema = GrepTool.schema();
         let props = schema["properties"].as_object().unwrap();
-        for expected in [
-            "case_sensitive",
-            "cursor",
-            "glob",
-            "include_ignored",
-            "limit",
-            "literal",
-            "path",
-            "pattern",
-        ] {
+        for expected in ["pattern", "path", "glob", "literal", "ignore_case", "limit"] {
             assert!(props.contains_key(expected), "missing {expected}");
         }
+        for retired in ["cursor", "include_ignored", "case_sensitive"] {
+            assert!(!props.contains_key(retired), "retired {retired} still in schema");
+        }
         assert_eq!(schema["required"], serde_json::json!(["pattern"]));
-        assert!(
-            props["literal"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("plain text")
-        );
+        let data = GrepTool.data_schema().unwrap();
+        let data_props = data["properties"].as_object().unwrap();
+        assert!(data_props.contains_key("hits"));
+        assert!(data_props.contains_key("message"));
+        for retired in ["base", "matches", "page", "searched", "reason"] {
+            assert!(!data_props.contains_key(retired), "retired {retired}");
+        }
     }
 
     #[test]
-    fn page_is_bounded_and_cursor_continues() {
+    fn limit_bounds_hits_and_notes_truncation() {
         let dir = tempfile::tempdir().unwrap();
         write_many_files(dir.path(), 25);
-
         let first = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
         assert_eq!(first.level, crate::types::ToolSignalLevel::Ok);
-        let first_data = grep_data(&first);
-        assert_eq!(first_data["matches"].as_array().unwrap().len(), 20);
-        assert_eq!(first_data["page"]["has_more"], true);
-        let cursor = first_data["page"]["next"].as_str().unwrap().to_string();
-
-        let second = call_result(
-            dir.path(),
-            serde_json::json!({"pattern": "needle", "cursor": cursor}),
+        assert!(first.content.is_empty(), "content must stay empty");
+        let data = grep_data(&first);
+        assert_eq!(data["hits"].as_array().unwrap().len(), 20);
+        assert!(
+            data["message"].as_str().unwrap().contains("Raise limit"),
+            "{}",
+            data["message"]
         );
-        let second_data = grep_data(&second);
-        assert_eq!(second_data["matches"].as_array().unwrap().len(), 5);
-        assert_eq!(second_data["page"]["has_more"], false);
-        assert!(second_data["page"]["next"].is_null());
-
-        let mut seen = HashSet::new();
-        for data in [&first_data, &second_data] {
-            for hit in data["matches"].as_array().unwrap() {
-                let key = format!(
-                    "{}:{}",
-                    hit["path"].as_str().unwrap(),
-                    hit["start_line"].as_u64().unwrap()
-                );
-                assert!(seen.insert(key), "pages overlapped");
-            }
-        }
-        assert_eq!(seen.len(), 25);
+        assert!(data.get("page").is_none());
+        assert!(data.get("matches").is_none());
     }
 
     #[test]
-    fn changed_pattern_reuses_cursor_as_stale() {
+    fn retired_cursor_is_absent_from_schema() {
+        let schema = GrepTool.schema();
+        let props = schema["properties"].as_object().unwrap();
+        assert!(!props.contains_key("cursor"));
+        assert!(!props.contains_key("include_ignored"));
+        // Direct execute ignores unknown keys; executor schema_validate rejects them.
         let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 25);
-        let first = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let cursor = grep_data(&first)["page"]["next"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let stale = call_result(
+        write(dir.path(), "a.rs", "needle\n");
+        let result = call_result(
             dir.path(),
-            serde_json::json!({"pattern": "other", "cursor": cursor}),
+            serde_json::json!({"pattern": "needle", "cursor": "anything"}),
         );
-        assert_eq!(stale.error_code.as_deref(), Some("stale_cursor"));
-        assert_eq!(stale.error_details.as_ref().unwrap()["reason"], "query");
+        assert!(result.error.is_none(), "{}", result.content);
+        assert_eq!(grep_data(&result)["hits"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -1306,8 +1046,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_many_files(dir.path(), 30);
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        assert_eq!(grep_data(&result)["page"]["has_more"], true);
-
+        assert!(grep_data(&result)["message"].as_str().unwrap().contains("Raise limit"));
         let bash_dir = dir.path().join(".litecode").join("bash");
         if bash_dir.is_dir() {
             let spill = std::fs::read_dir(bash_dir)
@@ -1333,15 +1072,20 @@ mod tests {
     }
 
     #[test]
-    fn data_line_text_is_bounded_and_marked() {
+    fn match_text_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let long = format!("needle {}\n", "x".repeat(600));
         write(dir.path(), "long.rs", &long);
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let data = grep_data(&result);
-        let hit = &data["matches"][0];
-        assert_eq!(hit["line_truncated"], true);
-        assert!(hit["line_text"].as_str().unwrap().ends_with("..."));
+        let hit = &grep_data(&result)["hits"][0];
+        assert!(hit["text"].as_str().unwrap().ends_with("..."));
+        assert!(
+            grep_data(&result)["message"]
+                .as_str()
+                .unwrap()
+                .contains("truncated")
+                || hit["text"].as_str().unwrap().ends_with("...")
+        );
     }
 
     #[test]
@@ -1397,7 +1141,7 @@ mod tests {
             serde_json::json!({"pattern": pattern, "literal": true}),
         );
         assert!(retry.error.is_none(), "{}", retry.content);
-        assert!(match_blob(&retry).contains("ModelRequest"));
+        assert!(hit_blob(&retry).contains("ModelRequest"));
     }
 
     #[test]
@@ -1416,7 +1160,7 @@ mod tests {
         write(dir.path(), "a.rs", "needle_42 {\n");
         write(dir.path(), "b.rs", "needle_x {\nother_42 {\n");
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle_\\d+"}));
-        let out = match_blob(&result);
+        let out = hit_blob(&result);
         assert!(out.contains("needle_42"), "got: {out}");
         assert!(
             !out.contains("needle_x") && !out.contains("other_42"),
@@ -1425,13 +1169,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_workspace_reports_the_corpus_without_naming_a_knob() {
+    fn empty_workspace_reports_no_files() {
         let dir = tempfile::tempdir().unwrap();
         let result = call_result(dir.path(), serde_json::json!({"pattern": "anything"}));
         let data = grep_data(&result);
-        assert_eq!(data["reason"], "corpus_empty");
+        assert!(data["hits"].as_array().unwrap().is_empty());
+        assert!(
+            data["message"].as_str().unwrap().contains("No files"),
+            "{}",
+            data["message"]
+        );
+        assert!(data.get("reason").is_none());
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(!result.content.contains("-u"), "{}", result.content);
     }
 
     fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {
@@ -1445,35 +1194,39 @@ mod tests {
     }
 
     #[test]
-    fn excluded_tree_requires_explicit_include_ignored() {
+    fn excluded_tree_stays_hidden_without_dialect_knob() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "hidden_dir/hidden.rs", "needle_lift\n");
         write(dir.path(), "visible.rs", "nothing\n");
         let path = dir.path().to_path_buf();
-
         let hidden =
             with_excluded_dir(|| call_result(&path, serde_json::json!({"pattern": "needle_lift"})));
         let hidden_data = grep_data(&hidden);
-        assert_eq!(hidden_data["reason"], "no_match");
-        assert_eq!(hidden_data["searched"]["excluded"], true);
+        assert!(hidden_data["hits"].as_array().unwrap().is_empty());
         assert!(
-            !match_blob(&hidden).contains("hidden.rs"),
-            "zero-hit must not lift excludes implicitly: {hidden_data}"
+            !hit_blob(&hidden).contains("hidden.rs"),
+            "must not lift excludes: {hidden_data}"
         );
-
-        let included = with_excluded_dir(|| {
+        // include_ignored retired from schema; direct execute ignores unknown keys.
+        assert!(!GrepTool.schema()["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("include_ignored"));
+        let ignored = with_excluded_dir(|| {
             call_result(
                 &path,
                 serde_json::json!({"pattern": "needle_lift", "include_ignored": true}),
             )
         });
-        let included_blob = match_blob(&included);
-        assert!(included_blob.contains("hidden.rs"), "got: {included_blob}");
-        assert_eq!(grep_data(&included)["searched"]["excluded"], false);
+        assert!(ignored.error.is_none(), "{}", ignored.content);
+        assert!(
+            grep_data(&ignored)["hits"].as_array().unwrap().is_empty(),
+            "retired knob must not lift excludes"
+        );
     }
 
     #[test]
-    fn naming_an_excluded_tree_is_refused_with_the_reason() {
+    fn naming_an_excluded_tree_explains_in_message() {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "hidden_dir/hidden.rs", "needle\n");
         let path = dir.path().to_path_buf();
@@ -1483,26 +1236,15 @@ mod tests {
                 serde_json::json!({"pattern": "needle", "path": "hidden_dir"}),
             )
         });
-        assert_eq!(grep_data(&result)["reason"], "path_excluded");
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(grep_data(&result)["matches"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn include_ignored_miss_names_the_expanded_corpus() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "hidden_dir/hidden.rs", "present\n");
-        let path = dir.path().to_path_buf();
-        let result = with_excluded_dir(|| {
-            call_result(
-                &path,
-                serde_json::json!({"pattern": "absent_everywhere", "include_ignored": true}),
-            )
-        });
         let data = grep_data(&result);
-        assert_eq!(data["matches"].as_array().unwrap().len(), 0);
-        assert_eq!(data["searched"]["excluded"], false);
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(data["hits"].as_array().unwrap().is_empty());
+        assert!(
+            data["message"].as_str().unwrap().to_lowercase().contains("hidden")
+                || data["message"].as_str().unwrap().contains("filter"),
+            "{}",
+            data["message"]
+        );
+        assert!(data.get("reason").is_none());
     }
 
     #[test]
@@ -1511,24 +1253,14 @@ mod tests {
         write(dir.path(), "a.rs", "needle\nfiller\nneedle\n");
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
         let data = grep_data(&result);
-        assert_eq!(data["matches"].as_array().unwrap().len(), 2);
-        assert_eq!(match_blob(&result).matches("needle").count(), 2);
+        assert_eq!(data["hits"].as_array().unwrap().len(), 2);
+        assert_eq!(hit_blob(&result).matches("needle").count(), 2);
+        assert_eq!(data["hits"][0]["line"], 1);
+        assert_eq!(data["hits"][1]["line"], 3);
     }
 
     #[test]
-    fn long_match_lines_are_marked_truncated() {
-        let dir = tempfile::tempdir().unwrap();
-        let long = format!("needle {}\n", "x".repeat(600));
-        write(dir.path(), "big.rs", &long);
-        let data = grep_data(&call_result(
-            dir.path(),
-            serde_json::json!({"pattern": "needle"}),
-        ));
-        assert_eq!(data["matches"][0]["line_truncated"], true);
-    }
-
-    #[test]
-    fn a_single_file_with_many_hits_still_returns_a_page() {
+    fn a_single_file_with_many_hits_still_bounds() {
         let dir = tempfile::tempdir().unwrap();
         let body: String = (0..40)
             .map(|i| format!("needle{i:02} {}\n", "y".repeat(400)))
@@ -1536,9 +1268,9 @@ mod tests {
         write(dir.path(), "wide.rs", &body);
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
         let data = grep_data(&result);
-        assert_eq!(data["matches"].as_array().unwrap().len(), 20);
-        assert_eq!(data["page"]["has_more"], true);
-        assert!(match_blob(&result).contains("needle00"));
+        assert_eq!(data["hits"].as_array().unwrap().len(), 20);
+        assert!(data["message"].as_str().unwrap().contains("Raise limit"));
+        assert!(hit_blob(&result).contains("needle00"));
     }
 
     #[test]
@@ -1546,7 +1278,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(dir.path(), "cn.rs", "let s = \"世界\";\n");
         let result = call_result(dir.path(), serde_json::json!({"pattern": "世界"}));
-        assert!(match_blob(&result).contains("世界"));
+        assert!(hit_blob(&result).contains("世界"));
+    }
+
+    #[test]
+    fn ignore_case_finds_mixed_case() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "a.rs", "Needle\n");
+        let sensitive = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
+        assert!(grep_data(&sensitive)["hits"].as_array().unwrap().is_empty());
+        let insensitive = call_result(
+            dir.path(),
+            serde_json::json!({"pattern": "needle", "ignore_case": true}),
+        );
+        assert_eq!(grep_data(&insensitive)["hits"].as_array().unwrap().len(), 1);
     }
 
     #[test]
@@ -1559,9 +1304,9 @@ mod tests {
             crate::workspace::ToolPathMode::All,
         );
         assert!(
-            match_blob(&result).contains("a.rs"),
+            hit_blob(&result).contains("a.rs"),
             "an absolute in-workspace path must work, got: {}",
-            match_blob(&result)
+            hit_blob(&result)
         );
     }
 
@@ -1596,6 +1341,13 @@ mod tests {
             !prod.contains("path_index") && !prod.contains("text_index"),
             "grep must not read the mention path catalog"
         );
+        assert!(!prod.contains("stale_cursor"));
+        assert!(!prod.contains("include_ignored"));
+        assert!(!prod.contains("QueryCursor"));
+        // LexicalQuery still has an internal case_sensitive field; public knob is ignore_case.
+        let schema = GrepTool.schema();
+        assert!(!schema["properties"].as_object().unwrap().contains_key("case_sensitive"));
+        assert!(schema["properties"].as_object().unwrap().contains_key("ignore_case"));
     }
 
     #[test]
@@ -1608,7 +1360,7 @@ mod tests {
             root,
             serde_json::json!({"pattern": "VIRTUAL_GREP_NEEDLE", "path": path}),
         );
-        assert!(match_blob(&result).contains("VIRTUAL_GREP_NEEDLE"));
+        assert!(hit_blob(&result).contains("VIRTUAL_GREP_NEEDLE"));
     }
 
     #[test]
@@ -1622,8 +1374,9 @@ mod tests {
             serde_json::json!({"pattern": "ABSENT_TOKEN", "path": path}),
         );
         let data = grep_data(&result);
-        assert_eq!(data["reason"], "no_match");
-        assert!(data["matches"].as_array().unwrap().is_empty());
+        assert!(data["hits"].as_array().unwrap().is_empty());
+        assert!(data["message"].as_str().unwrap().contains("No matches"));
+        assert!(data.get("reason").is_none());
     }
 
     fn seed_session(root: &std::path::Path, body: &str) -> String {
@@ -1640,7 +1393,7 @@ mod tests {
     }
 
     #[test]
-    fn data_schema_accepts_structured_page() {
+    fn data_schema_accepts_structured_hits() {
         let dir = tempfile::tempdir().unwrap();
         write_many_files(dir.path(), 3);
         let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
@@ -1651,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn phase2_grep_scan_budget_is_visible() {
+    fn examine_cap_bounds_hits_in_message() {
         let dir = tempfile::tempdir().unwrap();
         write_many_files(dir.path(), 8);
         let result = dispatch(
@@ -1660,9 +1413,8 @@ mod tests {
             3,
         );
         let data = grep_data(&result);
-        assert_eq!(data["matches"].as_array().unwrap().len(), 3);
-        assert_eq!(data["page"]["has_more"], true);
-        assert!(data["page"]["next"].is_string());
+        assert_eq!(data["hits"].as_array().unwrap().len(), 3);
+        assert!(data["message"].as_str().unwrap().contains("Raise limit"));
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 }

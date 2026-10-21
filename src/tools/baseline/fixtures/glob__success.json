@@ -1,13 +1,8 @@
 {
-  "content_historical": "keep.txt",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "base": "workspace",
-    "page": {
-      "has_more": false,
-      "next": null,
-      "total": 1
-    },
+    "message": "",
     "paths": [
       "keep.txt"
     ]

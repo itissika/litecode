@@ -441,11 +441,13 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
     let label = format!("{}/{}", case.tool, case.scenario);
     match (case.tool, case.scenario) {
         ("edit", "empty") => {
+            // WP-198: empty-file miss resolves ok=false with guidance in message.
             assert!(
-                result.error.is_some() && result.data.is_none(),
-                "{label} empty file is an error without data: {}",
+                result.error.is_none() && result.data.is_some(),
+                "{label} empty file should resolve with data: {}",
                 describe(result)
             );
+            assert_eq!(result.data.as_ref().unwrap()["ok"], false, "{label}");
         }
         (_, "invalid_input") => {
             assert_kind(result, ToolErrorKind::InvalidInput, &label);
@@ -477,19 +479,28 @@ fn expect_shape(case: &Live, result: &ToolCallResult) {
     }
     if case.tool == "read" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["lines"][0]["line_truncated"], true, "{data}");
+        let line = data["lines"][0].as_str().unwrap();
+        assert!(line.ends_with("..."), "{data}");
+        assert!(
+            data["message"].as_str().unwrap().contains("truncated"),
+            "{data}"
+        );
     }
     if case.tool == "glob" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["page"]["has_more"], true, "{data}");
         assert!(
-            data["page"]["total"].as_u64().unwrap()
-                > data["paths"].as_array().unwrap().len() as u64
+            data["message"].as_str().unwrap().contains("Raise limit"),
+            "{data}"
         );
+        assert_eq!(data["paths"].as_array().unwrap().len(), 1000, "{data}");
     }
     if case.tool == "grep" && case.scenario == "truncation" {
         let data = result.data.as_ref().unwrap();
-        assert_eq!(data["page"]["has_more"], true, "{data}");
+        assert_eq!(data["hits"].as_array().unwrap().len(), 1, "{data}");
+        assert!(
+            data["message"].as_str().unwrap().contains("Raise limit"),
+            "{data}"
+        );
     }
 }
 
@@ -515,12 +526,6 @@ fn describe(result: &ToolCallResult) -> String {
 
 fn observed(case: &Live, result: &ToolCallResult, root: &Path) -> Value {
     let mut data = normalize_value(&result.data.clone().unwrap_or(Value::Null), root);
-    if case.tool == "grep"
-        && let Some(next) = data.get_mut("page").and_then(|page| page.get_mut("next"))
-        && next.is_string()
-    {
-        *next = json!("<cursor>");
-    }
     if case.tool == "glob" && case.scenario == "truncation" {
         if let Some(paths) = data.get_mut("paths").and_then(Value::as_array_mut) {
             paths.sort_by(|left, right| {

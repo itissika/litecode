@@ -4,8 +4,7 @@ use serde_json::Value;
 
 use crate::context_pipeline::Context;
 use crate::tool::Tool;
-use crate::tool::file_identity::{self, QueryCursor, encode_cursor, fingerprint};
-use crate::tool::outcome::Page;
+use crate::tool::file_identity;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::types::{Result, ToolCallResult};
 use crate::workspace::filter::{
@@ -37,19 +36,11 @@ impl Tool for GlobTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
-                },
-                "include_ignored": {
-                    "type": "boolean",
-                    "description": "Also search gitignored and workspace-excluded paths. Default false."
+                    "description": "Optional directory to search under (workspace-relative preferred). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`."
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum paths in this page. Default 1000, maximum 5000."
-                },
-                "cursor": {
-                    "type": "string",
-                    "description": "Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor."
+                    "description": "Maximum paths to return. Default 1000, maximum 5000."
                 }
             },
             "required": ["pattern"],
@@ -60,34 +51,17 @@ impl Tool for GlobTool {
     fn data_schema(&self) -> Option<Value> {
         Some(serde_json::json!({
             "type": "object",
-            "description": "One page of matching paths.",
+            "additionalProperties": false,
+            "description": "Matching paths. Guidance lives only in message.",
             "properties": {
-                "base": {
-                    "type": "string",
-                    "enum": ["workspace", "absolute"],
-                    "description": "workspace: paths are workspace-relative. absolute: paths are absolute."
-                },
                 "paths": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Matching paths sorted by depth, then parent directory, then name."
+                    "description": "Matching paths sorted by depth, then parent directory, then name. Workspace-relative by default."
                 },
-                "page": {
-                    "type": "object",
-                    "properties": {
-                        "has_more": { "type": "boolean" },
-                        "next": { "type": ["string", "null"] },
-                        "total": { "type": "integer", "minimum": 0 }
-                    },
-                    "required": ["has_more", "next"]
-                },
-                "reason": {
-                    "type": "string",
-                    "enum": ["no_match", "path_excluded"],
-                    "description": "no_match: nothing matched. path_excluded: the path is hidden by the default filters."
-                }
+                "message": { "type": "string" }
             },
-            "required": ["base", "paths", "page"]
+            "required": ["paths", "message"]
         }))
     }
 
@@ -165,10 +139,6 @@ impl GlobTool {
             );
         }
 
-        let no_ignore = input
-            .get("include_ignored")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         let path_arg = input["path"]
             .as_str()
             .map(str::trim)
@@ -192,16 +162,7 @@ impl GlobTool {
                 Ok(r) => r,
                 Err(e) => return crate::tools::file_path::litecode_error(e),
             };
-            return finish_glob(
-                &results.hits,
-                file_identity::PathBase::Workspace,
-                pattern,
-                path_arg,
-                no_ignore,
-                limit,
-                input.get("cursor").and_then(Value::as_str),
-                false,
-            );
+            return finish_glob(&results.hits, limit, outside);
         }
 
         let search_path = match path_arg {
@@ -231,50 +192,32 @@ impl GlobTool {
             );
         }
 
-        if !no_ignore
-            && crate::workspace::filter::ignored_discovery_message(
-                &execution.workspace_root,
-                &search_path,
-            )
-            .is_some()
+        if crate::workspace::filter::ignored_discovery_message(
+            &execution.workspace_root,
+            &search_path,
+        )
+        .is_some()
         {
-            return finish_glob(
-                &[],
-                file_identity::PathBase::Workspace,
-                pattern,
-                path_arg,
-                no_ignore,
-                limit,
-                input.get("cursor").and_then(Value::as_str),
-                true,
-            );
+            let mut result = finish_glob(&[], limit, outside);
+            if let Some(data) = result.data.as_mut() {
+                data["message"] = serde_json::json!(
+                    "Path is hidden by default search filters (.gitignore / workspace excludes)."
+                );
+            }
+            return result;
         }
 
         let results = match glob_match_cancellable(
             &execution.workspace_root,
             &search_path,
             pattern,
-            no_ignore,
+            false,
             Some(&execution.cancel),
         ) {
             Ok(r) => r,
             Err(e) => return crate::tools::file_path::litecode_error(e),
         };
-        let base = if outside {
-            file_identity::PathBase::Absolute
-        } else {
-            file_identity::PathBase::Workspace
-        };
-        finish_glob(
-            &results.hits,
-            base,
-            pattern,
-            path_arg,
-            no_ignore,
-            limit,
-            input.get("cursor").and_then(Value::as_str),
-            false,
-        )
+        finish_glob(&results.hits, limit, outside)
     }
 }
 
@@ -313,79 +256,35 @@ fn coded(code: &str, message: impl Into<String>) -> ToolCallResult {
     crate::tools::file_path::coded_error(code, message)
 }
 
-fn finish_glob(
-    hits: &[String],
-    base: file_identity::PathBase,
-    pattern: &str,
-    path_arg: Option<&str>,
-    include_ignored: bool,
-    limit: usize,
-    cursor: Option<&str>,
-    path_excluded: bool,
-) -> ToolCallResult {
-    let version = file_identity::version_hash(hits.iter().map(String::as_str));
-    let bound = match file_identity::bind_cursor(
-        cursor,
-        &fingerprint(&[
-            ("pattern", pattern),
-            ("path", path_arg.unwrap_or("")),
-            (
-                "include_ignored",
-                if include_ignored { "true" } else { "false" },
-            ),
-        ]),
-        &version,
-    ) {
-        Ok(bound) => bound,
-        Err(stale) => return stale,
-    };
-    let offset = bound
-        .as_ref()
-        .map(|cursor| cursor.offset as usize)
-        .unwrap_or(0);
-    if offset > hits.len() {
-        return file_identity::stale_cursor_result("offset");
-    }
-    let end = (offset + limit).min(hits.len());
-    let page_hits = hits[offset..end].to_vec();
-    let has_more = end < hits.len();
-    let next = has_more.then(|| {
-        encode_cursor(&QueryCursor {
-            fp: fingerprint(&[
-                ("pattern", pattern),
-                ("path", path_arg.unwrap_or("")),
-                (
-                    "include_ignored",
-                    if include_ignored { "true" } else { "false" },
-                ),
-            ]),
-            ver: version,
-            offset: end as u64,
-            resume_path: None,
-            resume_line: None,
-        })
-    });
-    let page = Page {
-        has_more,
-        next,
-        total: Some(hits.len() as u64),
-    };
-    let reason = if path_excluded {
-        Some("path_excluded")
-    } else if hits.is_empty() {
-        Some("no_match")
+fn finish_glob(hits: &[String], limit: usize, outside: bool) -> ToolCallResult {
+    let truncated = hits.len() > limit;
+    let page_hits = if truncated {
+        hits[..limit].to_vec()
     } else {
-        None
+        hits.to_vec()
     };
-    let mut data = serde_json::json!({
-        "base": base.as_str(),
-        "paths": page_hits,
-        "page": page,
-    });
-    if let Some(reason) = reason {
-        data["reason"] = serde_json::json!(reason);
+    let mut message = String::new();
+    if truncated {
+        message = format!(
+            "Showing first {} of {} paths. Raise limit to see more.",
+            page_hits.len(),
+            hits.len()
+        );
+    } else if hits.is_empty() {
+        message = "No matching paths.".into();
     }
-    crate::tool::outcome::ok_data(data)
+    if outside {
+        let note = "Paths outside the workspace are absolute.";
+        if message.is_empty() {
+            message = note.into();
+        } else {
+            message = format!("{message} {note}");
+        }
+    }
+    crate::tool::outcome::ok_data(serde_json::json!({
+        "paths": page_hits,
+        "message": message,
+    }))
 }
 
 fn pattern_reaches_parent(pattern: &str) -> bool {
@@ -534,6 +433,7 @@ fn discovery_preset(no_ignore: bool) -> FilterPreset {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -560,27 +460,14 @@ mod tests {
         std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports=1\n").unwrap();
         std::fs::write(root.join(".env"), "AGENT_GLOB=1\n").unwrap();
 
-        let found = glob_match(root, root, "**/*.{rs,js,env}", false)
-            .unwrap()
-            .hits;
-        assert!(
-            found
-                .iter()
-                .any(|p| p == "src/main.rs" || p.ends_with("main.rs")),
-            "expected src/main.rs in {found:?}"
-        );
-        assert!(
-            !found.iter().any(|p| p.contains("node_modules")),
-            "Search must apply search.exclude; got {found:?}"
-        );
-        assert!(
-            found.iter().any(|p| p == ".env"),
-            "Search must not hide dotfiles; got {found:?}"
-        );
+        let found = glob_match(root, root, "**/*.{rs,js,env}", false).unwrap().hits;
+        assert!(found.iter().any(|p| p == "src/main.rs" || p.ends_with("main.rs")), "{found:?}");
+        assert!(!found.iter().any(|p| p.contains("node_modules")), "{found:?}");
+        assert!(found.iter().any(|p| p == ".env"), "{found:?}");
     }
 
     #[test]
-    fn no_ignore_includes_search_exclude_and_gitignored() {
+    fn default_filters_hide_gitignored() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".git")).unwrap();
@@ -594,25 +481,15 @@ mod tests {
         assert!(filtered.iter().any(|p| p == "keep.txt"));
         assert!(!filtered.iter().any(|p| p == "ignored.txt"));
         assert!(!filtered.iter().any(|p| p.contains("node_modules")));
-
         let raw = glob_match(root, root, "**/*", true).unwrap().hits;
-        assert!(raw.iter().any(|p| p == "ignored.txt"), "got {raw:?}");
-        assert!(
-            raw.iter().any(|p| p == "node_modules/pkg/index.js"),
-            "got {raw:?}"
-        );
+        assert!(raw.iter().any(|p| p == "ignored.txt"), "{raw:?}");
     }
 
-    /// PNG signature + IHDR length field (NUL bytes) so `looks_binary` is true.
     fn write_png(path: &std::path::Path) {
         std::fs::write(
             path,
-            [
-                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-                0x44, 0x52,
-            ],
-        )
-        .unwrap();
+            [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52],
+        ).unwrap();
     }
 
     #[test]
@@ -623,61 +500,27 @@ mod tests {
         write_png(&root.join("logo.png"));
         write_png(&root.join("assets/icon.png"));
         std::fs::write(root.join("keep.txt"), "x\n").unwrap();
-
         let from_root = glob_in(root, serde_json::json!({ "pattern": "*.png" }));
-        assert!(
-            from_root.contains("logo.png"),
-            "glob must list binary files by path; got {from_root}"
-        );
-        assert!(
-            from_root.contains("assets/icon.png"),
-            "glob must list nested png; got {from_root}"
-        );
-
-        let scoped = glob_in(
-            root,
-            serde_json::json!({ "pattern": "*.png", "path": "assets" }),
-        );
-        assert!(
-            scoped.contains("icon.png"),
-            "path=assets must still list png; got {scoped}"
-        );
+        assert!(from_root.contains("logo.png"), "{from_root}");
+        assert!(from_root.contains("assets/icon.png"), "{from_root}");
+        let scoped = glob_in(root, serde_json::json!({ "pattern": "*.png", "path": "assets" }));
+        assert!(scoped.contains("icon.png"), "{scoped}");
     }
 
     #[test]
-    fn path_into_excluded_dir_is_refused() {
+    fn path_into_excluded_dir_explains_in_message() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".git")).unwrap();
         std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
         std::fs::write(root.join("node_modules/pkg/index.js"), "x\n").unwrap();
-
-        let body = glob_data_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": "node_modules" }),
-        );
-        assert_eq!(body["reason"], "path_excluded");
+        let body = glob_data_in(root, serde_json::json!({ "pattern": "**/*", "path": "node_modules" }));
         assert!(body["paths"].as_array().unwrap().is_empty(), "{body}");
-
-        let nested = glob_data_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": "node_modules/pkg" }),
-        );
-        assert_eq!(nested["reason"], "path_excluded");
-        assert!(nested["paths"].as_array().unwrap().is_empty(), "{nested}");
-
-        let raw = glob_in(
-            root,
-            serde_json::json!({
-                "pattern": "**/*",
-                "path": "node_modules",
-                "include_ignored": true,
-            }),
-        );
-        assert!(
-            raw.contains("pkg/index.js") || raw.contains("index.js"),
-            "no_ignore must still list; got {raw}"
-        );
+        let msg = body["message"].as_str().unwrap().to_lowercase();
+        assert!(msg.contains("hidden") || msg.contains("filter"), "{}", body["message"]);
+        assert!(body.get("reason").is_none());
+        assert!(body.get("page").is_none());
+        assert!(body.get("base").is_none());
     }
 
     #[test]
@@ -693,46 +536,16 @@ mod tests {
         std::fs::create_dir_all(root.join(".litecode/index")).unwrap();
         std::fs::write(root.join(".litecode/index/x.rs"), "fn x() {}\n").unwrap();
         std::fs::write(root.join("keep.rs"), "fn k() {}\n").unwrap();
-
         let filtered = glob_match(root, root, "**/*", false).unwrap();
-        assert!(
-            filtered.iter().any(|path| path == "keep.rs"),
-            "{filtered:?}"
-        );
-        assert!(
-            filtered.iter().any(|path| path == "knowledge/node.md"),
-            "{filtered:?}"
-        );
-        assert!(
-            filtered
-                .iter()
-                .any(|path| path == ".litecode/knowledge/private.md"),
-            "{filtered:?}"
-        );
-        assert!(
-            !filtered.iter().any(|path| path.contains("index")),
-            "{filtered:?}"
-        );
-
-        let index = glob_data_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": ".litecode/index" }),
-        );
-        assert_eq!(index["reason"], "path_excluded");
+        assert!(filtered.iter().any(|path| path == "keep.rs"), "{filtered:?}");
+        assert!(filtered.iter().any(|path| path == "knowledge/node.md"), "{filtered:?}");
+        assert!(filtered.iter().any(|path| path == ".litecode/knowledge/private.md"), "{filtered:?}");
+        assert!(!filtered.iter().any(|path| path.contains("index")), "{filtered:?}");
+        let index = glob_data_in(root, serde_json::json!({ "pattern": "**/*", "path": ".litecode/index" }));
         assert!(index["paths"].as_array().unwrap().is_empty(), "{index}");
-
-        let inside = glob_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": ".litecode" }),
-        );
-        assert!(
-            inside.contains("knowledge/private.md"),
-            "path=.litecode lists the knowledge root; got {inside}"
-        );
-        assert!(
-            !inside.contains("index"),
-            "path=.litecode does not list the rest; got {inside}"
-        );
+        let inside = glob_in(root, serde_json::json!({ "pattern": "**/*", "path": ".litecode" }));
+        assert!(inside.contains("knowledge/private.md"), "{inside}");
+        assert!(!inside.contains("index"), "{inside}");
     }
 
     #[test]
@@ -744,13 +557,7 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "fn a() {}\n").unwrap();
         let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "../*" }));
         assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-        assert!(
-            result
-                .content
-                .contains("pattern '../*' reaches outside the search directory"),
-            "{}",
-            result.content
-        );
+        assert!(result.content.contains("reaches outside the search directory"), "{}", result.content);
         assert!(result.data.is_none());
     }
 
@@ -760,47 +567,20 @@ mod tests {
         let root = dir.path();
         std::fs::create_dir_all(root.join("src/agent")).unwrap();
         std::fs::write(root.join("src/agent/core.rs"), "fn x() {}\n").unwrap();
-
-        let found = glob_match(root, &root.join("src"), "src/**/*.rs", false)
-            .unwrap()
-            .hits;
-        assert!(
-            found.is_empty(),
-            "pattern is matched under path as given, got {found:?}"
-        );
-        let found = glob_match(root, &root.join("src"), "**/*.rs", false)
-            .unwrap()
-            .hits;
-        assert!(
-            found.iter().any(|path| path.ends_with("src/agent/core.rs")),
-            "got {found:?}"
-        );
+        let found = glob_match(root, &root.join("src"), "src/**/*.rs", false).unwrap().hits;
+        assert!(found.is_empty(), "{found:?}");
+        let found = glob_match(root, &root.join("src"), "**/*.rs", false).unwrap().hits;
+        assert!(found.iter().any(|path| path.ends_with("src/agent/core.rs")), "{found:?}");
     }
 
     #[test]
     fn hits_sort_by_depth_then_parent_then_name() {
         let mut hits = vec![
-            "src/tools/read.rs".into(),
-            "src/b.rs".into(),
-            "z.md".into(),
-            "src/tools/glob.rs".into(),
-            "a.md".into(),
-            "src/a.rs".into(),
-            "tests/a.rs".into(),
+            "src/tools/read.rs".into(), "src/b.rs".into(), "z.md".into(),
+            "src/tools/glob.rs".into(), "a.md".into(), "src/a.rs".into(), "tests/a.rs".into(),
         ];
         crate::workspace::sort_glob_hits(&mut hits);
-        assert_eq!(
-            hits,
-            [
-                "a.md",
-                "z.md",
-                "src/a.rs",
-                "src/b.rs",
-                "tests/a.rs",
-                "src/tools/glob.rs",
-                "src/tools/read.rs",
-            ]
-        );
+        assert_eq!(hits, ["a.md", "z.md", "src/a.rs", "src/b.rs", "tests/a.rs", "src/tools/glob.rs", "src/tools/read.rs"]);
     }
 
     #[test]
@@ -811,14 +591,12 @@ mod tests {
         std::fs::write(root.join("src/nested/deep.rs"), "fn d() {}\n").unwrap();
         std::fs::write(root.join("root.rs"), "fn r() {}\n").unwrap();
         std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
-
         let found = glob_match(root, root, "**/*.rs", false).unwrap();
         assert_eq!(found.hits, ["root.rs", "src/mid.rs", "src/nested/deep.rs"]);
-        assert_eq!(found.hits.len(), 3);
     }
 
     #[test]
-    fn truncates_with_count_note() {
+    fn truncates_with_message() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         for i in 0..(DEFAULT_GLOB_LIMIT + 7) {
@@ -828,8 +606,8 @@ mod tests {
         assert_eq!(listing.hits.len(), DEFAULT_GLOB_LIMIT + 7);
         let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
         assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
-        assert_eq!(data["page"]["has_more"], true);
-        assert_eq!(data["page"]["total"], listing.hits.len() as u64);
+        assert!(data["message"].as_str().unwrap().contains("Raise limit"), "{}", data["message"]);
+        assert!(data.get("page").is_none());
     }
 
     #[test]
@@ -841,33 +619,23 @@ mod tests {
         std::fs::write(root.join("root.rs"), "fn r() {}\n").unwrap();
         std::fs::write(root.join("src/mid.rs"), "fn m() {}\n").unwrap();
         std::fs::write(root.join("src/nested/README.md"), "# nested\n").unwrap();
-
         let rs = glob_match(root, root, "*.rs", false).unwrap();
         assert!(rs.iter().any(|p| p == "src/nested/deep.rs"), "{rs:?}");
         assert!(rs.iter().any(|p| p == "src/mid.rs"), "{rs:?}");
         assert!(rs.iter().any(|p| p == "root.rs"), "{rs:?}");
-
         let md = glob_match(root, root, "README.md", false).unwrap();
-        assert!(
-            md.iter().any(|p| p == "src/nested/README.md"),
-            "exact basename must recurse; got {md:?}"
-        );
+        assert!(md.iter().any(|p| p == "src/nested/README.md"), "{md:?}");
     }
 
     #[test]
-    fn empty_glob_sets_no_match_reason() {
+    fn empty_glob_sets_message() {
         let dir = TempDir::new().unwrap();
         let result = glob_result_in(dir.path(), serde_json::json!({ "pattern": "**/*.nope" }));
         let data = result.data.expect("data");
         assert!(data["paths"].as_array().unwrap().is_empty(), "{data}");
-        assert_eq!(data["reason"], "no_match");
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(
-            !result.content.contains("excludes.json")
-                && !result.content.contains("include_ignored"),
-            "{}",
-            result.content
-        );
+        assert!(data["message"].as_str().unwrap().contains("No matching"), "{}", data["message"]);
+        assert!(data.get("reason").is_none());
+        assert!(result.content.is_empty(), "{}", result.content);
     }
 
     fn seed_session(root: &std::path::Path, text: &str) -> String {
@@ -875,19 +643,13 @@ mod tests {
         std::fs::create_dir_all(db.parent().unwrap()).unwrap();
         let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
         let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        let id = data
-            .create_session(root.to_str().unwrap(), "default", None)
-            .unwrap();
-        data.insert_items(&id, &[crate::types::user_text(text)])
-            .unwrap();
+        let id = data.create_session(root.to_str().unwrap(), "default", None).unwrap();
+        data.insert_items(&id, &[crate::types::user_text(text)]).unwrap();
         id
     }
 
     fn glob_result_in(root: &std::path::Path, input: Value) -> ToolCallResult {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
         rt.block_on(GlobTool.execute(
             input,
             crate::tool::trait_::ToolExecutionContext {
@@ -897,100 +659,54 @@ mod tests {
                 cancel: tokio_util::sync::CancellationToken::new(),
                 output_limit: GlobTool.max_result_size(),
                 session_id: String::new(),
-                session: Some(crate::session::SessionDataReader::open(
-                    &root.join(".litecode").join("sessions.db"),
-                )),
+                session: Some(crate::session::SessionDataReader::open(&root.join(".litecode").join("sessions.db"))),
             },
         ))
     }
 
     fn glob_in(root: &std::path::Path, input: Value) -> String {
         let data = glob_data_in(root, input);
-        data["paths"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|path| path.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+        data["paths"].as_array().into_iter().flatten().filter_map(|path| path.as_str()).collect::<Vec<_>>().join("\n")
     }
 
     fn glob_data_in(root: &std::path::Path, input: Value) -> Value {
-        glob_result_in(root, input)
-            .data
-            .expect("glob must return structured data")
+        glob_result_in(root, input).data.expect("glob must return structured data")
     }
 
     #[test]
-    fn structured_result_lists_paths_and_totals() {
+    fn structured_result_lists_paths() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
         std::fs::write(root.join("a.txt"), "a").unwrap();
         std::fs::write(root.join("b.txt"), "b").unwrap();
         std::fs::write(root.join("c.md"), "c").unwrap();
-
         let data = glob_data_in(root, serde_json::json!({"pattern": "**/*.txt"}));
-        assert_eq!(data["base"], "workspace");
-        assert_eq!(data["page"]["total"], 2);
-        assert_eq!(data["page"]["has_more"], false);
-        let mut paths: Vec<String> = data["paths"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| value.as_str().unwrap().to_string())
-            .collect();
+        assert!(data.get("base").is_none());
+        assert!(data.get("page").is_none());
+        let mut paths: Vec<String> = data["paths"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect();
         paths.sort();
         assert_eq!(paths, vec!["a.txt".to_string(), "b.txt".to_string()]);
+        assert!(data["message"].as_str().unwrap().is_empty());
     }
 
     #[test]
-    fn structured_result_is_empty_on_no_hits() {
-        let dir = TempDir::new().unwrap();
-        let data = glob_data_in(dir.path(), serde_json::json!({"pattern": "**/*.nope"}));
-        assert_eq!(data["paths"], serde_json::json!([]));
-        assert_eq!(data["page"]["total"], 0);
-        assert_eq!(data["page"]["has_more"], false);
-    }
-
-    #[test]
-    fn include_ignored_is_the_public_boolean() {
+    fn schema_drops_retired_knobs() {
         assert_eq!(GlobTool.timeout(), Some(Duration::from_secs(30)));
         assert!(GlobTool.is_cancellable());
         let schema = GlobTool.schema();
         let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("include_ignored"));
-        assert!(!props.contains_key("-u"));
-
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::create_dir(root.join(".git")).unwrap();
-        std::fs::write(root.join(".gitignore"), "ignored.txt\n").unwrap();
-        std::fs::write(root.join("ignored.txt"), "x\n").unwrap();
-        let data = glob_data_in(
-            root,
-            serde_json::json!({"pattern": "**/*", "include_ignored": true}),
-        );
-        assert!(
-            data["paths"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|path| path == "ignored.txt")
-        );
-    }
-
-    #[test]
-    fn structured_result_reports_truncation() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        for i in 0..(DEFAULT_GLOB_LIMIT + 3) {
-            std::fs::write(root.join(format!("f{i:04}.txt")), "x").unwrap();
-        }
-        let data = glob_data_in(root, serde_json::json!({"pattern": "*.txt"}));
-        assert_eq!(data["paths"].as_array().unwrap().len(), DEFAULT_GLOB_LIMIT);
-        assert_eq!(data["page"]["total"], DEFAULT_GLOB_LIMIT + 3);
-        assert_eq!(data["page"]["has_more"], true);
-        assert!(data["page"]["next"].is_string());
+        assert!(props.contains_key("pattern"));
+        assert!(props.contains_key("path"));
+        assert!(props.contains_key("limit"));
+        assert!(!props.contains_key("include_ignored"));
+        assert!(!props.contains_key("cursor"));
+        let data_schema = GlobTool.data_schema().unwrap();
+        let dprops = data_schema["properties"].as_object().unwrap();
+        assert!(dprops.contains_key("paths"));
+        assert!(dprops.contains_key("message"));
+        assert!(!dprops.contains_key("base"));
+        assert!(!dprops.contains_key("page"));
+        assert!(!dprops.contains_key("reason"));
     }
 
     #[test]
@@ -1001,92 +717,42 @@ mod tests {
         let b = seed_session(root, "beta");
         let path_a = crate::session::transcript_file::virtual_path_for(&a);
         let path_b = crate::session::transcript_file::virtual_path_for(&b);
-
-        let listed = glob_in(
-            root,
-            serde_json::json!({
-                "pattern": "*.md",
-                "path": ".litecode/sessions",
-            }),
-        );
+        let listed = glob_in(root, serde_json::json!({"pattern": "*.md", "path": ".litecode/sessions"}));
         assert!(listed.contains(&path_a), "{listed}");
         assert!(listed.contains(&path_b), "{listed}");
-
         let unscoped = glob_in(root, serde_json::json!({ "pattern": "**/*.md" }));
-        assert!(
-            !unscoped.contains(".litecode/sessions/"),
-            "coding glob must not enter sessions, got: {unscoped}"
-        );
-
-        let pattern_only = glob_in(
-            root,
-            serde_json::json!({ "pattern": ".litecode/sessions/*.md" }),
-        );
-        assert!(
-            !pattern_only.contains(&path_a),
-            "pattern without path must not list sessions, got: {pattern_only}"
-        );
+        assert!(!unscoped.contains(".litecode/sessions/"), "{unscoped}");
+        let pattern_only = glob_in(root, serde_json::json!({ "pattern": ".litecode/sessions/*.md" }));
+        assert!(!pattern_only.contains(&path_a), "{pattern_only}");
     }
 
     fn session_md_hits(listed: &str) -> Vec<&str> {
-        listed
-            .lines()
-            .filter(|l| l.starts_with(".litecode/sessions/") && l.ends_with(".md"))
-            .collect()
+        listed.lines().filter(|l| l.starts_with(".litecode/sessions/") && l.ends_with(".md")).collect()
     }
 
     #[test]
     fn explicit_session_dir_glob_lists_every_session() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
-        let ids: Vec<String> = (0..3)
-            .map(|i| seed_session(root, &format!("glob body {i}")))
-            .collect();
-        let expected: Vec<String> = ids
-            .iter()
-            .map(|id| crate::session::transcript_file::virtual_path_for(id))
-            .collect();
-
+        let ids: Vec<String> = (0..3).map(|i| seed_session(root, &format!("glob body {i}"))).collect();
+        let expected: Vec<String> = ids.iter().map(|id| crate::session::transcript_file::virtual_path_for(id)).collect();
         for input in [
             serde_json::json!({ "pattern": "**/*", "path": ".litecode/sessions" }),
             serde_json::json!({ "pattern": "*.md", "path": ".litecode/sessions" }),
             serde_json::json!({ "pattern": "*.md", "path": ".litecode/sessions/" }),
-            serde_json::json!({
-                "pattern": ".litecode/sessions/*.md",
-                "path": ".litecode/sessions",
-            }),
+            serde_json::json!({ "pattern": ".litecode/sessions/*.md", "path": ".litecode/sessions" }),
         ] {
             let listed = glob_in(root, input.clone());
             let hits = session_md_hits(&listed);
-            assert_eq!(
-                hits.len(),
-                3,
-                "explicit dir glob must list all sessions for {input}:\n{listed}"
-            );
+            assert_eq!(hits.len(), 3, "{input}:\n{listed}");
             for path in &expected {
                 assert!(hits.contains(&path.as_str()), "missing {path} in {listed}");
             }
         }
-
-        let parent = glob_in(
-            root,
-            serde_json::json!({ "pattern": "**/*", "path": ".litecode" }),
-        );
+        let parent = glob_in(root, serde_json::json!({ "pattern": "**/*", "path": ".litecode" }));
         for path in &expected {
-            assert!(
-                !parent.contains(path),
-                "parent .litecode must not list virtual transcripts, got: {parent}"
-            );
+            assert!(!parent.contains(path), "{parent}");
         }
-
-        let unscoped_ignore = glob_in(
-            root,
-            serde_json::json!({ "pattern": "**/*.md", "include_ignored": true }),
-        );
-        assert!(
-            !unscoped_ignore.contains(".litecode/sessions/"),
-            "no_ignore workspace glob must still skip sessions, got: {unscoped_ignore}"
-        );
     }
 
     #[test]
@@ -1105,8 +771,7 @@ mod tests {
         std::fs::write(dir.path().join("a.rs"), "x\n").unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
-        let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel))
-            .unwrap_err();
+        let error = glob_match_cancellable(dir.path(), dir.path(), "**/*.rs", false, Some(&cancel)).unwrap_err();
         assert!(error.to_string().contains("glob cancelled"), "{error}");
     }
 }

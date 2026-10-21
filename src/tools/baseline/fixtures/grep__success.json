@@ -1,25 +1,15 @@
 {
-  "content_historical": "a.txt: alpha needle",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "base": "workspace",
-    "matches": [
+    "hits": [
       {
-        "end_line": 1,
-        "line_text": "alpha needle",
-        "line_truncated": false,
         "path": "a.txt",
-        "start_line": 1
+        "line": 1,
+        "text": "alpha needle"
       }
     ],
-    "page": {
-      "has_more": false,
-      "next": null
-    },
-    "searched": {
-      "excluded": true,
-      "files": 1
-    }
+    "message": ""
   },
   "error": null,
   "gap": null,

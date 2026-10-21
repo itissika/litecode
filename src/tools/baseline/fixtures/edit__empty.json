@@ -1,12 +1,12 @@
 {
-  "content_historical": "The file is empty. old_string cannot match an empty file.",
+  "content_historical": "",
   "covered": true,
-  "data": null,
-  "error": {
-    "kind": "invalid_input",
-    "message": "The file is empty. old_string cannot match an empty file.",
-    "retryable": false
+  "data": {
+    "ok": false,
+    "path": "empty.txt",
+    "message": "The file is empty. old_string cannot match an empty file."
   },
+  "error": null,
   "gap": null,
   "scenario": "empty",
   "tool": "edit"

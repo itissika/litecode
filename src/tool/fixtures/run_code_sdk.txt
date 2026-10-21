@@ -5,9 +5,7 @@ Permission denial is a catchable `ToolError` whose `code` is `permission_denied`
 `tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
 Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP errors from edit or write are not in the resolved data. They appear only in this run's outer text.
-A read of session lines already in the context window returns empty `lines` with `reason` `"in_context_window"`.
-A glob that matches nothing returns `reason` `"no_match"`. A glob whose path is hidden by the default filters returns `reason` `"path_excluded"`.
-Pagination dialect: for read, pass `page.next` back as `start_line`; for glob and grep, pass `page.next` back as `cursor`.
+A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. Continue a long read with a larger `start_line`; do not pass a cursor or `page.next`.
 The model sees about 64KB of this run. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
 Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
@@ -118,71 +116,42 @@ type EditData = {
 type GlobInput = {
   // Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'.
   pattern: string;
-  // Opaque continuation from a previous glob page. Bound to pattern, path, and filters. A different query rejects stale_cursor.
-  cursor?: string;
-  // Also search gitignored and workspace-excluded paths. Default false.
-  include_ignored?: boolean;
-  // Maximum paths in this page. Default 1000, maximum 5000.
+  // Maximum paths to return. Default 1000, maximum 5000.
   limit?: Integer;
-  // Optional directory to search under (workspace-relative preferred; absolute paths outside the workspace only under All permission). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`.
+  // Optional directory to search under (workspace-relative preferred). Pattern is matched relative to this directory. Session transcripts are listed only when this is `.litecode/sessions`.
   path?: string;
 };
 
-// One page of matching paths.
+// Matching paths. Guidance lives only in message.
 type GlobData = {
-  // workspace: paths are workspace-relative. absolute: paths are absolute.
-  base: "workspace" | "absolute";
-  page: {
-    has_more: boolean;
-    next: string | null;
-    total?: Integer;
-  };
-  // Matching paths sorted by depth, then parent directory, then name.
+  message: string;
+  // Matching paths sorted by depth, then parent directory, then name. Workspace-relative by default.
   paths: Array<string>;
-  // no_match: nothing matched. path_excluded: the path is hidden by the default filters.
-  reason?: "no_match" | "path_excluded";
 };
 
 type GrepInput = {
   // Regular expression over file contents, unless literal is true.
   pattern: string;
-  // Default true. Set false to ignore case.
-  case_sensitive?: boolean;
-  // Continuation from page.next. Bound to pattern, path, glob, filters, and the corpus version. A different query rejects stale_cursor.
-  cursor?: string;
   // Filter which files to search: one glob, or a comma-separated list. A leading ! excludes. Relative to path.
   glob?: string;
-  // Also search gitignored and workspace-excluded paths. Default false.
-  include_ignored?: boolean;
-  // Maximum matches in this page. Default 20, maximum 100.
+  // Ignore case when matching. Default false.
+  ignore_case?: boolean;
+  // Maximum hits to return. Default 20, maximum 100.
   limit?: Integer;
   // Search for pattern as plain text. Default false.
   literal?: boolean;
-  // File or directory to search. Defaults to the workspace. Outside the workspace, returned paths are absolute.
+  // File or directory to search. Defaults to the workspace.
   path?: string;
 };
 
-// One page of content matches.
+// Bounded content matches. Guidance lives only in message.
 type GrepData = {
-  base: "workspace" | "absolute";
-  matches: Array<{
-    end_line: Integer;
-    line_text: string;
-    line_truncated: boolean;
+  hits: Array<{
+    line: Integer;
     path: string;
-    start_line: Integer;
+    text: string;
   }>;
-  page: {
-    has_more: boolean;
-    next: string | null;
-    total?: Integer | null;
-  };
-  searched: {
-    // True when default exclusion filters were active, or the path itself was excluded.
-    excluded: boolean;
-    files: Integer;
-  };
-  reason?: "no_match" | "corpus_empty" | "glob_empty" | "path_excluded" | "binary_file" | "file_not_searched";
+  message: string;
 };
 
 type KillInput = {
@@ -203,43 +172,19 @@ type KillData = {
 type ReadInput = {
   // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
   path: string;
-  // Last line to read, 1-based, inclusive. The page ends at min(end_line, start_line + limit - 1).
-  end_line?: Integer;
-  // Maximum lines in this page. Default 2000, maximum 5000.
+  // Maximum lines to return. Default 2000, maximum 5000.
   limit?: Integer;
   // First line to read, 1-based, inclusive. Default 1.
   start_line?: Integer;
 };
 
-// One page of a text file, with the file's sha256 identity.
+// One page of a text file. Continue with a larger start_line. Guidance lives only in message.
 type ReadData = {
-  // File identity. path is workspace-relative inside the workspace. Outside the workspace, path is the requested path and abs is absolute.
-  file: {
-    bytes: Integer;
-    // sha256 hex of the file bytes.
-    hash: string;
-    path: string;
-    abs?: string;
-  };
-  // Lines in this page, in file order.
-  lines: Array<{
-    // True when text was capped at the per-line character limit.
-    line_truncated: boolean;
-    // 1-based line number.
-    number: Integer;
-    // Bare line text (no line-number prefix).
-    text: string;
-  }>;
-  page: {
-    // True when any line remains after this page, including after an explicit window.
-    has_more: boolean;
-    // Next 1-based line number, or null when the file is finished.
-    next: string | null;
-    // Total lines in the file.
-    total?: Integer;
-  };
-  // Set when lines is empty because those session lines are already in the context window.
-  reason?: "in_context_window";
+  // Line contents for this page, in file order.
+  lines: Array<string>;
+  message: string;
+  path: string;
+  start_line: Integer;
 };
 
 type RunInput = {
@@ -351,17 +296,42 @@ declare const tools: {
   // if (done.exit_code !== 0) return { ok: false, edited, done };
   // return { ok: true, path: edited.path, message: edited.message, exit_code: done.exit_code };
   readonly ["edit"]: (args: EditInput) => Promise<EditData>;
-  // Find files by path glob. The result is `base`, `paths`, and `page`. `paths` are sorted by depth, then parent directory, then name. When `base` is `"workspace"`, each path is workspace-relative. When `base` is `"absolute"`, each path is absolute.
+  // Find files by path glob inside `run_code`. Pass an object bag: `pattern` (required), optional `path`, and `limit`. Resolves `{ paths, message }`. `paths` is a string array of **workspace-relative** file paths only (sorted by depth, then parent, then name) — never absolute. There is no `base` workspace|absolute dual mode, no `page`/`cursor`/`stale_cursor`, no `include_ignored`, and no enum `reason` — “no files”, “hit the limit”, or a short why go in `message` only.
   //
-  // `pattern` is matched relative to `path` exactly as given. A directory prefix that repeats `path` is not removed. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that reaches outside the search directory, including `..`, rejects `invalid_input`. `limit` defaults to 1000 and is at most 5000. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, and filters. A different query rejects `ToolError` with `code` `stale_cursor`. Default filters hide gitignored and workspace-excluded paths; set `include_ignored` true to include them. No matches set `reason` to `no_match`. A path hidden by those filters sets `reason` to `path_excluded`.
+  // `pattern` is matched relative to `path` exactly as given. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern that walks outside the search directory (including `..`) rejects `ToolError` `invalid_input`. Omit `path` to search from the workspace root. `limit` defaults to **1000** and is at most **5000** (one bounded call). When more would match, `paths` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `paths` with an explanatory `message` means nothing matched (including under default ignore rules) — do not look for a `reason` enum, a `base` flag, or `include_ignored`.
+  //
+  // **Hard vs soft:** a bad bag (missing `pattern`, wrong types) or an out-of-root pattern rejects `ToolError` `invalid_input`. Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `paths` + `message`. Example (list then read in one program):
+  // const listed = await tools.glob({ pattern: "**/*.rs", path: "src" });
+  // if (listed.paths.length === 0) return { ok: false, message: listed.message };
+  // const first = listed.paths[0];
+  // const chunk = await tools.read({ path: first, start_line: 1 });
+  // return {
+  //   ok: true,
+  //   path: first,
+  //   start_line: chunk.start_line,
+  //   lines: chunk.lines,
+  //   glob_message: listed.message,
+  //   read_message: chunk.message,
+  // };
   readonly ["glob"]: (args: GlobInput) => Promise<GlobData>;
-  // Search file contents. The result is `base`, `matches`, `page`, `searched`, and sometimes `reason`. Matches are `{path, start_line, end_line, line_text, line_truncated}`.
+  // Search file contents inside `run_code`. Pass an object bag: `pattern` (required), optional `path`, `glob`, `literal`, `ignore_case`, and `limit`. Resolves `{ hits, message }`. Each hit is `{ path, line, text }`: workspace-relative `path`, **1-based** `line`, and `text` (that one line). If a single matching line is too long, shorten it **inside `text` itself** — there is no `line_truncated` / `truncated` field. There is no `matches` tree, no `start_line`/`end_line`/`line_text` on a hit, no `base`/`searched`/`page`/`cursor`/`stale_cursor`, no `include_ignored`, and no enum `reason` — put “no hits”, “hit the limit”, or a short why into `message` only.
   //
-  // `pattern` is a regular expression unless `literal` is true. An invalid pattern rejects `invalid_regex`. Pass `literal: true` to search for the pattern as plain text. A blank `glob` rejects `invalid_input`.
+  // `pattern` is a regular expression unless `literal` is true (plain text). Prefer `literal: true` when the string is not meant as regex. `path` narrows the search root (workspace-relative); omit it to search from the workspace root. `glob` further filters file names (for example `**/*.rs`). `ignore_case` makes matching case-insensitive when true. `limit` defaults to **20** and is at most **100** (one bounded call). When more would match, `hits` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `hits` with an explanatory `message` means nothing matched under the current filters (including default ignore rules) — do not look for a `reason` enum or an `include_ignored` knob.
   //
-  // The default corpus applies workspace search exclusions and `.gitignore`. Set `include_ignored` true to search gitignored and workspace-excluded paths. `limit` is 1-100 and defaults to 20. When `page.has_more` is true, pass `page.next` back as `cursor`. The cursor is bound to this pattern, path, glob, filters, and a corpus version. A different query, or the same query after the files change, rejects `ToolError` with `code` `stale_cursor`. A capped match line sets `line_truncated`. An empty result sets `reason` to `no_match`, `corpus_empty`, `glob_empty`, `path_excluded`, `binary_file`, or `file_not_searched`.
-  //
-  // Example: {"pattern":"fn main","path":"src"}
+  // **Hard vs soft:** a bad bag (missing `pattern`, wrong types, empty/invalid `glob` when provided) or an invalid regex rejects `ToolError` (`invalid_input` / `invalid_regex`). Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `hits` + `message`. Example (find then edit in one program):
+  // const found = await tools.grep({
+  //   pattern: "fn start",
+  //   path: "src",
+  //   literal: true,
+  // });
+  // if (found.hits.length === 0) return { ok: false, message: found.message };
+  // const hit = found.hits[0];
+  // const edited = await tools.edit({
+  //   path: hit.path,
+  //   old_string: hit.text,
+  //   new_string: hit.text.replace("fn start", "fn main"),
+  // });
+  // return { ok: edited.ok, hit, edited, message: found.message };
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData>;
   // Stop a shell command started with `tools.run` in this `run_code` program. Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group. Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run` / `wait`.
   //
@@ -375,9 +345,24 @@ declare const tools: {
   // }
   // return {exit_code:job.exit_code, output:job.output};
   readonly ["kill"]: (args: KillInput) => Promise<KillData>;
-  // Read one workspace file as structured data. Use `file` and `lines`. Images and other non-UTF-8 files reject `ToolError` with `code` `unsupported`. `details` has `path`, `mime`, and `bytes`.
+  // Read one workspace file inside `run_code`. Pass an object bag: `path` (required), optional `start_line`, and `limit`. Resolves `{ path, start_line, lines, message }`. `path` echoes the file (**workspace-relative**). `start_line` is the **1-based** line where this window began (same name on the way in and out — not `offset`). `lines` is a string array of that window’s line contents (plain strings). If one line is too long, shorten it **inside that `lines[]` string** — there is no `line_truncated` / `truncated` field and no `{line_number, …}` objects. Put “end of file”, “hit the limit”, session lines already in context, or a short why into `message` only. There is no `end_line`, no `file.hash` / `expected_hash` (write’s `expected_hash` is out of this package), no `page` / `cursor`, and no `reason` enum.
   //
-  // `path` is the file. `start_line` and `end_line` select a 1-based inclusive window and must be integers >= 1; any other value rejects `invalid_input`. A missing file rejects `not_found`. `limit` is the page size in lines (default 2000, maximum 5000). The page ends at `min(end_line, start_line + limit - 1)`. There is no cursor parameter and no token budget. `page.has_more` is true when any line remains after this page, including after an explicit window. `page.next` is the next 1-based line number as a string, or null when the file is finished. Pass it back as `start_line`. A capped line sets `lines[].line_truncated` only. `file.hash` is the sha256 of the file bytes; pass it as `expected_hash`. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`. Lines of this session that are already in the context window come back as empty `lines` with `reason` `in_context_window`.
+  // Omit `start_line` (or pass `1`) to start at the first line. `limit` defaults to **2000** and is at most **5000** (one bounded call). To continue, call again with a larger `start_line` (typically previous `start_line + lines.length`); do **not** pass a cursor. When the window reaches the end of the file, `lines` may be shorter than `limit` and `message` can note that. When the call hits the line bound with more remaining, say so in `message` (not a separate truncated flag). Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
+  //
+  // **Hard vs soft:** a bad bag (missing `path`, wrong types, non-integer `start_line` / `limit`) rejects `ToolError` `invalid_input`. A **missing path** rejects `not_found`. An **unsupported / non-text** file (image, non-UTF-8) rejects `unsupported`. Cancellation rejects `cancelled`. Past-EOF empty windows, hit-the-limit, and session lines already in the context window still **resolve** with `lines` + `message` (branch on `lines.length` / `message`). Example (paged read then edit in one program):
+  // const page1 = await tools.read({ path: "src/a.rs", start_line: 1 });
+  // if (page1.lines.length === 0) return { ok: false, message: page1.message };
+  // const next = page1.start_line + page1.lines.length;
+  // const page2 = await tools.read({ path: "src/a.rs", start_line: next });
+  // const needle = "fn start() {}";
+  // const blob = page1.lines.join("\n");
+  // if (!blob.includes(needle)) return { ok: false, message: "needle not in first page", page1 };
+  // const edited = await tools.edit({
+  //   path: "src/a.rs",
+  //   old_string: needle,
+  //   new_string: "fn main() {}",
+  // });
+  // return { ok: edited.ok, edited, page1_message: page1.message, page2_len: page2.lines.length };
   readonly ["read"]: (args: ReadInput) => Promise<ReadData>;
   // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, and `output`. `id` is the handle for later `tools.wait` / `tools.kill` in the same program. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is always present (may be empty): combined process text plus any truncation note, on-disk spill path, or status line the runtime appends. There is no `kind`, no separate stdout/stderr windows, and no wait-budget or background-mode parameters on this call.
   //

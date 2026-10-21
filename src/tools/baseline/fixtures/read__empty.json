@@ -1,18 +1,11 @@
 {
-  "content_historical": "(empty file)",
+  "content_historical": "",
   "covered": true,
   "data": {
-    "file": {
-      "bytes": 0,
-      "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "path": "empty.txt"
-    },
+    "path": "empty.txt",
+    "start_line": 1,
     "lines": [],
-    "page": {
-      "has_more": false,
-      "next": null,
-      "total": 0
-    }
+    "message": ""
   },
   "error": null,
   "gap": null,

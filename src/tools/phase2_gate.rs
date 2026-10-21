@@ -1,4 +1,4 @@
-//! Phase 2 acceptance checks: pagination, zero-hit reasons, and the read/edit chain.
+//! Phase 2 acceptance checks: bounded reads/searches and the read/edit chain.
 
 use std::path::Path;
 
@@ -41,30 +41,43 @@ fn safe<T: Tool>(tool: &T, root: &Path, input: Value) -> ToolCallResult {
     call(tool, root, input, crate::workspace::ToolPathMode::Safe)
 }
 
-fn reason(result: &ToolCallResult) -> String {
+fn message(result: &ToolCallResult) -> String {
     result
         .data
         .as_ref()
-        .and_then(|data| data.get("reason"))
+        .and_then(|data| data.get("message"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
 }
 
 #[test]
-fn phase2_read_explicit_window_reports_more() {
+fn phase2_read_limit_reports_more_in_message() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("note.txt"), "a\nb\nc\nd\ne\n").unwrap();
     let result = safe(
         &ReadTool::default(),
         dir.path(),
-        json!({"path": "note.txt", "start_line": 1, "end_line": 3}),
+        json!({"path": "note.txt", "start_line": 1, "limit": 3}),
     );
     assert!(result.error.is_none(), "{}", result.content);
     let data = result.data.unwrap();
     assert_eq!(data["lines"].as_array().unwrap().len(), 3);
-    assert_eq!(data["page"]["has_more"], true);
-    assert_eq!(data["page"]["next"], "4");
+    assert_eq!(data["lines"][0], "a");
+    assert_eq!(data["start_line"], 1);
+    assert!(
+        message_of(&data).contains("start_line=4"),
+        "{}",
+        message_of(&data)
+    );
+    assert!(data.get("page").is_none());
+}
+
+fn message_of(data: &Value) -> String {
+    data.get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 #[test]
@@ -93,7 +106,7 @@ fn phase2_read_missing_file_is_not_found() {
 }
 
 #[test]
-fn phase2_glob_over_limit_has_more_and_read_consumes_path() {
+fn phase2_glob_over_limit_notes_truncation_and_read_consumes_path() {
     let dir = tempfile::tempdir().unwrap();
     for name in ["a.txt", "b.txt", "c.txt"] {
         std::fs::write(dir.path().join(name), format!("body-{name}\n")).unwrap();
@@ -105,96 +118,72 @@ fn phase2_glob_over_limit_has_more_and_read_consumes_path() {
     );
     assert!(listed.error.is_none(), "{}", listed.content);
     let data = listed.data.unwrap();
-    assert_eq!(data["base"], "workspace");
-    assert_eq!(data["page"]["has_more"], true);
+    assert!(data.get("base").is_none());
+    assert!(data.get("page").is_none());
     assert_eq!(data["paths"].as_array().unwrap().len(), 2);
+    assert!(
+        message_of(&data).contains("Raise limit"),
+        "{}",
+        message_of(&data)
+    );
     let path = data["paths"][0].as_str().unwrap().to_string();
     let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
     assert!(read.error.is_none(), "{}", read.content);
-    let text = read.data.unwrap()["lines"][0]["text"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let text = read.data.unwrap()["lines"][0].as_str().unwrap().to_string();
     assert!(text.contains(&path), "read {path} returned {text}");
 }
 
 #[test]
-fn phase2_grep_cursor_rejects_changed_pattern() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("a.txt"), "one\nthree\n").unwrap();
-    let first = safe(&GrepTool, dir.path(), json!({"pattern": "e", "limit": 1}));
-    let cursor = first.data.unwrap()["page"]["next"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let stale = safe(
-        &GrepTool,
-        dir.path(),
-        json!({"pattern": "o", "limit": 1, "cursor": cursor}),
-    );
-    assert_eq!(stale.error_code.as_deref(), Some("stale_cursor"));
-    assert_eq!(stale.error_details.unwrap()["reason"], "query");
+fn phase2_grep_no_cursor_dialect() {
+    let schema = GrepTool.schema();
+    let props = schema["properties"].as_object().unwrap();
+    assert!(!props.contains_key("cursor"));
+    assert!(!props.contains_key("include_ignored"));
+    let data_schema = GrepTool.data_schema().unwrap();
+    let dprops = data_schema["properties"].as_object().unwrap();
+    assert!(dprops.contains_key("hits"));
+    assert!(dprops.contains_key("message"));
+    assert!(!dprops.contains_key("matches"));
+    assert!(!dprops.contains_key("page"));
+    assert!(!dprops.contains_key("searched"));
+    assert!(!dprops.contains_key("reason"));
+    assert!(!dprops.contains_key("base"));
 }
 
 #[test]
-fn phase2_grep_same_query_pages_are_stable() {
+fn phase2_grep_limit_bounds_hits() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
     let first = safe(&GrepTool, dir.path(), json!({"pattern": "e", "limit": 1}));
-    let first_data = first.data.unwrap();
-    let cursor = first_data["page"]["next"].as_str().unwrap().to_string();
-    let second = safe(
-        &GrepTool,
-        dir.path(),
-        json!({"pattern": "e", "limit": 1, "cursor": cursor}),
+    let data = first.data.unwrap();
+    assert_eq!(data["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(data["hits"][0]["line"], 1);
+    assert!(
+        message_of(&data).contains("Raise limit"),
+        "{}",
+        message_of(&data)
     );
-    let second_data = second.data.unwrap();
-    assert_eq!(first_data["matches"][0]["start_line"], 1);
-    assert_eq!(second_data["matches"][0]["start_line"], 3);
-    assert_ne!(
-        first_data["matches"][0]["line_text"],
-        second_data["matches"][0]["line_text"]
-    );
+    assert!(data.get("page").is_none());
 }
 
 #[test]
-fn phase2_grep_cursor_rejects_version_change() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("a.txt");
-    std::fs::write(&path, "one\nthree\n").unwrap();
-    let first = safe(&GrepTool, dir.path(), json!({"pattern": "e", "limit": 1}));
-    let cursor = first.data.unwrap()["page"]["next"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    std::fs::write(&path, "one\nthree\nextra\n").unwrap();
-    let stale = safe(
-        &GrepTool,
-        dir.path(),
-        json!({"pattern": "e", "limit": 1, "cursor": cursor}),
-    );
-    assert_eq!(stale.error_code.as_deref(), Some("stale_cursor"));
-    assert_eq!(stale.error_details.unwrap()["reason"], "version");
-}
-
-#[test]
-fn phase2_grep_reason_no_match() {
+fn phase2_grep_message_no_match() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
     let result = safe(&GrepTool, dir.path(), json!({"pattern": "missing"}));
-    assert_eq!(reason(&result), "no_match");
-    assert_eq!(result.data.unwrap()["searched"]["files"], 1);
+    assert!(message(&result).contains("No matches"), "{}", message(&result));
+    assert!(result.data.unwrap()["hits"].as_array().unwrap().is_empty());
 }
 
 #[test]
-fn phase2_grep_reason_corpus_empty() {
+fn phase2_grep_message_corpus_empty() {
     let dir = tempfile::tempdir().unwrap();
     let result = safe(&GrepTool, dir.path(), json!({"pattern": "anything"}));
-    assert_eq!(reason(&result), "corpus_empty");
+    assert!(message(&result).contains("No files"), "{}", message(&result));
 }
 
 #[test]
-fn phase2_grep_reason_glob_empty() {
+fn phase2_grep_message_glob_empty() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
     let result = safe(
@@ -202,11 +191,15 @@ fn phase2_grep_reason_glob_empty() {
         dir.path(),
         json!({"pattern": "needle", "glob": "*.md"}),
     );
-    assert_eq!(reason(&result), "glob_empty");
+    assert!(
+        message(&result).to_lowercase().contains("glob"),
+        "{}",
+        message(&result)
+    );
 }
 
 #[test]
-fn phase2_grep_reason_path_excluded() {
+fn phase2_grep_message_path_excluded() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("hidden_dir")).unwrap();
     std::fs::write(dir.path().join("hidden_dir/hidden.rs"), "needle\n").unwrap();
@@ -218,11 +211,12 @@ fn phase2_grep_reason_path_excluded() {
             json!({"pattern": "needle", "path": "hidden_dir"}),
         )
     });
-    assert_eq!(reason(&result), "path_excluded");
+    let msg = message(&result).to_lowercase();
+    assert!(msg.contains("hidden") || msg.contains("filter"), "{msg}");
 }
 
 #[test]
-fn phase2_grep_reason_binary_file() {
+fn phase2_grep_message_binary_file() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
     let result = safe(
@@ -230,7 +224,11 @@ fn phase2_grep_reason_binary_file() {
         dir.path(),
         json!({"pattern": "a", "path": "blob.bin"}),
     );
-    assert_eq!(reason(&result), "binary_file");
+    assert!(
+        message(&result).to_lowercase().contains("binary"),
+        "{}",
+        message(&result)
+    );
 }
 
 #[test]
@@ -241,17 +239,9 @@ fn phase2_grep_invalid_regex_details() {
     assert_eq!(result.error_code.as_deref(), Some("invalid_regex"));
     let details = result.error_details.unwrap();
     assert_eq!(details["pattern"], "ModelRequest {");
-    assert!(
-        details["regex_error"].as_str().unwrap().contains('^')
-            || details["regex_error"].is_string()
-    );
-    assert!(
-        details["position"].is_number(),
-        "position should be the caret column, got {}",
-        details["position"]
-    );
+    assert!(details["regex_error"].is_string());
+    assert!(details["position"].is_number());
     assert!(details.get("suggested_literal").is_none());
-    assert!(details.get("suggested_pattern").is_none());
 }
 
 #[test]
@@ -264,12 +254,12 @@ fn phase2_grep_literal_searches_metacharacters() {
         json!({"pattern": "a.b", "literal": true}),
     );
     let data = result.data.unwrap();
-    assert_eq!(data["matches"].as_array().unwrap().len(), 1);
-    assert_eq!(data["matches"][0]["line_text"], "a.b");
+    assert_eq!(data["hits"].as_array().unwrap().len(), 1);
+    assert_eq!(data["hits"][0]["text"], "a.b");
 }
 
 #[test]
-fn phase2_outside_workspace_base_absolute_read() {
+fn phase2_outside_workspace_paths_noted() {
     let workspace = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("note.txt"), "outside-body\n").unwrap();
@@ -281,9 +271,14 @@ fn phase2_outside_workspace_base_absolute_read() {
     );
     assert!(listed.error.is_none(), "{}", listed.content);
     let data = listed.data.unwrap();
-    assert_eq!(data["base"], "absolute");
+    assert!(data.get("base").is_none());
     let path = data["paths"][0].as_str().unwrap().to_string();
     assert!(path.contains("note.txt"), "{path}");
+    assert!(
+        message_of(&data).to_lowercase().contains("absolute") || path.starts_with('/'),
+        "{} / {path}",
+        message_of(&data)
+    );
     let read = call(
         &ReadTool::default(),
         workspace.path(),
@@ -292,9 +287,8 @@ fn phase2_outside_workspace_base_absolute_read() {
     );
     assert!(read.error.is_none(), "{}", read.content);
     let file = read.data.unwrap();
-    assert!(file["file"]["abs"].is_string(), "{file}");
-    assert_eq!(file["file"]["hash"].as_str().unwrap().len(), 64);
-    assert_eq!(file["lines"][0]["text"], "outside-body");
+    assert_eq!(file["lines"][0], "outside-body");
+    assert!(file.get("file").is_none());
 }
 
 #[test]
@@ -307,7 +301,7 @@ fn phase2_chain_glob_read() {
         .unwrap()
         .to_string();
     let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
-    assert_eq!(read.data.unwrap()["lines"][0]["text"], "glob-chain");
+    assert_eq!(read.data.unwrap()["lines"][0], "glob-chain");
 }
 
 #[test]
@@ -315,18 +309,22 @@ fn phase2_chain_grep_read() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "before\nneedle-chain\nafter\n").unwrap();
     let found = safe(&GrepTool, dir.path(), json!({"pattern": "needle-chain"}));
-    let hit = &found.data.unwrap()["matches"][0];
+    let hit = &found.data.unwrap()["hits"][0];
     let path = hit["path"].as_str().unwrap().to_string();
-    let line = hit["start_line"].as_u64().unwrap();
+    let line = hit["line"].as_u64().unwrap();
     let read = safe(
         &ReadTool::default(),
         dir.path(),
-        json!({"path": path, "start_line": line, "end_line": line}),
+        json!({"path": path, "start_line": line, "limit": 1}),
     );
     let data = read.data.unwrap();
-    assert_eq!(data["page"]["has_more"], true);
-    assert_eq!(data["page"]["next"], (line + 1).to_string());
-    assert_eq!(data["lines"][0]["text"], "needle-chain");
+    assert_eq!(data["lines"][0], "needle-chain");
+    assert_eq!(data["start_line"], line);
+    assert!(
+        message_of(&data).contains(&format!("start_line={}", line + 1)),
+        "{}",
+        message_of(&data)
+    );
 }
 
 #[test]
