@@ -4,7 +4,7 @@
 **分支：** `feat/tool-contract-ptc`（实验；**不合 main**）  
 **方案：** `plan.md`（Q1 GM：**snake_case** 七名）  
 **基线：** `d97561b`（WP-201 tip-backfill）  
-**本 tip：** `TIP_PLACEHOLDER`
+**本 tip：** `643bcfd5dc68b4b9662d2f9f89b6c56e5be97d07`
 
 | # | done_when | 结果 |
 |---|-----------|------|
