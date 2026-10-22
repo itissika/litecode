@@ -87,18 +87,18 @@ fn all_tools(ids: &[&str]) -> HashMap<String, litecode::config::schema::AgentToo
 }
 
 #[test]
-fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
+fn safe_run_matrix_readonly_allow_others_deny_floor_hard_deny() {
     let _grants = grant_lock();
     let dir = TempDir::new().unwrap();
     let engine = engine_for(
         "default",
         AgentRole::Primary,
         0,
-        safe_tools(&["run_command"]),
+        safe_tools(&["run"]),
     );
 
     let ls = engine.evaluate_tool(
-        "run_command",
+        "run",
         &serde_json::json!({"command": "ls"}),
         dir.path(),
     );
@@ -106,7 +106,7 @@ fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
     assert_eq!(ls.rule_id, "readonly_command");
 
     let rm = engine.evaluate_tool(
-        "run_command",
+        "run",
         &serde_json::json!({"command": "rm -rf ./node_modules"}),
         dir.path(),
     );
@@ -114,7 +114,7 @@ fn safe_bash_matrix_readonly_allow_others_deny_floor_hard_deny() {
     assert_eq!(rm.rule_id, DEFAULT_RULE_ID);
 
     let root = engine.evaluate_tool(
-        "run_command",
+        "run",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );
@@ -172,15 +172,15 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
         "default",
         AgentRole::Primary,
         0,
-        all_tools(&["run_command"]),
+        all_tools(&["run"]),
     );
     assert_eq!(
-        engine.path_mode("run_command"),
+        engine.path_mode("run"),
         BindingPathMode::Unrestricted
     );
 
     let eval = engine.evaluate_tool(
-        "run_command",
+        "run",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );
@@ -190,12 +190,12 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
     // Preset switch: even an explicit runtime grant cannot lift the floor.
     grant_runtime(
         "default",
-        "run_command",
+        "run",
         "floor_preset_switch",
         PermissionAction::Allow,
     );
     let eval2 = engine.evaluate_tool(
-        "run_command",
+        "run",
         &serde_json::json!({"command": "rm -rf /"}),
         dir.path(),
     );
