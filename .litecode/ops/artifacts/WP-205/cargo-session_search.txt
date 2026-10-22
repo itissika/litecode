@@ -1,0 +1,589 @@
+   Compiling litecode v0.2.6 (/workspace/litecode)
+warning: unused import: `super::*`
+    --> src/client_protocol/project.rs:1326:9
+     |
+1326 |     use super::*;
+     |         ^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:279:1
+    |
+279 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+280 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused import: `conn::SharedDb`
+ --> src/session/data/sqlite/mod.rs:8:9
+  |
+8 | pub use conn::SharedDb;
+  |         ^^^^^^^^^^^^^^
+
+warning: duplicated attribute
+    --> src/tool/registry.rs:1043:5
+     |
+1043 |     #[test]
+     |     ^^^^^^^
+     |
+     = note: `#[warn(duplicate_macro_attributes)]` on by default
+
+warning: unused import: `serde_json::Value`
+ --> src/tools/edit/tests.rs:1:5
+  |
+1 | use serde_json::Value;
+  |     ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `planner::EditSpec`
+   --> src/tools/edit.rs:215:16
+    |
+215 | pub(crate) use planner::EditSpec;
+    |                ^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `sid`
+    --> src/engines/session_search/mod.rs:2023:13
+     |
+2023 |         let sid = {
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_sid`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `workspace_root`
+   --> src/engines/mod.rs:437:9
+    |
+437 |         workspace_root: Option<PathBuf>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_workspace_root`
+
+warning: variable does not need to be mutable
+   --> src/serve/state.rs:108:13
+    |
+108 |         let mut runtime = RuntimeHandle::new(
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/tools/run.rs:348:13
+    |
+348 |         let mut exec = execution(dir.path());
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: type `edit::matcher::RejectReason` is more private than the item `planner::PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `planner::PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `ambiguous_session_ref` is never used
+   --> src/engines/session_search/mod.rs:400:4
+    |
+400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+    |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `MatchHaystack` is never constructed
+    --> src/engines/session_search/mod.rs:1060:19
+     |
+1060 | pub(crate) struct MatchHaystack {
+     |                   ^^^^^^^^^^^^^
+
+warning: function `normalize_for_match` is never used
+    --> src/engines/session_search/mod.rs:1072:4
+     |
+1072 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `prepare_haystack` is never used
+    --> src/engines/session_search/mod.rs:1098:15
+     |
+1098 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `fuzzy_edit_budget` is never used
+    --> src/engines/session_search/mod.rs:1117:4
+     |
+1117 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `match_in_haystack` is never used
+    --> src/engines/session_search/mod.rs:1132:15
+     |
+1132 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+     |               ^^^^^^^^^^^^^^^^^
+
+warning: function `map_span` is never used
+    --> src/engines/session_search/mod.rs:1199:4
+     |
+1199 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+     |    ^^^^^^^^
+
+warning: method `trimmed` is never used
+  --> src/engines/session_search/corpus.rs:54:12
+   |
+52 | impl SessionDoc {
+   | --------------- method in this implementation
+53 |     /// True when the budget trim (not chunking) cut the text.
+54 |     pub fn trimmed(&self) -> bool {
+   |            ^^^^^^^
+
+warning: function `build_docs` is never used
+  --> src/engines/session_search/corpus.rs:61:8
+   |
+61 | pub fn build_docs(
+   |        ^^^^^^^^^^
+
+warning: function `content_hash` is never used
+   --> src/engines/session_search/corpus.rs:313:8
+    |
+313 | pub fn content_hash(docs: &[SessionDoc]) -> String {
+    |        ^^^^^^^^^^^^
+
+warning: function `session_ids` is never used
+   --> src/engines/session_search/corpus.rs:325:8
+    |
+325 | pub fn session_ids(docs: &[SessionDoc]) -> Vec<String> {
+    |        ^^^^^^^^^^^
+
+warning: variant `V0Prod` is never constructed
+   --> src/engines/session_search/slots.rs:113:5
+    |
+109 | pub enum Policy {
+    |          ------ variant in this enum
+...
+113 |     V0Prod,
+    |     ^^^^^^
+    |
+    = note: `Policy` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `parse` and `as_str` are never used
+   --> src/engines/session_search/slots.rs:120:12
+    |
+119 | impl Policy {
+    | ----------- associated items in this implementation
+120 |     pub fn parse(raw: &str) -> Result<Self> {
+    |            ^^^^^
+...
+131 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+
+warning: variants `Unicode` and `Near` are never constructed
+   --> src/engines/session_search/sparse.rs:205:5
+    |
+202 | pub enum Lane {
+    |          ---- variants in this enum
+...
+205 |     Unicode,
+    |     ^^^^^^^
+...
+208 |     Near,
+    |     ^^^^
+    |
+    = note: `Lane` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: associated items `ALL`, `as_str`, and `parse` are never used
+   --> src/engines/session_search/sparse.rs:213:15
+    |
+212 | impl Lane {
+    | --------- associated items in this implementation
+213 |     pub const ALL: [Lane; 7] = [
+    |               ^^^
+...
+223 |     pub fn as_str(self) -> &'static str {
+    |            ^^^^^^
+...
+235 |     pub fn parse(raw: &str) -> Option<Self> {
+    |            ^^^^^
+
+warning: field `path` is never read
+   --> src/engines/session_search/sparse.rs:317:5
+    |
+315 | pub struct SparseIndex {
+    |            ----------- field in this struct
+316 |     conn: Connection,
+317 |     path: PathBuf,
+    |     ^^^^
+
+warning: method `path` is never used
+   --> src/engines/session_search/sparse.rs:343:12
+    |
+342 | impl SparseIndex {
+    | ---------------- method in this implementation
+343 |     pub fn path(&self) -> &Path {
+    |            ^^^^
+
+warning: methods `mark_failed` and `send_request_synced` are never used
+   --> src/lsp/server.rs:232:19
+    |
+136 | impl LspServer {
+    | -------------- methods in this implementation
+...
+232 |     pub(crate) fn mark_failed(&self, err: impl Into<String>) {
+    |                   ^^^^^^^^^^^
+...
+386 |     pub(crate) async fn send_request_synced(
+    |                         ^^^^^^^^^^^^^^^^^^^
+
+warning: method `finalize_turn` is never used
+   --> src/runtime/mod.rs:753:8
+    |
+547 | impl AgentRuntime {
+    | ----------------- method in this implementation
+...
+753 |     fn finalize_turn(
+    |        ^^^^^^^^^^^^^
+
+warning: field `path` is never read
+  --> src/session/data/sqlite/conn.rs:16:5
+   |
+14 | pub struct SharedDb {
+   |            -------- field in this struct
+15 |     conn: Connection,
+16 |     path: PathBuf,
+   |     ^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: function `remove_pending` is never used
+   --> src/session/data/sqlite/pending.rs:133:8
+    |
+133 | pub fn remove_pending(conn: &Connection, session_id: &str, request_id: &str) -> Result<()> {
+    |        ^^^^^^^^^^^^^^
+
+warning: method `session_has_job` is never used
+   --> src/terminal/agent_jobs.rs:366:19
+    |
+213 | impl AgentJobRegistry {
+    | --------------------- method in this implementation
+...
+366 |     pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
+    |                   ^^^^^^^^^^^^^^^
+
+warning: field `priority` is never read
+   --> src/tools/code.rs:180:5
+    |
+170 | struct LedgerLine {
+    |        ---------- field in this struct
+...
+180 |     priority: bool,
+    |     ^^^^^^^^
+    |
+    = note: `LedgerLine` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `seq`, `tool`, `summary`, `error_code`, and `error_message` are never read
+  --> src/tools/code/render.rs:28:9
+   |
+27 | pub(super) struct LedgerSnap {
+   |                   ---------- fields in this struct
+28 |     pub seq: u64,
+   |         ^^^
+29 |     pub tool: String,
+   |         ^^^^
+30 |     pub summary: String,
+   |         ^^^^^^^
+31 |     pub state: String,
+32 |     pub error_code: Option<String>,
+   |         ^^^^^^^^^^
+33 |     pub error_message: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: fields `message` and `details` are never read
+  --> src/tools/code/render.rs:42:9
+   |
+38 | pub(super) struct UncaughtToolError {
+   |                   ----------------- fields in this struct
+...
+42 |     pub message: String,
+   |         ^^^^^^^
+43 |     pub summary: String,
+44 |     pub details: Option<Value>,
+   |         ^^^^^^^
+
+warning: fields `diagnostics_omitted`, `tool_counts`, and `failure_stack` are never read
+  --> src/tools/code/render.rs:61:9
+   |
+48 | pub(super) struct RunReport {
+   |                   --------- fields in this struct
+...
+61 |     pub diagnostics_omitted: usize,
+   |         ^^^^^^^^^^^^^^^^^^^
+62 |     pub tool_counts: BTreeMap<String, usize>,
+   |         ^^^^^^^^^^^
+...
+71 |     pub failure_stack: Option<String>,
+   |         ^^^^^^^^^^^^^
+
+warning: function `apply_edits_data_schema` is never used
+  --> src/tools/edit/result.rs:49:8
+   |
+49 | pub fn apply_edits_data_schema() -> Value {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: variant `UnixStyleOnWindows` is never constructed
+  --> src/workspace/agent_path.rs:26:5
+   |
+23 | pub enum ClassifyError {
+   |          ------------- variant in this enum
+...
+26 |     UnixStyleOnWindows { raw: String },
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `ClassifyError` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variant `Failed` is never constructed
+  --> src/workspace/open_host.rs:11:5
+   |
+ 7 | pub enum OpenHostError {
+   |          ------------- variant in this enum
+...
+11 |     Failed(String),
+   |     ^^^^^^
+
+warning: `litecode` (lib test) generated 43 warnings (run `cargo fix --lib -p litecode --tests` to apply 8 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 32.94s
+     Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
+
+running 202 tests
+test engines::session_search::cjk::tests::latin_text_is_copied_through_untouched ... ok
+test engines::session_search::cjk::tests::a_chinese_run_becomes_words ... ok
+test engines::session_search::cjk::tests::a_query_of_pure_glue_is_still_a_query ... ok
+test engines::session_search::cjk::tests::mixed_scripts_are_split_by_script ... ok
+test engines::session_search::cjk::tests::scripts_do_not_fuse_across_a_run_boundary ... ok
+test engines::session_search::cjk::tests::query_tokens_are_ordered_deduped_and_glue_free ... ok
+test engines::session_search::chunk::tests::short_text_is_one_chunk ... ok
+test engines::session_search::chunk::tests::cjk_and_no_trailing_newline ... ok
+test engines::session_search::chunk::tests::long_text_is_cut_into_tiles ... ok
+test engines::session_search::derive::tests::decode_keeps_call_linkage_for_rows_it_does_not_admit ... ok
+test engines::session_search::echo::tests::nested_code_calls_are_echoes_when_the_ledger_reads_sessions ... ok
+test engines::session_search::echo::tests::session_targeted_results_are_echoes ... ok
+test engines::session_search::chunk::tests::one_giant_line_is_hard_cut ... ok
+test engines::session_search::dense_parity::a_legacy_index_migrates_in_one_pass_without_re_embedding ... ok
+test engines::session_search::dense_parity::a_late_echo_result_is_excluded_by_the_settled_seed ... ok
+test engines::session_search::dense_parity::a_reverted_dense_index_equals_a_clean_rebuild ... ok
+test engines::session_search::golden::golden_indexes_exactly_the_admitted_rows ... ok
+test engines::session_search::golden::golden_final_layer_gates_on_intent_and_reports_its_evidence ... ok
+test engines::session_search::golden::golden_query_ladder_and_exclusions ... ok
+test engines::session_search::golden::golden_scope_and_candidate_recall ... ok
+test engines::session_search::lexical::tests::a_current_index_is_reconciled_without_a_rebuild ... ok
+test engines::session_search::lexical::tests::a_file_from_another_schema_is_rebuilt ... ok
+test engines::session_search::lexical::tests::a_large_corpus_is_not_built_inside_the_search ... ok
+test engines::session_search::lexical::tests::a_failed_background_build_is_reported_as_its_cause ... ok
+test engines::session_search::lexical::tests::a_missing_index_is_built ... ok
+test engines::session_search::lexical::tests::a_usable_index_is_answered_without_waiting_for_the_delta ... ok
+test engines::session_search::lexical::tests::an_unopenable_index_is_rebuilt ... ok
+test engines::session_search::parity::a_failed_rebuild_leaves_the_previous_index_live ... ok
+test engines::session_search::parity::a_failed_refresh_leaves_the_index_unchanged ... ok
+test engines::session_search::lexical::tests::the_idle_pass_repairs_an_old_schema_without_a_search ... ok
+test engines::session_search::parity::a_rebuild_replaces_the_whole_index ... ok
+test engines::session_search::parity::a_refresh_indexes_final_rows_even_beside_an_in_flight_one ... ok
+test engines::session_search::parity::a_reconciled_index_equals_a_clean_rebuild ... ok
+test engines::session_search::parity::a_session_echo_result_never_reaches_the_index ... ok
+test engines::session_search::parity::a_reverted_tail_leaves_the_index ... ok
+test engines::session_search::parity::an_in_flight_row_does_not_hold_back_a_later_final_row ... ok
+test engines::session_search::parity::incremental_derive_from_a_partial_index_matches_a_full_build ... ok
+test engines::session_search::parity::incremental_derive_matches_a_full_build_field_by_field ... ok
+test engines::session_search::query_plan::tests::a_cjk_branch_carries_words_and_the_two_word_floor ... ok
+test engines::session_search::query_plan::tests::a_mixed_branch_keeps_both_scripts_and_ands_them ... ok
+test engines::session_search::query_plan::tests::a_query_of_pure_glue_is_still_a_query ... ok
+test engines::session_search::query_plan::tests::a_shared_suffix_is_not_a_fragment_of_the_query ... ok
+test engines::session_search::query_plan::tests::a_single_word_has_no_proximity_query ... ok
+test engines::session_search::query_plan::tests::branches_split_like_the_product_contract ... ok
+test engines::session_search::query_plan::tests::cjk_coverage_is_substring_but_latin_coverage_is_a_word ... ok
+test engines::session_search::query_plan::tests::cjk_routes_to_grams_and_latin_to_words ... ok
+test engines::session_search::query_plan::tests::gram_counting_and_contiguity ... ok
+test engines::session_search::query_plan::tests::identifiers_are_never_dropped_as_glue ... ok
+test engines::session_search::query_plan::tests::near_terms_follow_the_query_not_the_alphabet ... ok
+test engines::session_search::query_plan::tests::stopwords_leave_the_loose_path_but_not_the_literal ... ok
+test engines::session_search::query_plan::tests::the_character_floor_keeps_a_fragment_out_of_a_sentence ... ok
+test engines::session_search::query_plan::tests::the_gate_grows_with_the_query ... ok
+test engines::session_search::query_plan::tests::word_counting_is_whole_word_only ... ok
+test engines::session_search::query_plan::tests::words_keep_query_order_and_dedupe ... ok
+test engines::session_search::ranking::tests::a_role_weight_breaks_a_tie_in_quality_but_never_replaces_it ... ok
+test engines::session_search::ranking::tests::an_exact_echo_does_not_outrank_who_said_it ... ok
+test engines::session_search::ranking::tests::bands_order_like_the_product_ladder ... ok
+test engines::session_search::ranking::tests::coverage_is_a_ratio_of_intent ... ok
+test engines::session_search::ranking::tests::layer_depths_are_bounded_and_never_zero ... ok
+test engines::session_search::ranking::tests::role_breaks_ties_only_at_equal_coverage ... ok
+test engines::session_search::ranking::tests::roles_follow_the_product_ladder ... ok
+test engines::session_search::ranking::tests::rrf_decays_with_rank_and_rewards_agreement ... ok
+test engines::session_search::ranking::tests::speaker_tier_splits_the_two_sides_of_a_conversation ... ok
+test engines::session_search::ranking::tests::within_a_band_coverage_beats_role ... ok
+test engines::session_search::relevance::a_narrowing_scope_keeps_the_same_order_within_the_session ... ok
+test engines::session_search::relevance::live_corpus_probe ... ignored, needs a real workspace; run on demand
+test engines::session_search::relevance::the_evidence_behind_each_judged_hit_names_its_layer ... ok
+test engines::session_search::relevance::the_judgment_board_holds ... ok
+test engines::session_search::semantic_index::tests::a_dense_rebuild_keeps_the_sparse_index ... ok
+test engines::session_search::semantic_index::tests::a_write_after_the_last_consume_is_work_without_a_hint ... ok
+test engines::session_search::derive::tests::compacted_and_echo_rows_derive_without_chunks ... ok
+test engines::session_search::chunk::tests::text_past_the_tokenizer_truncation_limit_is_still_tiled ... ok
+test engines::session_search::semantic_index::tests::an_unchanged_store_is_not_reconciled_again ... ok
+test engines::session_search::dense_parity::an_appended_dense_index_equals_a_clean_rebuild ... ok
+test engines::session_search::golden::golden_chunk_keys_and_normalized_text ... ok
+test engines::session_search::semantic_index::tests::wp135_engine_state_maps_to_fail_reason ... ok
+test engines::session_search::semantic_index::tests::dense_corpus_chunks_long_rows_with_ranges_and_anchor ... ok
+test engines::session_search::semantic_index::tests::session_index_round_trip_and_search ... ok
+test engines::session_search::semantic_index::tests::session_index_reconcile_adds_new_rows ... ok
+test engines::session_search::semantic_index::tests::session_work_none_when_hint_cleared ... ok
+test engines::session_search::semantic_index::tests::wp135_live_running_is_not_cleared ... ok
+test engines::session_search::semantic_index::tests::wp135_files_pending_is_exact_queued_sessions ... ok
+test engines::session_search::semantic_index::tests::wp135_legacy_queue_without_kept_chunks_falls_back_to_indexed ... ok
+test engines::session_search::semantic_index::tests::wp135_index_error_is_failed_index_failed_and_clears_on_success ... ok
+test engines::session_search::semantic_index::tests::wp135_main_process_tick_does_not_touch_worker_running_job ... ok
+test engines::session_search::golden::golden_cjk_is_searched_by_words_and_gated_by_them ... ok
+test engines::session_search::semantic_index::tests::wp135_records_are_written_atomically ... ok
+test engines::session_search::semantic_index::tests::wp135_reconcile_failure_never_leaves_running ... ok
+test engines::session_search::semantic_index::tests::wp135_no_pending_hint_file_is_written ... ok
+test engines::session_search::semantic_index::tests::wp135_undesired_stopped_engine_is_not_failed ... ok
+test engines::session_search::semantic_index::tests::wp135_reconcile_writes_scanning_before_cutting ... ok
+test engines::session_search::semantic_index::tests::wp135_stale_running_is_cleared_on_load_and_requeued ... ok
+test engines::session_search::semantic_index::tests::wp135_total_excludes_chunks_of_deleted_sessions ... ok
+test engines::session_search::semantic_index::tests::wp135_incremental_scans_then_embeds_from_kept_chunks ... ok
+test engines::session_search::semantic_index::tests::wp144_consume_with_unreadable_meta_errs_without_embedding ... ok
+test engines::session_search::semantic_index::tests::wp135_rebuild_reports_embedding_then_ready_exact ... ok
+test engines::session_search::semantic_index::tests::wp144_build_is_searchable_and_refreshing_while_in_progress ... ok
+test engines::session_search::semantic_index::tests::wp144_corrupt_line_and_missing_chunks_log_salvage_instead_of_rebuilding ... ok
+test engines::session_search::semantic_index::tests::wp144_corrupt_meta_is_the_only_case_that_drops_it ... ok
+test engines::session_search::semantic_index::tests::wp144_commit_after_failed_commit_does_not_count_the_stale_tail ... ok
+test engines::session_search::golden::golden_long_row_tiles_losslessly_within_budget ... ok
+test engines::session_search::semantic_index::tests::wp144_crash_mid_migration_reruns_without_reembedding ... ok
+test engines::session_search::semantic_index::tests::wp144_crash_after_commit_resumes_without_reembed ... ok
+test engines::session_search::semantic_index::tests::wp144_crash_between_chunks_and_settled_redoes_one_batch ... ok
+test engines::session_search::semantic_index::tests::wp144_crash_between_vectors_and_chunks_redoes_one_batch ... ok
+test engines::session_search::semantic_index::tests::wp144_crash_before_checkpoint_redoes_one_batch ... ok
+test engines::session_search::semantic_index::tests::wp144_half_record_tail_is_cut_without_reembedding ... ok
+test engines::session_search::semantic_index::tests::wp144_invalid_utf8_line_keeps_meta_and_redoes_only_its_rows ... ok
+test engines::session_search::semantic_index::tests::wp144_load_failure_reason_is_typed ... ok
+test engines::session_search::semantic_index::tests::wp144_failed_reload_after_failed_commit_forces_reload_on_next_use ... ok
+test engines::session_search::semantic_index::tests::wp144_legacy_layout_migrates_without_reembedding ... ok
+test engines::session_search::semantic_index::tests::wp144_sigkill_child_build ... ok
+test engines::session_search::semantic_index::tests::wp144_io_error_on_load_keeps_meta_and_retries ... ok
+test engines::session_search::semantic_index::tests::wp144_sweep_removes_leftover_temps_on_load ... ok
+test engines::session_search::slots::tests::classify_covers_every_durable_kind ... ok
+test engines::session_search::slots::tests::final_policy_keeps_prose_and_call_text_drops_outcome ... ok
+test engines::session_search::slots::tests::lane_whitelist_admits_expected_slots_only ... ok
+test engines::session_search::slots::tests::long_prose_keeps_head_and_tail ... ok
+test engines::session_search::slots::tests::tool_call_summary_drops_bulk_payload ... ok
+test engines::session_search::semantic_index::tests::wp144_meta_read_io_error_is_not_a_rebuild_and_keeps_the_logs ... ok
+test engines::session_search::sparse::tests::a_needle_below_the_trigram_floor_is_scanned_not_dropped ... ok
+test engines::session_search::sparse::tests::a_partial_fragment_is_not_typo_tolerance ... ok
+test engines::session_search::semantic_index::tests::wp144_log_shorter_than_checkpoint_salvages_instead_of_rebuilding ... ok
+test engines::session_search::sparse::tests::a_row_that_only_shares_a_suffix_is_not_a_typo_match ... ok
+test engines::session_search::sparse::tests::a_typo_is_found_by_the_fuzzy_layer_and_gated_by_adjacency ... ok
+test engines::session_search::sparse::tests::alternatives_split_like_the_product ... ok
+test engines::session_search::sparse::tests::a_role_preference_yields_to_a_better_match ... ok
+test engines::session_search::sparse::tests::alternatives_match_any_branch ... ok
+test engines::session_search::sparse::tests::cjk_detection ... ok
+test engines::session_search::sparse::tests::hard_cut_is_the_only_cut ... ok
+test engines::session_search::sparse::tests::an_exact_tie_falls_to_the_later_session_not_the_repeat_count ... ok
+test engines::session_search::sparse::tests::map_span_lands_on_the_original_literal ... ok
+test engines::session_search::sparse::tests::chunked_hit_carries_row_coordinates ... ok
+test engines::session_search::sparse::tests::near_query_is_proximity_over_word_terms ... ok
+test engines::session_search::sparse::tests::normalize_folds_fullwidth_and_space ... ok
+test engines::session_search::sparse::tests::normalize_with_map_points_back_at_originals ... ok
+test engines::session_search::sparse::tests::like_and_match_spans_land_on_the_literal ... ok
+test engines::session_search::sparse::tests::near_parses_and_matches_in_the_bundled_sqlite ... ok
+test engines::session_search::sparse::tests::one_common_word_does_not_answer_a_multi_word_query ... ok
+test engines::session_search::sparse::tests::tier_score_keeps_tiers_apart_and_order_intact ... ok
+test engines::session_search::sparse::tests::trigram_query_needs_three_chars ... ok
+test engines::session_search::sparse::tests::word_query_drops_punctuation ... ok
+test engines::session_search::tests::a_newer_echo_does_not_pass_who_said_it ... ok
+test engines::session_search::tests::age_reads_as_relative_time ... ok
+test engines::session_search::sparse::tests::the_role_ladder_orders_equal_match_quality ... ok
+test engines::session_search::sparse::tests::the_human_outranks_a_shorter_echo_that_repeats_the_phrase ... ok
+test engines::session_search::tests::agent_view_carries_no_internal_ranking_vocabulary ... ok
+test engines::session_search::tests::agent_view_names_the_tool_of_a_call_and_its_result ... ok
+test engines::session_search::tests::agent_view_shows_the_whole_item_when_it_fits ... ok
+test engines::session_search::tests::chunk_hits_on_one_row_collapse_to_a_single_hit ... ok
+test engines::session_search::tests::build_search_page_uses_physical_line_and_match_count ... ok
+test engines::session_search::tests::agent_view_spills_the_remainder_into_a_named_file ... ok
+test engines::session_search::tests::exact_ties_follow_session_update_time_then_the_later_line ... ok
+test engines::session_search::tests::context_window_exclude_drops_live_seqs_keeps_archive ... ok
+test engines::session_search::tests::fusion_keeps_the_row_both_lanes_found_and_rewards_the_agreement ... ok
+test engines::session_search::tests::fusion_keeps_the_sparse_order_when_the_semantic_lane_is_empty ... ok
+test engines::session_search::tests::fusion_never_compares_native_scores_across_lanes ... ok
+test engines::session_search::tests::gate_drops_weak_semantic ... ok
+test engines::session_search::tests::gate_keeps_strong_semantic ... ok
+test engines::session_search::tests::handles_extend_until_they_are_unique ... ok
+test engines::session_search::semantic_index::tests::wp144_panic_mid_build_resumes_from_checkpoint ... ok
+test engines::session_search::tests::every_hit_travels_with_the_header_of_its_session ... ok
+test engines::session_search::semantic_index::tests::wp144_resume_progress_starts_from_committed_and_is_monotonic ... ok
+test engines::session_search::tests::exclude_session_ids_filters_rows ... ok
+test engines::session_search::tests::lane_state::a_broken_index_is_an_error_not_an_empty_result ... ok
+test engines::session_search::tests::lane_state::concurrent_searches_agree_and_none_is_left_unanswered ... ok
+test engines::session_search::tests::pack_page_offset_past_end_is_empty ... ok
+test engines::session_search::tests::pack_page_stops_on_whole_hit_and_advances_offset ... ok
+test engines::session_search::tests::lane_state::ready_is_a_real_answer_even_when_it_is_empty ... ok
+test engines::session_search::tests::lane_state::maintenance_reports_a_broken_store_instead_of_succeeding ... ok
+test engines::session_search::tests::resolve_session_ref_unique_prefix ... ok
+test engines::session_search::tests::lane_state::a_stale_index_is_caught_up_behind_the_query ... ok
+test engines::session_search::tests::lexical_fts_indexes_on_insert_and_finds_token ... ok
+test engines::session_search::tests::session_text_search_case_insensitive ... ok
+test engines::session_search::tests::session_text_search_finds_seeded_transcript ... ok
+test engines::session_search::tests::session_text_search_missing_db_returns_empty ... ok
+test engines::session_search::trimmer::tests::a_result_keeps_only_its_head ... ok
+test engines::session_search::trimmer::tests::a_result_under_the_budget_is_left_alone ... ok
+test engines::session_search::trimmer::tests::everything_that_is_not_a_result_is_untouched ... ok
+test engines::session_search::trimmer::tests::the_cut_lands_on_a_character_boundary ... ok
+test engines::session_search::tests::session_text_search_fuzzy_typo ... ok
+test engines::session_search::tests::session_text_search_skips_empty_query ... ok
+test engines::session_search::tests::session_text_search_includes_function_call_rows ... ok
+test engines::session_search::tests::session_text_search_respects_scope ... ok
+test engines::session_search::trimmer::tests::the_index_drops_tool_results_and_keeps_a_messages_whole_body ... ok
+test tools::session_search::tests::a_two_character_cjk_query_finds_the_row ... ok
+test tools::session_search::tests::desired_false_session_search_points_at_settings ... ok
+test tools::session_search::tests::rejects_empty_query ... ok
+test tools::session_search::tests::schema_is_query_and_session_scope ... ok
+test tools::session_search::tests::active_session_context_window_is_excluded_by_default ... ok
+test tools::session_search::tests::compacted_history_below_kept_from_seq_remains_searchable ... ok
+test engines::session_search::semantic_index::tests::wp144_bytes_per_batch_independent_of_index_size ... ok
+test tools::session_search::tests::empty_result_has_no_group_headings ... ok
+test tools::session_search::tests::search_hit_line_matches_virtual_read ... ok
+test tools::session_search::tests::semantic_unavailable_is_explicit_and_leads_with_sync_pct ... ok
+test tools::session_search::tests::session_id_scopes_to_one_session ... ok
+test tools::session_search::tests::unknown_session_id_errors ... ok
+test engines::session_search::parity::a_settled_reconcile_costs_a_fraction_of_a_rebuild ... ok
+test tools::session_search::tests::typical_broad_search_renders_handle_and_lines ... ok
+test tools::session_search::tests::typical_multi_hit_same_session_lists_lines ... ok
+test tools::session_search::tests::a_result_over_budget_names_the_file_that_holds_the_rest ... ok
+test engines::session_search::semantic_index::tests::wp144_sigkill_mid_build_resumes_without_reembed ... ok
+
+test result: ok. 201 passed; 0 failed; 1 ignored; 0 measured; 2000 filtered out; finished in 7.58s
+
+EXIT 0

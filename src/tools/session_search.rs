@@ -378,11 +378,7 @@ mod tests {
             out.matches(": user").count() < 120,
             "the view must not carry every hit:\n{out}"
         );
-        let location = out
-            .split(" are in ")
-            .nth(1)
-            .and_then(|rest| rest.split(" —").next())
-            .expect(&out);
+        let location = crate::engines::session_search::named_spill_location(&out).expect(&out);
         assert!(
             location.starts_with(".litecode/bash/session_search_"),
             "{out}"
@@ -571,7 +567,7 @@ mod tests {
             serde_json::json!({
                 "path": path,
                 "start_line": start_line,
-                "end_line": end_line,
+                "limit": end_line - start_line + 1,
             }),
             ToolExecutionContext {
                 path_mode: crate::workspace::ToolPathMode::All,
@@ -586,10 +582,21 @@ mod tests {
             },
         ));
         assert_eq!(read.level, ToolSignalLevel::Ok, "{}", read.content);
+        let data = read.data.as_ref().expect("read returns data");
+        let lines: Vec<&str> = data["lines"]
+            .as_array()
+            .expect("data.lines")
+            .iter()
+            .filter_map(|l| l.as_str())
+            .collect();
+        assert_eq!(
+            lines.len(),
+            (end_line - start_line + 1) as usize,
+            "read at L{start_line}-{end_line} must cover the hit range: {data}"
+        );
         assert!(
-            read.content.contains("SEARCH_READ_ALIGN_TOKEN"),
-            "read at L{start_line}-{end_line} should contain the hit:\n{}",
-            read.content
+            lines.iter().any(|l| l.contains("SEARCH_READ_ALIGN_TOKEN")),
+            "read at L{start_line}-{end_line} should contain the hit: {data}"
         );
     }
 

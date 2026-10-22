@@ -894,6 +894,14 @@ fn fit_prefix(
     best
 }
 
+/// Test helper: the spill path a view names in `are in <path>.`.
+#[cfg(test)]
+pub(crate) fn named_spill_location(view: &str) -> Option<&str> {
+    let rest = view.split(" are in ").nth(1)?;
+    let token = rest.split_whitespace().next()?;
+    Some(token.strip_suffix('.').unwrap_or(token))
+}
+
 /// Footer of a view that could not carry every hit: what was shown, where the
 /// rest is, and how many per session are missing.
 fn spill_footer(
@@ -2099,11 +2107,7 @@ mod tests {
             "{view}"
         );
         assert!(view.contains("More in: "), "{view}");
-        let location = view
-            .split(" are in ")
-            .nth(1)
-            .and_then(|rest| rest.split(" —").next())
-            .expect(&view);
+        let location = crate::engines::session_search::named_spill_location(&view).expect(&view);
         let spilled = std::fs::read_to_string(dir.path().join(location)).unwrap();
         assert!(spilled.contains("Remaining "), "{spilled}");
         let entries: Vec<&str> = spilled
