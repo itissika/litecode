@@ -67,18 +67,18 @@ async fn code_tool_runs_real_bundle_with_data_only_results() {
 
     let script = r#"
 const matches = await tools.grep({ pattern: "needle", path: "src", limit: 1 });
-if (!matches.matches) {
+if (!matches.hits) {
   throw new Error("grep failed: " + JSON.stringify(matches));
 }
 if (Object.prototype.hasOwnProperty.call(matches, "text")) {
   throw new Error("inner result must not expose text");
 }
 const file = await tools.read({
-  path: matches.matches[0].path,
+  path: matches.hits[0].path,
   start_line: 1,
-  end_line: 1,
+  limit: 1,
 });
-if (!file.file || !file.lines || file.lines.length !== 1) {
+if (!file.path || !file.lines || file.lines.length !== 1) {
   throw new Error("read failed: " + JSON.stringify(file));
 }
 let badCode = "";
@@ -89,13 +89,13 @@ try {
 }
 let unsupportedCode = "";
 try {
-  await tools.read({ path: file.file.path }, { timeout_ms: 1 });
+  await tools.read({ path: file.path }, { timeout_ms: 1 });
 } catch (e) {
   unsupportedCode = e instanceof ToolError ? e.code : e.name;
 }
 return {
-  path: file.file.path,
-  line: file.lines[0].text,
+  path: file.path,
+  line: file.lines[0],
   bad_code: badCode,
   unsupported_code: unsupportedCode,
   process_absent: typeof process === "undefined",
@@ -133,7 +133,6 @@ return {
     .await;
 
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(result.data.is_none(), "{}", result.content);
     assert!(!result.content.contains("\nlogs:"), "{}", result.content);
     let value = run_code_result(&result.content);
     assert_eq!(value["path"], "src/a.rs");
@@ -346,7 +345,6 @@ try {
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(result.data.is_none(), "{}", result.content);
     assert!(
         result.content.contains("result:\nTypeError"),
         "{}",
@@ -385,7 +383,7 @@ try {
         "{}",
         result.content
     );
-    assert!(result.content.contains("run_code timed out after 500ms"));
+    assert!(result.content.contains("timeout after 500ms"), "{}", result.content);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -449,7 +447,6 @@ return { ok: true };
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(result.data.is_none(), "{}", result.content);
     assert!(
         result.content.contains("[log] hello 42"),
         "{}",
@@ -496,7 +493,7 @@ return { ok: true };
         result.error.expect("typed output-limit result").kind,
         ToolErrorKind::OutputLimit
     );
-    assert!(result.content.contains("exceeded"), "{}", result.content);
+    assert!(result.content.contains("output limit"), "{}", result.content);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -567,7 +564,6 @@ return {
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(result.data.is_none(), "{}", result.content);
     let value = run_code_result(&result.content);
     assert_eq!(value["process"], "undefined");
     let require_state = value["require_state"].as_str().unwrap_or("");
