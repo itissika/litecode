@@ -1454,3 +1454,5 @@
 {"ts":"2026-10-22T01:13:42.407Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-206: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T01:21:16.352Z","kind":"wp_lifecycle","source":"gm","summary":"WP-206: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T01:29:43.528Z","kind":"wp_lifecycle","source":"gm","summary":"WP-207: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T01:33:43.885Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-207: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T01:33:44.025Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-207: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
