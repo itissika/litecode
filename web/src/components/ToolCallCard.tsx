@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FileArrowUpIcon } from "@phosphor-icons/react";
 
 import {
@@ -9,10 +9,11 @@ import {
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, matchJob } from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
-import { formatRunCodeData } from "../lib/runCodeSummary";
+import { formatRunCodeData, runCodeChips } from "../lib/runCodeSummary";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
 import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
+import { RunCodeStatus, runCodeChipTotalMs } from "./RunCodeStatus";
 import { ToolContentView } from "./ToolContentView";
 import { ToolIcon } from "./ToolIcon";
 import { deriveToolStatus } from "./toolCallStatus";
@@ -60,8 +61,16 @@ export function ToolCallCard({
   const inputSummary = toolTitle(toolName, input, rawOutput, {
     activePlanPath,
   }).summary;
-  const runCodeSummary =
+  const runCodeChipsList = useMemo(
+    () => (toolName === "run_code" ? runCodeChips(data) : []),
+    [toolName, data],
+  );
+  const runCodeLabel =
     toolName === "run_code" ? formatRunCodeData(data) : null;
+  const runCodeChipMs = runCodeChipTotalMs(runCodeChipsList.length);
+  const [runCodeAnimating, setRunCodeAnimating] = useState(false);
+  const prevHadOutput = useRef(Boolean(output));
+  const runCodeAnimTimer = useRef<number | null>(null);
 
   // edit header: file + line-level +N/−M, summed from edits[] (or historical
   // top-level old_string/new_string). Request preview only — not apply status.
@@ -107,6 +116,36 @@ export function ToolCallCard({
     return () => window.clearInterval(t);
   }, [bashJob]);
 
+  // run_code: play the chip row once when the result lands, then let the
+  // glyph settle. A mounted card that already has output (history, virtual-list
+  // remount) stays static.
+  useEffect(() => {
+    const hadOutput = prevHadOutput.current;
+    prevHadOutput.current = Boolean(output);
+    if (
+      toolName !== "run_code" ||
+      !output ||
+      hadOutput ||
+      runCodeChipsList.length === 0 ||
+      runCodeAnimTimer.current !== null
+    ) {
+      return;
+    }
+    setRunCodeAnimating(true);
+    runCodeAnimTimer.current = window.setTimeout(() => {
+      runCodeAnimTimer.current = null;
+      setRunCodeAnimating(false);
+    }, runCodeChipMs + 80);
+  }, [toolName, output, runCodeChipsList.length, runCodeChipMs]);
+
+  useEffect(() => {
+    return () => {
+      if (runCodeAnimTimer.current !== null) {
+        window.clearTimeout(runCodeAnimTimer.current);
+      }
+    };
+  }, []);
+
   // Action buttons are driven by tool type (not a universal copy). Today only
   // file-editing tools expose an "Open file" action; more can be added per
   // tool as needed.
@@ -147,7 +186,14 @@ export function ToolCallCard({
   return (
     <FoldCard
       id={foldCardId}
-      icon={<ToolIcon name={toolName} status={status} streaming={streaming} />}
+      icon={
+        <ToolIcon
+          name={toolName}
+          status={status}
+          streaming={streaming}
+          settleDelayMs={toolName === "run_code" ? runCodeChipMs : 0}
+        />
+      }
       label={
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <span
@@ -173,12 +219,21 @@ export function ToolCallCard({
                 </span>
               </span>
             </>
+          ) : toolName === "run_code" ? (
+            <RunCodeStatus
+              chips={runCodeChipsList}
+              streaming={streaming}
+              hasOutput={Boolean(output)}
+              animate={runCodeAnimating}
+              ariaLabel={runCodeLabel}
+              fallback={inputSummary}
+            />
           ) : (
-            (runCodeSummary || inputSummary) && (
+            inputSummary && (
               <span
                 className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}
               >
-                {runCodeSummary ?? inputSummary}
+                {inputSummary}
               </span>
             )
           )}

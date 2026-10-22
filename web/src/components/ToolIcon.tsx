@@ -96,10 +96,13 @@ export function ToolIcon({
   name,
   status,
   streaming = false,
+  settleDelayMs = 0,
 }: {
   name: string;
   status: ToolStatus;
   streaming?: boolean;
+  /** Delay the one-shot settle animation after the seal transition. */
+  settleDelayMs?: number;
 }) {
   const Glyph = glyphFor(name);
   const [anim, setAnim] = useState<ToolAnim>(null);
@@ -127,22 +130,33 @@ export function ToolIcon({
       return;
     }
 
-    if (status === "ok" || status === "warning") {
-      setAnim("pop");
-      clearTimer.current = window.setTimeout(() => setAnim(null), 700);
-    } else if (status === "failed") {
-      setAnim("fail");
-      clearTimer.current = window.setTimeout(() => setAnim(null), 900);
+    const play = () => {
+      if (status === "ok" || status === "warning") {
+        setAnim("pop");
+        clearTimer.current = window.setTimeout(() => setAnim(null), 700);
+      } else if (status === "failed") {
+        setAnim("fail");
+        clearTimer.current = window.setTimeout(() => setAnim(null), 900);
+      } else {
+        setAnim(null);
+      }
+    };
+
+    // A caller may own a result intro (e.g. run_code chips) and want the
+    // glyph settle after it, not on the same frame as the item sealing.
+    if (settleDelayMs > 0) {
+      clearTimer.current = window.setTimeout(play, settleDelayMs);
     } else {
-      setAnim(null);
+      play();
     }
+
     return () => {
       if (clearTimer.current !== null) {
         window.clearTimeout(clearTimer.current);
         clearTimer.current = null;
       }
     };
-  }, [streaming, status]);
+  }, [streaming, status, settleDelayMs]);
 
   const colorClass =
     status === "failed"

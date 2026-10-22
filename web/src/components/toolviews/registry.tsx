@@ -6,6 +6,7 @@ import { BashToolView } from "./BashToolView";
 import { EditToolView } from "./EditToolView";
 import { FileParamView } from "./FileParamView";
 import { CodeSearchToolView } from "./CodeSearchToolView";
+import { RunCodeToolView } from "./RunCodeToolView";
 import { SessionSearchToolView } from "./SessionSearchToolView";
 import { SubagentLaunchToolView } from "./SubagentLaunchToolView";
 import { SubagentListToolView } from "./SubagentListToolView";
@@ -39,6 +40,7 @@ const TOOL_VIEWS: Record<
   write: WriteToolView,
   edit: EditToolView,
   bash: BashToolView,
+  run_code: RunCodeToolView,
   subagent_launch: SubagentLaunchToolView,
   subagent_wait: SubagentWaitToolView,
   subagent_stop: SubagentStopToolView,
@@ -64,6 +66,7 @@ export function getToolView(
  */
 const OUTPUT_OWNED_BY_VIEW: ReadonlySet<string> = new Set([
   "bash",
+  "run_code",
   "subagent_launch",
   "subagent_wait",
   "subagent_stop",

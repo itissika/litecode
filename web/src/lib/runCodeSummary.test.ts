@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { formatRunCodeData } from "./runCodeSummary";
+import { formatRunCodeData, runCodeChips } from "./runCodeSummary";
 
 describe("formatRunCodeData", () => {
   it("renders per-tool totals plus failed", () => {
@@ -42,6 +42,25 @@ describe("formatRunCodeData", () => {
         ok: true,
       }),
     ).toBe("read ×2 · 1 unsettled");
+  });
+
+  it("exposes aggregate chips in display order", () => {
+    expect(
+      runCodeChips({
+        by_tool: {
+          read: { ok: 2, fail: 0 },
+          grep: { ok: 3, fail: 0 },
+        },
+        failed: 1,
+        unsettled: 1,
+        ok: false,
+      }).map((chip) => [chip.label, chip.count, chip.kind]),
+    ).toEqual([
+      ["grep", 3, "tool"],
+      ["read", 2, "tool"],
+      ["failed", 1, "failed"],
+      ["unsettled", 1, "unsettled"],
+    ]);
   });
 
   it("ignores malformed or absent data", () => {

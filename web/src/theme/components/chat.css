@@ -741,6 +741,31 @@
   animation: bash-view-reveal 900ms ease-out;
 }
 
+/* ── run_code header status ───────────────────────────────────
+   Aggregate chips pop in left-to-right after the result lands. No glow:
+   the run_code glyph owns the settle animation. The header truncates its
+   own overflow; no horizontal scrollbar. */
+.run-code-chip-in {
+  animation: run-code-chip-in 240ms cubic-bezier(0.22, 0.8, 0.24, 1) both;
+}
+
+@keyframes run-code-chip-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-code-chip-in {
+    animation: none;
+  }
+}
+
 /* ── Mini chat input overlay ── */
 
 @keyframes mini-chat-exit {
