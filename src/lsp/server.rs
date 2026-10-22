@@ -289,31 +289,38 @@ impl LspServer {
         self.io.index_settled.load(Ordering::SeqCst) || self.spawned_at.elapsed() >= INDEX_GRACE
     }
 
+    /// WP-206 ③: diagnostics for the agent tool, gated on the same index-not-ready
+    /// rule as navigation ([`Self::index_ready_for_empty_miss`]).
+    ///
+    /// - server not running → `Err` "index not ready" (tool maps to `unavailable`);
+    /// - a publish covering the synced version arrived within `budget` → those diagnostics;
+    /// - nothing published yet, still inside `INDEX_GRACE` / not settled → `Err` (unavailable);
+    /// - nothing published and the grace has expired → empty success (truly no diagnostics).
+    pub(crate) async fn wait_file_diagnostics_gated(
+        &self,
+        uri: &str,
+        budget: Duration,
+    ) -> Result<Value> {
+        if !self.is_running() {
+            return Err(index_not_ready_error("textDocument/publishDiagnostics"));
+        }
+        let diags = self.io.wait_diagnostics(uri, budget).await;
+        let fresh = self.io.diagnostics_are_current(uri);
+        match diagnostics_gate(self.is_running(), fresh, self.index_ready_for_empty_miss()) {
+            DiagnosticsGate::Fresh => Ok(diags),
+            DiagnosticsGate::SettledEmpty => Ok(Value::Array(vec![])),
+            DiagnosticsGate::NotReady => {
+                Err(index_not_ready_error("textDocument/publishDiagnostics"))
+            }
+        }
+    }
+
     pub(crate) async fn request_nav_with_retry(
         &self,
         method: &str,
         params: Value,
     ) -> Result<crate::lsp::conn::LspReply> {
         use crate::lsp::conn::LspReply;
-        fn nav_empty(method: &str, result: &Value) -> bool {
-            if method == "textDocument/hover" {
-                return result.is_null()
-                    || result
-                        .get("contents")
-                        .map(|c| match c {
-                            Value::String(s) => s.trim().is_empty(),
-                            Value::Object(o) => o
-                                .get("value")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.trim().is_empty())
-                                .unwrap_or(true),
-                            Value::Array(a) => a.is_empty(),
-                            _ => true,
-                        })
-                        .unwrap_or(true);
-            }
-            extract_locations(result).is_empty()
-        }
 
         // ContentModified ends the call at once (no resend; ISSUE-047).
         let mut result = match self.send_request_outcome(method, params.clone()).await? {
@@ -346,10 +353,7 @@ impl LspServer {
             }
         }
 
-        Err(LitecodeError::ToolExecution(format!(
-            "language server index not ready (method={method}); result would be inconclusive. \
-             Retry in a few seconds — do not treat this as 'symbol not found'."
-        )))
+        Err(index_not_ready_error(method))
     }
 
     pub(crate) async fn send_request(&self, method: &str, params: Value) -> Result<Value> {
@@ -920,10 +924,111 @@ fn eof_position(text: &str) -> (u32, u32) {
     (line, last.encode_utf16().count() as u32)
 }
 
+/// Shared "index not ready" error; `tools/lsp.rs` maps the text to `unavailable`.
+pub(crate) fn index_not_ready_error(method: &str) -> LitecodeError {
+    LitecodeError::ToolExecution(format!(
+        "language server index not ready (method={method}); result would be inconclusive. \
+         Retry in a few seconds — do not treat this as 'symbol not found'."
+    ))
+}
+
+/// Empty-result test for [`LspServer::request_nav_with_retry`].
+///
+/// WP-206 ③: `textDocument/documentSymbol` and `workspace/symbol` count as
+/// empty when the result is null or an empty array (their items are
+/// `DocumentSymbol`/`SymbolInformation`, not `Location`s, so
+/// `extract_locations` would misread a non-empty DocumentSymbol tree as empty).
+pub(crate) fn nav_empty(method: &str, result: &Value) -> bool {
+    match method {
+        "textDocument/hover" => {
+            result.is_null()
+                || result
+                    .get("contents")
+                    .map(|c| match c {
+                        Value::String(s) => s.trim().is_empty(),
+                        Value::Object(o) => o
+                            .get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim().is_empty())
+                            .unwrap_or(true),
+                        Value::Array(a) => a.is_empty(),
+                        _ => true,
+                    })
+                    .unwrap_or(true)
+        }
+        "textDocument/documentSymbol" | "workspace/symbol" => match result {
+            Value::Null => true,
+            Value::Array(a) => a.is_empty(),
+            _ => false,
+        },
+        _ => extract_locations(result).is_empty(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiagnosticsGate {
+    /// A publish covering the current document version exists.
+    Fresh,
+    /// Nothing published, but the index is settled / grace expired → empty success.
+    SettledEmpty,
+    /// Not running, or running without a publish inside the grace → `unavailable`.
+    NotReady,
+}
+
+/// WP-206 ③ decision table (dig-survey Q5).
+pub(crate) fn diagnostics_gate(server_ready: bool, fresh: bool, index_ready: bool) -> DiagnosticsGate {
+    if !server_ready {
+        DiagnosticsGate::NotReady
+    } else if fresh {
+        DiagnosticsGate::Fresh
+    } else if index_ready {
+        DiagnosticsGate::SettledEmpty
+    } else {
+        DiagnosticsGate::NotReady
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::lsp::conn::{parse_content_length, publish_diagnostics_payload};
+
+    #[test]
+    fn nav_empty_symbols_by_array_len() {
+        for m in ["textDocument/documentSymbol", "workspace/symbol"] {
+            assert!(nav_empty(m, &Value::Null), "{m} null");
+            assert!(nav_empty(m, &serde_json::json!([])), "{m} []");
+            // DocumentSymbol tree has no uri/location — still non-empty.
+            let tree = serde_json::json!([{ "name": "main", "kind": 12,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } },
+                "selectionRange": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } } }]);
+            assert!(!nav_empty(m, &tree), "{m} tree");
+        }
+        // Location-based methods unchanged.
+        assert!(nav_empty("textDocument/definition", &serde_json::json!([])));
+        assert!(nav_empty("textDocument/hover", &Value::Null));
+    }
+
+    #[test]
+    fn diagnostics_gate_table() {
+        use DiagnosticsGate::*;
+        // not running → unavailable regardless of cache
+        assert_eq!(diagnostics_gate(false, true, true), NotReady);
+        assert_eq!(diagnostics_gate(false, false, false), NotReady);
+        // running + published → real result
+        assert_eq!(diagnostics_gate(true, true, false), Fresh);
+        assert_eq!(diagnostics_gate(true, true, true), Fresh);
+        // running, not yet published: inside grace → unavailable; expired → empty success
+        assert_eq!(diagnostics_gate(true, false, false), NotReady);
+        assert_eq!(diagnostics_gate(true, false, true), SettledEmpty);
+    }
+
+    #[test]
+    fn index_not_ready_error_maps_to_unavailable_wording() {
+        let msg = index_not_ready_error("workspace/symbol").to_string();
+        assert!(msg.contains("index not ready"), "{msg}");
+        assert!(msg.contains("workspace/symbol"), "{msg}");
+    }
 
     #[test]
     fn content_length_parses_and_caps() {

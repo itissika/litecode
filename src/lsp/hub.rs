@@ -927,17 +927,21 @@ impl LspHub {
                 })?
         };
         let mut modified = false;
+        // WP-206 ③: same index-not-ready path as hover/definition (empty during
+        // the cold-start grace → Err "index not ready" → tool `unavailable`).
         let result = take_reply(
             server
-                .send_request_outcome(
+                .request_nav_with_retry(
                     "workspace/symbol",
                     serde_json::json!({ "query": query }),
                 )
                 .await?,
             &mut modified,
         );
+        let root = self.workspace_root();
+        let roots: Vec<&Path> = root.as_deref().into_iter().collect();
         Ok(LspToolOutput::new(
-            format_action_result("workspaceSymbol", &result),
+            format_action_result("workspaceSymbol", &result, &roots),
             result,
             modified,
         ))
@@ -1116,9 +1120,10 @@ impl LspHub {
                     .await?,
                 &mut modified,
             ),
+            // WP-206 ③: symbols go through the nav index-not-ready gate.
             "documentSymbol" => take_reply(
                 server
-                    .send_request_outcome(
+                    .request_nav_with_retry(
                         "textDocument/documentSymbol",
                         serde_json::json!({ "textDocument": { "uri": uri } }),
                     )
@@ -1129,7 +1134,7 @@ impl LspHub {
                 // file_path selects/starts the LS; query filters workspace symbols.
                 take_reply(
                     server
-                        .send_request_outcome(
+                        .request_nav_with_retry(
                             "workspace/symbol",
                             serde_json::json!({ "query": query.unwrap_or("") }),
                         )
@@ -1181,10 +1186,12 @@ impl LspHub {
                     &mut modified,
                 )
             }
+            // WP-206 ③: not running / unpublished inside grace → Err (unavailable);
+            // unpublished after grace → empty success.
             "diagnostics" => {
                 server
-                    .wait_file_diagnostics(&uri, Duration::from_secs(3))
-                    .await
+                    .wait_file_diagnostics_gated(&uri, Duration::from_secs(3))
+                    .await?
             }
             other => {
                 return Err(LitecodeError::ToolExecution(format!(
@@ -1193,8 +1200,10 @@ impl LspHub {
             }
         };
 
+        let root = self.workspace_root();
+        let roots: Vec<&Path> = root.as_deref().into_iter().collect();
         Ok(LspToolOutput::new(
-            format_action_result(action, &result),
+            format_action_result(action, &result, &roots),
             result,
             modified,
         ))

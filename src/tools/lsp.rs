@@ -458,10 +458,15 @@ impl LspOpTool {
             return err;
         }
 
+        // WP-206 ⑧: canonical root first (file URIs we send are canonical), then
+        // the configured root; prefix-only, symlinks are not resolved.
+        let configured_root = self.shared.workspace_root.clone();
+        let roots: [&Path; 2] = [workspace_root.as_path(), configured_root.as_path()];
+
         if self.op == LspOp::WorkspaceSymbol {
             let query = input["query"].as_str().expect("validated").to_string();
             return match self.shared.hub.workspace_symbol_outcome(&query).await {
-                Ok(out) => finish_symbols(out, true),
+                Ok(out) => finish_symbols(out, true, &roots),
                 Err(e) => map_lsp_query_error(e),
             };
         }
@@ -503,9 +508,9 @@ impl LspOpTool {
             Ok(out) => match self.op {
                 LspOp::Hover => finish_hover(out),
                 LspOp::Diagnostics => finish_diagnostics(out, &display_path),
-                LspOp::DocumentSymbol => finish_symbols(out, false),
+                LspOp::DocumentSymbol => finish_symbols(out, false, &roots),
                 LspOp::WorkspaceSymbol => unreachable!("handled above"),
-                _ => finish_locations(out),
+                _ => finish_locations(out, &roots),
             },
             Err(e) => map_lsp_query_error(e),
         }
@@ -637,8 +642,8 @@ fn map_lsp_query_error(err: impl std::fmt::Display) -> ToolCallResult {
     coded(code, msg)
 }
 
-fn finish_locations(out: crate::lsp::LspToolOutput) -> ToolCallResult {
-    let mut locations = extract_location_items(&out.raw);
+fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
+    let mut locations = extract_location_items(&out.raw, roots);
     let truncated = locations.len() > MAX_LOCATIONS;
     if truncated {
         locations.truncate(MAX_LOCATIONS);
@@ -703,8 +708,12 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
     )
 }
 
-fn finish_symbols(out: crate::lsp::LspToolOutput, require_path: bool) -> ToolCallResult {
-    let mut symbols = extract_symbol_items(&out.raw, require_path);
+fn finish_symbols(
+    out: crate::lsp::LspToolOutput,
+    require_path: bool,
+    roots: &[&Path],
+) -> ToolCallResult {
+    let mut symbols = extract_symbol_items(&out.raw, require_path, roots);
     let truncated = symbols.len() > MAX_SYMBOLS;
     if truncated {
         symbols.truncate(MAX_SYMBOLS);
@@ -900,12 +909,60 @@ mod tests {
             Value::Null,
             false,
         );
-        let result = finish_locations(out);
+        let result = finish_locations(out, &[]);
         assert_eq!(result.level, crate::types::result::ToolSignalLevel::Ok);
         assert!(result.error.is_none());
         let data = result.data.expect("data");
         assert_eq!(data["locations"], serde_json::json!([]));
         assert!(data["message"].as_str().unwrap().contains("No locations"));
+    }
+
+    #[test]
+    fn index_not_ready_rejects_unavailable_for_symbols_and_diagnostics() {
+        // WP-206 ③: documentSymbol / workspaceSymbol / diagnostics share the nav error.
+        for method in [
+            "textDocument/documentSymbol",
+            "workspace/symbol",
+            "textDocument/publishDiagnostics",
+        ] {
+            let err = crate::lsp::server::index_not_ready_error(method);
+            let result = map_lsp_query_error(err);
+            assert_eq!(result.error_code.as_deref(), Some("unavailable"), "{method}");
+            assert!(result.data.is_none(), "{method}: must not be an empty success");
+        }
+        // Hub's "server not running" also lands on unavailable.
+        let result = map_lsp_query_error("language server is not ready");
+        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
+    }
+
+    #[test]
+    fn finish_locations_relative_inside_absolute_outside() {
+        // WP-206 ⑧
+        let ws = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let mk = |p: &Path| serde_json::json!({
+            "uri": crate::lsp::uri::file_to_uri(p),
+            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }
+        });
+        let raw = serde_json::json!([mk(&ws.path().join("a").join("b.rs")), mk(&other.path().join("c.rs"))]);
+        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
+        let result = finish_locations(out, &[ws.path()]);
+        let data = result.data.expect("data");
+        assert_eq!(data["locations"][0]["path"], "a/b.rs");
+        let outside = data["locations"][1]["path"].as_str().unwrap();
+        assert!(Path::new(outside).is_absolute() && outside.ends_with("c.rs"), "{outside}");
+    }
+
+    #[test]
+    fn finish_symbols_workspace_paths_relative() {
+        let ws = tempfile::tempdir().unwrap();
+        let raw = serde_json::json!([{ "name": "f", "kind": 12, "location": {
+            "uri": crate::lsp::uri::file_to_uri(&ws.path().join("m.rs")),
+            "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 1 } } } }]);
+        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
+        let data = finish_symbols(out, true, &[ws.path()]).data.expect("data");
+        assert_eq!(data["symbols"][0]["path"], "m.rs");
+        assert_eq!(data["symbols"][0]["line"], 5);
     }
 
     #[test]
