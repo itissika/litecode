@@ -4,7 +4,8 @@
   "data": {
     "ok": false,
     "path": "a.txt",
-    "message": "old_string was not found"
+    "message": "old_string was not found",
+    "reason": "no_match"
   },
   "error": null,
   "gap": null,

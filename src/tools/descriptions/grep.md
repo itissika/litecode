@@ -2,7 +2,7 @@ Search file contents inside `run_code`. Pass an object bag: `pattern` (required)
 
 `pattern` is a regular expression unless `literal` is true (plain text). Prefer `literal: true` when the string is not meant as regex. `path` narrows the search root (workspace-relative); omit it to search from the workspace root. `glob` further filters file names (for example `**/*.rs`). `ignore_case` makes matching case-insensitive when true. `limit` defaults to **20** and is at most **100** (one bounded call). When more would match, `hits` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `hits` with an explanatory `message` means nothing matched under the current filters (including default ignore rules) — do not look for a `reason` enum or an `include_ignored` knob.
 
-**Hard vs soft:** a bad bag (missing `pattern`, wrong types, empty/invalid `glob` when provided) or an invalid regex rejects `ToolError` (`invalid_input` / `invalid_regex`). Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `hits` + `message`. Example (find then edit in one program):
+**Result contract:** a bad bag (missing `pattern`, wrong types, empty/invalid `glob` when provided) or an invalid regex resolves `ok: false` with `reason: "invalid_args"` and the cause in `message`. Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `hits` + `message`. Example (find then edit in one program):
 const found = await tools.grep({
   pattern: "fn start",
   path: "src",

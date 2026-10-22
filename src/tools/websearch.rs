@@ -10,7 +10,10 @@ use crate::tool::outcome::ToolOutcome;
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
-const MAX_RESULTS: u32 = 5;
+/// Default and ceiling for `top_k` (WP-210 J/Q14).
+const DEFAULT_TOP_K: u32 = 5;
+const MAX_TOP_K: u32 = 10;
+const SNIPPET_CHARS: usize = 300;
 
 pub struct WebSearchTool {
     client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
@@ -36,7 +39,7 @@ impl WebSearchTool {
         self
     }
 
-    fn search_outcome(&self, query: &str) -> SearchOutcome {
+    fn search_outcome(&self, query: &str, top_k: u32) -> SearchOutcome {
         // WP-167: one ensure_warm per call (builds on first use, reuses after,
         // retries after a failed build). Runs on the blocking pool (see
         // `call_async`). A failed build is returned as is.
@@ -90,7 +93,7 @@ impl WebSearchTool {
         };
         let query = query.to_string();
 
-        match std::thread::spawn(move || exa_mcp::search(&client, &endpoint, &query, MAX_RESULTS))
+        match std::thread::spawn(move || exa_mcp::search(&client, &endpoint, &query, top_k))
             .join()
         {
             Ok(Ok(text)) => SearchOutcome::Ok { text },
@@ -115,23 +118,125 @@ struct WebSearchData {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     query: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
+    results: Vec<SearchHit>,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SearchHit {
+    title: String,
+    url: String,
+    snippet: String,
+}
+
+/// Split the provider's text block (`Title:` / `URL:` / `Text:` records) into
+/// at most `top_k` hits. Unknown shapes keep one hit with the leading text.
+fn parse_hits(text: &str, top_k: usize) -> Vec<SearchHit> {
+    let mut hits: Vec<SearchHit> = Vec::new();
+    let mut current: Option<SearchHit> = None;
+    let mut in_body = false;
+    for raw in text.lines() {
+        let line = raw.trim();
+        if let Some(title) = line.strip_prefix("Title:") {
+            if let Some(hit) = current.take() {
+                hits.push(hit);
+            }
+            current = Some(SearchHit {
+                title: title.trim().to_string(),
+                url: String::new(),
+                snippet: String::new(),
+            });
+            in_body = false;
+            continue;
+        }
+        let Some(hit) = current.as_mut() else {
+            continue;
+        };
+        if let Some(url) = line.strip_prefix("URL:") {
+            hit.url = url.trim().to_string();
+        } else if let Some(body) = line
+            .strip_prefix("Text:")
+            .or_else(|| line.strip_prefix("Highlights:"))
+            .or_else(|| line.strip_prefix("Summary:"))
+        {
+            in_body = true;
+            push_snippet(&mut hit.snippet, body.trim());
+        } else if in_body && !line.is_empty() {
+            push_snippet(&mut hit.snippet, line);
+        }
+    }
+    if let Some(hit) = current.take() {
+        hits.push(hit);
+    }
+    if hits.is_empty() && !text.trim().is_empty() {
+        let mut snippet = String::new();
+        push_snippet(&mut snippet, text.trim());
+        hits.push(SearchHit {
+            title: String::new(),
+            url: String::new(),
+            snippet,
+        });
+    }
+    hits.truncate(top_k);
+    hits
+}
+
+fn push_snippet(snippet: &mut String, text: &str) {
+    let used = snippet.chars().count();
+    if used >= SNIPPET_CHARS || text.is_empty() {
+        return;
+    }
+    if !snippet.is_empty() {
+        snippet.push(' ');
+    }
+    let room = SNIPPET_CHARS - used;
+    let count = text.chars().count();
+    snippet.extend(text.chars().take(room));
+    if count > room {
+        snippet.push('…');
+    }
+}
+
+fn parse_top_k(input: &Value) -> Result<u32, String> {
+    match input.get("top_k") {
+        None | Some(Value::Null) => Ok(DEFAULT_TOP_K),
+        Some(value) => {
+            let k = value
+                .as_u64()
+                .ok_or_else(|| crate::tool::expected_type("top_k", "integer", value))?;
+            if k < 1 {
+                return Err(crate::tool::must_be("top_k", "a positive integer (>= 1)"));
+            }
+            Ok((k as u32).min(MAX_TOP_K))
+        }
+    }
 }
 
 fn websearch_data_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "websearch outcome. Soft failures (provider HTTP/business/parse/timeout) resolve with ok=false; hard failures reject ToolError.",
+        "description": "websearch outcome. Soft failures (provider HTTP/business/parse/timeout) resolve with ok=false and empty results; hard failures reject ToolError.",
         "properties": {
             "ok": { "type": "boolean" },
             "query": { "type": "string" },
-            "text": { "type": "string" },
+            "results": {
+                "type": "array",
+                "description": "At most top_k hits, best first.",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "title": { "type": "string" },
+                        "url": { "type": "string" },
+                        "snippet": { "type": "string", "description": "Leading page text, at most ~300 chars." }
+                    },
+                    "required": ["title", "url", "snippet"]
+                }
+            },
             "message": { "type": "string" }
         },
-        "required": ["ok", "message"]
+        "required": ["ok", "results", "message"]
     })
 }
 
@@ -176,6 +281,10 @@ impl Tool for WebSearchTool {
                 "query": {
                     "type": "string",
                     "description": "The search query"
+                },
+                "top_k": {
+                    "type": "integer",
+                    "description": "Number of results. Default 5, maximum 10."
                 }
             },
             "required": ["query"]
@@ -195,18 +304,30 @@ impl Tool for WebSearchTool {
             Ok(s) => s.to_string(),
             Err(e) => return coded_error("invalid_input", e),
         };
+        let top_k = match parse_top_k(&input) {
+            Ok(k) => k,
+            Err(e) => return coded_error("invalid_input", e),
+        };
 
-        match self.search_outcome(&query) {
-            SearchOutcome::Ok { text } => present_websearch(WebSearchData {
-                ok: true,
-                query: Some(query),
-                text: Some(text),
-                message: "Search completed.".to_string(),
-            }),
+        match self.search_outcome(&query, top_k) {
+            SearchOutcome::Ok { text } => {
+                let results = parse_hits(&text, top_k as usize);
+                let message = if results.is_empty() {
+                    "No results.".to_string()
+                } else {
+                    format!("{} results.", results.len())
+                };
+                present_websearch(WebSearchData {
+                    ok: true,
+                    query: Some(query),
+                    results,
+                    message,
+                })
+            }
             SearchOutcome::Soft { message } => present_websearch(WebSearchData {
                 ok: false,
                 query: Some(query),
-                text: None,
+                results: Vec::new(),
                 message,
             }),
             SearchOutcome::Hard { code, message } => coded_error(code, message),
@@ -254,7 +375,7 @@ mod tests {
         let result = present_websearch(WebSearchData {
             ok: false,
             query: Some("rust".into()),
-            text: None,
+            results: Vec::new(),
             message: "exa http 500".into(),
         });
         assert_ne!(result.level, ToolSignalLevel::Error);
@@ -263,6 +384,31 @@ mod tests {
         assert_eq!(data["ok"], false);
         assert_eq!(data["query"], "rust");
         assert_eq!(data["message"], "exa http 500");
+        assert_eq!(data["results"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn websearch_top_k_yields_structured_results() {
+        let text = "Title: One\nURL: https://a.example\nText: first body line\nmore body\n\n\
+                    Title: Two\nURL: https://b.example\nHighlights: second\n\n\
+                    Title: Three\nURL: https://c.example\nText: third";
+        let hits = parse_hits(text, 2);
+        assert_eq!(
+            hits,
+            vec![
+                SearchHit { title: "One".into(), url: "https://a.example".into(), snippet: "first body line more body".into() },
+                SearchHit { title: "Two".into(), url: "https://b.example".into(), snippet: "second".into() },
+            ]
+        );
+        assert_eq!(parse_top_k(&serde_json::json!({})).unwrap(), DEFAULT_TOP_K);
+        assert_eq!(parse_top_k(&serde_json::json!({"top_k": 50})).unwrap(), MAX_TOP_K);
+        assert!(parse_top_k(&serde_json::json!({"top_k": 0})).is_err());
+        let schema = websearch_data_schema();
+        assert!(schema["properties"].get("text").is_none());
+        assert!(WebSearchTool::new(Arc::new(RwLock::new(None)), Arc::new(RwLock::new(None)))
+            .schema()["properties"]
+            .get("top_k")
+            .is_some());
     }
 
 }

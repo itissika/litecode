@@ -386,7 +386,7 @@ fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool
 /// Builtins that currently declare a code surface. Admission for the settings
 /// catalog runs on this set; each tool's own `surface` is still the decision.
 pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
-    vec![
+    let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadTool::default()),
         Arc::new(GlobTool),
         Arc::new(GrepTool),
@@ -408,7 +408,14 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
             Arc::new(std::sync::RwLock::new(None)),
             Arc::new(std::sync::RwLock::new(None)),
         )),
-    ]
+    ];
+    // WP-210 I: the seven LSP navigation tools are Code-surface too (cold
+    // engines; admission only needs their contracts).
+    tools.extend(lsp::all_code_tools(
+        crate::engines::WorkspaceEngines::new(),
+        std::path::PathBuf::from("."),
+    ));
+    tools
 }
 
 #[cfg(test)]

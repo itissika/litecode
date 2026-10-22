@@ -39,11 +39,24 @@ fn phase0_run_code_sdk_snapshot() {
     assert_eq!(hash, expected_hash.trim(), "run_code SDK hash drifted");
     assert!(sdk.contains("declare const tools:"));
     assert!(hash.len() == 64);
-    assert!(!sdk.contains("view"), "sdk snapshot still contains view");
+    // WP-210 I: the LSP tools are on the surface now; their examples say
+    // `preview` and their schemas use `file_path` by design (WP-202). The
+    // retired `view` parameter and `file_path` on the file tools stay gone.
     assert!(
-        !sdk.contains("file_path"),
-        "sdk snapshot still contains file_path"
+        !sdk.split(|c: char| !c.is_ascii_alphanumeric() && c != '_').any(|word| word == "view"),
+        "sdk snapshot still contains view"
     );
+    for block in sdk.split("\ntype ").skip(1) {
+        let block = block.split("\n\n").next().unwrap_or("");
+        let name = block.split_whitespace().next().unwrap_or("");
+        let file_tool = ["Read", "Edit", "ApplyEdits", "Write", "Grep", "Glob"]
+            .iter()
+            .any(|prefix| name.starts_with(prefix));
+        assert!(
+            !(file_tool && block.contains("file_path")),
+            "sdk snapshot still contains file_path in {name}"
+        );
+    }
     assert!(
         !sdk.contains("context_lines"),
         "sdk snapshot still contains context_lines"

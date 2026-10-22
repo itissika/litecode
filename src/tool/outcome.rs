@@ -195,15 +195,68 @@ pub fn error_kind_code(kind: ToolErrorKind) -> String {
 pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
     let failed = result.error.is_some() || result.level == ToolSignalLevel::Error;
     if !failed {
-        return Ok(result.data.clone().unwrap_or(Value::Null));
+        return Ok(with_ok_flag(result.data.clone().unwrap_or(Value::Null)));
     }
-    let code = result.error_code.clone().unwrap_or_else(|| {
+    let code = program_error_code(result);
+    if let Some(reason) = soft_failure_reason(&code) {
+        // WP-210 G: the tool did not get the job done, but the program did
+        // nothing wrong. Resolve `{ok:false, reason, message}` instead of
+        // rejecting so one bad item does not end a batch.
+        let message = result
+            .error
+            .as_ref()
+            .map(|error| error.message.clone())
+            .filter(|message| !message.is_empty())
+            .unwrap_or_else(|| result.content.clone());
+        let mut map = serde_json::Map::new();
+        map.insert("ok".into(), Value::Bool(false));
+        map.insert("reason".into(), Value::String(reason.into()));
+        map.insert("message".into(), Value::String(message));
+        return Ok(Value::Object(map));
+    }
+    program_error(result, code)
+}
+
+/// Domain codes that resolve `{ok:false}` (WP-210 G, Q10 enum). Everything
+/// else (conflict/stale, timeout, cancelled, unavailable, internal, …) still
+/// rejects `ToolError`.
+pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
+    match code {
+        "not_found" => Some("not_found"),
+        "invalid_input" | "invalid_regex" => Some("invalid_args"),
+        "permission_denied" => Some("permission"),
+        "io" => Some("io"),
+        "no_match" => Some("no_match"),
+        "empty" => Some("empty"),
+        _ => None,
+    }
+}
+
+/// Every resolved object carries a leading `ok`. Tools that already set it
+/// (edit, webfetch, …) keep their own value.
+fn with_ok_flag(data: Value) -> Value {
+    match data {
+        Value::Object(map) if !map.contains_key("ok") => {
+            let mut out = serde_json::Map::with_capacity(map.len() + 1);
+            out.insert("ok".into(), Value::Bool(true));
+            out.extend(map);
+            Value::Object(out)
+        }
+        other => other,
+    }
+}
+
+fn program_error_code(result: &ToolCallResult) -> String {
+    result.error_code.clone().unwrap_or_else(|| {
         result
             .error
             .as_ref()
             .map(|error| error_kind_code(error.kind))
             .unwrap_or_else(|| "internal".into())
-    });
+    })
+}
+
+fn program_error(result: &ToolCallResult, code: String) -> Result<Value, HostError> {
     let message = result
         .error
         .as_ref()
@@ -225,8 +278,44 @@ pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
 
 #[cfg(test)]
 mod tests {
-    
-    
-    
+    use super::*;
+    use crate::types::ToolErrorKind;
 
+    fn coded(kind: ToolErrorKind, code: &str) -> ToolCallResult {
+        let mut result = ToolCallResult::error_with_kind(kind, format!("{code} happened"), false);
+        result.error_code = Some(code.to_string());
+        result
+    }
+
+    #[test]
+    fn domain_failures_resolve_ok_false_and_system_failures_reject() {
+        // read missing file / grep bad regex / argument validation / permission / io.
+        for (kind, code, reason) in [
+            (ToolErrorKind::NotFound, "not_found", "not_found"),
+            (ToolErrorKind::InvalidInput, "invalid_regex", "invalid_args"),
+            (ToolErrorKind::InvalidInput, "invalid_input", "invalid_args"),
+            (ToolErrorKind::PermissionDenied, "permission_denied", "permission"),
+            (ToolErrorKind::Io, "io", "io"),
+        ] {
+            let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
+            assert_eq!(value["ok"], false, "{code}");
+            assert_eq!(value["reason"], reason, "{code}");
+            assert_eq!(value["message"], format!("{code} happened"));
+        }
+        // System failures still reject ToolError.
+        for (kind, code) in [
+            (ToolErrorKind::Conflict, "stale"),
+            (ToolErrorKind::Timeout, "timeout"),
+            (ToolErrorKind::Unavailable, "unavailable"),
+            (ToolErrorKind::Internal, "internal"),
+        ] {
+            assert!(program_result(&coded(kind, code)).is_err(), "{code}");
+        }
+        // Success gains a leading ok:true; a tool's own ok (edit miss) is kept.
+        let value = program_result(&ok_data(serde_json::json!({"paths": [], "message": "no match"}))).unwrap();
+        assert_eq!(serde_json::to_string(&value).unwrap(), r#"{"ok":true,"paths":[],"message":"no match"}"#);
+        let value = program_result(&ok_data(serde_json::json!({"ok": false, "path": "a", "message": "old_string was not found", "reason": "no_match"}))).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["reason"], "no_match");
+    }
 }

@@ -82,6 +82,7 @@ impl RunTool {
         job_id: &str,
         exit_code: Option<i32>,
         running: bool,
+        message: Option<String>,
     ) -> ToolCallResult {
         let notes: &[&str] = if running {
             &["still running; use tools.wait or tools.kill"]
@@ -102,7 +103,7 @@ impl RunTool {
         let Some(output) = output else {
             return coded_error("io", "run lost the job logs");
         };
-        present_command(job_id, exit_code, output)
+        present_command(job_id, exit_code, output, message)
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -114,6 +115,7 @@ impl RunTool {
             return coded_error("cancelled", "run cancelled before spawn");
         }
 
+        let message = command_message(&command);
         let scope = crate::tool::run_scope::current().unwrap_or_default();
         let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
         let rx = supervise_pipe(
@@ -143,10 +145,10 @@ impl RunTool {
         };
         match decision {
             PipeDecision::Exited { job_id, exit_code } => {
-                self.command_result(&execution.workspace_root, &job_id, exit_code, false)
+                self.command_result(&execution.workspace_root, &job_id, exit_code, false, message)
             }
             PipeDecision::Background { job_id } | PipeDecision::Promoted { job_id } => {
-                self.command_result(&execution.workspace_root, &job_id, None, true)
+                self.command_result(&execution.workspace_root, &job_id, None, true, message)
             }
             PipeDecision::Cancelled { job_id } => {
                 self.discard_cancelled(&job_id);
@@ -154,6 +156,15 @@ impl RunTool {
             }
             PipeDecision::Failed { message } => coded_error("io", message),
         }
+    }
+}
+
+/// MSYS path-conversion hint, only when Git Bash is the shell (WP-210 F/Q8).
+fn command_message(command: &str) -> Option<String> {
+    if crate::terminal::decode::shell_identity().contains("MINGW") {
+        crate::terminal::decode::msys_path_hint(command)
+    } else {
+        None
     }
 }
 
@@ -339,6 +350,29 @@ mod tests {
         };
         let pid = jobs.job_pid(&id).expect("pid");
         assert!(pid_alive(pid), "job should still be running");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_separates_stdout_from_stderr_and_names_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, _jobs) = tool();
+        let result = tool
+            .execute(
+                serde_json::json!({"command": "echo to-out; echo to-err 1>&2"}),
+                execution(dir.path()),
+            )
+            .await;
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["exit_code"], 0, "{data}");
+        assert_eq!(data["output"].as_str().unwrap().trim(), "to-out", "{data}");
+        assert_eq!(data["stderr"].as_str().unwrap().trim(), "to-err", "{data}");
+        assert!(!data["output"].as_str().unwrap().contains("[stderr]"), "{data}");
+        assert!(!data["shell"].as_str().unwrap().is_empty(), "{data}");
+        assert_eq!(
+            crate::terminal::decode::msys_path_hint("cmd /c dir").is_some(),
+            true
+        );
+        assert!(crate::terminal::decode::msys_path_hint("ls -la src/a").is_none());
     }
 
 }

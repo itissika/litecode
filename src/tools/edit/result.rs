@@ -12,6 +12,10 @@ pub struct EditResult {
     pub ok: bool,
     pub path: String,
     pub message: String,
+    /// Structured cause when `ok` is false (WP-210 G): one of
+    /// not_found / no_match / invalid_args / empty / permission / io.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
 }
 
 impl EditResult {
@@ -20,6 +24,7 @@ impl EditResult {
             ok: true,
             path: path.into(),
             message: message.into(),
+            reason: None,
         }
     }
 
@@ -28,7 +33,13 @@ impl EditResult {
             ok: false,
             path: path.into(),
             message: message.into(),
+            reason: Some("io"),
         }
+    }
+
+    pub fn because(mut self, reason: &'static str) -> Self {
+        self.reason = Some(reason);
+        self
     }
 }
 
@@ -40,7 +51,8 @@ pub fn edit_result_schema() -> Value {
         "properties": {
             "ok": { "type": "boolean" },
             "path": { "type": "string" },
-            "message": { "type": "string" }
+            "message": { "type": "string" },
+            "reason": { "type": "string", "enum": ["not_found", "no_match", "invalid_args", "empty", "permission", "io"] }
         },
         "required": ["ok", "path", "message"]
     })

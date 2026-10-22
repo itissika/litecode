@@ -13,20 +13,21 @@ use serde_json::{Map, Value};
 use crate::context_pipeline::Context;
 use crate::tool::trait_::Tool;
 
-const PRELUDE: &str = r#"Return a summary (counts, paths, the few lines that matter), not raw bulk data. Only the returned value reaches you: the result is capped at 8k tokens (cut with a note at its start), logs are omitted on success (one `logs omitted (N lines)` line) and kept up to 2k tokens (the tail) on failure. Arrays of 3+ objects with the same primitive fields are shown as a table `[N]{a,b}:` then one `v1,v2` row each; other values as compact JSON.
+const PRELUDE: &str = r#"Return a summary (counts, paths, the few lines that matter), not raw bulk data. Only the returned value reaches you: the result is capped at 8k tokens. Over the cap it is cut structurally, keeping the start: arrays keep their first items plus `"… N more"`, deep values become `{…N keys}` / `[…N items]`, long strings `…(N chars)`; JSON stays valid, tables lose whole rows, and a note at the start says so. Arrays of 3+ objects with the same primitive fields are shown as a table `[N]{a,b}:` (columns in your key order) then one `v1,v2` row each; other values as compact JSON in your key order.
+Logs: on success only the first ~200 tokens of logs are shown, then `… N lines omitted`; on failure the last ~2k tokens. If you want to see progress, log sparingly: only the key lines.
 `code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
-The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. Standard JavaScript built-ins are available.
-A call resolves to the tool's data. A domain failure rejects `ToolError`. Its `code` is one of `invalid_input`, `not_found`, `invalid_regex`, `stale`, `stale_cursor`, `conflict`, `permission_denied`, `timeout`, `io`, `unsupported`, `internal`. A protocol failure (an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
-Permission denial is a catchable `ToolError` whose `code` is `permission_denied`.
-When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Miss, multiple match, missing path, and permission problems set `ok: false` with the reason in `message`; they do not reject `ToolError`. Branch on `ok` or filter `results`.
-When `webfetch` / `websearch` appear below, they likewise resolve `{ok,…,message}` for network/provider outcomes: HTTP/DNS/timeout and Exa business failures set `ok: false` and still resolve (branch on `ok`; no try/catch required for those). Empty or invalid input, true private SSRF targets, and an unwarmed or unconfigured engine reject catchable `ToolError`.
-Use `Promise.allSettled` for a batch. One uncaught rejection ends the program and cancels the other in-flight calls.
+The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous, read-only probes confined to the workspace (there is no write, rm, or mv; change files with `tools.write` / `tools.edit`). Standard JavaScript built-ins are available.
+Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation and a permission denial all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `conflict`, `stale`, `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message,reason?}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Branch on `ok` or filter `results`.
+When `webfetch` / `websearch` appear below, network/provider outcomes (HTTP/DNS/timeout, Exa business failures) likewise resolve `ok: false`. `websearch` takes `top_k` (default 5, max 10) and resolves `results: [{title,url,snippet}]`. An unwarmed or unconfigured engine rejects `ToolError` `unavailable`.
+`run` resolves `output` (stdout only), `stderr`, and `shell` (the shell that ran it, e.g. `bash (MINGW64)` on Windows); output is decoded to UTF-8. A job `id` stays valid for `wait` / `kill` across later `run_code` calls in the same session while the job is still running.
+Use `Promise.allSettled` for a batch when calls may reject. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
 For code navigation (when the LSP engine is ready and these bindings appear below) use `go_to_definition`, `find_references`, `hover`, `diagnostics`, `document_symbol`, `workspace_symbol`, and `go_to_implementation` — never a single `lsp` tool, `action` bag, or row-inline `text` locator.
-A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. Continue a long read with a larger `start_line`; do not pass a cursor or `page.next`.
-After a run you normally see a short head (settled tool-call success and failure counts and how long the run took in ms, or a precise line/error if the program never started; unsettled in-flight calls, if any, are noted in that same head and are not counted in those totals; a session-store read may appear as a short note there too), logs (see the first paragraph), and your returned result. Labels follow the host render (for example `logs:` / `result:`). Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool (`{ok,message}` or `ToolError`)—do not expect a second copy outside.
+A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. A read says `Showing lines…` / `Continue with start_line=` only when the file is not finished; continue with a larger `start_line`; do not pass a cursor or `page.next`.
+After a run you see a short head: `run_code ok` or `run_code failed: <cause>`, then `program: ok|failed` and `tool calls: N ok / M failed` (settled tool calls; `ok: false` results count as failed), and how long the run took in ms, or a precise line/error if the program never started. A runtime exception adds `line L, column C` and a short `stack:` of your frames. Unsettled in-flight calls, if any, are noted in that same head and are not counted; a session-store read may appear as a short note there too. Then logs (see above); on failure, one line per completed tool call before the failure so finished work is not lost; then your returned result. Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool—do not expect a second copy outside.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
-Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`, and the run head lists the dropped paths; undefined properties in tool arguments are dropped silently.
+Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`; the dropped paths are listed in the head only when the run failed. Undefined properties in tool arguments are dropped silently.
 
 ```ts
 "#;
@@ -82,6 +83,24 @@ declare const libs: {
     unique<T>(values: T[]): T[];
     sortBy<T>(rows: T[], key: string | ((row: T) => unknown), direction?: "asc" | "desc"): T[];
   };
+};
+
+type FsFailure = { ok: false; reason: "not_found" | "permission" | "io"; message: string };
+
+/** Read-only workspace probes. Synchronous; paths are workspace-relative. */
+declare const fs: {
+  /** One level, sorted by name, at most 500 entries (message says when cut). */
+  ls(path: string): { ok: true; entries: Array<{ name: string; type: "file" | "dir" | "symlink" | "other"; size: number }>; message?: string } | FsFailure;
+  /** mtime is ms since the Unix epoch. */
+  stat(path: string): { ok: true; type: "file" | "dir" | "symlink" | "other"; size: number; mtime: number } | FsFailure;
+  exists(path: string): boolean;
+};
+
+/** Any tool call resolves this when the tool did not get the job done. */
+type ToolFailure = {
+  ok: false;
+  reason: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io";
+  message: string;
 };
 
 "#;
@@ -193,7 +212,7 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         }
 
         let input = parse_schema(&input_schema, &format!("{name}.input"))?;
-        let data = parse_schema(&data_schema, &format!("{name}.data"))?;
+        let data = with_ok_field(parse_schema(&data_schema, &format!("{name}.data"))?);
 
         declarations.push(ToolDeclaration {
             name: name.to_string(),
@@ -245,13 +264,33 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
         let key = serde_json::to_string(&declaration.name)
             .map_err(|error| format!("serialize tool name: {error}"))?;
         out.push_str(&format!(
-            "  readonly [{key}]: (args: {}) => Promise<{}>;\n",
+            "  readonly [{key}]: (args: {}) => Promise<{} | ToolFailure>;\n",
             declaration.input_type, declaration.data_type
         ));
     }
     out.push_str("};\n```\n");
 
     Ok(out)
+}
+
+/// The host adds a leading `ok: true` to every resolved object that does not
+/// carry its own `ok` (WP-210 G). Mirror that in the SDK.
+fn with_ok_field(data: TsType) -> TsType {
+    match data {
+        TsType::Object(mut fields) if !fields.iter().any(|field| field.name == "ok") => {
+            fields.insert(
+                0,
+                TsField {
+                    name: "ok".to_string(),
+                    required: true,
+                    description: None,
+                    ty: TsType::Literal("true".to_string()),
+                },
+            );
+            TsType::Object(fields)
+        }
+        other => other,
+    }
 }
 
 struct ToolDeclaration {

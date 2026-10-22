@@ -17,14 +17,27 @@ use crate::types::ToolCallResult;
 pub(crate) struct CommandData {
     pub id: String,
     pub exit_code: Option<i32>,
+    /// Stdout only, plus stdout notes / status lines (WP-210 F).
     pub output: String,
+    /// Stderr plus stderr notes. Empty when the process wrote none.
+    pub stderr: String,
+    /// Shell that ran the command, e.g. `bash (MINGW64)`.
+    pub shell: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// Both streams of one job, already composed with their notes.
+pub(crate) struct JobOutput {
+    pub stdout: String,
+    pub stderr: String,
 }
 
 pub(crate) fn command_data_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is always present.",
+        "description": "Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.",
         "properties": {
             "id": {
                 "type": "string",
@@ -36,10 +49,22 @@ pub(crate) fn command_data_schema() -> serde_json::Value {
             },
             "output": {
                 "type": "string",
-                "description": "Combined process text plus any truncation note, on-disk spill path, or status line. Always present (may be empty)."
+                "description": "Stdout (decoded to UTF-8) plus any stdout truncation note, on-disk spill path, or status line. Always present (may be empty)."
+            },
+            "stderr": {
+                "type": "string",
+                "description": "Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written."
+            },
+            "shell": {
+                "type": "string",
+                "description": "Shell that ran the command, e.g. `bash (MINGW64)` on Windows with Git Bash, `powershell`, or `bash`/`sh`."
+            },
+            "message": {
+                "type": "string",
+                "description": "Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say."
             }
         },
-        "required": ["id", "exit_code", "output"]
+        "required": ["id", "exit_code", "output", "stderr", "shell"]
     })
 }
 
@@ -76,7 +101,7 @@ pub(crate) fn format_job_output(
     workspace_root: &Path,
     exit_code: Option<i32>,
     extra_notes: &[&str],
-) -> Option<String> {
+) -> Option<JobOutput> {
     let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
     let stdout_file = display_output_path(&stdout_path, workspace_root);
     let stderr_file = display_output_path(&stderr_path, workspace_root);
@@ -97,7 +122,7 @@ pub(crate) fn format_exited_output(
     workspace_root: &Path,
     exit_code: Option<i32>,
     extra_notes: &[&str],
-) -> Option<String> {
+) -> Option<JobOutput> {
     let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
     let need_file = stream_needs_file(&stdout) || stream_needs_file(&stderr);
     let (stdout_file, stderr_file) = if need_file {
@@ -149,54 +174,46 @@ fn compose_output(
     stderr_file: Option<&str>,
     exit_code: Option<i32>,
     extra_notes: &[&str],
-) -> String {
-    let mut parts: Vec<String> = Vec::new();
+) -> JobOutput {
     let out_text = stream_text(stdout);
     let err_text = stream_text(stderr);
-    if !out_text.is_empty() {
-        parts.push(out_text);
-    }
-    if !err_text.is_empty() {
-        if !parts.is_empty() {
-            parts.push(String::new());
-        }
-        parts.push(format!("[stderr]\n{err_text}"));
-    }
 
-    let mut notes: Vec<String> = Vec::new();
-    if stdout.frozen || stdout.truncated_on_disk {
-        notes.push(format!(
-            "stdout truncated ({} bytes{})",
-            stdout.total_bytes,
-            stdout_file
-                .map(|p| format!("; full log: {p}"))
-                .unwrap_or_default()
-        ));
-    } else if let Some(path) = stdout_file {
-        if stdout.total_bytes > INLINE_FULL {
-            notes.push(format!("stdout log: {path}"));
-        }
-    }
-    if stderr.frozen || stderr.truncated_on_disk {
-        notes.push(format!(
-            "stderr truncated ({} bytes{})",
-            stderr.total_bytes,
-            stderr_file
-                .map(|p| format!("; full log: {p}"))
-                .unwrap_or_default()
-        ));
-    } else if let Some(path) = stderr_file {
-        if stderr.total_bytes > INLINE_FULL {
-            notes.push(format!("stderr log: {path}"));
-        }
-    }
-    if exit_code.is_none() && parts.is_empty() && extra_notes.is_empty() {
-        notes.push("still running; no output yet".into());
+    let mut out_notes: Vec<String> = Vec::new();
+    stream_notes("stdout", stdout, stdout_file, &mut out_notes);
+    let mut err_notes: Vec<String> = Vec::new();
+    stream_notes("stderr", stderr, stderr_file, &mut err_notes);
+    if exit_code.is_none() && out_text.is_empty() && err_text.is_empty() && extra_notes.is_empty() {
+        out_notes.push("still running; no output yet".into());
     }
     for note in extra_notes {
         if !note.is_empty() {
-            notes.push((*note).to_string());
+            out_notes.push((*note).to_string());
         }
+    }
+    JobOutput {
+        stdout: with_notes(out_text, out_notes),
+        stderr: with_notes(err_text, err_notes),
+    }
+}
+
+fn stream_notes(label: &str, capture: &TeeCapture, file: Option<&str>, notes: &mut Vec<String>) {
+    if capture.frozen || capture.truncated_on_disk {
+        notes.push(format!(
+            "{label} truncated ({} bytes{})",
+            capture.total_bytes,
+            file.map(|p| format!("; full log: {p}")).unwrap_or_default()
+        ));
+    } else if let Some(path) = file
+        && capture.total_bytes > INLINE_FULL
+    {
+        notes.push(format!("{label} log: {path}"));
+    }
+}
+
+fn with_notes(text: String, notes: Vec<String>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !text.is_empty() {
+        parts.push(text);
     }
     for note in notes {
         if !parts.is_empty() {
@@ -210,7 +227,8 @@ fn compose_output(
 pub(crate) fn present_command(
     id: impl Into<String>,
     exit_code: Option<i32>,
-    output: String,
+    output: JobOutput,
+    message: Option<String>,
 ) -> ToolCallResult {
     let id = id.into();
     let shown = exit_code
@@ -219,7 +237,10 @@ pub(crate) fn present_command(
     crate::tool::outcome::ToolOutcome::ok(CommandData {
         id: id.clone(),
         exit_code,
-        output,
+        output: output.stdout,
+        stderr: output.stderr,
+        shell: crate::terminal::decode::shell_identity(),
+        message,
     })
     .into_call_result(format!("id: {id}\nexit_code: {shown}\n"))
 }

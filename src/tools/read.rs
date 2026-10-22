@@ -372,11 +372,11 @@ fn render_projection_page(
             end,
             total_lines,
             "These session lines are already in the context window.",
-            false,
+            Vec::new(),
         );
     }
     let mut lines = Vec::new();
-    let mut line_capped = false;
+    let mut line_capped: Vec<usize> = Vec::new();
     for i in start..end {
         let line_no = (i + 1) as u32;
         if file
@@ -388,7 +388,7 @@ fn render_projection_page(
         let raw = file.lines.get(i).map(String::as_str).unwrap_or("");
         let (text, capped) = data_line_text(raw);
         if capped {
-            line_capped = true;
+            line_capped.push(i + 1);
         }
         lines.push(text);
     }
@@ -424,11 +424,11 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
     let mut out = Vec::new();
-    let mut line_capped = false;
+    let mut line_capped: Vec<usize> = Vec::new();
     for i in start..end {
         let (text, capped) = data_line_text(lines[i]);
         if capped {
-            line_capped = true;
+            line_capped.push(i + 1);
         }
         out.push(text);
     }
@@ -440,7 +440,7 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
 fn past_eof_page(path: &str, start_line: usize, total_lines: usize) -> ToolCallResult {
     let message =
         format!("File has {total_lines} lines; start_line {start_line} is past the end.");
-    finish_read(path, start_line, Vec::new(), total_lines, total_lines, &message, false)
+    finish_read(path, start_line, Vec::new(), total_lines, total_lines, &message, Vec::new())
 }
 
 fn finish_read(
@@ -450,28 +450,43 @@ fn finish_read(
     covered_end: usize,
     total_lines: usize,
     preset_message: &str,
-    line_capped: bool,
+    line_capped: Vec<usize>,
 ) -> ToolCallResult {
+    // WP-210 H: paging guidance only when the file is not finished; a capped
+    // line is named by number.
     let has_more = covered_end < total_lines;
-    let mut message = preset_message.to_string();
-    if message.is_empty() {
-        if has_more {
-            message = format!(
-                "Showing lines {start_line}–{covered_end} of {total_lines}. Continue with start_line={}.",
-                covered_end + 1
-            );
-        } else if line_capped {
-            message = "One or more lines were truncated.".into();
-        }
-    } else if line_capped {
-        message = format!("{message} One or more lines were truncated.");
+    let mut parts: Vec<String> = Vec::new();
+    if !preset_message.is_empty() {
+        parts.push(preset_message.to_string());
+    } else if has_more {
+        parts.push(format!(
+            "Showing lines {start_line}–{covered_end} of {total_lines}. Continue with start_line={}.",
+            covered_end + 1
+        ));
     }
+    if !line_capped.is_empty() {
+        parts.push(capped_note(&line_capped));
+    }
+    let message = parts.join(" ");
     crate::tool::outcome::ok_data(serde_json::json!({
         "path": path,
         "start_line": start_line,
         "lines": lines,
         "message": message,
     }))
+}
+
+/// `Line 12 truncated to N chars.` / `Lines 3, 9, 40 (+2 more) truncated …`.
+fn capped_note(lines: &[usize]) -> String {
+    const SHOW: usize = 5;
+    let shown: Vec<String> = lines.iter().take(SHOW).map(usize::to_string).collect();
+    let more = lines.len().saturating_sub(SHOW);
+    let more = if more > 0 { format!(" (+{more} more)") } else { String::new() };
+    let noun = if lines.len() == 1 { "Line" } else { "Lines" };
+    format!(
+        "{noun} {}{more} truncated to {MAX_LINE_CHARS} chars.",
+        shown.join(", ")
+    )
 }
 
 fn data_line_text(line: &str) -> (String, bool) {

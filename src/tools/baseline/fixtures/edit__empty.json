@@ -4,7 +4,8 @@
   "data": {
     "ok": false,
     "path": "empty.txt",
-    "message": "The file is empty. old_string cannot match an empty file."
+    "message": "The file is empty. old_string cannot match an empty file.",
+    "reason": "empty"
   },
   "error": null,
   "gap": null,

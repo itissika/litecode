@@ -31,7 +31,8 @@ impl EditEngine {
             return Ok(EditResult::failure(
                 raw_path,
                 crate::session::transcript_file::READ_ONLY_MSG,
-            ));
+            )
+            .because("permission"));
         }
         let path = match crate::workspace::resolve_agent(
             &execution.workspace_root,
@@ -40,7 +41,7 @@ impl EditEngine {
         ) {
             Ok(path) => path,
             Err(error) => {
-                return Ok(EditResult::failure(raw_path, error.to_string()));
+                return Ok(EditResult::failure(raw_path, error.to_string()).because("invalid_args"));
             }
         };
         if execution.cancel.is_cancelled() {
@@ -55,19 +56,23 @@ impl EditEngine {
             (Some(ide), Some(relative)) => match ide.workspace.read_file_bytes(relative) {
                 Ok((_, bytes)) => bytes,
                 Err(error) => {
+                    let reason = if path.exists() { "io" } else { "not_found" };
                     return Ok(EditResult::failure(
                         raw_path,
                         format!("read {path_display}: {error}"),
-                    ));
+                    )
+                    .because(reason));
                 }
             },
             _ => match std::fs::read(&path) {
                 Ok(bytes) => bytes,
                 Err(error) => {
+                    let reason = if error.kind() == std::io::ErrorKind::NotFound { "not_found" } else { "io" };
                     return Ok(EditResult::failure(
                         raw_path,
                         format!("read {path_display}: {error}"),
-                    ));
+                    )
+                    .because(reason));
                 }
             },
         };
@@ -85,10 +90,14 @@ impl EditEngine {
             Ok(edited) => edited,
             Err(PlanFail::Cancelled) => return Err(Cancelled),
             Err(PlanFail::EmptyFile) => {
-                return Ok(EditResult::failure(raw_path, planner::EMPTY_FILE_MESSAGE));
+                return Ok(EditResult::failure(raw_path, planner::EMPTY_FILE_MESSAGE).because("empty"));
             }
             Err(PlanFail::Reject(reason)) => {
-                return Ok(EditResult::failure(raw_path, reason.message()));
+                let code = match reason.code() {
+                    "no_match" | "multiple_matches" => "no_match",
+                    _ => "invalid_args",
+                };
+                return Ok(EditResult::failure(raw_path, reason.message()).because(code));
             }
         };
         if execution.cancel.is_cancelled() {
@@ -98,7 +107,8 @@ impl EditEngine {
             return Ok(EditResult::failure(
                 raw_path,
                 "replacement does not change the file",
-            ));
+            )
+            .because("invalid_args"));
         }
         let to_write = text_codec::reattach_utf8_bom(decoded.has_bom, &edited);
         match (&self.ide, &workspace_relative) {
