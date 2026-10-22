@@ -1,12 +1,5 @@
-List symbols in one source file inside `run_code`. Pass `{ file_path }` (object bag). Code-only; no position fields, no `action`, no `text`. Resolves `{ symbols, message }`. Each symbol guarantees `{ name, kind, line, character }` — **string** `kind` (for example `Function`), **1-based** start line and character. Optional `end_line` / `end_character` may appear; **`path` is omitted** (use the same `file_path` you passed). Flattened — no raw LSP JSON, no `name_path` / Serena dialects.
-
-Empty `symbols` + `message` still **resolves**. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **200** symbols; truncation notes go in `message`. Example:
+List symbols in one source file. Pass `{ file_path }`. Resolves `{ symbols, message }`—each `{ name, kind, line, character }` (string kind, 1-based; optional `end_*`; no `path`). Cap 200. Engine-not-ready rejects `ToolError`.
+Example:
 const outline = await tools.document_symbol({ file_path: "src/lib.rs" });
 const target = outline.symbols.find((s) => s.name === "start");
-if (!target) return { ok: false, message: outline.message };
-const def = await tools.go_to_definition({
-  file_path: "src/lib.rs",
-  line: target.line,
-  character: target.character,
-});
-return { outline: outline.symbols, def: def.locations, message: def.message };
+return { target, n: outline.symbols.length };

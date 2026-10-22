@@ -1,17 +1,11 @@
-Return a summary (counts, paths, the few lines that matter), not raw bulk data. Only the returned value reaches you: the result is capped at 8k tokens. Over the cap it is cut structurally, keeping the start: arrays keep their first items plus `"… N more"`, deep values become `{…N keys}` / `[…N items]`, long strings `…(N chars)`; JSON stays valid, tables lose whole rows, and a note at the start says so. Arrays of 3+ objects with the same primitive fields are shown as a table `[N]{a,b}:` (columns in your key order) then one `v1,v2` row each; other values as compact JSON in your key order.
-Logs: on success only the first ~200 tokens of logs are shown, then `… N lines omitted`; on failure the last ~2k tokens. If you want to see progress, log sparingly: only the key lines.
-`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
-The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous, read-only probes confined to the workspace (there is no write, rm, or mv; change files with `tools.write` / `tools.edit`). Standard JavaScript built-ins are available.
-Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`, `conflict`, `stale`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation, a permission denial, a write `create_only` conflict, and a stale `expected_hash` all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an unknown parameter / extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError` and fails the whole call — unknown fields are never silently dropped. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught. The sandbox has no `setTimeout` / `setInterval`.
-When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message,reason?}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Branch on `ok` or filter `results`.
-When `webfetch` / `websearch` appear below, network/provider outcomes (HTTP/DNS/timeout, Exa business failures) likewise resolve `ok: false`. `websearch` takes `top_k` (default 5, max 10) and resolves `results: [{title,url,snippet}]`. An unwarmed or unconfigured engine rejects `ToolError` `unavailable`.
-`run` resolves `output` (stdout only), `stderr`, and `shell` (the shell that ran it, e.g. `bash (MINGW64)` on Windows); output is decoded to UTF-8. A job `id` stays valid for `wait` / `kill` across later `run_code` calls in the same session while the job is still running.
-Use `Promise.allSettled` for a batch when calls may reject. An unhandled Promise rejection does not end the program; a `[warn]` notes it after settle.
-LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
-A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. A read says `Showing lines…` / `Continue with start_line=` only when the file is not finished; continue with a larger `start_line`; do not pass a cursor or `page.next`.
-After a run you see a short head: `run_code ok` or `run_code failed: <cause>`, then `program: ok|failed` and `tool calls: N ok / M failed` (settled tool calls; `ok: false` results count as failed), and how long the run took in ms, or a precise line/error if the program never started. A runtime exception adds `line L, column C` and a short `stack:` of your frames. Unsettled in-flight calls, if any, are noted in that same head and are not counted; a session-store read may appear as a short note there too. Then logs (see above); on failure, one line per completed tool call before the failure so finished work is not lost; then your returned result. Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool—do not expect a second copy outside.
-Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
-Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`; the dropped paths are listed in the head only when the run failed. Undefined properties in tool arguments are dropped silently.
+Open `run_code` when one program can finish explore → edit → verify (search/read, then write/edit, then run/check). Do not open a long program just to peek one file—use a direct tool or a tiny program.
+Inside the program: explore first, then edit, then verify. `await` when a later call needs an earlier result; otherwise prefer `Promise.all` / `Promise.allSettled` for independent work.
+`return` a short summary (counts, paths, the few lines that matter)—not raw dumps. Only the returned value reaches you; oversized results are truncated (a note at the start says so).
+`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`.
+Call bundled tools only through `tools.name(args)` or `tools["name"](args)` (one argument object each). They are not separately callable. Other LiteCode tools may remain directly callable outside this SDK.
+Every call resolves an object with boolean `ok` (did the tool get the job done). Soft failures resolve `ok: false` with `reason`/`message` so one bad item does not end a batch. System failures reject `ToolError`. Unknown tool/parameter or illegal args throw `TypeError` and fail the whole call—unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
+`libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes—change files with `tools.write` / `tools.edit`. The sandbox has no `setTimeout` / `setInterval`.
+Unhandled Promise rejections do not end the program; a `[warn]` notes them after settle.
 
 ```ts
 declare class ToolError extends Error {
@@ -480,283 +474,120 @@ type WriteData = {
 };
 
 declare const tools: {
-  // Apply several independent `{path, old_string, new_string}` replacements in one call inside `run_code`. Pass an object bag with `edits`: a non-empty array. Runs **truly serially** in array order: each successful item is written before the next item runs, so later items on the **same `path` see earlier successful `new_string` values**. Resolves `{ results: EditResult[] }` — `results.length` equals `edits.length`. Each `EditResult` is `ok`, `path`, and `message` (same shape as `tools.edit`).
-  //
-  // A failed item is **skipped**; later items still run. Even when every item fails, the call still **resolves** with `results` full of `ok: false` — it does **not** reject `ToolError` / `edit_failed`. There is no `replace_all`, no `expected_hash`, no shared multi-block same-file plan, and no aggregate `applied` / `failed` / `blocks` / `details` — count or filter `results` yourself (`results.some(r => !r.ok)`). Empty `new_string` deletes that item's `old_string`. Exact match, unique-hit, CRLF/LF, and BOM rules match `edit`. Path missing, permission denied, miss, or multiple matches for an item → that item's `ok: false` with the reason in `message` only. On success, that item's `message` is a short confirmation such as `applied` (never empty, never structured).
-  //
-  // If a later `old_string` depends on an earlier change that failed (`ok: false`), that later item will typically miss and resolve `ok: false` with a not-found style `message` — fix the earlier failure or split into another call. Only a malformed bag / empty `edits` / bad item types reject `invalid_input`; cancellation rejects `cancelled`. Example:
+  // Apply several independent `{path, old_string, new_string}` replacements in one call. Runs serially in array order; later items on the same path see earlier successful writes. Failed items are skipped; the call still resolves `{ results }` (same length as `edits`)—filter `results` yourself. Exact-match / unique-hit / CRLF / BOM rules match `edit`. Empty `new_string` deletes that item's `old_string`.
+  // Example:
   // const batch = await tools.apply_edits({
   //   edits: [
   //     { path: "src/a.rs", old_string: "fn start()", new_string: "fn main()" },
   //     { path: "src/b.rs", old_string: "old_api(", new_string: "new_api(" },
   //   ],
   // });
-  // if (batch.results.some((r) => !r.ok)) {
-  //   return { ok: false, results: batch.results };
-  // }
-  // // each ok item: message === "applied" (short confirm)
-  // await tools.write({
-  //   path: "src/c.rs",
-  //   content: "pub fn ok() -> bool { true }\n",
-  // });
-  // const check = await tools.run({ command: "cargo check -q" });
-  // const done =
-  //   check.exit_code === null
-  //     ? await tools.wait({ id: check.id, sec: 120 })
-  //     : check;
-  // return {
-  //   ok: done.exit_code === 0,
-  //   results: batch.results,
-  //   exit_code: done.exit_code,
-  //   output: done.output,
-  // };
+  // if (batch.results.some((r) => !r.ok)) return { ok: false, results: batch.results };
+  // return { ok: true, results: batch.results };
   readonly ["apply_edits"]: (args: ApplyEditsInput) => Promise<ApplyEditsData | ToolFailure>;
-  // List diagnostics for one source file inside `run_code`. Pass `{ file_path }` only (object bag) — no `line` / `character` / `text` / `action`. Code-only. Resolves `{ items, message }`. Each item is `{ severity, path, line, character, message }` with **string** `severity` names (for example `Error`, `Warning`, `Information`, `Hint`) and **1-based** line and character when a range exists. Flattened only — no raw LSP JSON, no auto-injection into the `run_code` head (log or return `items` if needed).
-  //
-  // A clean file **resolves** with empty `items` and a short `message`. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **100** items; when truncated, `message` says so — no separate `truncated` field. Example:
+  // List diagnostics for one source file. Pass `{ file_path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
+  // Example:
   // const diags = await tools.diagnostics({ file_path: "src/a.rs" });
-  // if (diags.items.length === 0) return { ok: true, message: diags.message };
-  // const err = diags.items.find((d) => d.severity === "Error") ?? diags.items[0];
-  // const slice = await tools.read({ path: err.path, start_line: err.line, limit: 30 });
-  // return { diagnostic: err, preview: slice.lines, message: diags.message };
+  // return { n: diags.items.length, first: diags.items[0] ?? null, message: diags.message };
   readonly ["diagnostics"]: (args: DiagnosticsInput) => Promise<DiagnosticsData | ToolFailure>;
-  // List symbols in one source file inside `run_code`. Pass `{ file_path }` (object bag). Code-only; no position fields, no `action`, no `text`. Resolves `{ symbols, message }`. Each symbol guarantees `{ name, kind, line, character }` — **string** `kind` (for example `Function`), **1-based** start line and character. Optional `end_line` / `end_character` may appear; **`path` is omitted** (use the same `file_path` you passed). Flattened — no raw LSP JSON, no `name_path` / Serena dialects.
-  //
-  // Empty `symbols` + `message` still **resolves**. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **200** symbols; truncation notes go in `message`. Example:
+  // List symbols in one source file. Pass `{ file_path }`. Resolves `{ symbols, message }`—each `{ name, kind, line, character }` (string kind, 1-based; optional `end_*`; no `path`). Cap 200. Engine-not-ready rejects `ToolError`.
+  // Example:
   // const outline = await tools.document_symbol({ file_path: "src/lib.rs" });
   // const target = outline.symbols.find((s) => s.name === "start");
-  // if (!target) return { ok: false, message: outline.message };
-  // const def = await tools.go_to_definition({
-  //   file_path: "src/lib.rs",
-  //   line: target.line,
-  //   character: target.character,
-  // });
-  // return { outline: outline.symbols, def: def.locations, message: def.message };
+  // return { target, n: outline.symbols.length };
   readonly ["document_symbol"]: (args: DocumentSymbolInput) => Promise<DocumentSymbolData | ToolFailure>;
-  // Replace one exact string in one file inside `run_code`. Pass `path`, `old_string`, and `new_string` (object bag). Resolves an `EditResult`: `ok` (boolean), `path` (string), and `message` (string). There is no `replace_all`, no `expected_hash`, no `edits` array on this tool, and no `blocks` / `applied` / `failed` / `details` / `file.hash` report.
-  //
-  // Matching is exact and must hit exactly one place in the file. Empty `new_string` deletes `old_string`. CRLF and LF compare equal; a leading UTF-8 BOM is preserved. On success, `ok` is true and `message` is a short confirmation such as `replaced` (never empty, never a structured payload). When the path is missing, permission is denied, the string is missing, it matches more than once, or the write otherwise cannot proceed, this call still **resolves** with `ok: false`, a `reason` (`no_match`, `not_found`, `invalid_args`, `empty`, `permission`, `io`) and a short `message` that says what to fix (add surrounding lines, re-read, check the path, etc.) — it does **not** reject `ToolError` for those cases, including when this single replacement fully fails, and it does not partially write. Branch on `ok` in the same program; do not look for a structured details tree.
-  //
-  // Malformed input (missing fields, wrong types) also resolves `ok: false` (`invalid_args`); only cancellation rejects (`cancelled`). Multiple independent replacements: use `tools.apply_edits`, or call `edit` again. Example (edit then test in one program):
+  // Replace one exact string in one file. Must hit exactly one place; empty `new_string` deletes `old_string`. CRLF/LF compare equal; leading UTF-8 BOM is preserved. Soft failures (miss, multi-match, missing path, permission) resolve `ok: false` with `reason`/`message`—branch on `ok`. For several independent replacements use `tools.apply_edits`.
+  // Example:
   // const edited = await tools.edit({
   //   path: "src/a.rs",
   //   old_string: "fn start() {}",
   //   new_string: "fn main() {}",
   // });
-  // if (!edited.ok) return { ok: false, path: edited.path, message: edited.message };
-  // // edited.message === "replaced" (short confirm)
-  // const test = await tools.run({ command: "cargo test -q --lib a" });
-  // const done =
-  //   test.exit_code === null
-  //     ? await tools.wait({ id: test.id, sec: 60 })
-  //     : test;
-  // if (done.exit_code !== 0) return { ok: false, edited, done };
-  // return { ok: true, path: edited.path, message: edited.message, exit_code: done.exit_code };
+  // if (!edited.ok) return { ok: false, message: edited.message };
+  // return { ok: true, path: edited.path };
   readonly ["edit"]: (args: EditInput) => Promise<EditData | ToolFailure>;
-  // List references to the symbol at a file position inside `run_code`. Pass `file_path` plus **1-based** `line` and **1-based** UTF-16 `character` (object bag; end-of-line caret allowed). Code-only; no `action`, no inline `text` locator. Resolves `{ locations, message }` — same flattened location shape as `go_to_definition` (guaranteed start `path` / `line` / `character`; optional `end_*`). No raw LSP JSON.
-  //
-  // Empty `locations` + `message` still **resolves**. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **100** locations; truncation notes go in `message`. Example:
-  // const refs = await tools.find_references({
-  //   file_path: "src/lib.rs",
-  //   line: 40,
-  //   character: 12,
-  // });
-  // if (refs.locations.length === 0) return { ok: false, message: refs.message };
-  // const first = refs.locations[0];
-  // const slice = await tools.read({ path: first.path, start_line: first.line, limit: 20 });
-  // return { refs: refs.locations, preview: slice.lines, message: refs.message };
+  // List references at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character`. Resolves `{ locations, message }` (same location shape as `go_to_definition`). Cap 100. Engine-not-ready rejects `ToolError`.
+  // Example:
+  // const refs = await tools.find_references({ file_path: "src/lib.rs", line: 40, character: 12 });
+  // return { n: refs.locations.length, first: refs.locations[0] ?? null };
   readonly ["find_references"]: (args: FindReferencesInput) => Promise<FindReferencesData | ToolFailure>;
-  // Find files by path glob inside `run_code`. Pass an object bag: `pattern` (required), optional `path`, and `limit`. Resolves `{ paths, message }`. `paths` is a string array of **workspace-relative** file paths only (sorted by depth, then parent, then name) — never absolute. There is no `base` workspace|absolute dual mode, no `page`/`cursor`/`stale_cursor`, no `include_ignored`, and no enum `reason` — “no files”, “hit the limit”, or a short why go in `message` only.
-  //
-  // `pattern` is matched relative to `path` exactly as given. With `path` `src`, use `pattern` `**/*.rs`, not `src/**/*.rs`. A pattern with **no `/`** (e.g. `Cargo.toml`, `*.rs`) is matched against each file's **name at any depth** under `path` (like `.gitignore`), so `pattern` `read.rs` finds `src/tools/read.rs`; a pattern containing `/` is matched against the path relative to `path`. A pattern that walks outside the search directory (including `..`) resolves `ok: false` (`invalid_args`). Omit `path` to search from the workspace root. `limit` defaults to **1000** and is at most **5000** (one bounded call). When more would match, `paths` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `paths` with an explanatory `message` means nothing matched (including under default ignore rules) — do not look for a `reason` enum, a `base` flag, or `include_ignored`.
-  //
-  // **Result contract:** a bad bag (missing `pattern`, wrong types) or an out-of-root pattern resolves `ok: false` (`invalid_args`). Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `paths` + `message`. Example (list then read in one program):
+  // Find files by path glob. Pass `pattern`, optional `path` (search root), and `limit` (default 1000, max 5000). Resolves `{ paths, message }`—workspace-relative paths only. A pattern with no `/` matches the file name at any depth; with `/` it matches the path relative to `path`. Empty / hit-the-limit still resolve.
+  // Example:
   // const listed = await tools.glob({ pattern: "**/*.rs", path: "src" });
   // if (listed.paths.length === 0) return { ok: false, message: listed.message };
-  // const first = listed.paths[0];
-  // const chunk = await tools.read({ path: first, start_line: 1 });
-  // return {
-  //   ok: true,
-  //   path: first,
-  //   start_line: chunk.start_line,
-  //   lines: chunk.lines,
-  //   glob_message: listed.message,
-  //   read_message: chunk.message,
-  // };
+  // return { first: listed.paths[0], n: listed.paths.length };
   readonly ["glob"]: (args: GlobInput) => Promise<GlobData | ToolFailure>;
-  // Jump to the definition of the symbol at a file position inside `run_code`. Pass an object bag: `file_path` (workspace-relative source file), and **1-based** `line` + **1-based** UTF-16 `character` (end-of-line caret allowed: `1..=utf16_len+1`). There is no `action` bag, no row-inline `text` locator, and no Direct twin — this is Code-only. Resolves `{ locations, message }`. Each location guarantees `{ path, line, character }` (workspace-relative `path`, **1-based** start line and character). `end_line` / `end_character` may appear when the runtime supplies them — do not require them. No raw LSP JSON.
-  //
-  // Empty `locations` with an explanatory `message` still **resolves** (nothing at that position). Bad bags (missing fields, `line`/`character` < 1, wrong types, character past the line) and paths outside the workspace / non-files resolve `ok: false` (`invalid_args` / `not_found` / `permission`); engine-not-ready / server failures reject `ToolError` (not-ready includes a short retry hint — no fixed wait seconds in this description). Cancellation rejects `cancelled`. Prefer a precise character on the token (from a prior `read` / `grep` line). At most **100** locations; if truncated, `message` says so (for example `Returning first 100 locations (more omitted).`). Example:
-  // const found = await tools.grep({
-  //   pattern: "fn start",
-  //   path: "src",
-  //   literal: true,
-  // });
-  // if (found.hits.length === 0) return { ok: false, message: found.message };
-  // const hit = found.hits[0];
-  // const col = hit.text.indexOf("start") + 1; // 1-based character on that line
-  // const def = await tools.go_to_definition({
-  //   file_path: hit.path,
-  //   line: hit.line,
-  //   character: col,
-  // });
+  // Jump to definition at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character` (end-of-line caret allowed). Resolves `{ locations, message }`—each `{ path, line, character }` (optional `end_*`). Empty still resolves. Cap 100. Engine-not-ready rejects `ToolError`.
+  // Example:
+  // const def = await tools.go_to_definition({ file_path: "src/lib.rs", line: 10, character: 5 });
   // return { locations: def.locations, message: def.message };
   readonly ["go_to_definition"]: (args: GoToDefinitionInput) => Promise<GoToDefinitionData | ToolFailure>;
-  // Jump to implementations of the symbol at a file position inside `run_code` (traits / interfaces → concrete impls when the language server supports it). Pass `file_path` plus **1-based** `line` and **1-based** UTF-16 `character` (object bag; end-of-line caret allowed). Code-only; no `action`, no inline `text` locator. Resolves `{ locations, message }` — same flattened location shape as `go_to_definition` (guaranteed start fields; optional `end_*`).
-  //
-  // Empty `locations` + `message` still **resolves**. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **100** locations; truncation notes go in `message`. Prefer `go_to_definition` for the type itself; use this for implementors. Example:
-  // const impls = await tools.go_to_implementation({
-  //   file_path: "src/trait_foo.rs",
-  //   line: 3,
-  //   character: 10,
-  // });
+  // Jump to implementations at a file position (traits/interfaces → concrete impls when supported). Pass `file_path` plus 1-based `line` and UTF-16 `character`. Same `{ locations, message }` shape as `go_to_definition`. Prefer `go_to_definition` for the type itself.
+  // Example:
+  // const impls = await tools.go_to_implementation({ file_path: "src/trait_foo.rs", line: 3, character: 10 });
   // return { locations: impls.locations, message: impls.message };
   readonly ["go_to_implementation"]: (args: GoToImplementationInput) => Promise<GoToImplementationData | ToolFailure>;
-  // Search file contents inside `run_code`. Pass an object bag: `pattern` (required), optional `path`, `glob`, `literal`, `ignore_case`, and `limit`. Resolves `{ hits, message }`. Each hit is `{ path, line, text }`: workspace-relative `path`, **1-based** `line`, and `text` (that one line). If a single matching line is too long, shorten it **inside `text` itself** — there is no `line_truncated` / `truncated` field. There is no `matches` tree, no `start_line`/`end_line`/`line_text` on a hit, no `base`/`searched`/`page`/`cursor`/`stale_cursor`, no `include_ignored`, and no enum `reason` — put “no hits”, “hit the limit”, or a short why into `message` only.
-  //
-  // `pattern` is a regular expression unless `literal` is true (plain text). Prefer `literal: true` when the string is not meant as regex. `path` narrows the search root (workspace-relative); omit it to search from the workspace root. `glob` further filters file names (for example `**/*.rs`). `ignore_case` makes matching case-insensitive when true. `limit` defaults to **20** and is at most **100** (one bounded call). When more would match, `hits` stops at the bound and `message` says the call hit the limit — raise `limit` to see more. Empty `hits` with an explanatory `message` means nothing matched under the current filters (including default ignore rules) — do not look for a `reason` enum or an `include_ignored` knob.
-  //
-  // **Result contract:** a bad bag (missing `pattern`, wrong types, empty/invalid `glob` when provided) or an invalid regex resolves `ok: false` with `reason: "invalid_args"` and the cause in `message`. Cancellation rejects `cancelled`. Empty search and hit-the-limit still **resolve** with `hits` + `message`. Example (find then edit in one program):
-  // const found = await tools.grep({
-  //   pattern: "fn start",
-  //   path: "src",
-  //   literal: true,
-  // });
+  // Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, and `limit` (default 20, max 100). Resolves `{ hits, message }` where each hit is `{ path, line, text }`. Prefer `literal: true` when the string is not regex. Empty / hit-the-limit still resolve; invalid regex → `ok: false` `invalid_args`.
+  // Example:
+  // const found = await tools.grep({ pattern: "fn start", path: "src", literal: true });
   // if (found.hits.length === 0) return { ok: false, message: found.message };
-  // const hit = found.hits[0];
-  // const edited = await tools.edit({
-  //   path: hit.path,
-  //   old_string: hit.text,
-  //   new_string: hit.text.replace("fn start", "fn main"),
-  // });
-  // return { ok: edited.ok, hit, edited, message: found.message };
+  // return { hit: found.hits[0] };
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData | ToolFailure>;
-  // Fetch hover docs / type info at a file position inside `run_code`. Pass `file_path` plus **1-based** `line` and **1-based** UTF-16 `character` (object bag; end-of-line caret allowed). Code-only; no `action`, no inline `text` locator. Resolves `{ markdown, message }` — flattened hover text in the **`markdown`** field (not `content`, not raw LSP `contents` JSON). There is no `locations` array on this tool.
-  //
-  // Unavailable hover still **resolves** with an explanatory `message` and empty / short `markdown`. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. Example:
-  // const info = await tools.hover({
-  //   file_path: "src/main.rs",
-  //   line: 10,
-  //   character: 5,
-  // });
+  // Fetch hover docs / type info at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character`. Resolves `{ markdown, message }` (flattened text in `markdown`, not raw LSP JSON). Unavailable hover still resolves with explanatory `message`.
+  // Example:
+  // const info = await tools.hover({ file_path: "src/main.rs", line: 10, character: 5 });
   // return { markdown: info.markdown, message: info.message };
   readonly ["hover"]: (args: HoverInput) => Promise<HoverData | ToolFailure>;
-  // Stop a shell command started with `tools.run` in this session (this or an earlier `run_code` program). Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group (Windows: `taskkill /T`). Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell` — same shape as `run` / `wait`.
-  //
-  // Only after the process is confirmed dead is `ok` left true (or filled true): `output` includes a `[process was killed]` note and `exit_code` is the reaped code or `null` when none is available. If the reap wait expires and the process is still alive, resolves `ok: false` with `reason: "still_alive"`, `exit_code: null`, and a message — never a false success. This consumes the job: do not expect a later natural-exit reminder for the same id.
-  //
-  // An `id` stays valid across later `run_code` calls in the same session while the job is registered (still running, or finished but not yet collected); a job that already exited inside `run`'s foreground window may be gone. An unknown `id`, or an id from another session, resolves `ok: false` with `reason: "not_found"`. Cancelling before the signal rejects `cancelled`. This does not stop the human terminal. Example:
-  // const job = await tools.run({command:"npm test"});
+  // Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait → `ok: false` `still_alive`. Unknown id → `not_found`. Consumes the job.
+  // Example:
+  // const job = await tools.run({ command: "npm test" });
   // if (job.exit_code === null) {
-  //   const stopped = await tools.kill({id:job.id});
-  //   return {exit_code:stopped.exit_code, output:stopped.output};
+  //   const stopped = await tools.kill({ id: job.id });
+  //   return { exit_code: stopped.exit_code, output: stopped.output };
   // }
-  // return {exit_code:job.exit_code, output:job.output};
+  // return { exit_code: job.exit_code };
   readonly ["kill"]: (args: KillInput) => Promise<KillData | ToolFailure>;
-  // Read one workspace file inside `run_code`. Pass an object bag: `path` (required), optional `start_line`, and `limit`. Resolves `{ path, start_line, lines, message }`. `path` echoes the file (**workspace-relative**). `start_line` is the **1-based** line where this window began (same name on the way in and out — not `offset`). `lines` is a string array of that window’s line contents (plain strings). If one line is too long, shorten it **inside that `lines[]` string** — there is no `line_truncated` / `truncated` field and no `{line_number, …}` objects. Put “end of file”, “hit the limit”, session lines already in context, or a short why into `message` only. There is no `end_line`, no `file.hash` / `expected_hash` (write’s `expected_hash` is out of this package), no `page` / `cursor`, and no `reason` enum.
-  //
-  // Omit `start_line` (or pass `1`) to start at the first line. `limit` defaults to **2000** and is at most **5000** (one bounded call). To continue, call again with a larger `start_line` (typically previous `start_line + lines.length`); do **not** pass a cursor. When the window reaches the end of the file, `lines` may be shorter than `limit` and `message` can note that. When the call hits the line bound with more remaining, say so in `message` (not a separate truncated flag). Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
-  //
-  // **Result contract:** a bad bag (missing `path`, wrong types, non-integer `start_line` / `limit`) resolves `ok: false` with `reason: "invalid_args"`. A `start_line` past the last line (including any `start_line` on an empty file) is **not** an error: it resolves with empty `lines` and a `message` like `File has N lines; start_line S is past the end.` A **missing path** resolves `ok: false` with `reason: "not_found"` (no try/catch needed). An **unsupported / non-text** file (image, non-UTF-8) rejects `ToolError` `unsupported`. `message` says `Showing lines A–B of N. Continue with start_line=…` only when the file is not finished, and names any line cut to the line cap (`Line 12 truncated …`). Cancellation rejects `cancelled`. Past-EOF empty windows, hit-the-limit, and session lines already in the context window still **resolve** with `lines` + `message` (branch on `lines.length` / `message`). Example (paged read then edit in one program):
-  // const page1 = await tools.read({ path: "src/a.rs", start_line: 1 });
-  // if (page1.lines.length === 0) return { ok: false, message: page1.message };
-  // const next = page1.start_line + page1.lines.length;
-  // const page2 = await tools.read({ path: "src/a.rs", start_line: next });
-  // const needle = "fn start() {}";
-  // const blob = page1.lines.join("\n");
-  // if (!blob.includes(needle)) return { ok: false, message: "needle not in first page", page1 };
-  // const edited = await tools.edit({
-  //   path: "src/a.rs",
-  //   old_string: needle,
-  //   new_string: "fn main() {}",
-  // });
-  // return { ok: edited.ok, edited, page1_message: page1.message, page2_len: page2.lines.length };
+  // Read one workspace file. Pass `path`, optional `start_line` (1-based, default 1), and `limit` (default 2000, max 5000). Resolves `{ path, start_line, lines, message }`—`lines` is a string array; continue with a larger `start_line`, not a cursor. Past-EOF and hit-the-limit still resolve with `lines` + `message`. Missing path → `ok: false` `not_found`; non-text rejects `ToolError` `unsupported`.
+  // Example:
+  // const page = await tools.read({ path: "src/a.rs", start_line: 1 });
+  // if (page.lines.length === 0) return { ok: false, message: page.message };
+  // return { lines: page.lines.length, message: page.message };
   readonly ["read"]: (args: ReadInput) => Promise<ReadData | ToolFailure>;
-  // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell`, and optional `message`. `id` is the handle for later `tools.wait` / `tools.kill` in this session, including later `run_code` calls while the job is still running. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is stdout only, always present (may be empty), plus any stdout truncation note, on-disk spill path, or status line; `stderr` holds stderr the same way. Both are decoded to UTF-8 (non-UTF-8 output such as CP936 is transcoded from the system code page). `shell` names the shell that ran the command: `bash (MINGW64)` on Windows with Git Bash, `powershell` without it, otherwise the login shell (`bash`, `sh`, …). Under Git Bash, POSIX-looking arguments such as `/c` are rewritten to Windows paths by MSYS; when a command has one, the call resolves `ok: false` with `reason` `invalid_args`, `exit_code` `null`, and a `message` (write `//c`, or prefix `MSYS_NO_PATHCONV=1`) — never a successful `exit_code` `0`. There is no `kind` and no wait-budget or background-mode parameters on this call.
-  //
-  // cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.
-  //
-  // The call waits in the foreground for up to about 30s (less if the `run_code` budget is shorter): a command that finishes within that window returns its `exit_code` directly. A longer one moves to the background and this call returns with `exit_code` `null`. Parallel `run` calls (e.g. via `Promise.all`) really run concurrently and may touch the same files; when order matters, chain them with `await` one after another.
-  //
-  // If the process is still running when this call returns, `exit_code` is `null` and `output` holds whatever is available so far (or a short status note). Keep waiting with `tools.wait({id, sec})`. Stop it with `tools.kill({id})`. Example (edit then test in one program):
-  // const edited = await tools.edit({path:"src/a.rs", old_string:"fn start()", new_string:"fn main()"});
-  // if (!edited.ok) return {ok:false, edited};
-  // const test = await tools.run({command:"cargo test -q --lib a"});
-  // if (test.exit_code === null) {
-  //   const done = await tools.wait({id:test.id, sec:60});
-  //   if (done.exit_code !== 0) return {ok:false, done};
-  //   return {ok:true, path:edited.path, exit_code:done.exit_code, output:done.output};
-  // }
-  // if (test.exit_code !== 0) return {ok:false, test};
-  // return {ok:true, path:edited.path, exit_code:test.exit_code, output:test.output};
-  //
-  // Example (write then check):
-  // await tools.write({path:"src/b.rs", content:"pub fn ok() -> bool { true }"});
-  // const check = await tools.run({command:"cargo check -q"});
-  // const done = check.exit_code === null
-  //   ? await tools.wait({id:check.id, sec:120})
-  //   : check;
-  // return {exit_code:done.exit_code, output:done.output};
+  // Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout), `stderr`, `shell`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. cwd is always workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, POSIX-looking args like `/c` can be rewritten by MSYS—use `//c` or `MSYS_NO_PATHCONV=1`.
+  // Example:
+  // const test = await tools.run({ command: "cargo test -q --lib a" });
+  // const done = test.exit_code === null ? await tools.wait({ id: test.id, sec: 60 }) : test;
+  // return { exit_code: done.exit_code, output: done.output };
   readonly ["run"]: (args: RunInput) => Promise<RunData | ToolFailure>;
-  // Wait on a shell command started with `tools.run` in this session (this or an earlier `run_code` program). Pass `id` (the `Command.id` from `run`) and `sec` (required positive number of seconds to block). Resolves a `Command`: `id`, `exit_code`, `output` (stdout), `stderr`, `shell` — same shape as `run`.
-  //
-  // `sec` is required. Values above the built-in maximum of **300** are silently clamped to 300 (no error). After clamping, this call blocks until the process exits or the wait budget elapses. If it exits, `exit_code` is set and `output` holds the accumulated text (plus any truncation / spill notes). When the exit was a kill (`tools.kill` or the UI stop), the result also has `killed: true` and a `[process was killed]` note in `output`; a natural exit (including `exit_code: 1`) has neither. If the budget elapses and the process is still running, the call still resolves: `exit_code` stays `null` and `output` is the current snapshot — the job is not killed and is not promoted. Call `wait` again or `tools.kill({id})`.
-  //
-  // An `id` stays valid across later `run_code` calls in the same session while the job is registered (still running, or finished but not yet collected); a job that already exited inside `run`'s foreground window may be gone. An unknown `id`, or an id from another session, resolves `ok: false` with `reason: "not_found"`. Cancelling this wait rejects `cancelled` and does not kill the job. Example:
-  // const job = await tools.run({command:"npm test"});
-  // if (job.exit_code !== null) return {exit_code:job.exit_code, output:job.output};
-  // const done = await tools.wait({id:job.id, sec:60});
-  // return {exit_code:done.exit_code, output:done.output};
+  // Wait on a `tools.run` job in this session. Pass `id` and required `sec` (clamped to 300). Resolves the same `Command` shape as `run`. Natural exit sets `exit_code`; a kill sets `killed: true` and a `[process was killed]` note. Budget elapsed with job still running → `exit_code: null` (job kept). Unknown id → `ok: false` `not_found`.
+  // Example:
+  // const job = await tools.run({ command: "npm test" });
+  // if (job.exit_code !== null) return { exit_code: job.exit_code, output: job.output };
+  // const done = await tools.wait({ id: job.id, sec: 60 });
+  // return { exit_code: done.exit_code, output: done.output };
   readonly ["wait"]: (args: WaitInput) => Promise<WaitData | ToolFailure>;
-  // Fetch one http(s) URL inside `run_code` when you already know the address (docs page, raw file, API HTML). Prefer `tools.websearch` when you still need to discover URLs. Pass an object bag: required `url` (string); optional `format` as `text` | `markdown` | `html` (default `markdown`). Code-only — there is no Direct `webfetch`.
-  //
-  // Resolves structured data (never a content-only string):
-  // - success: `{ ok: true, url, status, format, body, message }` — `message` is the short fixed confirmation `Fetched.`
-  // - soft failure: `{ ok: false, url?, status?, format?, message }` — **still resolves**; does **not** reject `ToolError`. Soft failure **tries to return** the request `url` and `format`; `status` is present **only when** the server answered with an HTTP response. Treat those fields as optional when reading. Soft failures have no `body`.
-  //
-  // Soft failure (branch on `ok` in the same program; no try/catch required for these): HTTP 4xx/5xx, DNS failure, request/body/redirect read failure, timeout. `message` is a short human reason. Long bodies are truncated inside `body` at **50000** bytes with a size note (no separate truncated field).
-  //
-  // Invalid input — empty/invalid `url`, non-http(s) scheme, SSRF block for true private/non-public targets (RFC1918, loopback, link-local, unique-local; CGNAT `100.64/10` still blocked) — resolves `ok: false` with a `reason` (`invalid_args` / `permission`). Hard failure — rejects `ToolError` (catchable; uncaught fails the whole `run_code`): engine not warmed / unavailable — short Settings-oriented retry hint, **no hardcoded seconds**. Malformed args / protocol / budget failures are program-level errors, not soft `ok:false`. Fake-IP / TUN ranges such as `198.18.0.0/15` are **allowed** through the public gate when the hostname resolves there; teaching does not ask you to use literal IPs to bypass TUN.
-  //
-  // Example (search then fetch; soft-fail safe):
-  // const found = await tools.websearch({ query: "litecode webfetch SSRF" });
-  // if (!found.ok) return { ok: false, step: "search", message: found.message };
+  // Fetch one http(s) URL you already know. Prefer `tools.websearch` to discover URLs. Pass `url` and optional `format` (`text`|`markdown`|`html`, default `markdown`). Success → `{ ok, url, status, format, body, message }`. Soft failures (HTTP/DNS/timeout) still resolve `ok: false` without `body`. SSRF / bad URL → `ok: false`; engine not ready rejects `ToolError`.
+  // Example:
   // const page = await tools.webfetch({ url: "https://example.com/docs", format: "markdown" });
-  // if (!page.ok) return { ok: false, step: "fetch", status: page.status, message: page.message };
-  // // page.message === "Fetched."
+  // if (!page.ok) return { ok: false, status: page.status, message: page.message };
   // return { ok: true, chars: page.body.length, status: page.status };
   readonly ["webfetch"]: (args: WebfetchInput) => Promise<WebfetchData | ToolFailure>;
-  // Search the public web inside `run_code` for current titles, URLs, and snippets when the answer is outside the workspace. Use this for discovery; follow a specific URL with `tools.webfetch`. Pass an object bag: required `query` (string), optional `top_k` (integer, default 5, max 10). Code-only — there is no Direct `websearch`. Requires a configured search engine (Exa) that is warmed.
-  //
-  // Resolves structured data (never a content-only string):
-  // - success: `{ ok: true, query, results, message }` — `results` is at most `top_k` hits `{title, url, snippet}` (snippet ≈300 chars), best first; `message` is a short count such as `5 results.` (or `No results.`).
-  // - soft failure: `{ ok: false, query?, results: [], message }` — **still resolves**; does **not** reject `ToolError`
-  //
-  // Soft failure (branch on `ok`; no try/catch required for these): provider HTTP/business errors, timeouts, unparseable provider responses. `message` is a short human reason.
-  //
-  // Empty/invalid `query` or `top_k` resolves `ok: false` (`invalid_args`). Hard failure — rejects `ToolError`: engine not warmed / Exa not configured — short Exa/Settings-oriented retry hint, **no hardcoded seconds**. Malformed args / protocol / budget failures are program-level errors, not soft `ok:false`. This tool has no URL SSRF gate (outbound is to the search provider only).
-  //
-  // Example (discover then fetch; soft-fail safe):
-  // const hit = await tools.websearch({ query: "example.com docs webfetch", top_k: 3 });
+  // Search the public web (Exa). Pass `query` and optional `top_k` (default 5, max 10). Success → `{ ok, query, results: [{title,url,snippet}], message }`. Soft provider failures resolve `ok: false`; engine not configured rejects `ToolError`. Follow a hit with `tools.webfetch`.
+  // Example:
+  // const hit = await tools.websearch({ query: "example.com docs", top_k: 3 });
   // if (!hit.ok) return { ok: false, message: hit.message };
-  // const page = await tools.webfetch({ url: hit.results[0]?.url ?? "https://example.com/docs", format: "markdown" });
-  // if (!page.ok) return { ok: false, status: page.status, message: page.message };
-  // return { ok: true, snippet: page.body.slice(0, 200), hits: hit.results.length };
+  // return { ok: true, hits: hit.results.length, first: hit.results[0] };
   readonly ["websearch"]: (args: WebsearchInput) => Promise<WebsearchData | ToolFailure>;
-  // Search symbols across the workspace inside `run_code`. Pass a required `query` string only (object bag `{ query }`). Do **not** pass `path`, `file_path`, `line`, `character`, `text`, or `action` — this is not a position tool and has no path scope filter. Code-only. Resolves `{ symbols, message }`. Each symbol guarantees `{ name, kind, path, line, character }` — **string** `kind`, workspace-relative **`path` (required on every hit)**, **1-based** start line and character; optional `end_*`. Flattened — no raw LSP JSON.
-  //
-  // Empty `symbols` + `message` still **resolves**. Missing / empty `query` or bad types resolve `ok: false` (`invalid_args`); engine-not-ready / server failure → `ToolError` (short retry hint when not ready; no fixed seconds); cancel → `cancelled`. At most **200** symbols; truncation notes go in `message`. Example:
+  // Search symbols across the workspace. Pass `{ query }` only—no path or position. Resolves `{ symbols, message }`—each `{ name, kind, path, line, character }` (`path` required). Cap 200. Engine-not-ready rejects `ToolError`.
+  // Example:
   // const hits = await tools.workspace_symbol({ query: "AgentDeps" });
   // if (hits.symbols.length === 0) return { ok: false, message: hits.message };
-  // const s = hits.symbols[0];
-  // const def = await tools.go_to_definition({
-  //   file_path: s.path,
-  //   line: s.line,
-  //   character: s.character,
-  // });
-  // return { hit: s, locations: def.locations, message: def.message };
+  // return { hit: hits.symbols[0] };
   readonly ["workspace_symbol"]: (args: WorkspaceSymbolInput) => Promise<WorkspaceSymbolData | ToolFailure>;
-  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch resolves `ok: false` with `reason` `stale` (and `details.current_hash` on the underlying error), and does not write. If the file is missing, `expected_hash` alone resolves `ok: false` with `reason` `not_found` and does not create the file. `create_only` on an existing file resolves `ok: false` with `reason` `conflict`. `create_only` together with `expected_hash` when the file does not exist resolves `ok: false` with `reason` `invalid_args` and does not create it. LSP errors from the written file are not in the resolved data—log or return them if you need them visible.
+  // Create or overwrite one file. Resolves `file` (`path`, `hash`, `bytes`, …) and `created`. Optional `expected_hash` (sha256 of current bytes)—mismatch → `ok: false` `stale`; missing file with `expected_hash` → `not_found` (does not create). `create_only` on an existing file → `conflict`. Prefer `tools.edit` / `tools.apply_edits` for surgical changes.
+  // Example:
+  // const w = await tools.write({ path: "src/b.rs", content: "pub fn ok() -> bool { true }\n" });
+  // return { created: w.created, path: w.file.path };
   readonly ["write"]: (args: WriteInput) => Promise<WriteData | ToolFailure>;
 };
 ```

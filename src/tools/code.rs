@@ -1218,7 +1218,7 @@ impl Tool for CodeTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data with a boolean `ok`; when the tool could not do the job it resolves `{ok:false, reason, message}`. Only system failures reject ToolError; program misuse throws TypeError. `fs.ls/stat/exists` are read-only workspace probes. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`; a failed run lists the dropped paths in its head. Undefined properties in tool arguments are dropped silently."
+                    "description": "Async JavaScript function body for the Code SDK below. Prefer explore → edit → verify in one program; return a short summary. Call tools as `await tools.name(args)` and branch on `ok`."
                 },
                 "timeout_ms": {
                     "type": "integer",

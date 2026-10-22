@@ -1,8 +1,4 @@
-List diagnostics for one source file inside `run_code`. Pass `{ file_path }` only (object bag) — no `line` / `character` / `text` / `action`. Code-only. Resolves `{ items, message }`. Each item is `{ severity, path, line, character, message }` with **string** `severity` names (for example `Error`, `Warning`, `Information`, `Hint`) and **1-based** line and character when a range exists. Flattened only — no raw LSP JSON, no auto-injection into the `run_code` head (log or return `items` if needed).
-
-A clean file **resolves** with empty `items` and a short `message`. Invalid input and bad paths resolve `ok: false` with `reason` `invalid_args` / `not_found` (they do not reject); engine-not-ready / server failures reject `ToolError` (short retry hint when not ready; no fixed seconds). Cancel → `cancelled`. At most **100** items; when truncated, `message` says so — no separate `truncated` field. Example:
+List diagnostics for one source file. Pass `{ file_path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
+Example:
 const diags = await tools.diagnostics({ file_path: "src/a.rs" });
-if (diags.items.length === 0) return { ok: true, message: diags.message };
-const err = diags.items.find((d) => d.severity === "Error") ?? diags.items[0];
-const slice = await tools.read({ path: err.path, start_line: err.line, limit: 30 });
-return { diagnostic: err, preview: slice.lines, message: diags.message };
+return { n: diags.items.length, first: diags.items[0] ?? null, message: diags.message };

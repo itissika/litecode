@@ -1,25 +1,5 @@
-Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell`, and optional `message`. `id` is the handle for later `tools.wait` / `tools.kill` in this session, including later `run_code` calls while the job is still running. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is stdout only, always present (may be empty), plus any stdout truncation note, on-disk spill path, or status line; `stderr` holds stderr the same way. Both are decoded to UTF-8 (non-UTF-8 output such as CP936 is transcoded from the system code page). `shell` names the shell that ran the command: `bash (MINGW64)` on Windows with Git Bash, `powershell` without it, otherwise the login shell (`bash`, `sh`, …). Under Git Bash, POSIX-looking arguments such as `/c` are rewritten to Windows paths by MSYS; when a command has one, the call resolves `ok: false` with `reason` `invalid_args`, `exit_code` `null`, and a `message` (write `//c`, or prefix `MSYS_NO_PATHCONV=1`) — never a successful `exit_code` `0`. There is no `kind` and no wait-budget or background-mode parameters on this call.
-
-cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.
-
-The call waits in the foreground for up to about 30s (less if the `run_code` budget is shorter): a command that finishes within that window returns its `exit_code` directly. A longer one moves to the background and this call returns with `exit_code` `null`. Parallel `run` calls (e.g. via `Promise.all`) really run concurrently and may touch the same files; when order matters, chain them with `await` one after another.
-
-If the process is still running when this call returns, `exit_code` is `null` and `output` holds whatever is available so far (or a short status note). Keep waiting with `tools.wait({id, sec})`. Stop it with `tools.kill({id})`. Example (edit then test in one program):
-const edited = await tools.edit({path:"src/a.rs", old_string:"fn start()", new_string:"fn main()"});
-if (!edited.ok) return {ok:false, edited};
-const test = await tools.run({command:"cargo test -q --lib a"});
-if (test.exit_code === null) {
-  const done = await tools.wait({id:test.id, sec:60});
-  if (done.exit_code !== 0) return {ok:false, done};
-  return {ok:true, path:edited.path, exit_code:done.exit_code, output:done.output};
-}
-if (test.exit_code !== 0) return {ok:false, test};
-return {ok:true, path:edited.path, exit_code:test.exit_code, output:test.output};
-
-Example (write then check):
-await tools.write({path:"src/b.rs", content:"pub fn ok() -> bool { true }"});
-const check = await tools.run({command:"cargo check -q"});
-const done = check.exit_code === null
-  ? await tools.wait({id:check.id, sec:120})
-  : check;
-return {exit_code:done.exit_code, output:done.output};
+Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout), `stderr`, `shell`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. cwd is always workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, POSIX-looking args like `/c` can be rewritten by MSYS—use `//c` or `MSYS_NO_PATHCONV=1`.
+Example:
+const test = await tools.run({ command: "cargo test -q --lib a" });
+const done = test.exit_code === null ? await tools.wait({ id: test.id, sec: 60 }) : test;
+return { exit_code: done.exit_code, output: done.output };
