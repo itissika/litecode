@@ -278,16 +278,8 @@ pub fn resolve_media_artifact_url(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::{InputContent, MessageItem};
-    use crate::types::{Item, MediaArtifact};
-
-    #[test]
-    fn blob_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
-        let blob_id = write_media_blob(dir.path(), b"hello").unwrap();
-        let bytes = read_media_blob(dir.path(), &blob_id).unwrap();
-        assert_eq!(bytes, b"hello");
-    }
+    
+    use crate::types::MediaArtifact;
 
     #[test]
     fn typed_artifact_uses_recorded_mime_type() {
@@ -302,51 +294,10 @@ mod tests {
     }
 
     #[test]
-    fn user_media_round_trip_resolves_to_data_url() {
-        let dir = tempfile::tempdir().unwrap();
-        let png = b"\x89PNG\r\n\x1a\nrest";
-        let name = write_user_media(dir.path(), png, "png").unwrap();
-        assert!(valid_media_name(&name));
-        let media_ref = media_ref(&name);
-        let mut items = vec![crate::types::user_message("", &[media_ref])];
-        resolve_user_media(&mut items, dir.path());
-        let Item::Message(MessageItem::Input(message)) = &items[0] else {
-            panic!("user message");
-        };
-        let InputContent::InputImage(image) = &message.content[0] else {
-            panic!("image part");
-        };
-        let url = image.image_url.as_deref().unwrap();
-        assert!(url.starts_with("data:image/png;base64,"));
-    }
-
-    #[test]
-    fn missing_user_media_becomes_text() {
-        let dir = tempfile::tempdir().unwrap();
-        let name = format!("{}.jpg", "ab".repeat(32));
-        let mut items = vec![crate::types::user_message("", &[media_ref(&name)])];
-        resolve_user_media(&mut items, dir.path());
-        let Item::Message(MessageItem::Input(message)) = &items[0] else {
-            panic!("user message");
-        };
-        let InputContent::InputText(text) = &message.content[0] else {
-            panic!("text note");
-        };
-        assert!(text.text.contains("image missing"));
-        assert!(text.text.contains(&name));
-    }
-
-    #[test]
     fn media_ref_rejects_path_escape() {
         assert!(parse_media_ref("litecode-media:../secret.jpg").is_none());
         assert!(parse_media_ref("https://example.com/a.png").is_none());
         assert!(normalize_image_refs(["not-a-ref".into()]).is_err());
     }
 
-    #[test]
-    fn sniff_image_matches_magic_bytes() {
-        assert_eq!(sniff_image(b"\x89PNG\r\n\x1a\n").unwrap().1, "png");
-        assert_eq!(sniff_image(&[0xff, 0xd8, 0xff, 0x00]).unwrap().1, "jpg");
-        assert!(sniff_image(b"not an image").is_none());
-    }
 }

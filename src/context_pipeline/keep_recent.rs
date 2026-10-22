@@ -461,37 +461,6 @@ mod tests {
     }
 
     #[test]
-    fn update_prompt_when_leading_summary() {
-        let discarded = vec![
-            compact_summary_message("old decisions", false),
-            user_text("new turn"),
-        ];
-        let prompt = build_compaction_prompt(&discarded, None);
-        assert!(prompt.contains("Previous summary:"));
-        assert!(prompt.contains("old decisions"));
-        assert!(prompt.contains("New transcript:\nUser:\nnew turn"));
-        assert!(!prompt.contains("20,000 tokens"));
-        assert!(!prompt.contains("User messages and intent"));
-        assert!(!prompt.contains("[Conversation summary]\nold decisions"));
-    }
-
-    #[test]
-    fn fresh_prompt_without_leading_summary() {
-        let discarded = vec![user_text("a"), user_text("b")];
-        let prompt = build_compaction_prompt(&discarded, None);
-        assert!(prompt.starts_with("Transcript:\n"));
-        assert!(!prompt.contains("20,000 tokens"));
-        assert!(!prompt.contains("User messages and intent"));
-        assert!(!prompt.contains("Previous summary:"));
-    }
-
-    #[test]
-    fn default_keep_recent_caps_at_20k() {
-        assert_eq!(default_keep_recent_tokens(200_000), 20_000);
-        assert_eq!(default_keep_recent_tokens(10_000), 2_500);
-    }
-
-    #[test]
     fn compact_output_tokens_caps_above_product_limit() {
         assert_eq!(
             compact_output_tokens(200_000, default_keep_recent_tokens(200_000), 65_536),

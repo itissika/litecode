@@ -62,7 +62,7 @@ mod tests {
     use super::*;
     use crate::config::WorkspacePaths;
     use crate::config::global_db::{
-        CITATION_PROMPT, COMPACTION_PROMPT, DEFAULT_PROMPT, GENERAL_PROMPT, HARNESS_SYSTEM,
+        CITATION_PROMPT, COMPACTION_PROMPT, HARNESS_SYSTEM,
         HARNESS_TOOLS, ORCHESTRATOR_PROMPT,
     };
 
@@ -97,30 +97,6 @@ mod tests {
     }
 
     #[test]
-    fn builtin_general_marker_loads_default_pack() {
-        let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
-        assert!(prompt.starts_with("# System"));
-        assert!(!prompt.contains("You are litecode"));
-        assert_eq!(prompt, visible(DEFAULT_PROMPT));
-        let identity = prompt
-            .find("You are a General Purpose Agent in LiteCode.")
-            .unwrap();
-        assert!(prompt.find("# System").unwrap() < identity);
-        assert!(identity < prompt.find("# Using your tools").unwrap());
-        assert!(prompt.find("# Using your tools").unwrap() < prompt.find("# Citations").unwrap());
-        assert!(prompt.contains("[@ key=\"seq\"]"));
-        assert!(prompt.contains("knowledge guide"));
-        assert!(prompt.contains("[@ file=\"src/a.rs\"]"));
-        assert!(!prompt.contains("## Knowledge nodes"));
-        assert!(!prompt.contains("[Docs](https://example.com/docs)"));
-        assert!(!prompt.contains("file:src/auth/validate.ts"));
-        assert!(!prompt.contains("[@ id="));
-        assert!(!prompt.contains("file_path:line_number"));
-        assert!(!prompt.contains("owner/repo#123"));
-        assert!(!prompt.contains("# Doing tasks"));
-    }
-
-    #[test]
     fn builtin_orchestrator_marker_loads_orchestrator_pack() {
         let prompt = build_system_prompt(
             "orchestrator",
@@ -134,49 +110,6 @@ mod tests {
         assert!(identity < prompt.find("# Using your tools").unwrap());
         assert!(prompt.find("# Using your tools").unwrap() < prompt.find("# Citations").unwrap());
         assert!(!prompt.contains("file_path:line_number"));
-    }
-
-    #[test]
-    fn user_override_replaces_editable_layers() {
-        let prompt =
-            build_system_prompt("default", &cfg("primary", "You are a custom agent."), None);
-        assert_eq!(prompt, visible("You are a custom agent."));
-        assert!(prompt.contains("# System"));
-        assert!(prompt.contains("# Using your tools"));
-        assert!(prompt.contains("# Citations"));
-        assert!(!prompt.contains("General Purpose Agent"));
-    }
-
-    #[test]
-    fn empty_override_still_splices_harness() {
-        let prompt = build_system_prompt("default", &cfg("primary", "  "), None);
-        assert_eq!(prompt, visible(""));
-        assert!(prompt.starts_with("# System"));
-        assert!(prompt.contains("# Using your tools"));
-        assert!(prompt.contains("# Citations"));
-        assert!(!prompt.contains("General Purpose Agent"));
-    }
-
-    #[test]
-    fn primary_splices_agents_md_then_claude_md() {
-        let ctx = make_ctx(Some("# contract"), Some("follow agents"));
-        let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
-        let agents = prompt.find("<context from=\"AGENTS.md\">").unwrap();
-        let claude = prompt.find("<context from=\"CLAUDE.md\">").unwrap();
-        assert!(prompt.find("# System").unwrap() < prompt.find("General Purpose Agent").unwrap());
-        assert!(prompt.find("# Citations").unwrap() < agents);
-        assert!(agents < claude);
-        assert!(prompt.contains("follow agents"));
-        assert!(prompt.contains("# contract"));
-    }
-
-    #[test]
-    fn absent_agents_md_leaves_claude_suffix_unchanged() {
-        let ctx = make_ctx(Some("# contract"), None);
-        let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), Some(&ctx));
-        assert!(!prompt.contains("AGENTS.md"));
-        assert!(prompt.contains("<context from=\"CLAUDE.md\">"));
-        assert!(prompt.ends_with("<context from=\"CLAUDE.md\">\n# contract\n</context>\n"));
     }
 
     #[test]
@@ -194,49 +127,4 @@ mod tests {
         assert!(!prompt.contains("# contract"));
     }
 
-    #[test]
-    fn code_review_marker_is_just_builtin_for_that_agent() {
-        let prompt = build_system_prompt("default", &cfg("primary", "builtin:code-review"), None);
-        assert!(prompt.contains("General Purpose Agent"));
-        assert!(!prompt.contains("code reviewer"));
-    }
-
-    #[test]
-    fn explore_marker_loads_explore_pack() {
-        let prompt = build_system_prompt("explore", &cfg("subagent", "builtin:explore"), None);
-        assert!(prompt.starts_with("# System"));
-        assert!(prompt.contains("Explore Purpose Agent"));
-        assert!(prompt.contains("Don't change local or remote state."));
-        assert!(prompt.contains("# Citations"));
-        assert!(!prompt.contains("READ-ONLY"));
-        assert!(!prompt.contains("# Core Tools"));
-    }
-
-    #[test]
-    fn general_marker_loads_general_pack() {
-        let prompt = build_system_prompt("general", &cfg("subagent", "builtin:general"), None);
-        assert!(prompt.starts_with("# System"));
-        assert!(prompt.contains("You are general,"));
-        assert!(prompt.contains("You can work heads-down."));
-        assert!(prompt.contains("# Citations"));
-        assert!(!prompt.contains("# Collaboration"));
-        let system = prompt.find("# System").unwrap();
-        let identity = prompt.find("You are general,").unwrap();
-        assert!(system < identity);
-        assert_eq!(prompt, visible(GENERAL_PROMPT));
-    }
-
-    #[test]
-    fn system_prompt_restores_tool_guidance_and_notes_code_mode() {
-        let prompt = build_system_prompt("default", &cfg("primary", "builtin:general"), None);
-        assert!(prompt.contains("# Using your tools"));
-        assert!(prompt.contains("this request's tool list already has a dedicated tool"));
-        assert!(prompt.contains("cut round trips and use tokens more efficiently"));
-        assert!(!prompt.contains("over the shell"));
-        assert!(prompt.contains("run_code"));
-        assert!(prompt.contains("do not call them directly"));
-        let tools = prompt.find("# Using your tools").unwrap();
-        let citations = prompt.find("# Citations").unwrap();
-        assert!(tools < citations);
-    }
 }

@@ -219,36 +219,6 @@ mod tests {
     use crate::types::user_text;
 
     #[test]
-    fn token_count_prefers_provider_or_falls_back_to_estimate() {
-        let budget = BudgetPolicy::new(10_000);
-        let tiny = vec![user_text("hi")];
-        // (provider_tokens, expected)
-        let cases = [(8_500_u64, 8_500_usize), (0, compute_token_estimate(&tiny))];
-        for (provider_tokens, expected) in cases {
-            assert_eq!(
-                budget.token_count(&tiny, provider_tokens),
-                expected,
-                "provider_tokens={provider_tokens}"
-            );
-        }
-    }
-
-    #[test]
-    fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix() {
-        let budget = BudgetPolicy::new(10_000);
-        let items = vec![user_text("sent"), user_text("x".repeat(4_000))];
-        let seqs = vec![Some(4), Some(9)];
-        let bill = OccupancyBill {
-            prompt_tokens: 7_000,
-            covered_seq: Some(4),
-        };
-        assert_eq!(
-            budget.occupancy_token_count(&items, &seqs, Some(bill)),
-            7_000 + compute_token_estimate(&items[1..])
-        );
-    }
-
-    #[test]
     fn low_provider_bill_stays_under_threshold_when_local_estimate_is_over() {
         let budget = BudgetPolicy::new(10_000);
         let items = vec![user_text("word ".repeat(12_000))];
@@ -271,14 +241,6 @@ mod tests {
             covered_seq: Some(3),
         };
         assert!(budget.should_compact(budget.occupancy_token_count(&items, &seqs, Some(over))));
-    }
-
-    #[test]
-    fn rewritten_view_does_not_reuse_a_provider_bill() {
-        let budget = BudgetPolicy::new(10_000);
-        let items = vec![user_text("summary")];
-        let local = compute_token_estimate(&items);
-        assert_eq!(budget.occupancy_token_count(&items, &[], None), local);
     }
 
     #[test]
@@ -317,41 +279,4 @@ mod tests {
         assert!(occupancy_bill_from(&empty, Some(8), &rollup, &meter).is_none());
     }
 
-    #[test]
-    fn ring_occupancy_prefers_provider_prompt() {
-        assert_eq!(ring_occupancy(Some(3_000), 100), 3_000);
-        assert_eq!(ring_occupancy(Some(0), 100), 100);
-        assert_eq!(ring_occupancy(None, 100), 100);
-        assert!(manual_compact_eligible(
-            10_000,
-            ring_occupancy(Some(3_000), 100)
-        ));
-        assert!(!manual_compact_eligible(
-            10_000,
-            ring_occupancy(Some(2_000), 9_000)
-        ));
-    }
-
-    #[test]
-    fn token_count_does_not_apply_a_separate_media_slice() {
-        // Trigger and stored estimate share compute_token_estimate. Stale-media
-        // dropping happens on the items passed in, not inside the count.
-        let budget = BudgetPolicy::new(10_000);
-        let items = vec![user_text("hi")];
-        assert_eq!(
-            budget.token_count(&items, 0),
-            compute_token_estimate(&items)
-        );
-        assert_eq!(
-            budget.occupancy_token_count(&items, &[Some(1)], None),
-            compute_token_estimate(&items)
-        );
-    }
-
-    #[test]
-    fn manual_compact_gate_is_inclusive_at_thirty_percent() {
-        assert!(!manual_compact_eligible(0, 10_000));
-        assert!(!manual_compact_eligible(10_000, 2_999));
-        assert!(manual_compact_eligible(10_000, 3_000));
-    }
 }

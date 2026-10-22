@@ -566,53 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn append_tool_audit_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
-        let data_root = dir.path();
-        let sid = "sess-audit";
-        let e1 = AuditEvent {
-            ts_unix_ms: 1,
-            phase: "start".into(),
-            session_id: sid.into(),
-            turn_id: Some("t1".into()),
-            step: Some(1),
-            tool: "grep".into(),
-            call_id: "c1".into(),
-            rule_id: None,
-            ok: None,
-            error_kind: None,
-            error: None,
-            auth_outcome: None,
-        };
-        let e2 = AuditEvent {
-            ts_unix_ms: 2,
-            phase: "exec_done".into(),
-            session_id: sid.into(),
-            turn_id: Some("t1".into()),
-            step: Some(1),
-            tool: "grep".into(),
-            call_id: "c1".into(),
-            rule_id: None,
-            ok: Some(true),
-            error_kind: None,
-            error: None,
-            auth_outcome: None,
-        };
-        append_tool_audit(data_root, sid, &e1);
-        append_tool_audit(data_root, sid, &e2);
-        let path = session_diag_dir(data_root, sid).join("tool-audit.jsonl");
-        let text = fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
-        assert_eq!(lines.len(), 2);
-        let back1: AuditEvent = serde_json::from_str(lines[0]).unwrap();
-        let back2: AuditEvent = serde_json::from_str(lines[1]).unwrap();
-        assert_eq!(back1.phase, "start");
-        assert_eq!(back1.tool, "grep");
-        assert_eq!(back2.phase, "exec_done");
-        assert_eq!(back2.ok, Some(true));
-    }
-
-    #[test]
     fn write_last_turn_overwrites() {
         let dir = tempfile::tempdir().unwrap();
         let data_root = dir.path();

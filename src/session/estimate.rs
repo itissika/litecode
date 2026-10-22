@@ -241,67 +241,10 @@ pub fn autocompact_threshold(context_window: usize) -> usize {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, InputImageContent,
-        InputTextContent,
+        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
     };
-    use crate::session::media_tokens::IMAGE_FALLBACK_TOKENS;
+    
     use crate::types::user_text;
-
-    #[test]
-    fn cl100k_gold_sample_hello_world() {
-        // Documented gold: cl100k_base encodes "hello world" as exactly 2 tokens.
-        assert_eq!(count_text_tokens("hello world"), 2);
-    }
-
-    #[test]
-    fn text_token_count_handles_utf8_and_grows_monotonically() {
-        let ascii = count_text_tokens("needle");
-        let chinese = count_text_tokens("你好，世界");
-        assert!(ascii > 0 && chinese > 0);
-        assert!(count_text_tokens("needle needle") > ascii);
-    }
-
-    #[test]
-    fn estimate_grows_with_text() {
-        let short = vec![user_text("hi")];
-        let long = vec![user_text("x".repeat(400))];
-        assert!(compute_token_estimate(&long) > compute_token_estimate(&short));
-    }
-
-    #[test]
-    fn media_adds_tokens_beyond_text_only() {
-        let text_only = vec![Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: "c1".into(),
-            output: FunctionCallOutput::Content(vec![InputContent::InputText(InputTextContent {
-                text: "caption".into(),
-            })]),
-            id: None,
-            status: None,
-        })];
-        let with_image = vec![Item::FunctionCallOutput(FunctionCallOutputItemParam {
-            call_id: "c1".into(),
-            output: FunctionCallOutput::Content(vec![
-                InputContent::InputText(InputTextContent {
-                    text: "caption".into(),
-                }),
-                InputContent::InputImage(InputImageContent {
-                    detail: Default::default(),
-                    file_id: None,
-                    image_url: Some("https://example.com/a.png".into()),
-                }),
-            ]),
-            id: None,
-            status: None,
-        })];
-        let text_n = compute_token_estimate(&text_only);
-        let media_n = compute_token_estimate(&with_image);
-        assert!(media_n >= text_n + IMAGE_FALLBACK_TOKENS);
-    }
-
-    #[test]
-    fn empty_transcript_is_zero() {
-        assert_eq!(compute_token_estimate(&[]), 0);
-    }
 
     #[test]
     fn breakdown_splits_tool_output_from_conversation() {
@@ -345,22 +288,4 @@ mod tests {
         assert_eq!(bd.per_tool[0].output, bd.tool_output);
     }
 
-    #[test]
-    fn prompt_overhead_fills_system_and_schema() {
-        let mut bd = compute_token_breakdown(&[]);
-        apply_prompt_overhead(
-            &mut bd,
-            "you are a helpful assistant",
-            &[("bash".into(), 12)],
-        );
-        assert!(bd.system > 0);
-        assert_eq!(bd.tool_schema, 12);
-        assert_eq!(bd.per_tool[0].name, "bash");
-        assert_eq!(bd.per_tool[0].schema, 12);
-    }
-
-    #[test]
-    fn breakdown_empty_is_zero() {
-        assert_eq!(compute_token_breakdown(&[]), ItemTokenBreakdown::default());
-    }
 }

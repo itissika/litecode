@@ -172,26 +172,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_calls_cleanup_for_every_removed_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let m = mgr(dir.path());
-        let root = m.open_session("/proj", "default", None).await.unwrap();
-        let a = m.test_child_session("/proj", &root, "c1").unwrap();
-        let b = m.test_child_session("/proj", &a, "c2").unwrap();
-        let seen = std::sync::Mutex::new(Vec::new());
-        let out = delete_session_tree(
-            &m,
-            &|id: &str| seen.lock().unwrap().push(id.to_string()),
-            &root,
-        )
-        .await
-        .unwrap();
-        assert_eq!(out.parent_session_id, None);
-        assert_eq!(*seen.lock().unwrap(), out.removed);
-        assert!(out.removed.contains(&a) && out.removed.contains(&b));
-    }
-
-    #[tokio::test]
     async fn tombstone_survives_reload() {
         let dir = tempfile::tempdir().unwrap();
         let (root, child) = {

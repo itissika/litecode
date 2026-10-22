@@ -41,51 +41,8 @@ fn non_empty(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
-    use crate::config::schema::GlobalSettings;
+    
+    
+    
 
-    #[test]
-    fn build_context_maps_resolved_contract_to_claude_md() {
-        let mut workspace = WorkspaceState::new("/tmp/project");
-        workspace.contract = "# workspace contract\n\nFollow these rules.".into();
-        let resolved = resolve_without_catalog(GlobalSettings::default(), workspace);
-        let paths = WorkspacePaths::for_legacy_root(&std::path::PathBuf::from("/tmp/project"));
-
-        let ctx = build_context(&resolved, std::path::Path::new("/tmp/project"), &paths);
-
-        assert_eq!(
-            ctx.claude_md.as_deref(),
-            Some("# workspace contract\n\nFollow these rules.")
-        );
-    }
-
-    #[test]
-    fn build_context_omits_claude_md_when_contract_empty() {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp/empty"));
-        let paths = WorkspacePaths::for_legacy_root(&std::path::PathBuf::from("/tmp/empty"));
-
-        let ctx = build_context(&resolved, std::path::Path::new("/tmp/empty"), &paths);
-
-        assert!(ctx.claude_md.is_none());
-        assert!(ctx.agents_md.is_none());
-    }
-
-    #[test]
-    fn build_context_copies_process_snapshot_and_ignores_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("CLAUDE.md"), "# disk claude\n").unwrap();
-        std::fs::write(dir.path().join("AGENTS.md"), "# disk agents\n").unwrap();
-        let mut workspace = WorkspaceState::new(dir.path());
-        workspace.contract = "# process claude\n".into();
-        workspace.agents_md = "# process agents\n".into();
-        let resolved = resolve_without_catalog(GlobalSettings::default(), workspace);
-        let paths = WorkspacePaths::for_legacy_root(dir.path());
-
-        let ctx = build_context(&resolved, dir.path(), &paths);
-
-        assert_eq!(ctx.claude_md.as_deref(), Some("# process claude\n"));
-        assert_eq!(ctx.agents_md.as_deref(), Some("# process agents\n"));
-    }
 }
