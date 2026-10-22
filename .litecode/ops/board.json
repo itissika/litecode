@@ -16052,12 +16052,12 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "ready",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-212",
-      "progress": "plan approved by gm",
+      "progress": "closed done by gm: PASS acceptance @56831c3 feat/tool-contract-ptc (not main); cargo-full 855/0 (lib 567); independent re-verify also 855/0 unit+integ (doctest aborted only due to concurrent cargo target race, discounted); five knives landed + protected reported; Windows taskkill / hard-to-kill left for Andy local",
       "status_entered_at": null,
       "parent": null,
       "goal": "修 kill 假成功、未处理 rejection 静默、host-call 语法与文档小瑕疵；不合 main",
@@ -16090,6 +16090,25 @@
           "actor": "gm",
           "action": "approve",
           "note": "Q1-Q10 按推荐；五刀不加定时器"
+        },
+        {
+          "ts": "2026-10-22T08:19:41.023Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T08:29:46.259Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T08:40:34.609Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "PASS acceptance @56831c3 feat/tool-contract-ptc (not main); cargo-full 855/0 (lib 567); independent re-verify also 855/0 unit+integ (doctest aborted only due to concurrent cargo target race, discounted); five knives landed + protected reported; Windows taskkill / hard-to-kill left for Andy local",
+          "to": "done"
         }
       ]
     }
