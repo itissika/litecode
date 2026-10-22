@@ -509,20 +509,21 @@ async fn idle_reclaim_during_diagnostics_does_not_panic() {
     wait_lsp_warm(&engines).await;
 
     let hub = engines.lsp_hub();
-    hub.tool_action("diagnostics", &lib, None, None)
-        .await
-        .expect("first diagnostics should spawn LS");
+    // Cold start may reject "index not ready" (WP-206 #3); either way the LS is spawned.
+    if let Err(error) = hub.tool_action("diagnostics", &lib, None, None).await {
+        assert!(error.to_string().contains("index not ready"), "{error}");
+    }
 
     std::thread::sleep(Duration::from_millis(1100));
 
-    let out = hub
-        .tool_action("diagnostics", &lib, None, None)
-        .await
-        .expect("second diagnostics after idle must not panic nested block_on");
-    assert!(
-        out.contains("No diagnostics") || out.contains("Error") || out.contains("Warning"),
-        "unexpected diagnostics output: {out}"
-    );
+    // The point: a request after idle reclaim must not panic (nested block_on).
+    match hub.tool_action("diagnostics", &lib, None, None).await {
+        Ok(out) => assert!(
+            out.contains("No diagnostics") || out.contains("Error") || out.contains("Warning"),
+            "unexpected diagnostics output: {out}"
+        ),
+        Err(error) => assert!(error.to_string().contains("index not ready"), "{error}"),
+    }
 
     engines.stop_all();
     clear_mock_ls_env();
