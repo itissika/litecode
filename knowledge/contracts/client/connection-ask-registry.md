@@ -15,5 +15,5 @@ domain : client-ux
 基线：075308b
 **核实结论：一致，无漂移。**（基线 075308b；修复提交 74f2bb1）
 - Ask 阻塞 agent、不阻塞连接：`request_id → reply_tx` 登记，主循环继续处理各 session 的 JsonRpc —— [@ file="src/client_protocol/connection.rs" symbol="struct PendingAsk"]、[@ file="src/client_protocol/connection.rs" symbol="fn apply_permission_grant"]；循环注释明确无嵌套 select 排队异会话 RPC。
-- 与 Andy 口径对齐：**一 session 只管自己的 Ask**；跨 session 整条 WS 串行 = 错（已在 74f2bb1 修掉）。测试见 [@ file="src/client_protocol/connection.rs" symbol="mod ask_loop_tests › fn ask_does_not_block_other_session_rpc"]。
+- 与 Andy 口径对齐：**一 session 只管自己的 Ask**；跨 session 整条 WS 串行 = 错（已在 74f2bb1 修掉）。测试见 [@ file="src/client_protocol/connection.rs"]。
 - 断线/取消/退出对未决 Ask 回 Deny —— [@ file="src/client_protocol/connection.rs" symbol="fn reject_all_pending_asks"]；未知 grant 进 stray 不静默丢。ISSUE-019 / DRAFT-CUX-1 = closed。

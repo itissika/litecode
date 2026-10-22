@@ -14,5 +14,5 @@ domain : harness-core
 基线：075308b
 
 **核实结论：一致，无漂移。**（基线 075308b；锚点于 7286012 随 seq 化改名，语义未变）
-- provider 前缀权威 + 后缀本地估：`occupancy_token_count`（原 `token_count_with_baseline`，覆盖判定由 item 数改为 row seq）—— [@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn occupancy_token_count"]；测试见 [@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]、[@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn token_count_prefers_provider_or_falls_back_to_estimate"]。
+- provider 前缀权威 + 后缀本地估：`occupancy_token_count`（原 `token_count_with_baseline`，覆盖判定由 item 数改为 row seq）—— [@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn occupancy_token_count"]；测试见 [@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]、[@ file="src/context_pipeline/budget.rs"]。
 - 超阈 compact / 硬顶拒绝：`should_compact`；`enforce_token_count`（原 `enforce_hard_limit_with_baseline`，改收已算好的计数）—— [@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn should_compact"]；[@ file="src/context_pipeline/compact.rs" symbol="impl CompactPolicy › fn compact_if_needed"]。

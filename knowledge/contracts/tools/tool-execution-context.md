@@ -13,7 +13,7 @@ domain : tools-permission
 
 - 字段：`path_mode`、`workspace_root`、`call_id`、`cancel`、`output_limit`、`session_id`、`session` [@ file="src/tool/trait_.rs" symbol="struct ToolExecutionContext"]；未注入 session 时 `session_reader()` 返回错误，不静默回退 [@ file="src/tool/trait_.rs" symbol="impl ToolExecutionContext › fn session_reader"]。
 - 装配点在执行入口：`path_mode` 取自 `permission.path_mode(工具名)`，`output_limit = tool.max_result_size()`，`cancel` 与 turn 共享（入口生命周期见 [@ key="tool-call-lifecycle"]）。
-- 消费逐工具而异，不是统一消费：read 用 `workspace_root`/`path_mode` 解析路径 [@ file="src/tools/read.rs" symbol="impl ReadTool › fn call_for_execution"]；bash 取 `cancel`/`session_id`/`call_id`/`workspace_root` [@ file="src/tools/bash.rs" symbol="impl Tool for BashTool › fn execute"]。
+- 消费逐工具而异，不是统一消费：read 用 `workspace_root`/`path_mode` 解析路径 [@ file="src/tools/read.rs" symbol="impl ReadTool › fn call_for_execution"]；bash 取 `cancel`/`session_id`/`call_id`/`workspace_root` [@ file="src/tools/run.rs" symbol="impl Tool for RunTool › fn execute"]。
 - Custom / MCP 是否消费上下文由各适配决定，见 [@ key="tool-adapters"]；本节点只钉上下文装配本身。
 - `is_cancellable` 默认 false、部分工具覆写为 true；该标记不参与分流，取消令牌与 join 行为见 [@ key="tool-call-lifecycle"]。
 
