@@ -15836,13 +15836,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-209/",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-22T03:49:43.367Z",
+      "progress": "closed done by gm",
+      "status_entered_at": null,
       "parent": null,
       "goal": "降低 run_code 结果的上下文 token 成本：渲染层整形、cl100k token 预算、超限提示、PRELUDE 前置指引",
       "approver": "gm",
@@ -15892,6 +15892,13 @@
           "actor": "backend_mid",
           "action": "deliver",
           "note": null
+        },
+        {
+          "ts": "2026-10-22T03:53:53.493Z",
+          "actor": "gm",
+          "action": "close",
+          "note": null,
+          "to": "done"
         }
       ]
     }
