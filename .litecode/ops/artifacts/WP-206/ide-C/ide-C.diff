@@ -1,0 +1,663 @@
+diff --git a/src/lsp/format.rs b/src/lsp/format.rs
+index ab087f6..6b2434e 100644
+--- a/src/lsp/format.rs
++++ b/src/lsp/format.rs
+@@ -1,22 +1,59 @@
+ //! Agent-facing formatting of LSP JSON results.
+ 
++use std::path::Path;
++
+ use serde_json::Value;
+ 
+ use crate::lsp::uri::uri_to_path;
+ 
+-pub(crate) fn format_action_result(action: &str, result: &Value) -> String {
++/// WP-206 ⑧: agent-facing path for an LSP `uri`, consistent with read/grep/glob.
++///
++/// Inside one of `roots` → workspace-relative (`/`-separated, via
++/// [`crate::workspace::filter::cheap_rel_under`]); outside (or no roots) →
++/// absolute. Pure string-prefix work: symlinks are **not** resolved, so a
++/// path reported through a symlink keeps the form the server sent. The first
++/// root that matches wins (callers pass the canonical root first, then the
++/// as-configured root).
++pub(crate) fn display_path_for_uri(uri: &str, roots: &[&Path]) -> String {
++    match uri_to_path(uri) {
++        Some(p) => display_path(&p, roots),
++        None => uri.to_string(),
++    }
++}
++
++pub(crate) fn display_path(path: &Path, roots: &[&Path]) -> String {
++    for root in roots {
++        if root.as_os_str().is_empty() {
++            continue;
++        }
++        if let Some(rel) = crate::workspace::filter::cheap_rel_under(root, path) {
++            let rel = rel.trim_start_matches('/');
++            return if rel.is_empty() { ".".to_string() } else { rel.to_string() };
++        }
++    }
++    path.to_string_lossy().into_owned()
++}
++
++pub(crate) fn format_action_result(action: &str, result: &Value, roots: &[&Path]) -> String {
+     match action {
+-        "goToDefinition" | "findReferences" | "goToImplementation" => format_locations(result),
++        "goToDefinition" | "findReferences" | "goToImplementation" => {
++            format_locations(result, roots)
++        }
+         "hover" => format_hover(result),
+         "diagnostics" => format_diagnostics(result),
+         "documentSymbol" | "workspaceSymbol" => format_symbols(result),
+-        "prepareCallHierarchy" | "incomingCalls" | "outgoingCalls" => format_call_hierarchy(result),
++        "prepareCallHierarchy" | "incomingCalls" | "outgoingCalls" => {
++            format_call_hierarchy(result, roots)
++        }
+         _ => result.to_string(),
+     }
+ }
+ 
+-fn format_locations(result: &Value) -> String {
+-    let locations = extract_locations(result);
++fn format_locations(result: &Value, roots: &[&Path]) -> String {
++    let locations: Vec<(String, u64, u64)> = extract_location_items(result, roots)
++        .into_iter()
++        .map(|loc| (loc.path, loc.line, loc.character))
++        .collect();
+     if locations.is_empty() {
+         // Only reached when the language server index is known-settled.
+         return "No locations found (language server ready; no definition/reference at this position)."
+@@ -71,16 +108,17 @@ pub(crate) const MAX_LOCATIONS: usize = 100;
+ pub(crate) const MAX_DIAGNOSTIC_ITEMS: usize = 100;
+ pub(crate) const MAX_SYMBOLS: usize = 200;
+ 
++/// Absolute paths (internal emptiness / routing checks; not agent-facing).
+ pub(crate) fn extract_locations(result: &Value) -> Vec<(String, u64, u64)> {
+-    extract_location_items(result)
++    extract_location_items(result, &[])
+         .into_iter()
+         .map(|loc| (loc.path, loc.line, loc.character))
+         .collect()
+ }
+ 
+-pub(crate) fn extract_location_items(result: &Value) -> Vec<LocationItem> {
++pub(crate) fn extract_location_items(result: &Value, roots: &[&Path]) -> Vec<LocationItem> {
+     let mut out = Vec::new();
+-    fn parse_one(val: &Value) -> Option<LocationItem> {
++    fn parse_one(val: &Value, roots: &[&Path]) -> Option<LocationItem> {
+         let uri = val
+             .get("uri")
+             .or_else(|| val.get("targetUri"))
+@@ -95,9 +133,7 @@ pub(crate) fn extract_location_items(result: &Value) -> Vec<LocationItem> {
+         let end = range.get("end");
+         let end_line = end.and_then(|e| e["line"].as_u64()).map(|l| l + 1);
+         let end_character = end.and_then(|e| e["character"].as_u64()).map(|c| c + 1);
+-        let path = uri_to_path(uri)
+-            .map(|p| p.to_string_lossy().into_owned())
+-            .unwrap_or_else(|| uri.to_string());
++        let path = display_path_for_uri(uri, roots);
+         Some(LocationItem {
+             path,
+             line,
+@@ -108,11 +144,11 @@ pub(crate) fn extract_location_items(result: &Value) -> Vec<LocationItem> {
+     }
+     if let Some(arr) = result.as_array() {
+         for item in arr {
+-            if let Some(loc) = parse_one(item) {
++            if let Some(loc) = parse_one(item, roots) {
+                 out.push(loc);
+             }
+         }
+-    } else if let Some(loc) = parse_one(result) {
++    } else if let Some(loc) = parse_one(result, roots) {
+         out.push(loc);
+     }
+     out
+@@ -153,12 +189,16 @@ pub(crate) fn extract_diagnostic_items(result: &Value, file_path: &str) -> Vec<D
+         .collect()
+ }
+ 
+-pub(crate) fn extract_symbol_items(result: &Value, require_path: bool) -> Vec<SymbolItem> {
++pub(crate) fn extract_symbol_items(
++    result: &Value,
++    require_path: bool,
++    roots: &[&Path],
++) -> Vec<SymbolItem> {
+     let mut out = Vec::new();
+-    fn walk(val: &Value, require_path: bool, out: &mut Vec<SymbolItem>) {
++    fn walk(val: &Value, require_path: bool, roots: &[&Path], out: &mut Vec<SymbolItem>) {
+         if let Some(arr) = val.as_array() {
+             for item in arr {
+-                walk(item, require_path, out);
++                walk(item, require_path, roots, out);
+             }
+             return;
+         }
+@@ -189,11 +229,7 @@ pub(crate) fn extract_symbol_items(result: &Value, require_path: bool) -> Vec<Sy
+         let path = loc
+             .and_then(|l| l.get("uri").and_then(|u| u.as_str()))
+             .or_else(|| val.get("uri").and_then(|u| u.as_str()))
+-            .map(|uri| {
+-                uri_to_path(uri)
+-                    .map(|p| p.to_string_lossy().into_owned())
+-                    .unwrap_or_else(|| uri.to_string())
+-            });
++            .map(|uri| display_path_for_uri(uri, roots));
+         if require_path && path.is_none() {
+             // skip workspace rows without a path
+         } else {
+@@ -208,10 +244,10 @@ pub(crate) fn extract_symbol_items(result: &Value, require_path: bool) -> Vec<Sy
+             });
+         }
+         if let Some(children) = val.get("children") {
+-            walk(children, require_path, out);
++            walk(children, require_path, roots, out);
+         }
+     }
+-    walk(result, require_path, &mut out);
++    walk(result, require_path, roots, &mut out);
+     out
+ }
+ 
+@@ -370,7 +406,7 @@ pub(crate) fn symbol_kind_name(kind: u64) -> &'static str {
+     }
+ }
+ 
+-fn format_call_hierarchy(result: &Value) -> String {
++fn format_call_hierarchy(result: &Value, roots: &[&Path]) -> String {
+     if result.is_null() {
+         return "No call hierarchy results".into();
+     }
+@@ -391,9 +427,11 @@ fn format_call_hierarchy(result: &Value) -> String {
+             .and_then(|n| n.as_str())
+             .unwrap_or("(unknown)");
+         let uri = node.get("uri").and_then(|u| u.as_str()).unwrap_or("");
+-        let path = uri_to_path(uri)
+-            .map(|p| p.to_string_lossy().into_owned())
+-            .unwrap_or_else(|| uri.to_string());
++        let path = if uri.is_empty() {
++            String::new()
++        } else {
++            display_path_for_uri(uri, roots)
++        };
+         let line = node
+             .get("range")
+             .or_else(|| node.get("selectionRange"))
+@@ -415,3 +453,91 @@ fn format_call_hierarchy(result: &Value) -> String {
+     }
+     lines.join("\n")
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::lsp::uri::file_to_uri;
++    use std::path::PathBuf;
++
++    fn loc(path: &Path) -> Value {
++        serde_json::json!([{
++            "uri": file_to_uri(path),
++            "range": { "start": { "line": 2, "character": 4 }, "end": { "line": 2, "character": 9 } }
++        }])
++    }
++
++    #[test]
++    fn location_inside_workspace_is_relative() {
++        let tmp = tempfile::tempdir().unwrap();
++        let root = tmp.path().to_path_buf();
++        let file = root.join("src").join("lib.rs");
++        let items = extract_location_items(&loc(&file), &[root.as_path()]);
++        assert_eq!(items.len(), 1);
++        assert_eq!(items[0].path, "src/lib.rs");
++        assert_eq!(items[0].line, 3);
++    }
++
++    #[test]
++    fn location_outside_workspace_stays_absolute() {
++        let ws = tempfile::tempdir().unwrap();
++        let other = tempfile::tempdir().unwrap();
++        let file = other.path().join("dep.rs");
++        let items = extract_location_items(&loc(&file), &[ws.path()]);
++        assert_eq!(items.len(), 1);
++        let got = PathBuf::from(&items[0].path);
++        assert!(got.is_absolute(), "outside path must stay absolute: {}", items[0].path);
++        assert!(items[0].path.ends_with("dep.rs"));
++    }
++
++    #[test]
++    fn display_path_does_not_resolve_symlinks() {
++        // Pure prefix strip: a symlinked root is matched textually, never canonicalized.
++        let root = Path::new("/ws/link");
++        assert_eq!(display_path(Path::new("/ws/link/a/b.rs"), &[root]), "a/b.rs");
++        // Same file reached via the symlink target is outside by string → absolute.
++        assert_eq!(
++            display_path(Path::new("/ws/real/a/b.rs"), &[root]),
++            "/ws/real/a/b.rs"
++        );
++        // No roots → absolute (internal callers).
++        assert_eq!(display_path(Path::new("/ws/link/a.rs"), &[]), "/ws/link/a.rs");
++    }
++
++    #[test]
++    fn display_path_tries_roots_in_order() {
++        let canon = Path::new("/real/ws");
++        let configured = Path::new("/home/u/ws");
++        assert_eq!(
++            display_path(Path::new("/home/u/ws/x.rs"), &[canon, configured]),
++            "x.rs"
++        );
++    }
++
++    #[test]
++    fn workspace_symbol_paths_relative_inside_absolute_outside() {
++        let ws = tempfile::tempdir().unwrap();
++        let other = tempfile::tempdir().unwrap();
++        let inside = ws.path().join("m.rs");
++        let outside = other.path().join("o.rs");
++        let raw = serde_json::json!([
++            { "name": "A", "kind": 12, "location": { "uri": file_to_uri(&inside),
++              "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } } },
++            { "name": "B", "kind": 12, "location": { "uri": file_to_uri(&outside),
++              "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } } } }
++        ]);
++        let syms = extract_symbol_items(&raw, true, &[ws.path()]);
++        assert_eq!(syms[0].path.as_deref(), Some("m.rs"));
++        let b = syms[1].path.as_deref().unwrap();
++        assert!(Path::new(b).is_absolute() && b.ends_with("o.rs"), "got {b}");
++    }
++
++    #[test]
++    fn format_locations_text_uses_relative_path() {
++        let tmp = tempfile::tempdir().unwrap();
++        let file = tmp.path().join("src").join("lib.rs");
++        let text = format_action_result("goToDefinition", &loc(&file), &[tmp.path()]);
++        assert!(text.contains("src/lib.rs"), "got {text}");
++        assert!(!text.contains(&tmp.path().to_string_lossy().into_owned()), "got {text}");
++    }
++}
+diff --git a/src/lsp/hub.rs b/src/lsp/hub.rs
+index 6f91116..91d33aa 100644
+--- a/src/lsp/hub.rs
++++ b/src/lsp/hub.rs
+@@ -927,17 +927,21 @@ impl LspHub {
+                 })?
+         };
+         let mut modified = false;
++        // WP-206 ③: same index-not-ready path as hover/definition (empty during
++        // the cold-start grace → Err "index not ready" → tool `unavailable`).
+         let result = take_reply(
+             server
+-                .send_request_outcome(
++                .request_nav_with_retry(
+                     "workspace/symbol",
+                     serde_json::json!({ "query": query }),
+                 )
+                 .await?,
+             &mut modified,
+         );
++        let root = self.workspace_root();
++        let roots: Vec<&Path> = root.as_deref().into_iter().collect();
+         Ok(LspToolOutput::new(
+-            format_action_result("workspaceSymbol", &result),
++            format_action_result("workspaceSymbol", &result, &roots),
+             result,
+             modified,
+         ))
+@@ -1116,9 +1120,10 @@ impl LspHub {
+                     .await?,
+                 &mut modified,
+             ),
++            // WP-206 ③: symbols go through the nav index-not-ready gate.
+             "documentSymbol" => take_reply(
+                 server
+-                    .send_request_outcome(
++                    .request_nav_with_retry(
+                         "textDocument/documentSymbol",
+                         serde_json::json!({ "textDocument": { "uri": uri } }),
+                     )
+@@ -1129,7 +1134,7 @@ impl LspHub {
+                 // file_path selects/starts the LS; query filters workspace symbols.
+                 take_reply(
+                     server
+-                        .send_request_outcome(
++                        .request_nav_with_retry(
+                             "workspace/symbol",
+                             serde_json::json!({ "query": query.unwrap_or("") }),
+                         )
+@@ -1181,10 +1186,12 @@ impl LspHub {
+                     &mut modified,
+                 )
+             }
++            // WP-206 ③: not running / unpublished inside grace → Err (unavailable);
++            // unpublished after grace → empty success.
+             "diagnostics" => {
+                 server
+-                    .wait_file_diagnostics(&uri, Duration::from_secs(3))
+-                    .await
++                    .wait_file_diagnostics_gated(&uri, Duration::from_secs(3))
++                    .await?
+             }
+             other => {
+                 return Err(LitecodeError::ToolExecution(format!(
+@@ -1193,8 +1200,10 @@ impl LspHub {
+             }
+         };
+ 
++        let root = self.workspace_root();
++        let roots: Vec<&Path> = root.as_deref().into_iter().collect();
+         Ok(LspToolOutput::new(
+-            format_action_result(action, &result),
++            format_action_result(action, &result, &roots),
+             result,
+             modified,
+         ))
+diff --git a/src/lsp/server.rs b/src/lsp/server.rs
+index b63de06..51154bf 100644
+--- a/src/lsp/server.rs
++++ b/src/lsp/server.rs
+@@ -289,31 +289,38 @@ impl LspServer {
+         self.io.index_settled.load(Ordering::SeqCst) || self.spawned_at.elapsed() >= INDEX_GRACE
+     }
+ 
++    /// WP-206 ③: diagnostics for the agent tool, gated on the same index-not-ready
++    /// rule as navigation ([`Self::index_ready_for_empty_miss`]).
++    ///
++    /// - server not running → `Err` "index not ready" (tool maps to `unavailable`);
++    /// - a publish covering the synced version arrived within `budget` → those diagnostics;
++    /// - nothing published yet, still inside `INDEX_GRACE` / not settled → `Err` (unavailable);
++    /// - nothing published and the grace has expired → empty success (truly no diagnostics).
++    pub(crate) async fn wait_file_diagnostics_gated(
++        &self,
++        uri: &str,
++        budget: Duration,
++    ) -> Result<Value> {
++        if !self.is_running() {
++            return Err(index_not_ready_error("textDocument/publishDiagnostics"));
++        }
++        let diags = self.io.wait_diagnostics(uri, budget).await;
++        let fresh = self.io.diagnostics_are_current(uri);
++        match diagnostics_gate(self.is_running(), fresh, self.index_ready_for_empty_miss()) {
++            DiagnosticsGate::Fresh => Ok(diags),
++            DiagnosticsGate::SettledEmpty => Ok(Value::Array(vec![])),
++            DiagnosticsGate::NotReady => {
++                Err(index_not_ready_error("textDocument/publishDiagnostics"))
++            }
++        }
++    }
++
+     pub(crate) async fn request_nav_with_retry(
+         &self,
+         method: &str,
+         params: Value,
+     ) -> Result<crate::lsp::conn::LspReply> {
+         use crate::lsp::conn::LspReply;
+-        fn nav_empty(method: &str, result: &Value) -> bool {
+-            if method == "textDocument/hover" {
+-                return result.is_null()
+-                    || result
+-                        .get("contents")
+-                        .map(|c| match c {
+-                            Value::String(s) => s.trim().is_empty(),
+-                            Value::Object(o) => o
+-                                .get("value")
+-                                .and_then(|v| v.as_str())
+-                                .map(|s| s.trim().is_empty())
+-                                .unwrap_or(true),
+-                            Value::Array(a) => a.is_empty(),
+-                            _ => true,
+-                        })
+-                        .unwrap_or(true);
+-            }
+-            extract_locations(result).is_empty()
+-        }
+ 
+         // ContentModified ends the call at once (no resend; ISSUE-047).
+         let mut result = match self.send_request_outcome(method, params.clone()).await? {
+@@ -346,10 +353,7 @@ impl LspServer {
+             }
+         }
+ 
+-        Err(LitecodeError::ToolExecution(format!(
+-            "language server index not ready (method={method}); result would be inconclusive. \
+-             Retry in a few seconds — do not treat this as 'symbol not found'."
+-        )))
++        Err(index_not_ready_error(method))
+     }
+ 
+     pub(crate) async fn send_request(&self, method: &str, params: Value) -> Result<Value> {
+@@ -920,11 +924,112 @@ fn eof_position(text: &str) -> (u32, u32) {
+     (line, last.encode_utf16().count() as u32)
+ }
+ 
++/// Shared "index not ready" error; `tools/lsp.rs` maps the text to `unavailable`.
++pub(crate) fn index_not_ready_error(method: &str) -> LitecodeError {
++    LitecodeError::ToolExecution(format!(
++        "language server index not ready (method={method}); result would be inconclusive. \
++         Retry in a few seconds — do not treat this as 'symbol not found'."
++    ))
++}
++
++/// Empty-result test for [`LspServer::request_nav_with_retry`].
++///
++/// WP-206 ③: `textDocument/documentSymbol` and `workspace/symbol` count as
++/// empty when the result is null or an empty array (their items are
++/// `DocumentSymbol`/`SymbolInformation`, not `Location`s, so
++/// `extract_locations` would misread a non-empty DocumentSymbol tree as empty).
++pub(crate) fn nav_empty(method: &str, result: &Value) -> bool {
++    match method {
++        "textDocument/hover" => {
++            result.is_null()
++                || result
++                    .get("contents")
++                    .map(|c| match c {
++                        Value::String(s) => s.trim().is_empty(),
++                        Value::Object(o) => o
++                            .get("value")
++                            .and_then(|v| v.as_str())
++                            .map(|s| s.trim().is_empty())
++                            .unwrap_or(true),
++                        Value::Array(a) => a.is_empty(),
++                        _ => true,
++                    })
++                    .unwrap_or(true)
++        }
++        "textDocument/documentSymbol" | "workspace/symbol" => match result {
++            Value::Null => true,
++            Value::Array(a) => a.is_empty(),
++            _ => false,
++        },
++        _ => extract_locations(result).is_empty(),
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum DiagnosticsGate {
++    /// A publish covering the current document version exists.
++    Fresh,
++    /// Nothing published, but the index is settled / grace expired → empty success.
++    SettledEmpty,
++    /// Not running, or running without a publish inside the grace → `unavailable`.
++    NotReady,
++}
++
++/// WP-206 ③ decision table (dig-survey Q5).
++pub(crate) fn diagnostics_gate(server_ready: bool, fresh: bool, index_ready: bool) -> DiagnosticsGate {
++    if !server_ready {
++        DiagnosticsGate::NotReady
++    } else if fresh {
++        DiagnosticsGate::Fresh
++    } else if index_ready {
++        DiagnosticsGate::SettledEmpty
++    } else {
++        DiagnosticsGate::NotReady
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+     use crate::lsp::conn::{parse_content_length, publish_diagnostics_payload};
+ 
++    #[test]
++    fn nav_empty_symbols_by_array_len() {
++        for m in ["textDocument/documentSymbol", "workspace/symbol"] {
++            assert!(nav_empty(m, &Value::Null), "{m} null");
++            assert!(nav_empty(m, &serde_json::json!([])), "{m} []");
++            // DocumentSymbol tree has no uri/location — still non-empty.
++            let tree = serde_json::json!([{ "name": "main", "kind": 12,
++                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } },
++                "selectionRange": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } } }]);
++            assert!(!nav_empty(m, &tree), "{m} tree");
++        }
++        // Location-based methods unchanged.
++        assert!(nav_empty("textDocument/definition", &serde_json::json!([])));
++        assert!(nav_empty("textDocument/hover", &Value::Null));
++    }
++
++    #[test]
++    fn diagnostics_gate_table() {
++        use DiagnosticsGate::*;
++        // not running → unavailable regardless of cache
++        assert_eq!(diagnostics_gate(false, true, true), NotReady);
++        assert_eq!(diagnostics_gate(false, false, false), NotReady);
++        // running + published → real result
++        assert_eq!(diagnostics_gate(true, true, false), Fresh);
++        assert_eq!(diagnostics_gate(true, true, true), Fresh);
++        // running, not yet published: inside grace → unavailable; expired → empty success
++        assert_eq!(diagnostics_gate(true, false, false), NotReady);
++        assert_eq!(diagnostics_gate(true, false, true), SettledEmpty);
++    }
++
++    #[test]
++    fn index_not_ready_error_maps_to_unavailable_wording() {
++        let msg = index_not_ready_error("workspace/symbol").to_string();
++        assert!(msg.contains("index not ready"), "{msg}");
++        assert!(msg.contains("workspace/symbol"), "{msg}");
++    }
++
+     #[test]
+     fn content_length_parses_and_caps() {
+         assert_eq!(parse_content_length("not a header").unwrap(), None);
+diff --git a/src/tools/lsp.rs b/src/tools/lsp.rs
+index 42aeac8..5bbeb19 100644
+--- a/src/tools/lsp.rs
++++ b/src/tools/lsp.rs
+@@ -458,10 +458,15 @@ impl LspOpTool {
+             return err;
+         }
+ 
++        // WP-206 ⑧: canonical root first (file URIs we send are canonical), then
++        // the configured root; prefix-only, symlinks are not resolved.
++        let configured_root = self.shared.workspace_root.clone();
++        let roots: [&Path; 2] = [workspace_root.as_path(), configured_root.as_path()];
++
+         if self.op == LspOp::WorkspaceSymbol {
+             let query = input["query"].as_str().expect("validated").to_string();
+             return match self.shared.hub.workspace_symbol_outcome(&query).await {
+-                Ok(out) => finish_symbols(out, true),
++                Ok(out) => finish_symbols(out, true, &roots),
+                 Err(e) => map_lsp_query_error(e),
+             };
+         }
+@@ -503,9 +508,9 @@ impl LspOpTool {
+             Ok(out) => match self.op {
+                 LspOp::Hover => finish_hover(out),
+                 LspOp::Diagnostics => finish_diagnostics(out, &display_path),
+-                LspOp::DocumentSymbol => finish_symbols(out, false),
++                LspOp::DocumentSymbol => finish_symbols(out, false, &roots),
+                 LspOp::WorkspaceSymbol => unreachable!("handled above"),
+-                _ => finish_locations(out),
++                _ => finish_locations(out, &roots),
+             },
+             Err(e) => map_lsp_query_error(e),
+         }
+@@ -637,8 +642,8 @@ fn map_lsp_query_error(err: impl std::fmt::Display) -> ToolCallResult {
+     coded(code, msg)
+ }
+ 
+-fn finish_locations(out: crate::lsp::LspToolOutput) -> ToolCallResult {
+-    let mut locations = extract_location_items(&out.raw);
++fn finish_locations(out: crate::lsp::LspToolOutput, roots: &[&Path]) -> ToolCallResult {
++    let mut locations = extract_location_items(&out.raw, roots);
+     let truncated = locations.len() > MAX_LOCATIONS;
+     if truncated {
+         locations.truncate(MAX_LOCATIONS);
+@@ -703,8 +708,12 @@ fn finish_diagnostics(out: crate::lsp::LspToolOutput, file_path: &str) -> ToolCa
+     )
+ }
+ 
+-fn finish_symbols(out: crate::lsp::LspToolOutput, require_path: bool) -> ToolCallResult {
+-    let mut symbols = extract_symbol_items(&out.raw, require_path);
++fn finish_symbols(
++    out: crate::lsp::LspToolOutput,
++    require_path: bool,
++    roots: &[&Path],
++) -> ToolCallResult {
++    let mut symbols = extract_symbol_items(&out.raw, require_path, roots);
+     let truncated = symbols.len() > MAX_SYMBOLS;
+     if truncated {
+         symbols.truncate(MAX_SYMBOLS);
+@@ -900,7 +909,7 @@ mod tests {
+             Value::Null,
+             false,
+         );
+-        let result = finish_locations(out);
++        let result = finish_locations(out, &[]);
+         assert_eq!(result.level, crate::types::result::ToolSignalLevel::Ok);
+         assert!(result.error.is_none());
+         let data = result.data.expect("data");
+@@ -908,6 +917,54 @@ mod tests {
+         assert!(data["message"].as_str().unwrap().contains("No locations"));
+     }
+ 
++    #[test]
++    fn index_not_ready_rejects_unavailable_for_symbols_and_diagnostics() {
++        // WP-206 ③: documentSymbol / workspaceSymbol / diagnostics share the nav error.
++        for method in [
++            "textDocument/documentSymbol",
++            "workspace/symbol",
++            "textDocument/publishDiagnostics",
++        ] {
++            let err = crate::lsp::server::index_not_ready_error(method);
++            let result = map_lsp_query_error(err);
++            assert_eq!(result.error_code.as_deref(), Some("unavailable"), "{method}");
++            assert!(result.data.is_none(), "{method}: must not be an empty success");
++        }
++        // Hub's "server not running" also lands on unavailable.
++        let result = map_lsp_query_error("language server is not ready");
++        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
++    }
++
++    #[test]
++    fn finish_locations_relative_inside_absolute_outside() {
++        // WP-206 ⑧
++        let ws = tempfile::tempdir().unwrap();
++        let other = tempfile::tempdir().unwrap();
++        let mk = |p: &Path| serde_json::json!({
++            "uri": crate::lsp::uri::file_to_uri(p),
++            "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } }
++        });
++        let raw = serde_json::json!([mk(&ws.path().join("a").join("b.rs")), mk(&other.path().join("c.rs"))]);
++        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
++        let result = finish_locations(out, &[ws.path()]);
++        let data = result.data.expect("data");
++        assert_eq!(data["locations"][0]["path"], "a/b.rs");
++        let outside = data["locations"][1]["path"].as_str().unwrap();
++        assert!(Path::new(outside).is_absolute() && outside.ends_with("c.rs"), "{outside}");
++    }
++
++    #[test]
++    fn finish_symbols_workspace_paths_relative() {
++        let ws = tempfile::tempdir().unwrap();
++        let raw = serde_json::json!([{ "name": "f", "kind": 12, "location": {
++            "uri": crate::lsp::uri::file_to_uri(&ws.path().join("m.rs")),
++            "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 1 } } } }]);
++        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
++        let data = finish_symbols(out, true, &[ws.path()]).data.expect("data");
++        assert_eq!(data["symbols"][0]["path"], "m.rs");
++        assert_eq!(data["symbols"][0]["line"], 5);
++    }
++
+     #[test]
+     fn finish_hover_shape() {
+         let raw = serde_json::json!({

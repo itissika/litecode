@@ -15611,13 +15611,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "in_progress",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-206",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T00:51:22.475Z",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-22T00:52:15.089Z",
       "parent": null,
       "goal": "落实 Andy 拍板的 8 项 Code 模式测评修复（基线 feat/tool-contract-ptc@80c7a91）",
       "approver": "gm",
@@ -15643,6 +15643,18 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "dig+plan，Q1-Q7 待定"
+        },
+        {
+          "ts": "2026-10-22T00:52:01.336Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q7 均按推荐批准；①②同 commit；cargo 串行，最后统一刷 fixture"
+        },
+        {
+          "ts": "2026-10-22T00:52:15.089Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
         }
       ]
     }
