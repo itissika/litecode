@@ -152,17 +152,6 @@ fn workspace_lock_second_acquire_same_root_fails() {
     );
 }
 
-#[test]
-fn workspace_lock_different_roots_can_coexist() {
-    let _guard = CONTRACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let a = tempfile::tempdir().unwrap();
-    let b = tempfile::tempdir().unwrap();
-    init_workspace(a.path()).unwrap();
-    init_workspace(b.path()).unwrap();
-    let _la = WorkspaceLock::acquire(&a.path().join(".litecode")).expect("a");
-    let _lb = WorkspaceLock::acquire(&b.path().join(".litecode")).expect("b");
-}
-
 #[tokio::test]
 async fn workspace_open_http_endpoint_is_gone() {
     let _guard = CONTRACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());

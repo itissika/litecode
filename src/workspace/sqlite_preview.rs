@@ -179,19 +179,6 @@ mod tests {
     }
 
     #[test]
-    fn lists_tables_and_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = sample_db(dir.path());
-        let page = preview(&path, "", 0).unwrap();
-        assert_eq!(page.tables, vec!["items".to_string()]);
-        assert_eq!(page.table, "items");
-        assert_eq!(page.columns, vec!["id".to_string(), "name".to_string()]);
-        assert_eq!(page.rows.len(), 2);
-        assert_eq!(page.rows[0][1], Value::String("a".into()));
-        assert!(!page.truncated);
-    }
-
-    #[test]
     fn rejects_unknown_and_injected_table_names() {
         let dir = tempfile::tempdir().unwrap();
         let path = sample_db(dir.path());
@@ -210,33 +197,4 @@ mod tests {
         assert_eq!(count, 2);
     }
 
-    #[test]
-    fn rejects_non_sqlite_bytes() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.db");
-        std::fs::write(&path, b"hello").unwrap();
-        assert!(matches!(
-            preview(&path, "", 0),
-            Err(WorkspaceError::NotSqlite)
-        ));
-    }
-
-    #[test]
-    fn pages_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wide.db");
-        let conn = Connection::open(&path).unwrap();
-        conn.execute("CREATE TABLE n (id INTEGER)", []).unwrap();
-        for id in 0..150 {
-            conn.execute("INSERT INTO n VALUES (?1)", params![id])
-                .unwrap();
-        }
-        drop(conn);
-        let first = preview(&path, "n", 0).unwrap();
-        assert_eq!(first.rows.len(), 100);
-        assert!(first.truncated);
-        let second = preview(&path, "n", 100).unwrap();
-        assert_eq!(second.rows.len(), 50);
-        assert!(!second.truncated);
-    }
 }

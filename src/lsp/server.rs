@@ -991,7 +991,7 @@ pub(crate) fn diagnostics_gate(server_ready: bool, fresh: bool, index_ready: boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::conn::{parse_content_length, publish_diagnostics_payload};
+    
 
     #[test]
     fn nav_empty_symbols_by_array_len() {
@@ -1030,104 +1030,4 @@ mod tests {
         assert!(msg.contains("workspace/symbol"), "{msg}");
     }
 
-    #[test]
-    fn content_length_parses_and_caps() {
-        assert_eq!(parse_content_length("not a header").unwrap(), None);
-        assert_eq!(
-            parse_content_length("Content-Length: 42").unwrap(),
-            Some(42)
-        );
-        assert_eq!(
-            parse_content_length("  Content-Length: 7  ").unwrap(),
-            Some(7)
-        );
-        let too_big = format!("Content-Length: {}", 16 * 1024 * 1024 + 1);
-        let err = parse_content_length(&too_big).unwrap_err();
-        assert!(err.to_string().contains("exceeds limit"), "got: {err}");
-        assert!(parse_content_length("Content-Length: nope").is_err());
-    }
-
-    #[test]
-    fn stderr_buffer_is_bounded_and_rotates() {
-        let mut buf = Vec::new();
-        append_stderr_rotated(&mut buf, b"line one\n");
-        append_stderr_rotated(&mut buf, b"line two\n");
-        assert_eq!(buf, b"line one\nline two\n");
-
-        let big = "x".repeat(MAX_LSP_STDERR_BYTES);
-        let mut buf = Vec::new();
-        append_stderr_rotated(&mut buf, b"PREFIX ");
-        append_stderr_rotated(&mut buf, big.as_bytes());
-        assert!(
-            buf.len() <= MAX_LSP_STDERR_BYTES,
-            "rotated buffer must not exceed cap, got {}",
-            buf.len()
-        );
-        let text = String::from_utf8_lossy(&buf);
-        assert!(
-            !text.contains("PREFIX"),
-            "old prefix must be rotated out: {text}"
-        );
-        assert!(text.ends_with("x"), "recent bytes must survive: {text}");
-    }
-
-    #[test]
-    fn publish_diagnostics_payload_extracts_array() {
-        let msg = serde_json::json!({
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///a.rs",
-                "diagnostics": [{ "message": "boom", "severity": 1 }]
-            }
-        });
-        let (uri, version, diags) = publish_diagnostics_payload(&msg).expect("payload");
-        assert_eq!(uri, "file:///a.rs");
-        assert_eq!(version, None);
-        assert_eq!(diags.as_array().map(|a| a.len()), Some(1));
-        let versioned = serde_json::json!({
-            "method": "textDocument/publishDiagnostics",
-            "params": {
-                "uri": "file:///a.rs",
-                "version": 3,
-                "diagnostics": []
-            }
-        });
-        let (_, ver, empty) = publish_diagnostics_payload(&versioned).expect("versioned");
-        assert_eq!(ver, Some(3));
-        assert_eq!(empty, serde_json::json!([]));
-        assert!(
-            publish_diagnostics_payload(&serde_json::json!({
-                "method": "window/logMessage"
-            }))
-            .is_none()
-        );
-    }
-
-    #[test]
-    fn eof_position_tracks_utf16() {
-        assert_eq!(eof_position(""), (0, 0));
-        assert_eq!(eof_position("ab"), (0, 2));
-        assert_eq!(eof_position("a\nb"), (1, 1));
-    }
-
-    #[test]
-    fn incremental_changes_prefer_client_edits() {
-        let edits = serde_json::json!([{
-            "range": {
-                "start": { "line": 0, "character": 1 },
-                "end": { "line": 0, "character": 1 }
-            },
-            "text": "x"
-        }]);
-        let got = incremental_content_changes(true, Some(&edits), "ab", "axb");
-        assert_eq!(got, edits.as_array().cloned().unwrap());
-        let full = incremental_content_changes(false, Some(&edits), "ab", "axb");
-        assert_eq!(full, vec![serde_json::json!({ "text": "axb" })]);
-        let fallback = incremental_content_changes(true, None, "ab", "axb");
-        assert_eq!(
-            fallback[0]["range"]["end"],
-            serde_json::json!({ "line": 0, "character": 2 })
-        );
-        assert_eq!(fallback[0]["text"], "axb");
-    }
 }

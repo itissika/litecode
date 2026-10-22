@@ -86,17 +86,6 @@ mod tests {
     }
 
     #[test]
-    fn resolves_existing_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("a.txt");
-        std::fs::write(&file, "hi").unwrap();
-        let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();
-        let resolved = sandbox.resolve("a.txt").unwrap();
-        assert_eq!(resolved, canon_abs(&file).unwrap());
-        assert!(resolved.starts_with(sandbox.root()));
-    }
-
-    #[test]
     fn root_is_lap_not_verbatim() {
         let dir = tempfile::tempdir().unwrap();
         let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();

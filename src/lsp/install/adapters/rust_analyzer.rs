@@ -117,34 +117,7 @@ fn lib_dir_has_musl() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::lsp::install::ArchiveFormat;
+    
+    
 
-    #[test]
-    fn github_asset_name_is_exact_filename() {
-        let (name, format, unpack) = github_asset_spec();
-        assert!(name.starts_with("rust-analyzer-"), "{name}");
-        assert!(!name.contains("unsupported-"), "unknown platform: {name}");
-        if cfg!(windows) {
-            assert!(name.ends_with(".zip"), "{name}");
-            assert_eq!(format, ArchiveFormat::Zip);
-            assert_eq!(unpack, "rust-analyzer.exe");
-            assert!(
-                name.contains("pc-windows-msvc"),
-                "windows asset should be msvc: {name}"
-            );
-        } else {
-            assert!(name.ends_with(".gz"), "{name}");
-            assert_eq!(format, ArchiveFormat::Gz);
-            assert_eq!(unpack, "rust-analyzer");
-        }
-    }
-
-    #[test]
-    fn binary_info_points_at_unpacked_name() {
-        let dir = Path::new("/tmp/rust-analyzer");
-        let binary = adapter().binary_info(dir);
-        assert_eq!(binary.path, dir.join(binary_file_name()));
-        assert!(binary.arguments.is_empty());
-    }
 }

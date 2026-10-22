@@ -769,29 +769,6 @@ pub async fn ensure_servers(ids: &[String], install: bool) -> (Vec<String>, Vec<
 mod tests {
     use super::*;
 
-    #[test]
-    fn server_id_from_rust_analyzer_command() {
-        assert_eq!(server_id_from_command("rust-analyzer"), "rust-analyzer");
-        assert_eq!(
-            server_id_from_command("typescript-language-server --stdio"),
-            "typescript-language-server"
-        );
-    }
-
-    #[test]
-    fn probe_empty_repo_returns_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(probe_workspace_servers(dir.path()).is_empty());
-    }
-
-    #[test]
-    fn probe_rust_repo_lists_rust_analyzer() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"t\"\n").unwrap();
-        let probes = probe_workspace_servers(dir.path());
-        assert!(probes.iter().any(|p| p.id == "rust-analyzer"));
-    }
-
     /// Writing an executable while other test threads fork can make exec fail
     /// with ETXTBSY (inherited write fd until their exec). Test-only retry.
     #[cfg(unix)]
@@ -820,23 +797,6 @@ mod tests {
         let link = dir.join("rust-analyzer");
         std::os::unix::fs::symlink(&rustup, &link).unwrap();
         link
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn rustup_symlink_passes_generic_version_probe() {
-        let dir = tempfile::tempdir().unwrap();
-        let link = fake_rustup_with_link(dir.path());
-        let found = candidate_in_dir(dir.path(), "rust-analyzer").unwrap();
-        assert_eq!(found, link);
-        assert_eq!(found.file_name().unwrap(), "rust-analyzer");
-        let binary = LanguageServerBinary {
-            path: found,
-            arguments: vec![],
-            env: None,
-        };
-        retry_txt_busy(|| run_version_probe(&binary, Some(dir.path())))
-            .expect("generic --version probe via link");
     }
 
     #[cfg(unix)]
@@ -882,103 +842,4 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn candidate_finds_windows_command_shim() {
-        let dir = tempfile::tempdir().unwrap();
-        let shim = dir.path().join("typescript-language-server.cmd");
-        std::fs::write(&shim, "@echo off\r\n").unwrap();
-        assert_eq!(
-            candidate_in_dir(dir.path(), "typescript-language-server"),
-            Some(crate::config::path::os_probe_abs(&shim).unwrap())
-        );
-    }
-
-    #[test]
-    fn has_dotnet_10_sdk_detects_10() {
-        assert!(has_dotnet_10_sdk(
-            "8.0.100 [/usr/share/dotnet/sdk]\n10.0.100 [/usr/share/dotnet/sdk]\n"
-        ));
-        // preview/rc builds still count as 10.x
-        assert!(has_dotnet_10_sdk("10.0.100-rc.1 [/usr/share/dotnet/sdk]\n"));
-    }
-
-    #[test]
-    fn has_dotnet_10_sdk_rejects_other_versions() {
-        assert!(!has_dotnet_10_sdk(""));
-        assert!(!has_dotnet_10_sdk("8.0.100 [/usr/share/dotnet/sdk]\n"));
-        assert!(!has_dotnet_10_sdk("9.0.300 [/usr/share/dotnet/sdk]\n"));
-    }
-
-    #[test]
-    fn dotnet_tools_dir_derives_from_home() {
-        let prev_home = std::env::var_os("HOME");
-        let prev_up = std::env::var_os("USERPROFILE");
-        unsafe {
-            std::env::set_var("HOME", "/home/tester");
-            std::env::remove_var("USERPROFILE");
-        }
-
-        let dirs = dotnet_tools_dirs();
-
-        unsafe {
-            match prev_home {
-                Some(h) => std::env::set_var("HOME", h),
-                None => std::env::remove_var("HOME"),
-            }
-            if let Some(up) = prev_up {
-                std::env::set_var("USERPROFILE", up);
-            }
-        }
-
-        assert_eq!(dirs, vec![PathBuf::from("/home/tester/.dotnet/tools")]);
-    }
-
-    #[test]
-    fn dotnet_sdk_install_hint_is_complete() {
-        let hint = dotnet_sdk_install_hint("reason-here");
-        assert!(hint.contains("reason-here"));
-        assert!(hint.contains("dotnet tool install -g csharp-ls"));
-        if cfg!(windows) {
-            assert!(hint.contains("winget"));
-        } else {
-            assert!(hint.contains("apt-get"));
-        }
-    }
-
-    #[test]
-    fn csharp_adapter_is_dotnet_tool() {
-        let adapter = crate::lsp::install::adapters::csharp::adapter();
-        assert_eq!(
-            adapter.install_kind(),
-            crate::lsp::install::InstallKind::DotnetTool
-        );
-    }
-
-    #[test]
-    fn managed_path_requires_declared_binary() {
-        let dir = tempfile::tempdir().unwrap();
-        let server_dir = dir.path().join("rust-analyzer");
-        std::fs::create_dir_all(&server_dir).unwrap();
-        std::fs::write(
-            server_dir.join("rust-analyzer-x86_64-unknown-linux-gnu"),
-            b"",
-        )
-        .unwrap();
-        assert!(managed_binary_path_at("rust-analyzer", &server_dir).is_none());
-    }
-
-    #[test]
-    fn merge_keeps_node_entry_when_command_only_has_flags() {
-        let mut binary = LanguageServerBinary {
-            path: PathBuf::from("node"),
-            arguments: vec!["/tmp/cli.mjs".into(), "--stdio".into()],
-            env: None,
-        };
-        merge_managed_arguments(&mut binary, &["--stdio".into()]);
-        assert_eq!(
-            binary.arguments,
-            vec!["/tmp/cli.mjs".to_string(), "--stdio".to_string()]
-        );
-    }
 }

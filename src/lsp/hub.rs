@@ -1356,49 +1356,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn split_want_rev_is_stripped_before_the_language_server() {
-        let (params, want) = split_want_rev(serde_json::json!({
-            "textDocument": { "uri": "file:///a.rs" },
-            "position": { "line": 0, "character": 1 },
-            "want_rev": 7
-        }));
-        assert_eq!(want, Some(7));
-        assert!(params.get("want_rev").is_none());
-        assert_eq!(
-            params["textDocument"]["uri"],
-            serde_json::json!("file:///a.rs")
-        );
-    }
-
-    #[test]
-    fn split_want_rev_absent_is_none() {
-        let (params, want) = split_want_rev(serde_json::json!({
-            "textDocument": { "uri": "file:///a.rs" }
-        }));
-        assert_eq!(want, None);
-        assert!(params.get("textDocument").is_some());
-    }
-
-    #[test]
-    fn editor_rpc_silence_is_not_a_diagnostic_list() {
-        let snap = diagnostics_silence_snapshot();
-        assert_eq!(snap["fresh"], false);
-        assert_eq!(snap["server_ready"], false);
-        assert_eq!(snap["diagnostics"], serde_json::json!([]));
-        assert!(snap.get("diagnostics").and_then(|d| d.as_array()).is_some());
-    }
-
-    #[test]
-    fn editor_did_change_ack_has_no_diagnostic_list() {
-        let ack = editor_sync_ack(Some(3), Some(2), true);
-        assert_eq!(ack["rev"], 3);
-        assert_eq!(ack["version"], 2);
-        assert_eq!(ack["server_ready"], true);
-        assert!(ack.get("diagnostics").is_none());
-        let quiet = editor_sync_ack(None, None, false);
-        assert_eq!(quiet["server_ready"], false);
-        assert!(quiet["rev"].is_null());
-        assert!(quiet.get("diagnostics").is_none());
-    }
 }

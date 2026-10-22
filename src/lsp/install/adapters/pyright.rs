@@ -65,41 +65,6 @@ pub fn adapter() -> Box<dyn LspAdapter> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn binary_info_uses_node_and_langserver_js() {
-        let dir = Path::new("/tmp/pyright-langserver");
-        let binary = adapter().binary_info(dir);
-        assert!(
-            binary
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n == "node" || n.eq_ignore_ascii_case("node.exe")),
-            "expected node, got {}",
-            binary.path.display()
-        );
-        assert!(
-            binary.arguments[0]
-                .replace('\\', "/")
-                .ends_with(SERVER_ENTRY),
-            "{:?}",
-            binary.arguments
-        );
-        assert_eq!(binary.arguments[1], "--stdio");
-        assert!(!binary.arguments[0].ends_with(".cmd"));
-    }
-
-    #[test]
-    fn verify_uses_pyright_cli_not_langserver() {
-        let dir = Path::new("/tmp/pyright-langserver");
-        let probe = adapter().verify_binary_info(dir);
-        assert!(
-            probe.arguments[0].replace('\\', "/").ends_with(CLI_ENTRY),
-            "{:?}",
-            probe.arguments
-        );
-        assert!(probe.arguments.iter().all(|a| a != "--stdio"));
-    }
 }

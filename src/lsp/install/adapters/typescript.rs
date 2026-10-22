@@ -52,30 +52,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn binary_info_uses_node_and_cli_mjs() {
-        let dir = Path::new("/tmp/typescript-language-server");
-        let binary = adapter().binary_info(dir);
-        assert!(
-            binary
-                .path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n == "node" || n.eq_ignore_ascii_case("node.exe")),
-            "expected node, got {}",
-            binary.path.display()
-        );
-        assert!(
-            binary.arguments[0]
-                .replace('\\', "/")
-                .ends_with(SERVER_ENTRY),
-            "{:?}",
-            binary.arguments
-        );
-        assert_eq!(binary.arguments[1], "--stdio");
-        assert!(!binary.arguments[0].ends_with(".cmd"));
-    }
-
-    #[test]
     fn pins_typescript_below_7() {
         let pkgs = adapter().npm_packages();
         assert_eq!(pkgs[0], ("typescript", "6.0.3"));

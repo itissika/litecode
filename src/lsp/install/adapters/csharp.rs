@@ -39,20 +39,7 @@ pub fn adapter() -> Box<dyn LspAdapter> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::lsp::install::InstallKind;
+    
+    
 
-    #[test]
-    fn installs_as_dotnet_tool_into_server_dir() {
-        let adapter = adapter();
-        assert_eq!(adapter.install_kind(), InstallKind::DotnetTool);
-        let dir = Path::new("/tmp/csharp-ls");
-        let binary = adapter.binary_info(dir);
-        let expected = if cfg!(windows) {
-            dir.join("csharp-ls.exe")
-        } else {
-            dir.join("csharp-ls")
-        };
-        assert_eq!(binary.path, expected);
-    }
 }

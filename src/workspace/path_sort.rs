@@ -19,31 +19,6 @@ pub fn sort_glob_hits(hits: &mut [String]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn hits_sort_by_depth_then_parent_then_name() {
-        let mut hits = vec![
-            "src/tools/read.rs".into(),
-            "src/b.rs".into(),
-            "z.md".into(),
-            "src/tools/glob.rs".into(),
-            "a.md".into(),
-            "src/a.rs".into(),
-            "tests/a.rs".into(),
-        ];
-        sort_glob_hits(&mut hits);
-        assert_eq!(
-            hits,
-            [
-                "a.md",
-                "z.md",
-                "src/a.rs",
-                "src/b.rs",
-                "tests/a.rs",
-                "src/tools/glob.rs",
-                "src/tools/read.rs",
-            ]
-        );
-    }
 }

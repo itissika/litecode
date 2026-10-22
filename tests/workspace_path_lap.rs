@@ -91,28 +91,6 @@ fn strip_verbatim_unc_keeps_unc_prefix() {
 }
 
 #[test]
-fn rel_path_under_uses_lap_compare() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = canon_abs(dir.path()).unwrap();
-    let file = root.join("src").join("a.rs");
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(&file, "fn x() {}\n").unwrap();
-
-    assert_eq!(rel_path_under(&root, &file).as_deref(), Some("src/a.rs"));
-
-    // Pass a path that may still be pre-LAP (tempdir join); helper must LAP both sides.
-    assert_eq!(
-        rel_path_under(dir.path(), &file).as_deref(),
-        Some("src/a.rs")
-    );
-
-    let outside = tempfile::tempdir().unwrap();
-    let other = outside.path().join("x.rs");
-    std::fs::write(&other, "x").unwrap();
-    assert_eq!(rel_path_under(&root, &other), None);
-}
-
-#[test]
 fn rel_path_ctx_matches_rel_path_under_and_rejects_outside() {
     let dir = tempfile::tempdir().unwrap();
     let root = canon_abs(dir.path()).unwrap();

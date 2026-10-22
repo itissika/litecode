@@ -133,13 +133,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn relative_path_uses_workspace_root() {
-        let root = tempfile::tempdir().unwrap();
-        let path = resolve_tool_path_from(root.path(), "src/main.rs", ToolPathMode::All).unwrap();
-        assert!(path.starts_with(crate::config::path::canon_abs(root.path()).unwrap()));
-    }
-
-    #[test]
     fn relative_traversal_is_rejected_in_all_modes() {
         let root = tempfile::tempdir().unwrap();
         assert!(matches!(

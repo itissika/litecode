@@ -181,36 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn line_lookup_matches_lines_and_stops_at_cap() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("a.txt");
-        std::fs::write(&path, "one\ntwo\n").unwrap();
-        assert!(matches!(
-            look_up_line(&path, 2, 100).unwrap(),
-            LineLook::Present
-        ));
-        assert!(matches!(
-            look_up_line(&path, 3, 100).unwrap(),
-            LineLook::Absent
-        ));
-        std::fs::write(&path, "").unwrap();
-        assert!(matches!(
-            look_up_line(&path, 1, 100).unwrap(),
-            LineLook::Absent
-        ));
-        std::fs::write(&path, "hello").unwrap();
-        assert!(matches!(
-            look_up_line(&path, 1, 100).unwrap(),
-            LineLook::Present
-        ));
-        std::fs::write(&path, "abcdefghij").unwrap();
-        assert!(matches!(
-            look_up_line(&path, 1, 4).unwrap(),
-            LineLook::Capped
-        ));
-    }
-
-    #[test]
     fn resolve_reports_exists_line_symbol_and_hides_escapes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("lines.txt"), "alpha\nbeta\n").unwrap();

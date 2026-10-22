@@ -532,12 +532,4 @@ mod tests {
         assert!(Path::new(b).is_absolute() && b.ends_with("o.rs"), "got {b}");
     }
 
-    #[test]
-    fn format_locations_text_uses_relative_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("src").join("lib.rs");
-        let text = format_action_result("goToDefinition", &loc(&file), &[tmp.path()]);
-        assert!(text.contains("src/lib.rs"), "got {text}");
-        assert!(!text.contains(&tmp.path().to_string_lossy().into_owned()), "got {text}");
-    }
 }

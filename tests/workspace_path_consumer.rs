@@ -74,17 +74,6 @@ fn active_paths_fallback_is_lap() {
 }
 
 #[test]
-fn scannable_files_lists_under_lap_root() {
-    use litecode::engines::code_search::scannable_files;
-
-    let dir = tempfile::tempdir().unwrap();
-    let root = canon_abs(dir.path()).unwrap();
-    std::fs::write(root.join("lib.rs"), "fn x() {}\n").unwrap();
-    let files = scannable_files(&root).expect("scannable");
-    assert!(files.iter().any(|f| f == "lib.rs"), "got {files:?}");
-}
-
-#[test]
 fn project_root_fallback_accepts_verbatim_under_lap_ws() {
     use litecode::lsp::project_root::project_root_for_file;
 

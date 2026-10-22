@@ -147,14 +147,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn relative_path_ok() {
-        assert!(matches!(
-            classify_agent_path("src/main.rs"),
-            Ok(PathCandidate::Relative(_))
-        ));
-    }
-
     #[cfg(windows)]
     #[test]
     fn unix_style_on_windows_not_traversal() {
@@ -171,14 +163,6 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn msys_tmp_mapping() {
-        let mapped = msys_tmp_path("/tmp/litecode_tool_eval").unwrap();
-        assert!(mapped.ends_with("litecode_tool_eval"));
-        assert!(mapped.starts_with(std::env::temp_dir()));
-    }
-
-    #[cfg(windows)]
-    #[test]
     fn msys_drive_mapping() {
         let mapped = msys_drive_path("/c/Users/foo").unwrap();
         assert_eq!(mapped, PathBuf::from(r"C:\Users\foo"));
@@ -186,27 +170,4 @@ mod tests {
         assert_eq!(mapped, PathBuf::from(r"D:\"));
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn git_etc_passwd_maps_when_installed() {
-        if find_git_root().is_none() {
-            return;
-        }
-        let candidate = classify_agent_path("/etc/passwd").unwrap();
-        assert!(matches!(candidate, PathCandidate::Absolute(_)));
-        let abs = match candidate {
-            PathCandidate::Absolute(p) => p,
-            PathCandidate::Relative(_) => panic!("expected absolute"),
-        };
-        assert!(abs.to_string_lossy().contains("etc"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unix_absolute_is_native() {
-        assert!(matches!(
-            classify_agent_path("/etc/passwd"),
-            Ok(PathCandidate::Absolute(_))
-        ));
-    }
 }

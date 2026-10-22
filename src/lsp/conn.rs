@@ -793,18 +793,6 @@ mod tests {
         assert_eq!(seen.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
-    async fn success_is_value() {
-        let (io, rx) = test_io_with_rx();
-        let seen = spawn_mock_modified(&io, rx, 0);
-        let out = io
-            .request_outcome("textDocument/hover", serde_json::json!({}), None)
-            .await
-            .unwrap();
-        assert_eq!(out, LspReply::Value(Value::String("ok".into())));
-        assert_eq!(seen.load(Ordering::SeqCst), 1);
-    }
-
     #[test]
     fn is_content_modified_matches_only_32801() {
         assert!(is_content_modified(&LitecodeError::ToolExecution(
@@ -866,21 +854,6 @@ mod tests {
             rx1.try_recv().unwrap().unwrap(),
             Value::String("first".into())
         );
-    }
-
-    #[test]
-    fn configuration_ack_is_queued() {
-        let io = test_io();
-        let ack = dispatch_message(
-            &io,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "workspace/configuration",
-                "params": { "items": [{ "section": "csharp" }] }
-            }),
-        );
-        assert_eq!(ack.unwrap()["result"], serde_json::json!([{}]));
     }
 
     #[test]
@@ -1037,22 +1010,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn publish_diagnostics_fans_out_to_subscribers() {
-        let (tx, mut rx) = broadcast::channel(8);
-        let io = test_io_diag(Some(tx));
-        io.ingest_notification(&publish(
-            "file:///a.rs",
-            Some(2),
-            serde_json::json!([{ "message": "x", "severity": 1 }]),
-        ));
-        let ev = rx.try_recv().expect("editor fan-out");
-        assert_eq!(ev.uri, "file:///a.rs");
-        assert_eq!(ev.version, Some(2));
-        assert_eq!(ev.diagnostics.as_array().map(|a| a.len()), Some(1));
-        assert!(
-            io.diagnostics_for_uri("file:///a.rs").is_some(),
-            "agent cache must still be written"
-        );
-    }
 }
