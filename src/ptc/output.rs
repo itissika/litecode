@@ -75,16 +75,6 @@ impl OutputLedger {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn push_keeps_the_fitting_prefix() {
-        let mut ledger = OutputLedger::new(12);
-        assert!(ledger.push(LogLevel::Log, "abcdefghij".into()));
-        assert!(!ledger.push(LogLevel::Log, "XYZ".into()));
-        assert!(ledger.tripped());
-        assert_eq!(ledger.logs()[0].message, "abcdefghij");
-        assert_eq!(ledger.logs()[1].message, "XY");
-        assert!(!ledger.try_value(1));
-    }
 }

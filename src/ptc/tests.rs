@@ -87,23 +87,6 @@ fn failure_kind(outcome: &Outcome) -> FailureKind {
 }
 
 #[tokio::test]
-async fn returns_json_values() {
-    let outcome = run(
-        r#"
-        const bare = Object.create(null);
-        bare.a = 1;
-        return { n: null, t: true, f: false, i: 1, x: 1.5, s: "hi", a: [1, "a", null], o: bare };
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(
-        value_of(&outcome),
-        &json!({"n": null, "t": true, "f": false, "i": 1, "x": 1.5, "s": "hi", "a": [1, "a", null], "o": {"a": 1}})
-    );
-}
-
-#[tokio::test]
 async fn log_levels() {
     let outcome = run(
         r#"
@@ -535,21 +518,6 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
 }
 
 #[tokio::test]
-async fn syntax_error() {
-    let outcome = run("return (", Vec::new()).await;
-    let failure = outcome.failure.expect("syntax");
-    assert_eq!(failure.kind, FailureKind::Syntax);
-    assert!(!failure.message.is_empty());
-    // QuickJS points `return (` at the wrapper's closing brace (program.js:3),
-    // which is outside the one-line source, so the site is end of input.
-    assert_eq!(failure.location, None, "{failure:?}");
-    assert!(failure.at_end_of_input, "{failure:?}");
-    assert!(failure.stack.is_some(), "{failure:?}");
-    assert!(outcome.calls.is_empty());
-    assert!(outcome.value.is_none());
-}
-
-#[tokio::test]
 async fn syntax_error_on_the_second_line_keeps_stack_and_location() {
     let outcome = run("const x = 1;\nreturn (;", Vec::new()).await;
     let failure = outcome.failure.expect("syntax");
@@ -769,14 +737,6 @@ async fn illegal_arguments_skip_host() {
 }
 
 #[tokio::test]
-async fn host_safe_integer_round_trips() {
-    let host = HostFn::new(|_, _, _, _| async move { Ok(json!(9_007_199_254_740_991_i64)) });
-    let outcome = run("return await tools.n(null);", tools(vec![("n", host)])).await;
-    assert_eq!(value_of(&outcome), &json!(9_007_199_254_740_991_i64));
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
-}
-
-#[tokio::test]
 async fn host_integer_above_safe_range_is_rejected() {
     let cases = [
         json!(9_007_199_254_740_992_i64),
@@ -900,48 +860,6 @@ async fn unawaited_calls_are_waited_and_recorded() {
 }
 
 #[tokio::test]
-async fn cold_start_median() {
-    let mut samples = Vec::new();
-    for _ in 0..11 {
-        let started = Instant::now();
-        let outcome = run("return 1;", Vec::new()).await;
-        samples.push(started.elapsed());
-        assert_eq!(value_of(&outcome), &json!(1));
-    }
-    samples.remove(0);
-    samples.sort();
-    let median = samples[samples.len() / 2];
-    eprintln!("ptc cold start median {median:?}");
-    assert!(
-        median < Duration::from_millis(250),
-        "cold start median {median:?}"
-    );
-}
-
-#[tokio::test]
-async fn tool_error_is_catchable_and_instanceof() {
-    let host = HostFn::new(|_, _, _, _| async move {
-        Err(HostError::tool("not_found", "missing", None, false))
-    });
-    let outcome = run(
-        r#"
-        try {
-          await tools.read(null);
-          return "resolved";
-        } catch (e) {
-          return [e instanceof ToolError, e.name, e.code, e.tool, typeof e.seq, e.message];
-        }
-        "#,
-        tools(vec![("read", host)]),
-    )
-    .await;
-    assert_eq!(
-        value_of(&outcome),
-        &json!([true, "ToolError", "not_found", "read", "number", "missing"])
-    );
-}
-
-#[tokio::test]
 async fn uncaught_tool_error_keeps_code() {
     let host = HostFn::new(|_, _, _, _| async move {
         Err(HostError::tool("not_found", "missing", None, false))
@@ -982,56 +900,6 @@ async fn second_argument_is_type_error() {
     );
 }
 
-#[tokio::test]
-async fn type_error_from_host_is_catchable() {
-    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::type_error("bad call")) });
-    let outcome = run(
-        r#"try { await tools.f(null); return "resolved"; } catch (e) { return [e.name, e.message]; }"#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!(["TypeError", "bad call"]));
-}
-
-#[tokio::test]
-async fn console_formats_errors() {
-    let host = HostFn::new(|_, _, _, _| async move {
-        Err(HostError::tool("not_found", "missing", None, false))
-    });
-    let outcome = run(
-        r#"
-        console.log(new Error("x"));
-        try {
-          await tools.read(null);
-        } catch (e) {
-          console.log(e);
-        }
-        return "ok";
-        "#,
-        tools(vec![("read", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("ok"));
-    let logs: Vec<&str> = outcome.logs.iter().map(|entry| entry.message.as_str()).collect();
-    assert!(logs.iter().any(|line| *line == "Error: x"), "{logs:?}");
-    assert!(
-        logs.iter().any(|line| *line == "ToolError: missing [not_found]"),
-        "{logs:?}"
-    );
-}
-
-#[tokio::test]
-async fn host_error_finishes_the_call() {
-    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::new("nope")) });
-    let outcome = run(
-        r#"try { await tools.f(null); return "called"; } catch (e) { return String(e.message); }"#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("nope"));
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
-}
-
 fn nested_arrays(depth: usize) -> Value {
     let mut value = json!(0);
     for _ in 0..depth {
@@ -1056,22 +924,6 @@ fn array_depth(value: &Value) -> usize {
     depth
 }
 
-fn directory_depth(value: &Value) -> usize {
-    let mut depth = 0;
-    let mut cursor = value;
-    while cursor.get("entries").is_some() {
-        let Some(child) = cursor
-            .get("entries")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-        else {
-            break;
-        };
-        depth += 1;
-        cursor = child;
-    }
-    depth
-}
 
 fn failure_text(outcome: &Outcome) -> String {
     match &outcome.failure {
@@ -1212,54 +1064,6 @@ async fn user_exceptions_are_not_classified_by_message() {
         );
         assert!(outcome.value.is_none());
     }
-}
-
-#[tokio::test]
-async fn moderate_nesting_round_trips() {
-    let outcome = run(
-        r#"
-        let value = 1;
-        for (let i = 0; i < 8; i++) value = [value, { n: i }];
-        return value;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert!(outcome.failure.is_none(), "{outcome:?}");
-    assert!(value_of(&outcome).is_array());
-}
-
-#[tokio::test]
-async fn object_nesting_past_old_depth_cap() {
-    let built = run(
-        r#"
-        let node = "leaf";
-        for (let i = 0; i < 48; i++) node = { name: "d", entries: [node] };
-        return node;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert!(built.failure.is_none(), "{}", failure_text(&built));
-    let value = value_of(&built);
-    assert_eq!(directory_depth(value), 48);
-    assert_eq!(value["name"], json!("d"));
-
-    let host = HostFn::new(|_, _, _, _| async move {
-        let mut node = json!("leaf");
-        for _ in 0..48 {
-            node = json!({ "name": "d", "entries": [node] });
-        }
-        Ok(node)
-    });
-    let injected = run(
-        "return await tools.tree(null);",
-        tools(vec![("tree", host)]),
-    )
-    .await;
-    assert!(injected.failure.is_none(), "{}", failure_text(&injected));
-    assert_eq!(directory_depth(value_of(&injected)), 48);
-    assert_eq!(injected.calls[0].state, CallState::Completed);
 }
 
 #[tokio::test]

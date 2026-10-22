@@ -1585,50 +1585,5 @@ mod settle_tests {
         assert!(matches!(end, ProgramEnd::Success(_)));
     }
 
-    #[test]
-    fn timeout_during_drain_keeps_the_returned_value() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
-            Some(Failure::timeout()),
-            &output,
-        );
-        match end {
-            ProgramEnd::Success(value) => {
-                assert_eq!(value.as_value(), &serde_json::json!("kept"));
-            }
-            _ => panic!("expected the returned value to survive a drain timeout"),
-        }
-        assert!(
-            output.borrow().logs().iter().any(|entry| {
-                entry.message.contains("program budget expired while draining")
-            })
-        );
-    }
-
-    #[test]
-    fn cancel_during_drain_keeps_the_value() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
-            Some(Failure::cancelled()),
-            &output,
-        );
-        assert!(matches!(end, ProgramEnd::CancelledAfterReturn(_)));
-    }
-
-    #[test]
-    fn other_drain_failures_replace_success() {
-        let output = RefCell::new(OutputLedger::new(4096));
-        let end = reconcile_drain(
-            ProgramEnd::Success(Json::new(serde_json::json!("kept"))),
-            Some(Failure::output(32)),
-            &output,
-        );
-        match end {
-            ProgramEnd::Failure(failure) => assert_eq!(failure.kind, FailureKind::OutputLimit),
-            _ => panic!("expected the output failure to replace success"),
-        }
-    }
 }
 

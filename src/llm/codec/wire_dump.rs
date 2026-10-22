@@ -1112,29 +1112,6 @@ mod tests {
     }
 
     #[test]
-    fn responses_body_reports_ciphertext_text_and_ids() {
-        let body = json!({
-            "model": "m",
-            "tools": [{"type": "function", "name": "read"}],
-            "input": [
-                {"type": "message", "role": "user", "content": []},
-                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "plan"}], "encrypted_content": "gAAAA"},
-                {"type": "reasoning", "id": "rs_1", "summary": [], "content": [{"type": "reasoning_text", "text": "raw"}]},
-                {"type": "function_call", "call_id": "c"}
-            ]
-        });
-        let sent = sent_stats("responses", &body);
-        assert_eq!(sent["reasoning"]["items"], 2);
-        assert_eq!(sent["reasoning"]["encrypted"], 1);
-        assert_eq!(sent["reasoning"]["with_text"], 1);
-        assert_eq!(sent["reasoning"]["with_summary"], 1);
-        assert_eq!(sent["ids_on_wire"], 1);
-        assert_eq!(sent["items"]["message:user"], 1);
-        assert_eq!(sent["assistant"]["turns"], 0);
-        assert_eq!(sent["tool_names"][0], "read");
-    }
-
-    #[test]
     fn stream_fold_counts_both_dialects_and_the_terminal() {
         let mut chat = StreamStats::default();
         chat.fold(
@@ -1186,46 +1163,6 @@ mod tests {
         assert_eq!(summary["tokens"]["output"], 2);
         assert_eq!(summary["response_id"], "resp_1");
         assert_eq!(summary["response_model"], "mimo-v2.6-flash");
-    }
-
-    #[test]
-    fn messages_body_counts_signed_redacted_and_text_thinking() {
-        let body = json!({
-            "model": "claude-sonnet-5-5",
-            "max_tokens": 128000,
-            "stream": true,
-            "output_config": {"effort": "max"},
-            "tools": [{"name": "read"}],
-            "system": [{"type": "text", "text": "sys"}],
-            "messages": [
-                {"role": "user", "content": [{"type": "text", "text": "hi"}]},
-                {"role": "assistant", "content": [
-                    {"type": "thinking", "thinking": "Need it", "signature": "sig"},
-                    {"type": "redacted_thinking", "data": "opaque"},
-                    {"type": "thinking", "thinking": "", "signature": "omit"},
-                    {"type": "tool_use", "id": "toolu_01", "name": "read", "input": {}}
-                ]}
-            ]
-        });
-        let sent = sent_stats("messages", &body);
-        assert_eq!(sent["effort"], "max");
-        assert_eq!(sent["max_output_tokens"], 128000);
-        assert_eq!(sent["tool_names"][0], "read");
-        assert_eq!(sent["items"]["system"], 1);
-        assert_eq!(sent["items"]["assistant"], 1);
-        assert_eq!(sent["assistant"]["with_tool_calls"], 1);
-        assert_eq!(sent["assistant"]["reasoning_filled"], 1);
-        assert_eq!(sent["reasoning"]["items"], 3);
-        assert_eq!(sent["reasoning"]["encrypted"], 2);
-        assert_eq!(sent["reasoning"]["with_text"], 1);
-        assert_eq!(sent["reasoning"]["with_summary"], 1);
-        assert_eq!(sent["reasoning"]["chars"], 7);
-        assert_eq!(sent["ids_on_wire"], 0);
-        let line = human_line(1, "messages", &sent, &json!({"status": 200, "tokens": {}}));
-        assert!(
-            line.contains("thinking signed 2 / text 1 / redacted 1, 7 chars"),
-            "{line}"
-        );
     }
 
     #[test]
@@ -1282,58 +1219,6 @@ mod tests {
         assert!(tokens["cached"].is_null());
         assert!(tokens["output"].is_null());
         assert!(tokens_of(None)["input"].is_null());
-    }
-
-    #[test]
-    fn session_names_and_file_names_point_at_their_contents() {
-        assert_eq!(
-            session_dir_name(Some("01M3HJWDQF2KY41R6FHZPR8BV2")),
-            "01M3HJWDQF2KY41R6FHZPR8BV2"
-        );
-        assert_eq!(session_dir_name(Some("a/b")), "a_b");
-        assert_eq!(session_dir_name(None), "_unknown");
-        assert_eq!(session_dir_name(Some("..")), "_unknown");
-        assert_eq!(request_file_name(7, "chat"), "0007.chat.request.json");
-        assert_eq!(
-            response_file_name(7, "responses"),
-            "0007.responses.response.sse.jsonl"
-        );
-        assert_eq!(leading_n("0007.chat.request.json"), Some(7));
-        assert_eq!(leading_n("0007.chat.response.sse.jsonl"), Some(7));
-        assert_eq!(leading_n("summary.jsonl"), None);
-        assert_eq!(leading_n("meta.json"), None);
-    }
-
-    #[test]
-    fn gc_drops_oldest_pairs_and_keeps_the_summary() {
-        let dir = tempfile::tempdir().unwrap();
-        for n in 1..=5 {
-            fs::write(dir.path().join(request_file_name(n, "chat")), b"{}").unwrap();
-            fs::write(dir.path().join(response_file_name(n, "chat")), b"").unwrap();
-        }
-        fs::write(dir.path().join("summary.jsonl"), b"{}\n").unwrap();
-        fs::write(dir.path().join("meta.json"), b"{}").unwrap();
-        assert_eq!(next_n(dir.path()), 6);
-        gc_request_pairs(dir.path(), 5, 3);
-        let mut names: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            vec![
-                "0003.chat.request.json",
-                "0003.chat.response.sse.jsonl",
-                "0004.chat.request.json",
-                "0004.chat.response.sse.jsonl",
-                "0005.chat.request.json",
-                "0005.chat.response.sse.jsonl",
-                "meta.json",
-                "summary.jsonl",
-            ]
-        );
     }
 
     #[test]

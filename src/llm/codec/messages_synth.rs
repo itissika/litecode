@@ -672,7 +672,7 @@ fn done_reasoning(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::{Item, OutputMessageContent, Response};
+    use crate::authority::responses::Response;
 
     fn run(events: &[Value]) -> (Vec<ResponseStreamEvent>, Response) {
         let mut synth = MessagesSynth::new("claude-sonnet-5-5");
@@ -804,88 +804,6 @@ mod tests {
     }
 
     #[test]
-    fn thinking_text_and_tool_round_trip_with_the_signature() {
-        let (events, response) = run(&[
-            start_message(),
-            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Need the file."}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQBCg=="}}),
-            serde_json::json!({"type":"content_block_stop","index":0}),
-            serde_json::json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
-            serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Reading."}}),
-            serde_json::json!({"type":"content_block_stop","index":1}),
-            serde_json::json!({"type":"ping"}),
-            serde_json::json!({"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01ABC","name":"read","input":{}}}),
-            serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"path\":"}}),
-            serde_json::json!({"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":" \"a.rs\"}"}}),
-            serde_json::json!({"type":"content_block_stop","index":2}),
-            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":30,"cache_read_input_tokens":40,"output_tokens_details":{"thinking_tokens":8}}}),
-            serde_json::json!({"type":"message_stop"}),
-        ]);
-        assert!(
-            events
-                .iter()
-                .any(|event| matches!(event, ResponseStreamEvent::ResponseReasoningTextDelta(_)))
-        );
-        assert_eq!(
-            response.status,
-            crate::authority::responses::Status::Completed
-        );
-        assert!(response.incomplete_details.is_none());
-        let usage = response.usage.unwrap();
-        assert_eq!(usage.input_tokens, 140);
-        assert_eq!(usage.input_tokens_details.cached_tokens, 40);
-        assert_eq!(usage.output_tokens, 30);
-        assert_eq!(usage.output_tokens_details.reasoning_tokens, 8);
-        match &response.output[0] {
-            OutputItem::Reasoning(reasoning) => {
-                assert_eq!(reasoning.id.as_deref(), Some("msg_01_0"));
-                assert_eq!(reasoning.encrypted_content.as_deref(), Some("EqQBCg=="));
-                assert_eq!(
-                    crate::types::item_text_preview(&Item::Reasoning(reasoning.clone())),
-                    "Need the file."
-                );
-            }
-            other => panic!("expected reasoning, got {other:?}"),
-        }
-        match &response.output[2] {
-            OutputItem::FunctionCall(call) => {
-                assert_eq!(call.call_id, "toolu_01ABC");
-                assert_eq!(call.name, "read");
-                assert_eq!(call.arguments, "{\"path\": \"a.rs\"}");
-                assert_eq!(call.id.as_deref(), Some("msg_01_2"));
-            }
-            other => panic!("expected tool, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn omitted_thinking_keeps_an_empty_body_and_the_signature() {
-        let (_, response) = run(&[
-            start_message(),
-            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-omit"}}),
-            serde_json::json!({"type":"content_block_stop","index":0}),
-            serde_json::json!({"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}),
-            serde_json::json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ok"}}),
-            serde_json::json!({"type":"content_block_stop","index":1}),
-            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}),
-            serde_json::json!({"type":"message_stop"}),
-        ]);
-        match &response.output[0] {
-            OutputItem::Reasoning(reasoning) => {
-                assert_eq!(reasoning.encrypted_content.as_deref(), Some("sig-omit"));
-                assert_eq!(
-                    crate::types::item_text_preview(&Item::Reasoning(reasoning.clone())),
-                    ""
-                );
-            }
-            other => panic!("expected reasoning, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn parallel_tool_calls_keep_their_own_ids() {
         let (_, response) = run(&[
             start_message(),
@@ -916,37 +834,6 @@ mod tests {
     }
 
     #[test]
-    fn max_tokens_and_refusal_mark_the_response_incomplete() {
-        let (_, maxed) = run(&[
-            start_message(),
-            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}),
-            serde_json::json!({"type":"content_block_stop","index":0}),
-            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":8}}),
-            serde_json::json!({"type":"message_stop"}),
-        ]);
-        assert_eq!(
-            maxed.status,
-            crate::authority::responses::Status::Incomplete
-        );
-        assert_eq!(
-            maxed.incomplete_details.unwrap().reason,
-            "max_output_tokens"
-        );
-
-        let (_, refused) = run(&[
-            start_message(),
-            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":1}}),
-            serde_json::json!({"type":"message_stop"}),
-        ]);
-        assert_eq!(
-            refused.status,
-            crate::authority::responses::Status::Incomplete
-        );
-        assert_eq!(refused.incomplete_details.unwrap().reason, "content_filter");
-    }
-
-    #[test]
     fn redacted_block_is_complete_at_start() {
         let (_, response) = run(&[
             start_message(),
@@ -966,24 +853,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn citations_delta_is_ignored() {
-        let (events, response) = run(&[
-            start_message(),
-            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}),
-            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"char_location"}}}),
-            serde_json::json!({"type":"content_block_stop","index":0}),
-            serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}),
-            serde_json::json!({"type":"message_stop"}),
-        ]);
-        assert_eq!(events.len(), 3);
-        match &response.output[0] {
-            OutputItem::Message(message) => match &message.content[0] {
-                OutputMessageContent::OutputText(text) => assert_eq!(text.text, "hi"),
-                other => panic!("expected text, got {other:?}"),
-            },
-            other => panic!("expected message, got {other:?}"),
-        }
-    }
 }

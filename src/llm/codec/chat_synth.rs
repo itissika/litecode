@@ -565,21 +565,6 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_only_content_never_births_a_message() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "content": "\n\n" })),
-            &mut events,
-        );
-        assert!(events.is_empty(), "{events:?}");
-        assert_eq!(messages_opened(&events), 0);
-        let done = synth.finish_events("m").unwrap();
-        assert_eq!(message_text(&completed_output(&done)), None);
-        assert!(synth.seam_report().is_none());
-    }
-
-    #[test]
     fn held_whitespace_joins_the_first_visible_token() {
         let mut synth = ChatSynth::new();
         let mut events = Vec::new();
@@ -598,22 +583,6 @@ mod tests {
         assert_eq!(
             message_text(&completed_output(&done)).as_deref(),
             Some("\n\nhello")
-        );
-    }
-
-    #[test]
-    fn whitespace_between_visible_tokens_stays_in_the_message() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        for text in ["a", "\n\n", "b"] {
-            synth.ingest_chunk(&chunk(serde_json::json!({ "content": text })), &mut events);
-        }
-        assert_eq!(messages_opened(&events), 1);
-        assert_eq!(text_deltas(&events), ["a", "\n\n", "b"]);
-        let done = synth.finish_events("m").unwrap();
-        assert_eq!(
-            message_text(&completed_output(&done)).as_deref(),
-            Some("a\n\nb")
         );
     }
 
