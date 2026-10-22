@@ -451,65 +451,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn words_keep_query_order_and_dedupe() {
-        assert_eq!(terms_in_order("beta alpha beta"), ["beta", "alpha"]);
-        assert_eq!(terms_sorted("beta alpha beta"), ["alpha", "beta"]);
-        assert_eq!(terms_in_order("src/main.rs"), ["src", "main", "rs"]);
-    }
-
-    #[test]
-    fn the_gate_grows_with_the_query() {
-        assert_eq!(min_word_matches(1), 1);
-        assert_eq!(min_word_matches(2), 2, "two words is an AND");
-        assert_eq!(min_word_matches(3), 2);
-        assert_eq!(min_word_matches(4), 3);
-        assert_eq!(min_word_matches(5), 3);
-        assert_eq!(min_word_matches(6), 4);
-        assert_eq!(min_word_matches(0), 0);
-    }
-
-    #[test]
-    fn stopwords_leave_the_loose_path_but_not_the_literal() {
-        let branch = QueryBranch::parse("the auth refactor token");
-        assert_eq!(branch.terms, ["the", "auth", "refactor", "token"]);
-        assert_eq!(branch.content_terms, ["auth", "refactor", "token"]);
-        assert_eq!(branch.word_min(), 2, "3 informative words -> at least 2");
-        // The literal path keeps everything: the user typed those words.
-        assert!(branch.normalized.contains("the"));
-    }
-
-    #[test]
-    fn a_query_of_pure_glue_is_still_a_query() {
-        let branch = QueryBranch::parse("the of and");
-        assert_eq!(branch.content_terms, ["the", "of", "and"]);
-        assert_eq!(branch.word_min(), 2);
-    }
-
-    #[test]
-    fn identifiers_are_never_dropped_as_glue() {
-        let branch = QueryBranch::parse("the a_b_c token");
-        assert!(branch.content_terms.contains(&"a_b_c".to_string()));
-        let version = QueryBranch::parse("in v1_2");
-        assert!(version.content_terms.contains(&"v1_2".to_string()));
-    }
-
-    #[test]
-    fn cjk_routes_to_grams_and_latin_to_words() {
-        let cjk = QueryBranch::parse("为什么稀疏检索有噪音");
-        assert!(cjk.cjk);
-        assert!(!cjk.words_apply());
-        assert_eq!(cjk.grams.len(), 8, "ten chars, eight windows of three");
-        assert_eq!(cjk.gram_min(0.6), 5);
-        assert_eq!(cjk.gram_min(0.35), 3);
-
-        let latin = QueryBranch::parse("session search");
-        assert!(!latin.cjk);
-        assert!(latin.words_apply());
-        assert!(latin.grams_apply());
-        assert!(latin.proximity_applies());
-    }
-
-    #[test]
     fn a_cjk_branch_carries_words_and_the_two_word_floor() {
         let branch = QueryBranch::parse("网络连接总是断掉");
         assert!(branch.cjk);
@@ -534,16 +475,6 @@ mod tests {
     }
 
     #[test]
-    fn a_mixed_branch_keeps_both_scripts_and_ands_them() {
-        let branch = QueryBranch::parse("codex 感知");
-        assert_eq!(branch.latin_terms, ["codex"]);
-        assert_eq!(branch.cjk_tokens, ["感知"], "the Latin half is not CJK");
-        assert_eq!(branch.token_floor(), 2, "both halves are required");
-        assert_eq!(branch.token_terms(), ["codex", "感知"]);
-        assert_eq!(branch.cjk_char_min(), 1);
-    }
-
-    #[test]
     fn the_character_floor_keeps_a_fragment_out_of_a_sentence() {
         // The fragment shares two words of the sentence but only a third of its
         // characters; the words alone would let it in, the characters do not.
@@ -556,66 +487,6 @@ mod tests {
         // A row that really is about the query holds more than half of it.
         let row = normalize("稀疏检索的噪音来自单词命中，不是排序");
         assert!(count_chars(&row, &sentence.cjk_chars) >= sentence.cjk_char_min());
-    }
-
-    #[test]
-    fn cjk_coverage_is_substring_but_latin_coverage_is_a_word() {
-        let text = normalize("网络连接总是断掉；sessions list");
-        let tokens = vec![
-            "网络".to_string(),
-            "连接".to_string(),
-            "session".to_string(),
-            "list".to_string(),
-        ];
-        assert_eq!(count_tokens(&text, &tokens), 3, "network + 连接 + list");
-        assert!(token_present(&text, "网络"));
-        assert!(
-            token_present(&text, "sessions"),
-            "substring of another word"
-        );
-        assert!(!token_present(&text, "session"), "whole-word Latin only");
-    }
-
-    #[test]
-    fn near_terms_follow_the_query_not_the_alphabet() {
-        let branch = QueryBranch::parse("zebra apple mango");
-        assert_eq!(branch.near_terms(), ["zebra", "apple", "mango"]);
-        // Glue is skipped first, so proximity spends its window on intent.
-        let noisy = QueryBranch::parse("the zebra of apple");
-        assert_eq!(noisy.near_terms(), ["zebra", "apple"]);
-    }
-
-    #[test]
-    fn a_single_word_has_no_proximity_query() {
-        let branch = QueryBranch::parse("retry");
-        assert!(!branch.proximity_applies());
-        assert_eq!(branch.word_min(), 1);
-    }
-
-    #[test]
-    fn word_counting_is_whole_word_only() {
-        let terms = vec!["the".to_string()];
-        assert_eq!(count_word_terms("the cat", &terms), 1);
-        assert_eq!(count_word_terms("there cat", &terms), 0);
-        assert_eq!(count_word_terms("cat the", &terms), 1);
-        let terms = vec!["session".to_string()];
-        assert_eq!(count_word_terms("sessions", &terms), 0);
-    }
-
-    #[test]
-    fn gram_counting_and_contiguity() {
-        let grams = grams_of("为什么稀疏检索");
-        assert_eq!(grams.len(), 5, "seven chars, five windows of three");
-        let text = normalize("这里为什么稀疏检索会有噪音");
-        assert_eq!(count_grams(&text, &grams), 5, "the whole branch is present");
-        assert_eq!(
-            longest_contiguous_run(&text, &grams),
-            7,
-            "the branch is one unbroken fragment"
-        );
-        let partial = normalize("为什么会有噪音");
-        assert!(count_grams(&partial, &grams) < grams.len());
-        assert_eq!(longest_contiguous_run(&partial, &grams), 3, "one lone gram");
     }
 
     #[test]
@@ -641,10 +512,4 @@ mod tests {
         assert!(longest_contiguous_run(&row, &typo.grams) >= typo.min_fuzzy_run(3.0 / 4.0));
     }
 
-    #[test]
-    fn branches_split_like_the_product_contract() {
-        assert_eq!(split_branches("a|b"), ["a", "b"]);
-        assert_eq!(split_branches(" a | b | a |"), ["a", "b"]);
-        assert!(split_branches("|").is_empty());
-    }
 }

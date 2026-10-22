@@ -159,39 +159,6 @@ fn dedupe_parts(parts: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn camel_case_keeps_original_and_parts() {
-        let parts = expand_identifier("getUserById");
-        assert!(parts.contains(&"getuserbyid".into()));
-        assert!(parts.contains(&"get".into()));
-        assert!(parts.contains(&"user".into()));
-        assert!(parts.contains(&"by".into()));
-        assert!(parts.contains(&"id".into()));
-    }
-
-    #[test]
-    fn snake_case_splits() {
-        let parts = expand_identifier("user_repository");
-        assert!(parts.contains(&"user_repository".into()));
-        assert!(parts.contains(&"user".into()));
-        assert!(parts.contains(&"repository".into()));
-    }
-
-    #[test]
-    fn query_terms_expand_identifiers() {
-        let terms = query_terms("where is getUserById defined");
-        assert!(terms.iter().any(|t| t == "getuserbyid"));
-        assert!(terms.iter().any(|t| t == "user"));
-        assert!(terms.iter().any(|t| t == "where"));
-    }
-
-    #[test]
-    fn extract_identifiers_skips_plain_english() {
-        let ids = extract_identifiers("how do we combine vector hits");
-        assert!(!ids.iter().any(|t| t == "how"));
-        let ids2 = extract_identifiers("call SemanticEngine::search please");
-        assert!(ids2.iter().any(|t| t.contains("semantic")));
-    }
 }

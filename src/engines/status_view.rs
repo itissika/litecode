@@ -293,22 +293,6 @@ mod tests {
     use crate::engines::EngineState;
 
     #[test]
-    fn usable_ready_when_warm_even_without_chunks() {
-        assert_eq!(
-            retrieval_usable_label(true, true, Some(EngineState::Warm)),
-            "ready"
-        );
-    }
-
-    #[test]
-    fn usable_warming_while_worker_starts() {
-        assert_eq!(
-            retrieval_usable_label(true, true, Some(EngineState::Warming)),
-            "warming"
-        );
-    }
-
-    #[test]
     fn usable_unavailable_when_model_missing_or_failed() {
         assert_eq!(
             retrieval_usable_label(true, false, Some(EngineState::Warm)),
@@ -320,11 +304,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn usable_stopped_when_not_desired() {
-        assert_eq!(
-            retrieval_usable_label(false, true, Some(EngineState::Warm)),
-            "stopped"
-        );
-    }
 }

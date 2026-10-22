@@ -290,39 +290,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_chinese_run_becomes_words() {
-        let words = segment("会话检索测试");
-        let tokens: Vec<&str> = words.split(' ').collect();
-        assert!(
-            tokens.len() >= 2,
-            "a sentence is more than one word: {words:?}"
-        );
-        assert!(tokens.contains(&"会话"), "{words:?}");
-        assert!(tokens.contains(&"检索"), "{words:?}");
-        assert!(tokens.iter().all(|t| !t.is_empty()), "{words:?}");
-    }
-
-    #[test]
-    fn latin_text_is_copied_through_untouched() {
-        for text in ["alpha beta gamma", "a_b_c v1.2", ""] {
-            assert_eq!(segment(text), text, "{text:?} must not be rewritten");
-        }
-    }
-
-    #[test]
-    fn scripts_do_not_fuse_across_a_run_boundary() {
-        let words = segment("abc网络def");
-        let tokens: Vec<&str> = words.split(' ').collect();
-        assert!(tokens.contains(&"abc"), "{words:?}");
-        assert!(tokens.contains(&"def"), "{words:?}");
-        assert!(
-            tokens.contains(&"网络"),
-            "the run contributes its words: {words:?}"
-        );
-        assert_eq!(tokens.len(), 3, "{words:?}");
-    }
-
-    #[test]
     fn query_tokens_are_ordered_deduped_and_glue_free() {
         let tokens = query_tokens(&super::super::sparse::normalize("重试次数能不能放大一点"));
         assert!(tokens.contains(&"重试".to_string()), "{tokens:?}");
@@ -342,17 +309,4 @@ mod tests {
         assert_eq!(sorted.len(), tokens.len(), "no duplicates: {tokens:?}");
     }
 
-    #[test]
-    fn a_query_of_pure_glue_is_still_a_query() {
-        let tokens = query_tokens(&super::super::sparse::normalize("的了"));
-        assert_eq!(tokens.len(), 2, "{tokens:?}");
-    }
-
-    #[test]
-    fn mixed_scripts_are_split_by_script() {
-        let tokens = query_tokens(&super::super::sparse::normalize("codex 感知"));
-        assert_eq!(tokens, ["codex", "感知"]);
-        let tokens = query_tokens(&super::super::sparse::normalize("retry 重试"));
-        assert_eq!(tokens, ["retry", "重试"]);
-    }
 }

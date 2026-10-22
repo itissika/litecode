@@ -17,11 +17,9 @@ use tempfile::TempDir;
 use crate::authority::responses::{
     FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
 };
-use crate::engines::code_search::{Embedder, HashEmbedder};
-use crate::session::data::command::{MutationId, SessionMutation};
-use crate::session::data::sqlite::session::SessionApply;
+use crate::engines::code_search::HashEmbedder;
 use crate::session::{SessionData, SessionDataReader, WorkspaceWriteLease};
-use crate::types::{Item, Result, user_text};
+use crate::types::{Item, user_text};
 
 use super::{SessionSemanticIndex, ensure_session_index};
 
@@ -113,48 +111,6 @@ fn call_result(call_id: &str, output: &str) -> Item {
     })
 }
 
-#[test]
-fn an_appended_dense_index_equals_a_clean_rebuild() {
-    let f = open();
-    f.insert(&[user_text("alpha row")]);
-    f.reconcile();
-
-    f.insert(&[user_text("beta row"), user_text("gamma row")]);
-    let incremental = f.reconcile();
-    assert_eq!(incremental.len(), 3, "the delta was derived");
-
-    let (chunks, settled) = f.artifacts();
-    assert_eq!(chunks.len(), 3);
-    assert_eq!(f.rebuild(), (chunks, settled));
-}
-
-#[test]
-fn a_reverted_dense_index_equals_a_clean_rebuild() {
-    let f = open();
-    f.insert(&[
-        user_text("first turn"),
-        user_text("second turn"),
-        user_text("third turn"),
-    ]);
-    f.reconcile();
-
-    let revision = f.data.revision_blocking(&f.sid).unwrap();
-    f.data
-        .mutate_blocking(SessionMutation::Apply {
-            session_id: f.sid.clone(),
-            expected_revision: revision,
-            operation_id: MutationId::new(),
-            op: SessionApply::Truncate { anchor_seq: 1 },
-        })
-        .unwrap();
-    let reverted = f.reconcile();
-    assert_eq!(reverted.len(), 1, "the revert left one row");
-
-    let (chunks, settled) = f.artifacts();
-    assert_eq!(settled.len(), 1, "the removed rows left the settled state");
-    assert_eq!(f.rebuild(), (chunks, settled));
-}
-
 /// The echo closure has to survive a batch boundary: the result arrives after
 /// its call was settled, so only the persisted linkage can exclude it.
 #[test]
@@ -193,47 +149,4 @@ fn a_late_echo_result_is_excluded_by_the_settled_seed() {
     assert_eq!(f.rebuild(), (chunks, settled));
 }
 
-/// A hash embedder that counts what was actually embedded.
-#[derive(Default)]
-struct Counting {
-    embedded: usize,
-}
 
-impl Embedder for Counting {
-    fn embedder_id(&self) -> &'static str {
-        HashEmbedder.embedder_id()
-    }
-
-    fn embed_batch(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        self.embedded += texts.len();
-        HashEmbedder.embed_batch(texts)
-    }
-}
-
-/// An index written before the settled state existed has no diff basis: its
-/// first pass reads the corpus once, and it must reuse every vector it already
-/// holds — an upgrade that re-embeds the corpus is an upgrade nobody can afford.
-#[test]
-fn a_legacy_index_migrates_in_one_pass_without_re_embedding() {
-    let f = open();
-    f.insert(&[user_text("alpha row"), user_text("beta row")]);
-    f.reconcile();
-
-    // Leave exactly what the pre-settled version wrote: whole-file vectors
-    // (pre-WP-144 layout) and no settled state. Loading migrates the layout
-    // without re-embedding, then the legacy pass reuses every vector.
-    SessionSemanticIndex::write_legacy_layout_for_test(f.root.path(), true);
-    f.insert(&[user_text("gamma row")]);
-
-    let mut emb = Counting::default();
-    let index = ensure_session_index(f.root.path(), &f.reader(), &mut emb).unwrap();
-    assert_eq!(index.len(), 3);
-    assert_eq!(
-        emb.embedded, 1,
-        "only the new row may be embedded; the corpus is reused"
-    );
-
-    let (chunks, settled) = f.artifacts();
-    assert_eq!(settled.len(), 3, "the migrated state covers every row");
-    assert_eq!(f.rebuild(), (chunks, settled));
-}

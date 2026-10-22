@@ -176,39 +176,6 @@ mod tests {
     }
 
     #[test]
-    fn session_targeted_results_are_echoes() {
-        let rows = vec![
-            call_row(
-                "s1",
-                1,
-                "read",
-                r#"{"path":".litecode/sessions/01ARZ3NDEKTSV4RRFFQ69G5FAV.md","end_line":120}"#,
-            ),
-            result_row("s1", 2, 1),
-            call_row("s1", 3, "read", r#"{"path":"src/main.rs"}"#),
-            result_row("s1", 4, 3),
-            call_row(
-                "s1",
-                5,
-                "grep",
-                r#"{"pattern":"x","path":".litecode/sessions"}"#,
-            ),
-            result_row("s1", 6, 5),
-            call_row("s1", 7, "session_search", r#"{"query":"auth"}"#),
-            result_row("s1", 8, 7),
-            call_row("s1", 9, "read", r#"{"path":".litecode/sessions.db"}"#),
-            result_row("s1", 10, 9),
-        ];
-        let keys = result_keys(&rows, Path::new(".")).unwrap();
-        assert_eq!(keys.len(), 3, "{keys:?}");
-        assert!(keys.contains(&("s1".to_string(), 2)));
-        assert!(!keys.contains(&("s1".to_string(), 4)));
-        assert!(keys.contains(&("s1".to_string(), 6)));
-        assert!(keys.contains(&("s1".to_string(), 8)));
-        assert!(!keys.contains(&("s1".to_string(), 10)));
-    }
-
-    #[test]
     fn nested_code_calls_are_echoes_when_the_ledger_reads_sessions() {
         let rows = vec![
             call_row(

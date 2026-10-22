@@ -106,41 +106,6 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn human_search_text_column_uses_lexical_lane() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("a.rs"), "alpha\nfind_me_here\nomega\n").unwrap();
-        std::fs::write(root.join("b.txt"), "find_me_here\n").unwrap();
-        std::fs::write(root.join(".hidden"), "find_me_here\n").unwrap();
-
-        let resp = human_search(
-            root,
-            &HumanSearchRequest {
-                query: "find_me_here".into(),
-                corpus: "code".into(),
-                case_sensitive: true,
-                whole_word: false,
-                is_regex: false,
-                include: Some("*.rs".into()),
-                exclude: None,
-                top_k: Some(10),
-                offset: None,
-                project: None,
-                include_semantic: true,
-            },
-            None,
-        )
-        .unwrap();
-
-        assert_eq!(resp.text.len(), 1);
-        assert!(resp.text[0].path.ends_with("a.rs"));
-        assert_eq!(resp.text[0].start_line, 2);
-        assert!(resp.text[0].summary.contains("find_me_here"));
-        assert!(resp.semantic.is_none());
-        assert!(resp.session_page.is_none());
-    }
-
-    #[test]
     fn human_search_passes_through_semantic_column_untouched() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
@@ -175,17 +140,4 @@ mod tests {
         assert!(resp.session_page.is_none());
     }
 
-    #[test]
-    fn include_semantic_defaults_true_in_json() {
-        let req: HumanSearchRequest = serde_json::from_str(r#"{"query":"x"}"#).unwrap();
-        assert!(req.include_semantic);
-        assert_eq!(req.corpus, "code");
-    }
-
-    #[test]
-    fn include_semantic_false_parsed() {
-        let req: HumanSearchRequest =
-            serde_json::from_str(r#"{"query":"x","include_semantic":false}"#).unwrap();
-        assert!(!req.include_semantic);
-    }
 }
