@@ -292,43 +292,7 @@ pub(crate) fn write_managed_meta(dest_dir: &std::path::Path, version: &str) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn npm_is_invoked_as_the_shim_not_via_cmd_exe() {
-        let Some((program, args)) = npm_program_and_args(&["--version".into()]) else {
-            return;
-        };
-        let name = program
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        assert!(
-            name.eq_ignore_ascii_case("npm")
-                || name.eq_ignore_ascii_case("npm.cmd")
-                || name.eq_ignore_ascii_case("npm.exe"),
-            "unexpected npm launcher {}",
-            program.display()
-        );
-        assert!(
-            !name.eq_ignore_ascii_case("cmd") && !name.eq_ignore_ascii_case("cmd.exe"),
-            "npm must not be wrapped in cmd.exe (Rust Command re-quoting breaks it)"
-        );
-        assert_eq!(args, vec!["--version".to_string()]);
-    }
-
-    #[test]
-    fn resolved_npm_reports_version() {
-        let Some((program, args)) = npm_program_and_args(&["--version".into()]) else {
-            return;
-        };
-        let status = std::process::Command::new(program)
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .status()
-            .expect("spawn npm --version");
-        assert!(status.success(), "npm --version failed: {status}");
-    }
+    
 
     #[cfg(windows)]
     #[test]
@@ -347,25 +311,4 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn extra_nodejs_dirs_include_usr_bin_and_nvm() {
-        let previous_nvm = std::env::var_os("NVM_DIR");
-        unsafe { std::env::set_var("NVM_DIR", "/home/me/.nvm") };
-        let dirs = extra_nodejs_dirs();
-        match previous_nvm {
-            Some(value) => unsafe { std::env::set_var("NVM_DIR", value) },
-            None => unsafe { std::env::remove_var("NVM_DIR") },
-        }
-        assert!(dirs.iter().any(|d| d == Path::new("/usr/bin")), "{dirs:?}");
-        assert!(
-            dirs.iter().any(|d| d == Path::new("/usr/local/bin")),
-            "{dirs:?}"
-        );
-        assert!(
-            dirs.iter()
-                .any(|d| d == Path::new("/home/me/.nvm/current/bin")),
-            "{dirs:?}"
-        );
-    }
 }

@@ -101,17 +101,7 @@ impl SweepGate {
         let _ = rx.wait_for(|open| *open).await;
     }
 
-    #[cfg(test)]
-    pub(crate) fn running_for_test() -> Arc<Self> {
-        let gate = Self::new();
-        *gate.phase.lock().unwrap() = Phase::Running;
-        Arc::new(gate)
-    }
 
-    #[cfg(test)]
-    pub(crate) fn open_for_test(&self) {
-        self.open();
-    }
 
     fn is_passable(&self) -> bool {
         let phase = *self.phase.lock().unwrap_or_else(|e| e.into_inner());

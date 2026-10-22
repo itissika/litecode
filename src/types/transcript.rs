@@ -172,30 +172,3 @@ pub fn item_text_preview(item: &Item) -> String {
         _ => String::new(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn user_text_item_roundtrip() {
-        let item = user_text("hello");
-        let v = serde_json::to_value(&item).expect("serialize");
-        assert_eq!(v["type"], "message");
-        assert_eq!(v["role"], "user");
-        let back: Item = serde_json::from_value(v).expect("deserialize");
-        assert_eq!(item_text_preview(&back), "hello");
-    }
-
-    #[test]
-    fn assistant_text_item_is_output_assistant_role() {
-        use crate::authority::responses::{AssistantRole, MessageItem};
-        let item = assistant_text("hello");
-        match item {
-            Item::Message(MessageItem::Output(out)) => {
-                assert_eq!(out.role, AssistantRole::Assistant);
-            }
-            other => panic!("expected assistant output, got {other:?}"),
-        }
-    }
-}

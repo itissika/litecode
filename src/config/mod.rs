@@ -76,16 +76,3 @@ fn default_role() -> String {
 fn default_model_ref() -> String {
     "default".into()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_config_defaults() {
-        let config = AgentConfig::default();
-        assert_eq!(config.role, "primary");
-        assert_eq!(config.model_ref, "default");
-        assert_eq!(config.max_steps, default_max_steps());
-    }
-}

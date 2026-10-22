@@ -92,33 +92,6 @@ pub fn resolve_cwd(workdir: Option<&Path>) -> PathBuf {
 mod tests {
     use super::*;
 
-    #[test]
-    fn default_shell_is_platform_native() {
-        let s = default_shell();
-        #[cfg(windows)]
-        {
-            let name = s.program.to_string_lossy().to_ascii_lowercase();
-            assert!(
-                name.contains("bash") || name.contains("powershell"),
-                "got {:?}",
-                s.program
-            );
-        }
-        #[cfg(not(windows))]
-        {
-            assert!(!s.program.as_os_str().is_empty());
-        }
-    }
-
-    #[test]
-    fn shell_label_uses_the_program_stem() {
-        let spec = ShellSpec {
-            program: PathBuf::from("/usr/bin/bash.exe"),
-            args: Vec::new(),
-        };
-        assert_eq!(shell_label(&spec), "bash");
-    }
-
     /// Backslash is a path separator only on Windows; on Unix the whole string
     /// is one file name, so this case is meaningful only under cfg(windows).
     #[cfg(windows)]

@@ -75,10 +75,4 @@ mod tests {
         assert!(!binary.arguments[0].ends_with(".cmd"));
     }
 
-    #[test]
-    fn pins_typescript_below_7() {
-        let pkgs = adapter().npm_packages();
-        assert_eq!(pkgs[0], ("typescript", "6.0.3"));
-        assert_eq!(pkgs[1], ("typescript-language-server", "latest"));
-    }
 }

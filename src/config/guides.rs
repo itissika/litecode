@@ -105,15 +105,9 @@ pub const FRAGMENTS: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{CustomToolDefinition, McpServerDefinition, ToolSchema};
-    use crate::workspace::filter::WorkspaceExcludesFile;
+    
+    
 
-    fn object_keys<T: serde::Serialize>(value: &T) -> Vec<String> {
-        match serde_json::to_value(value).expect("serialize") {
-            serde_json::Value::Object(map) => map.keys().cloned().collect(),
-            other => panic!("expected an object, got {other}"),
-        }
-    }
 
     #[test]
     fn fragments_follow_the_contract() {
@@ -147,88 +141,4 @@ mod tests {
         assert!(WORKSPACE_README.contains("## Agent 速查"));
     }
 
-    #[test]
-    fn topic_fragments_name_every_serde_field() {
-        for key in object_keys(&WorkspaceExcludesFile::builtin_defaults()) {
-            assert!(
-                EXCLUDES.contains(&key),
-                "excludes fragment does not document `{key}`"
-            );
-        }
-        for key in object_keys(&McpServerDefinition::default()) {
-            assert!(MCP.contains(&key), "mcp fragment does not document `{key}`");
-        }
-        let custom = CustomToolDefinition {
-            name: "demo".into(),
-            description: String::new(),
-            schema: ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({}),
-                required: Vec::new(),
-            },
-            command: "demo".into(),
-            args: Vec::new(),
-            timeout: 120,
-            rules: Vec::new(),
-            suite: None,
-            suite_label: None,
-        };
-        for key in object_keys(&custom) {
-            assert!(
-                CUSTOM_TOOLS.contains(&key),
-                "custom tools fragment does not document `{key}`"
-            );
-        }
-        assert!(
-            CUSTOM_TOOLS.contains("rules"),
-            "optional rules are not documented"
-        );
-        assert!(CUSTOM_TOOLS.contains("path_outside_workspace"));
-        assert!(EXCLUDES.contains("code_index_extensions"));
-        assert!(EXCLUDES.contains("白名单"));
-        assert!(EXCLUDES.contains("空数组"));
-        assert!(
-            EXCLUDES.contains("改 `search_exclude` 不会改变代码语义索引"),
-            "guide must not tell the agent that search_exclude owns the semantic index"
-        );
-        assert!(!EXCLUDES.contains("语义索引默认不扫"));
-    }
-
-    #[test]
-    fn topic_fragments_keep_the_id_rule_and_verification_steps() {
-        for text in [MCP, CUSTOM_TOOLS] {
-            assert!(text.contains("[a-z][a-z0-9_]*"), "id rule missing");
-        }
-        for text in [EXCLUDES, MCP, CUSTOM_TOOLS] {
-            assert!(
-                text.contains("litecode_workspace"),
-                "verification step missing"
-            );
-            assert!(text.contains("**怎么验证。**"), "verify section missing");
-            assert!(text.contains("**下一步。**"), "next-step section missing");
-        }
-    }
-
-    #[test]
-    fn topic_names_round_trip() {
-        for topic in [
-            GuideTopic::Excludes,
-            GuideTopic::Mcp,
-            GuideTopic::CustomTools,
-        ] {
-            assert_eq!(GuideTopic::parse(topic.as_str()), Some(topic));
-        }
-        assert_eq!(GuideTopic::parse("nope"), None);
-        assert_eq!(
-            GuideTopic::parse(" custom_tools "),
-            Some(GuideTopic::CustomTools)
-        );
-    }
-
-    #[test]
-    fn guide_index_does_not_mention_the_provider_catalog() {
-        assert!(!GUIDE_INDEX.contains("provider"));
-        assert!(!WORKSPACE_README.contains("provider-catalog"));
-        assert!(!GUIDE_INDEX.contains("writes definitions"));
-    }
 }

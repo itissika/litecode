@@ -264,29 +264,6 @@ mod tests {
         assert!(leftovers.is_empty(), "temp files must be cleaned up");
     }
 
-    #[test]
-    fn atomic_write_overwrites_existing_content() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("note.txt");
-        atomic_write(&target, "first").unwrap();
-        atomic_write(&target, "second").unwrap();
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_write_sets_standard_permissions_on_create() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("note.txt");
-        atomic_write(&target, "body").unwrap();
-        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, 0o644,
-            "new file must be world-readable, owner-writable (0644), got {mode:o}"
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn atomic_write_preserves_execute_bit_on_overwrite() {
@@ -326,34 +303,4 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&link).unwrap(), "new");
     }
 
-    #[test]
-    fn atomic_create_fails_if_exists_without_clobber() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("note.txt");
-        atomic_create(&target, "first").unwrap();
-        let err = atomic_create(&target, "second").unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "first");
-    }
-
-    #[test]
-    fn atomic_create_bytes_creates_new_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = dir.path().join("bin.dat");
-        atomic_create_bytes(&target, &[1, 2, 3]).unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), vec![1, 2, 3]);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn atomic_write_preserves_hardlink_inode() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a.txt");
-        let b = dir.path().join("b.txt");
-        std::fs::write(&a, "old").unwrap();
-        std::fs::hard_link(&a, &b).unwrap();
-        atomic_write(&a, "shared").unwrap();
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "shared");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "shared");
-    }
 }

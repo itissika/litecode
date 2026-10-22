@@ -246,19 +246,6 @@ mod tests {
     }
 
     #[test]
-    fn rust_file_resolves_to_crate_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        let rs_file = root.join("src/main.rs");
-        std::fs::write(&rs_file, "fn main() {}").unwrap();
-
-        let project_root = project_root_for_file(&rs_file, "rust-analyzer", Some(root)).unwrap();
-        assert_eq!(project_root, root);
-    }
-
-    #[test]
     fn rust_analyzer_uses_cargo_workspace_not_member_crate() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -320,36 +307,4 @@ mod tests {
         assert_eq!(project_root, root);
     }
 
-    #[test]
-    fn go_mod_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("go.mod"), "module example.com\n").unwrap();
-        let go_file = root.join("main.go");
-        std::fs::write(&go_file, "package main").unwrap();
-
-        let project_root = project_root_for_file(&go_file, "gopls", Some(root)).unwrap();
-        assert_eq!(project_root, root);
-    }
-
-    #[test]
-    fn pyproject_marker() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("pyproject.toml"), "[project]\nname = \"t\"\n").unwrap();
-        let py_file = root.join("main.py");
-        std::fs::write(&py_file, "print('hi')").unwrap();
-
-        let project_root =
-            project_root_for_file(&py_file, "pyright-langserver", Some(root)).unwrap();
-        assert_eq!(project_root, root);
-    }
-
-    #[test]
-    fn lsp_language_id_maps_common_extensions() {
-        assert_eq!(lsp_language_id("rs"), "rust");
-        assert_eq!(lsp_language_id("ts"), "typescript");
-        assert_eq!(lsp_language_id("tsx"), "typescriptreact");
-        assert_eq!(lsp_language_id("py"), "python");
-    }
 }

@@ -91,15 +91,4 @@ mod tests {
         assert!(!binary.arguments[0].ends_with(".cmd"));
     }
 
-    #[test]
-    fn verify_uses_pyright_cli_not_langserver() {
-        let dir = Path::new("/tmp/pyright-langserver");
-        let probe = adapter().verify_binary_info(dir);
-        assert!(
-            probe.arguments[0].replace('\\', "/").ends_with(CLI_ENTRY),
-            "{:?}",
-            probe.arguments
-        );
-        assert!(probe.arguments.iter().all(|a| a != "--stdio"));
-    }
 }

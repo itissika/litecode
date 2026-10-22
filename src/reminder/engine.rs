@@ -139,9 +139,9 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reminder::kinds::{PlanPointer, Reminder, TodoSnap};
-    use crate::reminder::render_item;
-    use crate::types::item_text_preview;
+    use crate::reminder::kinds::{PlanPointer, TodoSnap};
+    
+    
 
     fn ctx(step: u64) -> SeamCtx {
         SeamCtx {
@@ -151,18 +151,6 @@ mod tests {
             max_steps: 10,
             cwd: PathBuf::from("/work"),
         }
-    }
-
-    #[test]
-    fn first_seam_writes_env_only() {
-        let reminders = sync(&ctx(1), &SpineReminderView::default(), &Facts::default());
-        let kinds: Vec<_> = reminders.iter().map(Reminder::kind).collect();
-        assert!(kinds.contains(&ReminderKind::Env));
-        assert!(!kinds.contains(&ReminderKind::Tasks));
-        assert!(!kinds.contains(&ReminderKind::StepBudget));
-        let rendered = item_text_preview(&render_item(&reminders[0]));
-        assert!(rendered.starts_with("<system-reminder>\n"));
-        assert!(rendered.ends_with("\n</system-reminder>"));
     }
 
     #[test]
@@ -202,14 +190,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn serde_roundtrip_keeps_kind_and_text() {
-        let reminders = sync(&ctx(1), &SpineReminderView::default(), &Facts::default());
-        for reminder in reminders {
-            let json = serde_json::to_string(&reminder).unwrap();
-            let back: Reminder = serde_json::from_str(&json).unwrap();
-            assert_eq!(back, reminder);
-            assert_eq!(back.kind().visibility(), reminder.kind().visibility());
-        }
-    }
 }

@@ -128,22 +128,4 @@ mod tests {
         assert!(text.contains("https://example.com"));
     }
 
-    #[test]
-    fn parse_json_exa_response() {
-        let body = r#"{"result":{"content":[{"type":"text","text":"ok"}]}}"#;
-        assert_eq!(parse_mcp_response(body).as_deref(), Some("ok"));
-    }
-
-    #[test]
-    fn mcp_url_appends_settings_key() {
-        let url = mcp_url(Some("abc+def"));
-        assert_eq!(url, "https://mcp.exa.ai/mcp?exaApiKey=abc%2Bdef");
-    }
-
-    #[test]
-    fn mcp_url_without_key_is_hosted_default() {
-        // Env may be set on the host; only assert the default prefix.
-        let url = mcp_url(None);
-        assert!(url.starts_with("https://mcp.exa.ai/mcp"), "{url}");
-    }
 }

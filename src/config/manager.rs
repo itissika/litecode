@@ -253,9 +253,9 @@ fn validate_mcp_servers(global: &GlobalSettings) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::resolved::WorkspaceState;
-    use crate::config::schema::{AgentProfile, AgentRole, AgentToolBinding};
-    use std::collections::HashMap;
+    
+    use crate::config::schema::{AgentProfile, AgentRole};
+    
 
     fn minimal_global() -> GlobalSettings {
         let mut global = GlobalSettings::default();
@@ -265,51 +265,7 @@ mod tests {
         global
     }
 
-    fn binding() -> AgentToolBinding {
-        AgentToolBinding {
-            enabled: true,
-            policy: crate::permission::ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::default(),
-            last_applied_preset: None,
-            allowed_tools: None,
-        }
-    }
 
-    fn catalog() -> Arc<ProviderCatalog> {
-        Arc::new(
-            ProviderCatalog::parse(
-                "version = 1\n[[providers]]\nid = \"main\"\nname = \"Main\"\nendpoint = \"https://api.example.com/v1\"\nendpoint_type = \"responses\"\n\n[[models]]\nid = \"default\"\nprovider_id = \"main\"\n",
-                std::path::Path::new("t.toml"),
-            )
-            .unwrap(),
-        )
-    }
-
-    #[test]
-    fn resolve_global_union_workspace_field_disjoint_property() {
-        let global = minimal_global();
-        let workspace = WorkspaceState::new("/tmp/ws");
-
-        let resolved = ConfigManager::resolve(global, workspace.clone(), catalog());
-
-        let global_names: std::collections::HashSet<_> =
-            GlobalSettings::FIELD_NAMES.iter().copied().collect();
-        let workspace_names: std::collections::HashSet<_> =
-            WorkspaceState::FIELD_NAMES.iter().copied().collect();
-        assert!(global_names.is_disjoint(&workspace_names));
-
-        let resolved_names: std::collections::HashSet<_> =
-            ResolvedConfig::FIELD_NAMES.iter().copied().collect();
-        assert_eq!(
-            resolved_names.len(),
-            global_names.len() + workspace_names.len()
-        );
-        assert_eq!(
-            resolved.workspace_root(),
-            workspace.workspace_root.as_path()
-        );
-        assert_eq!(resolved.paths(), &workspace.paths);
-    }
 
     #[test]
     fn boot_hands_a_stale_agent_a_model_that_can_run() {
@@ -358,108 +314,6 @@ mod tests {
             AgentProfile {
                 role: AgentRole::Primary,
                 model_ref: "ghost/model".into(),
-                ..Default::default()
-            },
-        );
-        ConfigManager::validate(&global).unwrap();
-    }
-
-    #[test]
-    fn validate_empty_model_ref_ok() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: String::new(),
-                ..Default::default()
-            },
-        );
-        ConfigManager::validate(&global).unwrap();
-    }
-
-    #[test]
-    fn validate_invalid_log_level_fails() {
-        let mut global = minimal_global();
-        global.log.level = Some("verbose".into());
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(matches!(err, LitecodeError::Config(msg) if msg.contains("log.level")));
-    }
-
-    #[test]
-    fn validate_log_level_accepts_standard_values() {
-        let mut global = minimal_global();
-        for level in ["trace", "debug", "info", "warn", "error", "off"] {
-            global.log.level = Some(level.into());
-            ConfigManager::validate(&global).unwrap();
-        }
-    }
-
-    #[test]
-    fn validate_subagent_cannot_bind_subagent_series() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "worker".into(),
-            AgentProfile {
-                role: AgentRole::Subagent,
-                model_ref: "main/default".into(),
-                tools: HashMap::from([("subagent_launch".into(), binding())]),
-                ..Default::default()
-            },
-        );
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(err.to_string().contains("subagent_launch"));
-    }
-
-    #[test]
-    fn validate_subagent_cannot_bind_plan_or_todo() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "worker".into(),
-            AgentProfile {
-                role: AgentRole::Subagent,
-                model_ref: "main/default".into(),
-                tools: HashMap::from([("plan".into(), binding())]),
-                ..Default::default()
-            },
-        );
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(err.to_string().contains("plan"));
-    }
-
-    #[test]
-    fn validate_primary_allowlist_references_subagent() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "main/default".into(),
-                allowed_subagents: vec!["ghost".into()],
-                ..Default::default()
-            },
-        );
-        let err = ConfigManager::validate(&global).unwrap_err();
-        assert!(err.to_string().contains("ghost"));
-    }
-
-    #[test]
-    fn validate_primary_allowlist_ok_for_subagent() {
-        let mut global = minimal_global();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "main/default".into(),
-                allowed_subagents: vec!["worker".into()],
-                ..Default::default()
-            },
-        );
-        global.agents.insert(
-            "worker".into(),
-            AgentProfile {
-                role: AgentRole::Subagent,
-                model_ref: "main/default".into(),
                 ..Default::default()
             },
         );

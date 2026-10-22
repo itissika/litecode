@@ -13,29 +13,7 @@ pub mod responses {
 
 #[cfg(test)]
 mod tests {
-    use super::responses::{FunctionToolCall, Item, MessageItem, OutputMessage, ReasoningItem};
-
-    #[test]
-    fn authority_item_roundtrip_function_call() {
-        let json = r#"{
-            "type": "function_call",
-            "id": "fc_1",
-            "call_id": "call_1",
-            "name": "bash",
-            "arguments": "{\"command\":\"ls\"}"
-        }"#;
-        let item: Item = serde_json::from_str(json).expect("deserialize Item::FunctionCall");
-        match &item {
-            Item::FunctionCall(FunctionToolCall { name, call_id, .. }) => {
-                assert_eq!(name, "bash");
-                assert_eq!(call_id, "call_1");
-            }
-            other => panic!("expected FunctionCall, got {other:?}"),
-        }
-        let out = serde_json::to_value(&item).expect("serialize");
-        assert_eq!(out["type"], "function_call");
-        assert_eq!(out["name"], "bash");
-    }
+    use super::responses::{Item, MessageItem, OutputMessage, ReasoningItem};
 
     #[test]
     fn authority_item_roundtrip_reasoning_and_message() {

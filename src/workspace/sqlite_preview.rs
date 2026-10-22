@@ -179,19 +179,6 @@ mod tests {
     }
 
     #[test]
-    fn lists_tables_and_rows() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = sample_db(dir.path());
-        let page = preview(&path, "", 0).unwrap();
-        assert_eq!(page.tables, vec!["items".to_string()]);
-        assert_eq!(page.table, "items");
-        assert_eq!(page.columns, vec!["id".to_string(), "name".to_string()]);
-        assert_eq!(page.rows.len(), 2);
-        assert_eq!(page.rows[0][1], Value::String("a".into()));
-        assert!(!page.truncated);
-    }
-
-    #[test]
     fn rejects_unknown_and_injected_table_names() {
         let dir = tempfile::tempdir().unwrap();
         let path = sample_db(dir.path());

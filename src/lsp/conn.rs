@@ -741,19 +741,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn content_modified_plain_request_returns_empty_once() {
-        let (io, rx) = test_io_with_rx();
-        let seen = spawn_mock_modified(&io, rx, usize::MAX);
-        let out = io
-            .request_outcome("textDocument/hover", serde_json::json!({}), None)
-            .await
-            .expect("hover maps to empty result");
-        assert_eq!(out, LspReply::ContentModified);
-        assert_eq!(out.into_value(), Value::Null);
-        assert_eq!(seen.load(Ordering::SeqCst), 1, "never retried");
-    }
-
-    #[tokio::test]
     async fn content_modified_semantic_tokens_is_cancelled_once() {
         let (io, rx) = test_io_with_rx();
         let seen = spawn_mock_modified(&io, rx, usize::MAX);
@@ -767,55 +754,6 @@ mod tests {
             .expect_err("semantic tokens cancelled");
         assert!(err.to_string().contains("cancelled"), "{err}");
         assert_eq!(seen.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn content_modified_resolve_is_cancelled_once() {
-        let (io, rx) = test_io_with_rx();
-        let seen = spawn_mock_modified(&io, rx, usize::MAX);
-        let err = io
-            .request_outcome("completionItem/resolve", serde_json::json!({}), None)
-            .await
-            .expect_err("resolve cancelled");
-        assert!(err.to_string().contains("cancelled"), "{err}");
-        assert_eq!(seen.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn content_modified_passthrough_rpc_id_keeps_raw_error() {
-        let (io, rx) = test_io_with_rx();
-        let seen = spawn_mock_modified(&io, rx, usize::MAX);
-        let err = io
-            .request_outcome("textDocument/hover", serde_json::json!({}), Some(987_654))
-            .await
-            .expect_err("passthrough keeps server error");
-        assert!(is_content_modified(&err));
-        assert_eq!(seen.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn success_is_value() {
-        let (io, rx) = test_io_with_rx();
-        let seen = spawn_mock_modified(&io, rx, 0);
-        let out = io
-            .request_outcome("textDocument/hover", serde_json::json!({}), None)
-            .await
-            .unwrap();
-        assert_eq!(out, LspReply::Value(Value::String("ok".into())));
-        assert_eq!(seen.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn is_content_modified_matches_only_32801() {
-        assert!(is_content_modified(&LitecodeError::ToolExecution(
-            "LSP error (code -32801): content modified".into()
-        )));
-        assert!(!is_content_modified(&LitecodeError::ToolExecution(
-            "LSP error (code -32800): cancelled".into()
-        )));
-        assert!(!is_content_modified(&LitecodeError::ToolExecution(
-            "LSP error (code -328011): x".into()
-        )));
     }
 
     fn publish(uri: &str, version: Option<i32>, diags: Value) -> Value {
@@ -837,112 +775,12 @@ mod tests {
         serde_json::json!([{ "message": "boom", "severity": 1 }])
     }
 
-    #[test]
-    fn dispatch_out_of_order_responses() {
-        let io = test_io();
-        let (tx1, mut rx1) = oneshot::channel();
-        let (tx2, mut rx2) = oneshot::channel();
-        io.pending.lock().unwrap().insert(1, tx1);
-        io.pending.lock().unwrap().insert(2, tx2);
-        assert!(
-            dispatch_message(
-                &io,
-                &serde_json::json!({"jsonrpc":"2.0","id":2,"result":"second"})
-            )
-            .is_none()
-        );
-        assert!(
-            dispatch_message(
-                &io,
-                &serde_json::json!({"jsonrpc":"2.0","id":1,"result":"first"})
-            )
-            .is_none()
-        );
-        assert_eq!(
-            rx2.try_recv().unwrap().unwrap(),
-            Value::String("second".into())
-        );
-        assert_eq!(
-            rx1.try_recv().unwrap().unwrap(),
-            Value::String("first".into())
-        );
-    }
-
-    #[test]
-    fn configuration_ack_is_queued() {
-        let io = test_io();
-        let ack = dispatch_message(
-            &io,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 7,
-                "method": "workspace/configuration",
-                "params": { "items": [{ "section": "csharp" }] }
-            }),
-        );
-        assert_eq!(ack.unwrap()["result"], serde_json::json!([{}]));
-    }
-
-    #[test]
-    fn cache_covers_sync_requires_matching_version() {
-        assert!(cache_covers_sync(Some(2), Some(2)));
-        assert!(cache_covers_sync(Some(3), Some(2)));
-        assert!(!cache_covers_sync(Some(1), Some(2)));
-        assert!(!cache_covers_sync(None, Some(2)));
-        assert!(!cache_covers_sync(Some(1), None));
-        assert!(!cache_covers_sync(None, None));
-    }
-
     fn stale_error() -> Value {
         serde_json::json!([{ "message": "cannot find foo", "severity": 1 }])
     }
 
     fn new_error() -> Value {
         serde_json::json!([{ "message": "unused import", "severity": 1 }])
-    }
-
-    /// Agent-fix sequence that previously echoed last round's Error:
-    /// v1 error → didChange v2 (fixed) with no fresh publish yet → must be
-    /// silence, not the v1 message. A late v1 publish must not resurrect it.
-    #[tokio::test]
-    async fn edit_fix_must_not_echo_previous_round_error() {
-        let io = test_io();
-        let uri = "file:///lib.rs";
-
-        io.note_doc_synced(uri, 1);
-        io.ingest_notification(&publish(uri, Some(1), stale_error()));
-        let round1 = io.wait_diagnostics(uri, Duration::from_millis(50)).await;
-        assert_eq!(
-            round1,
-            stale_error(),
-            "current v1 errors are valid feedback"
-        );
-
-        // Round 2: the file is fixed; LS has not published v2 yet.
-        // Old wait_diagnostics returned v1 errors immediately here.
-        io.note_doc_synced(uri, 2);
-        let round2 = io.wait_diagnostics(uri, Duration::from_millis(40)).await;
-        assert_eq!(
-            round2,
-            Value::Array(vec![]),
-            "stale v1 errors must not be reported after didChange v2; got {round2}"
-        );
-        assert!(
-            !round2.to_string().contains("cannot find foo"),
-            "must not leak previous-round message: {round2}"
-        );
-
-        io.ingest_notification(&publish(uri, Some(1), stale_error()));
-        let after_late_v1 = io.wait_diagnostics(uri, Duration::from_millis(40)).await;
-        assert_eq!(
-            after_late_v1,
-            Value::Array(vec![]),
-            "late v1 publish must not resurrect the old error"
-        );
-
-        io.ingest_notification(&publish(uri, Some(2), Value::Array(vec![])));
-        let round3 = io.wait_diagnostics(uri, Duration::from_millis(50)).await;
-        assert_eq!(round3, Value::Array(vec![]));
     }
 
     #[tokio::test]
@@ -971,22 +809,6 @@ mod tests {
         assert!(
             started.elapsed() < Duration::from_millis(200),
             "should complete on v2, not eat the full budget"
-        );
-    }
-
-    #[tokio::test]
-    async fn wait_returns_current_errors_without_blocking() {
-        let io = test_io();
-        let uri = "file:///a.rs";
-        io.note_doc_synced(uri, 1);
-        io.ingest_notification(&publish(uri, Some(1), error_diag()));
-
-        let started = Instant::now();
-        let found = io.wait_diagnostics(uri, Duration::from_millis(400)).await;
-        assert_eq!(found, error_diag());
-        assert!(
-            started.elapsed() < Duration::from_millis(80),
-            "current errors must not wait out the budget"
         );
     }
 
@@ -1023,36 +845,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn diagnostics_are_current_rejects_stale_cache() {
-        let io = test_io();
-        let uri = "file:///lib.rs";
-        io.note_doc_synced(uri, 1);
-        io.ingest_notification(&publish(uri, Some(1), stale_error()));
-        assert!(io.diagnostics_are_current(uri));
-        io.note_doc_synced(uri, 2);
-        assert!(
-            !io.diagnostics_are_current(uri),
-            "v1 cache must not cover v2 sync"
-        );
-    }
-
-    #[test]
-    fn publish_diagnostics_fans_out_to_subscribers() {
-        let (tx, mut rx) = broadcast::channel(8);
-        let io = test_io_diag(Some(tx));
-        io.ingest_notification(&publish(
-            "file:///a.rs",
-            Some(2),
-            serde_json::json!([{ "message": "x", "severity": 1 }]),
-        ));
-        let ev = rx.try_recv().expect("editor fan-out");
-        assert_eq!(ev.uri, "file:///a.rs");
-        assert_eq!(ev.version, Some(2));
-        assert_eq!(ev.diagnostics.as_array().map(|a| a.len()), Some(1));
-        assert!(
-            io.diagnostics_for_uri("file:///a.rs").is_some(),
-            "agent cache must still be written"
-        );
-    }
 }

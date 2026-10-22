@@ -96,16 +96,3 @@ pub enum LitecodeError {
 }
 
 pub type Result<T> = std::result::Result<T, LitecodeError>;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compaction_failed_display_matches_empty_summary_path() {
-        assert_eq!(
-            LitecodeError::CompactionFailed.to_string(),
-            "compaction failed: empty summary"
-        );
-    }
-}

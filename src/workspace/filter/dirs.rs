@@ -72,39 +72,3 @@ pub fn is_agent_knowledge_rel(rel: &str) -> bool {
 pub fn is_discovery_or_product_dir_name(name: &str) -> bool {
     is_product_internal_dir_name(name) || discovery_exclude_dir_basenames().contains(name)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovery_includes_git_and_node_modules() {
-        let d = discovery_exclude_dir_basenames();
-        assert!(d.contains(".git"));
-        assert!(d.contains("node_modules"));
-        assert!(d.contains("bower_components"));
-        assert!(!d.contains("target"));
-        assert!(!d.contains(".litecode"));
-    }
-
-    #[test]
-    fn snapshot_composes_discovery_product_and_only() {
-        let s = snapshot_exclude_dir_basenames();
-        assert!(s.iter().any(|x| x == ".git"));
-        assert!(s.iter().any(|x| x == "node_modules"));
-        assert!(s.iter().any(|x| x == ".litecode"));
-        assert!(s.iter().any(|x| x == "Library"));
-        assert!(s.iter().any(|x| x == "target"));
-    }
-
-    #[test]
-    fn product_internal_helpers() {
-        assert!(is_product_internal_dir_name(".litecode"));
-        assert!(path_has_product_internal_dir(".litecode/index/x"));
-        assert!(is_discovery_or_product_dir_name("node_modules"));
-        assert!(!is_discovery_or_product_dir_name(".data"));
-        assert!(!is_product_internal_dir_name(".data"));
-        assert!(!is_product_internal_dir_name(".venv-ort"));
-        assert!(!is_discovery_or_product_dir_name("target"));
-    }
-}

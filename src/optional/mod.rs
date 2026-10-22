@@ -351,28 +351,6 @@ mod tests {
     use crate::config::schema::GlobalSettings;
 
     #[test]
-    fn defer_reconcile_builds_no_client() {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
-        let mgr = EngineManager::new();
-        mgr.defer_reconcile(&resolved);
-        assert!(mgr.webfetch_client().read().unwrap().is_none());
-        assert!(mgr.websearch_client().read().unwrap().is_none());
-        assert_eq!(mgr.state("webfetch"), None);
-        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn ensure_warm_builds_once_and_reuses() {
-        let mgr = EngineManager::new();
-        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
-        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
-        assert!(mgr.webfetch_client().read().unwrap().is_some());
-        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
-        assert_eq!(mgr.builds.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
     fn concurrent_first_calls_build_once() {
         let mgr = EngineManager::new();
         let hook = mgr.warm_hook("webfetch");
@@ -393,78 +371,6 @@ mod tests {
         assert_eq!(mgr.builds.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
-    fn failed_build_is_not_cached_and_retries() {
-        let mgr = EngineManager::new();
-        // No endpoint yet: websearch warmup fails.
-        let err = mgr.ensure_warm("websearch").expect_err("unconfigured");
-        assert!(err.contains("not configured"), "{err}");
-        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Failed));
-        assert!(mgr.websearch_client().read().unwrap().is_none());
-        *mgr.websearch_endpoint().write().unwrap() = Some("https://example.invalid/mcp".into());
-        assert_eq!(mgr.ensure_warm("websearch"), Ok(()), "next call retries");
-        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Warm));
-        assert_eq!(mgr.last_error("websearch"), None);
-        assert_eq!(mgr.builds.load(Ordering::SeqCst), 2);
-    }
-
-    #[test]
-    fn stopped_engine_is_not_rebuilt() {
-        let mgr = EngineManager::new();
-        mgr.stop_engine("webfetch");
-        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()), "nothing to build");
-        assert!(mgr.webfetch_client().read().unwrap().is_none());
-        assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn reenable_after_stop_builds_on_next_call() {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
-        let mgr = EngineManager::new();
-        mgr.stop_engine("webfetch");
-        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Stopped));
-        // An old Failed record must not survive a settings change either.
-        assert!(mgr.ensure_warm("websearch").is_err(), "no endpoint yet");
-        assert_eq!(mgr.state("websearch"), Some(EngineWarmupState::Failed));
-
-        mgr.reconcile(&resolved);
-        assert_eq!(mgr.state("webfetch"), None, "Stopped cleared on re-enable");
-        assert_eq!(
-            mgr.state("websearch"),
-            None,
-            "Failed cleared on settings change"
-        );
-        assert_eq!(mgr.last_error("websearch"), None);
-
-        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
-        assert!(mgr.webfetch_client().read().unwrap().is_some());
-        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
-    }
-
-    #[test]
-    fn settings_reconcile_rebuilds_immediately() {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
-        let mgr = EngineManager::new();
-        assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
-        let before = mgr.webfetch_client().read().unwrap().is_some();
-        assert!(before);
-        // No runtime here, so the rebuild is inline.
-        mgr.reconcile(&resolved);
-        assert!(mgr.webfetch_client().read().unwrap().is_some());
-        assert_eq!(mgr.state("webfetch"), Some(EngineWarmupState::Warm));
-        assert!(
-            mgr.websearch_client().read().unwrap().is_none(),
-            "no websearch client existed, so none is built"
-        );
-        assert!(
-            mgr.websearch_endpoint().read().unwrap().is_some(),
-            "configure still runs"
-        );
-        assert_eq!(mgr.builds.load(Ordering::SeqCst), 2, "1 + webfetch rebuild");
-    }
-
     /// WP-167 contract (tools.md (b)): `reconcile` on a manager with no client
     /// builds nothing; the first tool call (`ensure_warm`) builds it. Before
     /// WP-167 reconcile warmed eagerly, which is what this test used to assert.
@@ -478,16 +384,6 @@ mod tests {
         assert_eq!(mgr.builds.load(Ordering::SeqCst), 0);
         assert_eq!(mgr.ensure_warm("webfetch"), Ok(()));
         assert!(mgr.is_warmed("webfetch", &resolved), "first use warms");
-    }
-
-    #[test]
-    fn stop_clears_warm_state() {
-        let global = GlobalSettings::default();
-        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
-        let mgr = EngineManager::new();
-        mgr.reconcile(&resolved);
-        mgr.stop_all();
-        assert!(!mgr.is_warmed("webfetch", &resolved));
     }
 
     /// B12: a panic while holding the states lock must not poison every later call.

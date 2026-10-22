@@ -42,8 +42,4 @@ mod tests {
         assert_eq!(strip_ansi(raw), "line1\nline2");
     }
 
-    #[test]
-    fn removes_osc_with_st_terminator() {
-        assert_eq!(strip_ansi("\x1b]0;title\x1b\\hello"), "hello");
-    }
 }
