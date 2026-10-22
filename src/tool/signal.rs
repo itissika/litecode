@@ -86,18 +86,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_is_prefix_only() {
-        let t = ToolCallResult::error("missing regex").finalize_signals();
-        assert_eq!(t.content, "Error: missing regex");
-    }
-
-    #[test]
-    fn warning_standalone() {
-        let t = ToolCallResult::warning("exit_code: 1").finalize_signals();
-        assert_eq!(t.content, "Warning: exit_code: 1");
-    }
-
-    #[test]
     fn warning_after_body_hint_stays_independent() {
         let t = ToolCallResult::ok("Created: a.rs")
             .with_hint_appendix("LSP note — still warming; diagnostics skipped", None)

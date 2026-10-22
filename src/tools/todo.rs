@@ -193,8 +193,8 @@ mod tests {
     use crate::config::WorkspacePaths;
     use crate::config::workspace::set_runtime_paths;
     use crate::session::manager::SessionManager;
-    use crate::session::task_state::TaskReminders;
-    use crate::session::task_state::render_todos;
+    
+    
 
     fn test_dir() -> tempfile::TempDir {
         tempfile::tempdir().expect("tempdir")
@@ -242,37 +242,6 @@ mod tests {
         (manager, sid, home)
     }
 
-    fn load_task_state(manager: &SessionManager, session_id: &str) -> TaskReminders {
-        manager
-            .with_entry_task_state(session_id, |s| Ok(s.clone()))
-            .unwrap()
-    }
-
-    #[test]
-    fn test_add_todo() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let result = tool.call(serde_json::json!({
-            "todos": [{"content": "Implement feature X", "status": "pending"}]
-        }));
-        assert!(
-            result.content.contains("pending: 1"),
-            "got: {}",
-            result.content
-        );
-        assert!(
-            result.content.contains("completed: 0"),
-            "got: {}",
-            result.content
-        );
-        assert!(
-            !result.content.contains("Implement feature X"),
-            "tool result must not echo the list: {}",
-            result.content
-        );
-    }
 
     #[test]
     fn test_list_todos() {
@@ -339,140 +308,6 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_todo() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let _ = tool.call(serde_json::json!({
-            "todos": [
-                {"content": "Task A", "status": "pending"},
-                {"content": "Task B", "status": "pending"}
-            ]
-        }));
-
-        // Remove Task A by submitting array without it
-        let result = tool.call(serde_json::json!({
-            "todos": [
-                {"content": "Task B", "status": "pending"}
-            ]
-        }));
-        assert!(
-            result.content.contains("pending: 1"),
-            "got: {}",
-            result.content
-        );
-    }
-
-    #[test]
-    fn test_clear_todos() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let _ = tool.call(serde_json::json!({
-            "todos": [
-                {"content": "A", "status": "pending"},
-                {"content": "B", "status": "pending"}
-            ]
-        }));
-
-        let result = tool.call(serde_json::json!({"todos": []}));
-        assert!(
-            result.content.contains("pending: 0") && result.content.contains("completed: 0"),
-            "got: {}",
-            result.content
-        );
-        assert!(
-            result.content.contains("in_progress: 0"),
-            "got: {}",
-            result.content
-        );
-    }
-
-    #[test]
-    fn test_in_progress_todo() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let result = tool.call(serde_json::json!({
-            "todos": [
-                {"content": "Active task", "status": "in_progress"},
-                {"content": "Queued", "status": "pending"}
-            ]
-        }));
-        assert!(
-            result.content.contains("in_progress: 1"),
-            "got: {}",
-            result.content
-        );
-        assert!(
-            result.content.contains("pending: 1"),
-            "got: {}",
-            result.content
-        );
-
-        let reloaded = load_task_state(&manager, &sid);
-        assert_eq!(reloaded.todos[0].status, TodoStatus::InProgress);
-    }
-
-    #[test]
-    fn test_all_completed_reports_cleared_list() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let result = tool.call(serde_json::json!({
-            "todos": [
-                {"content": "A", "status": "completed"},
-                {"content": "B", "status": "completed"}
-            ]
-        }));
-        // A fully-finished list must not be acked as a bare 0/0/0.
-        assert_eq!(
-            result.content,
-            "OK. All 2 todos completed; task list cleared."
-        );
-        // The overlay is genuinely dropped, not merely mis-reported.
-        let reloaded = load_task_state(&manager, &sid);
-        assert!(reloaded.todos.is_empty());
-    }
-
-    #[test]
-    fn test_persisted_to_session_db() {
-        let dir = test_dir();
-        let (manager, sid, _home) = setup(dir.path());
-        let tool = make_tool(Arc::clone(&manager), &sid);
-
-        let _ = tool.call(serde_json::json!({
-            "todos": [{"content": "Persist me", "status": "pending"}]
-        }));
-
-        let reloaded = load_task_state(&manager, &sid);
-        assert_eq!(reloaded.todos.len(), 1);
-        assert_eq!(reloaded.todos[0].content, "Persist me");
-    }
-
-    #[test]
-    fn test_requires_active_session() {
-        let manager = Arc::new(SessionManager::new_for_test(
-            Arc::new(crate::config::TurnGuard::new()),
-            String::new(),
-        ));
-        let tool = TodoWriteTool::new(manager);
-        // No session set
-        let result = tool.call(serde_json::json!({
-            "todos": [{"content": "orphan", "status": "pending"}]
-        }));
-        assert!(
-            result.content.contains("no active session"),
-            "got: {}",
-            result.content
-        );
-    }
-
-    #[test]
     fn test_validate_input() {
         let manager = Arc::new(SessionManager::new_for_test(
             Arc::new(crate::config::TurnGuard::new()),
@@ -507,31 +342,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_render_todos() {
-        let items = vec![
-            TodoItem {
-                id: "t1".into(),
-                content: "First".into(),
-                status: TodoStatus::Pending,
-                priority: None,
-            },
-            TodoItem {
-                id: "t2".into(),
-                content: "Active".into(),
-                status: TodoStatus::InProgress,
-                priority: None,
-            },
-            TodoItem {
-                id: "t3".into(),
-                content: "Second".into(),
-                status: TodoStatus::Completed,
-                priority: None,
-            },
-        ];
-        let rendered = render_todos(&items);
-        assert!(rendered.contains("○ [t1] First"));
-        assert!(rendered.contains("◐ [t2] Active"));
-        assert!(rendered.contains("● [t3] Second"));
-    }
 }

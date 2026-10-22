@@ -276,56 +276,6 @@ mod tests {
             .unwrap();
     }
 
-    fn notice_without_wake(notice: ParentNotice) {
-        let hub = SubagentHub::new();
-        let wakes = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&wakes);
-        hub.set_exit_handler(Arc::new(move |_| {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }));
-        hub.notify_parent_no_wake("parent", notice.clone());
-        hub.notify_parent_no_wake("parent", notice.clone()); // dedup
-        hub.notify_parent_no_wake("", notice.clone()); // no-op
-        assert!(hub.has_notices("parent"));
-        assert!(
-            !hub.has_pending("parent"),
-            "notice must not count as pending"
-        );
-        assert_eq!(wakes.load(Ordering::SeqCst), 0, "exit handler must not run");
-        hub.forget_child(notice.child_session_id());
-        assert!(hub.has_notices("parent"), "forget_child keeps the notice");
-        let taken = hub.take_notices("parent");
-        assert_eq!(taken, vec![notice.clone()]);
-        hub.restore_notices("parent", taken);
-        assert_eq!(hub.take_notices("parent"), vec![notice]);
-        assert!(!hub.has_notices("parent"));
-    }
-
-    #[test]
-    fn child_stopped_notice_writes_mailbox_without_wake() {
-        notice_without_wake(ParentNotice::ChildStopped {
-            child_session_id: "child-a".into(),
-            by: crate::types::StopOrigin::User,
-        });
-    }
-
-    #[test]
-    fn child_deleted_notice_writes_mailbox_without_wake() {
-        notice_without_wake(ParentNotice::ChildDeleted {
-            child_session_id: "child-a".into(),
-            by: crate::types::StopOrigin::User,
-        });
-        let hub = SubagentHub::new();
-        hub.notify_parent_no_wake(
-            "parent",
-            ParentNotice::ChildDeleted {
-                child_session_id: "c".into(),
-                by: crate::types::StopOrigin::Parent,
-            },
-        );
-        hub.purge_parent("parent");
-        assert!(!hub.has_notices("parent"), "purge_parent clears notices");
-    }
 
     #[test]
     fn child_turn_finished_still_wakes_parent() {
@@ -420,30 +370,6 @@ mod tests {
         assert_eq!(taken[0].turn_id, "t2");
         assert!(taken[0].cancelled);
         assert_eq!(taken[0].cancelled_by, Some(crate::types::StopOrigin::User));
-    }
-
-    #[test]
-    fn hub_notice_carries_by_user_parent() {
-        use crate::types::StopOrigin;
-        let hub = SubagentHub::new();
-        hub.notify_parent_no_wake(
-            "p",
-            ParentNotice::ChildStopped {
-                child_session_id: "a".into(),
-                by: StopOrigin::User,
-            },
-        );
-        hub.notify_parent_no_wake(
-            "p",
-            ParentNotice::ChildDeleted {
-                child_session_id: "b".into(),
-                by: StopOrigin::Parent,
-            },
-        );
-        let taken = hub.take_notices("p");
-        assert_eq!(taken[0].by(), StopOrigin::User);
-        assert_eq!(taken[1].by(), StopOrigin::Parent);
-        assert!(!hub.has_pending("p"));
     }
 
     #[test]

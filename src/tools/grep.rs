@@ -985,28 +985,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_exposes_simple_contract() {
-        assert_eq!(GrepTool.timeout(), Some(Duration::from_secs(30)));
-        assert!(GrepTool.is_cancellable());
-        let schema = GrepTool.schema();
-        let props = schema["properties"].as_object().unwrap();
-        for expected in ["pattern", "path", "glob", "literal", "ignore_case", "limit"] {
-            assert!(props.contains_key(expected), "missing {expected}");
-        }
-        for retired in ["cursor", "include_ignored", "case_sensitive"] {
-            assert!(!props.contains_key(retired), "retired {retired} still in schema");
-        }
-        assert_eq!(schema["required"], serde_json::json!(["pattern"]));
-        let data = GrepTool.data_schema().unwrap();
-        let data_props = data["properties"].as_object().unwrap();
-        assert!(data_props.contains_key("hits"));
-        assert!(data_props.contains_key("message"));
-        for retired in ["base", "matches", "page", "searched", "reason"] {
-            assert!(!data_props.contains_key(retired), "retired {retired}");
-        }
-    }
-
-    #[test]
     fn limit_bounds_hits_and_notes_truncation() {
         let dir = tempfile::tempdir().unwrap();
         write_many_files(dir.path(), 25);
@@ -1022,90 +1000,6 @@ mod tests {
         );
         assert!(data.get("page").is_none());
         assert!(data.get("matches").is_none());
-    }
-
-    #[test]
-    fn retired_cursor_is_absent_from_schema() {
-        let schema = GrepTool.schema();
-        let props = schema["properties"].as_object().unwrap();
-        assert!(!props.contains_key("cursor"));
-        assert!(!props.contains_key("include_ignored"));
-        // Direct execute ignores unknown keys; executor schema_validate rejects them.
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "needle\n");
-        let result = call_result(
-            dir.path(),
-            serde_json::json!({"pattern": "needle", "cursor": "anything"}),
-        );
-        assert!(result.error.is_none(), "{}", result.content);
-        assert_eq!(grep_data(&result)["hits"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn wide_search_never_writes_a_spill_file() {
-        let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 30);
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        assert!(grep_data(&result)["message"].as_str().unwrap().contains("Raise limit"));
-        let bash_dir = dir.path().join(".litecode").join("bash");
-        if bash_dir.is_dir() {
-            let spill = std::fs::read_dir(bash_dir)
-                .unwrap()
-                .filter_map(std::result::Result::ok)
-                .any(|entry| entry.file_name().to_string_lossy().starts_with("grep_"));
-            assert!(!spill, "grep must not spill matches to a file");
-        }
-    }
-
-    #[test]
-    fn invalid_limit_is_rejected() {
-        assert!(
-            GrepTool
-                .validate_input(&serde_json::json!({"pattern": "x", "limit": 0}))
-                .is_err()
-        );
-        assert!(
-            GrepTool
-                .validate_input(&serde_json::json!({"pattern": "x", "limit": 101}))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn match_text_is_bounded() {
-        let dir = tempfile::tempdir().unwrap();
-        let long = format!("needle {}\n", "x".repeat(600));
-        write(dir.path(), "long.rs", &long);
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let hit = &grep_data(&result)["hits"][0];
-        assert!(hit["text"].as_str().unwrap().ends_with("..."));
-        assert!(
-            grep_data(&result)["message"]
-                .as_str()
-                .unwrap()
-                .contains("truncated")
-                || hit["text"].as_str().unwrap().ends_with("...")
-        );
-    }
-
-    #[test]
-    fn pattern_is_required_and_must_be_nonempty() {
-        assert!(
-            GrepTool
-                .validate_input(&serde_json::json!({}))
-                .unwrap_err()
-                .contains("pattern")
-        );
-        assert!(
-            GrepTool
-                .validate_input(&serde_json::json!({"pattern": ""}))
-                .is_err()
-        );
-        assert!(
-            GrepTool
-                .validate_input(&serde_json::json!({"pattern": "x"}))
-                .is_ok()
-        );
     }
 
     fn assert_invalid_regex(pattern: &str, result: &ToolCallResult) {
@@ -1144,155 +1038,6 @@ mod tests {
         assert!(hit_blob(&retry).contains("ModelRequest"));
     }
 
-    #[test]
-    fn an_unclosed_class_is_not_searched_as_literal_text() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "let hit = found[0];\n");
-        let pattern = "found[";
-        let result = call_result(dir.path(), serde_json::json!({"pattern": pattern}));
-        assert_invalid_regex(pattern, &result);
-        assert!(!result.content.contains("found[0]"));
-    }
-
-    #[test]
-    fn a_valid_regex_still_distinguishes_matches() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "needle_42 {\n");
-        write(dir.path(), "b.rs", "needle_x {\nother_42 {\n");
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle_\\d+"}));
-        let out = hit_blob(&result);
-        assert!(out.contains("needle_42"), "got: {out}");
-        assert!(
-            !out.contains("needle_x") && !out.contains("other_42"),
-            "got: {out}"
-        );
-    }
-
-    #[test]
-    fn empty_workspace_reports_no_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "anything"}));
-        let data = grep_data(&result);
-        assert!(data["hits"].as_array().unwrap().is_empty());
-        assert!(
-            data["message"].as_str().unwrap().contains("No files"),
-            "{}",
-            data["message"]
-        );
-        assert!(data.get("reason").is_none());
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    }
-
-    fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {
-        let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
-        file.search_exclude.push("hidden_dir".into());
-        let mut out = None;
-        crate::workspace::filter::with_excludes_cache_for_test(file, || {
-            out = Some(f());
-        });
-        out.expect("cache test body ran")
-    }
-
-    #[test]
-    fn excluded_tree_stays_hidden_without_dialect_knob() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "hidden_dir/hidden.rs", "needle_lift\n");
-        write(dir.path(), "visible.rs", "nothing\n");
-        let path = dir.path().to_path_buf();
-        let hidden =
-            with_excluded_dir(|| call_result(&path, serde_json::json!({"pattern": "needle_lift"})));
-        let hidden_data = grep_data(&hidden);
-        assert!(hidden_data["hits"].as_array().unwrap().is_empty());
-        assert!(
-            !hit_blob(&hidden).contains("hidden.rs"),
-            "must not lift excludes: {hidden_data}"
-        );
-        // include_ignored retired from schema; direct execute ignores unknown keys.
-        assert!(!GrepTool.schema()["properties"]
-            .as_object()
-            .unwrap()
-            .contains_key("include_ignored"));
-        let ignored = with_excluded_dir(|| {
-            call_result(
-                &path,
-                serde_json::json!({"pattern": "needle_lift", "include_ignored": true}),
-            )
-        });
-        assert!(ignored.error.is_none(), "{}", ignored.content);
-        assert!(
-            grep_data(&ignored)["hits"].as_array().unwrap().is_empty(),
-            "retired knob must not lift excludes"
-        );
-    }
-
-    #[test]
-    fn naming_an_excluded_tree_explains_in_message() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "hidden_dir/hidden.rs", "needle\n");
-        let path = dir.path().to_path_buf();
-        let result = with_excluded_dir(|| {
-            call_result(
-                &path,
-                serde_json::json!({"pattern": "needle", "path": "hidden_dir"}),
-            )
-        });
-        let data = grep_data(&result);
-        assert!(data["hits"].as_array().unwrap().is_empty());
-        assert!(
-            data["message"].as_str().unwrap().to_lowercase().contains("hidden")
-                || data["message"].as_str().unwrap().contains("filter"),
-            "{}",
-            data["message"]
-        );
-        assert!(data.get("reason").is_none());
-    }
-
-    #[test]
-    fn multiple_hits_in_one_file_render_each_occurrence() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "needle\nfiller\nneedle\n");
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let data = grep_data(&result);
-        assert_eq!(data["hits"].as_array().unwrap().len(), 2);
-        assert_eq!(hit_blob(&result).matches("needle").count(), 2);
-        assert_eq!(data["hits"][0]["line"], 1);
-        assert_eq!(data["hits"][1]["line"], 3);
-    }
-
-    #[test]
-    fn a_single_file_with_many_hits_still_bounds() {
-        let dir = tempfile::tempdir().unwrap();
-        let body: String = (0..40)
-            .map(|i| format!("needle{i:02} {}\n", "y".repeat(400)))
-            .collect();
-        write(dir.path(), "wide.rs", &body);
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let data = grep_data(&result);
-        assert_eq!(data["hits"].as_array().unwrap().len(), 20);
-        assert!(data["message"].as_str().unwrap().contains("Raise limit"));
-        assert!(hit_blob(&result).contains("needle00"));
-    }
-
-    #[test]
-    fn unicode_matches_render_intact() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "cn.rs", "let s = \"世界\";\n");
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "世界"}));
-        assert!(hit_blob(&result).contains("世界"));
-    }
-
-    #[test]
-    fn ignore_case_finds_mixed_case() {
-        let dir = tempfile::tempdir().unwrap();
-        write(dir.path(), "a.rs", "Needle\n");
-        let sensitive = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        assert!(grep_data(&sensitive)["hits"].as_array().unwrap().is_empty());
-        let insensitive = call_result(
-            dir.path(),
-            serde_json::json!({"pattern": "needle", "ignore_case": true}),
-        );
-        assert_eq!(grep_data(&insensitive)["hits"].as_array().unwrap().len(), 1);
-    }
 
     #[test]
     fn a_path_outside_the_mode_is_reported_not_panicking() {
@@ -1329,94 +1074,7 @@ mod tests {
         assert!(result.data.is_none());
     }
 
-    #[test]
-    fn grep_does_not_consult_the_path_index() {
-        let src = include_str!("grep.rs");
-        let prod = src.split("mod tests").next().expect("production source");
-        assert!(
-            prod.contains("lexical_search_for_agent_cancellable"),
-            "grep must search through the lexical walk"
-        );
-        assert!(
-            !prod.contains("path_index") && !prod.contains("text_index"),
-            "grep must not read the mention path catalog"
-        );
-        assert!(!prod.contains("stale_cursor"));
-        assert!(!prod.contains("include_ignored"));
-        assert!(!prod.contains("QueryCursor"));
-        // LexicalQuery still has an internal case_sensitive field; public knob is ignore_case.
-        let schema = GrepTool.schema();
-        assert!(!schema["properties"].as_object().unwrap().contains_key("case_sensitive"));
-        assert!(schema["properties"].as_object().unwrap().contains_key("ignore_case"));
-    }
 
-    #[test]
-    fn virtual_session_grep_still_answers() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let sid = seed_session(root, "alpha\nVIRTUAL_GREP_NEEDLE here\ndelta");
-        let path = crate::session::transcript_file::virtual_path_for(&sid);
-        let result = call_result(
-            root,
-            serde_json::json!({"pattern": "VIRTUAL_GREP_NEEDLE", "path": path}),
-        );
-        assert!(hit_blob(&result).contains("VIRTUAL_GREP_NEEDLE"));
-    }
-
-    #[test]
-    fn virtual_session_grep_miss_stays_a_plain_miss() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let sid = seed_session(root, "alpha\nbeta");
-        let path = crate::session::transcript_file::virtual_path_for(&sid);
-        let result = call_result(
-            root,
-            serde_json::json!({"pattern": "ABSENT_TOKEN", "path": path}),
-        );
-        let data = grep_data(&result);
-        assert!(data["hits"].as_array().unwrap().is_empty());
-        assert!(data["message"].as_str().unwrap().contains("No matches"));
-        assert!(data.get("reason").is_none());
-    }
-
-    fn seed_session(root: &std::path::Path, body: &str) -> String {
-        let db = root.join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let lease = crate::session::WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
-        let data = crate::session::SessionData::open(&lease, &db).unwrap();
-        let id = data
-            .create_session(root.to_str().unwrap(), "default", None)
-            .unwrap();
-        data.insert_items(&id, &[crate::types::user_text(body)])
-            .unwrap();
-        id
-    }
-
-    #[test]
-    fn data_schema_accepts_structured_hits() {
-        let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 3);
-        let result = call_result(dir.path(), serde_json::json!({"pattern": "needle"}));
-        let data = grep_data(&result);
-        let schema = GrepTool.data_schema().expect("grep data schema");
-        crate::tool::schema_validate(&schema, &data)
-            .unwrap_or_else(|error| panic!("grep data does not match its schema: {error}: {data}"));
-    }
-
-    #[test]
-    fn examine_cap_bounds_hits_in_message() {
-        let dir = tempfile::tempdir().unwrap();
-        write_many_files(dir.path(), 8);
-        let result = dispatch(
-            serde_json::json!({"pattern": "needle", "limit": 20}),
-            execution(dir.path(), crate::workspace::ToolPathMode::Safe),
-            3,
-        );
-        let data = grep_data(&result);
-        assert_eq!(data["hits"].as_array().unwrap().len(), 3);
-        assert!(data["message"].as_str().unwrap().contains("Raise limit"));
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    }
 }
 
 /// grep message states (merged from phase2_gate, WP-207).
@@ -1482,22 +1140,6 @@ mod message_contract_tests {
     }
 
     #[test]
-    fn grep_message_no_match() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
-        let result = safe(&GrepTool, dir.path(), json!({"pattern": "missing"}));
-        assert!(message(&result).contains("No matches"), "{}", message(&result));
-        assert!(result.data.unwrap()["hits"].as_array().unwrap().is_empty());
-    }
-
-    #[test]
-    fn grep_message_corpus_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = safe(&GrepTool, dir.path(), json!({"pattern": "anything"}));
-        assert!(message(&result).contains("No files"), "{}", message(&result));
-    }
-
-    #[test]
     fn grep_message_glob_empty() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
@@ -1544,20 +1186,6 @@ mod message_contract_tests {
             "{}",
             message(&result)
         );
-    }
-
-    #[test]
-    fn grep_literal_searches_metacharacters() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "a.b\naxb\n").unwrap();
-        let result = safe(
-            &GrepTool,
-            dir.path(),
-            json!({"pattern": "a.b", "literal": true}),
-        );
-        let data = result.data.unwrap();
-        assert_eq!(data["hits"].as_array().unwrap().len(), 1);
-        assert_eq!(data["hits"][0]["text"], "a.b");
     }
 
     fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {

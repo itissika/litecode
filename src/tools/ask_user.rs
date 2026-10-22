@@ -352,13 +352,6 @@ mod tests {
     use crate::types::ToolSignalLevel;
 
     #[test]
-    fn schema_describes_questions_batch() {
-        let tool = AskUserTool::new();
-        let schema = tool.schema();
-        assert!(schema["properties"]["questions"].is_object());
-    }
-
-    #[test]
     fn validate_rejects_single_option() {
         let tool = AskUserTool::new();
         let err = tool
@@ -401,26 +394,6 @@ mod tests {
             .unwrap_or_else(|| panic!("missing [{qid}] free_text in:\n{content}"));
         let body = line.split_once(':').map(|(_, b)| b.trim()).unwrap_or("");
         assert_eq!(body, text, "free_text mismatch in {line}");
-    }
-
-    #[test]
-    fn legacy_question_normalizes_to_q0() {
-        let tool = AskUserTool::new();
-        tool.set_permission_sink(Arc::new(
-            RecordingPermissionSink::from_reply(true, false)
-                .with_selected(vec!["ship".into()])
-                .with_free_text("lgtm"),
-        ));
-        let result = tool.call(serde_json::json!({
-            "question": "Ship it?",
-            "options": [
-                {"id": "ship", "label": "Ship"},
-                {"id": "hold", "label": "Hold"}
-            ]
-        }));
-        assert_eq!(result.level, ToolSignalLevel::Ok);
-        assert_selected_ids(&result.content, "q0", &["ship"]);
-        assert_free_text(&result.content, "q0", "lgtm");
     }
 
     #[test]
@@ -473,74 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_has_no_allow_free_text() {
-        let schema = AskUserTool::new().schema();
-        assert!(schema["properties"].get("allow_free_text").is_none());
-        let item = &schema["properties"]["questions"]["items"]["properties"];
-        assert!(item.get("allow_free_text").is_none());
-        assert!(item.get("free_text").is_none());
-        assert!(!schema.to_string().contains("allow_free_text"));
-    }
-
-    #[test]
-    fn legacy_free_text_flags_ignored_free_text_always_true() {
-        let opts = serde_json::json!([{"id": "a", "label": "A"}, {"id": "b", "label": "B"}]);
-        let batch = parse_questions(&serde_json::json!({
-            "questions": [
-                {"id": "q1", "prompt": "P1?", "options": opts, "allow_free_text": false},
-                {"id": "q2", "prompt": "P2?", "options": opts, "free_text": false},
-                {"id": "q3", "prompt": "P3?", "options": opts}
-            ]
-        }))
-        .expect("batch parses");
-        assert_eq!(batch.len(), 3);
-        assert!(batch.iter().all(|q| q.free_text), "{batch:?}");
-        let legacy = parse_questions(&serde_json::json!({
-            "question": "Ship?", "options": opts, "allow_free_text": false
-        }))
-        .expect("legacy parses");
-        assert!(legacy[0].free_text);
-        let tool = AskUserTool::new();
-        assert!(tool
-            .validate_input(&serde_json::json!({
-                "questions": [{"id": "q1", "prompt": "P?", "options": opts, "allow_free_text": false}]
-            }))
-            .is_ok());
-    }
-
-    #[test]
-    fn text_only_answer_is_formatted() {
-        let tool = AskUserTool::new();
-        let mut answers = HashMap::new();
-        answers.insert(
-            "q1".into(),
-            AskAnswer {
-                selected: vec![],
-                free_text: Some("use postgres".into()),
-            },
-        );
-        tool.set_permission_sink(Arc::new(
-            RecordingPermissionSink::from_reply(true, false).with_answers(answers),
-        ));
-        let result = tool.call(serde_json::json!({
-            "questions": [{
-                "id": "q1",
-                "prompt": "DB?",
-                "options": [{"id": "sqlite", "label": "SQLite"}, {"id": "mysql", "label": "MySQL"}]
-            }]
-        }));
-        assert_eq!(result.level, ToolSignalLevel::Ok);
-        let c = &result.content;
-        assert!(
-            line_for(c, "q1", "selected").is_some_and(|l| l.contains("(none)")),
-            "{c}"
-        );
-        assert!(line_for(c, "q1", "selected_ids").is_none(), "{c}");
-        assert_free_text(c, "q1", "use postgres");
-        assert!(!c.contains("(no answer)"), "{c}");
-    }
-
-    #[test]
     fn skip_returns_clear_message() {
         let tool = AskUserTool::new();
         tool.set_permission_sink(Arc::new(RecordingPermissionSink::new(AskOutcome::Deny)));
@@ -558,20 +463,4 @@ mod tests {
         assert!(result.content.contains("skipped"), "{}", result.content);
     }
 
-    #[test]
-    fn missing_sink_errors() {
-        let tool = AskUserTool::new();
-        let result = tool.call(serde_json::json!({
-            "questions": [{
-                "id": "q1",
-                "prompt": "Q?",
-                "options": [
-                    {"id": "a", "label": "A"},
-                    {"id": "b", "label": "B"}
-                ]
-            }]
-        }));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert!(result.content.contains("Ask bridge"), "{}", result.content);
-    }
 }

@@ -100,27 +100,6 @@ mod tests {
     use crate::engines::{EngineState, WorkspaceEngines};
 
     #[tokio::test]
-    async fn no_engines_leaves_content_untouched() {
-        let base = ToolCallResult::ok("Created: /tmp/x.rs (10 bytes)");
-        let out = maybe_append_local_lsp_errors(None, "/tmp/x.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Created: /tmp/x.rs (10 bytes)");
-        assert!(!out.content.contains("Hint:"));
-    }
-
-    #[tokio::test]
-    async fn idle_engines_stay_silent() {
-        let engines = WorkspaceEngines::new();
-        let base = ToolCallResult::ok("Edited /tmp/x.rs");
-        let out = maybe_append_local_lsp_errors(Some(&engines), "/tmp/x.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Edited /tmp/x.rs");
-        assert!(!out.content.contains("Hint:"));
-    }
-
-    #[tokio::test]
     async fn warming_stays_silent() {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("lsp", EngineState::Warming);

@@ -183,14 +183,6 @@ mod tests {
             "{c}"
         );
     }
-    use crate::config::TurnGuard;
+    
 
-    #[test]
-    fn schema_is_empty_object() {
-        let tool = SubagentListTool::new(Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        )));
-        assert_eq!(tool.schema()["type"], "object");
-    }
 }

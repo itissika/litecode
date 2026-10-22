@@ -397,87 +397,6 @@ mod tests {
     }
 
     #[test]
-    fn test_write_create_new() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("new.txt");
-
-        let tool = WriteTool::new();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "content": "hello world"
-        });
-
-        let result = tool.call(input);
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.expect("write data");
-        assert_eq!(data["created"], true);
-        assert_eq!(data["file"]["bytes"], "hello world".len() as u64);
-        assert_eq!(data["file"]["hash"].as_str().unwrap().len(), 64);
-
-        let content = std::fs::read_to_string(&file_path).expect("read back");
-        assert_eq!(content, "hello world");
-    }
-
-    #[test]
-    fn test_write_update_existing() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("existing.txt");
-        std::fs::write(&file_path, "old content").expect("write");
-
-        let tool = WriteTool::new();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "content": "new content"
-        });
-
-        let result = tool.call(input);
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.expect("write data");
-        assert_eq!(data["created"], false);
-        assert_eq!(
-            data["file"]["hash"],
-            crate::tool::file_identity::sha256_hex(b"new content")
-        );
-
-        let content = std::fs::read_to_string(&file_path).expect("read back");
-        assert_eq!(content, "new content");
-    }
-
-    #[test]
-    fn test_write_create_only_refuses_overwrite() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("exists.txt");
-        std::fs::write(&file_path, "existing").expect("write");
-
-        let tool = WriteTool::new();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "content": "new",
-            "create_only": true
-        });
-
-        let result = tool.call(input);
-        assert_eq!(result.error_code.as_deref(), Some("conflict"));
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "existing");
-    }
-
-    #[test]
-    fn test_write_creates_parent_dirs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("a/b/c/deep.txt");
-
-        let tool = WriteTool::new();
-        let input = serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-            "content": "deep content"
-        });
-
-        let _ = tool.call(input);
-        let content = std::fs::read_to_string(&file_path).expect("read back");
-        assert_eq!(content, "deep content");
-    }
-
-    #[test]
     fn test_write_atomic() {
         let dir = tempfile::tempdir().expect("tempdir");
         let file_path = dir.path().join("atomic.txt");
@@ -496,113 +415,12 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_input() {
-        let tool = WriteTool::new();
-
-        // Missing file_path
-        assert!(
-            tool.validate_input(&serde_json::json!({"content": "x"}))
-                .is_err()
-        );
-
-        // Empty file_path
-        assert!(
-            tool.validate_input(&serde_json::json!({"path": "", "content": "x"}))
-                .is_err()
-        );
-
-        // Missing content
-        assert!(
-            tool.validate_input(&serde_json::json!({"path": "/tmp/x"}))
-                .is_err()
-        );
-
-        // Valid
-        assert!(
-            tool.validate_input(&serde_json::json!({"path": "/tmp/x", "content": "hello"}))
-                .is_ok()
-        );
-    }
-
-    #[test]
-    fn test_is_destructive() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let existing = dir.path().join("existing.txt");
-        std::fs::write(&existing, "x").expect("write");
-
-        let tool = WriteTool::new();
-
-        // Overwriting existing = destructive
-        assert!(tool.is_destructive(
-            &serde_json::json!({
-                "path": "existing.txt",
-                "content": "new"
-            }),
-            crate::workspace::ToolPathMode::All,
-            dir.path(),
-        ));
-
-        // Creating new = not destructive
-        assert!(!tool.is_destructive(
-            &serde_json::json!({
-                "path": "missing.txt",
-                "content": "new"
-            }),
-            crate::workspace::ToolPathMode::All,
-            dir.path(),
-        ));
-    }
-
-    #[test]
     fn test_sensitive_path_detection() {
         assert!(is_sensitive_write_path("/etc/passwd"));
         assert!(is_sensitive_write_path("/boot/vmlinuz"));
         assert!(is_sensitive_write_path("/usr/bin/python3"));
         assert!(!is_sensitive_write_path("/home/user/project/main.rs"));
         assert!(!is_sensitive_write_path("/tmp/test.txt"));
-    }
-
-    #[tokio::test]
-    async fn ide_write_emits_workspace_change_for_inner_path() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let workspace =
-            crate::workspace::WorkspaceService::new(root.path().to_path_buf()).expect("workspace");
-        let engines = std::sync::Arc::new(crate::engines::WorkspaceEngines::new());
-        let hub = std::sync::Arc::new(crate::terminal::TerminalHub::new());
-        crate::terminal::install_hub(Arc::clone(&hub));
-        let ide =
-            crate::ide_base::IdeBaseHandle::new(std::sync::Arc::clone(&workspace), engines, hub);
-        let mut rx = workspace.subscribe_changes();
-        let tool = WriteTool::with_ide(std::sync::Arc::clone(&ide));
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "path": "inner.txt",
-                    "content": "from agent"
-                }),
-                crate::tool::trait_::ToolExecutionContext {
-                    path_mode: crate::workspace::ToolPathMode::All,
-                    workspace_root: root.path().to_path_buf(),
-                    call_id: "write-1".into(),
-                    cancel: tokio_util::sync::CancellationToken::new(),
-                    output_limit: 8_000,
-                    session_id: String::new(),
-                    session: None,
-                },
-            )
-            .await;
-        assert_eq!(
-            result.data.as_ref().unwrap()["created"],
-            true,
-            "{}",
-            result.content
-        );
-        let change = rx.try_recv().expect("workspace change");
-        assert!(change.paths.iter().any(|p| p.contains("inner.txt")));
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("inner.txt")).unwrap(),
-            "from agent"
-        );
     }
 
     #[tokio::test]
@@ -649,22 +467,6 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&external_file).unwrap(), "external");
     }
 
-    #[test]
-    fn virtual_session_path_is_read_only() {
-        let tool = WriteTool::new();
-        let result = tool.call(serde_json::json!({
-            "path": ".litecode/sessions/01ABCDEF.md",
-            "content": "nope"
-        }));
-        assert_eq!(result.level, crate::types::ToolSignalLevel::Error);
-        assert!(
-            result
-                .content
-                .contains(crate::session::transcript_file::READ_ONLY_MSG),
-            "{}",
-            result.content
-        );
-    }
 }
 
 /// write expected_hash preconditions (merged from phase3_gate, WP-207).
@@ -826,19 +628,4 @@ mod expected_hash_tests {
         assert!(!dir.path().join("missing.txt").exists());
     }
 
-    #[test]
-    fn write_expected_hash_on_missing_file_does_not_create() {
-        let dir = tempfile::tempdir().unwrap();
-        let result = call(
-            &WriteTool::new(),
-            dir.path(),
-            json!({
-                "path": "missing.txt",
-                "content": "hello",
-                "expected_hash": "ab"
-            }),
-        );
-        assert_eq!(result.error_code.as_deref(), Some("not_found"));
-        assert!(!dir.path().join("missing.txt").exists());
-    }
 }

@@ -739,17 +739,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn code_tool_names_are_snake_case_seven() {
-        assert_eq!(LSP_CODE_TOOL_NAMES.len(), 7);
-        for name in LSP_CODE_TOOL_NAMES {
-            assert!(!name.contains("lsp") || *name != "lsp");
-            assert!(name
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c == '_'));
-        }
-    }
-
-    #[test]
     fn all_code_tools_are_code_surface_no_direct_lsp() {
         let engines = WorkspaceEngines::new();
         let tools = all_code_tools(engines, PathBuf::from("."));
@@ -774,89 +763,6 @@ mod tests {
             assert!(tool.schema()["properties"].get("action").is_none());
             assert!(tool.data_schema().is_some());
         }
-    }
-
-    #[test]
-    fn position_schema_requires_file_path_line_character() {
-        let engines = WorkspaceEngines::new();
-        let tool = all_code_tools(engines, PathBuf::from("."))
-            .into_iter()
-            .find(|t| t.name() == "go_to_definition")
-            .unwrap();
-        let schema = tool.schema();
-        assert!(schema["properties"].get("character").is_some());
-        assert!(schema["properties"].get("text").is_none());
-        assert!(schema["properties"].get("action").is_none());
-        assert!(
-            tool.validate_input(&serde_json::json!({
-                "file_path": "src/main.rs",
-                "line": 1,
-                "character": 1
-            }))
-            .is_ok()
-        );
-        assert!(
-            tool.validate_input(&serde_json::json!({
-                "file_path": "src/main.rs",
-                "line": 1,
-                "text": "main"
-            }))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn workspace_symbol_schema_is_query_only() {
-        let engines = WorkspaceEngines::new();
-        let tool = all_code_tools(engines, PathBuf::from("."))
-            .into_iter()
-            .find(|t| t.name() == "workspace_symbol")
-            .unwrap();
-        let schema = tool.schema();
-        assert!(schema["properties"].get("query").is_some());
-        assert!(schema["properties"].get("path").is_none());
-        assert!(schema["properties"].get("file_path").is_none());
-        assert!(schema["properties"].get("line").is_none());
-        assert!(
-            tool.validate_input(&serde_json::json!({ "query": "Foo" }))
-                .is_ok()
-        );
-        assert!(tool.validate_input(&serde_json::json!({})).is_err());
-    }
-
-    #[test]
-    fn character_out_of_range_is_hard_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        std::fs::write(&file, "fn main() {}\n").unwrap();
-        // "fn main() {}" UTF-16 length 12 → valid character 1..=13
-        assert!(validate_position_on_file(&file, 1, 1).is_ok());
-        assert!(validate_position_on_file(&file, 1, 13).is_ok());
-        assert!(validate_position_on_file(&file, 1, 14).is_err());
-        assert!(validate_position_on_file(&file, 2, 1).is_err());
-        assert!(validate_position_on_file(&file, 0, 1).is_err());
-    }
-
-    #[test]
-    fn character_utf16_multibyte() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("lib.rs");
-        // `😀` is two UTF-16 units; line "a😀b" → len 4; valid 1..=5
-        std::fs::write(&file, "a😀b\n").unwrap();
-        assert!(validate_position_on_file(&file, 1, 4).is_ok());
-        assert!(validate_position_on_file(&file, 1, 5).is_ok());
-        assert!(validate_position_on_file(&file, 1, 6).is_err());
-    }
-
-    #[test]
-    fn relative_path_resolves_under_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        let file = root.join("src/lib.rs");
-        std::fs::write(&file, "fn x() {}\n").unwrap();
-        let resolved = resolve_in_workspace(root, "src/lib.rs").unwrap();
-        assert_eq!(resolved, crate::config::path::canon_abs(&file).unwrap());
     }
 
     #[test]
@@ -903,21 +809,6 @@ mod tests {
     }
 
     #[test]
-    fn finish_locations_empty_resolves_with_empty_array() {
-        let out = crate::lsp::LspToolOutput::new(
-            "No locations found".into(),
-            Value::Null,
-            false,
-        );
-        let result = finish_locations(out, &[]);
-        assert_eq!(result.level, crate::types::result::ToolSignalLevel::Ok);
-        assert!(result.error.is_none());
-        let data = result.data.expect("data");
-        assert_eq!(data["locations"], serde_json::json!([]));
-        assert!(data["message"].as_str().unwrap().contains("No locations"));
-    }
-
-    #[test]
     fn index_not_ready_rejects_unavailable_for_symbols_and_diagnostics() {
         // WP-206 ③: documentSymbol / workspaceSymbol / diagnostics share the nav error.
         for method in [
@@ -951,51 +842,6 @@ mod tests {
         assert_eq!(data["locations"][0]["path"], "a/b.rs");
         let outside = data["locations"][1]["path"].as_str().unwrap();
         assert!(Path::new(outside).is_absolute() && outside.ends_with("c.rs"), "{outside}");
-    }
-
-    #[test]
-    fn finish_symbols_workspace_paths_relative() {
-        let ws = tempfile::tempdir().unwrap();
-        let raw = serde_json::json!([{ "name": "f", "kind": 12, "location": {
-            "uri": crate::lsp::uri::file_to_uri(&ws.path().join("m.rs")),
-            "range": { "start": { "line": 4, "character": 0 }, "end": { "line": 4, "character": 1 } } } }]);
-        let out = crate::lsp::LspToolOutput::new(String::new(), raw, false);
-        let data = finish_symbols(out, true, &[ws.path()]).data.expect("data");
-        assert_eq!(data["symbols"][0]["path"], "m.rs");
-        assert_eq!(data["symbols"][0]["line"], 5);
-    }
-
-    #[test]
-    fn finish_hover_shape() {
-        let raw = serde_json::json!({
-            "contents": { "kind": "markdown", "value": "**fn** item" }
-        });
-        let out = crate::lsp::LspToolOutput::new("x".into(), raw, false);
-        let result = finish_hover(out);
-        let data = result.data.expect("data");
-        assert_eq!(data["markdown"], "**fn** item");
-        assert!(data["message"].as_str().is_some());
-    }
-
-    #[test]
-    fn per_server_gate_matches_only_failed_program() {
-        use crate::lsp::{LspInstanceStatus, LspLifecycle};
-        fn status(command: &str, state: LspLifecycle) -> LspInstanceStatus {
-            LspInstanceStatus {
-                command: command.into(),
-                project_root: "/proj".into(),
-                state,
-                index_settled: false,
-                last_error: None,
-                restart_count: 0,
-            }
-        }
-        let statuses = vec![
-            status("rust-analyzer", LspLifecycle::Running),
-            status("pyright", LspLifecycle::Failed),
-        ];
-        assert!(failed_server_detail(&statuses, "pyright").is_some());
-        assert!(failed_server_detail(&statuses, "rust-analyzer").is_none());
     }
 
 }

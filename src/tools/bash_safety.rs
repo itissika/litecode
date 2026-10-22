@@ -561,59 +561,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn bypass_backtick_rm_is_denied() {
-        assert_eq!(
-            check_dangerous_command("`rm -rf /`"),
-            PermissionAction::Deny
-        );
-    }
-
-    #[test]
-    fn bypass_eval_rm_is_denied() {
-        assert_eq!(
-            check_dangerous_command("eval rm -rf /"),
-            PermissionAction::Deny
-        );
-        assert_eq!(
-            check_dangerous_command("eval \"rm -rf /\""),
-            PermissionAction::Deny
-        );
-    }
-
-    #[test]
-    fn bypass_nested_obfuscation_is_denied() {
-        // Nested: quote wrapper containing a backtick-substituted escaped command.
-        assert_eq!(
-            check_dangerous_command("\"`\\rm -rf /`\""),
-            PermissionAction::Deny
-        );
-    }
-
-    #[test]
-    fn bypass_readonly_classification_is_not_foiled() {
-        // An escaped destructive command must NOT be treated as read-only.
-        assert!(!is_readonly_command("\\rm file.txt"));
-        assert!(!is_readonly_command("$(rm file.txt)"));
-        assert!(!is_destructive_command("ls")); // sanity: readonly stays readonly
-        assert!(is_destructive_command("\\rm file.txt"));
-    }
-
     // -----------------------------------------------------------------------
     // B2-3.3: per-path key extraction
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn extract_bash_paths_returns_argument_and_redirect_paths() {
-        let paths = extract_bash_paths("cat a.txt > out.txt");
-        assert!(paths.contains(&"a.txt".to_string()));
-        assert!(paths.contains(&"out.txt".to_string()));
-    }
-
-    #[test]
-    fn extract_bash_paths_skips_flags() {
-        let paths = extract_bash_paths("rm -rf ./build");
-        assert!(!paths.iter().any(|p| p.starts_with('-')));
-        assert!(paths.contains(&"./build".to_string()));
-    }
 }

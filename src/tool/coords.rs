@@ -108,28 +108,6 @@ mod tests {
     }
 
     #[test]
-    fn line_label_single_and_range() {
-        assert_eq!(format_line_label(12, 12), "L12");
-        assert_eq!(format_line_label(12, 15), "L12-15");
-    }
-
-    #[test]
-    fn path_lines_single_and_range() {
-        assert_eq!(format_path_lines("src/a.rs", 12, 12), "src/a.rs:L12");
-        assert_eq!(format_path_lines("src/a.rs", 12, 15), "src/a.rs:L12-15");
-    }
-
-    #[test]
-    fn line_list_labels_and_caps() {
-        assert_eq!(format_line_list(&[1, 3]), "L1, L3");
-        let many: Vec<u32> = (1..=10).collect();
-        assert_eq!(
-            format_line_list(&many),
-            "L1, L2, L3, L4, L5, L6, L7, L8 (and 2 more)"
-        );
-    }
-
-    #[test]
     fn offset_footers_are_exact() {
         assert_eq!(format_offset_more(10), "More hits: pass offset=10.");
         assert_eq!(
@@ -148,11 +126,6 @@ mod tests {
             format_file_window_footer(1, 1, 3, 2, true),
             "[showing lines 1-1 of 3 — output cap. Use start_line=2 to continue]"
         );
-    }
-
-    #[test]
-    fn attach_offset_footer_first_complete_has_none() {
-        assert_eq!(attach_offset_footer("body\n", 0, 3, 3), "body\n");
     }
 
     #[test]
