@@ -1,0 +1,26 @@
+# WP-204 follow-up
+               total        used        free      shared  buff/cache   available
+Mem:              15          11           0           0           3           3
+Swap:              0           0           0
+   Compiling thiserror v1.0.69
+   Compiling thiserror-impl v1.0.69
+   Compiling proc-macro-error-attr3 v3.1.1
+   Compiling proc-macro-error3 v3.1.1
+   Compiling serde_path_to_error v0.1.20
+warning: fields `seq`, `tool`, `summary`, `error_code`, and `error_message` are never read
+32 |     pub error_code: Option<String>,
+33 |     pub error_message: Option<String>,
+test tool::sdk_snapshot::phase0_run_code_sdk_snapshot ... ok
+test tool::sdk_snapshot::sdk_hash_is_stable_for_the_same_tool_set_under_different_cwd_and_permission ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2200 filtered out; finished in 0.01s
+EXIT 0
+test engines::session_search::tests::agent_view_spills_the_remainder_into_a_named_file ... FAILED
+test tools::session_search::tests::a_result_over_budget_names_the_file_that_holds_the_rest ... FAILED
+test tools::session_search::tests::search_hit_line_matches_virtual_read ... FAILED
+thread 'engines::session_search::tests::agent_view_spills_the_remainder_into_a_named_file' (17124) panicked at src/engines/session_search/mod.rs:2107:74:
+thread 'tools::session_search::tests::a_result_over_budget_names_the_file_that_holds_the_rest' (17188) panicked at src/tools/session_search.rs:390:68:
+thread 'tools::session_search::tests::search_hit_line_matches_virtual_read' (17273) panicked at src/tools/session_search.rs:589:9:
+test result: FAILED. 198 passed; 3 failed; 1 ignored; 0 measured; 2000 filtered out; finished in 14.56s
+EXIT 101
+
+# Baseline check (description reverted): same 3 session_search failures -> pre-existing, not caused by this change (spill-file read/virtual read env).
