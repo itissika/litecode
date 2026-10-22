@@ -74,6 +74,7 @@ fn origin(code_names: Arc<[String]>) -> ToolCallOrigin {
         file_note: None,
         permission_sink: None,
         plan_touch: None,
+        deadline: None,
     }
 }
 

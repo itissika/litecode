@@ -362,6 +362,7 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -399,6 +400,7 @@ async fn direct_call_of_code_tool_is_routed_before_authorization() {
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -439,6 +441,7 @@ async fn code_call_of_invisible_tool_is_not_found_and_does_not_run() {
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -484,6 +487,7 @@ async fn code_call_keeps_the_tools_own_permission_and_does_not_execute_a_deny() 
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -523,6 +527,7 @@ async fn code_success_without_matching_data_is_an_internal_error() {
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -573,6 +578,7 @@ async fn nested_and_direct_calls_note_the_same_paths() {
             file_note: Some(Arc::clone(&hook)),
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -601,6 +607,7 @@ async fn nested_and_direct_calls_note_the_same_paths() {
             file_note: Some(hook),
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         },
     )
     .await;
@@ -773,6 +780,7 @@ async fn direct_and_nested_calls_share_plan_touch() {
             file_note: None,
             permission_sink: None,
             plan_touch: Some(Arc::clone(&hook)),
+            deadline: None,
         },
     )
     .await;
@@ -802,6 +810,7 @@ async fn direct_and_nested_calls_share_plan_touch() {
             file_note: None,
             permission_sink: None,
             plan_touch: Some(hook),
+            deadline: None,
         },
     )
     .await;
