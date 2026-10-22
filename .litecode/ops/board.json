@@ -16052,13 +16052,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "ready",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-212",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T08:18:47.523Z",
+      "progress": "plan approved by gm",
+      "status_entered_at": null,
       "parent": null,
       "goal": "修 kill 假成功、未处理 rejection 静默、host-call 语法与文档小瑕疵；不合 main",
       "approver": "gm",
@@ -16084,6 +16084,12 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "WP-212 plan fill→submit；Q1–Q10 附推荐；Tools①④⑤ + Runtime②③；不加定时器"
+        },
+        {
+          "ts": "2026-10-22T08:19:24.751Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q10 按推荐；五刀不加定时器"
         }
       ]
     }
