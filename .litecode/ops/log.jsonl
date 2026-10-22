@@ -1485,3 +1485,4 @@
 {"ts":"2026-10-22T07:25:13.071Z","kind":"wp_lifecycle","source":"gm","summary":"WP-211: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T07:28:42.407Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T07:28:42.555Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T07:29:09.586Z","kind":"wp_lifecycle","source":"gm","summary":"WP-211: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}

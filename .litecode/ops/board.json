@@ -15982,13 +15982,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "ready",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-211",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T07:28:42.469Z",
+      "progress": "plan approved by gm",
+      "status_entered_at": null,
       "parent": null,
       "goal": "三项钉死：① write conflict/stale → ok:false reason conflict|stale（扩 soft_failure_reason；更 write.md/PRELUDE/ToolFailure；调 protected uncaught_tool_error）；② MSYS pathconv 命中 → ok:false exit_code:null（不加 timeout/background）；③ PRELUDE 去掉硬编码 LSP 七名，描述仅经 admitted blocks；desired=false 时 description/whitelist 无 LSP 名。不改 builtin_code_surface_tools、不弱 Ready+bind。详见 brief.md",
       "approver": "gm",
@@ -16014,6 +16014,12 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "三刀方案已填：① conflict/stale soft；② MSYS pathconv ok:false+exit_code null；③ PRELUDE 去 LSP 硬编码。Q1–Q8 附推荐，请批。"
+        },
+        {
+          "ts": "2026-10-22T07:29:09.496Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q8 按推荐；范围仅三刀"
         }
       ]
     }
