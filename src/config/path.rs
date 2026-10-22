@@ -161,23 +161,6 @@ mod tests {
         );
     }
 
-    #[test]
-    #[cfg(windows)] // Path::starts_with on `\\?\` + `\` components is Windows-only semantics; string strip is covered cross-platform above
-    fn strip_makes_verbatim_prefix_compatible() {
-        let root = PathBuf::from(r"E:\litecode");
-        let verbatim_file = PathBuf::from(r"\\?\E:\litecode\src\agent\core.rs");
-        assert!(
-            !verbatim_file.starts_with(&root),
-            "Windows verbatim vs stripped root must diverge before normalize"
-        );
-        let normalized = strip_verbatim(&verbatim_file);
-        assert_eq!(normalized, PathBuf::from(r"E:\litecode\src\agent\core.rs"));
-        assert!(
-            normalized.starts_with(&root),
-            "after strip, starts_with must succeed"
-        );
-    }
-
     #[cfg(windows)]
     #[test]
     fn is_under_is_case_insensitive_on_windows() {
