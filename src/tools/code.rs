@@ -119,6 +119,7 @@ impl CodeToolHost {
         cancel: CancellationToken,
         parent_call_id: &str,
         sink: &dyn PermissionSink,
+        deadline: Option<tokio::time::Instant>,
     ) -> ToolCallResult {
         execute_tool_call(
             call,
@@ -143,6 +144,7 @@ impl CodeToolHost {
                 file_note: self.file_note.clone(),
                 permission_sink: Some(self.sink()),
                 plan_touch: self.plan_touch.clone(),
+                deadline,
             },
         )
         .await
@@ -585,10 +587,12 @@ impl CodeTool {
                         let session_id = session_id.clone();
                         let parent_call_id = parent_call_id.clone();
                         let seq = info.seq;
+                        let deadline = tokio::time::Instant::now() + info.remaining;
                         async move {
                             invoke_binding(
                                 name,
                                 seq,
+                                deadline,
                                 args,
                                 cancel,
                                 pause,
@@ -651,6 +655,7 @@ impl CodeTool {
 async fn invoke_binding(
     name: String,
     seq: u64,
+    deadline: tokio::time::Instant,
     args: Json,
     cancel: CancellationToken,
     pause: BudgetPause,
@@ -712,6 +717,7 @@ async fn invoke_binding(
             cancel.child_token(),
             &parent_call_id,
             &sink,
+            Some(deadline),
         )
         .await;
     ledger.record(index, &result);

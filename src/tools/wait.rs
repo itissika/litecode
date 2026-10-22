@@ -203,7 +203,7 @@ mod tests {
         root: &std::path::Path,
         session: &str,
     ) -> String {
-        let runner = RunTool::new(Arc::clone(jobs));
+        let runner = RunTool::with_window(Arc::clone(jobs), Duration::from_millis(500));
         let started = runner
             .execute(
                 serde_json::json!({"command": sleep_shell(30)}),
@@ -260,7 +260,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (tool, jobs) = tool();
         let session = "sess-wait-exit";
-        let runner = RunTool::new(Arc::clone(&jobs));
+        let runner = RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(500));
         let started = runner
             .execute(
                 serde_json::json!({"command": echo_then_sleep("ready", 1)}),

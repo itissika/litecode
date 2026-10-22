@@ -782,11 +782,11 @@ pub enum WaitOutcome {
     UnknownId(String),
 }
 
-/// A `run_in_background` command keeps the exit arm selected for this long
-/// before detach. Shell startup on Windows is tens to low hundreds of
-/// milliseconds; without the window, `echo` is still alive at the first poll
-/// and would be detached with no result in the tool return.
-const BACKGROUND_EXIT_WINDOW: Duration = Duration::from_millis(500);
+/// Default foreground window for `run`: a command that exits within it returns
+/// its `exit_code` directly; one still alive afterwards detaches with
+/// `exit_code: null` and stays a `wait` / `kill` target. `run` may shorten it
+/// to the enclosing `run_code` budget.
+pub const RUN_FOREGROUND_WINDOW: Duration = Duration::from_secs(30);
 
 /// How the supervisor waits before it either returns the exit or detaches.
 #[derive(Debug, Clone, Copy)]
@@ -794,10 +794,10 @@ pub enum PipeDetach {
     /// Stay attached until exit, nested cancel, or `timeout`.
     /// A timeout while the process is still alive promotes; it does not kill.
     Foreground { timeout: Duration },
-    /// If the process is still alive after [`BACKGROUND_EXIT_WINDOW`], detach.
+    /// If the process is still alive after `window`, detach.
     /// The exit arm stays selected during that window, so a command that has
-    /// already finished (a fast `echo`) is `Exited` and is not detached.
-    Background,
+    /// already finished is `Exited` and is not detached.
+    Background { window: Duration },
 }
 
 /// One oneshot for the tool future. The supervisor chooses this in the same
@@ -833,6 +833,9 @@ pub struct PipeRequest {
     /// that sets `detached`. Never given to the stdout or stderr readers.
     pub cancel: CancellationToken,
     pub detach: PipeDetach,
+    /// Fired once `spawn()` succeeded. Dropped unsent on every early return
+    /// (cancel before spawn, spawn failure), so the receiver always resolves.
+    pub on_spawned: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 /// Own a piped child on the calling tokio runtime.
@@ -855,9 +858,10 @@ pub fn supervise_pipe(
 
 async fn run_pipe_supervisor(
     jobs: Arc<AgentJobRegistry>,
-    request: PipeRequest,
+    mut request: PipeRequest,
     tx: tokio::sync::oneshot::Sender<PipeDecision>,
 ) {
+    let on_spawned = request.on_spawned.take();
     if request.cancel.is_cancelled() {
         let _ = tx.send(PipeDecision::Cancelled {
             job_id: String::new(),
@@ -885,12 +889,16 @@ async fn run_pipe_supervisor(
     let mut child = match cmd.spawn() {
         Ok(child) => child,
         Err(e) => {
+            drop(on_spawned);
             let _ = tx.send(PipeDecision::Failed {
                 message: format!("failed to spawn: {e}"),
             });
             return;
         }
     };
+    if let Some(spawned) = on_spawned {
+        let _ = spawned.send(());
+    }
     let pid = child.id().filter(|pid| *pid != 0);
     crate::proc_lifetime::bind_child_to_parent(pid.unwrap_or(0));
     let stdout = child.stdout.take();
@@ -969,7 +977,11 @@ async fn run_pipe_supervisor(
     let detach_mode = request.detach;
     let timeout_at = match detach_mode {
         PipeDetach::Foreground { timeout } => Some(tokio::time::Instant::now() + timeout),
-        PipeDetach::Background => None,
+        PipeDetach::Background { .. } => None,
+    };
+    let background_window = match detach_mode {
+        PipeDetach::Background { window } => Some(window),
+        PipeDetach::Foreground { .. } => None,
     };
 
     loop {
@@ -1035,7 +1047,7 @@ async fn run_pipe_supervisor(
                     break;
                 }
             }
-            _ = tokio::time::sleep(BACKGROUND_EXIT_WINDOW), if !detached && matches!(detach_mode, PipeDetach::Background) => {
+            _ = tokio::time::sleep(background_window.unwrap_or_default()), if !detached && background_window.is_some() => {
                 if settle_detach_or_exit(
                     &jobs,
                     &mut child,
@@ -1247,6 +1259,7 @@ mod tests {
             call_id: call_id.into(),
             cancel,
             detach,
+            on_spawned: None,
         }
     }
 
@@ -1667,7 +1680,9 @@ mod tests {
                 &delayed_blob(),
                 "parent:code:9",
                 cancel2,
-                PipeDetach::Background,
+                PipeDetach::Background {
+                    window: Duration::from_millis(500),
+                },
             ),
         );
         let decision = recv_decision(rx).await;
@@ -1710,7 +1725,9 @@ mod tests {
                 &sleep_secs(30),
                 "call_kill",
                 CancellationToken::new(),
-                PipeDetach::Background,
+                PipeDetach::Background {
+                    window: Duration::from_millis(500),
+                },
             ),
         );
         let decision = recv_decision(rx).await;

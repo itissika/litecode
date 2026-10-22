@@ -138,6 +138,8 @@ pub type HostFuture = BoxFuture<'static, Result<serde_json::Value, HostError>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CallInfo {
     pub seq: u64,
+    /// Program budget left when the call began.
+    pub remaining: std::time::Duration,
 }
 
 /// Async host function. It receives one JSON argument, a cancellation token for

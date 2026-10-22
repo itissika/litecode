@@ -59,6 +59,7 @@ impl ToolPipeline {
             file_note: self.file_note.clone(),
             permission_sink: Some(Arc::clone(&self.runtime.permission_sink)),
             plan_touch: self.plan_touch.clone(),
+            deadline: None,
         }
     }
 

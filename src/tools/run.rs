@@ -1,7 +1,8 @@
 //! Code-surface shell starter (`run`).
 //!
-//! Spawns a pipe job on [`AgentJobRegistry`] with a short background detach
-//! window. Returns [`CommandData`] immediately: finished processes carry an
+//! Spawns a pipe job on [`AgentJobRegistry`] with a foreground window of
+//! [`RUN_FOREGROUND_WINDOW`] (capped by the enclosing `run_code` budget).
+//! Non-read-only commands hold the workspace locks only until spawn. Returns [`CommandData`] immediately: finished processes carry an
 //! exit code; still-running ones keep `exit_code = null` and remain wait/kill
 //! targets. No `kind`, timeout, promote, or `run_in_background`.
 
@@ -12,7 +13,9 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::context_pipeline::Context;
-use crate::terminal::{AgentJobRegistry, PipeDecision, PipeDetach, PipeRequest, supervise_pipe};
+use crate::terminal::{
+    AgentJobRegistry, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, supervise_pipe,
+};
 use crate::tool::Tool;
 use crate::tool::resource_gate::ToolEffects;
 use crate::tool::trait_::ToolExecutionContext;
@@ -22,13 +25,39 @@ use crate::tools::command_job::{self, present_command};
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
+/// Kept back from the `run_code` deadline so `run` returns before the program
+/// budget stops the whole call.
+const BUDGET_MARGIN: Duration = Duration::from_millis(250);
+
 pub struct RunTool {
     jobs: Arc<AgentJobRegistry>,
+    window: Duration,
 }
 
 impl RunTool {
     pub fn new(jobs: Arc<AgentJobRegistry>) -> Self {
-        Self { jobs }
+        Self {
+            jobs,
+            window: RUN_FOREGROUND_WINDOW,
+        }
+    }
+
+    /// Test hook: a shorter foreground window so detach tests stay fast.
+    #[cfg(test)]
+    pub(crate) fn with_window(jobs: Arc<AgentJobRegistry>, window: Duration) -> Self {
+        Self { jobs, window }
+    }
+
+    /// `min(window, run_code remaining - margin)`.
+    fn effective_window(&self, deadline: Option<tokio::time::Instant>) -> Duration {
+        match deadline {
+            Some(deadline) => self.window.min(
+                deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .saturating_sub(BUDGET_MARGIN),
+            ),
+            None => self.window,
+        }
     }
 
     fn discard_cancelled(&self, job_id: &str) {
@@ -85,6 +114,8 @@ impl RunTool {
             return coded_error("cancelled", "run cancelled before spawn");
         }
 
+        let scope = crate::tool::run_scope::current().unwrap_or_default();
+        let (spawned_tx, spawned_rx) = tokio::sync::oneshot::channel();
         let rx = supervise_pipe(
             Arc::clone(&self.jobs),
             PipeRequest {
@@ -94,10 +125,18 @@ impl RunTool {
                 session_id: execution.session_id.clone(),
                 call_id: execution.call_id.clone(),
                 cancel: execution.cancel.clone(),
-                // Short window: fast commands exit; otherwise detach with null exit.
-                detach: PipeDetach::Background,
+                // Exit inside the window returns exit_code; otherwise detach with null.
+                detach: PipeDetach::Background {
+                    window: self.effective_window(scope.deadline),
+                },
+                on_spawned: Some(spawned_tx),
             },
         );
+        // Resolves on spawn success, or with Err when the supervisor gave up
+        // before/at spawn. Either way the locks go now, not after the wait.
+        // Cancel/panic of this future drops them with the executor's scope.
+        let _ = spawned_rx.await;
+        scope.spawn_locks.release();
         let decision = match rx.await {
             Ok(decision) => decision,
             Err(_) => return coded_error("io", "run supervisor dropped the result"),
@@ -162,6 +201,10 @@ impl Tool for RunTool {
     }
 
     fn is_cancellable(&self) -> bool {
+        true
+    }
+
+    fn releases_lock_after_spawn(&self) -> bool {
         true
     }
 
@@ -247,7 +290,7 @@ mod tests {
 
     fn tool() -> (RunTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
-        (RunTool::new(Arc::clone(&jobs)), jobs)
+        (RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(500)), jobs)
     }
 
     fn execution(root: &Path) -> ToolExecutionContext {

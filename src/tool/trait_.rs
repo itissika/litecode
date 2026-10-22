@@ -160,6 +160,14 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// When true, the executor hands this call's resource-gate and write-lock
+    /// guards to [`crate::tool::run_scope::SpawnLocks`] instead of holding them
+    /// for the whole call. The tool releases them once its process is spawned
+    /// (`run`); every other exit path drops them with the call.
+    fn releases_lock_after_spawn(&self) -> bool {
+        false
+    }
+
     fn max_result_size(&self) -> usize {
         8000
     }

@@ -21,7 +21,8 @@ use uuid::Uuid;
 
 pub use agent_jobs::{
     AgentJobRecord, AgentJobRegistry, BashJobWire, BashJobsSnapshot, BashTailView, BashWaitWire,
-    ExitNotice, PipeDecision, PipeDetach, PipeRequest, RunningJob, WaitOutcome, command_preview,
+    ExitNotice, PipeDecision, PipeDetach, PipeRequest, RUN_FOREGROUND_WINDOW, RunningJob, WaitOutcome,
+    command_preview,
     supervise_pipe,
 };
 pub use error::{TerminalError, TerminalResult};

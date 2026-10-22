@@ -176,7 +176,7 @@ mod tests {
         root: &std::path::Path,
         session: &str,
     ) -> (String, u32) {
-        let runner = RunTool::new(Arc::clone(jobs));
+        let runner = RunTool::with_window(Arc::clone(jobs), Duration::from_millis(500));
         let started = runner
             .execute(
                 serde_json::json!({"command": sleep_shell(30)}),

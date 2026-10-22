@@ -408,6 +408,8 @@ pub struct ToolCallOrigin {
     pub permission_sink: Option<Arc<dyn PermissionSink>>,
     /// Fired once when a callable tool settles, for both callers.
     pub plan_touch: Option<PlanTouch>,
+    /// End of the enclosing `run_code` budget (nested calls only).
+    pub deadline: Option<tokio::time::Instant>,
 }
 
 impl ToolCallOrigin {
@@ -418,6 +420,7 @@ impl ToolCallOrigin {
             file_note: None,
             permission_sink: None,
             plan_touch: None,
+            deadline: None,
         }
     }
 }
@@ -599,7 +602,7 @@ pub async fn execute_tool_call(
 
     let path_mode = permission.path_mode(&tu_name).to_tool_path_mode();
     let effects = tool.effects(&effective_input, path_mode, &ctx.cwd);
-    let _effect_guard = match process_resource_gate().acquire(&effects, &cancel).await {
+    let effect_guard = match process_resource_gate().acquire(&effects, &cancel).await {
         Ok(guard) => guard,
         Err(()) => {
             emit_audit(data_root, "cancel", session_id, &tu_name, &tu_id, |e| {
@@ -617,7 +620,7 @@ pub async fn execute_tool_call(
         return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
     let resource_keys = effects.writes.clone();
-    let _lock_guard = if !resource_keys.is_empty() {
+    let lock_guard = if !resource_keys.is_empty() {
         match write_lock.try_acquire(&resource_keys, session_id) {
             Ok(()) => Some(WriteLockGuard {
                 lock: Arc::clone(&write_lock),
@@ -659,6 +662,22 @@ pub async fn execute_tool_call(
         return present_for_caller(&origin, cancelled_tool_result(&tu_name));
     }
 
+    // `run` keeps its locks only until spawn; everyone else holds them for the
+    // whole call. Either way the guards live no longer than this function.
+    let run_scope = crate::tool::run_scope::RunScope {
+        deadline: origin.deadline,
+        spawn_locks: Default::default(),
+    };
+    let _held_guards = if tool.releases_lock_after_spawn() {
+        run_scope.spawn_locks.hold(Box::new(effect_guard));
+        if let Some(guard) = lock_guard {
+            run_scope.spawn_locks.hold(Box::new(guard));
+        }
+        None
+    } else {
+        Some((effect_guard, lock_guard))
+    };
+
     let tool_clone = tool.clone();
     let input = effective_input.clone();
     let name = tu_name.clone();
@@ -679,7 +698,11 @@ pub async fn execute_tool_call(
         session,
     };
     // Build the tool execution future
-    let tool_fut = AssertUnwindSafe(tool_clone.execute(input, execution)).catch_unwind();
+    let _spawn_locks = run_scope.spawn_locks.clone();
+    let tool_fut = crate::tool::run_scope::scope(
+        run_scope,
+        AssertUnwindSafe(tool_clone.execute(input, execution)).catch_unwind(),
+    );
     tokio::pin!(tool_fut);
 
     // The tool's own budget is a safety net. On expiry, ask the tool to stop

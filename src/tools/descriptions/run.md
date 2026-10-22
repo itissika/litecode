@@ -2,6 +2,8 @@ Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`
 
 cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.
 
+The call waits in the foreground for up to about 30s (less if the `run_code` budget is shorter): a command that finishes within that window returns its `exit_code` directly. A longer one moves to the background and this call returns with `exit_code` `null`. Parallel `run` calls (e.g. via `Promise.all`) really run concurrently and may touch the same files; when order matters, chain them with `await` one after another.
+
 If the process is still running when this call returns, `exit_code` is `null` and `output` holds whatever is available so far (or a short status note). Keep waiting with `tools.wait({id, sec})`. Stop it with `tools.kill({id})`. Example (edit then test in one program):
 const edited = await tools.edit({path:"src/a.rs", old_string:"fn start()", new_string:"fn main()"});
 if (!edited.ok) return {ok:false, edited};

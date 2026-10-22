@@ -804,8 +804,12 @@ async fn invoke<'js>(
     let finish_clock = Arc::clone(&clock);
     let idx = ticket.idx;
     let seq = ticket.seq;
+    let remaining = clock.remaining();
     handle.spawn(async move {
-        let info = super::CallInfo { seq: ticket.seq };
+        let info = super::CallInfo {
+            seq: ticket.seq,
+            remaining,
+        };
         let result = AssertUnwindSafe(host.call(json_args, token, pause, info))
             .catch_unwind()
             .await;
