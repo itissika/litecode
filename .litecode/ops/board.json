@@ -15912,13 +15912,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-210",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-22T05:54:33.042Z",
+      "progress": "closed done by gm: PASS 846/0 @3d5ebbe",
+      "status_entered_at": null,
       "parent": null,
       "goal": "按 Andy 已定决策落地 A–K：失败保留部分结果、运行时异常行列栈、结构化截断、窄日志车道、保留 key 序、run 工具诚实结果（shell 身份/转码/stdout-stderr 分字段）、统一 ok 契约、read 降噪、只读 ls/stat/exists 与 LSP 暴露、websearch top_k/results[]、知识库失效引用清理；详见 brief.md",
       "approver": "gm",
@@ -15962,6 +15962,13 @@
           "actor": "backend_mid",
           "action": "deliver",
           "note": null
+        },
+        {
+          "ts": "2026-10-22T06:01:05.829Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "PASS 846/0 @3d5ebbe",
+          "to": "done"
         }
       ]
     }
