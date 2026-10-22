@@ -15686,13 +15686,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-207",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T01:33:43.944Z",
+      "progress": "awaiting acceptance by gm",
+      "status_entered_at": "2026-10-22T01:51:51.056Z",
       "parent": null,
       "goal": "清理测试膨胀：删除过时/冗余/低价值测试，保留核心路径覆盖地图，修 ptc 栈溢出可捕获 bug，lib+集成测试全绿",
       "approver": "gm",
@@ -15718,6 +15718,24 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "dig+plan；集成测当前编译不过（deadline），Q1-Q6"
+        },
+        {
+          "ts": "2026-10-22T01:34:21.359Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q6 按推荐；death_list 只保留仍可能回潮的守卫，已无引入路径的一并删；WP-206 集成测编译漏洞第一步补"
+        },
+        {
+          "ts": "2026-10-22T01:34:35.070Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T01:51:51.056Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "tip dadd9e1; full lib+tests 0 red on b81a42d"
         }
       ]
     }
