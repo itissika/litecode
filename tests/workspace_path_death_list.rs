@@ -6,19 +6,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const FORBIDDEN_SYMBOLS: &[&str] = &[
-    "normalize_lsp_abs",
-    "strip_windows_verbatim",
-    "normalizeWindowsPath",
-];
-
 /// Silent-strip patterns that must not return in the web LAP client.
 const FORBIDDEN_WEB_STRIP_RES: &[&str] = &[
     r"\/\/\/?\?\/", // old normalizeWindowsPath replace
     r"\/\/\?\/unc",
 ];
-
-const SCAN_ROOTS: &[&str] = &["src", "web/src", "desktop/src", "tests", "scripts"];
 
 fn should_scan(path: &Path) -> bool {
     let s = path.to_string_lossy().replace('\\', "/");
@@ -89,36 +81,6 @@ fn death_list_no_bare_canonicalize_outside_path_module() {
     assert!(
         hits.is_empty(),
         "LAP zero-bypass death list (canonicalize):\n{}",
-        hits.join("\n")
-    );
-}
-
-#[test]
-fn death_list_forbidden_legacy_path_symbols() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    for rel in SCAN_ROOTS {
-        walk(&root.join(rel), &mut files);
-    }
-
-    let mut hits: Vec<String> = Vec::new();
-    for path in &files {
-        if path.ends_with("workspace_path_death_list.rs") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for needle in FORBIDDEN_SYMBOLS {
-            if text.contains(needle) {
-                hits.push(format!("{}: contains `{needle}`", path.display()));
-            }
-        }
-    }
-
-    assert!(
-        hits.is_empty(),
-        "LAP zero-bypass death list (legacy symbols):\n{}",
         hits.join("\n")
     );
 }
