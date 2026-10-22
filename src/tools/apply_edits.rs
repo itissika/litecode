@@ -344,20 +344,4 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("replace_all"), "{err}");
     }
-
-    #[test]
-    fn description_mentions_serial_skip() {
-        let ctx = crate::context_pipeline::Context {
-            cwd: std::path::PathBuf::from("."),
-            workspace_paths: crate::config::resolved::WorkspacePaths::for_legacy_root(
-                std::path::Path::new("."),
-            ),
-            agents_md: None,
-            claude_md: None,
-        };
-        let text = tool().description(&ctx);
-        assert!(text.contains("serially") || text.contains("skipped"), "{text}");
-        assert!(text.contains("no `replace_all`") || text.contains("There is no"), "{text}");
-        assert!(text.contains("no `expected_hash`") || text.contains("There is no"), "{text}");
-    }
 }

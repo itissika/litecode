@@ -1621,7 +1621,7 @@ mod tests {
                 "servers": {
                     "Good": { "command": "npx" },
                     "empty": { "command": "  " },
-                    "bash": { "command": "npx" }
+                    "run": { "command": "npx" }
                 }
             }"#,
         )
@@ -1646,7 +1646,7 @@ mod tests {
         assert!(
             result
                 .content
-                .contains("`bash`: rejected — MCP server id 'bash' conflicts with a builtin tool"),
+                .contains("`run`: rejected — MCP server id 'run' conflicts with a builtin tool"),
             "{}",
             result.content
         );

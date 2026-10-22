@@ -1418,3 +1418,155 @@ mod tests {
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     }
 }
+
+/// grep message states (merged from phase2_gate, WP-207).
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod message_contract_tests {
+    use std::path::Path;
+
+    use serde_json::{Value, json};
+
+    use crate::tool::Tool;
+    use crate::tool::trait_::ToolExecutionContext;
+    use crate::tools::edit::EditTool;
+    use crate::tools::glob::GlobTool;
+    use crate::tools::grep::GrepTool;
+    use crate::tools::read::ReadTool;
+    use crate::types::ToolCallResult;
+
+    fn execution(root: &Path, path_mode: crate::workspace::ToolPathMode) -> ToolExecutionContext {
+        ToolExecutionContext {
+            path_mode,
+            workspace_root: root.to_path_buf(),
+            call_id: String::new(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            output_limit: usize::MAX,
+            session_id: String::new(),
+            session: None,
+        }
+    }
+
+    fn call<T: Tool>(
+        tool: &T,
+        root: &Path,
+        input: Value,
+        path_mode: crate::workspace::ToolPathMode,
+    ) -> ToolCallResult {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(tool.execute(input, execution(root, path_mode)))
+    }
+
+    fn safe<T: Tool>(tool: &T, root: &Path, input: Value) -> ToolCallResult {
+        call(tool, root, input, crate::workspace::ToolPathMode::Safe)
+    }
+
+    fn message(result: &ToolCallResult) -> String {
+        result
+            .data
+            .as_ref()
+            .and_then(|data| data.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn message_of(data: &Value) -> String {
+        data.get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn grep_message_no_match() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        let result = safe(&GrepTool, dir.path(), json!({"pattern": "missing"}));
+        assert!(message(&result).contains("No matches"), "{}", message(&result));
+        assert!(result.data.unwrap()["hits"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn grep_message_corpus_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = safe(&GrepTool, dir.path(), json!({"pattern": "anything"}));
+        assert!(message(&result).contains("No files"), "{}", message(&result));
+    }
+
+    #[test]
+    fn grep_message_glob_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "needle\n").unwrap();
+        let result = safe(
+            &GrepTool,
+            dir.path(),
+            json!({"pattern": "needle", "glob": "*.md"}),
+        );
+        assert!(
+            message(&result).to_lowercase().contains("glob"),
+            "{}",
+            message(&result)
+        );
+    }
+
+    #[test]
+    fn grep_message_path_excluded() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("hidden_dir")).unwrap();
+        std::fs::write(dir.path().join("hidden_dir/hidden.rs"), "needle\n").unwrap();
+        let root = dir.path().to_path_buf();
+        let result = with_excluded_dir(|| {
+            safe(
+                &GrepTool,
+                &root,
+                json!({"pattern": "needle", "path": "hidden_dir"}),
+            )
+        });
+        let msg = message(&result).to_lowercase();
+        assert!(msg.contains("hidden") || msg.contains("filter"), "{msg}");
+    }
+
+    #[test]
+    fn grep_message_binary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blob.bin"), [0u8, 1, 2, 3]).unwrap();
+        let result = safe(
+            &GrepTool,
+            dir.path(),
+            json!({"pattern": "a", "path": "blob.bin"}),
+        );
+        assert!(
+            message(&result).to_lowercase().contains("binary"),
+            "{}",
+            message(&result)
+        );
+    }
+
+    #[test]
+    fn grep_literal_searches_metacharacters() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a.b\naxb\n").unwrap();
+        let result = safe(
+            &GrepTool,
+            dir.path(),
+            json!({"pattern": "a.b", "literal": true}),
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(data["hits"][0]["text"], "a.b");
+    }
+
+    fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {
+        let mut file = crate::workspace::filter::WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("hidden_dir".into());
+        let mut out = None;
+        crate::workspace::filter::with_excludes_cache_for_test(file, || {
+            out = Some(f());
+        });
+        out.expect("cache test body ran")
+    }
+}

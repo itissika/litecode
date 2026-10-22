@@ -30,10 +30,6 @@ pub mod write;
 #[cfg(test)]
 mod baseline;
 #[cfg(test)]
-mod phase2_gate;
-#[cfg(test)]
-mod phase3_gate;
-#[cfg(test)]
 mod run_lock_gate;
 
 /// Model-facing description of a built-in tool.

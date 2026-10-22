@@ -666,3 +666,179 @@ mod tests {
         );
     }
 }
+
+/// write expected_hash preconditions (merged from phase3_gate, WP-207).
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod expected_hash_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
+    use crate::config::schema::GlobalSettings;
+    use crate::context_pipeline::Context;
+    use crate::permission::{PermissionEngine, deny_permission_sink};
+    use crate::tool::trait_::{Tool, ToolExecutionContext};
+    use crate::tool::write_lock::WorkspaceWriteLock;
+    use crate::tools::code::{CodeTool, CodeToolHost};
+    use crate::tools::edit::EditTool;
+    use crate::tools::write::WriteTool;
+    use crate::types::ToolCallResult;
+
+    fn execution(root: &Path) -> ToolExecutionContext {
+        ToolExecutionContext {
+            path_mode: crate::workspace::ToolPathMode::Safe,
+            workspace_root: root.to_path_buf(),
+            call_id: String::new(),
+            cancel: CancellationToken::new(),
+            output_limit: usize::MAX,
+            session_id: String::new(),
+            session: None,
+        }
+    }
+
+    fn call<T: Tool>(tool: &T, root: &Path, input: Value) -> ToolCallResult {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(tool.execute(input, execution(root)))
+    }
+
+    fn allow_engine(root: &Path) -> PermissionEngine {
+        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
+        PermissionEngine::resolver(resolved, "default", 0)
+    }
+
+    fn context(root: &Path) -> Context {
+        Context {
+            cwd: root.to_path_buf(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(root),
+            agents_md: None,
+            claude_md: None,
+        }
+    }
+
+    fn tools() -> Vec<Arc<dyn Tool>> {
+        vec![
+            Arc::new(crate::tools::read::ReadTool::default()),
+            Arc::new(EditTool::new()),
+            Arc::new(crate::tools::apply_edits::ApplyEditsTool::new()),
+            Arc::new(WriteTool::new()),
+        ]
+    }
+
+    async fn run_program(root: &Path, code: &str) -> ToolCallResult {
+        let host = Arc::new(CodeToolHost::new(
+            allow_engine(root),
+            context(root),
+            "default",
+            deny_permission_sink(),
+            root.join(".litecode"),
+            Arc::new(WorkspaceWriteLock::new()),
+            None,
+        ));
+        let tool = CodeTool::new(tools(), host);
+        tool.execute(
+            json!({ "code": code }),
+            ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::All,
+                workspace_root: root.to_path_buf(),
+                call_id: "p3-run".into(),
+                cancel: CancellationToken::new(),
+                output_limit: usize::MAX,
+                session_id: "p3-session".into(),
+                session: None,
+            },
+        )
+        .await
+    }
+
+    #[test]
+    fn write_expected_hash_mismatch_is_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let result = call(
+            &WriteTool::new(),
+            dir.path(),
+            json!({
+                "path": "note.txt",
+                "content": "beta\n",
+                "expected_hash": "0".repeat(64)
+            }),
+        );
+        assert_eq!(result.error_code.as_deref(), Some("stale"));
+        assert!(result.data.is_none());
+        assert_eq!(
+            result.error_details.as_ref().unwrap()["current_hash"],
+            crate::tool::file_identity::sha256_hex(b"alpha\n")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "alpha\n");
+    }
+
+    #[test]
+    fn write_expected_hash_match_returns_file_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let hash = crate::tool::file_identity::sha256_hex(b"alpha\n");
+        let result = call(
+            &WriteTool::new(),
+            dir.path(),
+            json!({
+                "path": "note.txt",
+                "content": "beta\n",
+                "expected_hash": hash
+            }),
+        );
+        assert!(result.error.is_none(), "{}", result.content);
+        let data = result.data.unwrap();
+        assert_eq!(data["created"], false);
+        assert_eq!(data["file"]["path"], "note.txt");
+        assert_eq!(
+            data["file"]["hash"],
+            crate::tool::file_identity::sha256_hex(b"beta\n")
+        );
+        assert_eq!(data["file"]["bytes"], 5);
+        assert!(data["file"].get("abs").is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "beta\n");
+    }
+
+    #[test]
+    fn write_create_only_with_expected_hash_on_missing_file_is_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = call(
+            &WriteTool::new(),
+            dir.path(),
+            json!({
+                "path": "missing.txt",
+                "content": "hello",
+                "create_only": true,
+                "expected_hash": "ab"
+            }),
+        );
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+        assert!(result.data.is_none());
+        assert!(!dir.path().join("missing.txt").exists());
+    }
+
+    #[test]
+    fn write_expected_hash_on_missing_file_does_not_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = call(
+            &WriteTool::new(),
+            dir.path(),
+            json!({
+                "path": "missing.txt",
+                "content": "hello",
+                "expected_hash": "ab"
+            }),
+        );
+        assert_eq!(result.error_code.as_deref(), Some("not_found"));
+        assert!(!dir.path().join("missing.txt").exists());
+    }
+}
