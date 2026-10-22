@@ -1154,10 +1154,343 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         })
     }
 
+    fn output_text(id: &str, text: &str) -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: id.into(),
+            output: FunctionCallOutput::Text(text.into()),
+            id: None,
+            status: None,
+        })
+    }
 
+    fn cache_count(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => {
+                let here = usize::from(map.contains_key("cache_control"));
+                here + map.values().map(cache_count).sum::<usize>()
+            }
+            Value::Array(items) => items.iter().map(cache_count).sum(),
+            _ => 0,
+        }
+    }
 
+    fn assert_thinking_uncached(value: &Value) {
+        match value {
+            Value::Object(map) => {
+                let kind = map.get("type").and_then(Value::as_str);
+                if kind == Some("thinking") || kind == Some("redacted_thinking") {
+                    assert!(
+                        map.get("cache_control").is_none(),
+                        "cache breakpoint landed on thinking: {value}"
+                    );
+                }
+                for child in map.values() {
+                    assert_thinking_uncached(child);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    assert_thinking_uncached(child);
+                }
+            }
+            _ => {}
+        }
+    }
 
+    fn without_cache_control(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut next = serde_json::Map::new();
+                for (key, child) in map {
+                    if key == "cache_control" {
+                        continue;
+                    }
+                    next.insert(key.clone(), without_cache_control(child));
+                }
+                Value::Object(next)
+            }
+            Value::Array(items) => Value::Array(items.iter().map(without_cache_control).collect()),
+            other => other.clone(),
+        }
+    }
 
+    /// The trailing "." is a prefill pad, not history. Drop it before comparing
+    /// one turn's messages with the next turn's.
+    fn history_messages(body: &Value) -> Vec<Value> {
+        let mut messages = body["messages"].as_array().cloned().unwrap_or_default();
+        if let Some(last) = messages.last() {
+            let pad = last.get("role").and_then(Value::as_str) == Some("user")
+                && last.pointer("/content/0/text").and_then(Value::as_str) == Some(".")
+                && last
+                    .get("content")
+                    .and_then(Value::as_array)
+                    .is_some_and(|blocks| blocks.len() == 1);
+            if pad {
+                messages.pop();
+            }
+        }
+        messages
+            .into_iter()
+            .map(|message| without_cache_control(&message))
+            .collect()
+    }
+
+    /// One conversation, two turns. The earlier request's messages are a prefix
+    /// of the later one: history is append-only, including signed thinking.
+    #[test]
+    fn later_turn_extends_the_previous_messages_prefix() {
+        let first = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("q1"),
+                    thinking("old", "sig-old"),
+                    assistant("a1"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let second = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("q1"),
+                    thinking("old", "sig-old"),
+                    assistant("a1"),
+                    user_text("q2"),
+                    thinking("new", "sig-new"),
+                    assistant("a2"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let prev = history_messages(&first);
+        let next = history_messages(&second);
+        assert!(
+            next.starts_with(&prev),
+            "closed-turn thinking left the later request\nprev={prev:?}\nnext={next:?}"
+        );
+    }
+
+    #[test]
+    fn text_turn_sends_adaptive_thinking_and_no_sampling() {
+        let body = codec()
+            .encode_body(&request(vec![user_text("hi")]), true)
+            .unwrap();
+        assert_eq!(body["model"], "claude-sonnet-5-5");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 64);
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("top_k").is_none());
+        assert!(body.get("tool_choice").is_none());
+        assert_eq!(body["system"][0]["text"], "sys");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(body["messages"][0]["content"][0]["text"], "hi");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert_eq!(body["output_config"]["effort"], "high");
+        assert_eq!(body["tools"][0]["name"], "read");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn zero_max_tokens_uses_the_model_cap() {
+        let mut params = request(vec![user_text("hi")]);
+        params.max_output_tokens = 0;
+        let body = codec().encode_body(&params, true).unwrap();
+        assert_eq!(body["max_tokens"], 128000);
+    }
+
+    #[test]
+    fn thinking_and_tool_signatures_round_trip_inside_the_open_turn() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("read a.rs"),
+                    thinking("Need the file.", "EqQBCg=="),
+                    assistant("Reading."),
+                    call("toolu_01", "read", r#"{"path":"a.rs"}"#),
+                    output_text("toolu_01", "contents"),
+                    thinking("Done.", "EqQBCg==second"),
+                    assistant("Summary."),
+                ]),
+                true,
+            )
+            .unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let first = &messages[1]["content"];
+        assert_eq!(first[0]["type"], "thinking");
+        assert_eq!(first[0]["thinking"], "Need the file.");
+        assert_eq!(first[0]["signature"], "EqQBCg==");
+        assert_eq!(first[1]["type"], "text");
+        assert_eq!(first[2]["type"], "tool_use");
+        assert_eq!(first[2]["id"], "toolu_01");
+        assert_eq!(first[2]["input"]["path"], "a.rs");
+        assert_eq!(messages[2]["content"][0]["type"], "tool_result");
+        assert_eq!(messages[2]["content"][0]["tool_use_id"], "toolu_01");
+        assert_eq!(messages[2]["content"][0]["content"], "contents");
+        assert!(messages[2]["content"][0].get("is_error").is_none());
+        let second = &messages[3]["content"];
+        assert_eq!(second[0]["signature"], "EqQBCg==second");
+        assert_eq!(second[1]["text"], "Summary.");
+    }
+
+    #[test]
+    fn omitted_thinking_replays_an_empty_body() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("hi"),
+                    thinking("", "sig-omit"),
+                    assistant("ok"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let thinking = &body["messages"][1]["content"][0];
+        assert_eq!(thinking["type"], "thinking");
+        assert_eq!(thinking["thinking"], "");
+        assert_eq!(thinking["signature"], "sig-omit");
+    }
+
+    #[test]
+    fn redacted_thinking_replays_without_the_storage_prefix() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("hi"),
+                    thinking("", "redacted_thinking:opaque"),
+                    assistant("ok"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let block = &body["messages"][1]["content"][0];
+        assert_eq!(block["type"], "redacted_thinking");
+        assert_eq!(block["data"], "opaque");
+        assert!(block.get("signature").is_none());
+    }
+
+    #[test]
+    fn thinking_from_a_closed_turn_stays() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("q1"),
+                    thinking("old", "sig-old"),
+                    assistant("a1"),
+                    user_text("q2"),
+                    thinking("new", "sig-new"),
+                    assistant("a2"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains("sig-old"), "{rendered}");
+        assert!(rendered.contains("sig-new"), "{rendered}");
+        assert_eq!(body["messages"][1]["content"][0]["signature"], "sig-old");
+        assert_eq!(body["messages"][1]["content"][1]["text"], "a1");
+        let last = body["messages"].as_array().unwrap().last().unwrap();
+        assert_eq!(last["role"], "user");
+        assert_eq!(last["content"][0]["text"], ".");
+    }
+
+    #[test]
+    fn signed_thinking_stays_when_the_transcript_opens_on_a_summary() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    assistant("[Conversation summary]\nearlier work"),
+                    thinking("kept", "sig-kept"),
+                    assistant("Grepping."),
+                    call("toolu_01", "read", r#"{"path":"a.rs"}"#),
+                    output_text("toolu_01", "contents"),
+                    thinking("next", "sig-next"),
+                    call("toolu_02", "read", r#"{"path":"b.rs"}"#),
+                    output_text("toolu_02", "more"),
+                    user_text("<system-reminder>\nenv\n</system-reminder>"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains("sig-kept"), "{rendered}");
+        assert!(rendered.contains("sig-next"), "{rendered}");
+        assert_eq!(
+            body["messages"][0]["content"][0]["text"],
+            "[Conversation summary]\nearlier work"
+        );
+    }
+
+    #[test]
+    fn a_reminder_after_a_tool_turn_keeps_its_thinking() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("do it"),
+                    thinking("Need the file.", "sig-open"),
+                    call("toolu_01", "read", "{}"),
+                    output_text("toolu_01", "ok"),
+                    assistant("running"),
+                    user_text("<system-reminder>\nremember\n</system-reminder>"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains("sig-open"), "{rendered}");
+    }
+
+    #[test]
+    fn thinking_off_drops_signed_history_before_encoding() {
+        let sonnet = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { off = \"between_tools\", low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let mut params = request(vec![
+            user_text("q1"),
+            thinking("old", "sig-old"),
+            assistant("a1"),
+            user_text("q2"),
+        ]);
+        params.thinking = ThinkingSpec::Off;
+        let target = sonnet.model.as_ref();
+        let producers: Vec<_> = params
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: target.provider_id.clone(),
+                    endpoint_type: Some("messages".into()),
+                    model_ref: Some(target.reference.clone()),
+                })
+            })
+            .collect();
+        let rebased = vec![false; params.input.len()];
+        let report = crate::llm::port::port(
+            &mut params.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 1);
+
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert!(!body.to_string().contains("sig-old"), "{body}");
+        assert_eq!(body["thinking"]["type"], "between_tools");
+        assert!(body["thinking"].get("block_binding").is_none());
+
+        params.input = vec![user_text("compacted")];
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "between_tools");
+        assert!(body["thinking"].get("block_binding").is_none());
+    }
 
     #[test]
     fn thinking_blocks_keep_their_order_inside_fences() {
@@ -1230,6 +1563,103 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
     }
 
     #[test]
+    fn a_reminder_stays_behind_the_tool_result() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("do it"),
+                    call("toolu_01", "read", "{}"),
+                    user_text("remember this"),
+                    output_text("toolu_01", "ok"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let user = &body["messages"][2];
+        assert_eq!(user["role"], "user");
+        assert_eq!(user["content"][0]["type"], "tool_result");
+        assert_eq!(user["content"][0]["tool_use_id"], "toolu_01");
+        assert_eq!(user["content"][1]["type"], "text");
+        assert_eq!(user["content"][1]["text"], "remember this");
+    }
+
+    #[test]
+    fn a_trailing_reminder_keeps_the_open_tool_turns_thinking() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("do it"),
+                    thinking("Need the file.", "sig-open"),
+                    call("toolu_01", "read", "{}"),
+                    output_text("toolu_01", "ok"),
+                    user_text("remember this"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let assistant = &body["messages"][1]["content"];
+        assert_eq!(assistant[0]["type"], "thinking");
+        assert_eq!(assistant[0]["signature"], "sig-open");
+        assert_eq!(assistant[1]["type"], "tool_use");
+        let follow = &body["messages"][2]["content"];
+        assert_eq!(follow[0]["type"], "tool_result");
+        assert_eq!(follow[1]["text"], "remember this");
+    }
+
+    #[test]
+    fn a_model_without_an_off_literal_stays_adaptive() {
+        let opus = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let mut params = request(vec![user_text("hi")]);
+        params.thinking = ThinkingSpec::Off;
+        let body = opus.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body["thinking"].get("display").is_none());
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert!(body.get("output_config").is_none());
+    }
+
+    #[test]
+    fn a_missing_tool_result_is_repaired() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("do it"),
+                    call("toolu_01", "read", "not-json"),
+                ]),
+                true,
+            )
+            .unwrap();
+        let result = &body["messages"][2]["content"][0];
+        assert_eq!(result["type"], "tool_result");
+        assert_eq!(result["is_error"], true);
+        assert_eq!(result["content"], NO_RESULT);
+        assert_eq!(
+            body["messages"][1]["content"][0]["input"],
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn an_orphan_tool_result_becomes_text() {
+        let body = codec()
+            .encode_body(
+                &request(vec![user_text("hi"), output_text("missing", "orphan")]),
+                true,
+            )
+            .unwrap();
+        let rendered = body.to_string();
+        assert!(rendered.contains(ORPHAN_RESULT));
+        assert!(rendered.contains("orphan"));
+        assert!(!rendered.contains("\"tool_result\""));
+    }
+
+    #[test]
     fn image_pdf_and_tool_image_map_to_blocks() {
         let image = InputContent::InputImage(InputImageContent {
             detail: Default::default(),
@@ -1290,6 +1720,183 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         let result = &body["messages"][2]["content"][0];
         assert_eq!(result["content"][0]["text"], "shot");
         assert_eq!(result["content"][1]["type"], "image");
+    }
+
+    #[test]
+    fn undeclared_media_degrades_to_text() {
+        let codec = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let body = codec
+            .encode_body(
+                &request(vec![Item::Message(MessageItem::Input(InputMessage {
+                    content: vec![
+                        InputContent::InputImage(InputImageContent {
+                            detail: Default::default(),
+                            file_id: None,
+                            image_url: Some("data:image/png;base64,AAAA".into()),
+                        }),
+                        InputContent::InputFile(InputFileContent {
+                            file_data: Some("data:application/pdf;base64,BBBB".into()),
+                            file_id: None,
+                            file_url: None,
+                            filename: Some("a.pdf".into()),
+                            detail: None,
+                        }),
+                    ],
+                    role: InputRole::User,
+                    status: None,
+                }))]),
+                true,
+            )
+            .unwrap();
+        let rendered = body["messages"][0]["content"].to_string();
+        assert!(rendered.contains("[image]"));
+        assert!(rendered.contains("a.pdf"));
+        assert!(!rendered.contains("base64"));
+    }
+
+    #[test]
+    fn thinking_binding_header_keeps_other_betas() {
+        assert_eq!(
+            thinking_binding_header(None),
+            "thinking-binding-controls-2026-08-01"
+        );
+        assert_eq!(
+            thinking_binding_header(Some("inline-tools-2026-09-15")),
+            "inline-tools-2026-09-15,thinking-binding-controls-2026-08-01"
+        );
+        assert_eq!(
+            thinking_binding_header(Some(
+                "thinking-binding-controls-2026-08-01,inline-tools-2026-09-15"
+            )),
+            "thinking-binding-controls-2026-08-01,inline-tools-2026-09-15"
+        );
+    }
+
+    #[test]
+    fn off_shapes_follow_the_catalog_literal() {
+        let opus = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let mut params = request(vec![user_text("hi")]);
+        params.thinking = ThinkingSpec::Off;
+        let body = opus.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert!(body["thinking"].get("display").is_none());
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert!(body.get("output_config").is_none());
+
+        let sonnet = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { off = \"between_tools\", low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let body = sonnet.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "between_tools");
+        assert!(body["thinking"].get("display").is_none());
+        assert!(body["thinking"].get("block_binding").is_none());
+        assert!(body.get("output_config").is_none());
+
+        let haiku = codec_at(
+            "https://opencode.ai/inference/anthropic/v1",
+            "modalities = [\"text\"]\nreasoning = { summary = \"summarized\", tiers = { off = \"disabled\", low = \"low\", medium = \"high\", high = \"max\" } }\n",
+        );
+        let body = haiku.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "disabled");
+        assert!(body["thinking"].get("block_binding").is_none());
+        assert!(body.get("output_config").is_none());
+
+        params.thinking = ThinkingSpec::Tier(ThinkingTier::High);
+        let body = haiku.encode_body(&params, true).unwrap();
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(body["thinking"]["display"], "summarized");
+        assert_eq!(
+            body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
+            "drop_block"
+        );
+        assert_eq!(body["output_config"]["effort"], "max");
+    }
+
+    #[test]
+    fn cache_breakpoints_skip_thinking_and_stay_within_three() {
+        let body = codec()
+            .encode_body(
+                &request(vec![
+                    user_text("u1"),
+                    thinking("think", "sig"),
+                    assistant("a1"),
+                    user_text("u2"),
+                ]),
+                true,
+            )
+            .unwrap();
+        assert!(cache_count(&body) <= 3, "{body}");
+        assert_eq!(cache_count(&body), 3);
+        assert_thinking_uncached(&body);
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert!(
+            body["messages"][0]["content"][0]
+                .get("cache_control")
+                .is_some()
+        );
+        assert!(
+            body["messages"].as_array().unwrap().last().unwrap()["content"][0]
+                .get("cache_control")
+                .is_some()
+        );
+        assert!(
+            body["messages"][1]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn reserved_messages_keys_are_refused_at_load() {
+        let text = r#"
+version = 1
+[[providers]]
+id = "zen"
+name = "OpenCode Zen"
+endpoint = "https://opencode.ai/inference/anthropic/v1"
+endpoint_type = "messages"
+auth = "bearer"
+headers = { "anthropic-version" = "2099-01-01" }
+[[models]]
+id = "m"
+provider_id = "zen"
+context_window = 256000
+max_output = 128000
+"#;
+        let error = ProviderCatalog::parse(text, Path::new("t.toml"))
+            .expect_err("reserved header")
+            .to_string();
+        assert!(error.contains("anthropic-version"), "{error}");
+
+        let text = r#"
+version = 1
+[[providers]]
+id = "zen"
+name = "OpenCode Zen"
+endpoint = "https://opencode.ai/inference/anthropic/v1"
+endpoint_type = "messages"
+auth = "bearer"
+[[models]]
+id = "m"
+provider_id = "zen"
+context_window = 256000
+max_output = 128000
+extra_body = { system = "nope" }
+"#;
+        let error = ProviderCatalog::parse(text, Path::new("t.toml"))
+            .expect_err("reserved body")
+            .to_string();
+        assert!(error.contains("system"), "{error}");
     }
 
     struct Scripted {
@@ -1361,6 +1968,105 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         ])
     }
 
+    fn header_has(raw: &str, name: &str, value: &str) -> bool {
+        raw.lines().any(|line| {
+            let Some((header, got)) = line.split_once(':') else {
+                return false;
+            };
+            header.eq_ignore_ascii_case(name) && got.trim() == value
+        })
+    }
+
+    #[tokio::test]
+    async fn stream_round_trip_keeps_the_signature_and_sends_the_version_header() {
+        let (endpoint, requests) = serve(vec![Scripted {
+            status: 200,
+            content_type: "text/event-stream",
+            body: ok_sse(),
+            declared_len: None,
+        }])
+        .await;
+        let codec = codec_at(&endpoint, REASONING);
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let collector = std::sync::Arc::clone(&seen);
+        let on_event: Option<Box<dyn FnMut(StreamEvents) + Send + '_>> =
+            Some(Box::new(move |event| collector.lock().unwrap().push(event)));
+        let items = codec
+            .complete_with_stream_events(
+                &request(vec![user_text("hi")]),
+                "sk-test",
+                on_event,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("stream");
+        let raw = requests.lock().unwrap()[0].clone();
+        assert!(
+            header_has(&raw, "anthropic-version", ANTHROPIC_VERSION),
+            "{raw}"
+        );
+        assert!(
+            header_has(&raw, "anthropic-beta", THINKING_BINDING_BETA),
+            "{raw}"
+        );
+        assert!(header_has(&raw, "authorization", "Bearer sk-test"), "{raw}");
+        assert!(header_has(&raw, "x-opencode-session", "ses_1"), "{raw}");
+        assert!(raw.contains("POST /v1/messages"), "{raw}");
+        match &items[0] {
+            Item::Reasoning(reasoning) => {
+                assert_eq!(reasoning.encrypted_content.as_deref(), Some("EqQBCg=="));
+            }
+            other => panic!("expected reasoning, got {other:?}"),
+        }
+        match &items[2] {
+            Item::FunctionCall(call) => {
+                assert_eq!(call.call_id, "toolu_01");
+                assert_eq!(call.arguments, "{}");
+            }
+            other => panic!("expected tool, got {other:?}"),
+        }
+        let events = seen.lock().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ResponseStreamEvent::ResponseCompleted(completed)
+                if completed.response.usage.as_ref().is_some_and(|usage| {
+                    usage.input_tokens == 140 && usage.input_tokens_details.cached_tokens == 40
+                })
+        )));
+    }
+
+    #[tokio::test]
+    async fn overloaded_status_is_retried() {
+        let (endpoint, requests) = serve(vec![
+            Scripted {
+                status: 529,
+                content_type: "application/json",
+                body:
+                    r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#
+                        .into(),
+                declared_len: None,
+            },
+            Scripted {
+                status: 200,
+                content_type: "text/event-stream",
+                body: ok_sse(),
+                declared_len: None,
+            },
+        ])
+        .await;
+        let codec = codec_at(&endpoint, REASONING);
+        let items = codec
+            .complete_with_stream_events(
+                &request(vec![user_text("hi")]),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("retried");
+        assert_eq!(requests.lock().unwrap().len(), 2);
+        assert!(matches!(items[1], Item::Message(_)));
+    }
 
     #[tokio::test]
     async fn empty_stream_retries_until_a_terminal_arrives() {
@@ -1391,6 +2097,32 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             .expect("retried empty stream");
         assert_eq!(requests.lock().unwrap().len(), 2);
         assert!(!items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn disconnect_after_items_keeps_the_partial() {
+        let (endpoint, requests) = serve(vec![Scripted {
+            status: 200,
+            content_type: "text/event-stream",
+            body: text_sse("recover me"),
+            declared_len: Some(4096),
+        }])
+        .await;
+        let codec = codec_at(&endpoint, REASONING);
+        let error = codec
+            .complete_with_stream_events(
+                &request(vec![user_text("hi")]),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("truncated");
+        let LitecodeError::LlmStreamInterrupted { partial, .. } = error else {
+            panic!("expected interrupted stream, got {error:?}");
+        };
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(crate::types::item_text_preview(&partial[0]), "recover me");
     }
 
     #[tokio::test]
@@ -1487,9 +2219,222 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
         }
     }
 
+    #[tokio::test]
+    async fn http_400_names_the_upstream_error_and_does_not_retry() {
+        let (endpoint, requests) = serve(vec![Scripted {
+            status: 400,
+            content_type: "application/json",
+            body: r#"{"type":"error","error":{"type":"invalid_request_error","message":"temperature is not supported"}}"#.into(),
+            declared_len: None,
+        }])
+        .await;
+        let codec = codec_at(&endpoint, REASONING);
+        let error = codec
+            .complete_with_stream_events(
+                &request(vec![user_text("hi")]),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("400");
+        let message = error.to_string();
+        assert!(message.contains("invalid_request_error"), "{message}");
+        assert!(
+            message.contains("temperature is not supported"),
+            "{message}"
+        );
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
 
+    fn tool_shot(call_id: &str, url: &str) -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: call_id.into(),
+            output: FunctionCallOutput::Content(vec![
+                InputContent::InputText(InputTextContent {
+                    text: "caption".into(),
+                }),
+                InputContent::InputImage(InputImageContent {
+                    detail: Default::default(),
+                    file_id: None,
+                    image_url: Some(url.into()),
+                }),
+            ]),
+            id: None,
+            status: None,
+        })
+    }
 
+    fn reasoning_text_only(text: &str) -> Item {
+        Item::Reasoning(ReasoningItem {
+            id: Some("rs_ds".into()),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText(
+                ReasoningTextContent { text: text.into() },
+            )]),
+            encrypted_content: None,
+            status: Some(OutputStatus::Completed),
+        })
+    }
 
+    /// The request the runtime would send: media notes, compaction flags, then
+    /// signature stripping, then the Messages body. The log itself is untouched.
+    fn wire_signatures(log: &[Item], seqs: &[Option<u64>]) -> Vec<String> {
+        let mut view = log.to_vec();
+        let mut rebased = crate::context_pipeline::media_budget::drop_stale_media(&mut view);
+        for (flag, compacted) in
+            rebased
+                .iter_mut()
+                .zip(crate::context_pipeline::summary::minted_before_summary(
+                    &view, seqs,
+                ))
+        {
+            *flag |= compacted;
+        }
+        crate::llm::strip_rebased_signatures(&mut view, &rebased, "messages");
+        let body = codec().encode_body(&request(view), true).unwrap();
+        let mut signatures = Vec::new();
+        collect_signatures(&body, &mut signatures);
+        signatures
+    }
 
+    fn collect_signatures(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if map.get("type").and_then(Value::as_str) == Some("thinking") {
+                    if let Some(signature) = map.get("signature").and_then(Value::as_str) {
+                        out.push(signature.to_string());
+                    }
+                }
+                for child in map.values() {
+                    collect_signatures(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    collect_signatures(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
 
+    fn seqs_in_order(log: &[Item]) -> Vec<Option<u64>> {
+        (0..log.len()).map(|index| Some(index as u64 + 1)).collect()
+    }
+
+    #[test]
+    fn a_user_image_drops_only_the_turn_that_saw_it() {
+        let mut log = vec![
+            crate::types::user_message("look", &["litecode-media:old.png".into()]),
+            thinking("see", "sig-img"),
+            assistant("saw"),
+            user_text("q1"),
+            thinking("plan", "sig-1"),
+            assistant("a1"),
+            user_text("q2"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+
+        log.extend([thinking("next", "sig-2"), assistant("a2"), user_text("q3")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-2".to_string()), "{sigs:?}");
+
+        log.extend([thinking("third", "sig-3"), assistant("a3")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(!sigs.contains(&"sig-img".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-2".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-3".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn two_tool_shots_then_a_later_turn_keeps_signatures_after_the_notes() {
+        let mut log = vec![
+            user_text("look"),
+            thinking("before", "sig-a"),
+            call("c1", "shot", "{}"),
+            tool_shot("c1", "https://example.com/old.png"),
+            thinking("answered old", "sig-b"),
+            call("c2", "shot", "{}"),
+            tool_shot("c2", "https://example.com/new.png"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+
+        log.extend([
+            thinking("answered new", "sig-c"),
+            assistant("done"),
+            user_text("next"),
+        ]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-c".to_string()), "{sigs:?}");
+
+        log.extend([thinking("after", "sig-d"), assistant("later")]);
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-a".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-b".to_string()), "{sigs:?}");
+        assert!(!sigs.contains(&"sig-c".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-d".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn compaction_keeps_thinking_signed_against_the_summary() {
+        let mut log = vec![
+            crate::context_pipeline::summary::compact_summary_message("prior decisions", false),
+            thinking("old", "sig-old"),
+            assistant("kept"),
+            user_text("go on"),
+        ];
+        let mut seqs = vec![Some(200), Some(10), Some(11), Some(201)];
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+
+        log.extend([
+            thinking("continue", "sig-new"),
+            call("c1", "read", "{}"),
+            output_text("c1", "file"),
+        ]);
+        seqs.extend([Some(202), Some(203), Some(204)]);
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-new".to_string()), "{sigs:?}");
+
+        log.extend([thinking("use the file", "sig-tool"), assistant("done")]);
+        seqs.extend([Some(205), Some(206)]);
+        let sigs = wire_signatures(&log, &seqs);
+        assert!(!sigs.contains(&"sig-old".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-new".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-tool".to_string()), "{sigs:?}");
+    }
+
+    #[test]
+    fn switching_away_and_back_keeps_each_haiku_signature() {
+        let log = vec![
+            user_text("q"),
+            thinking("haiku", "sig-h1"),
+            assistant("from haiku"),
+            user_text("switch"),
+            reasoning_text_only("deepseek thought"),
+            assistant("from deepseek"),
+            user_text("back"),
+            thinking("haiku again", "sig-h2"),
+            assistant("from haiku again"),
+            user_text("later"),
+        ];
+        let sigs = wire_signatures(&log, &seqs_in_order(&log));
+        assert!(sigs.contains(&"sig-h1".to_string()), "{sigs:?}");
+        assert!(sigs.contains(&"sig-h2".to_string()), "{sigs:?}");
+        assert!(
+            !sigs.iter().any(|signature| signature.is_empty()),
+            "{sigs:?}"
+        );
+    }
 }

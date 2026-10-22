@@ -750,6 +750,14 @@ fn copy_recursive(
 #[cfg(test)]
 mod tests {
     // WP-141: rescan requests reach every subscriber (router → full reconcile).
+    #[tokio::test]
+    async fn rescan_signal_reaches_subscribers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let mut rx = service.subscribe_rescan();
+        service.rescan_sender().send(()).unwrap();
+        assert!(rx.recv().await.is_ok());
+    }
 
     use super::*;
 
@@ -801,6 +809,106 @@ mod tests {
             last.as_deref(),
             Some(format!("f{}.txt", overflow - 1).as_str())
         );
+    }
+
+    #[test]
+    fn mkdir_rename_copy_and_reject_self_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+
+        service.mkdir("sub/nested").unwrap();
+        assert!(dir.path().join("sub/nested").is_dir());
+        assert!(matches!(
+            service.mkdir("sub/nested"),
+            Err(WorkspaceError::AlreadyExists(_))
+        ));
+
+        std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
+        let (from, to) = service.rename_path("a.txt", "b.txt", false).unwrap();
+        assert_eq!(from, "a.txt");
+        assert_eq!(to, "b.txt");
+        assert!(!dir.path().join("a.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "hello"
+        );
+
+        service.copy_path("b.txt", "sub/c.txt", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sub/c.txt")).unwrap(),
+            "hello"
+        );
+
+        std::fs::write(dir.path().join("sub/nested/inner.txt"), "x").unwrap();
+        service.copy_path("sub", "sub2", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("sub2/nested/inner.txt")).unwrap(),
+            "x"
+        );
+
+        assert!(matches!(
+            service.copy_path("sub", "sub/deeper", false),
+            Err(WorkspaceError::InvalidMove(_))
+        ));
+        assert!(matches!(
+            service.rename_path("sub", "sub/deeper", false),
+            Err(WorkspaceError::InvalidMove(_))
+        ));
+        assert!(matches!(
+            service.rename_path("b.txt", "sub/c.txt", false),
+            Err(WorkspaceError::AlreadyExists(_))
+        ));
+
+        service
+            .write_file_bytes("pic.bin", &[0, 1, 255], false)
+            .unwrap();
+        assert_eq!(
+            std::fs::read(dir.path().join("pic.bin")).unwrap(),
+            vec![0, 1, 255]
+        );
+        assert!(matches!(
+            service.write_file_bytes("pic.bin", &[2], false),
+            Err(WorkspaceError::AlreadyExists(_))
+        ));
+        service.write_file_bytes("pic.bin", &[9], true).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("pic.bin")).unwrap(), vec![9]);
+    }
+
+    #[test]
+    fn refuses_directory_overwrite_and_renames_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        std::fs::create_dir(dir.path().join("b")).unwrap();
+        std::fs::write(dir.path().join("a/x.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("file.txt"), "f").unwrap();
+
+        assert!(matches!(
+            service.rename_path("a", "b", true),
+            Err(WorkspaceError::InvalidMove(_))
+        ));
+        assert!(dir.path().join("a/x.txt").exists());
+        assert!(dir.path().join("b").exists());
+
+        assert!(matches!(
+            service.copy_path("file.txt", "a", true),
+            Err(WorkspaceError::InvalidMove(_))
+        ));
+
+        let (from, to) = service.rename_path("a", "c", false).unwrap();
+        assert_eq!(from, "a");
+        assert_eq!(to, "c");
+        assert!(dir.path().join("c/x.txt").exists());
+        assert!(!dir.path().join("a").exists());
+    }
+
+    #[test]
+    fn delete_removes_file_from_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        std::fs::write(dir.path().join("gone.txt"), "bye").unwrap();
+        service.delete_path("gone.txt", false).unwrap();
+        assert!(!dir.path().join("gone.txt").exists());
     }
 
     #[cfg(unix)]
@@ -861,4 +969,26 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn refuses_symlink_copy_escaping_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = WorkspaceService::new(dir.path().to_path_buf()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.txt"), "nope").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.txt"),
+            dir.path().join("evil.txt"),
+        )
+        .unwrap();
+        assert!(matches!(
+            service.copy_path("evil.txt", "out.txt", false),
+            Err(WorkspaceError::Sandbox(SandboxError::Escape))
+        ));
+        assert!(!dir.path().join("out.txt").exists());
+        assert!(
+            std::fs::symlink_metadata(dir.path().join("out.txt")).is_err(),
+            "must not leave a half-written escape link"
+        );
+    }
 }

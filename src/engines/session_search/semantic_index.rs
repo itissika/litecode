@@ -1919,6 +1919,35 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn session_index_round_trip_and_search() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        {
+            let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("alpha session semantic marker omega")])
+                .unwrap();
+        }
+        let reader = crate::session::SessionDataReader::open(&db);
+
+        let mut emb = HashEmbedder;
+        let index = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert!(!index.is_empty());
+
+        let q = emb.embed_one("session semantic marker").unwrap();
+        let hits = index.search(&q, 8, None).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits[0].summary.contains("semantic marker"));
+
+        // Already durable batch by batch (WP-144): no separate save step.
+        let loaded = SessionSemanticIndex::load(root).unwrap();
+        assert_eq!(loaded.len(), index.len());
+    }
+
+    #[test]
     fn dense_corpus_chunks_long_rows_with_ranges_and_anchor() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
@@ -1960,6 +1989,168 @@ mod tests {
         let hits = index.search(&q, 4, None).unwrap();
         assert!(!hits.is_empty());
         assert!(hits.iter().any(|h| h.char_end > h.char_start));
+    }
+
+    #[test]
+    fn session_index_reconcile_adds_new_rows() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let mut emb = HashEmbedder;
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut index = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(index.len(), 1);
+
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+        let reloaded = load_session_index(root).unwrap();
+        assert_eq!(reloaded.len(), 1, "load must not digest new session rows");
+        queue_session_dirty(root, &reader);
+        assert!(
+            session_has_pending_work(root),
+            "watermark lag must be queued, not embedded"
+        );
+        index.reconcile(&reader, root, &mut emb).unwrap();
+        assert_eq!(index.len(), 2);
+        assert!(!session_has_pending_work(root));
+    }
+
+    #[test]
+    fn session_work_none_when_hint_cleared() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        write_session_queue_counts(root, 3, 3);
+        assert_eq!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::None,
+            "a job record without sessions.db or vectors is not engine work"
+        );
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("seed")]).unwrap();
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut emb = HashEmbedder;
+        let _ = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::None
+        );
+        data.insert_items(&id, &[user_text("later")]).unwrap();
+        queue_session_dirty(root, &reader);
+        assert!(matches!(
+            session_work_from_disk(root),
+            crate::engines::code_search::IndexWork::Update { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unchanged_store_is_not_reconciled_again() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let mut emb = HashEmbedder;
+        let reader = crate::session::SessionDataReader::open(&db);
+        let mut index = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert!(!session_has_pending_work(root));
+
+        let dir = root.join(".litecode").join("session-index");
+        let before = (
+            std::fs::read(dir.join("chunks.jsonl")).unwrap(),
+            std::fs::read(dir.join("meta.json")).unwrap(),
+        );
+
+        // Nothing moved: the second reconcile stops at the key list, so the
+        // projection never runs and neither index file is touched.
+        assert!(!index.reconcile(&reader, root, &mut emb).unwrap());
+        assert_eq!(
+            (
+                std::fs::read(dir.join("chunks.jsonl")).unwrap(),
+                std::fs::read(dir.join("meta.json")).unwrap(),
+            ),
+            before,
+            "an unchanged store must not rewrite the index"
+        );
+
+        // The store moves: the same call picks the row up.
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+        assert!(index.reconcile(&reader, root, &mut emb).unwrap());
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn a_write_after_the_last_consume_is_work_without_a_hint() {
+        use crate::engines::code_search::IndexWork;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let mut emb = HashEmbedder;
+        let reader = crate::session::SessionDataReader::open(&db);
+        let _ = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(
+            session_work_now(root, &reader),
+            IndexWork::None,
+            "a consumed index is up to date"
+        );
+
+        data.insert_items(&id, &[user_text("later row")]).unwrap();
+        assert!(
+            !session_has_pending_work(root),
+            "the writer never touches the job record, so nothing else would see this row"
+        );
+        assert!(
+            matches!(session_work_now(root, &reader), IndexWork::Update { .. }),
+            "the live watermark, not the hint file, decides the work"
+        );
+    }
+
+    #[test]
+    fn a_dense_rebuild_keeps_the_sparse_index() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let db = root.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+
+        let reader = crate::session::SessionDataReader::open(&db);
+        crate::engines::session_search::ensure_sparse_index(&reader).unwrap();
+        let sparse = crate::engines::session_search::sparse_index_path(reader.data_root());
+        let before = std::fs::read(&sparse).unwrap();
+
+        // No meta.json yet, so this is the dense rebuild path: the one that used
+        // to `remove_dir_all` the shared directory and take the sparse lane's
+        // index with it, leaving the next search to rebuild it inline.
+        let mut emb = HashEmbedder;
+        let mut index = SessionSemanticIndex::new_empty().unwrap();
+        consume_session_index(root, &reader, &mut emb, &mut index).unwrap();
+        assert!(meta_path(root).is_file(), "the dense lane did rebuild");
+        assert_eq!(
+            std::fs::read(&sparse).unwrap(),
+            before,
+            "a dense rebuild must not touch the sparse lane's index"
+        );
     }
 
     // ---- WP-135 progress -------------------------------------------------
@@ -2167,6 +2358,26 @@ mod tests {
             session_corpus_progress(root, warm()).phase,
             Some(CorpusPhase::Embedding)
         );
+    }
+
+    #[test]
+    fn wp135_legacy_queue_without_kept_chunks_falls_back_to_indexed() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let (_data, _id, db, _lease) = seeded(root, 3);
+        let reader = crate::session::SessionDataReader::open(&db);
+        let index = ensure_session_index(root, &reader, &mut HashEmbedder).unwrap();
+        // A queue.json from before `kept_chunks` existed.
+        std::fs::write(
+            session_queue_path(root),
+            r#"{"queued": 2, "embed_dirty": 2}"#,
+        )
+        .unwrap();
+        let p = session_corpus_progress(root, warm());
+        assert_invariants(&p);
+        assert_eq!(p.phase, Some(CorpusPhase::Scanning));
+        assert_eq!(p.chunks_done, index.len() as u64, "not 0");
+        assert_eq!(p.files_pending, 2);
     }
 
     #[test]
@@ -2857,6 +3068,25 @@ mod tests {
         std::fs::write(&stray, b"half").unwrap();
         let _ = load_session_index(root).unwrap();
         assert!(!stray.exists());
+    }
+
+    #[test]
+    fn wp144_legacy_layout_migrates_without_reembedding() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let (_data, _id, db, _lease) = seeded(root, 40);
+        let reader = crate::session::SessionDataReader::open(&db);
+        let before = ensure_session_index(root, &reader, &mut HashEmbedder)
+            .unwrap()
+            .len();
+        SessionSemanticIndex::write_legacy_layout_for_test(root, false);
+        assert!(session_should_rebuild(root), "layout 0 alone would rebuild");
+        let (mut emb, texts) = CountingEmbedder::new();
+        let index = ensure_session_index(root, &reader, &mut emb).unwrap();
+        assert_eq!(index.len(), before);
+        assert_eq!(texts.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(!legacy_vectors_path(root).exists());
+        assert_eq!(read_meta(root).unwrap().unwrap().layout, LAYOUT);
     }
 
     fn built(rows: usize) -> (TempDir, SessionDataReader, usize, Box<dyn std::any::Any>) {

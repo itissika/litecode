@@ -222,6 +222,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn probes_pass_values_through() {
+        let mut acc = Acc::new();
+        assert_eq!(acc.time(|| 7), 7);
+        assert_eq!(time("t", || 8), 8);
+        let mut stages = Stages::new("t", Some(1));
+        stages.mark("a");
+        stages.note("b", acc);
+        lap_step("t", 1).done();
+        report_since("t", now(), None);
+    }
+
+    #[test]
     fn the_target_filter_turns_probes_on_and_off() {
         let on = tracing_subscriber::fmt()
             .with_env_filter("info,litecode::latency=debug")

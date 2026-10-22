@@ -582,7 +582,7 @@ mod tests {
     use crate::authority::responses::ResponseStreamEvent;
     use crate::config::TurnGuard;
     use crate::runtime::observer::NoopObserver;
-    
+    use crate::session::FaultKind;
     use crate::session::working::WorkingRow;
     use crate::types::user_text;
 
@@ -695,8 +695,60 @@ mod tests {
         }
     }
 
+    fn added_event(id: &str, output_index: u32, reasoning: bool) -> ResponseStreamEvent {
+        use crate::authority::responses::{
+            AssistantRole, OutputItem, OutputMessage, OutputStatus, ReasoningItem,
+            ResponseOutputItemAddedEvent,
+        };
+        let item = if reasoning {
+            OutputItem::Reasoning(ReasoningItem {
+                id: Some(id.to_string()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::InProgress),
+            })
+        } else {
+            OutputItem::Message(OutputMessage {
+                id: id.to_string(),
+                role: AssistantRole::Assistant,
+                content: vec![],
+                status: OutputStatus::InProgress,
+                phase: None,
+            })
+        };
+        ResponseStreamEvent::ResponseOutputItemAdded(ResponseOutputItemAddedEvent {
+            sequence_number: output_index as u64 + 1,
+            output_index,
+            item,
+        })
+    }
 
+    fn done_event(id: &str, output_index: u32) -> ResponseStreamEvent {
+        use crate::authority::responses::{
+            AssistantRole, OutputItem, OutputMessage, OutputStatus, ResponseOutputItemDoneEvent,
+        };
+        ResponseStreamEvent::ResponseOutputItemDone(ResponseOutputItemDoneEvent {
+            sequence_number: output_index as u64 + 100,
+            output_index,
+            item: OutputItem::Message(OutputMessage {
+                id: id.to_string(),
+                role: AssistantRole::Assistant,
+                content: vec![],
+                status: OutputStatus::Completed,
+                phase: None,
+            }),
+        })
+    }
 
+    fn projection_for(f: &Fixture) -> SharedStreamProjection {
+        StreamProjection::new(
+            Arc::clone(&f.sessions),
+            Arc::new(NoopObserver),
+            f.sid.clone(),
+            "turn-1".into(),
+        )
+    }
 
     fn summary_texts(body: &str) -> Vec<String> {
         let value: serde_json::Value = serde_json::from_str(body).expect("body json");
@@ -752,6 +804,56 @@ mod tests {
         assert!(summary_texts(&rows[2].body).is_empty());
     }
 
+    /// Content is durable while the call is still running: a reader that arrives
+    /// mid-stream sees the same bytes the log holds, not a private buffer.
+    #[test]
+    fn content_lands_while_the_call_is_still_running() {
+        let events = fixture_events();
+        let f = Fixture::open();
+        let projection = StreamProjection::new(
+            Arc::clone(&f.sessions),
+            Arc::new(NoopObserver),
+            f.sid.clone(),
+            "turn-1".into(),
+        );
+        // Announce and stream the first reasoning item only.
+        let mut seen = 0;
+        for event in &events {
+            projection.observe(event);
+            if let ResponseStreamEvent::ResponseReasoningSummaryTextDone(_) = event {
+                seen += 1;
+            }
+            if seen == 1 {
+                break;
+            }
+        }
+        let rows = f.rows();
+        assert_eq!(rows.len(), 1, "the open item already owns a row");
+        assert_eq!(rows[0].state, "in_progress", "the call is still running");
+        assert_eq!(
+            summary_texts(&rows[0].body),
+            vec!["Checked how the rows are written. ".to_string()],
+            "the log holds the part that arrived, not a private buffer: {}",
+            rows[0].body
+        );
+        assert!(
+            !rows[0].body.contains("TERMINAL0"),
+            "the call has not returned, so its copy cannot be in the log yet"
+        );
+        projection.settle(None).expect("settle the abandoned call");
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].state, "final");
+        let value: serde_json::Value = serde_json::from_str(&rows[0].body).expect("body json");
+        assert_eq!(value["status"].as_str(), Some("incomplete"));
+        assert_eq!(
+            summary_texts(&rows[0].body),
+            vec!["Checked how the rows are written. ".to_string()],
+            "partial reasoning keeps what it received"
+        );
+    }
+
     /// Settling and then committing the same call must find every row already in
     /// place. Re-appending here is exactly what used to push an item's settled copy
     /// past the text that followed it.
@@ -788,6 +890,115 @@ mod tests {
         sorted.sort_unstable();
         assert_eq!(seqs, sorted, "rows stay in seq order");
         assert_eq!(working.len(), 14, "the working set matches the log");
+    }
+
+    /// A stream that dies mid-item keeps what it received: the item that never got
+    /// a terminal of its own settles as incomplete, and the ones the provider did
+    /// finish keep the payload the provider gave them.
+    #[test]
+    fn an_item_the_call_never_confirmed_settles_incomplete() {
+        let mut events = fixture_events();
+        // Drop the batch terminal and the message's own terminal: the reasoning
+        // items were confirmed one by one, the text never was.
+        events.retain(|ev| {
+            !matches!(ev, ResponseStreamEvent::ResponseCompleted(_))
+                && !matches!(
+                    ev,
+                    ResponseStreamEvent::ResponseOutputItemDone(done)
+                        if matches!(
+                            Item::from(done.item.clone()),
+                            Item::Message(_)
+                        )
+                )
+        });
+        let f = Fixture::open();
+        f.run_call_with(&events, None, "turn-1").expect("call");
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 13, "every opened item is still on record");
+        assert!(
+            rows.iter().all(|r| r.state == "final"),
+            "a died stream must not leave rows in flight"
+        );
+        let last = rows.last().expect("a row");
+        assert_eq!(last.item_type, "message");
+        let value: serde_json::Value = serde_json::from_str(&last.body).expect("body json");
+        assert_eq!(
+            value["status"].as_str(),
+            Some("incomplete"),
+            "the text that arrived is kept, and honestly labelled"
+        );
+        assert!(
+            value["content"][0]["text"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty()),
+            "the partial text is not thrown away: {}",
+            last.body
+        );
+        assert!(
+            summary_texts(&rows[0].body).len() == 3,
+            "partial reasoning keeps the parts it received"
+        );
+    }
+
+    /// An item the provider finished on its own is not downgraded just because the
+    /// batch terminal never arrived.
+    #[test]
+    fn an_item_the_provider_finished_keeps_its_own_terminal() {
+        let mut events = fixture_events();
+        events.retain(|ev| !matches!(ev, ResponseStreamEvent::ResponseCompleted(_)));
+        let f = Fixture::open();
+        f.run_call_with(&events, None, "turn-1").expect("call");
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 13);
+        assert!(
+            rows.iter().all(|r| r.state == "final"),
+            "a died stream must not leave rows in flight"
+        );
+        let value: serde_json::Value = serde_json::from_str(&rows[0].body).expect("body json");
+        assert_ne!(
+            value["status"].as_str(),
+            Some("incomplete"),
+            "`output_item.done` is that item's terminal payload: {}",
+            rows[0].body
+        );
+    }
+
+    /// One call's identity map does not outlive it. A later call is free to reuse
+    /// the provider's id: that is a different item and it gets its own row, in its
+    /// own place, and it streams while it arrives.
+    #[test]
+    fn a_call_that_reuses_a_provider_id_opens_a_new_row() {
+        let f = Fixture::open();
+        let events = fixture_events();
+        f.run_call(&events, "turn-1").expect("first call");
+        let first = f.rows();
+        assert_eq!(first.len(), 13);
+
+        // A second call reuses every id from the first.
+        f.run_call(&events, "turn-2").expect("second call");
+        let rows = f.rows();
+        assert_eq!(
+            rows.len(),
+            26,
+            "a reused provider id is a new item, not a rewrite: {:?}",
+            rows.iter()
+                .map(|r| (r.seq, r.item_type.as_str(), r.turn_id.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            rows.iter().all(|r| r.state == "final"),
+            "both calls left settled rows"
+        );
+        assert_eq!(
+            rows[13].turn_id, "turn-2",
+            "the new rows carry the new turn"
+        );
+        assert!(
+            !rows.iter().any(|r| r.turn_id.starts_with("orphan-")),
+            "a running turn never writes an orphan row"
+        );
     }
 
     /// A missing `added` is tolerated when a semantic delta still carries the
@@ -837,4 +1048,149 @@ mod tests {
         );
     }
 
+    /// A call that returns a list without an item the stream announced is a
+    /// contract breach: the log would keep a row the transcript never replays.
+    #[test]
+    fn a_returned_list_that_omits_a_streamed_item_fails_the_call() {
+        let f = Fixture::open();
+        let events = fixture_events();
+        let mut items = terminal_items(&events);
+        items.remove(0);
+        let error = f
+            .run_call_with(&events, Some(&items), "turn-1")
+            .expect_err("an item was streamed but not returned");
+        assert!(
+            error.to_string().contains("omitted"),
+            "the error must say what happened, got {error}"
+        );
+    }
+
+    #[test]
+    fn same_call_identity_conflicts_fail_closed() {
+        let f = Fixture::open();
+
+        let moved = projection_for(&f);
+        moved.observe(&added_event("msg_1", 0, false));
+        moved.observe(&added_event("msg_1", 1, false));
+        assert!(
+            moved
+                .settle(None)
+                .expect_err("one id may not move indexes")
+                .to_string()
+                .contains("moved from output index")
+        );
+
+        let reused = projection_for(&f);
+        reused.observe(&added_event("msg_2", 0, false));
+        reused.observe(&added_event("msg_3", 0, false));
+        assert!(
+            reused
+                .settle(None)
+                .expect_err("one index may not identify two items")
+                .to_string()
+                .contains("belongs to provider item")
+        );
+
+        let changed = projection_for(&f);
+        changed.observe(&added_event("same", 0, false));
+        changed.observe(&added_event("same", 0, true));
+        assert!(
+            changed
+                .settle(None)
+                .expect_err("one item may not change type")
+                .to_string()
+                .contains("changed type")
+        );
+    }
+
+    #[test]
+    fn terminal_duplicate_id_fails_closed() {
+        let f = Fixture::open();
+        let projection = projection_for(&f);
+        let items = [
+            match added_event("dup", 0, false) {
+                ResponseStreamEvent::ResponseOutputItemAdded(ev) => Item::from(ev.item),
+                _ => unreachable!(),
+            },
+            match added_event("dup", 1, false) {
+                ResponseStreamEvent::ResponseOutputItemAdded(ev) => Item::from(ev.item),
+                _ => unreachable!(),
+            },
+        ];
+        assert!(
+            projection
+                .settle(Some(&items))
+                .expect_err("terminal ids must be unique")
+                .to_string()
+                .contains("more than once")
+        );
+    }
+
+    /// A write that cannot happen is reported, not swallowed: the row would
+    /// otherwise sit in flight with nothing left to settle it.
+    #[test]
+    fn a_write_the_session_refuses_fails_the_call() {
+        let f = Fixture::open();
+        let events = fixture_events();
+        let projection = StreamProjection::new(
+            Arc::clone(&f.sessions),
+            Arc::new(NoopObserver),
+            f.sid.clone(),
+            "turn-1".into(),
+        );
+        for event in &events {
+            projection.observe(event);
+        }
+        // Settle the first row behind the projection's back. Its own settle now
+        // has nothing legitimate to write, and a silent `continue` would leave the
+        // remaining rows in flight while the turn looked successful.
+        let first = f.rows()[0].seq as u64;
+        let settled = terminal_items(&events)
+            .into_iter()
+            .find(|item| item_id_of(item).as_deref() == Some("rs_a0"))
+            .expect("the first item");
+        f.sessions
+            .seal_stream_item(&f.sid, first, &settled)
+            .expect("settle behind the projection");
+
+        let error = projection
+            .settle(Some(&terminal_items(&events)))
+            .expect_err("the refused write must surface");
+        assert!(
+            error.to_string().contains("only a row in flight"),
+            "the session's own refusal is what comes back, got {error}"
+        );
+    }
+
+    /// UpdateStreamItem failure must fail `settle` (so the call/turn stops) and
+    /// must still attempt to seal open rows rather than leave them in flight.
+    #[test]
+    fn update_stream_item_failure_fails_settle_and_still_seals() {
+        let f = Fixture::open();
+        let projection = projection_for(&f);
+        projection.observe(&added_event("msg_upd", 0, false));
+        assert_eq!(f.rows().len(), 1);
+        assert_eq!(f.rows()[0].state, "in_progress");
+
+        f.sessions.data().hooks().inject(FaultKind::BeforeCommit);
+        // Checkpoint flushes an UpdateStreamItem while the fault is armed.
+        projection.observe(&done_event("msg_upd", 0));
+
+        let err = projection
+            .settle(None)
+            .expect_err("update write failure must surface through settle");
+        assert!(
+            err.to_string().contains("before commit")
+                || err.to_string().contains("streamed output")
+                || err.to_string().contains("Session"),
+            "settle must carry the write failure, got {err}"
+        );
+
+        let rows = f.rows();
+        assert_eq!(rows.len(), 1, "row identity must remain");
+        assert_eq!(
+            rows[0].state, "final",
+            "settle_open must still seal after a failed update; left in_progress would be the bug"
+        );
+    }
 }

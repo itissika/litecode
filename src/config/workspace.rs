@@ -560,6 +560,74 @@ mod engine_state_tests {
     use super::*;
 
     #[test]
+    fn engines_json_is_sole_workspace_engine_truth() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_lsp_init(root, vec!["rust_analyzer".into()]).unwrap();
+
+        assert!(workspace_engines_path(root).is_file());
+        assert!(workspace_engine_desired(root, "lsp"));
+        assert_eq!(
+            lsp_servers_from_engines(root),
+            vec!["rust_analyzer".to_string()]
+        );
+        assert_eq!(
+            workspace_readiness_from_engines(root).get("lsp"),
+            Some(&ToolReadiness::Ready)
+        );
+    }
+
+    #[test]
+    fn retrieval_desired_drives_readiness() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        set_workspace_engine_desired(root, "code_search", true).unwrap();
+        assert!(workspace_engine_desired(root, "code_search"));
+        assert_eq!(
+            workspace_readiness_from_engines(root).get("code_search"),
+            Some(&ToolReadiness::Ready)
+        );
+        set_workspace_engine_desired(root, "code_search", false).unwrap();
+        assert!(!workspace_engine_desired(root, "code_search"));
+        assert!(!workspace_readiness_from_engines(root).contains_key("code_search"));
+    }
+
+    #[test]
+    fn lsp_desired_without_servers_is_not_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let err = set_workspace_engine_desired(root, "lsp", true).unwrap_err();
+        assert!(err.to_string().contains("language server"));
+    }
+
+    #[test]
+    fn stopping_lsp_preserves_configured_servers() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_lsp_init(root, vec!["rust_analyzer".into(), "typescript".into()]).unwrap();
+
+        set_workspace_engine_desired(root, "lsp", false).unwrap();
+
+        assert!(!workspace_engine_desired(root, "lsp"));
+        assert_eq!(
+            lsp_servers_from_engines(root),
+            vec!["rust_analyzer".to_string(), "typescript".to_string()]
+        );
+    }
+
+    #[test]
+    fn clearing_lsp_removes_servers_and_desired() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write_lsp_init(root, vec!["rust_analyzer".into()]).unwrap();
+
+        clear_lsp_servers(root).unwrap();
+
+        assert!(!workspace_engine_desired(root, "lsp"));
+        assert!(lsp_servers_from_engines(root).is_empty());
+    }
+
+    #[test]
     fn load_drops_builtin_collisions_and_keeps_timeout_zero() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -657,6 +725,26 @@ mod tests {
     }
 
     #[test]
+    fn active_paths_prefers_runtime_paths_over_cwd() {
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let cwd_dir = tempfile::tempdir().unwrap();
+        let paths = WorkspacePaths::for_workspace(workspace_dir.path(), "test-workspace-id");
+        set_runtime_paths(paths.clone());
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(cwd_dir.path()).unwrap();
+
+        let active = active_paths();
+        assert_eq!(active.plan_dir, paths.plan_dir);
+        assert_eq!(active.snapshots_dir, paths.snapshots_dir);
+        assert_ne!(
+            active.plan_dir,
+            cwd_dir.path().join(".litecode").join("plan")
+        );
+
+        std::env::set_current_dir(prev).ok();
+    }
+
+    #[test]
     fn init_workspace_creates_layout_and_claude_shell() {
         let _home = isolate_litecode_home();
         let dir = tempfile::tempdir().unwrap();
@@ -738,4 +826,119 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_workspace_state_default_still_warms() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let state = load_workspace_state(Some(dir.path())).unwrap();
+        let repo = git2::Repository::open_bare(&state.paths.snapshots_dir)
+            .expect("default load warms the snapshot repo");
+        assert!(
+            !repo.index().unwrap().is_empty(),
+            "warm populated the index"
+        );
+    }
+
+    #[test]
+    fn init_workspace_refreshes_litecode_readme() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let readme = root.join(".litecode").join("README.md");
+        std::fs::create_dir_all(readme.parent().unwrap()).unwrap();
+        std::fs::write(&readme, "stale custom notes\n").unwrap();
+        init_workspace(root).unwrap();
+        let guide = std::fs::read_to_string(&readme).unwrap();
+        assert!(!guide.contains("stale custom notes"));
+        assert_eq!(guide, crate::config::guides::WORKSPACE_README);
+    }
+
+    #[test]
+    fn workspace_tool_defs_rel_matches_mcp_and_custom_tools() {
+        assert!(is_workspace_mcp_rel(".litecode/mcp.json"));
+        assert!(is_workspace_mcp_rel("./.litecode/mcp.json"));
+        assert!(is_workspace_custom_tools_rel(".litecode/custom_tools.json"));
+        assert!(is_workspace_tool_defs_rel(".litecode/mcp.json"));
+        assert!(is_workspace_tool_defs_rel(".litecode/custom_tools.json"));
+        assert!(!is_workspace_tool_defs_rel(".litecode/excludes.json"));
+        assert!(!is_workspace_tool_defs_rel(".litecode/engines.json"));
+        assert!(!is_workspace_mcp_rel(".litecode/mcp.json.bak"));
+    }
+
+    #[test]
+    fn init_workspace_preserves_existing_claude_md() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "# My project\n").unwrap();
+        init_workspace(root).unwrap();
+        let claude = std::fs::read_to_string(root.join("CLAUDE.md")).unwrap();
+        assert_eq!(claude, "# My project\n");
+    }
+
+    #[test]
+    fn read_contract_missing_returns_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_contract_result(dir.path()), ContractRead::Missing);
+        assert!(read_contract(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn read_contract_reads_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("CLAUDE.md"), "# body\n").unwrap();
+        assert_eq!(
+            read_contract_result(dir.path()),
+            ContractRead::Found("# body\n".into())
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn read_contract_io_error_is_distinct_from_missing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("CLAUDE.md");
+        std::fs::write(&path, "secret").unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        let result = read_contract_result(dir.path());
+        assert_ne!(result, ContractRead::Missing);
+        assert!(matches!(result, ContractRead::IoError(_)));
+        assert!(read_contract(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn load_workspace_state_freezes_instruction_files() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "# c1\n").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "# a1\n").unwrap();
+        let state = load_workspace_state(Some(root)).unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# c2\n").unwrap();
+        std::fs::write(root.join("AGENTS.md"), "# a2\n").unwrap();
+        assert_eq!(state.contract, "# c1\n");
+        assert_eq!(state.agents_md, "# a1\n");
+    }
+
+    #[test]
+    fn load_workspace_state_reads_contract() {
+        let _home = isolate_litecode_home();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("CLAUDE.md"), "# Contract body\n").unwrap();
+        let state = load_workspace_state(Some(root)).unwrap();
+        assert_eq!(state.contract, "# Contract body\n");
+        assert!(
+            state
+                .paths
+                .sessions_db
+                .ends_with(std::path::Path::new(".litecode").join("sessions.db"))
+        );
+    }
 }

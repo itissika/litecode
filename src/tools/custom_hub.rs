@@ -221,6 +221,72 @@ mod tests {
     }
 
     #[test]
+    fn push_dedupes_same_job_id() {
+        let hub = CustomToolHub::new();
+        hub.push_notice(notice("s", "j1"));
+        hub.push_notice(notice("s", "j1"));
+        assert_eq!(hub.take_mailbox("s").len(), 1);
+    }
+
+    #[test]
+    fn seam_drain_builds_settled_reminder_text() {
+        use crate::reminder::CustomToolSettledEntry;
+        use crate::reminder::{Facts, ReminderKind, SeamCtx, SpineReminderView, sync};
+        use std::path::PathBuf;
+
+        let hub = CustomToolHub::new();
+        hub.push_notice(CustomToolExitNotice {
+            session_id: "s".into(),
+            call_id: "c1".into(),
+            tool_name: "demo".into(),
+            job_id: "j1".into(),
+            outcome: CustomToolOutcome::Error {
+                message: "boom".into(),
+            },
+            revision_hint: Some(3),
+        });
+        assert!(hub.mailbox_pending("s"));
+        let notices = hub.take_mailbox("s");
+        assert!(!hub.mailbox_pending("s"));
+        let entries: Vec<_> = notices
+            .iter()
+            .map(|n| {
+                let (status, detail) = match &n.outcome {
+                    CustomToolOutcome::Ok { output } => ("ok".into(), output.clone()),
+                    CustomToolOutcome::Error { message } => ("error".into(), message.clone()),
+                    CustomToolOutcome::Cancelled => ("cancelled".into(), String::new()),
+                };
+                CustomToolSettledEntry {
+                    job_id: n.job_id.clone(),
+                    call_id: n.call_id.clone(),
+                    tool_name: n.tool_name.clone(),
+                    status,
+                    detail,
+                }
+            })
+            .collect();
+        let facts = Facts {
+            custom_tool_settled: entries,
+            ..Facts::default()
+        };
+        let ctx = SeamCtx {
+            session_id: "s".into(),
+            turn_id: "t".into(),
+            step: 1,
+            max_steps: 10,
+            cwd: PathBuf::from("/work"),
+        };
+        let reminders = sync(&ctx, &SpineReminderView::default(), &facts);
+        let row = reminders
+            .iter()
+            .find(|r| r.kind() == ReminderKind::CustomToolSettled)
+            .expect("custom settled reminder");
+        assert!(row.text().contains("status: error"));
+        assert!(row.text().contains("detail: boom"));
+        assert!(row.text().contains("tool: demo"));
+    }
+
+    #[test]
     fn restore_after_failed_persist_keeps_pending() {
         let hub = CustomToolHub::new();
         hub.push_notice(notice("s", "j1"));

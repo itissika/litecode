@@ -139,3 +139,111 @@ pub fn exclude_globs(preset: FilterPreset) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::filter::{WorkspaceExcludesFile, with_excludes_cache_for_test};
+
+    fn with_config(cfg: WorkspaceExcludesFile, f: impl FnOnce()) {
+        with_excludes_cache_for_test(cfg, f);
+    }
+
+    fn git_layers(preset: FilterPreset) -> (bool, bool, bool) {
+        let l = preset.layers();
+        (l.git_ignore, l.git_global, l.git_exclude)
+    }
+
+    #[test]
+    fn browse_search_split_explorer_reads_own_switch() {
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: true,
+                explorer_git_ignore: false,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Explorer), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::Search), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::CodeIndex), (true, true, true));
+                let code = FilterPreset::CodeIndex.layers();
+                assert!(code.files_exclude);
+                assert!(!code.search_exclude);
+            },
+        );
+    }
+
+    #[test]
+    fn browse_search_split_inverse() {
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: false,
+                explorer_git_ignore: true,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Explorer), (true, true, true));
+                assert_eq!(git_layers(FilterPreset::Search), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::CodeIndex), (false, false, false));
+            },
+        );
+    }
+
+    #[test]
+    fn watcher_and_unfiltered_never_honor_gitignore() {
+        with_config(
+            WorkspaceExcludesFile {
+                git_ignore: true,
+                explorer_git_ignore: true,
+                ..WorkspaceExcludesFile::builtin_defaults()
+            },
+            || {
+                assert_eq!(git_layers(FilterPreset::Watcher), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::Unfiltered), (false, false, false));
+                assert_eq!(git_layers(FilterPreset::NoIgnore), (false, false, false));
+            },
+        );
+    }
+
+    #[test]
+    fn prune_product_internal_presets() {
+        assert!(!FilterPreset::Explorer.prune_product_internal_dirs());
+        assert!(!FilterPreset::Unfiltered.prune_product_internal_dirs());
+        assert!(FilterPreset::NoIgnore.prune_product_internal_dirs());
+        assert!(FilterPreset::Search.prune_product_internal_dirs());
+        assert!(FilterPreset::CodeIndex.prune_product_internal_dirs());
+        assert!(FilterPreset::Watcher.prune_product_internal_dirs());
+    }
+
+    #[test]
+    fn code_index_hard_skips_dependency_dirs_without_search_exclude() {
+        use crate::workspace::filter::path_excluded;
+
+        let mut cfg = WorkspaceExcludesFile::builtin_defaults();
+        cfg.search_exclude.clear();
+        with_config(cfg, || {
+            assert!(path_excluded(
+                "node_modules/pkg/index.js",
+                FilterPreset::CodeIndex
+            ));
+            assert!(path_excluded(
+                "vendor/bower_components/lib.js",
+                FilterPreset::CodeIndex
+            ));
+            assert!(!path_excluded("src/app.js", FilterPreset::CodeIndex));
+            assert!(!path_excluded(
+                "node_modules/pkg/index.js",
+                FilterPreset::Search
+            ));
+        });
+    }
+
+    #[test]
+    fn no_ignore_skips_binary_unlike_unfiltered() {
+        let layers = FilterPreset::NoIgnore.layers();
+        assert!(layers.skip_binary);
+        assert!(!layers.files_exclude);
+        assert!(!layers.search_exclude);
+        assert!(!FilterPreset::Unfiltered.layers().skip_binary);
+    }
+}

@@ -598,6 +598,165 @@ mod tests {
     }
 
     #[test]
+    fn rust_nested_impl_method_breadcrumb() {
+        let src = r#"
+pub struct Store;
+
+impl Store {
+    pub fn save(&self, path: &str) {
+        let x = path.len();
+        let _ = x;
+    }
+}
+"#;
+        let segs = enclosing_scopes("store.rs", src, line_of(src, "path.len()"));
+        assert_eq!(format_breadcrumb(&segs).unwrap(), "impl Store › fn save");
+    }
+
+    #[test]
+    fn rust_free_function() {
+        let src = "fn alpha() {\n    let hit = 1;\n}\n";
+        let segs = enclosing_scopes("a.rs", src, 2);
+        assert_eq!(format_breadcrumb(&segs).unwrap(), "fn alpha");
+    }
+
+    #[test]
+    fn python_class_method() {
+        let src = r#"
+class Repo:
+    def index(self):
+        return 42
+"#;
+        let crumb =
+            format_breadcrumb(&enclosing_scopes("r.py", src, line_of(src, "return 42"))).unwrap();
+        assert_eq!(crumb, "class Repo › fn index");
+    }
+
+    #[test]
+    fn typescript_class_method() {
+        let src = r#"
+export class Engine {
+  search(q: string): number {
+    return q.length;
+  }
+}
+"#;
+        let crumb =
+            format_breadcrumb(&enclosing_scopes("e.ts", src, line_of(src, "q.length"))).unwrap();
+        assert_eq!(crumb, "class Engine › method search");
+    }
+
+    #[test]
+    fn go_method_on_type() {
+        let src = r#"
+package p
+
+type Client struct{}
+
+func (c *Client) Ping() {
+	x := 1
+	_ = x
+}
+"#;
+        let crumb =
+            format_breadcrumb(&enclosing_scopes("c.go", src, line_of(src, "x := 1"))).unwrap();
+        assert_eq!(crumb, "method Ping");
+    }
+
+    #[test]
+    fn csharp_namespace_class_method() {
+        let src = r#"
+namespace App.Core {
+  public class Store {
+    public void Save(string path) {
+      var n = path.Length;
+    }
+  }
+}
+"#;
+        let crumb = format_breadcrumb(&enclosing_scopes(
+            "Store.cs",
+            src,
+            line_of(src, "path.Length"),
+        ))
+        .unwrap();
+        assert_eq!(crumb, "namespace App.Core › class Store › method Save");
+    }
+
+    #[test]
+    fn java_class_method() {
+        let src = r#"
+public class Engine {
+  public int search(String q) {
+    return q.length();
+  }
+}
+"#;
+        let crumb = format_breadcrumb(&enclosing_scopes(
+            "Engine.java",
+            src,
+            line_of(src, "q.length()"),
+        ))
+        .unwrap();
+        assert_eq!(crumb, "class Engine › method search");
+    }
+
+    #[test]
+    fn c_function() {
+        let src = r#"
+int save(const char *path) {
+  int n = 0;
+  return n;
+}
+"#;
+        let crumb =
+            format_breadcrumb(&enclosing_scopes("save.c", src, line_of(src, "int n = 0"))).unwrap();
+        assert_eq!(crumb, "fn save");
+    }
+
+    #[test]
+    fn cpp_namespace_class_method() {
+        let src = r#"
+namespace app {
+class Store {
+ public:
+  void save(const char* path) {
+    int n = 0;
+    (void)n;
+  }
+};
+}
+"#;
+        let crumb = format_breadcrumb(&enclosing_scopes(
+            "store.cpp",
+            src,
+            line_of(src, "int n = 0"),
+        ))
+        .unwrap();
+        assert!(
+            crumb.contains("Store") && crumb.contains("save"),
+            "expected class/method in {crumb}"
+        );
+        assert!(
+            crumb.contains("namespace") || crumb.starts_with("class"),
+            "{crumb}"
+        );
+    }
+
+    #[test]
+    fn unsupported_extension_falls_back_empty() {
+        let segs = enclosing_scopes("notes.md", "# title\nhit\n", 2);
+        assert!(segs.is_empty());
+        assert!(format_breadcrumb(&segs).is_none());
+    }
+
+    #[test]
+    fn out_of_range_line_falls_back_empty() {
+        let segs = enclosing_scopes("a.rs", "fn main() {}\n", 99);
+        assert!(segs.is_empty());
+    }
+
+    #[test]
     fn top_level_line_outside_fn_may_be_empty_or_mod_only() {
         // Use-item / blank: no function parent — empty is correct fallback.
         let src = "use std::io;\n\nfn main() {}\n";
@@ -630,4 +789,158 @@ fn method_with_block() {
         assert_eq!(snip.remaining_lines, 0);
     }
 
+    #[test]
+    fn ancestor_caps_long_function_and_reports_remaining() {
+        let mut body = String::from("fn long_function() {\n");
+        for i in 1..=12 {
+            body.push_str(&format!("    println!(\"Line {i}\");\n"));
+        }
+        body.push_str("}\n");
+        let hit = line_of(&body, "Line 5");
+        let snip = syntax_ancestor_snippet("t.rs", &body, hit, hit).expect("ancestor");
+        assert_eq!(snip.start_line, 1, "should start at fn");
+        assert!(
+            snip.end_line - snip.start_line + 1 <= MAX_ANCESTOR_LINES + 1,
+            "capped window too large: {snip:?}"
+        );
+        assert!(
+            snip.remaining_lines > 0,
+            "long fn should report remaining, got {snip:?}"
+        );
+        let text = lines_slice(&body, snip.start_line, snip.end_line);
+        assert!(text.contains("fn long_function"), "{text}");
+        assert!(text.contains("Line 5"), "{text}");
+        assert!(
+            !text.contains("Line 12"),
+            "cap should drop the tail: {text}"
+        );
+    }
+
+    #[test]
+    fn ancestor_near_end_falls_back_none() {
+        let mut body = String::from("fn long_function() {\n");
+        for i in 1..=12 {
+            body.push_str(&format!("    println!(\"Line {i}\");\n"));
+        }
+        body.push_str("}\n");
+        let hit = line_of(&body, "Line 12");
+        // Cap from fn start cannot cover Line 12 → None (±2 fallback at call site).
+        assert!(syntax_ancestor_snippet("t.rs", &body, hit, hit).is_none());
+    }
+
+    #[test]
+    fn ancestor_unsupported_lang_is_none() {
+        assert!(syntax_ancestor_snippet("a.txt", "hello\nworld\n", 1, 1).is_none());
+    }
+
+    #[test]
+    fn rust_lists_scopes_and_keeps_trait_impls_apart() {
+        let src = r#"
+pub struct Store;
+
+impl Store {
+    pub fn save(&self) {
+        let _ = 1;
+    }
+}
+
+impl std::fmt::Display for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Ok(())
+    }
+}
+
+fn alpha() {}
+"#;
+        let scopes = list_scopes("store.rs", src);
+        let chains: Vec<_> = scopes.iter().map(|entry| entry.chain.as_str()).collect();
+        assert!(chains.contains(&"struct Store"), "{chains:?}");
+        assert!(chains.contains(&"impl Store › fn save"), "{chains:?}");
+        assert!(
+            chains
+                .iter()
+                .any(|chain| chain.contains("Display") && chain.ends_with("fn fmt")),
+            "{chains:?}"
+        );
+        assert!(chains.contains(&"fn alpha"), "{chains:?}");
+        assert!(matches!(
+            find_scope("store.rs", src, "impl Store › fn save"),
+            ScopeMatch::Unique(_)
+        ));
+        assert!(matches!(
+            find_scope("store.rs", src, "fn missing"),
+            ScopeMatch::Missing
+        ));
+        let save_line = line_of(src, "let _ = 1");
+        let at = scope_at("store.rs", src, save_line, save_line).expect("fn");
+        assert_eq!(at.chain, "impl Store › fn save");
+        assert!(scope_at("store.rs", src, 1, 999).is_none());
+    }
+
+    #[test]
+    fn an_old_type_only_impl_chain_resolves_when_one_trait_impl_matches() {
+        let one = r#"
+impl Display for Store {
+    fn fmt(&self) {}
+}
+"#;
+        match find_scope("store.rs", one, "impl Store › fn fmt") {
+            ScopeMatch::Unique(entry) => {
+                assert_eq!(entry.chain, "impl Display for Store › fn fmt");
+            }
+            other => panic!("expected the trait impl, got {other:?}"),
+        }
+
+        let two = r#"
+impl Display for Store {
+    fn fmt(&self) {}
+}
+impl Debug for Store {
+    fn fmt(&self) {}
+}
+"#;
+        assert!(matches!(
+            find_scope("store.rs", two, "impl Store › fn fmt"),
+            ScopeMatch::Ambiguous(_)
+        ));
+
+        let inherent = r#"
+impl Store {
+    fn save(&self) {}
+}
+impl Display for Store {
+    fn fmt(&self) {}
+}
+"#;
+        match find_scope("store.rs", inherent, "impl Store › fn save") {
+            ScopeMatch::Unique(entry) => assert_eq!(entry.chain, "impl Store › fn save"),
+            other => panic!("expected the inherent impl, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn duplicate_chain_is_ambiguous() {
+        let src = "fn new() {}\nfn new() {}\n";
+        assert!(matches!(
+            find_scope("a.rs", src, "fn new"),
+            ScopeMatch::Ambiguous(_)
+        ));
+    }
+
+    #[test]
+    fn typescript_and_python_scopes_resolve() {
+        let ts = "export class Engine {\n  search(q: string) {\n    return q.length;\n  }\n}\n";
+        let ts_line = line_of(ts, "q.length");
+        assert_eq!(
+            scope_at("e.ts", ts, ts_line, ts_line).unwrap().chain,
+            "class Engine › method search"
+        );
+        let py = "class Repo:\n    def index(self):\n        return 42\n";
+        let py_line = line_of(py, "return 42");
+        assert_eq!(
+            scope_at("r.py", py, py_line, py_line).unwrap().chain,
+            "class Repo › fn index"
+        );
+        assert!(list_scopes("notes.md", "# hi\n").is_empty());
+    }
 }

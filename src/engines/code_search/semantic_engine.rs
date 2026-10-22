@@ -65,10 +65,31 @@ impl SemanticEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
-    use crate::engines::code_search::LexicalQuery;
+    use crate::engines::code_search::embed::HashEmbedder;
+    use crate::engines::code_search::index_workspace_blocking;
+    use crate::engines::code_search::{CodeSearchRuntime, LexicalQuery};
     use tempfile::TempDir;
+
+    #[test]
+    fn search_returns_hits_for_indexed_content() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.rs"), "fn auth_login() {}\n").unwrap();
+
+        let emb = HashEmbedder;
+        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
+        index.save(root).unwrap();
+        let runtime = CodeSearchRuntime::new(
+            root.to_path_buf(),
+            index,
+            Some(Box::new(HashEmbedder)),
+            None,
+        );
+
+        let hits = SemanticEngine::search(&runtime, "auth_login", None, 8).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].path, "main.rs");
+    }
 
     #[test]
     fn borrow_lexical_wire_works_from_semantic_engine() {

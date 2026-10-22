@@ -1108,13 +1108,16 @@ mod tests {
     use super::*;
     use crate::config::TurnGuard;
     use crate::config::resolved::{WorkspaceState, resolve};
-    use crate::config::schema::GlobalSettings;
+    use crate::config::schema::{
+        AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, McpTransport,
+        ToolSchema,
+    };
     use crate::ide_base::IdeBaseHandle;
     use crate::optional::EngineManager;
     use crate::provider_catalog::{DEFAULT_CATALOG, ProviderCatalog};
-    
+    use crate::session::data::command::{MutationId, SessionMutation};
     use crate::types::{ToolSignalLevel, user_text};
-    
+    use crate::workspace::filter::write_workspace_excludes;
     use std::path::Path;
     use std::sync::atomic::AtomicU64;
 
@@ -1199,6 +1202,62 @@ mod tests {
         id
     }
 
+    fn create_child(
+        root: &Path,
+        sessions: &Arc<SessionManager>,
+        parent: &str,
+        text: &str,
+    ) -> String {
+        let id = sessions
+            .data()
+            .mutate_blocking(SessionMutation::Create {
+                operation_id: MutationId::new(),
+                project: root.to_str().unwrap().into(),
+                agent_id: "default".into(),
+                model_id: None,
+                parent_session_id: Some(parent.to_string()),
+                parent_call_id: Some(format!("call_{parent}")),
+                responsibility: String::new(),
+            })
+            .unwrap()
+            .session_id;
+        sessions
+            .data()
+            .insert_items(&id, &[user_text(text)])
+            .unwrap();
+        id
+    }
+
+    #[test]
+    fn parser_accepts_the_documented_commands() {
+        assert_eq!(parse_action(""), Ok(Action::Panel));
+        assert_eq!(parse_action("   "), Ok(Action::Panel));
+        assert_eq!(parse_action("status"), Ok(Action::Status));
+        assert_eq!(parse_action("help"), Ok(Action::Panel));
+        assert_eq!(
+            parse_action("help refresh"),
+            Ok(Action::Help("refresh".into()))
+        );
+        assert_eq!(
+            parse_action("sessions --all --limit 3"),
+            Ok(Action::Sessions {
+                all: true,
+                limit: Some(3)
+            })
+        );
+        assert_eq!(
+            parse_action("guide mcp"),
+            Ok(Action::Guide(Some(GuideTopic::Mcp)))
+        );
+        assert_eq!(
+            parse_action("refresh custom_tools"),
+            Ok(Action::Refresh(Some(RefreshTarget::CustomTools)))
+        );
+        assert!(parse_action("guide provider").is_err());
+        assert!(parse_action("refresh provider").is_err());
+        assert_eq!(parse_action("refresh all"), Ok(Action::Refresh(None)));
+        assert!(parse_action("seed").is_err());
+    }
 
     #[test]
     fn parser_rejects_unknown_input_with_the_buttons() {
@@ -1212,6 +1271,273 @@ mod tests {
         assert!(parse_action("refresh nope").is_err());
         assert!(parse_action("mcp").is_err());
         assert!(parse_action("mcp restart").is_err());
+    }
+
+    #[test]
+    fn unknown_command_result_is_an_error_with_the_buttons() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions) = tool_for(dir.path(), GlobalSettings::default());
+        let result = run(&tool, &execution(dir.path(), &sessions, ""), "statuz");
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(result.content.contains("unknown command 'statuz'"));
+        assert!(
+            result
+                .content
+                .contains("| `sessions [--all] [--limit N]` |")
+        );
+    }
+
+    #[test]
+    fn panel_lists_current_state_and_marks_one_off_switch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut global = GlobalSettings::default();
+        global.mcp_servers.insert(
+            "docs".into(),
+            McpServerDefinition {
+                command: "npx".into(),
+                args: vec!["-y".into(), "docs-server".into()],
+                env: HashMap::new(),
+                transport: McpTransport::Stdio,
+                timeout: 60,
+            },
+        );
+        let (tool, sessions) = tool_for(root, global);
+        let result = run(&tool, &execution(root, &sessions, ""), "");
+        assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+        for expected in [
+            "# Workspace",
+            "# Buttons",
+            "\n---\n",
+            "## excludes",
+            "## mcp",
+            "## custom tools",
+            "## sessions",
+            "`docs` · stopped · off for you · global",
+            "- next: If you actually need it, ask a human to enable it in Settings → Agents. Otherwise stay silent.",
+            "- running (0):",
+            "total: 0 sessions in this workspace",
+        ] {
+            assert!(
+                result.content.contains(expected),
+                "missing {expected}:\n{}",
+                result.content
+            );
+        }
+        assert_eq!(
+            result.content.matches("ask a human").count(),
+            1,
+            "the human gate is one line:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("npx"),
+            "the launch command stays off the panel:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("- on disk:") && !result.content.contains("- drift:"),
+            "a quiet file does not print a diff:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("provider config")
+                && !result.content.contains("provider-catalog"),
+            "the panel does not talk about the provider catalog:\n{}",
+            result.content
+        );
+        let status = run(&tool, &execution(root, &sessions, ""), "status");
+        assert!(
+            !status.content.contains("# Buttons"),
+            "status reprints the picture without the button table:\n{}",
+            status.content
+        );
+    }
+
+    #[test]
+    fn disk_mcp_drift_shows_on_the_panel_without_the_launch_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        std::fs::write(
+            root.join(".litecode").join("mcp.json"),
+            r#"{
+                "version": 1,
+                "servers": { "docs": { "command": "npx", "args": ["-y", "docs-server"] } }
+            }"#,
+        )
+        .unwrap();
+        let (tool, sessions) = tool_for(root, GlobalSettings::default());
+        let result = run(&tool, &execution(root, &sessions, ""), "status");
+        assert!(
+            result.content.contains("- drift: `docs` added on disk"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result
+                .content
+                .contains(&format!("- next: {APPLIES_WHEN_IDLE}")),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("npx"), "{}", result.content);
+    }
+
+    #[test]
+    fn an_enabled_custom_tool_omits_the_human_line_until_disk_drifts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let mut global = GlobalSettings::default();
+        global.custom_tools.push(CustomToolDefinition {
+            name: "demo".into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "demo".into(),
+            args: vec!["--json".into()],
+            timeout: 120,
+            rules: Vec::new(),
+            suite: None,
+            suite_label: None,
+        });
+        let mut agent = AgentProfile::default();
+        agent.tools.insert(
+            "demo".into(),
+            AgentToolBinding {
+                enabled: true,
+                policy: crate::permission::ToolPolicy::allow_all(),
+                path_mode: crate::permission::BindingPathMode::default(),
+                last_applied_preset: None,
+                allowed_tools: None,
+            },
+        );
+        global.agents.insert("default".into(), agent);
+        let (tool, sessions) = tool_for(root, global);
+        let quiet = run(&tool, &execution(root, &sessions, ""), "status");
+        assert!(
+            quiet
+                .content
+                .contains("`demo` · `demo --json` · timeout 120s · on for you · global"),
+            "{}",
+            quiet.content
+        );
+        assert!(
+            !quiet.content.contains("ask a human"),
+            "every switch that is on stays quiet:\n{}",
+            quiet.content
+        );
+        assert!(!quiet.content.contains("- drift:"), "{}", quiet.content);
+
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        std::fs::write(
+            root.join(".litecode").join("custom_tools.json"),
+            r#"{
+                "version": 1,
+                "tools": {
+                    "demo": {
+                        "name": "demo",
+                        "schema": { "type": "object", "properties": {} },
+                        "command": "other",
+                        "timeout": 30
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let drifted = run(&tool, &execution(root, &sessions, ""), "status");
+        assert!(
+            drifted.content.contains("- drift: `demo` added on disk"),
+            "{}",
+            drifted.content
+        );
+        assert!(
+            drifted
+                .content
+                .contains(&format!("- next: {APPLIES_WHEN_IDLE}")),
+            "{}",
+            drifted.content
+        );
+        assert!(
+            !drifted.content.contains("other"),
+            "the disk command stays off the panel:\n{}",
+            drifted.content
+        );
+    }
+
+    #[tokio::test]
+    async fn sessions_section_lists_running_and_hides_self_and_subtree() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let (tool, sessions) = tool_for(root, GlobalSettings::default());
+        let me = create_session(root, &sessions, "mine").await;
+        let other = create_session(root, &sessions, "other work").await;
+        let mine_child = create_child(root, &sessions, &me, "my helper");
+        let other_child = create_child(root, &sessions, &other, "their helper");
+        sessions
+            .reserve_turn(&other, "t1".into(), 25, "reviewer", root.to_str().unwrap())
+            .unwrap();
+
+        let result = run(&tool, &execution(root, &sessions, &me), "sessions");
+        assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+        assert!(
+            result.content.contains("running (1):"),
+            "{}",
+            result.content
+        );
+        assert!(
+            result.content.contains(short_session_ref(&other)),
+            "other session missing:\n{}",
+            result.content
+        );
+        assert!(
+            result.content.contains("turn ") && result.content.contains("step 1/25"),
+            "turn/step missing:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains(short_session_ref(&me)),
+            "self must be hidden by default:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("it's you"),
+            "a hidden self is not labeled:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains(short_session_ref(&mine_child)),
+            "own subtree must stay hidden:\n{}",
+            result.content
+        );
+        assert!(
+            result.content.contains(short_session_ref(&other_child)),
+            "another session's child must be listed:\n{}",
+            result.content
+        );
+        assert!(
+            result
+                .content
+                .contains("total: 4 sessions in this workspace"),
+            "{}",
+            result.content
+        );
+
+        let all = run(&tool, &execution(root, &sessions, &me), "sessions --all");
+        assert!(
+            all.content
+                .contains(&format!("`{}` · it's you", short_session_ref(&me))),
+            "--all must include self and mark the row:\n{}",
+            all.content
+        );
+        assert!(
+            !all.content.contains(short_session_ref(&mine_child)),
+            "--all must still hide the own subtree:\n{}",
+            all.content
+        );
     }
 
     #[tokio::test]
@@ -1265,6 +1591,22 @@ mod tests {
             "saturation warning missing: {:?}",
             result.warning_status
         );
+    }
+
+    #[test]
+    fn guide_prints_the_index_then_one_topic() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions) = tool_for(dir.path(), GlobalSettings::default());
+        let index = run(&tool, &execution(dir.path(), &sessions, ""), "guide");
+        assert!(index.content.contains("# guide"));
+        assert!(index.content.contains("`guide mcp`"));
+        assert!(!index.content.contains("`guide provider`"));
+        assert!(index.content.contains("Settings → Agents"));
+        assert!(!index.content.contains("writes definitions"));
+
+        let topic = run(&tool, &execution(dir.path(), &sessions, ""), "guide mcp");
+        assert_eq!(topic.content, guides::topic(GuideTopic::Mcp));
+        assert!(topic.content.contains("**怎么验证。**"));
     }
 
     #[test]
@@ -1326,6 +1668,28 @@ mod tests {
             }),
             "{:?}",
             result.warning_status
+        );
+    }
+
+    #[test]
+    fn refresh_reports_broken_json_without_claiming_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        std::fs::write(root.join(".litecode").join("mcp.json"), "{ not json").unwrap();
+        std::fs::write(
+            root.join(".litecode").join("custom_tools.json"),
+            "{ not json",
+        )
+        .unwrap();
+        let (tool, sessions) = tool_for(root, GlobalSettings::default());
+        let result = run(&tool, &execution(root, &sessions, ""), "refresh");
+        assert_eq!(result.level, ToolSignalLevel::Warning, "{}", result.content);
+        assert!(result.content.contains(FILE_BROKEN), "{}", result.content);
+        assert!(
+            !result.content.contains("this turn") && !result.content.contains("reloaded"),
+            "{}",
+            result.content
         );
     }
 
@@ -1392,4 +1756,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn refresh_excludes_reports_what_is_in_effect() {
+        let _lock = crate::workspace::filter::lock_excludes_cache_for_test();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        let mut file = WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude.push("**/dist".into());
+        write_workspace_excludes(root, file).unwrap();
+        crate::workspace::filter::activate_workspace_excludes(
+            WorkspaceExcludesFile::builtin_defaults(),
+        );
+        let before = active_workspace_excludes();
+        let (tool, sessions) = tool_for(root, GlobalSettings::default());
+        let result = run(&tool, &execution(root, &sessions, ""), "refresh excludes");
+        assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+        assert!(result.content.contains("- active:"), "{}", result.content);
+        assert!(
+            result.content.contains(&format!(
+                "code_index_extensions {}",
+                crate::workspace::filter::CODE_INDEX_EXTENSIONS.len()
+            )),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("- on disk:") && !result.content.contains("- drift:"),
+            "a file the watcher has not caught up with is not a drift report:\n{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains(FILE_BROKEN),
+            "a valid file is not broken:\n{}",
+            result.content
+        );
+        assert_eq!(
+            active_workspace_excludes(),
+            before,
+            "refresh must not publish the file into the process cache"
+        );
+        std::fs::write(root.join(".litecode").join("excludes.json"), "{").unwrap();
+        let broken = run(&tool, &execution(root, &sessions, ""), "status");
+        assert!(
+            broken.content.contains(FILE_BROKEN) && broken.content.contains("- active:"),
+            "{}",
+            broken.content
+        );
+        assert!(
+            !broken.content.contains("- drift:"),
+            "a broken excludes file is not drift:\n{}",
+            broken.content
+        );
+        let broken_refresh = run(&tool, &execution(root, &sessions, ""), "refresh excludes");
+        assert_eq!(
+            broken_refresh.level,
+            ToolSignalLevel::Warning,
+            "{}",
+            broken_refresh.content
+        );
+        assert!(
+            broken_refresh.content.contains(FILE_BROKEN),
+            "{}",
+            broken_refresh.content
+        );
+        assert_eq!(active_workspace_excludes(), before);
+        crate::workspace::filter::activate_workspace_excludes(
+            WorkspaceExcludesFile::builtin_defaults(),
+        );
+    }
+
+    #[test]
+    fn read_commands_are_concurrency_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, _sessions) = tool_for(dir.path(), GlobalSettings::default());
+        assert!(tool.is_concurrency_safe(&serde_json::json!({})));
+        assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "status" })));
+        assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "refresh" })));
+        assert!(tool.is_concurrency_safe(&serde_json::json!({ "action": "guide mcp" })));
+    }
 }

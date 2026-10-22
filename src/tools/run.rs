@@ -284,9 +284,9 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     use crate::tool::Tool;
-    
-    
-    use crate::tools::command_job::{sleep_shell, test_execution};
+    use crate::tool::code_manifest::{render_code_tool_description, validate_code_contract};
+    use crate::tool::{ToolSurface, project_tools};
+    use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
 
     fn tool() -> (RunTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
@@ -295,6 +295,41 @@ mod tests {
 
     fn execution(root: &Path) -> ToolExecutionContext {
         test_execution(root, "test-session")
+    }
+
+    #[test]
+    fn surface_schema_and_command_shape() {
+        let (tool, _) = tool();
+        assert_eq!(tool.surface(), ToolSurface::Code);
+        assert!(tool.timeout().is_none());
+        assert!(tool.is_cancellable());
+        assert!(validate_code_contract(&tool).is_ok());
+        let schema = tool.data_schema().expect("schema");
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["id", "exit_code", "output"])
+        );
+        assert!(schema.get("oneOf").is_none());
+        assert!(
+            schema
+                .get("properties")
+                .and_then(|p| p.get("kind"))
+                .is_none()
+        );
+        let rendered = render_code_tool_description(&[Arc::new(RunTool::new(Arc::new(
+            AgentJobRegistry::new(),
+        )))])
+        .expect("sdk");
+        assert!(rendered.contains("run"));
+        assert!(rendered.contains("exit_code"));
+        assert!(rendered.contains("output"));
+        assert!(!rendered.contains("run_in_background"));
+        assert!(!rendered.contains("timeout_sec"));
+        let projected = project_tools(vec![Arc::new(RunTool::new(Arc::new(
+            AgentJobRegistry::new(),
+        )))]);
+        assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
+        assert_eq!(projected.whitelist, vec!["run".to_string()]);
     }
 
     #[test]
@@ -326,6 +361,30 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn long_command_returns_null_exit_and_keeps_job() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-run-long";
+        let result = tool
+            .execute(
+                serde_json::json!({"command": sleep_shell(30)}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert!(data["exit_code"].is_null(), "{data}");
+        let id = data["id"].as_str().unwrap().to_string();
+        let _stop = StopJob {
+            jobs: Arc::clone(&jobs),
+            id: id.clone(),
+            session_id: session.into(),
+        };
+        let pid = jobs.job_pid(&id).expect("pid");
+        assert!(pid_alive(pid), "job should still be running");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn cancel_before_spawn_rejects() {
         let dir = tempfile::tempdir().unwrap();
         let (tool, _) = tool();
@@ -336,6 +395,30 @@ mod tests {
             .await;
         assert!(result.error.is_some());
         assert_eq!(result.error_code.as_deref(), Some("cancelled"));
+    }
+
+    #[test]
+    fn effects_and_safe_policy_match_readonly_dial() {
+        use crate::config::schema::ToolPreset;
+        use crate::permission::{MatchContext, PermissionAction, binding_for_tool, evaluate};
+
+        let (tool, _) = tool();
+        let root = Path::new(".");
+        assert!(tool.is_concurrency_safe(&serde_json::json!({"command": "ls"})));
+        assert!(!tool.is_concurrency_safe(&serde_json::json!({"command": "cargo build"})));
+        let (policy, path_mode) = binding_for_tool("run", ToolPreset::Safe);
+        let ctx = MatchContext {
+            workspace_root: root,
+            path_mode,
+        };
+        let denied = evaluate(
+            &policy,
+            &serde_json::json!({"command": "cargo build"}),
+            &ctx,
+        );
+        assert_eq!(denied.action, PermissionAction::Deny);
+        let allowed = evaluate(&policy, &serde_json::json!({"command": "ls"}), &ctx);
+        assert_eq!(allowed.action, PermissionAction::Allow);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -141,3 +141,29 @@ fn hub_call(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn agent_name_prefixes_server_id() {
+        let tool = McpTool::new(
+            "github",
+            "read a file".into(),
+            serde_json::json!({"type": "object"}),
+            McpServerConnection {
+                tool_name: "read".into(),
+                server_name: "global:github".into(),
+                command: "unused".into(),
+                args: Vec::new(),
+                env: HashMap::new(),
+                cwd: None,
+                pool: Arc::new(McpConnectionPool::new()),
+                timeout_secs: 60,
+            },
+        );
+        assert_eq!(tool.name(), "mcp_github_read");
+    }
+}

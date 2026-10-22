@@ -133,6 +133,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn relative_path_uses_workspace_root() {
+        let root = tempfile::tempdir().unwrap();
+        let path = resolve_tool_path_from(root.path(), "src/main.rs", ToolPathMode::All).unwrap();
+        assert!(path.starts_with(crate::config::path::canon_abs(root.path()).unwrap()));
+    }
+
+    #[test]
+    fn relative_traversal_is_rejected_in_all_modes() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            resolve_tool_path_from(root.path(), "../outside", ToolPathMode::All),
+            Err(ToolPathError::RelativeTraversal)
+        ));
+    }
+
+    #[test]
     fn all_allows_and_safe_rejects_external_absolute_path() {
         let root = tempfile::tempdir().unwrap();
         let external = tempfile::NamedTempFile::new().unwrap();
@@ -140,6 +156,33 @@ mod tests {
         assert!(resolve_tool_path_from(root.path(), &raw, ToolPathMode::All).is_ok());
         assert!(matches!(
             resolve_tool_path_from(root.path(), &raw, ToolPathMode::Safe),
+            Err(ToolPathError::OutsideWorkspace)
+        ));
+    }
+
+    #[test]
+    fn human_relative_rejects_absolute_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::NamedTempFile::new().unwrap();
+        let raw = external.path().to_string_lossy();
+        assert!(matches!(
+            resolve_human_relative(root.path(), &raw),
+            Err(ToolPathError::OutsideWorkspace)
+        ));
+        assert!(resolve_human_relative(root.path(), "src/main.rs").is_ok());
+    }
+
+    #[test]
+    fn agent_and_lsp_share_safe_scope() {
+        let root = tempfile::tempdir().unwrap();
+        let external = tempfile::NamedTempFile::new().unwrap();
+        let raw = external.path().to_string_lossy();
+        assert!(matches!(
+            resolve_agent(root.path(), &raw, ToolPathMode::Safe),
+            Err(ToolPathError::OutsideWorkspace)
+        ));
+        assert!(matches!(
+            resolve_lsp_workspace(root.path(), &raw),
             Err(ToolPathError::OutsideWorkspace)
         ));
     }

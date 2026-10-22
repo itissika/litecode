@@ -195,3 +195,93 @@ pub fn delete_blob_rows(conn: &Connection, ids: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::data::sqlite::schema::ensure_session_schema;
+
+    fn receipt(session_id: &str, revision: u64) -> CommitReceipt {
+        CommitReceipt {
+            session_id: session_id.to_string(),
+            operation_id: "op-1".into(),
+            revision,
+            change_id: 0,
+            outcome: CommitKind::MetaUpdated,
+            preview: None,
+            assistant_preview: None,
+            working_set: None,
+        }
+    }
+
+    #[test]
+    fn persist_receipt_fails_when_session_row_missing() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let err = persist_receipt(&conn, &receipt("missing-session", 2)).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sessions.revision update affected 0 rows"),
+            "expected revision miss, got {msg}"
+        );
+    }
+
+    #[test]
+    fn persist_receipt_deleted_accepts_missing_session_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        let mut r = receipt("gone", 3);
+        r.outcome = CommitKind::Deleted;
+        persist_receipt(&conn, &r).expect("delete receipt after row removal");
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(changes, 1);
+    }
+
+    #[test]
+    fn persist_receipt_deleted_rejects_surviving_session_row() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, project, agent_id, created_at, updated_at, schema_version, revision
+             ) VALUES (?1, '/p', 'default', 1, 1, 3, 1)",
+            rusqlite::params!["s1"],
+        )
+        .unwrap();
+        let mut r = receipt("s1", 2);
+        r.outcome = CommitKind::Deleted;
+        let err = persist_receipt(&conn, &r).unwrap_err().to_string();
+        assert!(err.contains("still exists"), "got {err}");
+    }
+    #[test]
+    fn persist_receipt_updates_revision_when_session_exists() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, project, agent_id, created_at, updated_at, schema_version, revision
+             ) VALUES (?1, '/p', 'default', 1, 1, 3, 1)",
+            rusqlite::params!["s1"],
+        )
+        .unwrap();
+        persist_receipt(&conn, &receipt("s1", 2)).expect("persist");
+        let revision: i64 = conn
+            .query_row(
+                "SELECT revision FROM sessions WHERE id = ?1",
+                rusqlite::params!["s1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, 2);
+        let changes: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_change_log", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(changes, 1);
+    }
+}

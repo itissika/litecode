@@ -211,6 +211,19 @@ mod tests {
     }
 
     #[test]
+    fn round_trips_stamped_and_unstamped_paths() {
+        let dir = TempDir::new().unwrap();
+        seed_meta(dir.path());
+        save(dir.path(), &sample());
+        assert_eq!(load(dir.path()), Some(sample()));
+        let names: Vec<String> = std::fs::read_dir(meta::index_dir(dir.path()))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
+    }
+
+    #[test]
     fn invalidation_matrix_discards_the_file() {
         type Mutate = fn(&Path);
         let cases: Vec<(&str, Mutate)> = vec![
@@ -255,4 +268,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn root_change_invalidates() {
+        let a = TempDir::new().unwrap();
+        let b = TempDir::new().unwrap();
+        seed_meta(a.path());
+        save(a.path(), &sample());
+        let ia = meta::index_dir(a.path());
+        let ib = meta::index_dir(b.path());
+        std::fs::create_dir_all(&ib).unwrap();
+        for f in ["meta.json", "stamps.v1"] {
+            std::fs::copy(ia.join(f), ib.join(f)).unwrap();
+        }
+        assert_eq!(load(b.path()), None, "copied to another root");
+    }
 }

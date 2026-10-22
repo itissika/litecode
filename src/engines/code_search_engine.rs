@@ -550,11 +550,11 @@ impl Default for CodeSearchEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::engines::code_search::init_workspace_index;
     use std::process::{Command, Stdio};
-    
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
-    
+    use tempfile::TempDir;
 
     fn spawn_stub_child() -> std::process::Child {
         #[cfg(windows)]
@@ -589,6 +589,14 @@ mod tests {
     }
 
     #[test]
+    fn notify_buffers_while_cold() {
+        let engine = CodeSearchEngine::new();
+        engine.notify_fs_changes(&["src/a.rs".into()], false);
+        let pending = engine.pending_fs.lock().unwrap();
+        assert!(pending.contains(&("src/a.rs".into(), false)));
+    }
+
+    #[test]
     fn stop_kills_os_process_when_client_not_installed() {
         // Warmup holds the Child locally until the worker RPC returns. Turning
         // the engine off must still kill that OS process; worker_alive() is
@@ -620,6 +628,99 @@ mod tests {
     }
 
     #[test]
+    fn stop_during_warmup_kills_worker() {
+        unsafe {
+            std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
+        }
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        init_workspace_index(&root).unwrap();
+        for i in 0..80 {
+            std::fs::write(
+                root.join(format!("slow_{i}.rs")),
+                format!("pub fn fn_{i}() {{\n{}\n}}\n", "let _ = 1;\n".repeat(200)),
+            )
+            .unwrap();
+        }
+
+        let engine = Arc::new(CodeSearchEngine::new());
+        engine.set_workspace(root);
+
+        let worker = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                let _ = engine.warmup();
+            })
+        };
+
+        std::thread::sleep(Duration::from_millis(5));
+        engine.stop();
+        worker.join().expect("warmup thread");
+
+        assert!(!engine.worker_alive());
+        let guard = engine.client.lock().unwrap();
+        assert!(guard.is_none());
+    }
+
+    #[test]
+    fn worker_pid_available_during_warmup() {
+        if std::env::var("CARGO_BIN_EXE_litecode").is_err() {
+            // Product worker is `litecode code-search-worker`. `cargo test --lib`
+            // uses the test harness as current_exe, so spawn cannot speak IPC.
+            return;
+        }
+        unsafe {
+            std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
+        }
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        init_workspace_index(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+
+        let engine = Arc::new(CodeSearchEngine::new());
+        engine.set_workspace(root);
+
+        let worker = {
+            let engine = Arc::clone(&engine);
+            std::thread::spawn(move || {
+                let _ = engine.warmup();
+            })
+        };
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut saw_pid = false;
+        while std::time::Instant::now() < deadline {
+            if engine.worker_pid().is_some() {
+                saw_pid = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        worker.join().expect("warmup thread");
+        assert!(
+            saw_pid,
+            "worker_pid should be set once the child is spawned"
+        );
+        if engine.worker_alive() {
+            assert!(engine.worker_pid().is_some());
+            engine
+                .search("main", None, 5)
+                .expect("code search must not require SessionData");
+            let err = engine
+                .search_sessions("x", 5, None)
+                .expect_err("session lane needs SessionData nod");
+            assert!(
+                err.to_string().contains("SessionData reader not ready"),
+                "got: {err}"
+            );
+            engine
+                .search("main", None, 5)
+                .expect("code search still Ok after session lane error");
+        }
+    }
+
+    #[test]
     fn search_returns_busy_without_waiting_when_client_lock_held() {
         let engine = CodeSearchEngine::new();
         let _hold = engine.hold_client_for_test();
@@ -634,4 +735,18 @@ mod tests {
         assert!(is_search_worker_busy(&err), "{err}");
     }
 
+    #[test]
+    fn handshake_closed_stdout_is_worker_death() {
+        assert!(handshake_error_looks_like_death(
+            &LitecodeError::ToolExecution("code_search worker closed stdout".into())
+        ));
+        assert!(handshake_error_looks_like_death(&LitecodeError::Io(
+            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe")
+        )));
+        assert!(!handshake_error_looks_like_death(
+            &LitecodeError::ToolExecution(
+                "code_search worker error (-32000): tokenizer missing".into()
+            )
+        ));
+    }
 }

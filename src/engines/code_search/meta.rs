@@ -92,3 +92,40 @@ pub fn init_workspace_index(workspace_root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engines::code_search::{EMBEDDER_ID_HASH, EMBEDDER_ID_PASS};
+    use tempfile::TempDir;
+
+    #[test]
+    fn init_creates_meta_without_vectors() {
+        let dir = TempDir::new().unwrap();
+        init_workspace_index(dir.path()).unwrap();
+        let meta = read_meta(dir.path()).unwrap().expect("meta");
+        assert_eq!(meta.pipeline_version, PIPELINE_VERSION);
+        assert_eq!(meta.indexed_chunks, 0);
+        assert!(!dir.path().join(".litecode/index/vectors.usearch").exists());
+    }
+
+    #[test]
+    fn pipeline_version_change_requires_rebuild() {
+        let mut meta = IndexMeta::shell();
+        assert!(!needs_rebuild(&meta));
+        meta.pipeline_version = 0;
+        assert!(needs_rebuild(&meta));
+    }
+
+    #[test]
+    fn embedder_id_mismatch_requires_rebuild() {
+        let mut meta = IndexMeta::shell();
+        assert!(!needs_rebuild(&meta));
+        meta.embedder_id = if production_embedder_id() == EMBEDDER_ID_HASH {
+            EMBEDDER_ID_PASS.into()
+        } else {
+            EMBEDDER_ID_HASH.into()
+        };
+        assert!(needs_rebuild(&meta));
+    }
+}

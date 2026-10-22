@@ -248,4 +248,53 @@ mod tests {
         assert!(parsed.text.contains("Background bash bg_a"));
     }
 
+    #[test]
+    fn job_exit_with_subagent_source_becomes_settled() {
+        let text = "<system-reminder>\nsource: subagent\nchild_session_id: child-1\nturn_id: t1\nreason: completed\nagent: reviewer\n</system-reminder>";
+        let (kind, body) = rewrite_reminder_row("reminder/job_exit", &item_body(text)).unwrap();
+        assert_eq!(kind, "reminder/subagent_settled");
+        let Reminder::SubagentSettled(parsed) = serde_json::from_str(&body).unwrap() else {
+            panic!("kind");
+        };
+        assert_eq!(parsed.settled[0].child_session_id, "child-1");
+        assert_eq!(parsed.settled[0].agent, "reviewer");
+    }
+
+    #[test]
+    fn plan_row_keeps_path_and_empty_revision() {
+        let text = "<system-reminder>\n[Plan updated] .litecode/plan/calm.md changed since you last read it.\n</system-reminder>";
+        let (kind, body) = rewrite_reminder_row("reminder/plan", &item_body(text)).unwrap();
+        assert_eq!(kind, "reminder/plan_changed");
+        let Reminder::PlanChanged(parsed) = serde_json::from_str(&body).unwrap() else {
+            panic!("kind");
+        };
+        assert_eq!(parsed.relative_path, ".litecode/plan/calm.md");
+        assert!(parsed.revision.is_empty());
+    }
+
+    #[test]
+    fn unparseable_bash_keeps_text_and_empty_exits() {
+        let (kind, body) =
+            rewrite_reminder_row("reminder/job_exit", &item_body("no structure here")).unwrap();
+        assert_eq!(kind, "reminder/bash_exit");
+        let Reminder::BashExit(parsed) = serde_json::from_str(&body).unwrap() else {
+            panic!("kind");
+        };
+        assert!(parsed.exits.is_empty());
+        assert_eq!(parsed.text, "no structure here");
+    }
+
+    #[test]
+    fn strip_embedded_reminder_leaves_label_and_prose() {
+        let summary = "[Conversation summary]\n<system-reminder>\nTodos:\n[~] a\n</system-reminder>\nkept prose";
+        assert_eq!(
+            strip_embedded_reminder(summary),
+            "[Conversation summary]\nkept prose"
+        );
+    }
+
+    #[test]
+    fn rewrite_is_none_for_current_kinds() {
+        assert!(rewrite_reminder_row("reminder/bash_exit", "{}").is_none());
+    }
 }

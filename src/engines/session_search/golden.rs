@@ -16,6 +16,7 @@
 //! `sparse::build_index` directly, so nothing here depends on the store's ULID
 //! generation or on wall-clock ordering.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -26,7 +27,7 @@ use crate::authority::responses::{
 use crate::session::transcript_file::SearchableRow;
 use crate::types::{Item, assistant_text, user_text};
 
-use super::sparse::{self};
+use super::sparse::{self, Lane};
 use super::tokenizer;
 
 /// One `SearchableRow` from an `Item`, with `item_type` taken from the serde
@@ -154,6 +155,117 @@ fn open(dir: &Path) -> Connection {
     Connection::open(sparse::sparse_index_path(dir)).expect("open sparse db")
 }
 
+/// `(session_id, seq, chunk, single)` for every indexed chunk, ordered.
+fn chunk_keys(dir: &Path) -> Vec<(String, i64, i64, i64)> {
+    let conn = open(dir);
+    let mut stmt = conn
+        .prepare("SELECT session_id, seq, chunk, single FROM rows ORDER BY session_id, seq, chunk")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+}
+
+#[test]
+fn golden_indexes_exactly_the_admitted_rows() {
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+
+    let indexed: BTreeSet<(String, i64)> = chunk_keys(dir.path())
+        .into_iter()
+        .map(|(sid, seq, _, _)| (sid, seq))
+        .collect();
+
+    let expected: BTreeSet<(String, i64)> = [
+        ("S1", 0),
+        ("S1", 1),
+        ("S1", 2),
+        ("S1", 4),
+        // S1:5 tool_result excluded (sparse whitelist)
+        ("S2", 0),
+        ("S2", 2),
+        ("S2", 3),
+        ("S2", 4),
+        ("S2", 5),
+        ("S2", 6),
+        ("S2", 7),
+        ("S2", 8),
+    ]
+    .into_iter()
+    .map(|(s, q)| (s.to_string(), q))
+    .collect();
+
+    assert_eq!(
+        indexed, expected,
+        "admission changed: echo results and compacted rows must stay out"
+    );
+    // The two excluded rows explicitly, so a future failure names them.
+    assert!(
+        !indexed.contains(&("S1".into(), 3)),
+        "session-echo result indexed"
+    );
+    assert!(
+        !indexed.contains(&("S2".into(), 1)),
+        "compacted row indexed"
+    );
+    assert!(
+        !indexed.contains(&("S1".into(), 5)),
+        "ordinary tool_result must stay out of sparse"
+    );
+}
+
+#[test]
+fn golden_chunk_keys_and_normalized_text() {
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+
+    let conn = open(dir.path());
+    let norm = |sid: &str, seq: i64| -> String {
+        conn.query_row(
+            "SELECT text_norm FROM rows WHERE session_id = ?1 AND seq = ?2 AND chunk = 0",
+            rusqlite::params![sid, seq],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(norm("S1", 0), sparse::normalize("alpha beta gamma"));
+    assert_eq!(
+        norm("S1", 1),
+        sparse::normalize("the AuthRefactorToken decision is final")
+    );
+    // The word column is the normalized text with the CJK run segmented
+    // (`cjk::segment`), which is what the `seg` table indexes.
+    let words = |sid: &str, seq: i64| -> String {
+        conn.query_row(
+            "SELECT text_words FROM rows WHERE session_id = ?1 AND seq = ?2 AND chunk = 0",
+            rusqlite::params![sid, seq],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let chinese = words("S2", 0);
+    assert!(chinese.contains("会话"), "{chinese:?}");
+    assert!(chinese.contains("检索"), "{chinese:?}");
+    // Latin rows are copied through unchanged, so the English word path sees
+    // exactly what it saw before.
+    assert_eq!(words("S1", 1), norm("S1", 1));
+    // The tool call row's plain text is `name(arguments)`.
+    assert_eq!(
+        norm("S1", 4),
+        sparse::normalize(r#"bash({"cmd":"grep NEEDLE_TOOL"})"#)
+    );
+
+    // Every indexed row that is not the long row is a single chunk.
+    let singles: BTreeSet<(String, i64)> = chunk_keys(dir.path())
+        .into_iter()
+        .filter(|(_, _, _, single)| *single == 1)
+        .map(|(sid, seq, _, _)| (sid, seq))
+        .collect();
+    assert!(singles.contains(&("S1".into(), 0)));
+    assert!(singles.contains(&("S2".into(), 0)));
+    assert!(!singles.contains(&("S2".into(), 2)), "long row must split");
+}
 
 #[test]
 fn golden_long_row_tiles_losslessly_within_budget() {
@@ -202,3 +314,219 @@ fn golden_long_row_tiles_losslessly_within_budget() {
     );
 }
 
+#[test]
+fn golden_query_ladder_and_exclusions() {
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+    let index = index(dir.path());
+
+    // Exact Latin substring: LIKE tier, score 1.0, one row.
+    let hits = index.search(Lane::Final, "AuthRefactorToken", 50).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].row_key, "S1:1");
+    assert_eq!(hits[0].score, 1.0);
+    // The span lands on the literal.
+    let text = "the AuthRefactorToken decision is final";
+    let span: String = text
+        .chars()
+        .skip(hits[0].char_start)
+        .take(hits[0].char_end - hits[0].char_start)
+        .collect();
+    assert_eq!(span, "AuthRefactorToken");
+
+    // The literal appears on the call; the result row is out of the whitelist.
+    let hits = index.search(Lane::Like, "NEEDLE_TOOL", 50).unwrap();
+    let keys: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
+    assert_eq!(keys, ["S1:4".to_string()].into_iter().collect());
+    assert!(!keys.contains("S1:5"), "tool_result must not be searchable");
+
+    // CJK substring is answerable by both the LIKE path and the trigram table.
+    assert!(
+        index
+            .search(Lane::Like, "会话检索测试", 50)
+            .unwrap()
+            .iter()
+            .any(|h| h.row_key == "S2:0"),
+        "CJK substring must hit via LIKE"
+    );
+    assert!(
+        index
+            .search(Lane::Trigram, "会话检索", 50)
+            .unwrap()
+            .iter()
+            .any(|h| h.row_key == "S2:0"),
+        "CJK substring must be in the trigram candidate set"
+    );
+
+    // The echo result and the compacted summary are absent from the exact
+    // (LIKE) index, and no lane may surface them by key — the fuzzy n-gram
+    // fallback is allowed to match other rows, but never an excluded one.
+    assert!(
+        index
+            .search(Lane::Like, "UNIQUE_ECHO", 50)
+            .unwrap()
+            .is_empty(),
+        "session-echo result must not be indexed"
+    );
+    assert!(
+        index
+            .search(Lane::Like, "COMPACTED_SUMMARY_UNIQUE", 50)
+            .unwrap()
+            .is_empty(),
+        "compacted summary must not be indexed"
+    );
+    for query in ["UNIQUE_ECHO", "COMPACTED_SUMMARY_UNIQUE"] {
+        for lane in [Lane::Final, Lane::Hybrid, Lane::Recipe] {
+            let keys: BTreeSet<String> = index
+                .search(lane, query, 50)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.row_key)
+                .collect();
+            assert!(!keys.contains("S1:3"), "{lane:?} surfaced the echo result");
+            assert!(
+                !keys.contains("S2:1"),
+                "{lane:?} surfaced the compacted row"
+            );
+        }
+    }
+}
+
+#[test]
+fn golden_scope_and_candidate_recall() {
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+
+    // Scope is applied inside the SQL: another session's rows never surface.
+    let scoped = sparse::open_read_only(&sparse::sparse_index_path(dir.path()))
+        .unwrap()
+        .with_scope(Some("S2"));
+    let hits = scoped.search(Lane::Final, "NEEDLE_TOOL", 50).unwrap();
+    assert!(hits.is_empty(), "S2 must not see S1's tool rows");
+
+    // Candidate recall: a truth row is in the candidate set even below top-k.
+    let index = sparse::open_read_only(&sparse::sparse_index_path(dir.path())).unwrap();
+    assert!(
+        index
+            .contains(Lane::Final, "AuthRefactorToken", "S1", 1)
+            .unwrap()
+    );
+    assert!(
+        !index
+            .contains(Lane::Final, "AuthRefactorToken", "S1", 0)
+            .unwrap()
+    );
+}
+
+fn index(dir: &Path) -> sparse::SparseIndex {
+    sparse::open_read_only(&sparse::sparse_index_path(dir)).expect("open index")
+}
+
+/// The Chinese word path: a query is answered by the *words* it asks for, in a
+/// row that says them apart — and a fragment of a sentence is not the sentence.
+#[test]
+fn golden_cjk_is_searched_by_words_and_gated_by_them() {
+    use super::ranking::LayerId;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+    let index = index(dir.path());
+    let keys = |query: &str| -> BTreeSet<String> {
+        index
+            .search(Lane::Final, query, 50)
+            .unwrap()
+            .into_iter()
+            .map(|h| h.row_key)
+            .collect()
+    };
+
+    // The words are spread across the row (`能否重试次数放大` vs
+    // `能不能放大一点`): the old trigram ratio could not see it, the word path
+    // does, and the row is found by the `Lexical` layer rather than by the
+    // literal.
+    let hits = index
+        .search(Lane::Final, "重试次数能不能放大一点", 50)
+        .unwrap();
+    let found: BTreeSet<String> = hits.iter().map(|h| h.row_key.clone()).collect();
+    assert!(found.contains("S2:3"), "{hits:#?}");
+    assert!(hits[0].layers().contains(&LayerId::Lexical), "{hits:#?}");
+
+    // A whole sentence. `S2:4` shares three words of it and a third of its
+    // characters; the word floor lets it in, the character floor does not.
+    let found = keys("网络连接总是断掉能否把重试次数放大一点");
+    assert!(found.contains("S2:3"), "{found:?}");
+    assert!(
+        !found.contains("S2:4"),
+        "a fragment must not stand in for the sentence: {found:?}"
+    );
+
+    // Two words mean both, and they need not be adjacent.
+    let found = keys("配置落盘");
+    assert!(found.contains("S2:7"), "{found:?}");
+    assert!(
+        !found.contains("S2:8"),
+        "one word of two is not the query: {found:?}"
+    );
+
+    // Both scripts are required: `codex` alone (S2:5 says `opencode`, `ifIndex`)
+    // and `感知` alone are not answers.
+    assert_eq!(
+        keys("codex 感知"),
+        ["S2:6".to_string()].into_iter().collect::<BTreeSet<_>>()
+    );
+    assert_eq!(
+        keys("retry 重试"),
+        ["S2:6".to_string()].into_iter().collect::<BTreeSet<_>>()
+    );
+}
+
+/// The product layer's contract, on the same fixed corpus: a query that shares
+/// only part of its words must not return the row that has the other part, and
+/// every hit must say which mechanism found it.
+#[test]
+fn golden_final_layer_gates_on_intent_and_reports_its_evidence() {
+    use super::ranking::{LayerId, RankBand};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    build(dir.path());
+    let index = index(dir.path());
+
+    // The literal: exact evidence, and the strongest band there is.
+    let hits = index.search(Lane::Final, "AuthRefactorToken", 50).unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].row_key, "S1:1");
+    assert_eq!(hits[0].rank.band, RankBand::Exact);
+    assert!(hits[0].layers().contains(&LayerId::Exact), "{hits:#?}");
+
+    // Two words are an AND, even when one of them is an identifier: the row is
+    // the same, and the second word is not there, so nothing answers.
+    assert!(
+        index
+            .search(Lane::Final, "authrefactortoken missingword", 50)
+            .unwrap()
+            .is_empty(),
+        "a query must not be answered by half of itself"
+    );
+
+    // The same words, out of the literal's order: proximity answers, and the
+    // word layer agrees.
+    let hits = index
+        .search(Lane::Final, "authrefactortoken final", 50)
+        .unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].row_key, "S1:1");
+    assert_eq!(hits[0].rank.band, RankBand::Proximity);
+    assert!(hits[0].layers().contains(&LayerId::Proximity), "{hits:#?}");
+    assert_eq!(hits[0].coverage_of(LayerId::Lexical), Some(1.0));
+
+    // A scope only narrows: the same row, from a session-scoped index.
+    let scoped = sparse::open_read_only(&sparse::sparse_index_path(dir.path()))
+        .unwrap()
+        .with_scope(Some("S2"));
+    assert!(
+        scoped
+            .search(Lane::Final, "authrefactortoken", 50)
+            .unwrap()
+            .is_empty()
+    );
+}

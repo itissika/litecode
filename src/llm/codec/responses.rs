@@ -564,11 +564,11 @@ impl LlmProvider for ResponsesCodec {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        Item, MessageItem, OutputMessage, OutputStatus, ResponseTextDeltaEvent,
+        Item, MessageItem, OutputMessage, OutputStatus, OutputTextContent, ResponseTextDeltaEvent,
     };
-    
+    use crate::llm::request::ToolDef;
     use crate::provider_catalog::ProviderCatalog;
-    
+    use crate::types::{assistant_text, user_text};
     use std::path::Path;
     use std::sync::Mutex;
 
@@ -586,13 +586,61 @@ endpoint_type = "responses"
 tiers = { low = "low", medium = "medium", high = "high" }
 "#;
 
+    const DEEPSEEK_PROVIDER: &str = r#"
+version = 1
+[[providers]]
+id = "deepseek"
+name = "DeepSeek"
+endpoint = "https://api.deepseek.com"
+endpoint_type = "responses"
+"#;
 
+    const ARK_PROVIDER: &str = r#"
+version = 1
+[[providers]]
+id = "ark"
+name = "Ark"
+endpoint = "https://ark.example.com/api/coding/v3"
+endpoint_type = "responses"
+quirks = ["thinking_type_switch"]
+"#;
 
+    /// A provider that declares no reasoning tiers at all.
+    const PLAIN_PROVIDER: &str = r#"
+version = 1
+[[providers]]
+id = "plain"
+name = "Plain"
+endpoint = "https://plain.example.com/v1"
+endpoint_type = "responses"
+"#;
 
+    fn plain(entry: &str) -> Arc<ResolvedModel> {
+        let entry = format!("provider_id = \"plain\"\n{entry}");
+        model(PLAIN_PROVIDER, &entry, "plain/m")
+    }
 
+    fn model(provider: &str, entry: &str, reference: &str) -> Arc<ResolvedModel> {
+        let text = format!("{provider}\n[[models]]\nid = \"m\"\n{entry}\n");
+        let catalog = ProviderCatalog::parse(&text, Path::new("test-catalog.toml")).unwrap();
+        Arc::clone(catalog.model(reference).expect("model"))
+    }
 
+    fn openai(entry: &str) -> Arc<ResolvedModel> {
+        let entry = format!("provider_id = \"openai\"\n{entry}");
+        let provider = OPENAI_PROVIDER.replace("ENDPOINT", "https://api.openai.com/v1");
+        model(&provider, &entry, "openai/m")
+    }
 
+    fn deepseek(entry: &str) -> Arc<ResolvedModel> {
+        let entry = format!("provider_id = \"deepseek\"\n{entry}");
+        model(DEEPSEEK_PROVIDER, &entry, "deepseek/m")
+    }
 
+    fn ark(entry: &str) -> Arc<ResolvedModel> {
+        let entry = format!("provider_id = \"ark\"\n{entry}");
+        model(ARK_PROVIDER, &entry, "ark/m")
+    }
 
     fn sample_request() -> ModelRequest {
         ModelRequest {
@@ -607,7 +655,1032 @@ tiers = { low = "low", medium = "medium", high = "high" }
         }
     }
 
+    fn tool(name: &str) -> ToolDef {
+        ToolDef {
+            name: name.into(),
+            description: "d".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }
+    }
 
+    fn request_body(codec: &ResponsesCodec, request: &ModelRequest) -> Value {
+        codec.build_body(request, true).unwrap()
+    }
+
+    #[test]
+    fn plain_model_sends_the_authority_shape() {
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let body = request_body(&codec, &sample_request());
+        assert_eq!(body["model"], "m");
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_output_tokens"], 64);
+        assert!(body.get("temperature").is_none(), "{body}");
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert!(body.get("tools").is_none(), "empty tools are omitted");
+        assert!(body.get("store").is_none());
+    }
+
+    #[test]
+    fn thinking_off_omits_the_whole_control() {
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.thinking = ThinkingSpec::Off;
+        let body = request_body(&codec, &request);
+        assert!(body.get("reasoning").is_none(), "{body}");
+    }
+
+    #[test]
+    fn thinking_off_sends_the_declared_off_literal() {
+        let codec = ResponsesCodec::new(deepseek(
+            "reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let mut request = sample_request();
+        request.thinking = ThinkingSpec::Off;
+        assert_eq!(
+            request_body(&codec, &request)["reasoning"]["effort"],
+            "none"
+        );
+    }
+
+    #[test]
+    fn model_without_tiers_never_sends_reasoning() {
+        let codec = ResponsesCodec::new(plain("")).unwrap();
+        let body = request_body(&codec, &sample_request());
+        assert!(body.get("reasoning").is_none(), "{body}");
+    }
+
+    /// The summary opt-in rides the declared literal: a model that never
+    /// declares one does not grow a `summary` key on the wire.
+    #[test]
+    fn reasoning_summary_rides_the_declared_literal() {
+        let declared = ResponsesCodec::new(openai(
+            "reasoning = { summary = \"auto\", tiers = { off = \"none\", low = \"low\", medium = \"medium\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let body = request_body(&declared, &sample_request());
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert_eq!(body["reasoning"]["summary"], "auto");
+
+        let bare = ResponsesCodec::new(openai("")).unwrap();
+        let body = request_body(&bare, &sample_request());
+        assert_eq!(body["reasoning"]["effort"], "medium");
+        assert!(body["reasoning"].get("summary").is_none(), "{body}");
+    }
+
+    #[test]
+    fn tiers_map_each_platform_level_to_its_own_literal() {
+        let codec = ResponsesCodec::new(deepseek(
+            "reasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        for (tier, literal) in [
+            (ThinkingTier::Low, "low"),
+            (ThinkingTier::Medium, "high"),
+            (ThinkingTier::High, "max"),
+        ] {
+            let mut request = sample_request();
+            request.thinking = ThinkingSpec::Tier(tier);
+            assert_eq!(
+                request_body(&codec, &request)["reasoning"]["effort"],
+                literal
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_off_does_not_send_temperature() {
+        let codec = ResponsesCodec::new(deepseek(
+            "reasoning = { tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let with_thinking = request_body(&codec, &sample_request());
+        assert!(
+            with_thinking.get("temperature").is_none(),
+            "{with_thinking}"
+        );
+        let mut request = sample_request();
+        request.thinking = ThinkingSpec::Off;
+        let off = request_body(&codec, &request);
+        assert!(off.get("temperature").is_none(), "{off}");
+        assert_eq!(off["reasoning"]["effort"], "none");
+    }
+
+    #[test]
+    fn ark_uses_the_thinking_switch_and_store_extra_body() {
+        let codec = ResponsesCodec::new(ark(
+            "reasoning = { tiers = { off = \"disabled\", low = \"disabled\", medium = \"medium\", high = \"high\" } }\nextra_body = { store = false }",
+        ))
+        .unwrap();
+
+        let mut request = sample_request();
+        request.thinking = ThinkingSpec::Tier(ThinkingTier::Low);
+        let low = request_body(&codec, &request);
+        assert_eq!(low["thinking"]["type"], "disabled");
+        assert!(low.get("reasoning").is_none(), "{low}");
+        assert_eq!(low["store"], false);
+
+        // Off uses the same switch value as Low; thinking stays off.
+        request.thinking = ThinkingSpec::Off;
+        let off = request_body(&codec, &request);
+        assert_eq!(off["thinking"]["type"], "disabled");
+        assert!(off.get("reasoning").is_none(), "{off}");
+
+        request.thinking = ThinkingSpec::Tier(ThinkingTier::High);
+        let high = request_body(&codec, &request);
+        assert_eq!(high["thinking"]["type"], "enabled");
+        assert_eq!(high["reasoning"]["effort"], "high");
+    }
+
+    #[test]
+    fn json_output_is_intent_gated_by_capability() {
+        // Intent + capability: the model declares JSON support and this request asks for it.
+        let codec = ResponsesCodec::new(deepseek("json_output = true\n")).unwrap();
+        let mut request = sample_request();
+        request.json_output = true;
+        let body = request_body(&codec, &request);
+        assert_eq!(body["text"]["format"]["type"], "json_object");
+
+        // Capability alone must never force every turn into JSON mode.
+        let body = request_body(&codec, &sample_request());
+        assert!(body.get("text").is_none(), "{body}");
+
+        // Intent without the capability is dropped, not sent blind.
+        let codec = ResponsesCodec::new(deepseek("")).unwrap();
+        let mut request = sample_request();
+        request.json_output = true;
+        assert!(request_body(&codec, &request).get("text").is_none());
+    }
+
+    #[test]
+    fn tools_use_the_responses_function_shape() {
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        let body = request_body(&codec, &request);
+        assert_eq!(body["tools"][0]["type"], "function");
+        assert_eq!(body["tools"][0]["name"], "read");
+        assert!(body["tools"][0].get("function").is_none());
+    }
+
+    /// Item ids never reach the wire, so a repeated id cannot collide there; the
+    /// stream projection owns the one-row-per-item invariant.
+    #[test]
+    fn repeated_item_ids_are_not_rewritten_by_the_codec() {
+        use crate::authority::responses::{FunctionToolCall, ReasoningItem};
+
+        fn reasoning(encrypted: &str) -> Item {
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_1".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some(encrypted.into()),
+                status: Some(OutputStatus::Completed),
+            })
+        }
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.session_id = Some("s1".into());
+        request.input = vec![
+            user_text("hi"),
+            reasoning("gAAAA-live-snapshot"),
+            Item::FunctionCall(FunctionToolCall {
+                arguments: "{}".into(),
+                call_id: "call_1".into(),
+                namespace: None,
+                name: "read".into(),
+                id: Some("fc_1".into()),
+                status: Some(OutputStatus::Completed),
+            }),
+            reasoning("gAAAA-complete"),
+        ];
+
+        let body = codec
+            .build_body(&request, true)
+            .expect("the codec no longer rejects repeated ids");
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 4, "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
+        assert_eq!(request.input.len(), 4, "session-owned copy unchanged");
+    }
+
+    /// `status` is populated when items are returned *from* the API; a replay
+    /// that carries it is rejected as an unknown parameter.
+    #[test]
+    fn output_only_status_never_reaches_the_wire() {
+        use crate::authority::responses::ReasoningItem;
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            assistant_text("done"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_1".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some("gAAAA".into()),
+                status: Some(OutputStatus::InProgress),
+            }),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3, "{input:?}");
+        for item in input {
+            assert!(item.get("status").is_none(), "{item}");
+        }
+    }
+
+    /// An empty id is not an identity: synthesized assistant turns and host-built
+    /// outputs must never collapse into each other or send an invalid id.
+    #[test]
+    fn items_without_ids_are_never_collapsed() {
+        use crate::authority::responses::FunctionCallOutputItemParam;
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            assistant_text("one"),
+            assistant_text("two"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                id: None,
+                status: None,
+            }),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3, "{body}");
+        for item in input {
+            assert!(item.get("id").is_none(), "{item}");
+        }
+        assert_eq!(input[0]["content"][0]["text"], "one");
+        assert_eq!(input[1]["content"][0]["text"], "two");
+    }
+
+    #[test]
+    fn compact_summary_does_not_send_an_empty_id() {
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            crate::context_pipeline::summary::compact_summary_message("decisions", false),
+            user_text("continue"),
+        ];
+
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "{body}");
+        assert!(input[0].get("id").is_none(), "{}", input[0]);
+        assert_eq!(input[0]["role"], "assistant");
+    }
+
+    /// A ciphertext-only target keeps only reasoning this endpoint can read
+    /// (its own ciphertext); the codec then clears input `content`, which the
+    /// dialect rejects. The session copy is unchanged.
+    #[test]
+    fn undeclared_dialect_replays_only_its_own_ciphertext() {
+        use crate::authority::responses::{
+            ReasoningItem, ReasoningItemContent, ReasoningTextContent, SummaryPart,
+            SummaryTextContent,
+        };
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("earlier"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_1".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "plain text from another dialect".into(),
+                    },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_foreign".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "what the other model thought".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "raw text riding along".into(),
+                    },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_own".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "own summary rides along".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "raw text stripped from input".into(),
+                    },
+                )]),
+                encrypted_content: Some("gAAAA".into()),
+                status: None,
+            }),
+            assistant_text("answer"),
+        ];
+        let target = codec.model.as_ref();
+        let producers: Vec<_> = request
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: target.provider_id.clone(),
+                    endpoint_type: Some("responses".into()),
+                    model_ref: Some(target.reference.clone()),
+                })
+            })
+            .collect();
+        let mut producers = producers;
+        producers[1] = Some(crate::llm::ItemProducer {
+            provider_id: "other".into(),
+            endpoint_type: Some("responses".into()),
+            model_ref: Some("other/model".into()),
+        });
+        producers[2] = producers[1].clone();
+        let session_copy = request.input.clone();
+        let rebased = vec![false; request.input.len()];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 2, "{report:?}");
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3, "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
+        assert_eq!(input[1]["encrypted_content"], "gAAAA");
+        assert!(input[1].get("content").is_none(), "{}", input[1]);
+        assert_eq!(input[1]["summary"][0]["text"], "own summary rides along");
+        assert_eq!(input[2]["role"], "assistant");
+        assert_eq!(
+            session_copy.len(),
+            5,
+            "the ported request copy is not the session copy"
+        );
+    }
+
+    #[test]
+    fn summary_replay_sends_own_id_and_summary_text() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem, ReasoningItemContent,
+            ReasoningTextContent, SummaryPart, SummaryTextContent,
+        };
+
+        let codec = ResponsesCodec::new(plain(
+            "reasoning = { replay = \"summary\", tiers = { off = \"none\", low = \"low\", medium = \"medium\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_bailian".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "short".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "full thought".into(),
+                    },
+                )]),
+                encrypted_content: Some("cipher".into()),
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("  ".into()),
+                summary: vec![],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent {
+                        text: "blank id".into(),
+                    },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_empty".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_summary_only".into()),
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "only summary".into(),
+                })],
+                content: Some(vec![ReasoningItemContent::ReasoningText(
+                    ReasoningTextContent { text: "   ".into() },
+                )]),
+                encrypted_content: None,
+                status: None,
+            }),
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("fc_foreign".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: Some("out_foreign".into()),
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+            assistant_text("answer"),
+        ];
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 6, "{input:?}");
+        assert!(input[0].get("id").is_none(), "{}", input[0]);
+        assert_eq!(input[1]["id"], "rs_bailian");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert_eq!(input[1]["summary"][0]["type"], "summary_text");
+        assert_eq!(input[1]["summary"][0]["text"], "full thought");
+        assert!(input[1].get("content").is_none(), "{}", input[1]);
+        assert!(input[1].get("encrypted_content").is_none(), "{}", input[1]);
+        assert!(input[1].get("status").is_none(), "{}", input[1]);
+        assert_eq!(input[2]["id"], "rs_summary_only");
+        assert_eq!(input[2]["summary"][0]["text"], "only summary");
+        assert!(input[2].get("content").is_none(), "{}", input[2]);
+        assert!(input[3].get("id").is_none(), "{}", input[3]);
+        assert_eq!(input[3]["call_id"], "call_1");
+        assert!(input[4].get("id").is_none(), "{}", input[4]);
+        assert_eq!(input[4]["call_id"], "call_1");
+        assert_eq!(input[5]["role"], "assistant");
+        assert!(input[5].get("id").is_none(), "{}", input[5]);
+        assert_eq!(request.input.len(), 8, "session-owned copy unchanged");
+    }
+
+    #[test]
+    fn foreign_item_ids_do_not_break_tool_pairing() {
+        use crate::authority::responses::{FunctionCallOutputItemParam, FunctionToolCall};
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        let mut message = assistant_text("calling tool");
+        if let Item::Message(MessageItem::Output(ref mut out)) = message {
+            out.id = "foreign-uuid".into();
+        }
+        request.input = vec![
+            message,
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("foreign-call-id".into()),
+                call_id: "call_1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: Some("foreign-output-id".into()),
+                call_id: "call_1".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+        ];
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert!(input.iter().all(|item| item.get("id").is_none()));
+        assert_eq!(input[1]["call_id"], input[2]["call_id"]);
+        assert_eq!(request.input.len(), 3);
+    }
+
+    #[test]
+    fn chat_history_does_not_replay_synthetic_responses_ids() {
+        use crate::authority::responses::{
+            FunctionCallOutputItemParam, FunctionToolCall, ReasoningItem,
+        };
+
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let mut request = sample_request();
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_fbef1944fce743688ba5cd474a3f35f6".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            }),
+            Item::Message(MessageItem::Output(OutputMessage {
+                id: "cc_msg_123".into(),
+                role: crate::authority::responses::AssistantRole::Assistant,
+                status: OutputStatus::Completed,
+                phase: None,
+                content: vec![
+                    crate::authority::responses::OutputMessageContent::OutputText(
+                        OutputTextContent {
+                            text: "I'll use a tool".into(),
+                            annotations: vec![],
+                            logprobs: None,
+                        },
+                    ),
+                ],
+            })),
+            Item::FunctionCall(FunctionToolCall {
+                id: Some("cc_fc_123".into()),
+                call_id: "call_123".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                status: Some(OutputStatus::Completed),
+                namespace: None,
+            }),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                id: None,
+                call_id: "call_123".into(),
+                output: FunctionCallOutput::Text("ok".into()),
+                status: None,
+            }),
+            user_text("continue"),
+        ];
+
+        let target = codec.model.as_ref();
+        let producers: Vec<_> = request
+            .input
+            .iter()
+            .map(|_| {
+                Some(crate::llm::ItemProducer {
+                    provider_id: "zen".into(),
+                    endpoint_type: Some("chat_completions".into()),
+                    model_ref: Some("zen/m".into()),
+                })
+            })
+            .collect();
+        let rebased = vec![false; request.input.len()];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &rebased,
+            target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 1, "{report:?}");
+
+        let input = request_body(&codec, &request)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(input.len(), 5, "{input:?}");
+        assert!(
+            input.iter().all(|item| item.get("id").is_none()),
+            "{input:?}"
+        );
+        assert_eq!(input[1]["content"][0]["text"], "I'll use a tool");
+        assert_eq!(input[2]["type"], "function_call");
+        assert_eq!(input[2]["call_id"], input[3]["call_id"]);
+        assert_eq!(input[4]["role"], "user");
+    }
+
+    #[test]
+    fn empty_reasoning_keeps_its_slot_without_invented_text() {
+        use crate::authority::responses::ReasoningItem;
+
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("cc_rs_123".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: Some(OutputStatus::Completed),
+            }),
+            assistant_text("done"),
+        ];
+
+        let input = request_body(&codec, &request)["input"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(input.len(), 3, "{input:?}");
+        assert_eq!(input[1]["type"], "reasoning");
+        assert!(input[1].get("id").is_none(), "{input:?}");
+        assert!(
+            input[1].get("content").is_none() || input[1]["content"].is_null(),
+            "empty reasoning stays empty: {input:?}"
+        );
+        assert_eq!(input[2]["role"], "assistant");
+    }
+
+    #[test]
+    fn foreign_summary_reaches_text_replay_responses() {
+        use crate::authority::responses::{ReasoningItem, SummaryPart, SummaryTextContent};
+        use crate::llm::ItemProducer;
+
+        let codec = ResponsesCodec::new(deepseek(
+            "reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: None,
+                summary: vec![SummaryPart::SummaryText(SummaryTextContent {
+                    text: "foreign summary".into(),
+                })],
+                content: None,
+                encrypted_content: Some("foreign-cipher".into()),
+                status: None,
+            }),
+            assistant_text("done"),
+        ];
+        let producers = vec![
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+            Some(ItemProducer {
+                provider_id: "other".into(),
+                endpoint_type: Some("responses".into()),
+                model_ref: Some("other/gpt".into()),
+            }),
+        ];
+        let report = crate::llm::port::port(
+            &mut request.input,
+            &producers,
+            &[false; 3],
+            codec.model.as_ref(),
+            ModelRequest::sample_thinking(),
+            true,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{report:?}");
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input[1]["type"], "reasoning", "{body}");
+        assert_eq!(input[1]["content"][0]["text"], "foreign summary", "{body}");
+        assert!(input[1]["summary"].as_array().is_some_and(Vec::is_empty));
+    }
+
+    #[test]
+    fn foreign_reasoning_id_is_stripped_and_missing_text_stays_missing() {
+        use crate::authority::responses::ReasoningItem;
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("60102752-7590-49a2-92bf-cd3e631b96bf".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: None,
+                status: None,
+            }),
+            assistant_text("done"),
+        ];
+        let body = request_body(&codec, &request);
+        assert_eq!(body["input"].as_array().unwrap().len(), 3);
+        assert_eq!(body["input"][1]["type"], "reasoning");
+        assert!(body["input"][1].get("id").is_none(), "{}", body["input"][1]);
+        assert!(
+            body["input"][1].get("content").is_none() || body["input"][1]["content"].is_null(),
+            "a foreign id is stripped; its missing text is not invented: {}",
+            body["input"][1]
+        );
+    }
+
+    #[test]
+    fn replay_does_not_invent_reasoning_the_model_omitted() {
+        let request = {
+            let mut request = sample_request();
+            request.tools = vec![tool("read")];
+            request.input = vec![
+                user_text("hi"),
+                Item::Message(MessageItem::Output(OutputMessage {
+                    id: "msg_1".into(),
+                    role: crate::authority::responses::AssistantRole::Assistant,
+                    status: OutputStatus::Completed,
+                    phase: None,
+                    content: vec![
+                        crate::authority::responses::OutputMessageContent::OutputText(
+                            OutputTextContent {
+                                text: "hello".into(),
+                                annotations: vec![],
+                                logprobs: None,
+                            },
+                        ),
+                    ],
+                })),
+            ];
+            request
+        };
+
+        let codec = ResponsesCodec::new(deepseek("reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"low\", medium = \"high\", high = \"max\" } }")).unwrap();
+        let body = request_body(&codec, &request);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2, "{input:?}");
+        assert!(
+            input.iter().all(|item| item["type"] != "reasoning"),
+            "{input:?}"
+        );
+
+        // A ciphertext-only provider keeps the same history.
+        let codec = ResponsesCodec::new(openai("")).unwrap();
+        let body = request_body(&codec, &request);
+        assert_eq!(body["input"].as_array().unwrap().len(), 2);
+    }
+
+    /// MiMo's Low literal is its off literal, so a Low request is not "thinking"
+    /// and must not force reasoning replay.
+    #[test]
+    fn a_tier_whose_literal_is_off_does_not_force_replay() {
+        const MIMO_PROVIDER: &str = r#"
+version = 1
+[[providers]]
+id = "mimo"
+name = "MiMo"
+endpoint = "https://mimo.example/v1"
+endpoint_type = "responses"
+"#;
+        let entry = "reasoning = { replay = \"text\", tiers = { off = \"none\", low = \"none\", medium = \"medium\", high = \"high\" } }";
+        let text =
+            format!("{MIMO_PROVIDER}\n[[models]]\nid = \"m\"\nprovider_id = \"mimo\"\n{entry}\n");
+        let catalog = ProviderCatalog::parse(&text, Path::new("test-catalog.toml")).unwrap();
+        let codec = ResponsesCodec::new(Arc::clone(catalog.model("mimo/m").unwrap())).unwrap();
+
+        let mut request = sample_request();
+        request.tools = vec![tool("read")];
+        request.input = vec![
+            user_text("hi"),
+            Item::Message(MessageItem::Output(OutputMessage {
+                id: "msg_1".into(),
+                role: crate::authority::responses::AssistantRole::Assistant,
+                status: OutputStatus::Completed,
+                phase: None,
+                content: vec![
+                    crate::authority::responses::OutputMessageContent::OutputText(
+                        OutputTextContent {
+                            text: "hello".into(),
+                            annotations: vec![],
+                            logprobs: None,
+                        },
+                    ),
+                ],
+            })),
+        ];
+
+        request.thinking = ThinkingSpec::Tier(ThinkingTier::Low);
+        assert_eq!(
+            request_body(&codec, &request)["input"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "low maps to the off literal: no replay"
+        );
+
+        request.thinking = ThinkingSpec::Tier(ThinkingTier::Medium);
+        assert_eq!(
+            request_body(&codec, &request)["input"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2,
+            "medium thinks, but a turn with no reasoning is not given one"
+        );
+    }
+
+    #[test]
+    fn media_parts_use_vendor_documented_names() {
+        use crate::authority::responses::{FunctionCallOutputItemParam, InputFileContent};
+
+        let file = |name: &str| {
+            InputContent::InputFile(InputFileContent {
+                file_data: None,
+                file_id: None,
+                file_url: Some(format!("https://example.com/{name}")),
+                filename: Some(name.into()),
+                detail: None,
+            })
+        };
+        let item = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "c1".into(),
+            output: FunctionCallOutput::Content(vec![
+                file("clip.mp4"),
+                file("sound.mp3"),
+                file("shot.webp"),
+                file("doc.pdf"),
+            ]),
+            id: None,
+            status: None,
+        });
+        let value = serialize_input_item(&item).unwrap();
+        assert_eq!(value["output"][0]["type"], "input_video");
+        assert_eq!(
+            value["output"][0]["video_url"],
+            "https://example.com/clip.mp4"
+        );
+        assert_eq!(value["output"][1]["type"], "input_audio");
+        assert_eq!(value["output"][2]["type"], "input_image");
+        assert_eq!(value["output"][3]["type"], "input_file");
+    }
+
+    #[test]
+    fn request_headers_come_from_the_catalog() {
+        let text = r#"
+version = 1
+[[providers]]
+id = "p"
+name = "P"
+endpoint = "https://x.example/v1"
+endpoint_type = "responses"
+headers = { "x-session" = "{{session_id}}", "x-static" = "1" }
+
+[[models]]
+id = "m"
+provider_id = "p"
+"#;
+        let catalog = ProviderCatalog::parse(text, Path::new("t.toml")).unwrap();
+        let resolved = Arc::clone(catalog.model("p/m").unwrap());
+        let codec = ResponsesCodec::new(resolved).unwrap();
+        let request = codec
+            .request(&serde_json::json!({}), "sk-test", Some("ses_1"))
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["x-session"], "ses_1");
+        assert_eq!(request.headers()["x-static"], "1");
+        assert_eq!(request.headers()["authorization"], "Bearer sk-test");
+        assert_eq!(request.headers()["user-agent"], user_agent());
+        assert_eq!(request.url().as_str(), "https://x.example/v1/responses");
+    }
+
+    #[test]
+    fn session_header_falls_back_to_global() {
+        let text = r#"
+version = 1
+[[providers]]
+id = "p"
+name = "P"
+endpoint = "https://x.example/v1"
+endpoint_type = "responses"
+headers = { "x-session" = "{{session_id}}" }
+
+[[models]]
+id = "m"
+provider_id = "p"
+"#;
+        let catalog = ProviderCatalog::parse(text, Path::new("t.toml")).unwrap();
+        let codec = ResponsesCodec::new(Arc::clone(catalog.model("p/m").unwrap())).unwrap();
+        let request = codec
+            .request(&serde_json::json!({}), "k", None)
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["x-session"], "global");
+    }
+
+    #[test]
+    fn usage_patch_is_applied_before_deserialization() {
+        let codec = ResponsesCodec::new(deepseek(
+            "usage_patch = \"map_max_effort_to_xhigh\"\nreasoning = { tiers = { low = \"low\", medium = \"high\", high = \"max\" } }",
+        ))
+        .unwrap();
+        let event = serde_json::json!({
+            "type": "response.created",
+            "sequence_number": 1,
+            "response": {
+                "id": "r",
+                "object": "response",
+                "created_at": 1,
+                "model": "m",
+                "status": "in_progress",
+                "reasoning": { "effort": "max" },
+                "output": []
+            }
+        })
+        .to_string();
+        let parsed = codec
+            .parse_stream_event(&event)
+            .expect("hardened event")
+            .expect("response event");
+        let serialized = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(serialized["response"]["reasoning"]["effort"], "xhigh");
+    }
+
+    #[test]
+    fn keepalive_is_skipped_and_other_unknown_types_still_fail() {
+        let codec = ResponsesCodec::new(plain("")).unwrap();
+        let skipped = codec
+            .parse_stream_event(r#"{"type":"keepalive","sequence_number":138}"#)
+            .expect("keepalive parses");
+        assert!(skipped.is_none());
+
+        let err = codec
+            .parse_stream_event(r#"{"type":"not-a-real-event","sequence_number":1}"#)
+            .expect_err("unknown response events still fail");
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    /// A gateway that emits the parsed arguments object, and omits
+    /// `sequence_number`, must not abort the turn. The authority field is a
+    /// string; the codec coerces before deserialization.
+    #[test]
+    fn nonconforming_tool_call_events_parse_as_function_calls() {
+        use crate::authority::responses::{
+            FunctionToolCall, OutputItem, ResponseFunctionCallArgumentsDeltaEvent,
+            ResponseFunctionCallArgumentsDoneEvent, ResponseStreamEvent,
+        };
+
+        let codec = ResponsesCodec::new(plain("")).unwrap();
+        let added = codec
+            .parse_stream_event(
+                r#"{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"bash","arguments":{"command":"ls"}}}"#,
+            )
+            .expect("object arguments must not fail the stream")
+            .expect("event");
+        match added {
+            ResponseStreamEvent::ResponseOutputItemAdded(ev) => {
+                assert_eq!(ev.sequence_number, 0);
+                match ev.item {
+                    OutputItem::FunctionCall(FunctionToolCall {
+                        arguments, name, ..
+                    }) => {
+                        assert_eq!(name, "bash");
+                        assert_eq!(arguments, r#"{"command":"ls"}"#);
+                    }
+                    other => panic!("expected function_call, got {other:?}"),
+                }
+            }
+            other => panic!("expected output_item.added, got {other:?}"),
+        }
+
+        let delta = codec
+            .parse_stream_event(
+                r#"{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":{"command":"ls"}}"#,
+            )
+            .expect("object delta must not fail the stream")
+            .expect("event");
+        match delta {
+            ResponseStreamEvent::ResponseFunctionCallArgumentsDelta(
+                ResponseFunctionCallArgumentsDeltaEvent { delta, .. },
+            ) => assert_eq!(delta, r#"{"command":"ls"}"#),
+            other => panic!("expected arguments delta, got {other:?}"),
+        }
+
+        let done = codec
+            .parse_stream_event(
+                r#"{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":1,"arguments":null}"#,
+            )
+            .expect("null arguments must not fail the stream")
+            .expect("event");
+        match done {
+            ResponseStreamEvent::ResponseFunctionCallArgumentsDone(
+                ResponseFunctionCallArgumentsDoneEvent { arguments, .. },
+            ) => assert_eq!(arguments, ""),
+            other => panic!("expected arguments done, got {other:?}"),
+        }
+
+        let completed = codec
+            .parse_stream_event(
+                r#"{"type":"response.completed","sequence_number":3,"response":{"id":"r","object":"response","created_at":1,"model":"gpt-6-luna","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"bash","arguments":{"command":"ls"}}]}}"#,
+            )
+            .expect("completed payload with object arguments must not fail the stream")
+            .expect("event");
+        match completed {
+            ResponseStreamEvent::ResponseCompleted(ev) => match &ev.response.output[0] {
+                OutputItem::FunctionCall(FunctionToolCall { arguments, .. }) => {
+                    assert_eq!(arguments, r#"{"command":"ls"}"#);
+                }
+                other => panic!("expected function_call, got {other:?}"),
+            },
+            other => panic!("expected response.completed, got {other:?}"),
+        }
+    }
 
     // ── streaming ────────────────────────────────────────────────────────────
 
@@ -814,6 +1887,97 @@ tiers = { low = "low", medium = "medium", high = "high" }
     }
 
     #[tokio::test]
+    async fn cancel_before_any_event_is_canceled() {
+        let endpoint = serve_once(String::new(), "text/event-stream", None).await;
+        let codec = codec_at(OPENAI_PROVIDER, &endpoint);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = codec
+            .complete_with_stream_events(&sample_request(), "sk-test", None, &cancel)
+            .await
+            .expect_err("no opened items");
+        assert!(matches!(error, LitecodeError::Canceled));
+    }
+
+    #[tokio::test]
+    async fn transport_disconnect_returns_partial_items_with_an_explicit_error() {
+        let delta = serde_json::json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "recover me"
+        });
+        let endpoint = serve_once(
+            format!("data: {delta}\n\n"),
+            "text/event-stream",
+            Some(4096),
+        )
+        .await;
+        let codec = codec_at(OPENAI_PROVIDER, &endpoint);
+        let error = codec
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("truncated response is an explicit failure");
+        let LitecodeError::LlmStreamInterrupted { partial, .. } = error else {
+            panic!("expected interrupted stream error, got {error:?}");
+        };
+        assert_eq!(partial.len(), 1);
+        assert_eq!(crate::types::item_text_preview(&partial[0]), "recover me");
+    }
+
+    #[tokio::test]
+    async fn truncated_sse_after_items_is_terminal_and_keeps_partials() {
+        let delta = serde_json::json!({
+            "type": "response.output_text.delta",
+            "sequence_number": 1,
+            "item_id": "msg_1",
+            "output_index": 0,
+            "content_index": 0,
+            "delta": "recover me"
+        });
+        let endpoint = serve_once(
+            format!("data: {delta}\n\ndata: {{\"type\":"),
+            "text/event-stream",
+            None,
+        )
+        .await;
+        let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_notices = std::sync::Arc::clone(&notices);
+        let sink: std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
+            std::sync::Arc::new(move |notice| sink_notices.lock().unwrap().push(notice));
+        let codec = codec_at(OPENAI_PROVIDER, &endpoint);
+        let error = crate::llm::reconnect::scope(sink, async move {
+            codec
+                .complete_with_stream_events(
+                    &sample_request(),
+                    "sk-test",
+                    None,
+                    &CancellationToken::new(),
+                )
+                .await
+        })
+        .await
+        .expect_err("a cut SSE line after items is terminal");
+        let LitecodeError::LlmStreamInterrupted { partial, .. } = error else {
+            panic!("expected interrupted stream error, got {error:?}");
+        };
+        assert_eq!(partial.len(), 1);
+        assert_eq!(crate::types::item_text_preview(&partial[0]), "recover me");
+        let seen = notices.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|notice| notice.is_failed()),
+            "terminal truncation surfaces Retry, got {seen:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn non_event_stream_content_type_surfaces_the_proxy_body() {
         let body = r#"{"error":{"message":"upstream exploded"}}"#;
         let endpoint = serve_times(
@@ -837,4 +2001,32 @@ tiers = { low = "low", medium = "medium", high = "high" }
         assert!(message.contains("upstream exploded"), "{message}");
     }
 
+    #[tokio::test]
+    async fn http_errors_name_the_catalog_provider() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad",
+                )
+                .await;
+        });
+        let codec = codec_at(OPENAI_PROVIDER, &format!("http://{address}/v1"));
+        let message = codec
+            .complete_with_stream_events(
+                &sample_request(),
+                "sk-test",
+                None,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("400")
+            .to_string();
+        assert!(message.contains("provider 'OpenAI'"), "{message}");
+        assert!(message.contains("HTTP 400"), "{message}");
+    }
 }

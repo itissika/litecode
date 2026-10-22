@@ -148,6 +148,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_clears_all_completed_todos() {
+        let mut state = TaskReminders {
+            todos: vec![TodoItem {
+                id: "t1".into(),
+                content: "done".into(),
+                status: TodoStatus::Completed,
+                priority: None,
+            }],
+            active_plan: None,
+        };
+        state.normalize();
+        assert!(state.todos.is_empty());
+    }
+
+    #[test]
+    fn normalize_keeps_pending_todos() {
+        let mut state = TaskReminders {
+            todos: vec![
+                TodoItem {
+                    id: "t1".into(),
+                    content: "pending".into(),
+                    status: TodoStatus::Pending,
+                    priority: None,
+                },
+                TodoItem {
+                    id: "t2".into(),
+                    content: "done".into(),
+                    status: TodoStatus::Completed,
+                    priority: None,
+                },
+            ],
+            active_plan: None,
+        };
+        state.normalize();
+        assert_eq!(state.todos.len(), 2);
+    }
+
+    #[test]
+    fn normalize_keeps_in_progress_todos() {
+        let mut state = TaskReminders {
+            todos: vec![
+                TodoItem {
+                    id: "t1".into(),
+                    content: "active".into(),
+                    status: TodoStatus::InProgress,
+                    priority: None,
+                },
+                TodoItem {
+                    id: "t2".into(),
+                    content: "done".into(),
+                    status: TodoStatus::Completed,
+                    priority: None,
+                },
+            ],
+            active_plan: None,
+        };
+        state.normalize();
+        assert_eq!(state.todos.len(), 2);
+    }
+
+    #[test]
+    fn plan_ref_path_is_flat_under_plan_dir() {
+        let plan = PlanRef::new("my-plan");
+        assert_eq!(plan.slug, "my-plan");
+        assert_eq!(plan.relative_path, ".litecode/plan/my-plan.md");
+    }
+
+    #[test]
     fn prune_stale_active_plan_clears_when_file_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let plan_root = dir.path().join(".litecode/plan");

@@ -357,4 +357,26 @@ mod tests {
         assert_eq!(model_in_bundle_root(&dir), Some(dir));
     }
 
+    #[test]
+    fn source_tree_fallback_is_debug_only() {
+        let fallback = source_tree_model_path();
+        if cfg!(debug_assertions) {
+            let path = fallback.expect("debug builds keep the checkout fallback");
+            assert!(path.starts_with(env!("CARGO_MANIFEST_DIR")));
+        } else {
+            assert!(
+                fallback.is_none(),
+                "release must not probe the build machine's repo"
+            );
+        }
+    }
+
+    #[test]
+    fn hash_embedder_produces_unit_vectors() {
+        let mut emb = HashEmbedder;
+        let v = emb.embed_one("hello world").unwrap();
+        assert_eq!(v.len(), EMBED_DIM);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5);
+    }
 }

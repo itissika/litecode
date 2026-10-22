@@ -242,6 +242,19 @@ mod tests {
     }
 
     #[test]
+    fn latest_tool_batch_keeps_every_media_part() {
+        let mut items = vec![
+            user_text("go"),
+            call("c1"),
+            call("c2"),
+            tool_image("c1", "https://example.com/a.png"),
+            tool_image("c2", "https://example.com/b.png"),
+        ];
+        drop_stale_media(&mut items);
+        assert_eq!(media_count(&items), 2);
+    }
+
+    #[test]
     fn tool_media_is_dropped_once_the_model_has_seen_it() {
         let mut items = vec![
             user_text("go"),
@@ -265,6 +278,104 @@ mod tests {
         }
     }
 
+    fn reasoning() -> Item {
+        Item::Reasoning(crate::authority::responses::ReasoningItem {
+            id: None,
+            summary: vec![],
+            content: None,
+            encrypted_content: Some("sig".into()),
+            status: None,
+        })
+    }
+
+    #[test]
+    fn only_the_answer_to_a_stripped_batch_is_rebased() {
+        let mut items = vec![
+            user_text("go"),
+            reasoning(),
+            call("c1"),
+            tool_image("c1", "https://example.com/old.png"),
+            user_text("<system-reminder>\nnote\n</system-reminder>"),
+            reasoning(),
+            call("c2"),
+            tool_image("c2", "https://example.com/new.png"),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert!(!has_media(&items[3]));
+        assert_eq!(
+            rebased,
+            vec![false, false, false, false, false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn a_batch_without_media_rebases_nothing() {
+        let mut items = vec![
+            user_text("go"),
+            call("c1"),
+            Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                call_id: "c1".into(),
+                output: FunctionCallOutput::Text("plain".into()),
+                id: None,
+                status: None,
+            }),
+            reasoning(),
+            call("c2"),
+        ];
+        assert!(drop_stale_media(&mut items).iter().all(|flag| !flag));
+    }
+
+    #[test]
+    fn a_later_turn_signed_after_the_note_is_not_rebased() {
+        let mut items = vec![
+            user_image("litecode-media:old.png"),
+            reasoning(),
+            assistant_text("done"),
+            user_text("second"),
+            reasoning(),
+            assistant_text("ok"),
+            user_text("third"),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert!(!has_media(&items[0]));
+        assert_eq!(rebased, vec![false, true, true, false, false, false, false]);
+    }
+
+    #[test]
+    fn a_stripped_user_image_rebases_its_whole_turn() {
+        let mut items = vec![
+            user_image("litecode-media:old.png"),
+            reasoning(),
+            call("c1"),
+            tool_image("c1", "https://example.com/shot.png"),
+            reasoning(),
+            assistant_text("done"),
+            user_text("next"),
+            reasoning(),
+        ];
+        let rebased = drop_stale_media(&mut items);
+        assert_eq!(
+            rebased,
+            vec![false, true, true, false, true, true, false, false]
+        );
+    }
+
+    #[test]
+    fn user_media_stays_for_the_whole_turn() {
+        let mut items = vec![
+            user_image("litecode-media:a.png"),
+            assistant_text("checking"),
+            call("c1"),
+            tool_image("c1", "https://example.com/shot.png"),
+            call("c2"),
+            tool_image("c2", "https://example.com/shot2.png"),
+            user_text("<system-reminder>\nnote\n</system-reminder>"),
+        ];
+        drop_stale_media(&mut items);
+        assert!(has_media(&items[0]));
+        assert!(!has_media(&items[3]));
+        assert!(has_media(&items[5]));
+    }
 
     #[test]
     fn user_media_from_an_earlier_turn_is_dropped() {
@@ -290,4 +401,17 @@ mod tests {
         }
     }
 
+    #[test]
+    fn summary_strip_removes_every_media_part() {
+        let blob = format!("data:image/png;base64,{}", "A".repeat(80));
+        let mut items = vec![
+            tool_image("c1", &blob),
+            crate::types::user_message("", &["litecode-media:abc.png".into()]),
+        ];
+        strip_media_for_summary(&mut items);
+        assert_eq!(media_count(&items), 0);
+        let rendered = format!("{items:?}");
+        assert!(!rendered.contains("data:image"));
+        assert!(!rendered.contains("litecode-media:"));
+    }
 }

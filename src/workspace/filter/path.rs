@@ -112,6 +112,20 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn rel_path_ctx_matches_rel_path_under() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let file = root.join("src").join("a.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "fn x() {}\n").unwrap();
+
+        let ctx = RelPathCtx::new(root).unwrap();
+        assert_eq!(ctx.rel(&file).as_deref(), Some("src/a.rs"));
+        assert_eq!(rel_path_under(root, &file).as_deref(), Some("src/a.rs"));
+        assert_eq!(ctx.rel(&file), rel_path_under(root, &file));
+    }
+
+    #[test]
     fn rel_path_ctx_rejects_outside() {
         let dir = TempDir::new().unwrap();
         let ctx = RelPathCtx::new(dir.path()).unwrap();
@@ -119,6 +133,18 @@ mod tests {
         let other = outside.path().join("x.rs");
         std::fs::write(&other, "x").unwrap();
         assert_eq!(ctx.rel(&other), None);
+    }
+
+    #[test]
+    fn cheap_rel_under_strips_without_canon() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let file = root.join("nested").join("b.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "x").unwrap();
+
+        let rel = cheap_rel_under(root, &file).expect("cheap rel");
+        assert_eq!(rel, "nested/b.txt");
     }
 
     #[test]

@@ -183,6 +183,32 @@ mod tests {
     }
 
     #[test]
+    fn decode_keeps_call_linkage_for_rows_it_does_not_admit() {
+        let dir = PathBuf::from(".");
+        let call = call_row(1, "c1", "session_search", r#"{"query":"x"}"#);
+        let decoded = decode_row(&call, &dir).unwrap();
+        assert_eq!(decoded.call_id.as_deref(), Some("c1"));
+        assert!(
+            decoded.session_read_call,
+            "a session_search call reads the store"
+        );
+
+        let plain = call_row(2, "c2", "read", r#"{"path":"src/main.rs"}"#);
+        let decoded = decode_row(&plain, &dir).unwrap();
+        assert_eq!(decoded.call_id.as_deref(), Some("c2"));
+        assert!(!decoded.session_read_call);
+
+        let result = result_row(3, "c1");
+        let decoded = decode_row(&result, &dir).unwrap();
+        assert_eq!(
+            decoded.call_id.as_deref(),
+            Some("c1"),
+            "an excluded result still records which call it answers"
+        );
+        assert!(!decoded.session_read_call);
+    }
+
+    #[test]
     fn compacted_and_echo_rows_derive_without_chunks() {
         let (tk, chunk) = cfg();
         let cfg = DeriveCfg {

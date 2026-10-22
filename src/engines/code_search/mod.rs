@@ -1185,7 +1185,7 @@ pub type SharedRuntime = Arc<RwLock<Option<CodeSearchRuntime>>>;
 #[cfg(test)]
 mod cool_tests {
     use super::*;
-    
+    use crate::engines::EngineState;
     use crate::engines::code_search::embed::HashEmbedder;
     use crate::engines::code_search::index_workspace_blocking;
     use tempfile::TempDir;
@@ -1233,14 +1233,188 @@ mod cool_tests {
         assert!(hits.iter().any(|h| h.path.contains("added.rs")));
     }
 
+    fn lines(tag: &str, n: usize) -> String {
+        (0..n).map(|i| format!("fn {tag}_{i}() {{}}\n")).collect()
+    }
 
     // WP-131: incremental refresh two-pass — scanning (null total) first, then
     // exact total = kept + new; done monotonic from kept, done <= total, ends equal.
     // Covers re-indexed (shrunk), deleted and added files.
+    #[test]
+    fn incremental_refresh_total_exact_with_delete_and_reindex() {
+        use crate::engines::code_search::index_status::CHUNK_PROGRESS_TRACE;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), lines("a", 300)).unwrap();
+        std::fs::write(root.join("b.rs"), lines("b", 150)).unwrap();
+        std::fs::write(root.join("c.rs"), lines("c", 100)).unwrap();
+        let runtime = runtime_with_hash(root);
+        let count = |p: &str| {
+            runtime
+                .with_index(|i| Ok(i.chunks().values().filter(|c| c.path == p).count() as u64))
+                .unwrap()
+        };
+        let initial = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+        let (old_a, old_b) = (count("a.rs"), count("b.rs"));
+        assert!(old_a > 2 && old_b > 1, "fixture must span several chunks");
+
+        std::fs::write(root.join("a.rs"), lines("a2", 70)).unwrap(); // re-index, shrinks
+        std::fs::remove_file(root.join("b.rs")).unwrap(); // delete
+        std::fs::write(root.join("d.rs"), lines("d", 130)).unwrap(); // add
+        let kept = initial - old_a - old_b;
+
+        begin_refreshing(root);
+        CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().clear());
+        update_files(
+            &runtime,
+            &[
+                ("a.rs".into(), false),
+                ("b.rs".into(), true),
+                ("d.rs".into(), false),
+            ],
+        )
+        .unwrap();
+        let trace = CHUNK_PROGRESS_TRACE.with(|t| t.borrow().clone());
+        let final_len = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+
+        assert_eq!(
+            trace.first(),
+            Some(&(kept, None)),
+            "pass 1 = scanning, done = kept"
+        );
+        let first_total = trace.iter().find_map(|(_, t)| *t).unwrap();
+        assert_eq!(
+            first_total, final_len,
+            "total exact before embedding starts"
+        );
+        assert_eq!(final_len, kept + count("a.rs") + count("d.rs"));
+        assert_eq!(count("b.rs"), 0);
+        let mut seen_total = false;
+        let mut prev = 0u64;
+        for &(done, total) in &trace {
+            if seen_total {
+                assert!(total.is_some(), "no return to scanning: {trace:?}");
+            }
+            if let Some(t) = total {
+                seen_total = true;
+                assert_eq!(t, first_total, "total stable: {trace:?}");
+                assert!(done <= t, "done <= total: {trace:?}");
+            }
+            assert!(done >= prev, "monotonic: {trace:?}");
+            prev = done;
+        }
+        assert_eq!(
+            trace.last(),
+            Some(&(final_len, Some(final_len))),
+            "ends equal"
+        );
+        assert!(trace.len() >= 4, "reports per file: {trace:?}");
+        clear_index_job(root);
+    }
 
     // WP-131: from enqueue to the end, `done` never drops — idle view reports
     // queue.kept_chunks, the job starts there, pass 1 reports the same kept,
     // embedding rises, final pins done == total.
+    #[test]
+    fn done_monotonic_from_enqueue_to_end() {
+        use crate::engines::code_search::index_status::{
+            CHUNK_PROGRESS_TRACE, CodeEngineFacts, code_corpus_progress,
+        };
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), lines("a", 300)).unwrap();
+        std::fs::write(root.join("b.rs"), lines("b", 150)).unwrap();
+        std::fs::write(root.join("c.rs"), lines("c", 100)).unwrap();
+        let runtime = runtime_with_hash(root);
+        meta::write_meta(
+            root,
+            &runtime.with_index(|i| Ok(i.meta_snapshot())).unwrap(),
+        )
+        .unwrap();
+        clear_index_job(root); // warmup_index clears the build job; mirror it
+        let facts = CodeEngineFacts {
+            desired: true,
+            state: Some(EngineState::Warm),
+            model_ready: true,
+        };
+        let idle_before = code_corpus_progress(root, facts).chunks_done;
+
+        std::fs::write(root.join("a.rs"), lines("a2", 70)).unwrap();
+        std::fs::remove_file(root.join("b.rs")).unwrap();
+        std::fs::write(root.join("d.rs"), lines("d", 130)).unwrap();
+        // Enqueue exactly as the watcher does (fs_notify::queue_fs_changes).
+        {
+            let mut q = runtime.pending_updates.lock().unwrap();
+            q.insert(("a.rs".into(), false));
+            q.insert(("d.rs".into(), false));
+            q.insert(("b.rs".into(), true));
+            runtime.persist_queue(&q);
+        }
+        let q = read_code_queue(root);
+        assert_eq!(q.queued, 3);
+        let idle_queued = code_corpus_progress(root, facts);
+        assert_eq!(idle_queued.chunks_done, q.kept_chunks);
+        assert!(
+            idle_queued.chunks_done < idle_before,
+            "enqueue fixes done = kept"
+        );
+
+        CHUNK_PROGRESS_TRACE.with(|t| t.borrow_mut().clear());
+        refresh_index_incremental(&runtime).unwrap();
+        let trace = CHUNK_PROGRESS_TRACE.with(|t| t.borrow().clone());
+        let final_len = runtime.with_index(|i| Ok(i.chunks().len() as u64)).unwrap();
+
+        let mut prev = idle_queued.chunks_done;
+        for &(done, total) in &trace {
+            assert!(done >= prev, "done dropped {prev} -> {done}: {trace:?}");
+            if let Some(t) = total {
+                assert!(done <= t, "{trace:?}");
+            }
+            prev = done;
+        }
+        assert_eq!(
+            trace.first(),
+            Some(&(q.kept_chunks, None)),
+            "job starts at kept"
+        );
+        assert_eq!(trace.last(), Some(&(final_len, Some(final_len))));
+        let after = code_corpus_progress(root, facts);
+        assert_eq!(after.chunks_done, final_len);
+        assert_eq!(after.files_pending, 0);
+    }
+
+    #[test]
+    fn drop_embedder_and_index_reload_for_search() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.rs"), "fn cool_reload_target() {}\n").unwrap();
+        let runtime = runtime_with_hash(root);
+
+        assert!(runtime.embedder_is_loaded());
+        assert!(runtime.index_is_loaded());
+
+        runtime.drop_embedder_for_cool();
+        assert!(!runtime.embedder_is_loaded());
+        assert_eq!(runtime.embed_device(), "hash");
+        assert!(runtime.index_is_loaded());
+
+        runtime.drop_index_for_cool();
+        assert!(!runtime.index_is_loaded());
+
+        // Hash embedder path: with_embedder opens production ORT — avoid that in unit test.
+        // Re-install hash embedder and ensure_index from disk.
+        {
+            let mut emb = runtime.embedder.lock().unwrap();
+            *emb = Some(Box::new(HashEmbedder));
+        }
+        runtime.ensure_index().unwrap();
+        assert!(runtime.index_is_loaded());
+
+        let hits = SemanticEngine::search(&runtime, "cool_reload_target", None, 5).unwrap();
+        assert!(!hits.is_empty());
+        assert!(runtime.embedder_is_loaded());
+        assert!(runtime.index_is_loaded());
+    }
 
     #[test]
     fn pending_blocks_cool_drop() {
@@ -1262,6 +1436,19 @@ mod cool_tests {
         assert!(runtime.index_is_loaded(), "pending must block IndexCold");
     }
 
+    #[test]
+    fn maybe_cool_respects_zero_idle() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        let runtime = runtime_with_hash(root);
+
+        runtime.note_index_activity();
+        runtime.maybe_cool_memory_with(Duration::ZERO, Duration::ZERO);
+
+        assert!(!runtime.embedder_is_loaded());
+        assert!(!runtime.index_is_loaded());
+    }
 }
 
 #[cfg(test)]
@@ -1339,6 +1526,19 @@ mod wp143_tests {
             .sum()
     }
 
+    /// Run a first build that is killed at batch `kill_at`; returns the
+    /// chunks committed to disk at the kill.
+    fn killed_first_build(root: &Path, kill_at: usize) -> usize {
+        let (emb, _) = counting(Some(kill_at));
+        let fresh = start_fresh_index(root, EMBEDDER_ID_HASH).unwrap();
+        let runtime = CodeSearchRuntime::new(root.to_path_buf(), fresh, Some(emb), None);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            refresh_index_incremental(&runtime)
+        }));
+        assert!(r.is_err(), "the injected kill must fire");
+        drop(runtime);
+        CodeSearchIndex::load(root).unwrap().chunks().len()
+    }
 
     /// Restart like the worker: warmup load + reconcile + drain.
     fn restart(root: &Path) -> (CodeSearchRuntime, Arc<AtomicUsize>) {
@@ -1350,6 +1550,65 @@ mod wp143_tests {
         (runtime, count)
     }
 
+    fn assert_store_consistent(root: &Path) {
+        let index = CodeSearchIndex::load(root).unwrap();
+        for (id, c) in index.chunks() {
+            let v = index
+                .get_vector(*id)
+                .unwrap_or_else(|| panic!("chunk {id} ({}) has no vector", c.path));
+            // The vector belongs to this chunk's text (hash embedder).
+            let want = HashEmbedder.embed_one(&c.text).unwrap();
+            let cos: f32 = v.iter().zip(&want).map(|(a, b)| a * b).sum();
+            assert!(cos > 0.99, "chunk {id} vector does not match its text");
+        }
+        assert_eq!(index.vector_count(), index.chunks().len(), "orphan vectors");
+    }
+
+    #[test]
+    fn kill_resume_first_build_embeds_only_remaining() {
+        let dir = workspace(100, 3);
+        let root = dir.path();
+        let total = expected_chunks(root);
+        let committed = killed_first_build(root, 2);
+        assert!(committed > 0 && committed < total, "{committed}/{total}");
+        // Partial index is searchable (committed batches are on disk).
+        assert_store_consistent(root);
+        let (runtime, count) = restart(root);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            total - committed,
+            "resume embeds exactly the chunks not yet committed"
+        );
+        let n = runtime.with_index(|i| Ok(i.chunks().len())).unwrap();
+        assert_eq!(n, total);
+        // A second restart has nothing left to embed.
+        drop(runtime);
+        let (_rt, again) = restart(root);
+        assert_eq!(again.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn kill_resume_rebuild_embeds_only_remaining() {
+        let dir = workspace(80, 2);
+        let root = dir.path();
+        let total = expected_chunks(root);
+        index_workspace_blocking(root, Box::new(HashEmbedder)).unwrap();
+        // Manual rebuild in a live runtime, killed at batch 1.
+        let (emb, _) = counting(Some(1));
+        let mut hash = HashEmbedder;
+        let index = warmup_index(root, &mut hash).unwrap();
+        let runtime = CodeSearchRuntime::new(root.to_path_buf(), index, Some(emb), None);
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rebuild_index_in_runtime(&runtime)
+        }));
+        assert!(r.is_err());
+        drop(runtime);
+        let committed = CodeSearchIndex::load(root).unwrap().chunks().len();
+        assert!(committed > 0 && committed < total, "{committed}/{total}");
+        let (runtime, count) = restart(root);
+        assert_eq!(count.load(Ordering::SeqCst), total - committed);
+        assert_eq!(runtime.with_index(|i| Ok(i.chunks().len())).unwrap(), total);
+    }
 
     #[test]
     fn save_count_equals_batches_and_bytes_scale_with_batch() {
@@ -1402,6 +1661,96 @@ mod wp143_tests {
             "per-batch bytes independent of store size: {small} vs {big}"
         );
         assert!(small < 2 * rec as u64 + 512, "{small} bytes for one chunk");
+    }
+
+    #[test]
+    fn uncommitted_append_tail_is_cut_on_load() {
+        let dir = workspace(40, 0);
+        let root = dir.path();
+        index_workspace_blocking(root, Box::new(HashEmbedder)).unwrap();
+        let before = CodeSearchIndex::load(root).unwrap().chunks().len();
+        // Bytes appended after the last checkpoint (crash before commit).
+        for p in [store::vectors_log_path(root), store::chunks_path(root)] {
+            let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+            std::io::Write::write_all(&mut f, b"garbage-tail{\"id\":").unwrap();
+        }
+        let index = CodeSearchIndex::load(root).unwrap();
+        assert_eq!(index.chunks().len(), before);
+        assert_store_consistent(root);
+    }
+
+    /// R1 backstop: a crash in the middle of a compaction's renames leaves
+    /// files from two generations; the intersection keeps chunks and vectors
+    /// one-to-one and invalidates only the affected files' stamps.
+    #[test]
+    fn crash_between_compaction_renames_keeps_chunks_and_vectors_one_to_one() {
+        for k in 0..5 {
+            let dir = workspace(40, 1);
+            let root = dir.path();
+            let (runtime, _) = {
+                let fresh = start_fresh_index(root, EMBEDDER_ID_HASH).unwrap();
+                let rt = CodeSearchRuntime::new(
+                    root.to_path_buf(),
+                    fresh,
+                    Some(Box::new(HashEmbedder)),
+                    None,
+                );
+                refresh_index_incremental(&rt).unwrap();
+                (rt, ())
+            };
+            // Change files, then compact with an injected crash after k renames.
+            std::fs::write(root.join("f0001.rs"), "fn changed_one() {}\n").unwrap();
+            std::fs::remove_file(root.join("f0002.rs")).unwrap();
+            std::fs::write(root.join("new.rs"), "fn brand_new() {}\n").unwrap();
+            // Enough new files that the compacted chunks file is LONGER than
+            // the old checkpoint's chunks_len (the 34k-gap regression).
+            let extra: Vec<String> = (0..30).map(|i| format!("more{i:02}.rs")).collect();
+            for p in &extra {
+                std::fs::write(
+                    root.join(p),
+                    format!("fn more_{p}() {{}}\n").replace('.', "_"),
+                )
+                .unwrap();
+            }
+            runtime
+                .with_index_mut(|index| {
+                    index.remove_file("f0001.rs");
+                    index.remove_file("f0002.rs");
+                    for p in std::iter::once("new.rs".to_string()).chain(extra.iter().cloned()) {
+                        let body = std::fs::read_to_string(root.join(&p)).unwrap();
+                        let (mut c, _) = chunk::chunk_file(&p, &body, 1);
+                        let id = index.next_id();
+                        c[0].id = id;
+                        index.set_next_id(id + 1);
+                        let v = HashEmbedder.embed_batch(&[c[0].text.clone()]).unwrap();
+                        index.add_chunks_with_vectors(c, v)?;
+                    }
+                    atomic::FAIL_AFTER_RENAMES.with(|f| f.set(Some(k)));
+                    let r = index.save_full(root);
+                    atomic::FAIL_AFTER_RENAMES.with(|f| f.set(None));
+                    assert!(r.is_err(), "k={k}");
+                    Ok(())
+                })
+                .unwrap();
+            drop(runtime);
+            assert_store_consistent(root);
+            // Resume converges: every scannable file indexed, no extras.
+            let (runtime, _) = restart(root);
+            let paths = runtime.with_index(|i| Ok(i.indexed_paths())).unwrap();
+            assert!(
+                paths.contains("new.rs") && paths.contains("f0001.rs"),
+                "k={k}"
+            );
+            assert!(!paths.contains("f0002.rs"), "k={k}");
+            assert!(
+                paths.contains("more29.rs"),
+                "k={k}: tail files kept or re-indexed"
+            );
+            let n = runtime.with_index(|i| Ok(i.chunks().len())).unwrap();
+            assert_eq!(n, expected_chunks(root), "k={k}");
+            drop(runtime);
+            assert_store_consistent(root);
+        }
     }
 
     #[test]

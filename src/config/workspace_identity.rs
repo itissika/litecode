@@ -323,4 +323,44 @@ mod tests {
         assert_eq!(id, again);
     }
 
+    #[test]
+    fn move_keeps_id_when_old_path_gone() {
+        let _env = isolated_home();
+
+        let original = tempfile::tempdir().unwrap();
+        let id = ensure_workspace_identity(original.path()).unwrap();
+        let identity_body =
+            std::fs::read_to_string(workspace_identity_path(original.path())).unwrap();
+
+        let moved = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(moved.path().join(".litecode")).unwrap();
+        std::fs::write(workspace_identity_path(moved.path()), &identity_body).unwrap();
+        drop(original); // remove original path
+
+        let moved_id = ensure_workspace_identity(moved.path()).unwrap();
+        assert_eq!(id, moved_id);
+    }
+
+    #[test]
+    fn copy_mints_new_id_when_original_still_exists() {
+        let _env = isolated_home();
+
+        let original = tempfile::tempdir().unwrap();
+        let id = ensure_workspace_identity(original.path()).unwrap();
+        let identity_body =
+            std::fs::read_to_string(workspace_identity_path(original.path())).unwrap();
+
+        let copy = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(copy.path().join(".litecode")).unwrap();
+        std::fs::write(workspace_identity_path(copy.path()), &identity_body).unwrap();
+
+        let copy_id = ensure_workspace_identity(copy.path()).unwrap();
+        assert_ne!(id, copy_id);
+        assert_eq!(
+            peek_workspace_id(copy.path()).as_deref(),
+            Some(copy_id.as_str())
+        );
+        // Original keeps its id.
+        assert_eq!(ensure_workspace_identity(original.path()).unwrap(), id);
+    }
 }

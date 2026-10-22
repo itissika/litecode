@@ -305,6 +305,17 @@ mod tests {
     }
 
     #[test]
+    fn core_webfetch_available_without_bind() {
+        let resolved = ConfigManager::resolve_without_catalog(
+            GlobalSettings::default(),
+            WorkspaceState::new("/tmp/core"),
+        );
+        assert!(is_available(&resolved, "webfetch"));
+        assert!(is_available(&resolved, "websearch"));
+        assert!(!agent_tool_enabled(&resolved, "default", "webfetch"));
+    }
+
+    #[test]
     fn catalog_permission_surface_follows_preset_predicate() {
         use crate::config::schema::PermissionSurface;
 
@@ -377,8 +388,173 @@ mod tests {
         assert_eq!(surface("gated"), PermissionSurface::Fixed);
     }
 
+    #[test]
+    fn subagent_series_declared_on_available_tools() {
+        let resolved = ConfigManager::resolve_without_catalog(
+            GlobalSettings::default(),
+            WorkspaceState::new("/tmp/series"),
+        );
+        let tools = available_tools(&resolved);
+        for id in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill", "wait", "kill", "apply_edits"] {
+            assert!(
+                tools.iter().all(|tool| tool.id != id),
+                "{id} is not a catalog tool"
+            );
+        }
+        let launch = tools
+            .iter()
+            .find(|t| t.id == "subagent_launch")
+            .expect("launch");
+        assert_eq!(launch.series_id.as_deref(), Some("subagent"));
+        assert_eq!(launch.series_label.as_deref(), Some("Subagent"));
+        let ask = tools.iter().find(|t| t.id == "ask_user").expect("ask_user");
+        assert!(ask.series_id.is_none());
+    }
 
+    fn retrieval_bindings()
+    -> std::collections::HashMap<String, crate::config::schema::AgentToolBinding> {
+        use crate::config::schema::{AgentToolBinding, ToolPreset};
+        let mut tools = std::collections::HashMap::new();
+        for id in ["code_search", "session_search", "read"] {
+            let (policy, path_mode) =
+                crate::permission::presets::binding_for_tool(id, ToolPreset::All);
+            tools.insert(
+                id.to_string(),
+                AgentToolBinding {
+                    enabled: true,
+                    policy,
+                    path_mode,
+                    last_applied_preset: Some(ToolPreset::All),
+                    allowed_tools: None,
+                },
+            );
+        }
+        tools
+    }
 
+    fn resolved_with_root(
+        root: &std::path::Path,
+        tools: std::collections::HashMap<String, crate::config::schema::AgentToolBinding>,
+    ) -> ResolvedConfig {
+        use crate::config::schema::AgentProfile;
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools,
+                ..Default::default()
+            },
+        );
+        // Refresh readiness from engines.json after desired toggles.
+        let mut workspace = WorkspaceState::new(root);
+        workspace.workspace_tool_readiness =
+            crate::config::workspace::workspace_readiness_from_engines(root);
+        ConfigManager::resolve_without_catalog(global, workspace)
+    }
+
+    fn visible(resolved: &ResolvedConfig, engines: &WorkspaceEngines, id: &str) -> bool {
+        let em = crate::optional::EngineManager::new();
+        should_include_in_llm_list(resolved, "default", id, &em, engines)
+    }
+
+    #[test]
+    fn code_search_visible_when_bound_engine_off() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        assert!(visible(&resolved, &engines, "code_search"));
+        // session_search gate unchanged: still hidden when desired=false.
+        assert!(!visible(&resolved, &engines, "session_search"));
+        assert!(visible(&resolved, &engines, "read"));
+    }
+
+    #[test]
+    fn code_search_visible_when_bound_while_warming() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        assert!(is_available(&resolved, "code_search"));
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warming);
+        assert!(visible(&resolved, &engines, "code_search"));
+        // session_search gate unchanged: still hidden while Warming.
+        assert!(!visible(&resolved, &engines, "session_search"));
+    }
+
+    #[test]
+    fn code_search_visible_when_bound_engine_failed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Failed);
+        assert!(visible(&resolved, &engines, "code_search"));
+        assert!(!visible(&resolved, &engines, "session_search"));
+    }
+
+    #[test]
+    fn code_search_hidden_when_unbound() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let mut tools = retrieval_bindings();
+        tools.get_mut("code_search").unwrap().enabled = false;
+        let resolved = resolved_with_root(root, tools);
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        assert!(!visible(&resolved, &engines, "code_search"));
+    }
+
+    #[test]
+    fn code_search_bind_card_listed_when_desired_false() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        assert!(
+            available_tools(&resolved)
+                .iter()
+                .any(|t| t.id == "code_search")
+        );
+        // lsp still follows readiness (desired=false ⇒ no card).
+        assert!(!available_tools(&resolved).iter().any(|t| t.id == "lsp"));
+    }
+
+    #[test]
+    fn retrieval_visible_when_desired_and_warm() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".litecode")).unwrap();
+        crate::config::workspace::enable_code_search_engine(root).unwrap();
+        let resolved = resolved_with_root(root, retrieval_bindings());
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
+        let em = crate::optional::EngineManager::new();
+        assert!(should_include_in_llm_list(
+            &resolved,
+            "default",
+            "code_search",
+            &em,
+            &engines
+        ));
+        assert!(should_include_in_llm_list(
+            &resolved,
+            "default",
+            "session_search",
+            &em,
+            &engines
+        ));
+    }
 
     struct Declared {
         name: &'static str,

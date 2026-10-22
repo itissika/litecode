@@ -1249,6 +1249,29 @@ mod tests {
     }
 
     #[test]
+    fn session_text_search_finds_seeded_transcript() {
+        let dir = TempDir::new().unwrap();
+        let (reader, id_a, _) = seed_db(dir.path());
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "UNIQUE_SESSION_PHRASE".into(),
+                offset: 0,
+                include_session_id: None,
+                project: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, id_a);
+        assert_eq!(hits[0].seq, 0);
+        assert!(hits[0].summary.contains("UNIQUE_SESSION_PHRASE"));
+    }
+
+    #[test]
     fn session_text_search_case_insensitive() {
         let dir = TempDir::new().unwrap();
         let (reader, id_a, _) = seed_db(dir.path());
@@ -1266,6 +1289,92 @@ mod tests {
         assert!((hits[0].score - 1.0).abs() < 1e-9);
     }
 
+    #[test]
+    fn session_text_search_fuzzy_typo() {
+        let dir = TempDir::new().unwrap();
+        let (reader, id_a, _) = seed_db(dir.path());
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "UNIQUE_SESSION_PHRAZE".into(),
+                offset: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].session_id, id_a);
+        assert!(hits[0].score > 0.5, "fuzzy hit should score above 0.5");
+        assert!(hits[0].score < 1.0);
+    }
+
+    #[test]
+    fn session_text_search_respects_scope() {
+        let dir = TempDir::new().unwrap();
+        let (reader, id_a, id_b) = seed_db(dir.path());
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "OTHER_MARKER".into(),
+                offset: 0,
+                include_session_id: Some(id_a.clone()),
+                project: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            hits.is_empty(),
+            "scoped to session A must not see B's marker"
+        );
+
+        let page_b = search(
+            &reader,
+            &SessionTextQuery {
+                query: "OTHER_MARKER".into(),
+                offset: 0,
+                include_session_id: Some(id_b.clone()),
+                project: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page_b.len(), 1);
+        assert_eq!(page_b[0].session_id, id_b);
+    }
+
+    #[test]
+    fn session_text_search_skips_empty_query() {
+        let dir = TempDir::new().unwrap();
+        let (reader, _, _) = seed_db(dir.path());
+        let err = search(
+            &reader,
+            &SessionTextQuery {
+                query: "   ".into(),
+                offset: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("required"));
+    }
+
+    #[test]
+    fn session_text_search_missing_db_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let hits = search(
+            &SessionDataReader::open(&dir.path().join("nope.db")),
+            &SessionTextQuery {
+                query: "anything".into(),
+                offset: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+    }
+
     /// The three states a lane can be in, and the one thing they must not do:
     /// look alike.
     ///
@@ -1276,13 +1385,864 @@ mod tests {
     /// for an index that was merely broken or late. So an unanswered search is an
     /// error, and an answered one is not, and the tests below pin both halves.
     mod lane_state {
-        
-        
-        
+        use super::*;
+        use crate::engines::session_search::sparse;
+        use crate::types::LitecodeError;
 
+        /// Plant a row that is searchable in shape and unreadable in body: the
+        /// reconcile will schedule it, and the derivation will then refuse it.
+        fn plant_unreadable_row(dir: &Path, session_id: &str) {
+            let conn = rusqlite::Connection::open(dir.join("sessions.db")).unwrap();
+            conn.execute(
+                "INSERT INTO transcript_items
+                    (session_id, seq, turn_id, turn_seq, item_type, kind, body,
+                     token_estimate, created_at, event_type, surface_op, state)
+                 VALUES (?1, 99, 't', 0, 'message', 'item/user', '{{{ not an item',
+                         1, 1, 'message', 'append', 'final')",
+                rusqlite::params![session_id],
+            )
+            .unwrap();
+        }
 
+        fn q(text: &str) -> SessionTextQuery {
+            SessionTextQuery {
+                query: text.into(),
+                offset: 0,
+                ..Default::default()
+            }
+        }
 
+        /// `Ready`: the query ran, and an empty result is a fact about the corpus.
+        #[test]
+        fn ready_is_a_real_answer_even_when_it_is_empty() {
+            let dir = TempDir::new().unwrap();
+            let (reader, _, _) = seed_db(dir.path());
+            let hits = search(&reader, &q("zqxjvkjv")).unwrap();
+            assert!(
+                hits.is_empty(),
+                "a searched corpus with no match answers with nothing"
+            );
+        }
+
+        /// `Failed`: the index could not be prepared, so the query did not run and
+        /// the caller is told, rather than handed the empty list that would have
+        /// been indistinguishable from `Ready` above.
+        #[test]
+        fn a_broken_index_is_an_error_not_an_empty_result() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+
+            // A first search builds the index, so the missing one below is a real
+            // rebuild rather than a first run.
+            assert_eq!(
+                search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap().len(),
+                1
+            );
+
+            plant_unreadable_row(dir.path(), &id_a);
+            std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
+
+            let err = search(&reader, &q("UNIQUE_SESSION_PHRASE")).unwrap_err();
+            assert!(
+                matches!(err, LitecodeError::IndexNotReady(_)),
+                "the lane must say it did not answer, not that it found nothing: {err}"
+            );
+            assert!(
+                err.to_string().contains("did not run"),
+                "and say it plainly: {err}"
+            );
+        }
+
+        /// The blocking maintenance entry makes the same promise, and reports the
+        /// cause rather than a wrapper: a store it cannot read is a failed pass,
+        /// never a success. The consumer-facing `IndexNotReady` is raised once, at
+        /// the search boundary above ("I did not answer"), not again here.
+        #[test]
+        fn maintenance_reports_a_broken_store_instead_of_succeeding() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+            assert!(lexical::ensure_sparse_index(&reader).is_ok());
+            plant_unreadable_row(dir.path(), &id_a);
+            std::fs::remove_file(sparse::sparse_index_path(dir.path())).unwrap();
+
+            let err = lexical::ensure_sparse_index(&reader)
+                .expect_err("a store it cannot read is not a prepared index");
+            assert!(
+                err.to_string().contains(&format!("{id_a}:99")),
+                "and it names the row that could not be read: {err}"
+            );
+        }
+
+        /// The delta is applied *behind* the query, not in front of it. A search
+        /// in a live corpus never waits for it — every turn writes rows, so
+        /// "catch up first" meant "wait for the turn that never pauses". It must
+        /// not answer the wait as if the window closed, though: the row has to
+        /// arrive on its own, without a second explicit refresh, and the search
+        /// has to keep answering while it does.
+        #[test]
+        fn a_stale_index_is_caught_up_behind_the_query() {
+            let dir = TempDir::new().unwrap();
+            let (reader, id_a, _) = seed_db(dir.path());
+            assert!(
+                search(&reader, &q("zqxjvkjv")).unwrap().is_empty(),
+                "the marker does not exist yet"
+            );
+
+            {
+                let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+                let data = SessionData::open(&lease, &dir.path().join("sessions.db")).unwrap();
+                data.insert_items(&id_a, &[user_text("a zqxjvkjv arrives")])
+                    .unwrap();
+            }
+
+            // The first search dispatches the refresh and answers from the index
+            // as it stands, so this first answer may or may not hold the row. It
+            // may never be an error, and the row must land without a second kick.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let hits = search(&reader, &q("zqxjvkjv"))
+                    .expect("a delta is never reported as a failed search");
+                if hits.len() == 1 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the row written before the search never reached the index"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
+
+        /// Searches that arrive together all answer, and all answer the same way.
+        /// Nothing on that path waits: each reads the index as it stands, and the
+        /// refresh those reads dispatch is one pass, not four.
+        #[test]
+        fn concurrent_searches_agree_and_none_is_left_unanswered() {
+            let dir = TempDir::new().unwrap();
+            let (reader, _, _) = seed_db(dir.path());
+            let expected = search(&reader, &q("UNIQUE_SESSION_PHRASE"));
+            let expected = expected.unwrap();
+            assert_eq!(expected.len(), 1);
+
+            let readers: Vec<SessionDataReader> = (0..4)
+                .map(|_| SessionDataReader::open(&dir.path().join("sessions.db")))
+                .collect();
+            let handles: Vec<_> = readers
+                .into_iter()
+                .map(|r| std::thread::spawn(move || search(&r, &q("UNIQUE_SESSION_PHRASE"))))
+                .collect();
+
+            for handle in handles {
+                let hits = handle
+                    .join()
+                    .expect("a concurrent search must not panic")
+                    .expect("a concurrent search must be answered");
+                assert_eq!(hits.len(), 1, "and answered the same way");
+            }
+        }
     }
 
+    /// One hit for the ordering tests. Ranking reads the rank key, never the
+    /// score, so the helper takes the key explicitly.
+    fn ranked_hit(
+        session_id: &str,
+        seq: i64,
+        lane: SessionHitLane,
+        band: RankBand,
+        local_rank: u32,
+    ) -> SessionTextHit {
+        let layer = match lane {
+            SessionHitLane::Text => LayerId::Lexical,
+            SessionHitLane::Semantic => LayerId::Semantic,
+        };
+        let role = ContentRole::Conversation;
+        SessionTextHit {
+            session_id: session_id.into(),
+            seq,
+            item_type: "message".into(),
+            summary: format!("{session_id}:{seq}"),
+            score: 0.9,
+            char_start: 0,
+            char_end: 1,
+            lane,
+            role,
+            evidence: vec![HitEvidence {
+                layer,
+                branch: 0,
+                matched: 1,
+                total: 1,
+                local_rank: local_rank as usize,
+                native: 0.0,
+            }],
+            rank: RankKey {
+                band,
+                strength: 1_000 - local_rank,
+                role: role.preference(),
+                local_rank,
+            },
+        }
+    }
 
+    #[test]
+    fn exact_ties_follow_session_update_time_then_the_later_line() {
+        let mut repeated = ranked_hit("old", 1, SessionHitLane::Text, RankBand::Exact, 0);
+        repeated.rank.strength = 9_000;
+        let mut once = ranked_hit("new", 1, SessionHitLane::Text, RankBand::Exact, 9);
+        once.rank.strength = 100;
+        let early = ranked_hit("new", 2, SessionHitLane::Text, RankBand::Exact, 0);
+        let late = ranked_hit("new", 8, SessionHitLane::Text, RankBand::Exact, 0);
+        let mut hits = vec![repeated, early, once, late];
+        let updated = HashMap::from([("old".into(), 10_i64), ("new".into(), 50)]);
+        sort_hits_for_agent(&mut hits, &[], &updated);
+        let keys: Vec<_> = hits
+            .iter()
+            .map(|h| (h.session_id.as_str(), h.seq))
+            .collect();
+        assert_eq!(keys, vec![("new", 8), ("new", 2), ("new", 1), ("old", 1)]);
+    }
+
+    #[test]
+    fn a_newer_echo_does_not_pass_who_said_it() {
+        let mut human = ranked_hit("old", 1, SessionHitLane::Text, RankBand::Exact, 0);
+        human.rank.role = 0;
+        let mut echo = ranked_hit("new", 9, SessionHitLane::Text, RankBand::Exact, 0);
+        echo.rank.role = 2;
+        echo.rank.strength = 9_000;
+        let mut hits = vec![echo, human];
+        let updated = HashMap::from([("old".into(), 1_i64), ("new".into(), 100)]);
+        sort_hits_for_agent(&mut hits, &[], &updated);
+        assert_eq!(hits[0].session_id, "old");
+        assert_eq!(hits[0].rank.role, 0);
+    }
+
+    #[test]
+    fn gate_drops_weak_semantic() {
+        let mut sem = vec![ranked_hit(
+            "s",
+            0,
+            SessionHitLane::Semantic,
+            RankBand::Fusion,
+            0,
+        )];
+        sem[0].score = 0.3;
+        assert!(gate_semantic_hits(sem).is_empty());
+    }
+
+    #[test]
+    fn gate_keeps_strong_semantic() {
+        let mut sem = vec![ranked_hit(
+            "s",
+            0,
+            SessionHitLane::Semantic,
+            RankBand::Fusion,
+            0,
+        )];
+        sem[0].score = 0.8;
+        assert_eq!(gate_semantic_hits(sem).len(), 1);
+    }
+
+    #[test]
+    fn fusion_keeps_the_row_both_lanes_found_and_rewards_the_agreement() {
+        // The sparse lane found row a (with its literal span); the semantic lane
+        // found the same row plus one it alone knows about.
+        let lexical = vec![ranked_hit(
+            "a",
+            1,
+            SessionHitLane::Text,
+            RankBand::Fusion,
+            1,
+        )];
+        let semantic = vec![
+            ranked_hit("a", 1, SessionHitLane::Semantic, RankBand::Fusion, 0),
+            ranked_hit("b", 2, SessionHitLane::Semantic, RankBand::Fusion, 1),
+        ];
+        let fused = fuse_session_layers(lexical, semantic);
+        assert_eq!(
+            fused.len(),
+            2,
+            "one row is one hit, whichever lane found it"
+        );
+        assert_eq!(fused[0].session_id, "a");
+        // The sparse hit owns the row: it is the one carrying the literal span.
+        assert_eq!(fused[0].lane, SessionHitLane::Text);
+        assert_eq!(fused[0].char_end, 1);
+        let layers = fused[0].layers();
+        assert_eq!(layers, vec![LayerId::Lexical, LayerId::Semantic]);
+        assert!(layers.contains(&LayerId::Semantic), "agreement is recorded");
+        assert!(
+            fused[0].rank.strength > fused[1].rank.strength,
+            "two lists beating one is what rank fusion is for"
+        );
+        assert_eq!(fused[1].session_id, "b");
+        assert_eq!(fused[1].lane, SessionHitLane::Semantic);
+    }
+
+    #[test]
+    fn fusion_never_compares_native_scores_across_lanes() {
+        // The semantic hit has a far better `score` than the sparse one. It must
+        // still lose: an exact literal is a stronger statement than a distance,
+        // and the two numbers do not share a scale.
+        let mut literal = ranked_hit("exact", 1, SessionHitLane::Text, RankBand::Exact, 5);
+        literal.score = 1.0;
+        let mut dense = ranked_hit("dense", 2, SessionHitLane::Semantic, RankBand::Fusion, 0);
+        dense.score = 0.99;
+        let fused = fuse_session_layers(vec![literal], vec![dense]);
+        assert_eq!(fused[0].session_id, "exact");
+        assert_eq!(fused[1].session_id, "dense");
+    }
+
+    #[test]
+    fn fusion_keeps_the_sparse_order_when_the_semantic_lane_is_empty() {
+        let sparse = vec![
+            ranked_hit("a", 1, SessionHitLane::Text, RankBand::Fusion, 0),
+            ranked_hit("b", 2, SessionHitLane::Text, RankBand::Fusion, 1),
+            ranked_hit("c", 3, SessionHitLane::Text, RankBand::Fusion, 2),
+        ];
+        let fused = fuse_session_layers(sparse, Vec::new());
+        let order: Vec<&str> = fused.iter().map(|h| h.session_id.as_str()).collect();
+        assert_eq!(order, ["a", "b", "c"], "one list's own order is preserved");
+    }
+
+    #[test]
+    fn session_text_search_includes_function_call_rows() {
+        use crate::authority::responses::FunctionToolCall;
+        use crate::types::Item;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[Item::FunctionCall(FunctionToolCall {
+                    arguments: r#"{"cmd":"UNIQUE_TOOL_NEEDLE"}"#.into(),
+                    call_id: "c1".into(),
+                    namespace: None,
+                    name: "bash".into(),
+                    id: None,
+                    status: None,
+                })],
+            )
+            .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "UNIQUE_TOOL_NEEDLE".into(),
+                offset: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item_type, "function_call");
+    }
+
+    #[test]
+    fn context_window_exclude_drops_live_seqs_keeps_archive() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    user_text("ARCHIVE_NEEDLE_ONLY"),
+                    user_text("LIVE_NEEDLE_ONLY"),
+                ],
+            )
+            .unwrap();
+            data.compact_from(&id, &user_text("sum"), Some(1), 3)
+                .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "NEEDLE_ONLY".into(),
+                exclude_context_window: Some(ContextWindowExclude {
+                    session_id: sid.clone(),
+                    surface_seqs: load_surface_seqs(&reader, &sid).unwrap(),
+                }),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].seq, 0);
+        assert!(hits[0].summary.contains("ARCHIVE_NEEDLE_ONLY"));
+    }
+
+    #[test]
+    fn exclude_session_ids_filters_rows() {
+        let dir = TempDir::new().unwrap();
+        let (reader, id_a, id_b) = seed_db(dir.path());
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "OTHER_MARKER".into(),
+                exclude_session_ids: vec![id_b.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+
+        let page_a = search(
+            &reader,
+            &SessionTextQuery {
+                query: "UNIQUE_SESSION_PHRASE".into(),
+                exclude_session_ids: vec![id_b],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page_a.len(), 1);
+        assert_eq!(page_a[0].session_id, id_a);
+    }
+
+    #[test]
+    fn resolve_session_ref_unique_prefix() {
+        let dir = TempDir::new().unwrap();
+        let (reader, id_a, _) = seed_db(dir.path());
+        let short = short_session_ref(&id_a);
+        assert_eq!(resolve_session_ref(&reader, short).unwrap(), id_a);
+        assert_eq!(resolve_session_ref(&reader, &id_a).unwrap(), id_a);
+        let err = resolve_session_ref(&reader, "ZZZZNOPE").unwrap_err();
+        assert!(err.to_string().contains("matched no sessions"));
+    }
+
+    #[test]
+    fn lexical_fts_indexes_on_insert_and_finds_token() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[user_text(
+                    "decision: use middleware for AuthRefactorToken login path",
+                )],
+            )
+            .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "AuthRefactorToken".into(),
+                offset: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].score >= 0.55);
+        assert!(hits[0].summary.contains("AuthRefactorToken"));
+    }
+
+    #[test]
+    fn build_search_page_uses_physical_line_and_match_count() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    user_text("first PAGE_LINE_TOKEN here"),
+                    user_text("filler"),
+                    user_text("second PAGE_LINE_TOKEN there"),
+                ],
+            )
+            .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "PAGE_LINE_TOKEN".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let page = build_search_page(&reader, &hits, 0).unwrap();
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].session_id, sid);
+        assert_eq!(page.groups[0].match_count, 2);
+        assert_eq!(page.groups[0].hits.len(), 2);
+        assert_eq!(
+            page.groups[0].path,
+            crate::session::transcript_file::virtual_path_for(&sid)
+        );
+        assert!(page.groups[0].hits[0].line >= 2);
+        assert!(page.groups[0].hits[0].summary.contains("PAGE_LINE_TOKEN"));
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn chunk_hits_on_one_row_collapse_to_a_single_hit() {
+        let hit = |seq: i64, start: usize| SessionTextHit {
+            session_id: "s".into(),
+            seq,
+            item_type: "message".into(),
+            summary: "chunk".into(),
+            score: 1.0,
+            char_start: start,
+            char_end: start + 4,
+            lane: SessionHitLane::Text,
+            role: ContentRole::Conversation,
+            evidence: Vec::new(),
+            rank: RankKey::default(),
+        };
+        // The same row matched at three chunk offsets, plus a second row.
+        let rows = dedup_chunks_to_rows(&[hit(7, 0), hit(7, 320), hit(9, 0), hit(7, 900)]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].seq, 7);
+        assert_eq!(rows[0].char_start, 0, "the best-ranked chunk wins");
+        assert_eq!(rows[1].seq, 9);
+    }
+
+    #[test]
+    fn agent_view_shows_the_whole_item_when_it_fits() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("one\nVIEW_NEEDLE two\nthree")])
+                .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "VIEW_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        // The documented shape, pinned: session handle + age + count, then one
+        // label line per hit and the indented lines of its range.
+        assert_eq!(
+            view,
+            format!(
+                "### {} · just now · 1 Matches\nL2-4: user\n  one\n  VIEW_NEEDLE two\n  three\n",
+                short_session_ref(&sid)
+            ),
+            "{view}"
+        );
+        // Internal coordinates stay out of the view.
+        assert!(!view.contains("seq"), "{view}");
+        assert!(!view.contains("Showing"), "{view}");
+    }
+
+    /// The provenance the ranking is built from is **internal**. The agent sees
+    /// prose and line numbers: no layer names, no coverage, no scores, no rank
+    /// keys. That is a contract, not an accident of formatting, so it is pinned
+    /// here rather than left to whichever shape the renderer happens to use.
+    #[test]
+    fn agent_view_carries_no_internal_ranking_vocabulary() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&id, &[user_text("VIEW_CLEAN_NEEDLE plain words only")])
+                .unwrap();
+        }
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "VIEW_CLEAN_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(!hits.is_empty());
+        // The evidence is there, above and beyond what the view may show.
+        assert!(hits[0].layer_count() >= 1, "{hits:#?}");
+        assert_eq!(hits[0].rank.band, RankBand::Exact);
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(view.contains("VIEW_CLEAN_NEEDLE"), "{view}");
+        let lowered = view.to_lowercase();
+        for token in [
+            "exact",
+            "proximity",
+            "lexical",
+            "fuzzy",
+            "semantic",
+            "sparse",
+            "coverage",
+            "evidence",
+            "rank",
+            "band",
+            "score",
+            "layer",
+            "trace",
+            "0.85",
+            "0.9",
+        ] {
+            assert!(
+                !lowered.contains(token),
+                "{token} leaked into the view:\n{view}"
+            );
+        }
+    }
+
+    #[test]
+    fn agent_view_names_the_tool_of_a_call_and_its_result() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+        use crate::types::Item;
+
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(
+                &id,
+                &[
+                    Item::FunctionCall(FunctionToolCall {
+                        arguments: r#"{"command":"grep TOOL_NAME_NEEDLE"}"#.into(),
+                        call_id: "call_1".into(),
+                        namespace: None,
+                        name: "bash".into(),
+                        id: None,
+                        status: None,
+                    }),
+                    Item::FunctionCallOutput(FunctionCallOutputItemParam {
+                        call_id: "call_1".into(),
+                        output: FunctionCallOutput::Text("TOOL_NAME_NEEDLE found".into()),
+                        id: None,
+                        status: None,
+                    }),
+                ],
+            )
+            .unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "TOOL_NAME_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            hits.len(),
+            1,
+            "sparse whitelist: call matches, result does not"
+        );
+        assert_eq!(hits[0].item_type, "function_call");
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(view.contains("tool call · bash"), "{view}");
+        assert!(
+            !view.contains("tool result · bash"),
+            "tool_result must not appear in the view: {view}"
+        );
+    }
+
+    #[test]
+    fn agent_view_spills_the_remainder_into_a_named_file() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data.create_session("/proj", "default", None).unwrap();
+            let items: Vec<_> = (0..12)
+                .map(|i| {
+                    user_text(format!(
+                        "DEGRADE_NEEDLE {i} filled with words to spend budget"
+                    ))
+                })
+                .collect();
+            data.insert_items(&id, &items).unwrap();
+            id
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "DEGRADE_NEEDLE".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // A budget too small for the whole set at any shape: a prefix of the
+        // single-line shape is carried and the rest is named.
+        let view = build_agent_view_with_budget(&reader, &hits, dir.path(), 90).unwrap();
+        assert!(view.contains("Showing "), "{view}");
+        assert!(
+            view.contains("are in .litecode/bash/session_search_"),
+            "{view}"
+        );
+        assert!(view.contains("More in: "), "{view}");
+        let location = crate::engines::session_search::named_spill_location(&view).expect(&view);
+        let spilled = std::fs::read_to_string(dir.path().join(location)).unwrap();
+        assert!(spilled.contains("Remaining "), "{spilled}");
+        let entries: Vec<&str> = spilled
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .skip(1)
+            .collect();
+        assert!(!entries.is_empty(), "{spilled}");
+        for entry in entries {
+            assert!(
+                entry.starts_with(&format!("{} L", short_session_ref(&sid))),
+                "every spilled hit names its session: {entry}"
+            );
+            assert!(
+                entry.contains("filled with words to spend budget"),
+                "the spilled line is the rendered line: {entry}"
+            );
+        }
+
+        // The real budget carries the same corpus whole: no file, no footer.
+        let whole = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        assert!(!whole.contains("Showing"), "{whole}");
+    }
+
+    #[test]
+    fn every_hit_travels_with_the_header_of_its_session() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("sessions.db");
+        let (a, b) = {
+            let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let a = data.create_session("/proj", "default", None).unwrap();
+            let b = data.create_session("/proj", "default", None).unwrap();
+            data.insert_items(&a, &[user_text("TWO_SESSION_MARKER from a")])
+                .unwrap();
+            data.insert_items(&b, &[user_text("TWO_SESSION_MARKER from b")])
+                .unwrap();
+            (a, b)
+        };
+        let reader = SessionDataReader::open(&db);
+        let hits = search(
+            &reader,
+            &SessionTextQuery {
+                query: "TWO_SESSION_MARKER".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 2, "both sessions must hit");
+
+        let view = build_agent_view(&reader, &hits, dir.path()).unwrap();
+        let mut current = String::new();
+        let mut attributed = 0;
+        for line in view.lines() {
+            if let Some(rest) = line.strip_prefix("### ") {
+                current = rest.split(" · ").next().unwrap_or_default().to_string();
+            } else if let Some(body) = line.strip_prefix("  ") {
+                let expected = if body.contains(" from a") {
+                    short_session_ref(&a)
+                } else {
+                    short_session_ref(&b)
+                };
+                assert!(
+                    current.ends_with(&expected),
+                    "a hit must sit under its own session header:\n{view}"
+                );
+                attributed += 1;
+            }
+        }
+        assert_eq!(attributed, 2, "{view}");
+    }
+
+    #[test]
+    fn handles_extend_until_they_are_unique() {
+        let ids = vec![
+            "01AAAA000000000001".to_string(),
+            "01BBBB000000000001".to_string(),
+        ];
+        let handles = unique_handles(&ids);
+        let a = handles.get(&ids[0]).unwrap();
+        let b = handles.get(&ids[1]).unwrap();
+        assert_ne!(a, b);
+        assert!(a.chars().count() > SESSION_REF_SHORT_LEN, "{a}");
+        assert!(ids[0].ends_with(a.as_str()), "{a}");
+    }
+
+    #[test]
+    fn age_reads_as_relative_time() {
+        let now = 1_700_000_000_000i64;
+        assert_eq!(format_age(now, now), "just now");
+        assert_eq!(format_age(now, now - 5 * 60_000), "5m ago");
+        assert_eq!(format_age(now, now - 2 * 3_600_000), "2h ago");
+        assert_eq!(format_age(now, now - 3 * 86_400_000), "3d ago");
+        assert_eq!(format_age(now, now - 8 * 86_400_000), "1w ago");
+        assert_eq!(format_age(now, now - 40 * 86_400_000), "1mo ago");
+        assert_eq!(format_age(now, now - 400 * 86_400_000), "1y+ ago");
+    }
+
+    #[test]
+    fn pack_page_stops_on_whole_hit_and_advances_offset() {
+        let hits: Vec<HydratedHit> = (0..8)
+            .map(|i| HydratedHit {
+                session_id: "s".into(),
+                seq: i,
+                line: (i + 1) as u32,
+                first_line: (i + 1) as u32,
+                last_line: (i + 1) as u32,
+                label: "user".into(),
+                summary: format!("hit {i} {}", "x".repeat(20)),
+            })
+            .collect();
+        let mut counts = HashMap::new();
+        counts.insert("s".into(), 8);
+        let page = pack_page(&hits, &counts, &HashMap::new(), 0, 40);
+        assert!(page.groups.len() == 1);
+        assert!(page.groups[0].hits.len() >= 1);
+        assert!(page.has_more);
+        assert_eq!(page.next_offset, page.groups[0].hits.len());
+        assert!(page.next_offset >= 1);
+    }
+
+    #[test]
+    fn pack_page_offset_past_end_is_empty() {
+        let hits = vec![HydratedHit {
+            session_id: "s".into(),
+            seq: 0,
+            line: 1,
+            first_line: 1,
+            last_line: 1,
+            label: "user".into(),
+            summary: "only".into(),
+        }];
+        let page = pack_page(&hits, &HashMap::new(), &HashMap::new(), 3, 6000);
+        assert!(page.groups.is_empty());
+        assert_eq!(page.next_offset, 3);
+        assert!(!page.has_more);
+    }
 }

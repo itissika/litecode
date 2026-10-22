@@ -234,6 +234,17 @@ mod tests {
     }
 
     #[test]
+    fn trim_to_tail_aligns_to_next_newline() {
+        let mut tail = format!("{}abcng\nLASTLINE\n", "x".repeat(INLINE_TAIL));
+        trim_to_tail(&mut tail);
+        assert_eq!(tail, "LASTLINE\n");
+
+        let mut utf8 = format!("{}前置ng\n末尾行\n", "x".repeat(INLINE_TAIL));
+        trim_to_tail(&mut utf8);
+        assert_eq!(utf8, "末尾行\n");
+    }
+
+    #[test]
     fn freeze_keeps_utf8_char_boundaries() {
         let dir = tempfile::tempdir().unwrap();
         let mut t = tee_in(dir.path());
@@ -248,4 +259,16 @@ mod tests {
         assert!(on_disk.ends_with(&cap.tail));
     }
 
+    #[test]
+    fn file_stops_at_max_and_flags_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut t = tee_in(dir.path());
+        t.push_clean(&"x".repeat(FILE_MAX + 50));
+        let _ = t.flush_file();
+        let cap = t.snapshot_capture();
+        assert!(cap.truncated_on_disk);
+        assert_eq!(cap.total_bytes, FILE_MAX + 50);
+        let on_disk = std::fs::read(&cap.path).unwrap();
+        assert_eq!(on_disk.len(), FILE_MAX);
+    }
 }

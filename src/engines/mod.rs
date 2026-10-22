@@ -1315,6 +1315,35 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn lsp_probe_is_skipped_unless_warm() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Warming);
+        assert_eq!(engines.ensure_lsp_probed_blocking(), Ok(()));
+        assert_eq!(engines.state("lsp"), Some(EngineState::Warming));
+        assert!(hub.is_active());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lsp_probe_failure_after_stop_does_not_resurrect_state() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let hub = engines.lsp_hub();
+        hub.set_workspace(dir.path().to_path_buf());
+        hub.activate_deferred(&[broken_ls(dir.path())]).unwrap();
+        engines.set_state_for_test("lsp", EngineState::Stopped);
+        // Probe through the hub directly (as a request racing a stop would).
+        assert!(hub.ensure_probed_blocking().is_err());
+        assert_eq!(engines.state("lsp"), Some(EngineState::Stopped));
+        assert_eq!(engines.last_error("lsp"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn detail_view_after_deferred_probe_matches_eager() {
         let dir = TempDir::new().unwrap();
         let engines = WorkspaceEngines::new();
@@ -1349,6 +1378,76 @@ mod tests {
             !tail.contains("path_index"),
             "cli must not attach the path index after reconcile"
         );
+    }
+
+    #[test]
+    fn dropping_the_engines_stops_the_path_index_thread() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        let index = engines.path_index();
+        index.attach(dir.path());
+        assert_eq!(index.spawn_count_for_test(), 1);
+        drop(engines);
+        assert!(index.worker_stopped_for_test());
+    }
+
+    #[test]
+    fn workspace_engines_routes_session_text() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let litecode = root.join(".litecode");
+        std::fs::create_dir_all(&litecode).unwrap();
+        let db = litecode.join("sessions.db");
+        let sid = {
+            let lease = WorkspaceWriteLease::acquire(&litecode).unwrap();
+            let data = SessionData::open(&lease, &db).unwrap();
+            let id = data
+                .create_session(root.to_str().unwrap(), "default", None)
+                .unwrap();
+            data.insert_items(&id, &[user_text("route me ROUTER_MARKER please")])
+                .unwrap();
+            id
+        };
+
+        let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
+        // Must not require code_search Warm.
+        assert!(!engines.is_warmed("code_search"));
+
+        let hits = engines
+            .search(RetrievalQuery {
+                query: "ROUTER_MARKER".into(),
+                corpus: RetrievalCorpus::Session,
+                modality: RetrievalModality::Text,
+                filters: RetrievalFilters::default(),
+                top_k: 8,
+                offset: 0,
+                workspace_root: Some(root.to_path_buf()),
+            })
+            .unwrap();
+
+        assert_eq!(hits.len(), 1);
+        match &hits[0] {
+            RetrievalHit::Session {
+                session_id,
+                summary,
+                ..
+            } => {
+                assert_eq!(session_id, &sid);
+                assert!(summary.contains("ROUTER_MARKER"));
+            }
+            other => panic!("expected Session hit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_sessions_without_reader_is_explicit_error() {
+        let engines = WorkspaceEngines::new();
+        let err = engines
+            .search_sessions("q", 0, RetrievalFilters::default(), None)
+            .unwrap_err();
+        assert!(err.to_string().contains("SessionDataReader"), "got: {err}");
+        assert_ne!(engines.state("code_search"), Some(EngineState::Failed));
     }
 
     #[test]
@@ -1477,6 +1576,32 @@ mod tests {
     }
 
     #[test]
+    fn session_text_search_ignores_code_index_refresh() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let (_sid, db) = session_db_with_marker(root, "route me SESSION_TEXT_MARKER please");
+
+        let engines = WorkspaceEngines::new();
+        engines.set_session_reader(SessionDataReader::open(&db));
+        engines.set_state_for_test("code_search", EngineState::Warm);
+        engines.set_refresh_busy_for_test(true);
+
+        let hits = engines
+            .search(RetrievalQuery {
+                query: "SESSION_TEXT_MARKER".into(),
+                corpus: RetrievalCorpus::Session,
+                modality: RetrievalModality::Text,
+                filters: RetrievalFilters::default(),
+                top_k: 8,
+                offset: 0,
+                workspace_root: Some(root.to_path_buf()),
+            })
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
+    }
+
+    #[test]
     fn session_semantic_gate_not_blocked_by_code_silent_refresh() {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", EngineState::Warm);
@@ -1537,6 +1662,19 @@ mod tests {
         assert_eq!(page.groups[0].hits.len(), 1);
         assert!(page.groups[0].hits[0].summary.contains("HUMAN_SESSION_HIT"));
         assert!(!page.has_more);
+    }
+
+    #[test]
+    fn request_index_sync_does_not_enable_retrieval() {
+        let dir = TempDir::new().unwrap();
+        let engines = WorkspaceEngines::new();
+        engines.request_index_sync(dir.path());
+        assert!(!crate::config::workspace::workspace_engine_desired(
+            dir.path(),
+            "code_search"
+        ));
+        assert!(!engines.is_refresh_busy());
+        assert!(!dir.path().join(".litecode").join("engines.json").is_file());
     }
 
     #[test]
@@ -2055,4 +2193,12 @@ mod tests {
         );
     }
 
+    #[test]
+    fn warming_is_not_searchable() {
+        let engines = WorkspaceEngines::new();
+        engines.set_state_for_test("code_search", EngineState::Warming);
+        assert!(!engines.is_warmed("code_search"));
+        assert!(!engines.is_searchable("code_search"));
+        assert_eq!(engines.code_search_call_gate(), CodeSearchCallGate::Wait);
+    }
 }

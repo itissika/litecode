@@ -371,6 +371,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn send_mode_defaults_to_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        let schema = tool.schema();
+        assert_eq!(schema["properties"]["mode"]["default"], "queue");
+        assert_eq!(schema["required"], serde_json::json!(["id", "message"]));
+        let result = tool
+            .call_send(serde_json::json!({"id": child, "message": "next step"}))
+            .await;
+        assert_ok(&result);
+        assert!(
+            result.content.contains("status: queued"),
+            "{}",
+            result.content
+        );
+        let meta = result.metadata.clone().unwrap();
+        assert_eq!(meta["mode"], "queue");
+        assert_eq!(meta["status"], "queued");
+        assert!(sessions.has_follow_ups(&child));
+        assert!(sessions.pending_messages_snapshot(&child).is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_queue_while_running_returns_queued() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, sessions, child) = running_child(dir.path()).await;
+        for msg in ["one", "two"] {
+            let result = tool
+                .call_send(serde_json::json!({"id": child, "message": msg, "mode": "queue"}))
+                .await;
+            assert_ok(&result);
+            assert_eq!(result.metadata.unwrap()["status"], "queued");
+        }
+        assert_eq!(sessions.follow_ups_len(&child), 2);
+    }
+
+    #[tokio::test]
     async fn send_steer_injects_current_turn() {
         let dir = tempfile::tempdir().unwrap();
         let (tool, sessions, child) = running_child(dir.path()).await;

@@ -575,8 +575,36 @@ pub(crate) fn bash_nonce() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn display_output_path_strips_workspace_root() {
+        let root = Path::new("C:/proj");
+        let path = root
+            .join(".litecode")
+            .join("run")
+            .join("bg_aaa.stdout");
+        assert_eq!(
+            display_output_path(&path, root),
+            ".litecode/run/bg_aaa.stdout"
+        );
+    }
+
     // G6: ids are unguessable random strings (not sequential/guessable), and a
     // cross-session kill/close on an id the caller cannot know is rejected.
+    #[test]
+    fn ids_are_unguessable_uuid_and_distinct() {
+        let a = TerminalHub::next_id("term");
+        let b = TerminalHub::next_id("term");
+        // Format is `prefix_<uuid>` — not a small sequential integer.
+        assert!(a.starts_with("term_"));
+        assert!(b.starts_with("term_"));
+        assert_ne!(a, b);
+        let nonce_a = &a["term_".len()..];
+        let nonce_b = &b["term_".len()..];
+        assert!(nonce_a.len() >= 16, "nonce too short: {nonce_a}");
+        assert!(nonce_b.len() >= 16);
+        // A UUID cannot be trivially enumerated by incrementing.
+        assert!(nonce_a.parse::<u64>().is_err(), "nonce must not be numeric");
+    }
 
     #[test]
     fn agent_bash_ids_are_short_hex_not_sequential() {

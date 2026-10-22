@@ -292,6 +292,22 @@ mod tests {
     }
 
     #[test]
+    fn idle_without_subscribers_does_not_reserve() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions, hub) = test_runtime(dir.path());
+        let sid = sessions
+            .open_session_sync(&dir.path().display().to_string(), "default", None)
+            .unwrap();
+        queue_completion(&hub, &sid);
+        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
+            IdleAutoTurn::SkippedNoUi => {}
+            _ => panic!("expected no UI"),
+        }
+        assert!(!sessions.is_session_busy_blocking(&sid));
+        assert!(!hub.take_completions(&sid).is_empty());
+    }
+
+    #[test]
     fn busy_session_leaves_mailbox() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());

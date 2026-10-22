@@ -295,3 +295,239 @@ fn migrate_agent_refs(
     }
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::provider_catalog::ProviderCatalog;
+    use std::path::Path;
+
+    const CATALOG: &str = r#"
+version = 1
+
+[[providers]]
+id = "opencode"
+name = "OpenCode Zen"
+endpoint = "https://opencode.ai/zen/v1"
+endpoint_type = "chat_completions"
+
+[[providers]]
+id = "deepseek"
+name = "DeepSeek"
+endpoint = "https://api.deepseek.com"
+endpoint_type = "responses"
+
+[[models]]
+id = "deepseek-v4-flash"
+provider_id = "opencode"
+
+[[models]]
+id = "deepseek-flash"
+provider_id = "deepseek"
+"#;
+
+    /// A v6 database: legacy provider/model tables plus the current tables.
+    fn legacy_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE provider_credentials (provider_id TEXT PRIMARY KEY, api_key TEXT NOT NULL);
+            CREATE TABLE providers (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE models (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, provider_ref TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                model_ref TEXT NOT NULL,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                temperature REAL NOT NULL DEFAULT 0.7,
+                max_steps INTEGER NOT NULL DEFAULT 50,
+                description TEXT NOT NULL DEFAULT '',
+                allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', 'zen-flash');
+            INSERT INTO agents (id, role, model_ref) VALUES ('compaction', 'hidden', 'ghost-model');
+            ",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_legacy_provider(
+        conn: &Connection,
+        id: &str,
+        adapter_id: &str,
+        endpoint: &str,
+        key: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO providers (id, adapter_id, config_json) VALUES (?1, ?2, ?3)",
+            params![
+                id,
+                adapter_id,
+                format!(
+                    "{{\"endpoint\":\"{endpoint}\",\"api_key\":\"{key}\",\"auth\":\"bearer\"}}"
+                )
+            ],
+        )
+        .unwrap();
+    }
+
+    fn insert_legacy_model(
+        conn: &Connection,
+        id: &str,
+        adapter_id: &str,
+        provider_ref: &str,
+        api: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO models (id, adapter_id, provider_ref, config_json) VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id,
+                adapter_id,
+                provider_ref,
+                format!("{{\"api_model_id\":\"{api}\",\"context_window\":1000,\"max_tokens\":10,\"capabilities\":[\"text\"]}}")
+            ],
+        )
+        .unwrap();
+    }
+
+    fn catalog() -> ProviderCatalog {
+        ProviderCatalog::parse(CATALOG, Path::new("test-catalog.toml")).unwrap()
+    }
+
+    fn credential(conn: &Connection, provider_id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT api_key FROM provider_credentials WHERE provider_id = ?1",
+            [provider_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn agent_ref(conn: &Connection, id: &str) -> String {
+        conn.query_row("SELECT model_ref FROM agents WHERE id = ?1", [id], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn exact_provider_id_wins_and_the_agent_ref_is_rewritten() {
+        let conn = legacy_db();
+        insert_legacy_provider(&conn, "deepseek", "deepseek_responses", "", "sk-legacy");
+        insert_legacy_provider(
+            &conn,
+            "opencode",
+            "opencode",
+            "https://opencode.ai/zen/v1",
+            "sk-zen",
+        );
+        insert_legacy_model(
+            &conn,
+            "zen-flash",
+            "opencode",
+            "opencode",
+            "deepseek-v4-flash",
+        );
+
+        migrate_once(&conn, &catalog()).unwrap();
+
+        assert_eq!(credential(&conn, "deepseek").as_deref(), Some("sk-legacy"));
+        assert_eq!(credential(&conn, "opencode").as_deref(), Some("sk-zen"));
+        assert_eq!(agent_ref(&conn, "default"), "opencode/deepseek-v4-flash");
+        // The unmappable reference is preserved instead of guessed away.
+        assert_eq!(agent_ref(&conn, "compaction"), "ghost-model");
+        assert_eq!(
+            meta_get(&conn, LEGACY_LLM_MIGRATION_MARKER)
+                .unwrap()
+                .as_deref(),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn endpoint_match_migrates_a_renamed_provider() {
+        let conn = legacy_db();
+        insert_legacy_provider(
+            &conn,
+            "zen",
+            "opencode",
+            "https://opencode.ai/zen/v1/",
+            "sk-zen",
+        );
+
+        migrate_once(&conn, &catalog()).unwrap();
+
+        assert_eq!(credential(&conn, "opencode").as_deref(), Some("sk-zen"));
+        assert_eq!(credential(&conn, "zen"), None);
+    }
+
+    #[test]
+    fn an_ambiguous_endpoint_match_is_never_guessed() {
+        let conn = legacy_db();
+        // Catalog endpoint that two providers share.
+        let catalog = ProviderCatalog::parse(
+            "version = 1\n[[providers]]\nid = \"a\"\nname = \"A\"\nendpoint = \"https://shared.example/v1\"\nendpoint_type = \"responses\"\n\n[[providers]]\nid = \"b\"\nname = \"B\"\nendpoint = \"https://shared.example/v1\"\nendpoint_type = \"responses\"\n",
+            Path::new("t.toml"),
+        )
+        .unwrap();
+        insert_legacy_provider(
+            &conn,
+            "old",
+            "openai_responses",
+            "https://shared.example/v1",
+            "sk-old",
+        );
+
+        migrate_once(&conn, &catalog).unwrap();
+
+        assert_eq!(credential(&conn, "a"), None);
+        assert_eq!(credential(&conn, "b"), None);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "legacy rows must survive an unmapped migration");
+    }
+
+    #[test]
+    fn a_key_conflict_keeps_the_configured_credential() {
+        let conn = legacy_db();
+        store::set_provider_credential(&conn, "deepseek", "sk-current").unwrap();
+        insert_legacy_provider(&conn, "deepseek", "deepseek_responses", "", "sk-old");
+
+        migrate_once(&conn, &catalog()).unwrap();
+
+        assert_eq!(credential(&conn, "deepseek").as_deref(), Some("sk-current"));
+    }
+
+    #[test]
+    fn migration_runs_once() {
+        let conn = legacy_db();
+        insert_legacy_provider(&conn, "deepseek", "deepseek_responses", "", "sk-legacy");
+        migrate_once(&conn, &catalog()).unwrap();
+
+        // A later legacy write must not be picked up: the marker is final.
+        conn.execute("DELETE FROM provider_credentials", [])
+            .unwrap();
+        insert_legacy_provider(
+            &conn,
+            "other",
+            "opencode",
+            "https://opencode.ai/zen/v1",
+            "sk-new",
+        );
+        migrate_once(&conn, &catalog()).unwrap();
+
+        assert_eq!(credential(&conn, "deepseek"), None);
+        assert_eq!(credential(&conn, "opencode"), None);
+    }
+
+    #[test]
+    fn an_empty_key_is_not_a_credential() {
+        let conn = legacy_db();
+        insert_legacy_provider(&conn, "deepseek", "deepseek_responses", "", "   ");
+        migrate_once(&conn, &catalog()).unwrap();
+        assert_eq!(credential(&conn, "deepseek"), None);
+    }
+}

@@ -284,9 +284,75 @@ pub fn resolve_single_blob(body: &str, blob_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use crate::authority::responses::FunctionCallOutputItemParam;
 
+    fn fc_output(call_id: &str, content: String) -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: call_id.into(),
+            output: FunctionCallOutput::Text(content),
+            id: None,
+            status: None,
+        })
+    }
 
+    fn output_text(item: &Item) -> String {
+        match item {
+            Item::FunctionCallOutput(out) => match &out.output {
+                FunctionCallOutput::Text(s) => s.clone(),
+                _ => panic!("text expected"),
+            },
+            _ => panic!("function_call_output expected"),
+        }
+    }
+
+    #[test]
+    fn finalize_preserves_structured_data_and_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ToolCallResult::ok("done").with_data(serde_json::json!({"paths": ["a.rs"]}));
+        let finalized = finalize_tool_call_result(result, dir.path(), 32_768).unwrap();
+        assert_eq!(finalized.data, Some(serde_json::json!({"paths": ["a.rs"]})));
+        assert!(finalized.error.is_none());
+
+        let result = ToolCallResult::error_with_kind(
+            crate::types::ToolErrorKind::InvalidInput,
+            "bad input",
+            false,
+        );
+        let finalized = finalize_tool_call_result(result, dir.path(), 32_768).unwrap();
+        let error = finalized.error.expect("typed error");
+        assert_eq!(error.kind, crate::types::ToolErrorKind::InvalidInput);
+        assert_eq!(error.message, "bad input");
+    }
+
+    #[test]
+    fn spill_and_resolve_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_root = dir.path();
+        let big = "x".repeat(40_000);
+        let mut items = vec![fc_output("t1", big.clone())];
+
+        spill_tool_results(&mut items, data_root, DEFAULT_SPILL_THRESHOLD).unwrap();
+        let spilled = output_text(&items[0]);
+        assert!(spilled.starts_with(BLOB_PREFIX));
+        assert!(spilled.len() < big.len());
+        assert!(
+            std::fs::read_dir(blob_dir(data_root))
+                .unwrap()
+                .next()
+                .is_some()
+        );
+
+        resolve_body_refs(&mut items, data_root).unwrap();
+        assert_eq!(output_text(&items[0]), big);
+    }
+
+    #[test]
+    fn emergency_cap_truncates_huge_output() {
+        let huge = "a".repeat(EMERGENCY_HARD_CAP_CHARS + 1);
+        let capped = apply_emergency_cap(huge);
+        assert!(capped.contains("<persisted-output>"));
+        assert!(capped.len() < EMERGENCY_HARD_CAP_CHARS);
+    }
 
     #[test]
     fn emergency_cap_cjk_boundary_does_not_panic() {
@@ -307,6 +373,24 @@ mod tests {
         let spilled = finalize_tool_output(body, dir.path(), 32).unwrap();
         assert!(std::str::from_utf8(spilled.as_bytes()).is_ok());
         assert!(spilled.starts_with(BLOB_PREFIX));
+    }
+
+    #[test]
+    fn finalize_writes_blob_under_data_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_root = dir.path();
+        let big = "y".repeat(40_000);
+        let out = finalize_tool_output(big.clone(), data_root, DEFAULT_SPILL_THRESHOLD).unwrap();
+        assert!(out.starts_with(BLOB_PREFIX));
+        assert!(
+            std::fs::read_dir(blob_dir(data_root))
+                .unwrap()
+                .next()
+                .is_some()
+        );
+        let mut items = vec![fc_output("t1", out)];
+        resolve_body_refs(&mut items, data_root).unwrap();
+        assert_eq!(output_text(&items[0]), big);
     }
 
     #[test]
@@ -342,6 +426,32 @@ mod tests {
             crate::session::media::read_media_blob(dir.path(), blob_id).unwrap(),
             png
         );
+    }
+
+    #[test]
+    fn finalize_spills_text_without_touching_media_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("image.png");
+        std::fs::write(&source, b"png-bytes").unwrap();
+        let big = "y".repeat(40_000);
+
+        let result = ToolCallResult::ok_with_parts(
+            big.clone(),
+            vec![ToolOutputPart::image_file(
+                source.to_string_lossy(),
+                "image/png",
+            )],
+        );
+        let finalized =
+            finalize_tool_call_result(result, dir.path(), DEFAULT_SPILL_THRESHOLD).unwrap();
+
+        assert!(finalized.content.starts_with(BLOB_PREFIX));
+        assert_eq!(finalized.parts.len(), 1);
+        assert!(matches!(
+            &finalized.parts[0],
+            ToolOutputPart::Media { artifact }
+                if matches!(artifact.source, MediaSource::BlobRef { .. })
+        ));
     }
 
     #[test]

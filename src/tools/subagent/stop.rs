@@ -125,6 +125,16 @@ impl Tool for SubagentStopTool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn schema_requires_id() {
+        let sessions = Arc::new(SessionManager::new_for_test(
+            Arc::new(crate::config::TurnGuard::new()),
+            String::new(),
+        ));
+        let tool = SubagentStopTool::new(sessions);
+        assert_eq!(tool.schema()["required"], serde_json::json!(["id"]));
+    }
+
     async fn parent_and_child() -> (tempfile::TempDir, Arc<SessionManager>, String, String) {
         let dir = tempfile::tempdir().unwrap();
         let sessions = Arc::new(SessionManager::new_for_test(
@@ -180,6 +190,17 @@ mod tests {
         );
         assert!(!hub.has_notices(&parent));
         assert!(!hub.has_pending(&parent));
+    }
+
+    #[tokio::test]
+    async fn reports_nothing_running_when_idle() {
+        let (_dir, sessions, parent, child) = parent_and_child().await;
+        let result = stop(&sessions, &parent, &child);
+        assert!(
+            result.content.contains("status: nothing running"),
+            "{}",
+            result.content
+        );
     }
 
     #[tokio::test]

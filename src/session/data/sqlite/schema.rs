@@ -495,7 +495,118 @@ fn migrate_meter_table(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    
+    use tempfile::TempDir;
+
+    #[test]
+    fn fresh_db_builds_base_tables_before_fts() {
+        let dir = TempDir::new().unwrap();
+        let conn = Connection::open(dir.path().join("sessions.db")).unwrap();
+        configure_write(&conn).unwrap();
+        ensure_session_schema(&conn).unwrap();
+        assert!(table_exists(&conn, "sessions").unwrap());
+        assert!(table_exists(&conn, "transcript_items").unwrap());
+        assert!(!table_exists(&conn, "transcript_fts").unwrap());
+        assert!(!table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(!table_exists(&conn, "session_content_impacts").unwrap());
+        assert!(
+            table_columns(&conn, "sessions")
+                .unwrap()
+                .iter()
+                .any(|column| column == "responsibility")
+        );
+        assert_eq!(user_version(&conn).unwrap(), USER_VERSION);
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal.to_lowercase(), "wal");
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fk, 1);
+    }
+
+    #[test]
+    fn existing_session_db_adds_responsibility_without_losing_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute_batch("ALTER TABLE sessions DROP COLUMN responsibility;")
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (
+                id, schema_version, project, agent_id, created_at, updated_at
+             ) VALUES ('existing', ?1, '/project', 'default', 1, 1)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+
+        ensure_session_schema(&conn).unwrap();
+
+        let responsibility: String = conn
+            .query_row(
+                "SELECT responsibility FROM sessions WHERE id = 'existing'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(responsibility.is_empty());
+    }
+
+    #[test]
+    fn existing_session_db_drops_retired_content_outbox() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        // A real change row from the older writer, which the migration must not
+        // touch: dropping the outbox leaves `session_change_log` exactly as it was.
+        conn.execute(
+            "INSERT INTO session_change_log
+                (session_id, revision, kind, from_seq, to_seq, created_at)
+             VALUES ('s1', 1, 'Appended', 3, 4, 1)",
+            [],
+        )
+        .unwrap();
+        // Simulate a database written before the outbox was retired.
+        conn.execute_batch(
+            "CREATE TABLE session_content_change_batches (
+                change_id    INTEGER PRIMARY KEY,
+                version      INTEGER NOT NULL,
+                impact_count INTEGER NOT NULL
+             );
+             CREATE TABLE session_content_impacts (
+                change_id  INTEGER NOT NULL,
+                ordinal    INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                action     TEXT NOT NULL,
+                from_seq   INTEGER,
+                to_seq     INTEGER,
+                PRIMARY KEY (change_id, ordinal)
+             );
+             INSERT INTO session_content_change_batches (change_id, version, impact_count)
+                VALUES (1, 1, 0);
+             PRAGMA user_version = 5;",
+        )
+        .unwrap();
+        assert!(table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(table_exists(&conn, "session_content_impacts").unwrap());
+        assert_eq!(user_version(&conn).unwrap(), 5);
+
+        ensure_session_schema(&conn).unwrap();
+
+        assert!(!table_exists(&conn, "session_content_change_batches").unwrap());
+        assert!(!table_exists(&conn, "session_content_impacts").unwrap());
+        assert_eq!(user_version(&conn).unwrap(), USER_VERSION);
+        // The old change log table is left exactly as it was, data included.
+        let cols = table_columns(&conn, "session_change_log").unwrap();
+        assert!(cols.iter().any(|c| c == "from_seq"));
+        assert!(cols.iter().any(|c| c == "to_seq"));
+        let (kind, from_seq, to_seq): (String, i64, i64) = conn
+            .query_row(
+                "SELECT kind, from_seq, to_seq FROM session_change_log WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), from_seq, to_seq), ("Appended", 3, 4));
+    }
 
     #[test]
     fn fresh_sessions_table_has_next_seq_starting_at_zero() {
@@ -555,6 +666,20 @@ mod tests {
             })
             .unwrap();
         assert_eq!(next, 5, "backfill must be MAX(seq)+1 = 5");
+    }
+
+    #[test]
+    fn half_old_sessions_schema_fails_closed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                project TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let err = ensure_session_schema(&conn).unwrap_err();
+        assert!(err.to_string().contains("incompatible"));
     }
 
     #[test]

@@ -181,6 +181,11 @@ impl LspHub {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_sweep_gate_for_test(mut self, gate: Arc<SweepGate>) -> Self {
+        self.sweep_gate = gate;
+        self
+    }
 
     pub fn set_probe_failure_sink(&self, sink: ProbeFailureSink) {
         *self
@@ -1364,6 +1369,15 @@ mod tests {
             params["textDocument"]["uri"],
             serde_json::json!("file:///a.rs")
         );
+    }
+
+    #[test]
+    fn split_want_rev_absent_is_none() {
+        let (params, want) = split_want_rev(serde_json::json!({
+            "textDocument": { "uri": "file:///a.rs" }
+        }));
+        assert_eq!(want, None);
+        assert!(params.get("textDocument").is_some());
     }
 
     #[test]

@@ -128,6 +128,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn absorb_hides_our_write_and_take_changes_reports_external() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "one").unwrap();
+        let mut tracker = FileTracker::default();
+        tracker.record(&path);
+        fs::write(&path, "ours").unwrap();
+        tracker.absorb();
+        assert!(tracker.take_changes().is_empty());
+        fs::write(&path, "theirs").unwrap();
+        let changed = tracker.take_changes();
+        assert_eq!(changed, vec![path]);
+    }
+
+    #[test]
+    fn deletion_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.txt");
+        fs::write(&path, "x").unwrap();
+        let mut tracker = FileTracker::default();
+        tracker.record(&path);
+        fs::remove_file(&path).unwrap();
+        assert_eq!(tracker.take_changes(), vec![path]);
+    }
+
+    #[test]
+    fn mark_dirty_then_take_changes_rereports() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        fs::write(&path, "one").unwrap();
+        let mut tracker = FileTracker::default();
+        tracker.record(&path);
+        // External change → first take consumes (updates snap).
+        fs::write(&path, "theirs").unwrap();
+        assert_eq!(tracker.take_changes(), vec![path.clone()]);
+        assert!(tracker.take_changes().is_empty());
+        // Undo consumption without removing from order.
+        tracker.mark_dirty(&[path.clone()]);
+        // Content unchanged: re-report solely because snap is missing.
+        assert_eq!(tracker.take_changes(), vec![path]);
+    }
+
+    #[test]
+    fn mark_dirty_preserves_order_and_absorb() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("b.txt");
+        fs::write(&path, "base").unwrap();
+        let mut tracker = FileTracker::default();
+        tracker.record(&path);
+        tracker.mark_dirty(&[path.clone()]);
+        // Own write after mark_dirty must still be hidden by absorb.
+        fs::write(&path, "ours").unwrap();
+        tracker.absorb();
+        assert!(tracker.take_changes().is_empty());
+        // Path still tracked: external change reports.
+        fs::write(&path, "theirs").unwrap();
+        assert_eq!(tracker.take_changes(), vec![path]);
+    }
+
+    #[test]
     fn mark_dirty_unknown_path_is_noop() {
         let dir = tempfile::tempdir().unwrap();
         let known = dir.path().join("known.txt");

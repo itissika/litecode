@@ -466,7 +466,7 @@ fn truncate_loc(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        InputFileContent, InputMessage, InputRole,
+        FunctionCallOutputItemParam, InputFileContent, InputImageContent, InputMessage, InputRole,
     };
     use crate::config::resolved::WorkspaceState;
     use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
@@ -540,7 +540,64 @@ tool_call = false
         resolved_with("compact-provider/compact-api-model")
     }
 
+    fn user_with_image() -> Item {
+        Item::Message(MessageItem::Input(InputMessage {
+            content: vec![
+                InputContent::InputText(InputTextContent {
+                    text: "describe".into(),
+                }),
+                InputContent::InputImage(InputImageContent {
+                    detail: Default::default(),
+                    file_id: None,
+                    image_url: Some("https://example.com/a.png".into()),
+                }),
+            ],
+            role: InputRole::User,
+            status: None,
+        }))
+    }
 
+    fn tool_with_image() -> Item {
+        Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "read-1".into(),
+            output: FunctionCallOutput::Content(vec![
+                InputContent::InputText(InputTextContent {
+                    text: "screenshot".into(),
+                }),
+                InputContent::InputImage(InputImageContent {
+                    detail: Default::default(),
+                    file_id: None,
+                    image_url: Some("https://example.com/a.png".into()),
+                }),
+            ]),
+            id: None,
+            status: None,
+        })
+    }
+
+    #[test]
+    fn capability_mismatch_is_a_hard_error() {
+        let error = validate_llm_input_capabilities(
+            &[user_with_image()],
+            &model("compact-provider/text-model"),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not support capability 'image'")
+        );
+    }
+
+    #[test]
+    fn tool_image_capability_mismatch_is_a_hard_error() {
+        let error = validate_llm_input_capabilities(
+            &[tool_with_image()],
+            &model("compact-provider/text-model"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("required by tool output"));
+    }
 
     #[test]
     fn video_file_is_rejected_without_the_capability() {
@@ -568,6 +625,51 @@ tool_call = false
     }
 
     #[test]
+    fn document_file_is_allowed_under_text() {
+        let items = vec![Item::Message(MessageItem::Input(InputMessage {
+            content: vec![InputContent::InputFile(InputFileContent {
+                file_data: None,
+                file_id: None,
+                file_url: Some("https://example.com/doc.pdf".into()),
+                filename: Some("doc.pdf".into()),
+                detail: None,
+            })],
+            role: InputRole::User,
+            status: None,
+        }))];
+        validate_llm_input_capabilities(&items, &model("compact-provider/text-model")).unwrap();
+    }
+
+    #[test]
+    fn projection_replaces_unsupported_parts_then_validates() {
+        let text_only = model("compact-provider/text-model");
+        let mut items = vec![user_with_image()];
+        assert!(validate_llm_input_capabilities(&items, &text_only).is_err());
+        project_llm_input_for_model(&mut items, &text_only);
+        validate_llm_input_capabilities(&items, &text_only).unwrap();
+        let Item::Message(MessageItem::Input(message)) = &items[0] else {
+            panic!("expected input message");
+        };
+        assert!(message.content.iter().any(|part| matches!(
+            part,
+            InputContent::InputText(text) if text.text.contains("does not support image")
+        )));
+    }
+
+    #[test]
+    fn multimodal_model_is_untouched() {
+        let multimodal = model("compact-provider/mm");
+        let mut items = vec![user_with_image(), tool_with_image()];
+        project_llm_input_for_model(&mut items, &multimodal);
+        validate_llm_input_capabilities(&items, &multimodal).unwrap();
+        assert!(matches!(
+            &items[0],
+            Item::Message(MessageItem::Input(message))
+                if message.content.iter().any(|part| matches!(part, InputContent::InputImage(_)))
+        ));
+    }
+
+    #[test]
     fn compaction_binding_uses_its_own_provider_and_credentials() {
         let binding = binding_for_agent(&resolved(), &mut ProviderRegistry::new(), "compaction")
             .expect("resolve hidden compaction binding");
@@ -581,6 +683,43 @@ tool_call = false
         assert_eq!(binding.api_model_id, "compact-api-model");
         assert_eq!(binding.max_tokens, 2_048);
         assert_eq!(binding.context_window, 64_000);
+    }
+
+    #[test]
+    fn a_provider_without_a_key_is_not_ready() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "compaction".into(),
+            AgentProfile {
+                role: AgentRole::Hidden,
+                model_ref: "compact-provider/compact-api-model".into(),
+                ..Default::default()
+            },
+        );
+        let resolved =
+            crate::config::resolved::resolve(global, WorkspaceState::new("/tmp/no-key"), catalog());
+        let error = binding_for_agent(&resolved, &mut ProviderRegistry::new(), "compaction")
+            .err()
+            .expect("no credential");
+        assert!(error.to_string().contains("no API key"), "{error}");
+    }
+
+    #[test]
+    fn an_unknown_reference_is_a_missing_model_error() {
+        let error = binding_for_agent(
+            &resolved_with("ghost/model"),
+            &mut ProviderRegistry::new(),
+            "compaction",
+        )
+        .err()
+        .expect("unknown reference");
+        assert!(error.to_string().contains("ghost/model"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("not in this build's provider catalog"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -625,4 +764,71 @@ tool_call = false
         (sessions, sid)
     }
 
+    #[test]
+    fn a_session_without_a_model_is_repaired_before_the_turn_reads_it() {
+        let resolved = resolved_with("compact-provider/compact-api-model");
+        let (sessions, sid) = ephemeral_session();
+
+        let model = ensure_session_model(&resolved, &sessions, &sid, "default");
+        assert_eq!(model.as_deref(), Some("compact-provider/compact-api-model"));
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/compact-api-model"),
+            "the repair is persisted for the turn that reads the row"
+        );
+
+        // A usable ref is never re-pointed.
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/text-model".into()))
+            .unwrap();
+        assert_eq!(
+            ensure_session_model(&resolved, &sessions, &sid, "default").as_deref(),
+            Some("compact-provider/text-model")
+        );
+
+        // A ref the catalog no longer declares is replaced in place.
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/gone".into()))
+            .unwrap();
+        assert_eq!(
+            ensure_session_model(&resolved, &sessions, &sid, "default").as_deref(),
+            Some("compact-provider/compact-api-model")
+        );
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/compact-api-model")
+        );
+    }
+
+    #[test]
+    fn a_session_is_left_alone_when_no_model_is_selectable() {
+        let mut global = GlobalSettings::default();
+        global.agents.insert(
+            "compaction".into(),
+            AgentProfile {
+                role: AgentRole::Hidden,
+                model_ref: "compact-provider/compact-api-model".into(),
+                ..Default::default()
+            },
+        );
+        let keyless = crate::config::resolved::resolve(
+            global,
+            WorkspaceState::new("/tmp/keyless"),
+            catalog(),
+        );
+        let (sessions, sid) = ephemeral_session();
+        sessions
+            .set_session_model_id(&sid, Some("compact-provider/gone".into()))
+            .unwrap();
+
+        assert_eq!(
+            ensure_session_model(&keyless, &sessions, &sid, "default"),
+            None
+        );
+        assert_eq!(
+            sessions.session_model_id(&sid).as_deref(),
+            Some("compact-provider/gone"),
+            "nothing selectable means nothing to substitute"
+        );
+    }
 }

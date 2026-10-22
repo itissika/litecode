@@ -127,6 +127,14 @@ mod tests {
         format!("```node\nnode : {key}\nstatus : enabled\nsummary : {key}\n```\n{body}")
     }
 
+    #[test]
+    fn an_empty_library_is_not_a_note() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(note(dir.path()).is_none());
+        fs::create_dir_all(dir.path().join(".litecode").join("knowledge")).unwrap();
+        assert!(note(dir.path()).is_none());
+    }
+
     fn pending(key: &str, body: &str) -> String {
         format!("```node\nnode : {key}\nstatus : pending\nsummary : {key}\n```\n{body}")
     }
@@ -183,4 +191,51 @@ mod tests {
         assert_eq!(ok.text, "Knowledge base: 2 enabled nodes.");
     }
 
+    #[test]
+    fn a_library_with_no_enabled_node_is_not_a_note() {
+        let pending_only = tempfile::tempdir().unwrap();
+        write_node(pending_only.path(), "draft.md", &pending("draft", ""));
+        write_node(
+            pending_only.path(),
+            "broken.md",
+            &pending("broken", "see [@ key=\"missing\"]\n"),
+        );
+        assert!(note(pending_only.path()).is_none());
+
+        let disabled_only = tempfile::tempdir().unwrap();
+        write_node(
+            disabled_only.path(),
+            "old.md",
+            "```node\nnode : old\nstatus : disabled\nsummary : old\n```\nsee [@ key=\"missing\"]\n",
+        );
+        assert!(note(disabled_only.path()).is_none());
+    }
+
+    #[test]
+    fn issues_on_pending_nodes_do_not_change_the_class() {
+        let dir = tempfile::tempdir().unwrap();
+        write_node(dir.path(), "live.md", &enabled("live", ""));
+        write_node(
+            dir.path(),
+            "draft.md",
+            &pending("draft", "see [@ key=\"missing\"]\n"),
+        );
+        let held = note(dir.path()).unwrap();
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
+    }
+
+    #[test]
+    fn citing_a_pending_node_stays_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        write_node(
+            dir.path(),
+            "live.md",
+            &enabled("live", "see [@ key=\"draft\"]\n"),
+        );
+        write_node(dir.path(), "draft.md", &pending("draft", ""));
+        let held = note(dir.path()).unwrap();
+        assert_eq!(held.class, Class::Ok);
+        assert_eq!(held.text, "Knowledge base: 1 enabled node.");
+    }
 }

@@ -225,6 +225,20 @@ provider_id = "openai"
         );
     }
 
+    #[test]
+    fn agent_config_carries_the_model_ref() {
+        let config = agent_config_for(&resolved(&[]), "default").unwrap();
+        assert_eq!(config.model_ref, "openai/gpt");
+        assert!(agent_config_for(&resolved(&[]), "ghost").is_err());
+    }
+
+    #[test]
+    fn primary_agent_infos_lists_primary_agents() {
+        let infos = primary_agent_infos(&resolved(&[]));
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].0, "default");
+    }
+
     const MULTI_CATALOG: &str = r#"
 version = 1
 [[providers]]

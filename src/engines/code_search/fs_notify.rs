@@ -53,6 +53,26 @@ mod tests {
     }
 
     #[test]
+    fn queue_scannable_path() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
+        let runtime = runtime_at(root);
+
+        queue_fs_changes(&runtime, &["b.rs".into()], false);
+        let pending = runtime
+            .read()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .pending_updates
+            .lock()
+            .unwrap()
+            .clone();
+        assert!(pending.contains(&("b.rs".into(), false)));
+    }
+
+    #[test]
     fn queue_skips_litecode_and_skip_dirs() {
         let dir = TempDir::new().unwrap();
         let root = dir.path();

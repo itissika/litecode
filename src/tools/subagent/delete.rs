@@ -179,6 +179,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deletes_idle_child_and_notifies_without_wake() {
+        let env = env().await;
+        let grandchild = env
+            .sessions
+            .open_child_session("/proj", "reviewer", None, &env.child, "call_2")
+            .unwrap();
+        let result = delete(&env, &env.child).await;
+        assert!(ok(&result), "{}", result.content);
+        assert!(
+            result.content.contains("status: deleted"),
+            "{}",
+            result.content
+        );
+        // Cascade: grandchild removed too.
+        assert!(env.sessions.reader().meta_blocking(&env.child).is_err());
+        assert!(env.sessions.reader().meta_blocking(&grandchild).is_err());
+        assert!(!env.hub.has_pending(&env.parent));
+    }
+
+    #[tokio::test]
+    async fn delete_by_parent_no_notice_to_self() {
+        let env = env().await;
+        let result = delete(&env, &env.child).await;
+        assert!(ok(&result), "{}", result.content);
+        assert!(!env.hub.has_notices(&env.parent));
+        assert!(env.hub.take_notices(&env.parent).is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_running_child() {
+        let env = env().await;
+        env.sessions
+            .reserve_turn(&env.child, "t1".into(), 10, "reviewer", "/proj")
+            .unwrap();
+        let result = delete(&env, &env.child).await;
+        assert!(!ok(&result), "{}", result.content);
+        assert!(result.content.contains("is running"), "{}", result.content);
+        assert!(env.sessions.reader().meta_blocking(&env.child).is_ok());
+        assert!(!env.hub.has_notices(&env.parent));
+    }
+
+    #[tokio::test]
     async fn rejects_when_descendant_running() {
         let env = env().await;
         let grandchild = env

@@ -141,6 +141,16 @@ mod tests {
     }
 
     #[test]
+    fn case_a_loopback_require_auth_with_token_ok() {
+        assert!(validate_serve_bind(loopback(7483), false, true, true).is_ok());
+    }
+
+    #[test]
+    fn case_b_non_loopback_require_auth_with_token_ok() {
+        assert!(validate_serve_bind(all_interfaces(7483), false, true, true).is_ok());
+    }
+
+    #[test]
     fn case_c_non_loopback_without_auth_fails() {
         let err = validate_serve_bind(all_interfaces(7483), false, false, false)
             .expect_err("must reject non-loopback without auth");
@@ -154,4 +164,15 @@ mod tests {
         assert!(err.to_string().contains("LITECODE_TOKEN"));
     }
 
+    #[test]
+    fn loopback_only_rejects_non_loopback_even_with_auth() {
+        let err = validate_serve_bind(all_interfaces(7483), true, true, true)
+            .expect_err("loopback-only must still reject 0.0.0.0");
+        assert!(err.to_string().contains("loopback"));
+    }
+
+    #[test]
+    fn loopback_without_auth_still_ok() {
+        assert!(validate_serve_bind(loopback(0), false, false, false).is_ok());
+    }
 }

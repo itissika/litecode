@@ -388,6 +388,40 @@ mod tests {
         (cmd, args, env)
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_reaps_grandchild_process() {
+        let marker = std::env::temp_dir().join(format!("lc-mcp-gc-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 3; touch {}) & wait", marker.display());
+        let mut client =
+            McpStdioClient::new("sh", &[String::from("-c"), script], &HashMap::new(), None)
+                .expect("spawn");
+        // Let the grandchild start before we kill the tree.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        client.kill().await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(
+            !marker.exists(),
+            "MCP kill must reach grandchildren (process group / tree kill)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn drop_reaps_grandchild_process() {
+        let marker = std::env::temp_dir().join(format!("lc-mcp-drop-{}", ulid::Ulid::new()));
+        let script = format!("(sleep 3; touch {}) & wait", marker.display());
+        {
+            let _client =
+                McpStdioClient::new("sh", &[String::from("-c"), script], &HashMap::new(), None)
+                    .expect("spawn");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            // Drop triggers start_kill + group kill.
+        }
+        tokio::time::sleep(Duration::from_secs(4)).await;
+        assert!(!marker.exists(), "MCP Drop must reach grandchildren");
+    }
+
     /// R1: notification before the real response must not be treated as the result.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r1_skips_notification_before_response() {

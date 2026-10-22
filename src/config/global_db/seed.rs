@@ -669,9 +669,271 @@ fn agent_has_tool(conn: &Connection, agent_id: &str, tool: &str) -> Result<bool>
 
 #[cfg(test)]
 mod tests {
-    use super::super::migrate::{self};
+    use super::super::migrate::{self, CURRENT_USER_VERSION};
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn seed_has_agents_without_fake_llm_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        // A fresh install has no legacy LLM tables at all: provider/model facts
+        // live in the embedded catalog, credentials in provider_credentials.
+        for legacy in ["providers", "models"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [legacy],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                count, 0,
+                "fresh schema must not create the '{legacy}' table"
+            );
+        }
+        let credentials: i64 = conn
+            .query_row("SELECT COUNT(*) FROM provider_credentials", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(credentials, 0);
+
+        let default_ref: String = conn
+            .query_row(
+                "SELECT model_ref FROM agents WHERE id = 'default'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(default_ref.is_empty());
+
+        let version: i32 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn seed_plants_default_orchestrator_explore_and_general() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        let (role, prompt, allowed, desc): (String, String, String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt, allowed_subagents_json, description FROM agents WHERE id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(role, "primary");
+        assert_eq!(prompt, "builtin:general");
+        assert_eq!(desc, DEFAULT_DESCRIPTION);
+        assert!(allowed.contains("explore"));
+        assert!(!allowed.contains("general"));
+
+        let (orch_role, orch_prompt, orch_allowed): (String, String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt, allowed_subagents_json FROM agents WHERE id = 'orchestrator'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(orch_role, "primary");
+        assert_eq!(orch_prompt, "builtin:orchestrator");
+        assert!(orch_allowed.contains("explore"));
+        assert!(orch_allowed.contains("general"));
+
+        let (explore_role, explore_prompt): (String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt FROM agents WHERE id = 'explore'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(explore_role, "subagent");
+        assert_eq!(explore_prompt, "builtin:explore");
+
+        let write: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'write'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(write, 0);
+
+        // WP-197: explore 默认无旧 shell；有 run SAFE。
+        for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = ?1",
+                    [tool],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "explore must not bind {tool}");
+        }
+
+        let run_preset: Option<String> = conn
+            .query_row(
+                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(run_preset.as_deref(), Some("SAFE"));
+
+        let (general_role, general_prompt): (String, String) = conn
+            .query_row(
+                "SELECT role, system_prompt FROM agents WHERE id = 'general'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(general_role, "subagent");
+        assert_eq!(general_prompt, "builtin:general");
+
+        let general_write: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'write'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general_write, 1);
+
+        let general_plan: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'plan'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general_plan, 0);
+
+        let general_todo: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'todo'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general_todo, 0);
+
+        for agent in ["default", "orchestrator"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+        }
+        for agent in ["explore", "general"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+            let workspace: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'litecode_workspace'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
+        }
+
+        let general_launch: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'subagent_launch'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general_launch, 0);
+
+        // WP-197: general/default/orchestrator 默认无旧 shell；有 run。
+        for agent in ["general", "default", "orchestrator"] {
+            for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
+                let n: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                        rusqlite::params![agent, tool],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(n, 0, "{agent} must not bind {tool}");
+            }
+            let run_n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'run'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(run_n, 1, "{agent} should bind run");
+        }
+    }
+
+    #[test]
+    fn ensure_plants_missing_agents_without_replacing_default() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        store::upsert_agent(
+            &conn,
+            "default",
+            AgentRole::Primary,
+            "",
+            "builtin:general",
+            0.7,
+            50,
+            DEFAULT_DESCRIPTION,
+            &["explore".into()],
+        )
+        .unwrap();
+        bind_none(&conn, "default", "read").unwrap();
+
+        ensure_core_bindings(&conn).unwrap();
+
+        let (prompt, allowed, desc): (String, String, String) = conn
+            .query_row(
+                "SELECT system_prompt, allowed_subagents_json, description FROM agents WHERE id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(prompt, "builtin:general");
+        assert!(allowed.contains("explore"));
+        assert!(!allowed.contains("general"));
+        assert_eq!(desc, DEFAULT_DESCRIPTION);
+
+        let general: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE id = 'general'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(general, 1);
+        let orch: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE id = 'orchestrator'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orch, 1);
+    }
 
     #[test]
     fn ensure_prunes_rows_that_violate_role_rules() {
@@ -747,6 +1009,85 @@ mod tests {
 
         let loaded = store::load(&conn).unwrap();
         crate::config::ConfigManager::validate(&loaded).unwrap();
+    }
+
+    #[test]
+    fn ensure_restores_default_if_rewritten_to_orchestrator() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        store::upsert_agent(
+            &conn,
+            "default",
+            AgentRole::Primary,
+            "",
+            "builtin:orchestrator",
+            0.7,
+            50,
+            ORCHESTRATOR_DESCRIPTION,
+            &["explore".into(), "general".into()],
+        )
+        .unwrap();
+
+        ensure_core_bindings(&conn).unwrap();
+
+        let (prompt, allowed, desc): (String, String, String) = conn
+            .query_row(
+                "SELECT system_prompt, allowed_subagents_json, description FROM agents WHERE id = 'default'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(prompt, "builtin:general");
+        assert_eq!(desc, DEFAULT_DESCRIPTION);
+        assert!(allowed.contains("explore"));
+        assert!(!allowed.contains("general"));
+
+        let orch_prompt: String = conn
+            .query_row(
+                "SELECT system_prompt FROM agents WHERE id = 'orchestrator'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orch_prompt, "builtin:orchestrator");
+    }
+
+    #[test]
+    fn ensure_rebinds_knowledge_on_primary_and_subagents() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE tool_id = 'knowledge' AND agent_id IN ('default', 'explore', 'general')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE tool_id = 'litecode_workspace' AND agent_id IN ('explore', 'general')",
+            [],
+        )
+        .unwrap();
+        ensure_core_bindings(&conn).unwrap();
+        for agent in ["default", "explore", "general"] {
+            let knowledge: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'knowledge'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(knowledge, 1, "{agent} should bind knowledge");
+        }
+        for agent in ["explore", "general"] {
+            let workspace: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'litecode_workspace'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
+        }
     }
 
     #[test]
@@ -932,6 +1273,23 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn seed_binds_code_search_true_on_primary_agents() {
+        let conn = fresh_seeded();
+        assert_eq!(cs_enabled(&conn, "default"), Some(1));
+        assert_eq!(cs_enabled(&conn, "orchestrator"), Some(1));
+        assert!(cs_marker(&conn).is_some());
+    }
+
+    #[test]
+    fn seed_does_not_bind_code_search_on_subagents() {
+        let conn = fresh_seeded();
+        ensure_core_bindings(&conn).unwrap();
+        for agent in ["explore", "general", "compaction"] {
+            assert_eq!(cs_enabled(&conn, agent), None, "{agent}");
+        }
     }
 
     #[test]

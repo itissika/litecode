@@ -289,4 +289,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn file_ref_and_page_round_trip_required_fields() {
+        let file = FileRef {
+            path: "a.txt".into(),
+            abs: None,
+            hash: "abc".into(),
+            bytes: 3,
+        };
+        let page = Page {
+            has_more: true,
+            next: Some("2".into()),
+            total: Some(9),
+        };
+        let file_json = serde_json::to_value(file).unwrap();
+        let page_json = serde_json::to_value(page).unwrap();
+        assert_eq!(file_json["path"], "a.txt");
+        assert!(file_json.get("abs").is_none());
+        assert_eq!(file_json["hash"], "abc");
+        assert_eq!(file_json["bytes"], 3);
+        assert_eq!(page_json["has_more"], true);
+        assert_eq!(page_json["next"], "2");
+        assert_eq!(page_json["total"], 9);
+    }
 }

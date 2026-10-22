@@ -180,3 +180,54 @@ pub fn read_text_once(workspace: &Path, rel: &str) -> TextRead {
 pub fn line_count(text: &str) -> u32 {
     u32::try_from(text.lines().count()).unwrap_or(u32::MAX)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn names_match_exactly() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
+        let mut l = Listings::default();
+        assert_eq!(lookup(dir.path(), "src/a.rs", &mut l).kind, Kind::File);
+        assert_eq!(lookup(dir.path(), "src", &mut l).kind, Kind::Dir);
+        for bad in [
+            "SRC/a.rs",
+            "src/A.rs",
+            "src/a.rs.",
+            "src/a.rs ",
+            "../a.rs",
+            "src/",
+        ] {
+            assert_eq!(lookup(dir.path(), bad, &mut l).kind, Kind::Missing, "{bad}");
+        }
+        assert_eq!(lookup(dir.path(), "src\\a.rs", &mut l).kind, Kind::File);
+    }
+
+    #[test]
+    fn read_policy_classifies() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("t.rs"), "a\nb\n").unwrap();
+        fs::write(dir.path().join("bin.dat"), [0xff_u8, 0xfe, 0x00]).unwrap();
+        fs::create_dir_all(dir.path().join("d")).unwrap();
+        assert_eq!(
+            read_text_once(dir.path(), "t.rs"),
+            TextRead::Text("a\nb\n".into())
+        );
+        assert_eq!(
+            read_text_once(dir.path(), "bin.dat"),
+            TextRead::Unreadable(Unreadable::NotText)
+        );
+        assert_eq!(
+            read_text_once(dir.path(), "d"),
+            TextRead::Unreadable(Unreadable::Directory)
+        );
+        assert_eq!(read_text_once(dir.path(), "nope"), TextRead::Missing);
+        assert_eq!(line_count("a\nb\n"), 2);
+        assert_eq!(line_count(""), 0);
+        assert_eq!(line_count("a"), 1);
+    }
+}

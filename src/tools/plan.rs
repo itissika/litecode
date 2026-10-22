@@ -325,6 +325,15 @@ mod tests {
             .unwrap()
     }
 
+    fn slug_from_create(content: &str) -> String {
+        content
+            .lines()
+            .find(|l| l.contains(".litecode/plan/"))
+            .and_then(|l| l.split(".litecode/plan/").nth(1))
+            .and_then(|rest| rest.strip_suffix(".md"))
+            .expect("slug in create output")
+            .to_string()
+    }
 
     #[test]
     fn test_create_plan_asks_and_writes_stub() {
@@ -430,6 +439,26 @@ mod tests {
     }
 
     #[test]
+    fn test_finish_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(Arc::clone(&manager), &sid);
+
+        let _ = tool.call(serde_json::json!({
+            "action": "create",
+            "summary": "Ship feature X"
+        }));
+        let result = tool.call(serde_json::json!({"action": "finish"}));
+        assert!(
+            result.content.contains("cleared"),
+            "got: {}",
+            result.content
+        );
+        let state = load_task_state(&manager, &sid);
+        assert!(state.active_plan.is_none());
+    }
+
+    #[test]
     fn test_create_plan_generates_unique_names() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (manager, sid) = setup(dir.path());
@@ -455,6 +484,70 @@ mod tests {
     }
 
     #[test]
+    fn test_finish_keeps_plan_file_on_disk() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(Arc::clone(&manager), &sid);
+
+        let created = tool.call(serde_json::json!({
+            "action": "create",
+            "summary": "Keep file"
+        }));
+        let slug = slug_from_create(&created.content);
+
+        let plan_file = dir.path().join(".litecode/plan").join(format!("{slug}.md"));
+        assert!(plan_file.is_file());
+
+        let result = tool.call(serde_json::json!({"action": "finish"}));
+        assert!(result.content.contains("cleared"));
+        assert!(load_task_state(&manager, &sid).active_plan.is_none());
+        assert!(
+            plan_file.is_file(),
+            "finish should not delete the plan file"
+        );
+    }
+
+    #[test]
+    fn test_second_create_points_active_plan_at_latest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(Arc::clone(&manager), &sid);
+
+        tool.call(serde_json::json!({"action": "create", "summary": "Plan v1"}));
+        let second = tool.call(serde_json::json!({"action": "create", "summary": "Plan v2"}));
+
+        let slug = slug_from_create(&second.content);
+
+        let state = load_task_state(&manager, &sid);
+        let plan = state.active_plan.as_ref().expect("active plan");
+        assert_eq!(plan.slug, slug);
+        let file_content =
+            std::fs::read_to_string(dir.path().join(".litecode/plan").join(format!("{slug}.md")))
+                .unwrap();
+        assert_eq!(file_content, PLAN_STUB);
+    }
+
+    #[test]
+    fn test_session_resume_restores_flat_active_plan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(Arc::clone(&manager), &sid);
+
+        let created = tool.call(serde_json::json!({
+            "action": "create",
+            "summary": "Persisted"
+        }));
+        let slug = slug_from_create(&created.content);
+
+        let plan = manager
+            .with_entry_task_state(&sid, |state| Ok(state.active_plan.clone()))
+            .unwrap()
+            .expect("active plan after resume");
+        assert_eq!(plan.slug, slug);
+        assert_eq!(plan.relative_path, format!(".litecode/plan/{slug}.md"));
+    }
+
+    #[test]
     fn test_validate_input_rejects_empty_summary() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (manager, sid) = setup(dir.path());
@@ -466,4 +559,65 @@ mod tests {
         assert!(err.contains("summary"));
     }
 
+    #[test]
+    fn test_create_without_sink_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = PlanTool::new(manager);
+        tool.set_active_session(sid);
+        let result = tool.call(serde_json::json!({
+            "action": "create",
+            "summary": "No sink"
+        }));
+        assert_eq!(result.level, ToolSignalLevel::Error);
+        assert!(
+            result.content.contains("permission Ask bridge"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_requires_active_session() {
+        let manager = Arc::new(SessionManager::new_for_test(
+            Arc::new(crate::config::TurnGuard::new()),
+            String::new(),
+        ));
+        let tool = PlanTool::new(manager);
+        tool.set_permission_sink(Arc::new(RecordingPermissionSink::from_reply(true, false)));
+        let result = tool.call(serde_json::json!({
+            "action": "create",
+            "summary": "Plan"
+        }));
+        assert!(
+            result.content.contains("no active session"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_list_action_removed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(manager, &sid);
+
+        let result = tool.call(serde_json::json!({"action": "list"}));
+        assert!(
+            result.content.contains("expected one of create, finish"),
+            "got: {}",
+            result.content
+        );
+    }
+
+    #[test]
+    fn test_schema_has_summary_not_content() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (manager, sid) = setup(dir.path());
+        let tool = make_tool(manager, &sid);
+        let schema = tool.schema();
+        let props = schema.get("properties").unwrap();
+        assert!(props.get("summary").is_some());
+        assert!(props.get("content").is_none());
+    }
 }

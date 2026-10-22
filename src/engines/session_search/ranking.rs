@@ -525,6 +525,118 @@ mod tests {
     use super::*;
 
     #[test]
+    fn bands_order_like_the_product_ladder() {
+        let mut keys = [
+            RankKey {
+                band: RankBand::Fuzzy,
+                strength: 999,
+                role: 0,
+                local_rank: 0,
+            },
+            RankKey {
+                band: RankBand::Fusion,
+                strength: 1,
+                role: 0,
+                local_rank: 0,
+            },
+            RankKey {
+                band: RankBand::Exact,
+                strength: 0,
+                role: 2,
+                local_rank: 9,
+            },
+            RankKey {
+                band: RankBand::Proximity,
+                strength: 1000,
+                role: 0,
+                local_rank: 0,
+            },
+        ];
+        keys.sort_by(|a, b| cmp_rank(a, b));
+        let order: Vec<RankBand> = keys.iter().map(|k| k.band).collect();
+        assert_eq!(
+            order,
+            [
+                RankBand::Exact,
+                RankBand::Proximity,
+                RankBand::Fusion,
+                RankBand::Fuzzy
+            ],
+            "a lower band can never be overtaken by a higher one, whatever its strength"
+        );
+    }
+
+    #[test]
+    fn within_a_band_coverage_beats_role() {
+        let full_evidence = RankKey {
+            band: RankBand::Fusion,
+            strength: 1000,
+            role: 1,
+            local_rank: 3,
+        };
+        let partial_intent = RankKey {
+            band: RankBand::Fusion,
+            strength: 400,
+            role: 0,
+            local_rank: 0,
+        };
+        assert_eq!(cmp_rank(&full_evidence, &partial_intent), Ordering::Less);
+    }
+
+    #[test]
+    fn role_breaks_ties_only_at_equal_coverage() {
+        let intent = RankKey {
+            band: RankBand::Fusion,
+            strength: 700,
+            role: 0,
+            local_rank: 5,
+        };
+        let output = RankKey {
+            band: RankBand::Fusion,
+            strength: 700,
+            role: 1,
+            local_rank: 1,
+        };
+        assert_eq!(cmp_rank(&intent, &output), Ordering::Less);
+    }
+
+    #[test]
+    fn coverage_is_a_ratio_of_intent() {
+        let mut e = HitEvidence::new(LayerId::Lexical, 0, 3, 4);
+        assert_eq!(e.coverage_permille(), 750);
+        assert!(e.clears(3));
+        assert!(!e.clears(4));
+        e.matched = 4;
+        assert!(e.clears(4));
+        // A literal hit counts no terms and is always full coverage.
+        let literal = HitEvidence::new(LayerId::Exact, 0, 0, 0);
+        assert_eq!(literal.coverage(), 1.0);
+        assert!(literal.clears(1));
+    }
+
+    #[test]
+    fn rrf_decays_with_rank_and_rewards_agreement() {
+        assert!(rrf_score(0, 1.0) > rrf_score(1, 1.0));
+        assert!(rrf_score(1, 1.0) > rrf_score(2, 1.0));
+        assert!(rrf_score(0, 0.5) < rrf_score(0, 1.0));
+        // Two lists agreeing on a document beats one list alone at the same rank.
+        let agreed = rrf_score(0, 1.0) + rrf_score(0, 1.0);
+        assert!(agreed > rrf_score(0, 1.0));
+        // Agreeing at rank 0 beats a document one list ranked lower.
+        assert!(agreed > rrf_score(3, 1.0));
+    }
+
+    #[test]
+    fn layer_depths_are_bounded_and_never_zero() {
+        for layer in LAYERS {
+            assert!(layer.depth(1) >= 1, "{:?}", layer.id);
+            assert!(layer.depth(10_000) <= layer.depth_cap, "{:?}", layer.id);
+            assert!(layer.min_matches(0) == 0);
+            assert!(layer.min_matches(4) >= 1);
+        }
+    }
+
+    #[test]
     fn roles_follow_the_product_ladder() {
         // 人类/助手的话 → 思考 → 调用 → 结果, then everything unclassified.
         assert_eq!(ContentRole::from_slot(Slot::Who), ContentRole::Conversation);
@@ -580,4 +692,105 @@ mod tests {
         }
     }
 
+    /// The contract that keeps a role from becoming a layer: it decides between
+    /// equals, and loses to any real difference in match quality.
+    #[test]
+    fn a_role_weight_breaks_a_tie_in_quality_but_never_replaces_it() {
+        let said = ContentRole::Conversation;
+        let thought = ContentRole::Reasoning;
+
+        // Equal quality: the tier is the difference.
+        assert!(said.weigh(60_000) > thought.weigh(60_000));
+        // The step is the declared one, and never larger.
+        assert_eq!(thought.weigh(60_000), 57_000);
+
+        // One more matched term of a three-term query is 33% of coverage — far
+        // more than the 5% step — so the better match wins from either tier.
+        assert!(thought.weigh(100_000) > said.weigh(66_666));
+
+        // `weigh` itself still scales that way. Exact ordering does not use it
+        // to cross a speaker tier: repetition stays inside the tier.
+        assert!(said.weigh(100) > thought.weigh(100));
+        assert!(thought.weigh(200) > said.weigh(100));
+    }
+
+    #[test]
+    fn an_exact_echo_does_not_outrank_who_said_it() {
+        let human = RankKey {
+            band: RankBand::Exact,
+            strength: 100,
+            role: 0,
+            local_rank: 4,
+        };
+        let said = RankKey {
+            band: RankBand::Exact,
+            strength: 100,
+            role: 1,
+            local_rank: 0,
+        };
+        let echo = RankKey {
+            band: RankBand::Exact,
+            strength: 5_000,
+            role: 2,
+            local_rank: 0,
+        };
+        assert_eq!(cmp_rank(&human, &echo), Ordering::Less);
+        assert_eq!(cmp_rank(&human, &said), Ordering::Less);
+        assert_eq!(cmp_rank(&said, &echo), Ordering::Less);
+        // Inside one tier, repetition and the producing layer's own order are
+        // not a better match. The caller breaks the tie on update time.
+        let echoed_once = RankKey {
+            band: RankBand::Exact,
+            strength: 100,
+            role: 2,
+            local_rank: 9,
+        };
+        assert_eq!(cmp_rank(&echo, &echoed_once), Ordering::Equal);
+        // A fuller lexical match still beats a speaker advantage.
+        let partial_human = RankKey {
+            band: RankBand::Fusion,
+            strength: 400,
+            role: 0,
+            local_rank: 0,
+        };
+        let full_thought = RankKey {
+            band: RankBand::Fusion,
+            strength: 1_000,
+            role: 2,
+            local_rank: 3,
+        };
+        assert_eq!(cmp_rank(&full_thought, &partial_human), Ordering::Less);
+    }
+
+    #[test]
+    fn speaker_tier_splits_the_two_sides_of_a_conversation() {
+        assert_eq!(
+            speaker_tier(Some("item/user"), "message", ContentRole::Conversation),
+            0
+        );
+        assert_eq!(
+            speaker_tier(Some("item/assistant"), "message", ContentRole::Conversation),
+            1
+        );
+        assert_eq!(
+            speaker_tier(Some("item/assistant"), "reasoning", ContentRole::Reasoning),
+            2
+        );
+        assert_eq!(
+            speaker_tier(Some("item/tool_call"), "function_call", ContentRole::Action),
+            3
+        );
+        assert_eq!(
+            speaker_tier(
+                Some("item/tool_result"),
+                "function_call_output",
+                ContentRole::Outcome
+            ),
+            4
+        );
+        assert!(
+            speaker_tier(Some("item/user"), "message", ContentRole::Conversation)
+                < speaker_tier(Some("item/assistant"), "message", ContentRole::Conversation)
+        );
+    }
 }

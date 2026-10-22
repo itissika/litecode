@@ -590,6 +590,17 @@ fn nonempty(text: String) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn snap(seq: u64, tool: &str, summary: &str, state: &str, code: Option<&str>) -> LedgerSnap {
+        LedgerSnap {
+            seq,
+            tool: tool.to_string(),
+            summary: summary.to_string(),
+            state: state.to_string(),
+            error_code: code.map(str::to_string),
+            error_message: None,
+            session_read: false,
+        }
+    }
 
     fn report() -> RunReport {
         RunReport {
@@ -632,6 +643,37 @@ mod tests {
     }
 
     #[test]
+    fn small_string_is_verbatim_and_has_no_json_copy() {
+        let mut report = report();
+        report.value = Some(Value::String("hello-small".into()));
+        let text = render_model_view(&report);
+        assert!(
+            text.starts_with("run_code ok · 0 succeeded, 0 failed · 12ms"),
+            "{text}"
+        );
+        assert!(text.contains("result:\nhello-small"), "{text}");
+        assert!(!text.contains("@@run_code_data"), "{text}");
+        assert!(!text.contains("\"hello-small\""), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("diagnostics:"), "{text}");
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES);
+    }
+
+    #[test]
+    fn large_result_keeps_the_tail_and_states_the_omission() {
+        let mut report = report();
+        let mut body = "A".repeat(200_000);
+        body.push_str("END_SENTINEL");
+        report.value = Some(Value::String(body));
+        let text = render_model_view(&report);
+        assert!(text.starts_with("run_code ok"));
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
+        assert!(text.contains("END_SENTINEL"), "{text}");
+        assert!(text.contains("bytes omitted"), "{text}");
+        assert!(!text.starts_with("[blob:"));
+    }
+
+    #[test]
     fn cjk_result_stays_valid_utf8_inside_the_budget() {
         let mut report = report();
         report.value = Some(Value::String("中".repeat(300_000)));
@@ -639,6 +681,49 @@ mod tests {
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
         assert!(text.contains('中'), "{text}");
+    }
+
+    #[test]
+    fn default_view_stays_inside_the_budget_without_legacy_sections() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Timeout);
+        report.failure_text = Some("x".repeat(20_000));
+        report.duration_ms = 120_000;
+        report.calls = (0..64)
+            .map(|seq| snap(seq, "read", &"p".repeat(400), "ok", None))
+            .collect();
+        report.diagnostics = (0..20)
+            .map(|index| Diagnostic::warning(format!("code{index}"), "m".repeat(800)))
+            .collect();
+        report.logs = (0..40)
+            .map(|index| ("info".into(), format!("{index}{}", "L".repeat(800))))
+            .collect();
+        report.value = Some(Value::String("R".repeat(80_000)));
+        let text = render_model_view(&report);
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
+        assert!(text.contains("bytes omitted"), "{text}");
+        assert!(!text.contains("diagnostics:"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        // Timeout label only — long failure_text must not flood the head.
+        assert!(!text.contains(&"x".repeat(32)), "{text}");
+        assert!(text.contains("timeout after"), "{text}");
+    }
+
+    #[test]
+    fn success_header_counts_failures_from_call_states() {
+        let mut report = report();
+        report.calls = vec![
+            snap(1, "read", "path=a", "ok", None),
+            snap(2, "grep", "pattern=x", "error:not_found", Some("not_found")),
+            snap(3, "grep", "pattern=y", "error:not_found", Some("not_found")),
+        ];
+        let text = render_model_view(&report);
+        assert!(
+            text.starts_with("run_code ok · 1 succeeded, 2 failed · 12ms"),
+            "{text}"
+        );
+        assert!(!text.contains("rejected"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
     }
 
     #[test]
@@ -650,6 +735,30 @@ mod tests {
         assert!(text.ends_with("result:\nhi"), "{text}");
         assert!(text.contains("bytes omitted"), "{text}");
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
+    }
+
+    #[test]
+    fn failure_header_counts_and_marks_unsettled() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Timeout);
+        report.failure_text = Some("run_code timed out after 120000ms".into());
+        report.duration_ms = 120_000;
+        report.calls = vec![
+            snap(1, "read", "path=a", "ok", None),
+            snap(2, "write", "path=b", "unsettled", None),
+        ];
+        report.calls_omitted = 2;
+        report.call_total = Some(4);
+        report.unsettled_total = Some(1);
+        let text = render_model_view(&report);
+        assert!(
+            text.starts_with(
+                "run_code failed: timeout after 120000ms · 3 succeeded, 0 failed · 120000ms"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("1 calls were still running"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
     }
 
     #[test]
@@ -670,4 +779,115 @@ mod tests {
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
     }
 
+    #[test]
+    fn syntax_failure_puts_line_and_cause_on_the_head() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Syntax);
+        report.failure_text = Some("Unexpected token `)`".into());
+        report.failure_location = Some(SourceLocation { line: 2, column: 9 });
+        report.source = "const x = 1;\nreturn (;".into();
+        let text = render_model_view(&report);
+        assert!(
+            text.starts_with(
+                "run_code failed: syntax error · line 2, column 9 · return (;: Unexpected token `)`"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("diagnostics:"), "{text}");
+    }
+
+    #[test]
+    fn session_read_mark_lands_on_the_head() {
+        let mut report = report();
+        report.calls = vec![snap(1, "read", "path=probe.txt", "ok", None)];
+        report.session_read_hidden = true;
+        report.call_total = Some(10);
+        report.calls_omitted = 9;
+        let text = render_model_view(&report);
+        assert!(text.contains(RUN_CODE_SESSION_NOTE), "{text}");
+        assert!(crate::session::transcript_file::ledger_reads_sessions(
+            &text
+        ));
+        assert!(!text.contains("calls ("), "{text}");
+    }
+
+    #[test]
+    fn failure_keeps_partial_result() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("Error: boom".into());
+        report.value = Some(Value::String("partial-kept".into()));
+        let text = render_model_view(&report);
+        assert!(text.contains("result:\npartial-kept"), "{text}");
+        assert!(text.starts_with("run_code failed: exception"), "{text}");
+    }
+
+    #[test]
+    fn human_data_matches_head_counts_and_stays_out_of_content() {
+        let mut report = report();
+        report.duration_ms = 42;
+        report.calls = vec![
+            snap(1, "read", "path=a.txt", "ok", None),
+            snap(2, "write", "path=b.txt", "error:permission_denied", Some("permission_denied")),
+            snap(3, "read", "path=c.txt", "ok", None),
+        ];
+        report.error_counts.insert("permission_denied".into(), 1);
+        report.by_tool.insert("read".into(), (2, 0));
+        report.by_tool.insert("write".into(), (0, 1));
+        report.call_total = Some(3);
+        let text = render_model_view(&report);
+        assert!(text.contains("2 succeeded, 1 failed"), "{text}");
+        assert!(!text.contains("by_tool"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        let data = human_data(&report).expect("data");
+        assert_eq!(data["succeeded"], 2);
+        assert_eq!(data["failed"], 1);
+        assert_eq!(data["duration_ms"], 42);
+        assert_eq!(data["ok"], true);
+        assert!(data.get("failure_kind").is_none());
+        assert_eq!(data["by_tool"]["read"]["ok"], 2);
+        assert_eq!(data["by_tool"]["read"]["fail"], 0);
+        assert_eq!(data["by_tool"]["write"]["ok"], 0);
+        assert_eq!(data["by_tool"]["write"]["fail"], 1);
+        assert!(data.get("unsettled").is_none());
+    }
+
+    #[test]
+    fn human_data_wont_start_is_minimal() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Syntax);
+        report.failure_text = Some("Unexpected token".into());
+        report.failure_location = Some(SourceLocation { line: 1, column: 1 });
+        let data = human_data(&report).expect("minimal data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "syntax");
+        assert!(data.get("succeeded").is_none());
+        assert!(data.get("by_tool").is_none());
+        assert!(data.get("duration_ms").is_none());
+    }
+
+    #[test]
+    fn human_data_includes_unsettled_and_failure_kind() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Timeout);
+        report.duration_ms = 300;
+        report.calls = vec![
+            snap(1, "write", "path=a.txt", "ok", None),
+            snap(2, "write", "path=b.txt", "unsettled", None),
+        ];
+        report.by_tool.insert("write".into(), (1, 0));
+        report.call_total = Some(2);
+        report.unsettled_total = Some(1);
+        let data = human_data(&report).expect("data");
+        assert_eq!(data["succeeded"], 1);
+        assert_eq!(data["failed"], 0);
+        assert_eq!(data["unsettled"], 1);
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "timeout");
+        assert_eq!(data["duration_ms"], 300);
+        let text = render_model_view(&report);
+        assert!(!text.contains("by_tool"), "{text}");
+        assert!(!text.contains("\"unsettled\":"), "{text}");
+    }
 }

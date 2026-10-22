@@ -133,3 +133,26 @@ impl Drop for BudgetPauseGuard {
         self.clock.resume();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn paused_wait_is_not_charged() {
+        let clock = std::sync::Arc::new(BudgetClock::new(Duration::from_millis(40)));
+        let pause = BudgetClock::handle(&clock);
+        let outer = pause.pause();
+        let inner = pause.pause();
+        thread::sleep(Duration::from_millis(70));
+        assert!(!clock.exhausted());
+        drop(inner);
+        thread::sleep(Duration::from_millis(30));
+        assert!(!clock.exhausted());
+        drop(outer);
+        thread::sleep(Duration::from_millis(50));
+        assert!(clock.exhausted());
+    }
+}

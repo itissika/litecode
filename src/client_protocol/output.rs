@@ -21,3 +21,19 @@ pub fn encode_client_item(mut item: Item, data_root: &Path) -> Result<Item> {
     item = items.remove(0);
     Ok(item)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::user_text;
+
+    #[test]
+    fn encode_client_item_user_item_serde_shape() {
+        let item = user_text("hello");
+        let data_root = tempfile::tempdir().unwrap();
+        let encoded = encode_client_item(item, data_root.path()).unwrap();
+        let json = serde_json::to_value(&encoded).unwrap();
+        assert_eq!(json["type"], "message");
+        assert_eq!(json["role"], "user");
+    }
+}

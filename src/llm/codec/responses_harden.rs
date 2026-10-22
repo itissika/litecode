@@ -235,6 +235,14 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn shell_fill_completes_early_events() {
+        let mut event = json!({ "type": "response.created", "response": { "id": "r" } });
+        harden(&mut event, UsagePatch::None);
+        assert_eq!(event["response"]["status"], "in_progress");
+        assert_eq!(event["response"]["output"], json!([]));
+    }
+
+    #[test]
     fn shell_fill_marks_completed_messages() {
         let mut event = json!({
             "type": "response.completed",
@@ -261,6 +269,18 @@ mod tests {
         assert_eq!(value["usage"]["input_tokens_details"]["cached_tokens"], 0);
         assert!(value["usage"].get("output_tokens_details").is_none());
         assert!(value["usage"].get("total_tokens").is_none());
+    }
+
+    #[test]
+    fn deepseek_patch_also_fills_total_and_effort() {
+        let mut value = json!({
+            "usage": { "input_tokens": 2, "output_tokens": 1 },
+            "output": [{ "type": "reasoning", "effort": "max" }]
+        });
+        harden(&mut value, UsagePatch::MapMaxEffortToXhigh);
+        assert_eq!(value["usage"]["total_tokens"], 3);
+        assert_eq!(value["output"][0]["effort"], "xhigh");
+        assert_eq!(value["output"][0]["summary"], json!([]));
     }
 
     #[test]

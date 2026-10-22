@@ -406,6 +406,26 @@ mod tests {
     use crate::provider_catalog::ProviderCatalog;
     use std::path::Path;
 
+    #[test]
+    fn global_and_workspace_partitions_are_disjoint() {
+        let global: std::collections::HashSet<_> =
+            GlobalSettings::FIELD_NAMES.iter().copied().collect();
+        let workspace: std::collections::HashSet<_> =
+            WorkspaceState::FIELD_NAMES.iter().copied().collect();
+        let overlap: Vec<_> = global.intersection(&workspace).copied().collect();
+        assert!(
+            overlap.is_empty(),
+            "global and workspace must not share field names: {overlap:?}"
+        );
+    }
+
+    #[test]
+    fn resolved_field_names_are_union_of_partitions() {
+        let mut expected = GlobalSettings::FIELD_NAMES.to_vec();
+        expected.extend_from_slice(WorkspaceState::FIELD_NAMES);
+        assert_eq!(ResolvedConfig::FIELD_NAMES, expected.as_slice());
+    }
+
     const CATALOG: &str = r#"
 version = 1
 [[providers]]
@@ -421,6 +441,40 @@ provider_id = "p"
 
     fn catalog() -> Arc<ProviderCatalog> {
         Arc::new(ProviderCatalog::parse(CATALOG, Path::new("t.toml")).unwrap())
+    }
+
+    #[test]
+    fn resolve_preserves_layers_and_catalog() {
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("p".into(), "sk-test".into());
+        let mut workspace = WorkspaceState::new("/tmp/project");
+        workspace.contract = "# contract".into();
+        let catalog = catalog();
+
+        let resolved = resolve(global, workspace.clone(), Arc::clone(&catalog));
+
+        assert!(Arc::ptr_eq(resolved.catalog(), &catalog));
+        assert_eq!(
+            resolved.workspace_root(),
+            workspace.workspace_root.as_path()
+        );
+        assert_eq!(resolved.contract(), "# contract");
+        assert_eq!(resolved.paths().sessions_db, workspace.paths.sessions_db);
+    }
+
+    #[test]
+    fn credentials_are_serialization_safe() {
+        let mut global = GlobalSettings::default();
+        global
+            .provider_credentials
+            .insert("p".into(), "sk-secret-value".into());
+        let json = serde_json::to_string(&global).unwrap();
+        assert!(
+            !json.contains("sk-secret-value"),
+            "a credential must never reach a settings payload: {json}"
+        );
     }
 
     #[test]

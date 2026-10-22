@@ -1343,6 +1343,233 @@ max_output = 1024
         (dir, db, writer)
     }
 
+    fn project(writer: &SettingsWriter) -> crate::config::LlmSettingsView {
+        writer.llm_view().unwrap()
+    }
+
+    #[test]
+    fn mask_api_key_hides_middle() {
+        assert_eq!(
+            SettingsWriter::mask_api_key(Some("sk-abcdefghij")),
+            Some("sk-***ghij".into())
+        );
+    }
+
+    #[test]
+    fn api_key_patch_keeps_masked_echo_and_clears_empty() {
+        let stored = Some("sk-abcdefghij".to_string());
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored.clone(), Some("sk-***ghij")),
+            stored
+        );
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored.clone(), Some("")),
+            None
+        );
+        assert_eq!(
+            SettingsWriter::apply_api_key_patch(stored, Some("new-secret-key")),
+            Some("new-secret-key".into())
+        );
+    }
+
+    #[test]
+    fn provider_key_write_stores_the_credential_and_masks_it() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ack = writer
+            .write_provider_key("main", "sk-secret-value")
+            .unwrap();
+        // The same commit heals the seeded agents' empty model_ref.
+        assert_eq!(ack.docs, vec![DocId::Llm, DocId::Agents]);
+
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert!(main.configured);
+        assert_eq!(main.masked_api_key.as_deref(), Some("sk-***alue"));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(
+            !serialized.contains("sk-secret-value"),
+            "the raw credential must never be projected: {serialized}"
+        );
+        assert_eq!(view.active_models.len(), 2, "main owns two models");
+        assert!(view.active_models.iter().all(|m| m.provider_id == "main"));
+    }
+
+    #[test]
+    fn provider_key_write_rejects_an_unknown_provider_and_an_empty_key() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let unknown = writer.write_provider_key("ghost", "sk").unwrap_err();
+        assert!(unknown.to_string().contains("ghost"), "{unknown}");
+        let empty = writer.write_provider_key("main", "   ").unwrap_err();
+        assert!(empty.to_string().contains("api_key"), "{empty}");
+        assert!(project(&writer).active_models.is_empty());
+    }
+
+    #[test]
+    fn switching_a_model_off_drops_it_from_the_pickers_only() {
+        let (_dir, db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-one").unwrap();
+        let view = project(&writer);
+        assert_eq!(view.active_models.len(), 2);
+        assert!(view.active_models.iter().all(|m| m.enabled));
+
+        let reference = view.active_models[0].reference.clone();
+        let ack = writer.set_model_enabled(&reference, false).unwrap();
+        assert_eq!(ack.docs, vec![DocId::Llm]);
+
+        let view = project(&writer);
+        assert_eq!(
+            view.active_models.len(),
+            1,
+            "the off model leaves the pickers"
+        );
+        assert!(!view.active_models.iter().any(|m| m.reference == reference));
+        // It keeps existing under its provider: switched off, not gone.
+        let model = view
+            .providers
+            .iter()
+            .find(|p| p.id == "main")
+            .unwrap()
+            .models
+            .iter()
+            .find(|m| m.reference == reference)
+            .unwrap();
+        assert!(!model.enabled);
+
+        // The exception is persisted as a row, so it survives a reopen.
+        let reopened = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        assert!(
+            !project(&reopened)
+                .active_models
+                .iter()
+                .any(|m| m.reference == reference)
+        );
+
+        // On again removes the row rather than flipping a flag.
+        writer.set_model_enabled(&reference, true).unwrap();
+        let view = project(&writer);
+        assert_eq!(view.active_models.len(), 2);
+        assert!(view.active_models.iter().all(|m| m.enabled));
+    }
+
+    #[test]
+    fn model_switch_rejects_a_reference_the_catalog_does_not_declare() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let unknown = writer.set_model_enabled("main/ghost", false).unwrap_err();
+        assert!(unknown.to_string().contains("main/ghost"), "{unknown}");
+    }
+
+    #[test]
+    fn deleting_a_credential_returns_the_provider_to_the_picker() {
+        let (_dir, db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-one").unwrap();
+        writer.write_provider_key("other", "sk-two").unwrap();
+        assert_eq!(project(&writer).active_models.len(), 3);
+
+        let ack = writer.delete_provider_key("main").unwrap();
+        // The agents that pointed at `main` are handed to `other` in the same commit.
+        assert_eq!(ack.docs, vec![DocId::Llm, DocId::Agents]);
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert!(!main.configured);
+        assert_eq!(main.masked_api_key, None);
+        assert_eq!(view.active_models.len(), 1);
+        assert_eq!(view.active_models[0].provider_id, "other");
+
+        // The credential table is the only place the key ever lived.
+        let loaded = global_db::load_global_from_path(&db).unwrap();
+        assert!(!loaded.provider_credentials.contains_key("main"));
+        assert!(loaded.provider_credentials.contains_key("other"));
+    }
+
+    #[test]
+    fn replacing_a_key_keeps_one_row_per_provider() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk-first").unwrap();
+        writer.write_provider_key("main", "sk-second").unwrap();
+        let view = project(&writer);
+        let main = view.providers.iter().find(|p| p.id == "main").unwrap();
+        assert_eq!(main.masked_api_key.as_deref(), Some("sk-***cond"));
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(!serialized.contains("sk-first"), "{serialized}");
+    }
+
+    #[test]
+    fn settings_writes_hand_agents_a_runnable_model() {
+        let (_dir, db, writer) = writer_with_catalog();
+        // Seeded agents start with an empty model_ref and stay that way while no
+        // provider is keyed: there is nothing to hand them.
+        let seeded = global_db::load_global_from_path(&db).unwrap();
+        assert!(!seeded.agents.is_empty());
+        assert!(seeded.agents.values().all(|a| a.model_ref.is_empty()));
+
+        writer.write_provider_key("main", "sk-one").unwrap();
+        let healed = global_db::load_global_from_path(&db).unwrap();
+        for (id, profile) in &healed.agents {
+            assert_eq!(profile.model_ref, "main/default", "agent {id}");
+        }
+
+        // A second provider only matters once the first one loses its credential.
+        writer.write_provider_key("other", "sk-two").unwrap();
+        let ack = writer.delete_provider_key("main").unwrap();
+        assert!(ack.docs.contains(&DocId::Agents), "{:?}", ack.docs);
+        let moved = global_db::load_global_from_path(&db).unwrap();
+        for (id, profile) in &moved.agents {
+            assert_eq!(profile.model_ref, "other/small", "agent {id}");
+        }
+    }
+
+    #[test]
+    fn summary_counts_configured_providers_and_active_models() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let empty = writer.summary().unwrap();
+        assert_eq!(empty.configured_provider_count, 0);
+        assert_eq!(empty.active_model_count, 0);
+        assert!(empty.setup_guidance.is_some());
+
+        writer.write_provider_key("main", "sk").unwrap();
+        let one = writer.summary().unwrap();
+        assert_eq!(one.configured_provider_count, 1);
+        assert_eq!(one.active_model_count, 2);
+    }
+
+    #[test]
+    fn commit_log_roundtrip_and_docs() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let log = LogSettings {
+            level: Some("debug".into()),
+        };
+        let ack = writer.write_log(log.clone()).unwrap();
+        assert_eq!(ack.docs, vec![DocId::Log]);
+        assert!(ack.generation >= 1);
+        let loaded = writer.load_settings().unwrap().log;
+        assert_eq!(loaded, log);
+    }
+
+    #[test]
+    fn workspace_engines_commit_file_and_event_together() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let ws = TempDir::new().unwrap();
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let mut rx = writer.subscribe();
+        let file = workspace::WorkspaceEnginesFile {
+            version: 1,
+            lsp: workspace::WorkspaceLspState {
+                desired: true,
+                servers: vec!["rust-analyzer".into()],
+            },
+            retrieval: workspace::WorkspaceRetrievalState { desired: false },
+        };
+        let ack = writer.write_engines(ws.path(), file.clone()).unwrap();
+        let on_disk = workspace::read_workspace_engines(ws.path()).unwrap();
+        assert_eq!(on_disk.lsp.servers, file.lsp.servers);
+        assert_eq!(ack.docs, vec![DocId::Engines]);
+        let event = rx.try_recv().expect("settings event");
+        assert_eq!(event.docs, vec![DocId::Engines]);
+        assert_eq!(event.revision, ack.generation);
+    }
 
     #[test]
     fn write_log_rejects_invalid_level() {
@@ -1369,6 +1596,48 @@ max_output = 1024
         writer.write_provider_key("main", "sk").unwrap();
     }
 
+    #[test]
+    fn set_key_rejects_removed_auth_token() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join("litecode.db");
+        let writer = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let err = writer.set_key("auth.token", "nope").unwrap_err();
+        assert!(err.to_string().contains("LITECODE_TOKEN"), "got: {err}");
+    }
+
+    #[test]
+    fn setup_guidance_covers_provider_key_and_agents() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let summary = writer.summary().unwrap();
+        let guidance = summary.setup_guidance.expect("fresh seed should guide");
+        assert!(guidance.contains("Providers"), "{guidance}");
+        assert!(guidance.contains("default"), "{guidance}");
+        assert!(guidance.contains("compaction"), "{guidance}");
+    }
+
+    #[test]
+    fn setup_guidance_clears_when_ready() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        writer.write_provider_key("main", "sk").unwrap();
+        let mut settings = writer.load_settings().unwrap();
+        settings.agents.get_mut("default").unwrap().model_ref = "main/default".into();
+        settings.agents.get_mut("compaction").unwrap().model_ref = "main/compact".into();
+        global_db::import_into(writer.db_path(), &settings).unwrap();
+
+        let summary = writer.summary().unwrap();
+        assert_eq!(summary.setup_guidance, None);
+    }
+
+    fn declared_rules() -> Vec<crate::permission::PolicyRule> {
+        use crate::permission::{ArgMatcher, PermissionAction, PolicyRule};
+        vec![PolicyRule {
+            id: "outside_workspace".into(),
+            when: ArgMatcher::PathOutsideWorkspace {
+                name: "path".into(),
+            },
+            action: PermissionAction::Deny,
+        }]
+    }
 
     fn custom_def(name: &str, rules: Vec<crate::permission::PolicyRule>) -> CustomToolDefinition {
         use crate::config::schema::ToolSchema;
@@ -1389,6 +1658,75 @@ max_output = 1024
         }
     }
 
+    fn dial_binding(preset: Option<super::ToolPreset>) -> AgentToolBinding {
+        AgentToolBinding {
+            enabled: true,
+            policy: crate::permission::ToolPolicy::allow_all(),
+            path_mode: crate::permission::BindingPathMode::Unrestricted,
+            last_applied_preset: preset,
+            allowed_tools: None,
+        }
+    }
+
+    #[test]
+    fn declared_custom_preset_expands_and_undeclared_stays_fixed() {
+        let declared = declared_rules();
+        let mut tools = std::collections::HashMap::new();
+        tools.insert("gated".into(), dial_binding(Some(super::ToolPreset::Safe)));
+        tools.insert("open".into(), dial_binding(Some(super::ToolPreset::All)));
+        tools.insert("plain".into(), dial_binding(Some(super::ToolPreset::Safe)));
+        let mut safe = std::collections::HashMap::new();
+        safe.insert("gated".into(), declared.clone());
+        safe.insert("open".into(), declared.clone());
+        super::expand_binding_presets(&mut tools, &safe);
+
+        assert_eq!(
+            tools["gated"].policy,
+            crate::permission::ToolPolicy::from_rules(declared)
+        );
+        assert_eq!(
+            tools["gated"].path_mode,
+            crate::permission::BindingPathMode::Unrestricted
+        );
+        assert_eq!(
+            tools["gated"].last_applied_preset,
+            Some(super::ToolPreset::Safe)
+        );
+        assert_eq!(
+            tools["open"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+        assert_eq!(
+            tools["open"].path_mode,
+            crate::permission::BindingPathMode::Unrestricted
+        );
+        assert_eq!(
+            tools["open"].last_applied_preset,
+            Some(super::ToolPreset::All)
+        );
+        assert!(tools["plain"].last_applied_preset.is_none());
+        assert_eq!(
+            tools["plain"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+    }
+
+    #[test]
+    fn custom_rules_without_a_preset_store_allow_all() {
+        let mut tools = std::collections::HashMap::new();
+        let mut dirty = dial_binding(None);
+        dirty.policy =
+            crate::permission::ToolPolicy::with_default(crate::permission::PermissionAction::Ask);
+        tools.insert("gated".into(), dirty);
+        let mut safe = std::collections::HashMap::new();
+        safe.insert("gated".into(), declared_rules());
+        super::expand_binding_presets(&mut tools, &safe);
+        assert!(tools["gated"].last_applied_preset.is_none());
+        assert_eq!(
+            tools["gated"].policy,
+            crate::permission::ToolPolicy::allow_all()
+        );
+    }
 
     #[test]
     fn custom_tool_named_run_code_is_rejected() {
@@ -1400,6 +1738,57 @@ max_output = 1024
                 .contains("reserved for the code transport"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn custom_rule_ids_are_trimmed_unique_and_not_reserved() {
+        let mut def = custom_def(
+            "demo",
+            vec![crate::permission::PolicyRule {
+                id: "  outside  ".into(),
+                when: crate::permission::ArgMatcher::Any,
+                action: crate::permission::PermissionAction::Deny,
+            }],
+        );
+        super::validate_custom_definition("demo", &mut def).unwrap();
+        assert_eq!(def.rules[0].id, "outside");
+
+        let mut reserved = custom_def(
+            "demo",
+            vec![crate::permission::PolicyRule {
+                id: "__default".into(),
+                when: crate::permission::ArgMatcher::Any,
+                action: crate::permission::PermissionAction::Deny,
+            }],
+        );
+        assert!(super::validate_custom_definition("demo", &mut reserved).is_err());
+
+        let mut duplicated = custom_def(
+            "demo",
+            vec![
+                crate::permission::PolicyRule {
+                    id: "same".into(),
+                    when: crate::permission::ArgMatcher::Any,
+                    action: crate::permission::PermissionAction::Deny,
+                },
+                crate::permission::PolicyRule {
+                    id: " same ".into(),
+                    when: crate::permission::ArgMatcher::Any,
+                    action: crate::permission::PermissionAction::Allow,
+                },
+            ],
+        );
+        assert!(super::validate_custom_definition("demo", &mut duplicated).is_err());
+    }
+
+    #[test]
+    fn workspace_custom_without_rules_hides_global_rules() {
+        let declared = declared_rules();
+        let global = vec![custom_def("demo", declared)];
+        let mut workspace = std::collections::HashMap::new();
+        workspace.insert("demo".into(), custom_def("demo", Vec::new()));
+        let safe = super::merged_custom_rules(&global, &workspace);
+        assert!(safe.is_empty());
     }
 
     /// ISSUE-017 / WP-008: after a successful file write, a DB-side failure
@@ -1437,6 +1826,47 @@ max_output = 1024
         assert!(
             restored.tools.contains_key("demo"),
             "demo tool must be present again after restore"
+        );
+    }
+
+    /// Same restore path when validate rejects the mutated settings.
+    #[test]
+    fn commit_mixed_restores_file_when_validate_fails() {
+        let (_dir, _db, writer) = writer_with_catalog();
+        let ws = TempDir::new().unwrap();
+        let root = ws.path().to_path_buf();
+        let path = workspace::workspace_mcp_path(&root);
+        let def = McpServerDefinition {
+            command: "echo".into(),
+            ..Default::default()
+        };
+        workspace::upsert_workspace_mcp(&root, "demo_mcp", def).unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let err = writer
+            .commit_mixed(
+                &[DocId::McpWorkspace, DocId::Agents],
+                &path,
+                {
+                    let root = root.clone();
+                    move || workspace::delete_workspace_mcp(&root, "demo_mcp").map(|_| ())
+                },
+                |settings| {
+                    // Empty tool id fails ConfigManager::validate.
+                    if let Some(profile) = settings.agents.values_mut().next() {
+                        profile.tools.insert(String::new(), dial_binding(None));
+                    }
+                    Ok(false)
+                },
+            )
+            .expect_err("validate failure must surface");
+        assert!(err.to_string().contains("empty tool binding"), "got: {err}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(
+            workspace::read_workspace_mcp(&root)
+                .unwrap()
+                .servers
+                .contains_key("demo_mcp")
         );
     }
 

@@ -139,3 +139,50 @@ pub use workspace_excludes::{
 
 #[cfg(test)]
 pub(crate) use workspace_excludes::{lock_excludes_cache_for_test, with_excludes_cache_for_test};
+
+#[cfg(test)]
+mod corpus_note_tests {
+    use super::*;
+
+    #[test]
+    fn search_corpus_note_omits_when_no_ignore() {
+        assert!(search_corpus_note(true).is_none());
+    }
+
+    #[test]
+    fn search_corpus_note_cites_excludes_file_and_caps_lists() {
+        let mut file = WorkspaceExcludesFile::builtin_defaults();
+        file.search_exclude = (0..10).map(|i| format!("**/skip{i}")).collect();
+        file.files_exclude = vec!["**/.git".into()];
+        file.git_ignore = true;
+        with_excludes_cache_for_test(file, || {
+            let note = search_corpus_note(false).expect("note");
+            assert!(
+                note.contains(WORKSPACE_EXCLUDES_REL),
+                "must name config file, got: {note}"
+            );
+            assert!(note.contains("**/skip0"), "got: {note}");
+            assert!(note.contains("(and 2 more)"), "got: {note}");
+            assert!(
+                !note.contains("**/skip9"),
+                "cap must hide tail, got: {note}"
+            );
+            assert!(
+                note.contains("git_ignore=true (also .gitignore)"),
+                "got: {note}"
+            );
+            assert!(
+                !note.contains("watcher_exclude"),
+                "watcher is not a grep corpus, got: {note}"
+            );
+        });
+    }
+
+    #[test]
+    fn search_corpus_next_step_names_fields() {
+        let step = search_corpus_next_step();
+        assert!(step.contains("allow ignored"), "{step}");
+        assert!(step.contains("path"), "{step}");
+        assert!(!step.to_ascii_lowercase().contains("bash"), "{step}");
+    }
+}

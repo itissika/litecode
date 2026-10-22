@@ -229,3 +229,18 @@ fn values_eq(left: &Value, right: &Value) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn shallow_clone_eq_and_debug_match_serde() {
+        let value = Json::new(json!({"b": [1, null], "a": "x"}));
+        let cloned = value.clone();
+        assert_eq!(value, cloned);
+        assert_eq!(value.as_value(), cloned.as_value());
+        assert_eq!(format!("{value:?}"), format!("{:?}", value.as_value()));
+    }
+}

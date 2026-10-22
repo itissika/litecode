@@ -135,3 +135,42 @@ pub struct NotifyFsChangesParams {
     pub paths: Vec<String>,
     pub deleted: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ping_result_defaults_empty_device() {
+        let back: PingResult =
+            serde_json::from_value(serde_json::json!({ "ready": true })).unwrap();
+        assert!(back.ready);
+        assert!(back.embed_device.is_empty());
+    }
+
+    #[test]
+    fn ping_result_roundtrip_cuda() {
+        let v = serde_json::to_value(PingResult {
+            ready: true,
+            embed_device: "cuda-ort".into(),
+        })
+        .unwrap();
+        let back: PingResult = serde_json::from_value(v).unwrap();
+        assert_eq!(back.embed_device, "cuda-ort");
+    }
+
+    #[test]
+    fn refresh_params_empty_defaults_all() {
+        let back: RefreshParams = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(back.scope, RefreshScope::All);
+    }
+
+    #[test]
+    fn refresh_params_roundtrip_code_and_session() {
+        for scope in [RefreshScope::Code, RefreshScope::Session, RefreshScope::All] {
+            let v = serde_json::to_value(RefreshParams { scope }).unwrap();
+            let back: RefreshParams = serde_json::from_value(v).unwrap();
+            assert_eq!(back.scope, scope);
+        }
+    }
+}

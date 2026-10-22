@@ -46,3 +46,32 @@ pub fn path_gitignored(workspace_root: &Path, rel: &str, preset: FilterPreset) -
     };
     gi.matched_path_or_any_parents(&rel, is_dir).is_ignore()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::filter::WorkspaceExcludesFile;
+    use crate::workspace::filter::with_excludes_cache_for_test;
+    use tempfile::TempDir;
+
+    #[test]
+    fn search_honors_gitignore_when_switch_on() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), "target\n").unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("target/foo.rs"), "fn t() {}\n").unwrap();
+        std::fs::write(root.join("src.rs"), "fn s() {}\n").unwrap();
+
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            assert!(path_gitignored(root, "target/foo.rs", FilterPreset::Search));
+            assert!(!path_gitignored(root, "src.rs", FilterPreset::Search));
+            assert!(!path_gitignored(
+                root,
+                "target/foo.rs",
+                FilterPreset::Watcher
+            ));
+        });
+    }
+}

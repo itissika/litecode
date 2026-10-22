@@ -308,3 +308,37 @@ impl ToolCallResult {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_survives_signal_finalization() {
+        let result = ToolCallResult::ok("done")
+            .with_data(serde_json::json!({"items": [1, 2, 3]}))
+            .finalize_signals();
+        assert_eq!(result.content, "done");
+        assert_eq!(result.data, Some(serde_json::json!({"items": [1, 2, 3]})));
+        assert!(result.error.is_none());
+    }
+
+    #[test]
+    fn stable_error_kind_survives_finalization() {
+        let result =
+            ToolCallResult::error_with_kind(ToolErrorKind::InvalidInput, "bad range", false)
+                .finalize_signals();
+        assert_eq!(result.content, "Error: bad range");
+        let error = result.error.expect("typed error");
+        assert_eq!(error.kind, ToolErrorKind::InvalidInput);
+        assert_eq!(error.message, "bad range");
+        assert!(!error.retryable);
+    }
+
+    #[test]
+    fn warning_is_not_an_error() {
+        let result = ToolCallResult::warning("partial").finalize_signals();
+        assert_eq!(result.content, "Warning: partial");
+        assert!(result.error.is_none());
+    }
+}

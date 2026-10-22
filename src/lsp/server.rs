@@ -991,7 +991,61 @@ pub(crate) fn diagnostics_gate(server_ready: bool, fresh: bool, index_ready: boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lsp::conn::publish_diagnostics_payload;
+    use crate::lsp::conn::{parse_content_length, publish_diagnostics_payload};
+
+    #[test]
+    fn nav_empty_symbols_by_array_len() {
+        for m in ["textDocument/documentSymbol", "workspace/symbol"] {
+            assert!(nav_empty(m, &Value::Null), "{m} null");
+            assert!(nav_empty(m, &serde_json::json!([])), "{m} []");
+            // DocumentSymbol tree has no uri/location — still non-empty.
+            let tree = serde_json::json!([{ "name": "main", "kind": 12,
+                "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 1, "character": 0 } },
+                "selectionRange": { "start": { "line": 0, "character": 3 }, "end": { "line": 0, "character": 7 } } }]);
+            assert!(!nav_empty(m, &tree), "{m} tree");
+        }
+        // Location-based methods unchanged.
+        assert!(nav_empty("textDocument/definition", &serde_json::json!([])));
+        assert!(nav_empty("textDocument/hover", &Value::Null));
+    }
+
+    #[test]
+    fn diagnostics_gate_table() {
+        use DiagnosticsGate::*;
+        // not running → unavailable regardless of cache
+        assert_eq!(diagnostics_gate(false, true, true), NotReady);
+        assert_eq!(diagnostics_gate(false, false, false), NotReady);
+        // running + published → real result
+        assert_eq!(diagnostics_gate(true, true, false), Fresh);
+        assert_eq!(diagnostics_gate(true, true, true), Fresh);
+        // running, not yet published: inside grace → unavailable; expired → empty success
+        assert_eq!(diagnostics_gate(true, false, false), NotReady);
+        assert_eq!(diagnostics_gate(true, false, true), SettledEmpty);
+    }
+
+    #[test]
+    fn index_not_ready_error_maps_to_unavailable_wording() {
+        let msg = index_not_ready_error("workspace/symbol").to_string();
+        assert!(msg.contains("index not ready"), "{msg}");
+        assert!(msg.contains("workspace/symbol"), "{msg}");
+    }
+
+    #[test]
+    fn content_length_parses_and_caps() {
+        assert_eq!(parse_content_length("not a header").unwrap(), None);
+        assert_eq!(
+            parse_content_length("Content-Length: 42").unwrap(),
+            Some(42)
+        );
+        assert_eq!(
+            parse_content_length("  Content-Length: 7  ").unwrap(),
+            Some(7)
+        );
+        let too_big = format!("Content-Length: {}", 16 * 1024 * 1024 + 1);
+        let err = parse_content_length(&too_big).unwrap_err();
+        assert!(err.to_string().contains("exceeds limit"), "got: {err}");
+        assert!(parse_content_length("Content-Length: nope").is_err());
+    }
 
     #[test]
     fn stderr_buffer_is_bounded_and_rotates() {
@@ -1047,6 +1101,13 @@ mod tests {
             }))
             .is_none()
         );
+    }
+
+    #[test]
+    fn eof_position_tracks_utf16() {
+        assert_eq!(eof_position(""), (0, 0));
+        assert_eq!(eof_position("ab"), (0, 2));
+        assert_eq!(eof_position("a\nb"), (1, 1));
     }
 
     #[test]

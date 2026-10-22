@@ -344,8 +344,181 @@ mod tests {
     use crate::types::user_text;
     use tempfile::TempDir;
 
+    /// A reader over a store holding one row that a search can find, and one that
+    /// only this test knows about.
+    fn seeded(dir: &Path) -> SessionDataReader {
+        let db = dir.join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("alpha UNIQUE_SESSION_PHRASE omega")])
+            .unwrap();
+        SessionDataReader::open(&db)
+    }
 
+    fn find(reader: &SessionDataReader, needle: &str) -> Vec<SessionTextHit> {
+        let query = SessionTextQuery {
+            query: needle.into(),
+            offset: 0,
+            ..Default::default()
+        };
+        let (hits, state) = search_lexical(reader, &query).unwrap();
+        assert_eq!(state, LaneState::Ready, "the lane answered");
+        hits
+    }
 
+    /// Stamp the file as a previous build's, without disturbing its contents.
+    fn restamp_as_old_schema(path: &Path) {
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute("UPDATE meta SET value = '0' WHERE key = 'schema'", [])
+            .unwrap();
+    }
+
+    /// The bug this lifecycle was rebuilt around: a file written by another schema
+    /// is a **rebuild**, not something to reconcile row by row. Reconciling it
+    /// cannot work, so a pass that can only reconcile fails on every tick and the
+    /// lane never comes back.
+    #[test]
+    fn a_file_from_another_schema_is_rebuilt() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        restamp_as_old_schema(&path);
+        assert!(
+            sparse::needs_rebuild(&path),
+            "an old schema needs a rebuild"
+        );
+
+        assert!(
+            ensure_sparse_index(&reader).is_ok(),
+            "one maintenance pass repairs it"
+        );
+        assert!(
+            !sparse::needs_rebuild(&path),
+            "and the file is current again"
+        );
+        assert_eq!(
+            find(&reader, "UNIQUE_SESSION_PHRASE").len(),
+            1,
+            "with its rows intact"
+        );
+    }
+
+    /// The outage this work exists for: a schema bump left the idle tick calling
+    /// the one entry that cannot repair it, so every pass failed and the lane
+    /// stayed down until somebody happened to search. The tick's entry is pinned
+    /// here: with no search at all, the pass brings an old file back.
+    #[test]
+    fn the_idle_pass_repairs_an_old_schema_without_a_search() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        let path = sparse::sparse_index_path(reader.data_root());
+        assert!(ensure_sparse_index(&reader).is_ok());
+
+        restamp_as_old_schema(&path);
+        assert!(
+            sparse::needs_rebuild(&path),
+            "the file is from an older build"
+        );
+
+        // Exactly what `serve`'s 30-second tick does, and nothing else.
+        spawn_sparse_maintenance(&reader);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while sparse::needs_rebuild(&path) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the idle pass must repair the file on its own"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            find(&reader, "UNIQUE_SESSION_PHRASE").len(),
+            1,
+            "and the lane answers again"
+        );
+    }
+
+    /// A file that cannot be opened at all is also a rebuild. Nothing else can
+    /// make an unreadable file readable, so reporting the open failure instead
+    /// would leave the lane failed for good.
+    #[test]
+    fn an_unopenable_index_is_rebuilt() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        std::fs::write(&path, b"this is not a database").unwrap();
+        assert!(
+            sparse::needs_rebuild(&path),
+            "an unreadable file needs a rebuild"
+        );
+
+        assert!(
+            ensure_sparse_index(&reader).is_ok(),
+            "the corrupt file is replaced rather than reported"
+        );
+        assert!(!sparse::needs_rebuild(&path));
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+    }
+
+    /// The third row of the table: a current file is reconciled, and a corpus that
+    /// has not moved makes that a no-op.
+    #[test]
+    fn a_current_index_is_reconciled_without_a_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+
+        let path = sparse::sparse_index_path(reader.data_root());
+        let built = std::fs::metadata(&path).unwrap().len();
+
+        assert!(ensure_sparse_index(&reader).is_ok());
+        assert!(ensure_sparse_index(&reader).is_ok());
+        assert!(
+            std::fs::metadata(&path).unwrap().len() >= built,
+            "a settled pass leaves the index in place"
+        );
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+    }
+
+    /// A missing file is built, and the search that asked for it answers.
+    #[test]
+    fn a_missing_index_is_built() {
+        let dir = TempDir::new().unwrap();
+        let reader = seeded(dir.path());
+        let path = sparse::sparse_index_path(reader.data_root());
+        assert!(!path.is_file(), "nothing has been built yet");
+
+        assert_eq!(find(&reader, "UNIQUE_SESSION_PHRASE").len(), 1);
+        assert!(path.is_file());
+    }
+
+    /// A corpus too large to build inline is answered `Building` and built in the
+    /// background, instead of the search waiting out the whole build.
+    #[test]
+    fn a_large_corpus_is_not_built_inside_the_search() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        let rows: Vec<_> = (0..INLINE_BUILD_MAX_ROWS + 1)
+            .map(|i| user_text(&format!("row number {i}")))
+            .collect();
+        data.insert_items(&id, &rows).unwrap();
+        let reader = SessionDataReader::open(&db);
+
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Building,
+            "the caller is answered now, not after the build"
+        );
+    }
 
     /// Above the inline budget the build is dispatched, so a failure cannot be
     /// reported by the call that started it. It comes back from the worker's record
@@ -405,4 +578,31 @@ mod tests {
         }
     }
 
+    /// A usable index answers now; the delta is refreshed behind the query, not
+    /// in front of it. `Ready` here is what keeps a search in a moving corpus
+    /// from waiting for the turn that never pauses.
+    #[test]
+    fn a_usable_index_is_answered_without_waiting_for_the_delta() {
+        let dir = TempDir::new().unwrap();
+        let db = dir.path().join(".litecode").join("sessions.db");
+        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+        let lease = WorkspaceWriteLease::acquire(db.parent().unwrap()).unwrap();
+        let data = SessionData::open(&lease, &db).unwrap();
+        let id = data.create_session("/proj", "default", None).unwrap();
+        data.insert_items(&id, &[user_text("first row")]).unwrap();
+        let reader = SessionDataReader::open(&db);
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Ready,
+            "a small corpus is built inline on the first search"
+        );
+
+        data.insert_items(&id, &[user_text("second row")]).unwrap();
+
+        assert_eq!(
+            prepare_index(&reader, reader.data_root()),
+            LaneState::Ready,
+            "a moved store is answered from the index as it stands"
+        );
+    }
 }

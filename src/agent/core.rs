@@ -313,4 +313,15 @@ mod pending_continue_tests {
         assert_eq!(deps.steps.get(), 2);
     }
 
+    #[tokio::test]
+    async fn stop_check_breaks_without_pending() {
+        let mut deps = StopOnceDeps {
+            steps: Cell::new(0),
+            requests: Cell::new(0),
+            pending: Cell::new(false),
+        };
+        let outcome = crate::agent::run(&mut deps).await;
+        assert!(matches!(outcome, TurnOutcome::Completed { .. }));
+        assert_eq!(deps.requests.get(), 1);
+    }
 }

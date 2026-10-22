@@ -1169,10 +1169,50 @@ pub fn command_preview(command: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
+    use crate::terminal::{INLINE_FULL, INLINE_TAIL};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    fn rec(
+        session: &str,
+        call: &str,
+        workspace: &Path,
+        path: PathBuf,
+        tee: BoundedTee,
+    ) -> AgentJobRecord {
+        let stderr_path = path.with_extension("stderr");
+        let stderr = BoundedTee::create(stderr_path.clone()).unwrap();
+        AgentJobRecord {
+            session_id: session.into(),
+            call_id: call.into(),
+            command_preview: "sleep".into(),
+            output_path: path,
+            tee: Arc::new(Mutex::new(tee)),
+            alive: true,
+            exit_code: None,
+            started_at_ms: now_unix_ms(),
+            user_killed: false,
+            workspace_root: workspace.to_path_buf(),
+            stderr_path,
+            stderr_tee: Arc::new(Mutex::new(stderr)),
+            pid: None,
+            detached: false,
+        }
+    }
 
+    fn echo_hi() -> &'static str {
+        #[cfg(windows)]
+        {
+            if crate::config::git_install::find_git_bash().is_some() {
+                "echo hi"
+            } else {
+                "Write-Output hi"
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            "echo hi"
+        }
+    }
 
     fn sleep_secs(seconds: u64) -> String {
         #[cfg(windows)]
@@ -1253,6 +1293,306 @@ mod tests {
                 true
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_async_yields_so_sibling_can_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = Arc::new(AgentJobRegistry::new());
+        reg.insert(
+            "bg_yield001".into(),
+            rec("s1", "call_a", dir.path(), path, tee),
+        );
+        let flag = Arc::new(AtomicBool::new(false));
+        let flag2 = Arc::clone(&flag);
+        let reg2 = Arc::clone(&reg);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            flag2.store(true, Ordering::SeqCst);
+            reg2.finish("bg_yield001", Some(0));
+        });
+        let cancel = CancellationToken::new();
+        match reg
+            .wait_async("s1", "bg_yield001", Some(Duration::from_secs(2)), &cancel)
+            .await
+        {
+            WaitOutcome::Exited(n) => {
+                assert_eq!(n.bash_id, "bg_yield001");
+                assert_eq!(n.exit_code, Some(0));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            flag.load(Ordering::SeqCst),
+            "sibling task must progress during wait_async"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_async_times_out_while_job_stays_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        reg.insert(
+            "bg_timeout1".into(),
+            rec("s1", "call_a", dir.path(), path, tee),
+        );
+        let cancel = CancellationToken::new();
+        match reg
+            .wait_async(
+                "s1",
+                "bg_timeout1",
+                Some(Duration::from_millis(40)),
+                &cancel,
+            )
+            .await
+        {
+            WaitOutcome::TimedOut => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(reg.get("bg_timeout1").unwrap().0);
+    }
+
+    #[tokio::test]
+    async fn wait_async_takes_detached_exit_from_mailbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        let mut record = rec("s1", "call_b", dir.path(), path, tee);
+        record.detached = true;
+        reg.insert("bg_detach1".into(), record);
+        reg.finish("bg_detach1", Some(0));
+        assert!(reg.mailbox_pending("s1"));
+        let cancel = CancellationToken::new();
+        match reg
+            .wait_async("s1", "bg_detach1", Some(Duration::from_secs(1)), &cancel)
+            .await
+        {
+            WaitOutcome::Exited(n) => assert_eq!(n.bash_id, "bg_detach1"),
+            other => panic!("{other:?}"),
+        }
+        assert!(reg.take_mailbox("s1").is_empty());
+    }
+
+    #[test]
+    fn undetached_finish_skips_mailbox_and_exit_handler() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits_cb = Arc::clone(&hits);
+        reg.set_exit_handler(Arc::new(move |_| {
+            hits_cb.fetch_add(1, Ordering::SeqCst);
+        }));
+        reg.insert(
+            "bg_attached".into(),
+            rec("s1", "call_a", dir.path(), path, tee),
+        );
+        reg.finish("bg_attached", Some(0));
+        assert!(!reg.is_detached("bg_attached"));
+        assert!(reg.take_mailbox("s1").is_empty());
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        let path2 = dir.path().join("k.output");
+        let tee2 = BoundedTee::create(path2.clone()).unwrap();
+        let mut returned = rec("s1", "call_b", dir.path(), path2, tee2);
+        returned.detached = true;
+        reg.insert("bg_returned".into(), returned);
+        reg.finish("bg_returned", Some(0));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        let mail = reg.take_mailbox("s1");
+        assert_eq!(mail.len(), 1);
+        assert_eq!(mail[0].bash_id, "bg_returned");
+    }
+
+    #[test]
+    fn wire_snapshot_keeps_running_jobs_and_waiters() {
+        let dir = tempfile::tempdir().unwrap();
+        let path_a = dir
+            .path()
+            .join(".litecode")
+            .join("run")
+            .join("bg_a.stdout");
+        std::fs::create_dir_all(path_a.parent().unwrap()).unwrap();
+        let path_b = dir.path().join("b.output");
+        let path_done = dir.path().join("done.output");
+        let tee_a = BoundedTee::create(path_a.clone()).unwrap();
+        let tee_b = BoundedTee::create(path_b.clone()).unwrap();
+        let tee_done = BoundedTee::create(path_done.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        reg.insert(
+            "bg_a".into(),
+            rec("s1", "call_a", dir.path(), path_a, tee_a),
+        );
+        reg.insert(
+            "bg_b".into(),
+            rec("s2", "call_b", dir.path(), path_b, tee_b),
+        );
+        reg.insert(
+            "bg_done".into(),
+            rec("s1", "call_done", dir.path(), path_done, tee_done),
+        );
+        reg.finish("bg_done", Some(0));
+        reg.begin_wait("s1", "wait_1", Some("bg_a"), Some(Duration::from_secs(5)));
+        let snap = reg.wire_snapshot("s1");
+        assert_eq!(snap.jobs.len(), 1);
+        assert_eq!(snap.jobs[0].id, "bg_a");
+        assert_eq!(snap.jobs[0].call_id, "call_a");
+        assert_eq!(
+            snap.jobs[0].output_file,
+            ".litecode/run/bg_a.stdout"
+        );
+        assert_eq!(
+            snap.jobs[0].stderr_file.as_deref(),
+            Some(".litecode/run/bg_a.stderr")
+        );
+        assert!(snap.jobs[0].started_at_ms > 0);
+        assert_eq!(snap.waits.len(), 1);
+        assert_eq!(snap.waits[0].call_id, "wait_1");
+        assert_eq!(snap.waits[0].watching_id.as_deref(), Some("bg_a"));
+        assert!(snap.waits[0].deadline_ms.is_some());
+        reg.end_wait("wait_1");
+        assert!(reg.wire_snapshot("s1").waits.is_empty());
+    }
+
+    #[test]
+    fn empty_call_id_does_not_register_waiter() {
+        let reg = AgentJobRegistry::new();
+        reg.begin_wait("s1", "", Some("bg_a"), None);
+        assert!(reg.wire_snapshot("s1").waits.is_empty());
+    }
+
+    #[test]
+    fn tail_view_uses_full_window_then_frozen_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.output");
+        let mut tee = BoundedTee::create(path.clone()).unwrap();
+        tee.push_raw("hello-live");
+        let reg = AgentJobRegistry::new();
+        reg.insert("bg_t".into(), rec("s1", "call_t", dir.path(), path, tee));
+        let live = reg.tail_view("bg_t").expect("tail");
+        assert_eq!(live.text, "hello-live");
+        assert!(!live.truncated_on_disk);
+        assert!(live.alive);
+
+        let path2 = dir.path().join("big.output");
+        let mut tee2 = BoundedTee::create(path2.clone()).unwrap();
+        tee2.push_raw(&"x".repeat(INLINE_FULL + 64));
+        reg.insert(
+            "bg_big".into(),
+            rec("s1", "call_big", dir.path(), path2, tee2),
+        );
+        let frozen = reg.tail_view("bg_big").expect("frozen tail");
+        assert!(frozen.alive);
+        assert!(frozen.text.len() <= INLINE_TAIL);
+        assert!(!frozen.text.contains("hello-live"));
+    }
+
+    #[test]
+    fn jobs_changed_fires_on_insert_finish_and_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = Arc::new(AgentJobRegistry::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_cb = Arc::clone(&seen);
+        reg.set_jobs_changed_handler(Arc::new(move |sid| {
+            seen_cb.lock().unwrap().push(sid);
+        }));
+        reg.insert("bg_c".into(), rec("s1", "call_c", dir.path(), path, tee));
+        reg.begin_wait("s1", "w1", Some("bg_c"), None);
+        reg.end_wait("w1");
+        reg.finish("bg_c", Some(0));
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events, vec!["s1", "s1", "s1", "s1"]);
+    }
+
+    #[test]
+    fn mark_user_kill_before_finish_keeps_mailbox_notice_user_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        let mut record = rec("s1", "call_u", dir.path(), path, tee);
+        record.detached = true;
+        reg.insert("bg_u".into(), record);
+        reg.mark_user_kill("bg_u");
+        reg.finish("bg_u", Some(143));
+        let mail = reg.take_mailbox("s1");
+        assert_eq!(mail.len(), 1);
+        assert!(mail[0].user_killed);
+        assert_eq!(mail[0].exit_code, Some(143));
+    }
+
+    #[test]
+    fn alloc_pipe_job_id_skips_leftover_logs_and_call_id_colons() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = AgentJobRegistry::new();
+        let taken = "bg_aaaaaaaa";
+        let stdout = dir
+            .path()
+            .join(".litecode")
+            .join("run")
+            .join(format!("{taken}.stdout"));
+        std::fs::create_dir_all(stdout.parent().unwrap()).unwrap();
+        std::fs::write(&stdout, b"").unwrap();
+        for _ in 0..8 {
+            let id = alloc_pipe_job_id(&jobs, dir.path());
+            assert_ne!(id, taken);
+            assert!(id.starts_with("bg_"));
+            let nonce = &id["bg_".len()..];
+            assert_eq!(nonce.len(), 8, "{id}");
+            assert!(
+                nonce.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+                "{id}"
+            );
+            assert!(!id.contains(':'));
+        }
+    }
+
+    #[tokio::test]
+    async fn attached_exit_skips_mailbox_and_log_name_ignores_call_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let call_id = "parent:code:1";
+        let rx = supervise_pipe(
+            Arc::clone(&jobs),
+            pipe_request(
+                dir.path(),
+                echo_hi(),
+                call_id,
+                CancellationToken::new(),
+                PipeDetach::Foreground {
+                    timeout: Duration::from_secs(10),
+                },
+            ),
+        );
+        let decision = recv_decision(rx).await;
+        let PipeDecision::Exited { job_id, exit_code } = decision else {
+            panic!("expected exited, got {decision:?}");
+        };
+        assert_eq!(exit_code, Some(0));
+        assert!(!jobs.is_detached(&job_id));
+        assert!(jobs.take_mailbox("s1").is_empty());
+        let (alive, code, _, path) = jobs.get(&job_id).unwrap();
+        assert!(!alive);
+        assert_eq!(code, Some(0));
+        let rendered = crate::terminal::display_output_path(&path, dir.path());
+        assert!(rendered.starts_with(".litecode/run/"), "{rendered}");
+        assert!(rendered.ends_with(".stdout"), "{rendered}");
+        assert!(!rendered.contains(call_id), "{rendered}");
+        assert!(!rendered.contains(':'), "{rendered}");
+        let name = path.file_name().unwrap().to_string_lossy();
+        assert!(!name.contains(':'));
+        assert!(!name.contains(call_id));
+        let stderr = path.with_extension("stderr");
+        assert!(stderr.exists());
+        assert!(!stderr.file_name().unwrap().to_string_lossy().contains(':'));
     }
 
     #[tokio::test]
@@ -1374,4 +1714,39 @@ mod tests {
         assert!(!path.file_name().unwrap().to_string_lossy().contains(':'));
     }
 
+    #[tokio::test]
+    async fn kill_registered_kills_pid_and_marks_user_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = Arc::new(AgentJobRegistry::new());
+        let rx = supervise_pipe(
+            Arc::clone(&jobs),
+            pipe_request(
+                dir.path(),
+                &sleep_secs(30),
+                "call_kill",
+                CancellationToken::new(),
+                PipeDetach::Background {
+                    window: Duration::from_millis(500),
+                },
+            ),
+        );
+        let decision = recv_decision(rx).await;
+        let PipeDecision::Background { job_id } = decision else {
+            panic!("expected background, got {decision:?}");
+        };
+        let pid = jobs.job_pid(&job_id).expect("pid");
+        assert!(pid_alive(pid));
+        let killed = jobs.kill_registered(&job_id, true).expect("registered job");
+        assert!(!killed.alive);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while pid_alive(pid) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(!pid_alive(pid), "bash/kill must kill the process tree");
+        let mail = jobs.take_mailbox("s1");
+        assert_eq!(mail.len(), 1);
+        assert!(mail[0].user_killed);
+        assert_eq!(mail[0].bash_id, job_id);
+        assert!(jobs.kill_registered("term_not-a-pipe-job", true).is_none());
+    }
 }

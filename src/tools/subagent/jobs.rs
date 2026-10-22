@@ -219,6 +219,38 @@ mod tests {
     }
 
     #[test]
+    fn inbox_deduplicates_and_drains_by_parent() {
+        let inbox = CompletionInbox::default();
+        inbox.push(completion("p", "c", "t"));
+        inbox.push(completion("p", "c", "t"));
+        assert!(inbox.pending("p"));
+        assert_eq!(inbox.take_all("p"), vec![completion("p", "c", "t")]);
+        assert!(!inbox.pending("p"));
+    }
+
+    #[test]
+    fn forgetting_child_preserves_other_completions() {
+        let inbox = CompletionInbox::default();
+        inbox.push(completion("p", "a", "t1"));
+        inbox.push(completion("p", "b", "t2"));
+        inbox.forget_child("a");
+        assert_eq!(inbox.take_all("p"), vec![completion("p", "b", "t2")]);
+    }
+
+    #[test]
+    fn hub_latest_only_one_result_per_child() {
+        let inbox = CompletionInbox::default();
+        inbox.push(completion("p", "a", "t1"));
+        inbox.push(completion("p", "b", "u1"));
+        inbox.push(completion("p", "a", "t2"));
+        inbox.push(completion("p", "a", "t3"));
+        let taken = inbox.take_all("p");
+        assert_eq!(taken.len(), 2, "one entry per child");
+        assert_eq!(taken[0], completion("p", "a", "t3"));
+        assert_eq!(taken[1], completion("p", "b", "u1"));
+    }
+
+    #[test]
     fn hub_newer_result_overwrites_unread() {
         let inbox = CompletionInbox::default();
         assert!(inbox.push(completion("p", "a", "t1")));
@@ -270,4 +302,31 @@ mod tests {
         assert_eq!(taken[0], stop(StopOrigin::User));
     }
 
+    #[test]
+    fn settled_reminder_text_stopped_by_user() {
+        use crate::types::StopOrigin;
+        let n = |stop: bool, by| {
+            if stop {
+                ParentNotice::ChildStopped {
+                    child_session_id: "c".into(),
+                    by,
+                }
+            } else {
+                ParentNotice::ChildDeleted {
+                    child_session_id: "c".into(),
+                    by,
+                }
+            }
+        };
+        assert_eq!(n(true, StopOrigin::User).reason_text(), "stopped by user");
+        assert_eq!(
+            n(true, StopOrigin::Parent).reason_text(),
+            "stopped by parent"
+        );
+        assert_eq!(n(false, StopOrigin::User).reason_text(), "deleted by user");
+        assert_eq!(
+            n(false, StopOrigin::Parent).reason_text(),
+            "deleted by parent"
+        );
+    }
 }

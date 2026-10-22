@@ -1239,11 +1239,32 @@ mod outcome_tests {
 
     use serde_json::json;
 
-    use crate::ptc::{CallRecord, CallState, Json, Outcome};
+    use crate::ptc::{CallRecord, CallState, Failure, Json, Outcome};
     use crate::types::{ToolCallResult, ToolErrorKind};
 
-    use super::{CallLedger, DecodeFail, decode_invocation, render_run_output};
+    use super::{CallLedger, DecodeFail, decode_invocation, merge_call_outcome, render_run_output};
 
+    fn runtime(state: CallState) -> Outcome {
+        Outcome {
+            logs: Vec::new(),
+            dropped_undefined: Default::default(),
+            value: None,
+            failure: Some(Failure::cancelled()),
+            duration_ms: 0,
+            calls: vec![CallRecord {
+                seq: 1,
+                namespace: "tools".into(),
+                name: "write".into(),
+                started: Duration::from_millis(1),
+                ended: if state == CallState::CancelledUnfinished {
+                    None
+                } else {
+                    Some(Duration::from_millis(4))
+                },
+                state,
+            }],
+        }
+    }
 
     fn rendered(result: &ToolCallResult, outcome: &Outcome) -> String {
         let ledger = CallLedger::new();
@@ -1251,6 +1272,54 @@ mod outcome_tests {
         let index = 1u64;
         ledger.record(index, result);
         render_run_output(&ledger, outcome, 120_000, "").content
+    }
+
+    #[test]
+    fn unfinished_call_stays_unsettled_even_when_the_host_later_records_ok() {
+        assert_eq!(
+            merge_call_outcome(Some("ok"), Some(CallState::CancelledUnfinished)),
+            "unsettled"
+        );
+        let text = rendered(
+            &ToolCallResult::ok("wrote"),
+            &runtime(CallState::CancelledUnfinished),
+        );
+        // Unsettled is a head aside, not a ledger row; it is not counted as failed.
+        assert!(text.contains("calls were still running"), "{text}");
+        assert!(text.contains("0 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("@@run_code_data"), "{text}");
+    }
+
+    #[test]
+    fn a_finished_call_keeps_the_host_outcome() {
+        assert_eq!(
+            merge_call_outcome(Some("ok"), Some(CallState::CancelledFinished)),
+            "ok"
+        );
+        assert_eq!(
+            merge_call_outcome(Some("cancelled"), Some(CallState::CancelledFinished)),
+            "cancelled"
+        );
+        let text = rendered(
+            &ToolCallResult::ok("wrote"),
+            &runtime(CallState::CancelledFinished),
+        );
+        // Cancelled program + settled ok call → 1 succeeded on the head.
+        assert!(text.contains("1 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
+
+        let text = rendered(
+            &ToolCallResult::error_with_kind(
+                ToolErrorKind::Cancelled,
+                "write cancelled before write; file was not modified",
+                false,
+            ),
+            &runtime(CallState::CancelledFinished),
+        );
+        // Host "cancelled" is settled but neither ok nor error:* — not counted.
+        assert!(text.contains("0 succeeded, 0 failed"), "{text}");
+        assert!(!text.contains("calls ("), "{text}");
     }
 
     #[test]
@@ -1281,6 +1350,19 @@ mod outcome_tests {
     }
 
     #[test]
+    fn unknown_host_outcome_is_unsettled() {
+        assert_eq!(
+            merge_call_outcome(None, Some(CallState::Completed)),
+            "unsettled"
+        );
+        assert_eq!(merge_call_outcome(Some(""), None), "unsettled");
+        assert_eq!(
+            merge_call_outcome(Some("error:timeout"), None),
+            "error:timeout"
+        );
+    }
+
+    #[test]
     fn a_second_javascript_argument_is_rejected_before_the_tool_runs() {
         let payload = Json::new(json!([{"path": "a.txt"}, {"timeout_ms": 1}]));
         match decode_invocation(&payload) {
@@ -1289,6 +1371,104 @@ mod outcome_tests {
         }
         let one = Json::new(json!({"path": "a.txt"}));
         assert!(decode_invocation(&one).is_ok());
+    }
+
+    #[test]
+    fn ledger_keeps_a_priority_row_past_the_head_and_marks_a_hidden_session_read() {
+        let ledger = CallLedger::new();
+        for seq in 1..=256 {
+            ledger.begin(seq, "read", "path=probe.txt");
+            ledger.record(seq, &ToolCallResult::ok("ok"));
+        }
+        ledger.begin(300, "read", "path=.litecode/sessions/abc.md");
+        ledger.record(300, &ToolCallResult::ok("session"));
+        ledger.begin(301, "write", "path=a.txt");
+        ledger.record(
+            301,
+            &ToolCallResult::error_with_kind(ToolErrorKind::NotFound, "missing", false),
+        );
+        let snapshot = ledger.snapshot();
+        assert!(snapshot.lines.iter().any(|line| line.seq == 301));
+        assert!(!snapshot.lines.iter().any(|line| line.seq == 300));
+        assert!(snapshot.session_read_hidden);
+        assert_eq!(snapshot.tool_counts.get("read").copied(), Some(257));
+        assert_eq!(snapshot.error_counts.get("not_found").copied(), Some(1));
+
+        let mut result = ToolCallResult::ok("edited");
+        result.data = Some(json!({
+            "results": [
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": true, "path": "a", "message": "ok"},
+                {"ok": false, "path": "b", "message": "no"}
+            ]
+        }));
+        let edit = CallLedger::new();
+        edit.begin(1, "edit", "path=note.txt");
+        edit.record(1, &result);
+        let edit_line = &edit.snapshot().lines[0];
+        assert_eq!(edit_line.outcome.as_deref(), Some("ok(9/10)"));
+    }
+
+    #[test]
+    fn omitted_session_read_marks_the_ledger_and_states_the_count() {
+        let ledger = CallLedger::new();
+        let mut calls = Vec::new();
+        for seq in 1..=466 {
+            let summary = if seq == 300 {
+                "path=.litecode/sessions/abc.md"
+            } else {
+                "path=probe.txt"
+            };
+            ledger.begin(seq, "read", summary);
+            ledger.record(seq, &ToolCallResult::ok("ok"));
+            calls.push(CallRecord {
+                seq,
+                namespace: "tools".into(),
+                name: "read".into(),
+                started: Duration::from_millis(1),
+                ended: Some(Duration::from_millis(2)),
+                state: CallState::Completed,
+            });
+        }
+        let outcome = Outcome {
+            logs: Vec::new(),
+            dropped_undefined: Default::default(),
+            value: Some(Json::new(json!("done"))),
+            failure: None,
+            calls,
+            duration_ms: 25,
+        };
+        let text = render_run_output(&ledger, &outcome, 120_000, "").content;
+        assert!(
+            text.starts_with("run_code ok · 466 succeeded, 0 failed · 25ms"),
+            "{text}"
+        );
+        assert!(
+            text.contains(crate::session::transcript_file::RUN_CODE_SESSION_NOTE),
+            "{text}"
+        );
+        assert!(crate::session::transcript_file::ledger_reads_sessions(
+            &text
+        ));
+        assert!(!text.contains("calls ("), "{text}");
+        assert!(!text.contains("diagnostics:"), "{text}");
+        let data = render_run_output(&ledger, &outcome, 120_000, "")
+            .data
+            .expect("human data");
+        assert_eq!(data["succeeded"], 466);
+        assert_eq!(data["failed"], 0);
+        assert_eq!(data["duration_ms"], 25);
+        assert_eq!(data["ok"], true);
+        assert_eq!(data["by_tool"]["read"]["ok"], 466);
+        assert_eq!(data["by_tool"]["read"]["fail"], 0);
+        assert!(data.get("unsettled").is_none());
     }
 
     #[test]
@@ -1347,4 +1527,30 @@ mod outcome_tests {
         assert_eq!(data["by_tool"]["write"]["fail"], 1);
     }
 
+    #[test]
+    fn wont_start_data_is_minimal_without_by_tool() {
+        let ledger = CallLedger::new();
+        let outcome = Outcome {
+            logs: Vec::new(),
+            dropped_undefined: Default::default(),
+            value: None,
+            failure: Some(Failure::syntax(
+                "Unexpected token `)`",
+                None,
+                1,
+            )),
+            duration_ms: 1,
+            calls: Vec::new(),
+        };
+        let result = render_run_output(&ledger, &outcome, 120_000, "return (;");
+        assert!(result.error.is_some());
+        assert!(result.content.starts_with("run_code failed: syntax"), "{}", result.content);
+        assert!(!result.content.contains("by_tool"), "{}", result.content);
+        let data = result.data.expect("minimal data");
+        assert_eq!(data["ok"], false);
+        assert_eq!(data["failure_kind"], "syntax");
+        assert!(data.get("succeeded").is_none());
+        assert!(data.get("by_tool").is_none());
+        assert!(data.get("duration_ms").is_none());
+    }
 }

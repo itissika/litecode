@@ -12,3 +12,16 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub fn channel() -> &'static str {
     env!("LITECODE_BUILD_CHANNEL")
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn channel_is_non_empty() {
+        assert!(!super::channel().is_empty());
+    }
+
+    #[test]
+    fn dev_build_reports_dev_channel() {
+        assert_eq!(super::channel(), "dev");
+    }
+}

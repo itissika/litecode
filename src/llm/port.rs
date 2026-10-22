@@ -195,7 +195,7 @@ fn has_replay_text(reasoning: &ReasoningItem) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::ReasoningTextContent;
+    use crate::authority::responses::{ReasoningTextContent, SummaryTextContent};
     use crate::provider_catalog::ProviderCatalog;
     use crate::types::user_text;
     use std::path::Path;
@@ -247,6 +247,57 @@ mod tests {
             endpoint_type: Some(endpoint.to_string()),
             model_ref: Some(model.to_string()),
         })
+    }
+
+    #[test]
+    fn ciphertext_target_keeps_only_replayable_reasoning() {
+        let target = target("responses", "");
+        let mut items = vec![
+            reasoning(Some("own"), None, None),
+            reasoning(Some("foreign"), None, None),
+            reasoning(None, Some("text only"), None),
+            user_text("stay"),
+        ];
+        let producers = vec![producer("p"), producer("q"), producer("p"), producer("p")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 4],
+            &target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.items_in, 4);
+        assert_eq!(report.items_out, 2, "{items:?}");
+        assert_eq!(report.reasoning_dropped, 2);
+        assert_eq!(report.ciphertext_stripped, 1);
+        assert!(
+            matches!(&items[0], Item::Reasoning(r) if r.encrypted_content.as_deref() == Some("own"))
+        );
+    }
+
+    #[test]
+    fn summary_target_keeps_only_own_reasoning_with_identity() {
+        let target = target(
+            "responses",
+            "reasoning = { tiers = { low = \"l\", medium = \"m\", high = \"h\" }, replay = \"summary\" }\n",
+        );
+        let mut items = vec![
+            reasoning(None, Some("own"), Some("rs_1")),
+            reasoning(None, Some("foreign"), Some("rs_2")),
+            reasoning(None, Some("own but no id"), None),
+        ];
+        let producers = vec![producer("p"), producer("q"), producer("p")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 3],
+            &target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.items_out, 1);
+        assert_eq!(report.reasoning_dropped, 2);
     }
 
     #[test]
@@ -343,6 +394,181 @@ mod tests {
     }
 
     #[test]
+    fn chat_target_keeps_own_and_foreign_readable_text() {
+        let target = target("chat_completions", "");
+        let mut items = vec![
+            reasoning(None, Some("own thought"), None),
+            reasoning(None, Some("foreign thought"), None),
+            user_text("stay"),
+        ];
+        let producers = vec![producer("p"), producer("q"), producer("p")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 3],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{items:?}");
+        assert_eq!(report.items_out, 3);
+        assert_eq!(crate::types::item_text_preview(&items[0]), "own thought");
+        assert_eq!(
+            crate::types::item_text_preview(&items[1]),
+            "foreign thought"
+        );
+    }
+
+    #[test]
+    fn chat_target_keeps_foreign_readable_text() {
+        let target = target("chat_completions", "");
+        let mut items = vec![
+            reasoning(None, Some("foreign thought"), None),
+            user_text("stay"),
+        ];
+        let producers = vec![producer("q"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{items:?}");
+        assert_eq!(report.items_out, 2);
+        assert_eq!(
+            crate::types::item_text_preview(&items[0]),
+            "foreign thought"
+        );
+    }
+
+    /// OpenAI Responses exposes readable summaries. A Chat target accepts that
+    /// plain text even when OpenAI was not the provider that produced it.
+    #[test]
+    fn chat_target_keeps_foreign_summary_text() {
+        let target = target("chat_completions", "");
+        let mut item = reasoning(None, None, None);
+        if let Item::Reasoning(reasoning) = &mut item {
+            reasoning.summary = vec![SummaryPart::SummaryText(SummaryTextContent {
+                text: "foreign summary".into(),
+            })];
+        }
+        let mut items = vec![item, user_text("stay")];
+        let producers = vec![producer("q"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{items:?}");
+        assert_eq!(report.items_out, 2);
+        assert_eq!(
+            crate::types::item_text_preview(&items[0]),
+            "foreign summary"
+        );
+    }
+
+    /// Claude carries plaintext thinking beside a signature. Chat cannot use
+    /// the signature, but the readable thinking text remains portable.
+    #[test]
+    fn chat_target_strips_foreign_signature_but_keeps_thinking_text() {
+        let target = target("chat_completions", "");
+        let mut items = vec![
+            reasoning(Some("foreign-signature"), Some("claude thought"), None),
+            user_text("stay"),
+        ];
+        let producers = vec![signed_producer("q", "messages", "q/claude"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{items:?}");
+        assert_eq!(report.ciphertext_stripped, 1);
+        let Item::Reasoning(reasoning) = &items[0] else {
+            panic!("expected reasoning, got {:?}", items[0]);
+        };
+        assert_eq!(reasoning.encrypted_content, None);
+        assert_eq!(crate::types::item_text_preview(&items[0]), "claude thought");
+    }
+
+    /// No readable text means there is nothing a Chat target can receive.
+    #[test]
+    fn chat_target_drops_foreign_opaque_only_reasoning() {
+        let target = target("chat_completions", "");
+        let mut items = vec![
+            reasoning(Some("foreign-cipher"), None, None),
+            user_text("stay"),
+        ];
+        let producers = vec![producer("q"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.reasoning_dropped, 1, "{items:?}");
+        assert_eq!(report.items_out, 1);
+    }
+
+    #[test]
+    fn deepseek_text_replay_keeps_foreign_readable_text() {
+        let target = target(
+            "responses",
+            "reasoning = { replay = \"text\", tiers = { low = \"l\", medium = \"m\", high = \"h\" } }\n",
+        );
+        let mut items = vec![
+            reasoning(None, Some("foreign thought"), None),
+            user_text("stay"),
+        ];
+        let producers = vec![producer("q"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            true,
+        );
+        assert_eq!(report.reasoning_dropped, 0, "{items:?}");
+        assert_eq!(report.items_out, 2);
+        assert_eq!(
+            crate::types::item_text_preview(&items[0]),
+            "foreign thought"
+        );
+    }
+
+    #[test]
+    fn rebased_signature_is_stripped_and_counted() {
+        let target = target(
+            "messages",
+            "reasoning = { tiers = { low = \"l\", medium = \"m\", high = \"h\" } }\n",
+        );
+        let mut items = vec![reasoning(Some("sig"), Some("signed"), None)];
+        let producers = vec![signed_producer("p", "messages", "p/m")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[true],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            false,
+        );
+        assert_eq!(report.signatures_stripped, 1);
+        assert_eq!(report.reasoning_dropped, 1);
+        assert_eq!(report.items_out, 0);
+    }
+
+    #[test]
     fn a_target_without_tool_support_blocks_the_request() {
         let target = target("responses", "tool_call = false\n");
         let mut items = vec![user_text("hi")];
@@ -361,4 +587,63 @@ mod tests {
         );
     }
 
+    #[test]
+    fn kept_plus_dropped_always_equals_input() {
+        let target = target("responses", "");
+        let mut items = vec![
+            reasoning(Some("a"), None, None),
+            reasoning(None, Some("b"), None),
+            user_text("c"),
+            reasoning(Some("d"), None, None),
+        ];
+        let producers = vec![producer("q"), producer("p"), producer("p"), producer("p")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 4],
+            &target,
+            ThinkingSpec::Off,
+            false,
+        );
+        assert_eq!(report.items_out + report.reasoning_dropped, report.items_in);
+    }
+
+    #[test]
+    fn deepseek_text_replay_keeps_own_and_foreign_text() {
+        let target = target(
+            "responses",
+            "reasoning = { replay = \"text\", tiers = { low = \"l\", medium = \"m\", high = \"h\" } }\n",
+        );
+        let mut items = vec![
+            reasoning(None, Some("own"), None),
+            reasoning(None, Some("foreign"), None),
+        ];
+        let producers = vec![producer("p"), producer("q")];
+        let report = port(
+            &mut items,
+            &producers,
+            &[false; 2],
+            &target,
+            ThinkingSpec::Tier(crate::platform_knobs::ThinkingTier::Medium),
+            true,
+        );
+        assert_eq!(report.items_out, 2);
+        assert_eq!(report.reasoning_dropped, 0);
+        assert_eq!(crate::types::item_text_preview(&items[0]), "own");
+        assert_eq!(crate::types::item_text_preview(&items[1]), "foreign");
+    }
+
+    #[test]
+    fn summary_parts_count_as_replay_text() {
+        let mut item = reasoning(None, None, Some("rs"));
+        if let Item::Reasoning(reasoning) = &mut item {
+            reasoning.summary = vec![SummaryPart::SummaryText(SummaryTextContent {
+                text: "summary".into(),
+            })];
+        }
+        assert!(has_replay_text(match &item {
+            Item::Reasoning(reasoning) => reasoning,
+            _ => unreachable!(),
+        }));
+    }
 }

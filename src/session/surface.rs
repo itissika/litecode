@@ -374,6 +374,80 @@ mod tests {
     }
 
     #[test]
+    fn replace_puts_summary_where_shadowed_range_was_not_at_log_tail() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "d0");
+        append_user(&mut log, "d1");
+        append_user(&mut log, "d2");
+        append_user(&mut log, "d3");
+        append_user(&mut log, "d4");
+        assert_eq!(log.next_seq(), 5);
+
+        let mut summary = EventDraft::surface_item(
+            EventType::ItemUser,
+            &user_text("summary"),
+            SurfaceOp::Replace { start: 0, end: 1 },
+        )
+        .expect("draft");
+        summary.source_seqs = Some(vec![0, 1]);
+        log.append(summary).expect("replace");
+
+        let pre = fold_surface(&log.events()[..5]).expect("pre");
+        let shadowed = shadowed_nodes(&pre, 0, 1).expect("shadowed");
+        assert_eq!(shadowed, vec![0, 1]);
+        assert_eq!(
+            &pre.nodes[shadowed.len()..],
+            &[2, 3, 4],
+            "cut is the shadowed/unshadowed surface boundary, not the log tail"
+        );
+
+        let messages = derive_messages(log.events()).expect("derive_messages");
+        let texts: Vec<_> = messages.iter().map(item_text_preview).collect();
+        assert_eq!(texts, vec!["summary", "d2", "d3", "d4"]);
+        let after = fold_surface(log.events()).expect("after");
+        assert_eq!(after.nodes, vec![5, 2, 3, 4]);
+        assert_ne!(
+            after.nodes[0],
+            *shadowed.last().expect("non-empty"),
+            "replace seq is not the cut"
+        );
+
+        let transcript = derive_transcript_items(log.events()).expect("transcript");
+        let t: Vec<_> = transcript.iter().map(item_text_preview).collect();
+        assert_eq!(t, vec!["d0", "d1", "d2", "d3", "d4"]);
+    }
+
+    #[test]
+    fn transcript_is_append_origin_sorted_by_seq_not_slice_order() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "d0");
+        append_user(&mut log, "d1");
+        let mut shuffled = log.events().to_vec();
+        shuffled.reverse();
+        let transcript = derive_transcript_items(&shuffled).expect("transcript");
+        let t: Vec<_> = transcript.iter().map(item_text_preview).collect();
+        assert_eq!(t, vec!["d0", "d1"]);
+    }
+
+    #[test]
+    fn failed_append_does_not_enter_the_log() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "only");
+        let before = log.events().len();
+
+        let mut bad = EventDraft::surface_item(
+            EventType::ItemUser,
+            &user_text("nope"),
+            SurfaceOp::Replace { start: 9, end: 9 },
+        )
+        .expect("draft");
+        bad.source_seqs = Some(vec![9]);
+        assert!(log.append(bad).is_err());
+        assert_eq!(log.events().len(), before);
+        assert_eq!(log.next_seq(), 1);
+    }
+
+    #[test]
     fn unknown_non_ignorable_type_is_rejected() {
         let mut log = EventLog::new();
         let err = log
@@ -388,6 +462,40 @@ mod tests {
             })
             .unwrap_err();
         assert!(matches!(err, LitecodeError::InvalidSessionEvent(_)));
+    }
+
+    #[test]
+    fn session_event_seq_is_required_not_optional() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "x");
+        let event = &log.events()[0];
+        let seq: Seq = event.seq;
+        assert_eq!(seq, 0);
+        assert!(event.surface_op.is_some());
+        let _ = event.source_seqs.as_ref();
+    }
+
+    #[test]
+    fn incremental_surface_matches_full_fold() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "d0");
+        append_user(&mut log, "d1");
+        append_user(&mut log, "d2");
+        let mut summary = EventDraft::surface_item(
+            EventType::ItemUser,
+            &user_text("summary"),
+            SurfaceOp::Replace { start: 0, end: 1 },
+        )
+        .expect("draft");
+        summary.source_seqs = Some(vec![0, 1]);
+        log.append(summary).expect("replace");
+        append_user(&mut log, "d3");
+
+        assert_eq!(
+            log.surface().nodes,
+            fold_surface(log.events()).expect("fold").nodes
+        );
+        assert_eq!(log.surface().nodes, vec![3, 2, 4]);
     }
 
     fn append_compacted(log: &mut EventLog, summary: &str, from: Seq, to: Seq) {
@@ -441,4 +549,72 @@ mod tests {
         assert_eq!(fold_surface(log.events()).expect("fold").nodes, vec![2]);
     }
 
+    #[test]
+    fn control_plane_kinds_are_absent_from_both_views() {
+        let mut log = EventLog::new();
+        append_user(&mut log, "hi");
+        log.append(EventDraft {
+            time: 0,
+            event_type: EventType::TurnStart,
+            data: serde_json::json!({"turn": "t1"}),
+            surface_op: None,
+            source_seqs: None,
+            ignorable: false,
+            state: crate::session::model::LogState::Final,
+        })
+        .expect("turn/start");
+        log.append(EventDraft {
+            time: 0,
+            event_type: EventType::TurnEnd,
+            data: serde_json::json!({"turn": "t1", "reason": "completed"}),
+            surface_op: None,
+            source_seqs: None,
+            ignorable: false,
+            state: crate::session::model::LogState::Final,
+        })
+        .expect("turn/end");
+        assert!(EventType::TurnEnd.is_control_plane());
+        assert_eq!(log.events().len(), 3);
+        let agent = derive_messages(log.events()).expect("agent");
+        assert_eq!(agent.len(), 1);
+        assert_eq!(item_text_preview(&agent[0]), "hi");
+        let human = derive_transcript_items(log.events()).expect("human");
+        assert_eq!(human.len(), 1);
+    }
+
+    #[test]
+    fn job_exit_appends_as_spine_item() {
+        use crate::authority::responses::{InputRole, MessageItem};
+        use crate::reminder::{BashExitBody, BashExitEntry, Reminder};
+
+        let reminder = Reminder::BashExit(BashExitBody {
+            exits: vec![BashExitEntry {
+                job_id: "job-9".into(),
+                command: "echo".into(),
+                exit_code: 0,
+                killed: false,
+                output_file: "out".into(),
+            }],
+            running: vec![],
+            text: "Background bash job-9 exited with code 0.".into(),
+        });
+        let mut log = EventLog::new();
+        append_user(&mut log, "hi");
+        log.append(EventDraft::reminder(&reminder).unwrap())
+            .expect("job_exit");
+        assert_eq!(fold_surface(log.events()).expect("fold").nodes, vec![0, 1]);
+        let agent = derive_messages(log.events()).expect("agent");
+        assert_eq!(agent.len(), 2);
+        assert_eq!(item_text_preview(&agent[0]), "hi");
+        match &agent[1] {
+            crate::types::Item::Message(MessageItem::Input(input)) => {
+                assert_eq!(input.role, InputRole::User);
+            }
+            other => panic!("job exit AgentView must be a user Item, got {other:?}"),
+        }
+        assert!(item_text_preview(&agent[1]).contains("Background bash job-9"));
+        let human = derive_transcript_items(log.events()).expect("human");
+        assert_eq!(human.len(), 1);
+        assert_eq!(item_text_preview(&human[0]), "hi");
+    }
 }

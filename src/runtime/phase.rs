@@ -117,7 +117,7 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::permission::{
-        AskOutcome, AskPrompt, CancellingPermissionSink, RecordingPermissionSink,
+        AskOutcome, AskPrompt, AskReply, CancellingPermissionSink, RecordingPermissionSink,
     };
 
     struct RecordingObserver {
@@ -152,6 +152,72 @@ mod tests {
 
     fn prompt() -> AskPrompt<'static> {
         AskPrompt::permission("bash", "rule-shell", "run ls")
+    }
+
+    /// T1: enter emits PermissionAwaiting{true} then PhaseChanged(AwaitingPermission{…}) before inner.
+    #[test]
+    fn t1_enter_emits_awaiting_bool_then_phase() {
+        let observer = RecordingObserver::new();
+        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
+            always: false,
+        }));
+        let sink = wrap_with(inner.clone(), observer.clone(), 3);
+
+        let _ = sink.ask(&prompt(), &CancellationToken::new());
+
+        let events = observer.snapshot();
+        assert!(
+            matches!(
+                events.get(0),
+                Some(InternalEvent::PermissionAwaiting { awaiting: true })
+            ),
+            "first event must be PermissionAwaiting{{true}}, got {:?}",
+            events.first()
+        );
+        assert!(
+            matches!(
+                events.get(1),
+                Some(InternalEvent::PhaseChanged {
+                    phase: TurnPhase::AwaitingPermission {
+                        tool,
+                        rule_id,
+                        summary
+                    },
+                    step: 3,
+                }) if tool == "bash" && rule_id == "rule-shell" && summary == "run ls"
+            ),
+            "second event must be PhaseChanged(AwaitingPermission), got {:?}",
+            events.get(1)
+        );
+        // inner was called (RecordingPermissionSink recorded the ask)
+        assert_eq!(inner.calls.lock().unwrap().len(), 1);
+    }
+
+    /// T2: Allow leave → PermissionAwaiting{false} + ExecutingTools.
+    #[test]
+    fn t2_allow_leave_executing_tools() {
+        let observer = RecordingObserver::new();
+        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
+            always: true,
+        }));
+        let sink = wrap_with(inner, observer.clone(), 1);
+
+        let reply = sink.ask(&prompt(), &CancellationToken::new());
+        assert!(matches!(reply.outcome, AskOutcome::Allow { always: true }));
+
+        let events = observer.snapshot();
+        assert_eq!(events.len(), 4, "enter×2 + leave×2, got {events:?}");
+        assert!(matches!(
+            events[2],
+            InternalEvent::PermissionAwaiting { awaiting: false }
+        ));
+        assert!(matches!(
+            events[3],
+            InternalEvent::PhaseChanged {
+                phase: TurnPhase::ExecutingTools,
+                step: 1,
+            }
+        ));
     }
 
     /// T3: Deny leave → PermissionAwaiting{false} + ExecutingTools (leave AwaitingPermission).
@@ -279,4 +345,18 @@ mod tests {
         );
     }
 
+    /// Sanity: reply is forwarded unchanged (Allow always flag preserved).
+    #[test]
+    fn reply_outcome_forwarded_unchanged() {
+        let observer = RecordingObserver::new();
+        let inner = Arc::new(RecordingPermissionSink::new(AskOutcome::Allow {
+            always: true,
+        }));
+        let sink = wrap_with(inner, observer, 0);
+        let reply = sink.ask(&prompt(), &CancellationToken::new());
+        assert_eq!(
+            reply,
+            AskReply::from_outcome(AskOutcome::Allow { always: true })
+        );
+    }
 }

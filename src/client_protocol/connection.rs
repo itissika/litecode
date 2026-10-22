@@ -2089,8 +2089,187 @@ mod compact_error_tests {
         assert_eq!(v["error"]["data"]["message"], v["error"]["message"]);
     }
 
+    #[test]
+    fn compact_real_failure_is_compaction_failed_not_retryable() {
+        let v = wire(LitecodeError::CompactionFailed);
+        assert_eq!(v["error"]["code"], -32000);
+        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
+        assert_eq!(v["error"]["data"]["retryable"], false);
+        let v = wire(LitecodeError::Config("no context window".into()));
+        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
+    }
+
+    #[test]
+    fn compact_nothing_and_cancelled_unchanged() {
+        for e in [LitecodeError::NothingToCompact, LitecodeError::Canceled] {
+            let v = wire(e);
+            assert_eq!(v["error"]["code"], -32000);
+            assert!(v["error"].get("data").is_none());
+        }
+    }
 }
 
+#[cfg(test)]
+mod pending_ask_tests {
+    use super::{
+        GrantApply, PendingAsk, abort_all_pending_asks, apply_permission_grant,
+        retain_pending_on_disconnect,
+    };
+    use crate::permission::{AskOutcome, AskReply};
+    use std::collections::HashMap;
+    use tokio::sync::oneshot;
+
+    fn insert_ask(
+        map: &mut HashMap<String, PendingAsk>,
+        request_id: &str,
+        session_id: &str,
+    ) -> oneshot::Receiver<AskReply> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        map.insert(
+            request_id.to_string(),
+            PendingAsk {
+                session_id: session_id.to_string(),
+                agent_name: "default".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                reply_tx,
+            },
+        );
+        reply_rx
+    }
+
+    #[test]
+    fn matching_accept_resolves_allow() {
+        let mut pending = HashMap::new();
+        let rx = insert_ask(&mut pending, "req-1", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-1".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Resolved {
+                session_id,
+                approved,
+                always,
+                ..
+            } => {
+                assert_eq!(session_id, "sess-a");
+                assert!(approved);
+                assert!(!always);
+            }
+            GrantApply::Unknown { .. } => panic!("expected resolved"),
+        }
+        let reply = rx.blocking_recv().unwrap();
+        assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+        assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn matching_reject_resolves_deny() {
+        let mut pending = HashMap::new();
+        let rx = insert_ask(&mut pending, "req-2", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-2".into(),
+            "bash".into(),
+            false,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Resolved { approved, .. } => assert!(!approved),
+            GrantApply::Unknown { .. } => panic!("expected resolved"),
+        }
+        let reply = rx.blocking_recv().unwrap();
+        assert_eq!(reply.outcome, AskOutcome::Deny);
+    }
+
+    #[test]
+    fn unknown_grant_is_not_silently_dropped() {
+        let mut pending = HashMap::new();
+        let _rx = insert_ask(&mut pending, "req-live", "sess-a");
+        match apply_permission_grant(
+            &mut pending,
+            "req-other".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        ) {
+            GrantApply::Unknown { request_id, .. } => assert_eq!(request_id, "req-other"),
+            GrantApply::Resolved { .. } => panic!("mismatch must be Unknown"),
+        }
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key("req-live"));
+    }
+
+    #[test]
+    fn abort_all_pending_is_aborted_not_deny() {
+        let mut pending = HashMap::new();
+        let rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let rx_b = insert_ask(&mut pending, "b", "sess-b");
+        let rejected = abort_all_pending_asks(&mut pending);
+        assert_eq!(rejected.len(), 2);
+        assert!(pending.is_empty());
+        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Aborted);
+        assert_eq!(rx_b.blocking_recv().unwrap().outcome, AskOutcome::Aborted);
+    }
+
+    #[test]
+    fn retain_pending_on_disconnect_does_not_deny() {
+        let mut pending = HashMap::new();
+        let rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let listed = retain_pending_on_disconnect(&mut pending);
+        assert_eq!(listed.len(), 1);
+        assert!(pending.is_empty());
+        // oneshot closed without Deny — recv errors / is cancelled.
+        assert!(rx_a.blocking_recv().is_err());
+    }
+
+    #[test]
+    fn concurrent_asks_resolve_independently() {
+        let mut pending = HashMap::new();
+        let mut rx_a = insert_ask(&mut pending, "a", "sess-a");
+        let rx_b = insert_ask(&mut pending, "b", "sess-b");
+        apply_permission_grant(
+            &mut pending,
+            "b".into(),
+            "bash".into(),
+            true,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        );
+        assert_eq!(pending.len(), 1);
+        assert!(pending.contains_key("a"));
+        assert_eq!(
+            rx_b.blocking_recv().unwrap().outcome,
+            AskOutcome::Allow { always: false }
+        );
+        assert!(rx_a.try_recv().is_err());
+        apply_permission_grant(
+            &mut pending,
+            "a".into(),
+            "bash".into(),
+            false,
+            false,
+            None,
+            Vec::new(),
+            HashMap::new(),
+        );
+        assert_eq!(rx_a.blocking_recv().unwrap().outcome, AskOutcome::Deny);
+        assert!(pending.is_empty());
+    }
+}
 
 #[cfg(test)]
 mod ask_loop_tests {
@@ -2235,6 +2414,129 @@ mod ask_loop_tests {
             .expect("grant should resolve Ask")
             .expect("oneshot open");
         assert_eq!(reply.outcome, AskOutcome::Deny);
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_aborts_pending_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id: "sess-ask".into(),
+                agent_name: "default".into(),
+                turn_id: "turn-1".into(),
+                request_id: "req-ask".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                summary: "run".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        request_tx.send(SessionRequest::Cancel).unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("cancel should abort Ask")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Aborted);
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_grant_is_buffered_as_stray_then_consumed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        // Early grant before Ask registration.
+        request_tx
+            .send(SessionRequest::PermissionGrant {
+                request_id: "req-early".into(),
+                tool: "bash".into(),
+                approved: true,
+                always: false,
+                free_text: None,
+                selected: Vec::new(),
+                answers: HashMap::new(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id: "sess-ask".into(),
+                agent_name: "default".into(),
+                turn_id: "turn-1".into(),
+                request_id: "req-early".into(),
+                tool: "bash".into(),
+                rule_id: "rule".into(),
+                summary: "run".into(),
+                kind: AskKind::Permission,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("stray grant should resolve Ask")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
 
         let _ = request_tx.send(SessionRequest::Quit);
         let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;

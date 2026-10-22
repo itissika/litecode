@@ -144,6 +144,92 @@ mod tests {
     use super::*;
     use crate::config::TurnGuard;
 
+    #[tokio::test]
+    async fn turn_events_carry_raw_status_and_parent_status_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.path().join("s.db").to_string_lossy().to_string(),
+        ));
+        let parent = m.open_session("/proj", "default", None).await.unwrap();
+        let child = m.test_child_session("/proj", &parent, "c").unwrap();
+        let tracker = ParentStatusTracker::default();
+        let mut rx = m.subscribe_lifecycle();
+
+        // begin_turn does not fire Runtime's hook; drive the handler directly.
+        m.begin_turn(
+            &child,
+            "t".into(),
+            tokio_util::sync::CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+        tracker.on_turn_status(&m, &child);
+        let mut frames = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            frames.push(project_lifecycle(&m, &ev));
+        }
+        let started = frames
+            .iter()
+            .find(|f| f["params"]["event"] == "turn_started")
+            .expect("turn_started");
+        assert_eq!(started["params"]["status"], "running");
+        let changed: Vec<_> = frames
+            .iter()
+            .filter(|f| f["params"]["event"] == "status_changed")
+            .collect();
+        assert_eq!(changed.len(), 1, "{frames:?}");
+        assert_eq!(changed[0]["params"]["session_id"], parent.as_str());
+        assert_eq!(changed[0]["params"]["status"], "running_with_subagent");
+
+        // Same state again → no duplicate.
+        tracker.on_turn_status(&m, &child);
+        assert!(rx.try_recv().is_err());
+
+        m.finish_turn(&child, "t").unwrap();
+        tracker.on_turn_status(&m, &child);
+        let mut frames = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            frames.push(project_lifecycle(&m, &ev));
+        }
+        let finished = frames
+            .iter()
+            .find(|f| f["params"]["event"] == "turn_finished")
+            .expect("turn_finished");
+        assert_eq!(finished["params"]["status"], "idle");
+        let changed = frames
+            .iter()
+            .find(|f| f["params"]["event"] == "status_changed")
+            .expect("status_changed back to idle");
+        assert_eq!(changed["params"]["status"], "idle");
+    }
+
+    #[tokio::test]
+    async fn installed_hook_is_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = Arc::new(SessionManager::new_for_test(
+            Arc::new(TurnGuard::new()),
+            dir.path().join("s.db").to_string_lossy().to_string(),
+        ));
+        let parent = m.open_session("/proj", "default", None).await.unwrap();
+        let child = m.test_child_session("/proj", &parent, "c").unwrap();
+        let mut rx = m.subscribe_lifecycle();
+        let _tracker = install_parent_status_hook(&m);
+        // reserve + release fires the hook (release → Idle): parent stays idle,
+        // so no status_changed is pushed.
+        m.reserve_turn(&child, "t".into(), 5, "default", "/proj")
+            .unwrap();
+        assert!(m.release_turn_reservation(&child, "t"));
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, LifecycleEvent::SessionStatusChanged { .. }),
+                "unchanged aggregate must not push: {ev:?}"
+            );
+        }
+    }
+
     fn wp099_turn_end(m: &SessionManager, sid: &str, turn: &str, reason: &str, by: Option<&str>) {
         let mut data = json!({"turn": turn, "reason": reason, "final_text": ""});
         if let Some(by) = by {

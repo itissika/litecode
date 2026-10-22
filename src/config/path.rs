@@ -178,6 +178,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canon_abs_round_trips_tempdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let lap = canon_abs(dir.path()).unwrap();
+        assert!(lap.is_absolute());
+        let s = lap.to_string_lossy();
+        assert!(!s.starts_with(r"\\?\"), "LAP must not retain verbatim: {s}");
+        // Second call must be identical (stable).
+        assert_eq!(lap, canon_abs(&lap).unwrap());
+    }
+
+    #[test]
+    fn canon_abs_lossy_on_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nope").join("file.txt");
+        let lap = canon_abs_lossy(&missing);
+        assert!(!lap.to_string_lossy().starts_with(r"\\?\"));
+    }
+
+    #[test]
+    fn canon_join_nonexistent_under_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = canon_abs(dir.path()).unwrap();
+        let target = root.join("sub").join("new.txt");
+        let resolved = canon_join_nonexistent(&root, &target).unwrap();
+        assert!(resolved.starts_with(&root));
+        assert_eq!(resolved, strip_verbatim(root.join("sub").join("new.txt")));
+    }
+
+    #[test]
+    fn is_under_tempdir_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(is_under(&file, dir.path()));
+        assert!(!is_under(dir.path(), &file));
+    }
+
     #[cfg(windows)]
     #[test]
     fn is_under_is_case_insensitive_on_windows() {

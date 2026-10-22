@@ -1038,8 +1038,8 @@ pub fn items_from_tool_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
+    use crate::session::media::write_media_blob;
+    use crate::types::{MediaArtifact, MediaSource, ToolOutputPart};
 
     #[test]
     fn cross_session_lock_follows_effect_writes() {
@@ -1063,6 +1063,133 @@ mod tests {
         assert!(!write.writes.is_empty());
         assert_eq!(write.writes, edit.writes);
         assert!(read.writes.is_empty());
+    }
+
+    #[test]
+    fn blob_ref_image_becomes_input_image_data_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let blob_id = write_media_blob(dir.path(), b"\x89PNG").unwrap();
+        let result = ToolCallResult {
+            content: "shot".into(),
+            parts: vec![ToolOutputPart::Media {
+                artifact: MediaArtifact::image(MediaSource::BlobRef { blob_id }, "image/png"),
+            }],
+            ..ToolCallResult::ok("")
+        };
+        let out = function_call_output_from_result(&result, Some(dir.path())).unwrap();
+        match out {
+            FunctionCallOutput::Content(parts) => {
+                let img = parts.iter().find_map(|p| match p {
+                    InputContent::InputImage(i) => Some(i),
+                    _ => None,
+                });
+                let img = img.expect("InputImage");
+                let url = img.image_url.as_deref().expect("image_url");
+                assert!(url.starts_with("data:image/png;base64,"));
+                assert!(!parts.iter().any(|p| matches!(
+                    p,
+                    InputContent::InputText(t) if t.text.contains("blob:")
+                )));
+            }
+            FunctionCallOutput::Text(t) => panic!("expected Content, got Text: {t}"),
+        }
+    }
+
+    #[test]
+    fn local_file_after_finalize_encodes_as_input_image() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("shot.png");
+        // Minimal PNG header so finalize can optionally read dims; bytes still materialize.
+        std::fs::write(&file_path, b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR").unwrap();
+        let raw = ToolCallResult {
+            content: String::new(),
+            parts: vec![ToolOutputPart::image_file(
+                file_path.to_string_lossy(),
+                "image/png",
+            )],
+            ..ToolCallResult::ok("")
+        };
+        let finalized = output::finalize_tool_call_result(raw, dir.path(), 1024).unwrap();
+        assert!(matches!(
+            finalized.parts[0],
+            ToolOutputPart::Media {
+                artifact: MediaArtifact {
+                    source: MediaSource::BlobRef { .. },
+                    ..
+                }
+            }
+        ));
+        let out = function_call_output_from_result(&finalized, Some(dir.path())).unwrap();
+        match out {
+            FunctionCallOutput::Content(parts) => {
+                assert!(
+                    parts
+                        .iter()
+                        .any(|p| matches!(p, InputContent::InputImage(_)))
+                );
+            }
+            FunctionCallOutput::Text(t) => panic!("expected Content, got Text: {t}"),
+        }
+    }
+
+    #[test]
+    fn missing_blob_returns_err() {
+        let result = ToolCallResult {
+            content: String::new(),
+            parts: vec![ToolOutputPart::Media {
+                artifact: MediaArtifact::image(
+                    MediaSource::BlobRef {
+                        blob_id: "missing-blob".into(),
+                    },
+                    "image/png",
+                ),
+            }],
+            ..ToolCallResult::ok("")
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let err = function_call_output_from_result(&result, Some(dir.path())).unwrap_err();
+        assert!(
+            matches!(err, crate::types::LitecodeError::MediaBlobMissing(_))
+                || err.to_string().contains("missing")
+                || err.to_string().contains("unavailable")
+        );
+    }
+
+    #[test]
+    fn unmaterialized_local_file_returns_err() {
+        let result = ToolCallResult {
+            content: String::new(),
+            parts: vec![ToolOutputPart::image_file("/tmp/nope.png", "image/png")],
+            ..ToolCallResult::ok("")
+        };
+        let err = function_call_output_from_result(&result, None).unwrap_err();
+        assert!(err.to_string().contains("unmaterialized"));
+    }
+
+    #[test]
+    fn video_becomes_input_file() {
+        let result = ToolCallResult {
+            content: String::new(),
+            parts: vec![ToolOutputPart::video(
+                MediaSource::Url {
+                    url: "https://example.com/v.mp4".into(),
+                },
+                "video/mp4",
+            )],
+            ..ToolCallResult::ok("")
+        };
+        let out = function_call_output_from_result(&result, None).unwrap();
+        match out {
+            FunctionCallOutput::Content(parts) => {
+                let file = parts.iter().find_map(|p| match p {
+                    InputContent::InputFile(f) => Some(f),
+                    _ => None,
+                });
+                let file = file.expect("InputFile");
+                assert_eq!(file.file_url.as_deref(), Some("https://example.com/v.mp4"));
+            }
+            FunctionCallOutput::Text(t) => panic!("expected Content, got Text: {t}"),
+        }
     }
 
     /// 2.6: a blocking tool whose work runs in `spawn_blocking` (the fixed
@@ -1285,6 +1412,35 @@ mod tests {
     }
 
     #[test]
+    fn partition_splits_same_path_read_and_write() {
+        let tools: Vec<Arc<dyn Tool>> = vec![
+            Arc::new(crate::tools::read::ReadTool::default()),
+            Arc::new(crate::tools::write::WriteTool::default()),
+        ];
+        let root = Path::new("/proj");
+        let uses = vec![
+            fc("r1", "read", serde_json::json!({"path": "a.txt"})),
+            fc(
+                "w1",
+                "write",
+                serde_json::json!({"path": "a.txt", "content": "x"}),
+            ),
+        ];
+        let batches =
+            partition_tool_calls(&uses, &tools, root, |_| crate::workspace::ToolPathMode::All);
+        assert!(
+            batches.len() >= 2,
+            "same-path read/write must not share a concurrent batch, got {batches:?}"
+        );
+        assert!(
+            !batches
+                .iter()
+                .any(|b| b.is_concurrency_safe && b.blocks.len() > 1),
+            "overlapping path tools must not run in one concurrent batch"
+        );
+    }
+
+    #[test]
     fn partition_keeps_different_path_reads_concurrent() {
         let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(crate::tools::read::ReadTool::default())];
         let root = Path::new("/proj");
@@ -1297,6 +1453,29 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert!(batches[0].is_concurrency_safe);
         assert_eq!(batches[0].blocks.len(), 2);
+    }
+
+    #[test]
+    fn cancellable_tools_opt_in_and_the_default_is_off() {
+        assert!(
+            crate::tools::run::RunTool::new(std::sync::Arc::new(
+                crate::terminal::AgentJobRegistry::new(),
+            ))
+            .is_cancellable()
+        );
+        struct Dummy;
+        impl Tool for Dummy {
+            fn name(&self) -> &str {
+                "dummy"
+            }
+            fn schema(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn description(&self, _ctx: &crate::context_pipeline::Context) -> String {
+                String::new()
+            }
+        }
+        assert!(!Dummy.is_cancellable());
     }
 
     async fn run_schema_tool(tool: Arc<dyn Tool>, arguments: &str) -> ToolCallResult {
@@ -1360,10 +1539,69 @@ mod tests {
         result
     }
 
+    #[tokio::test]
+    async fn direct_tool_wrong_parameter_type_is_unified_error() {
+        let result = run_schema_tool(direct_command_shape(), r#"{"command": 1}"#).await;
+        assert_eq!(
+            result.content,
+            "Error: invalid input for 'command_shape': parameter 'command' expected string, got integer 1"
+        );
+    }
 
+    #[tokio::test]
+    async fn invalid_json_arguments_are_not_swallowed() {
+        let result = run_schema_tool(direct_command_shape(), "{not json").await;
+        assert!(
+            result.content.starts_with(
+                "Error: invalid input for 'command_shape': arguments were not valid JSON"
+            ),
+            "{}",
+            result.content
+        );
+    }
 
+    struct CommandShapeTool;
 
+    impl Tool for CommandShapeTool {
+        fn name(&self) -> &str {
+            "command_shape"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"]
+            })
+        }
+        fn description(&self, _ctx: &Context) -> String {
+            "schema probe".into()
+        }
+    }
 
+    fn direct_command_shape() -> Arc<dyn Tool> {
+        Arc::new(CommandShapeTool)
+    }
+
+    struct CustomShapeTool;
+
+    impl Tool for CustomShapeTool {
+        fn name(&self) -> &str {
+            "my_custom"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {"key": {"type": "string"}},
+                "required": ["key"]
+            })
+        }
+        fn description(&self, _ctx: &Context) -> String {
+            "custom-shaped".into()
+        }
+        fn call_inner(&self, _input: serde_json::Value) -> ToolCallResult {
+            ToolCallResult::ok("ran")
+        }
+    }
 
     struct SelfCancellingTool;
 
@@ -1396,9 +1634,169 @@ mod tests {
         assert_eq!(result.content, "file committed");
     }
 
+    #[tokio::test]
+    async fn custom_shaped_schema_rejects_wrong_type() {
+        let result = run_schema_tool(Arc::new(CustomShapeTool), r#"{"key": false}"#).await;
+        assert_eq!(
+            result.content,
+            "Error: invalid input for 'my_custom': parameter 'key' expected string, got boolean false"
+        );
+    }
 
+    #[tokio::test]
+    async fn unknown_parameters_warn_and_still_run() {
+        let result =
+            run_schema_tool(Arc::new(CustomShapeTool), r#"{"key": "ok", "timeout": 3}"#).await;
+        assert!(result.content.contains("ran"), "{}", result.content);
+        assert!(
+            result
+                .content
+                .contains("ignored unknown parameter(s): timeout"),
+            "{}",
+            result.content
+        );
+        assert_eq!(result.level, crate::types::ToolSignalLevel::Warning);
+    }
 
+    #[tokio::test]
+    async fn custom_shaped_schema_rejects_missing_required() {
+        let result = run_schema_tool(Arc::new(CustomShapeTool), "{}").await;
+        assert_eq!(
+            result.content,
+            "Error: invalid input for 'my_custom': missing required parameter 'key'"
+        );
+    }
 
+    struct EchoTool;
+
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "echo_tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        fn description(&self, _ctx: &Context) -> String {
+            "echo".into()
+        }
+        fn call_inner(&self, _input: serde_json::Value) -> ToolCallResult {
+            ToolCallResult::ok("echo-ok")
+        }
+    }
+
+    async fn run_named(
+        tools: Vec<Arc<dyn Tool>>,
+        name: &str,
+        arguments: &str,
+        session_id: &str,
+        cwd: &std::path::Path,
+    ) -> ToolCallResult {
+        let mut global = crate::config::schema::GlobalSettings::default();
+        let mut bindings = HashMap::new();
+        for t in &tools {
+            bindings.insert(
+                t.name().to_string(),
+                crate::config::schema::AgentToolBinding {
+                    enabled: true,
+                    policy: crate::permission::ToolPolicy::allow_all(),
+                    path_mode: crate::permission::BindingPathMode::default(),
+                    last_applied_preset: None,
+                    allowed_tools: None,
+                },
+            );
+        }
+        global.agents.insert(
+            "default".into(),
+            crate::config::schema::AgentProfile {
+                role: crate::config::schema::AgentRole::Primary,
+                model_ref: "default".into(),
+                tools: bindings,
+                ..Default::default()
+            },
+        );
+        let resolved = crate::config::resolved::resolve_without_catalog(
+            global,
+            crate::config::resolved::WorkspaceState::new(cwd),
+        );
+        let permission = crate::permission::PermissionEngine::resolver(resolved, "default", 0);
+        let ctx = Context {
+            cwd: cwd.to_path_buf(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(cwd),
+            agents_md: None,
+            claude_md: None,
+        };
+        let sink = crate::permission::sinks::RecordingPermissionSink::from_reply(true, true);
+        let tu = FunctionToolCall {
+            arguments: arguments.into(),
+            call_id: "call_1".into(),
+            name: name.into(),
+            namespace: None,
+            id: Some("fc_1".into()),
+            status: None,
+        };
+        let result = run_tool(
+            &tu,
+            &tools,
+            &permission,
+            &ctx,
+            session_id,
+            "default",
+            &sink,
+            CancellationToken::new(),
+            cwd,
+            4096,
+            None,
+            Arc::new(WorkspaceWriteLock::new()),
+            None,
+        )
+        .await;
+        result
+    }
+
+    #[tokio::test]
+    async fn mailbox_stays_pending_for_the_next_seam() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::terminal::TerminalHub::new();
+        hub.jobs
+            .insert_finished_pipe_job(
+                "bg_ec000003",
+                "sess",
+                "",
+                "echo hi",
+                dir.path(),
+                Some(0),
+                false,
+            )
+            .unwrap();
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(EchoTool)];
+        let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
+        assert_eq!(result.content, "echo-ok");
+        assert!(!result.content.contains("<system-reminder>"));
+        assert!(hub.jobs.mailbox_pending("sess"));
+    }
+
+    #[tokio::test]
+    async fn shell_exit_does_not_wrap_reminder() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = crate::terminal::TerminalHub::new();
+        hub.jobs
+            .insert_finished_pipe_job(
+                "bg_ec000004",
+                "sess",
+                "",
+                "echo hi",
+                dir.path(),
+                Some(0),
+                false,
+            )
+            .unwrap();
+        let tools: Vec<Arc<dyn Tool>> = vec![Arc::new(EchoTool)];
+        let result = run_named(tools, "echo_tool", "{}", "sess", dir.path()).await;
+        assert_eq!(result.content, "echo-ok");
+        assert!(!result.content.contains("<system-reminder>"));
+        // wait asserts it can take this notice without wrapping a reminder.
+        assert!(hub.jobs.mailbox_pending("sess"));
+    }
 }
 
 /// Code-caller contract checks (merged from phase1_gate, WP-207).

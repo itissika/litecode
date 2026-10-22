@@ -753,3 +753,50 @@ pub(crate) fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
     ann.load_from_buffer(&buf)
         .map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engines::code_search::chunk::chunk_file;
+    use crate::engines::code_search::embed::HashEmbedder;
+    use tempfile::TempDir;
+
+    #[test]
+    fn round_trip_save_load() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        let mut index = CodeSearchIndex::new_empty().unwrap();
+        let (chunks, _) = chunk_file("main.rs", "fn main() {}\n", 1);
+        let mut emb = HashEmbedder;
+        index.embed_and_add(chunks, &mut emb).unwrap();
+        index.save(root).unwrap();
+
+        assert!(vectors_path(root).is_file());
+        let loaded = CodeSearchIndex::load(root).unwrap();
+        assert_eq!(loaded.chunks().len(), 1);
+    }
+
+    #[test]
+    fn save_empty_index_creates_vectors_file() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        CodeSearchIndex::new_empty().unwrap().save(root).unwrap();
+        assert!(vectors_path(root).is_file());
+        let loaded = CodeSearchIndex::load(root).unwrap();
+        assert!(loaded.chunks().is_empty());
+    }
+
+    #[test]
+    fn save_load_unicode_workspace_path() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("新工作区");
+        std::fs::create_dir_all(&root).unwrap();
+        let mut index = CodeSearchIndex::new_empty().unwrap();
+        let (chunks, _) = chunk_file("main.rs", "fn main() {}\n", 1);
+        let mut emb = HashEmbedder;
+        index.embed_and_add(chunks, &mut emb).unwrap();
+        index.save(&root).unwrap();
+        let loaded = CodeSearchIndex::load(&root).unwrap();
+        assert_eq!(loaded.chunks().len(), 1);
+    }
+}

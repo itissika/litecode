@@ -273,6 +273,63 @@ mod tests {
         entries.iter().map(|e| e.name.as_str()).collect()
     }
 
+    fn by_name<'a>(entries: &'a [TreeEntry]) -> std::collections::HashMap<&'a str, &'a TreeEntry> {
+        entries.iter().map(|e| (e.name.as_str(), e)).collect()
+    }
+
+    #[test]
+    fn list_tree_is_one_level_and_reports_kinds_without_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/inner.txt"), "nested").unwrap();
+        std::fs::write(root.join("a.txt"), "hello").unwrap();
+
+        let sandbox = Sandbox::new(root.to_path_buf()).unwrap();
+        let entries = list_tree(&sandbox, "", 2).unwrap();
+        let map = by_name(&entries);
+
+        assert_eq!(map["src"].kind, "dir");
+        assert_eq!(map["src"].size, None);
+        assert_eq!(map["a.txt"].kind, "file");
+        assert_eq!(map["a.txt"].size, None);
+        assert!(
+            !names(&entries).contains(&"inner.txt"),
+            "depth>1 must still list one level only; got {entries:?}"
+        );
+
+        let src_kids = list_tree(&sandbox, "src", 1).unwrap();
+        assert_eq!(src_kids.len(), 1);
+        assert_eq!(src_kids[0].path, "src/inner.txt");
+        assert_eq!(src_kids[0].kind, "file");
+        assert_eq!(src_kids[0].size, None);
+    }
+
+    #[test]
+    fn list_tree_hides_git_shows_node_modules() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), "").unwrap();
+        std::fs::create_dir(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("node_modules/leftpad.js"), "").unwrap();
+        std::fs::write(root.join("app.rs"), "").unwrap();
+
+        let sandbox = Sandbox::new(root.to_path_buf()).unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let entries = list_tree(&sandbox, "", 1).unwrap();
+            let listed = names(&entries);
+            assert!(
+                !listed.contains(&".git"),
+                "files.exclude must hide .git; got {listed:?}"
+            );
+            assert!(
+                listed.contains(&"node_modules"),
+                "explorer must show node_modules (search.exclude only); got {listed:?}"
+            );
+            assert!(listed.contains(&"app.rs"));
+        });
+    }
 
     #[test]
     fn list_tree_honors_explorer_git_ignore_switch() {
@@ -342,6 +399,13 @@ mod tests {
         assert_eq!(a_names, vec!["b.ts"]);
     }
 
+    #[test]
+    fn list_tree_reveal_empty_path_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();
+        assert!(list_tree_reveal(&sandbox, "").unwrap().is_empty());
+    }
+
     fn glob_paths(sandbox: &Sandbox, query: &str) -> Vec<String> {
         list_glob(sandbox, query)
             .unwrap()
@@ -352,11 +416,74 @@ mod tests {
     }
 
     #[test]
+    fn list_glob_plain_text_matches_filename_substring() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/components")).unwrap();
+        std::fs::write(root.join("src/components/FileTree.tsx"), "").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("README.md"), "hi").unwrap();
+
+        let sandbox = Sandbox::new(root.to_path_buf()).unwrap();
+        let hits = glob_paths(&sandbox, "FileTree");
+        assert_eq!(hits, vec!["src/components/FileTree.tsx"]);
+        assert!(glob_paths(&sandbox, "main").contains(&"src/main.rs".to_string()));
+        assert!(glob_paths(&sandbox, "nope").is_empty());
+    }
+
+    #[test]
     fn list_glob_is_case_insensitive() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Main.rs"), "").unwrap();
         let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();
         assert_eq!(glob_paths(&sandbox, "main"), vec!["Main.rs"]);
+    }
+
+    #[test]
+    fn list_glob_star_pattern_is_recursive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/nested")).unwrap();
+        std::fs::write(root.join("top.ts"), "").unwrap();
+        std::fs::write(root.join("src/nested/leaf.ts"), "").unwrap();
+        std::fs::write(root.join("src/nested/skip.rs"), "").unwrap();
+
+        let sandbox = Sandbox::new(root.to_path_buf()).unwrap();
+        let mut hits = glob_paths(&sandbox, "*.ts");
+        hits.sort();
+        assert_eq!(hits, vec!["src/nested/leaf.ts", "top.ts"]);
+    }
+
+    #[test]
+    fn list_glob_includes_matching_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/stores")).unwrap();
+        std::fs::write(dir.path().join("src/stores/treeStore.ts"), "").unwrap();
+        let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();
+        let listing = list_glob(&sandbox, "store").unwrap();
+        let paths: Vec<_> = listing
+            .entries
+            .iter()
+            .map(|e| (e.path.as_str(), e.kind.as_str()))
+            .collect();
+        assert!(
+            paths.contains(&("src/stores", "dir")),
+            "expected stores dir, got {paths:?}"
+        );
+        assert!(
+            paths.contains(&("src/stores/treeStore.ts", "file")),
+            "expected treeStore.ts, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn list_glob_empty_query_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "").unwrap();
+        let sandbox = Sandbox::new(dir.path().to_path_buf()).unwrap();
+        let listing = list_glob(&sandbox, "  ").unwrap();
+        assert!(listing.entries.is_empty());
+        assert!(!listing.truncated);
     }
 
     #[test]
@@ -369,4 +496,30 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn list_glob_truncates_after_sort() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Shallower hits must survive truncation: z.md is depth 0, nested files
+        // are depth 1. Walk order is not sort order.
+        std::fs::write(root.join("z.md"), "").unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        for i in 0..=MAX_GLOB_RESULTS {
+            std::fs::write(root.join("src").join(format!("f{i}.txt")), "").unwrap();
+        }
+        let sandbox = Sandbox::new(root.to_path_buf()).unwrap();
+        let listing = list_glob(&sandbox, "*.txt").unwrap();
+        assert!(listing.truncated);
+        assert_eq!(listing.entries.len(), MAX_GLOB_RESULTS);
+        assert!(
+            listing.entries.iter().all(|e| e.path.starts_with("src/")),
+            "plain *.txt must not match z.md; got {:?}",
+            listing.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+        );
+
+        let listing = list_glob(&sandbox, "*").unwrap();
+        assert!(listing.truncated);
+        assert_eq!(listing.entries[0].path, "src");
+        assert_eq!(listing.entries[1].path, "z.md");
+    }
 }

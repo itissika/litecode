@@ -121,6 +121,18 @@ impl PathIndex {
         self.spawn_count.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
+    pub(crate) fn worker_stopped_for_test(&self) -> bool {
+        match self
+            .worker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            None => true,
+            Some(handle) => handle.is_finished(),
+        }
+    }
 
     pub fn detach(&self) {
         self.stop.store(true, Ordering::SeqCst);
@@ -532,7 +544,7 @@ fn matches_mention_bytes(path: &[u8], query: &[u8]) -> bool {
 mod tests {
     use super::*;
     use crate::workspace::filter::{
-        WorkspaceExcludesFile,
+        PathGlobMatcher, WorkspaceExcludesFile, compile_include_pattern,
         with_excludes_cache_for_test,
     };
     use std::time::Instant;
@@ -560,6 +572,44 @@ mod tests {
         }
     }
 
+    fn glob_agrees(path: &str, query: &str) -> (bool, bool) {
+        let pattern = format!("**/{query}*").to_lowercase();
+        let matcher: PathGlobMatcher = compile_include_pattern(&pattern).unwrap();
+        let expect = matcher.matches(&path.to_lowercase());
+        let got = matches_mention(path, query);
+        (expect, got)
+    }
+
+    #[test]
+    fn mention_match_agrees_with_the_glob_matcher() {
+        let cases = [
+            ("src/session/manager.rs", "manager"),
+            ("src/session/manager.rs", "Manager"),
+            ("src/session/manager.rs", "session"),
+            ("src/session/manager.rs", "session/man"),
+            ("src/session/manager.rs", "src/ses"),
+            ("manager.rs", "manager"),
+            ("src/my_manager.rs", "manager"),
+            ("src/manager_extra/foo.rs", "manager"),
+            ("a.rs", "a.rs"),
+            ("a.rs.bak", "a.rs"),
+            ("src/a.rs", "src/a"),
+            ("文档.rs", "文档"),
+        ];
+        for (path, query) in cases {
+            let (expect, got) = glob_agrees(path, query);
+            assert_eq!(got, expect, "{path} ~ {query}");
+        }
+    }
+
+    #[test]
+    fn catalog_source_does_not_walk_via_glob_or_body_index() {
+        let src = include_str!("mod.rs");
+        let prod = src.split("mod tests").next().expect("production source");
+        assert!(!prod.contains("list_glob"));
+        assert!(!prod.contains("tantivy"));
+        assert!(!prod.contains("rebuild"));
+    }
 
     #[test]
     fn attach_fills_explorer_corpus_and_second_attach_does_not_restart() {
@@ -609,5 +659,178 @@ mod tests {
         });
     }
 
+    #[test]
+    fn legacy_text_index_removed_by_worker_after_fill() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("main.rs"), "").unwrap();
+        let legacy = root.join(".litecode").join("text-index");
+        std::fs::create_dir_all(legacy.join("seg")).unwrap();
+        std::fs::write(legacy.join("seg/0.bin"), "x").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while legacy.exists() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!legacy.exists(), "worker must remove the legacy text-index");
+            assert!(
+                root.join(".litecode").is_dir(),
+                "only text-index is removed, not .litecode"
+            );
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("main.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("main.rs").len(), 1);
+            assert!(
+                engine.mention_paths("0.bin").is_empty(),
+                "the legacy files never enter the explorer corpus"
+            );
+        });
+    }
 
+    #[test]
+    fn a_finished_worker_starts_again_for_the_same_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.rs"), "").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+            engine.stop.store(true, Ordering::SeqCst);
+            engine.cv.notify_all();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !engine.worker_stopped_for_test() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(engine.worker_stopped_for_test());
+            assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 1);
+            engine.paths.write().unwrap().clear();
+            engine.attach(root);
+            assert_eq!(engine.spawn_count.load(Ordering::SeqCst), 2);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+        });
+    }
+
+    #[test]
+    fn request_rescan_refills_a_path_the_catalog_missed() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("app.rs"), "").unwrap();
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = Attached::new(root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("app.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            std::fs::write(root.join("late.rs"), "").unwrap();
+            engine.paths.write().unwrap().clear();
+            engine.request_rescan();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while engine.mention_paths("late.rs").is_empty() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.mention_paths("late.rs").len(), 1);
+            assert_eq!(engine.mention_paths("app.rs").len(), 1);
+        });
+    }
+
+    fn parked(root: &Path) -> PathIndex {
+        let engine = PathIndex::new();
+        engine.gate.lock().unwrap_or_else(|e| e.into_inner()).root = Some(canon_abs_lossy(root));
+        engine
+    }
+
+    #[test]
+    fn updates_insert_parents_and_delete_prefixes() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/nested")).unwrap();
+        std::fs::write(root.join("src/nested/b.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/config"), "").unwrap();
+
+        with_excludes_cache_for_test(WorkspaceExcludesFile::builtin_defaults(), || {
+            let engine = parked(root);
+            engine.paths.write().unwrap().insert("src".into(), false);
+            engine.notify_fs_changes(&["src/nested/b.rs".into()], false);
+            engine.notify_fs_changes(&["node_modules/pkg/index.js".into()], false);
+            engine.notify_fs_changes(&[".git/config".into()], false);
+            engine.flush_pending();
+
+            let paths = engine.paths.read().unwrap();
+            assert_eq!(paths.get("src/nested/b.rs"), Some(&true));
+            assert_eq!(paths.get("src/nested"), Some(&false));
+            assert_eq!(paths.get("node_modules/pkg/index.js"), Some(&true));
+            assert_eq!(paths.get("node_modules"), Some(&false));
+            assert!(!paths.contains_key(".git/config"));
+            assert!(!paths.contains_key(".git"));
+            drop(paths);
+
+            engine.notify_fs_changes(&["src/nested".into()], true);
+            engine.flush_pending();
+            let paths = engine.paths.read().unwrap();
+            assert!(!paths.contains_key("src/nested"));
+            assert!(!paths.contains_key("src/nested/b.rs"));
+            assert!(paths.contains_key("src"));
+        });
+    }
+
+    #[test]
+    fn query_stats_only_a_window_and_skips_missing_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let engine = parked(root);
+        let mut paths = engine.paths.write().unwrap();
+        for i in 0..40 {
+            let name = format!("a{i:02}.rs");
+            if (10..40).contains(&i) {
+                std::fs::write(root.join(&name), "").unwrap();
+            }
+            paths.insert(name, true);
+        }
+        drop(paths);
+
+        let hits = engine.mention_paths("a");
+        let names: Vec<_> = hits.into_iter().map(|hit| hit.path).collect();
+        assert_eq!(
+            names,
+            (10..18).map(|i| format!("a{i:02}.rs")).collect::<Vec<_>>()
+        );
+
+        assert!(engine.mention_paths("").is_empty());
+        assert!(engine.mention_paths("../secret").is_empty());
+    }
+
+    #[test]
+    fn query_sorts_like_glob_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.md"), "").unwrap();
+        std::fs::create_dir(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.md"), "").unwrap();
+        let engine = parked(root);
+        {
+            let mut paths = engine.paths.write().unwrap();
+            paths.insert("src/a.md".into(), true);
+            paths.insert("a.md".into(), true);
+            paths.insert("src".into(), false);
+        }
+        let hits = engine.mention_paths("a.md");
+        assert_eq!(
+            hits.iter().map(|hit| hit.path.as_str()).collect::<Vec<_>>(),
+            ["a.md", "src/a.md"]
+        );
+    }
 }

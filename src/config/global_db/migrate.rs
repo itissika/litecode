@@ -138,3 +138,262 @@ fn ensure_agent_tools_allowed_tools_column(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            [name],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap()
+            == 1
+    }
+
+    fn user_version(conn: &Connection) -> i32 {
+        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn config_global_db_migration_v0_to_current() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
+        assert!(table_exists(&conn, "provider_credentials"));
+        assert!(
+            !table_exists(&conn, "providers") && !table_exists(&conn, "models"),
+            "a fresh install must not create the legacy LLM tables"
+        );
+
+        let col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_tools') WHERE name='allowed_tools_json'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(col, 1);
+    }
+
+    #[test]
+    fn v0_existing_custom_tools_gains_rules_json() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE custom_tools (
+                id TEXT PRIMARY KEY,
+                schema_json TEXT NOT NULL,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                timeout INTEGER NOT NULL DEFAULT 120,
+                description TEXT NOT NULL DEFAULT ''
+            );
+            PRAGMA user_version = 0;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert!(column_exists(&conn, "custom_tools", "rules_json").unwrap());
+        assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn v5_drops_tool_catalog_in_place_and_keeps_legacy_llm_tables() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE tool_catalog (id TEXT PRIMARY KEY, tier TEXT NOT NULL);
+            CREATE TABLE providers (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE models (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, provider_ref TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                model_ref TEXT NOT NULL,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                temperature REAL NOT NULL DEFAULT 0.7,
+                max_steps INTEGER NOT NULL DEFAULT 50,
+                description TEXT NOT NULL DEFAULT '',
+                allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL DEFAULT '{}',
+                path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                last_applied_preset TEXT,
+                allowed_tools_json TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{}',
+                transport_json TEXT NOT NULL DEFAULT '{\"type\":\"stdio\"}'
+            );
+            INSERT INTO providers (id, adapter_id) VALUES ('deepseek', 'deepseek_responses');
+            INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', 'flash');
+            PRAGMA user_version = 5;
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), 7);
+        assert!(!table_exists(&conn, "tool_catalog"));
+        assert!(table_exists(&conn, "provider_credentials"));
+        let providers: i64 = conn
+            .query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(providers, 1, "legacy rows must survive the upgrade");
+        let agents: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(agents, 1);
+    }
+
+    #[test]
+    fn v6_upgrade_is_additive_and_never_drops_legacy_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE providers (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE models (id TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, provider_ref TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', config_json TEXT NOT NULL DEFAULT '{}');
+            CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                role TEXT NOT NULL,
+                model_ref TEXT NOT NULL,
+                system_prompt TEXT NOT NULL DEFAULT '',
+                temperature REAL NOT NULL DEFAULT 0.7,
+                max_steps INTEGER NOT NULL DEFAULT 50,
+                description TEXT NOT NULL DEFAULT '',
+                allowed_subagents_json TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL DEFAULT '{}',
+                path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                last_applied_preset TEXT,
+                allowed_tools_json TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{}',
+                transport_json TEXT NOT NULL DEFAULT '{\"type\":\"stdio\"}',
+                timeout INTEGER NOT NULL DEFAULT 60
+            );
+            INSERT INTO providers (id, adapter_id, config_json)
+                VALUES ('opencode', 'opencode', '{\"endpoint\":\"\",\"api_key\":\"sk-zen\",\"auth\":\"bearer\"}');
+            INSERT INTO models (id, adapter_id, provider_ref, config_json)
+                VALUES ('zen-flash', 'opencode', 'opencode', '{\"api_model_id\":\"deepseek-v4-flash\",\"context_window\":1,\"max_tokens\":1,\"capabilities\":[\"text\"]}');
+            INSERT INTO agents (id, role, model_ref) VALUES ('default', 'primary', 'zen-flash');
+            PRAGMA user_version = 6;
+            ",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), 7);
+        assert!(table_exists(&conn, "provider_credentials"));
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM providers", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        let models: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(models, 1);
+        let agents: String = conn
+            .query_row(
+                "SELECT model_ref FROM agents WHERE id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(agents, "zen-flash");
+    }
+
+    #[test]
+    fn re_running_the_migration_is_a_noop() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), CURRENT_USER_VERSION);
+    }
+
+    #[test]
+    fn current_db_gains_custom_tool_rules_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&format!(
+            "
+            CREATE TABLE agent_tools (
+                agent_id TEXT NOT NULL,
+                tool_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                policy_json TEXT NOT NULL DEFAULT '{{}}',
+                path_mode TEXT NOT NULL DEFAULT 'unrestricted',
+                last_applied_preset TEXT,
+                PRIMARY KEY (agent_id, tool_id)
+            );
+            CREATE TABLE mcp_servers (
+                id TEXT PRIMARY KEY,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                env_json TEXT NOT NULL DEFAULT '{{}}',
+                transport_json TEXT NOT NULL DEFAULT '{{\"type\":\"stdio\"}}'
+            );
+            CREATE TABLE custom_tools (
+                id TEXT PRIMARY KEY,
+                schema_json TEXT NOT NULL,
+                command TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                timeout INTEGER NOT NULL DEFAULT 120,
+                description TEXT NOT NULL DEFAULT '',
+                permission_json TEXT
+            );
+            PRAGMA user_version = {CURRENT_USER_VERSION};
+            "
+        ))
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let rules = conn
+            .prepare("SELECT 1 FROM pragma_table_info('custom_tools') WHERE name = 'rules_json'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        let permission = conn
+            .prepare(
+                "SELECT 1 FROM pragma_table_info('custom_tools') WHERE name = 'permission_json'",
+            )
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(rules);
+        assert!(!permission);
+    }
+
+    #[test]
+    fn config_global_db_wrong_user_version_fails_closed() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+
+        let message = migrate(&conn)
+            .expect_err("wrong version must fail")
+            .to_string();
+        assert!(message.contains("incompatible"), "{message}");
+        assert!(message.contains("user_version"), "{message}");
+    }
+}

@@ -363,6 +363,22 @@ mod mcp_server_definition_tests {
     use super::*;
 
     #[test]
+    fn omitted_timeout_defaults_to_sixty() {
+        let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
+            "command": "npx"
+        }))
+        .unwrap();
+        assert_eq!(def.call_timeout_secs(), 60);
+        assert!(
+            !serde_json::to_value(&def)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .contains_key("timeout")
+        );
+    }
+
+    #[test]
     fn declared_timeout_is_kept() {
         let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
             "command": "npx",
@@ -373,6 +389,15 @@ mod mcp_server_definition_tests {
         assert_eq!(serde_json::to_value(&def).unwrap()["timeout"], 300);
     }
 
+    #[test]
+    fn zero_timeout_means_default() {
+        let def = McpServerDefinition {
+            command: "npx".into(),
+            timeout: 0,
+            ..Default::default()
+        };
+        assert_eq!(def.call_timeout_secs(), 60);
+    }
 }
 
 /// Deprecated placeholder kept on [`GlobalSettings`] for DB schema stability.

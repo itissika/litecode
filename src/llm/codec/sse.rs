@@ -124,6 +124,14 @@ mod tests {
     }
 
     #[test]
+    fn skips_noise() {
+        assert_eq!(sse_data_payload(""), None);
+        assert_eq!(sse_data_payload(": keep-alive"), None);
+        assert_eq!(sse_data_payload("event: response.completed"), None);
+        assert_eq!(sse_data_payload("data: [DONE]"), None);
+    }
+
+    #[test]
     fn multibyte_char_split_across_chunks_is_preserved() {
         // "数据" = E6 95 B0 E6 8D AE — split across three feeds, plus an emoji
         // (F0 9F 98 80) split across two. Per-chunk lossy decode would corrupt
@@ -165,4 +173,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trailing_line_without_newline_is_kept_for_finish() {
+        let mut reader = SseLineReader::new();
+        assert_eq!(reader.feed(b"data: partial").unwrap(), Vec::<String>::new());
+        assert_eq!(reader.finish().unwrap(), Some("data: partial".to_string()));
+    }
+
+    #[test]
+    fn oversized_line_is_a_hard_error() {
+        let mut reader = SseLineReader::new();
+        let big = vec![b'a'; SseLineReader::MAX_LINE_BYTES + 1];
+        assert!(reader.feed(&big).is_err());
+    }
 }

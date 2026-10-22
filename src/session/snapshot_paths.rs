@@ -243,4 +243,13 @@ mod tests {
         assert!(assert_snapshots_isolated(dir.path(), &bad).is_err());
     }
 
+    #[test]
+    fn purge_legacy_removes_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let legacy = dir.path().join(".litecode").join("snapshots");
+        std::fs::create_dir_all(legacy.join(".git")).unwrap();
+        assert!(purge_legacy_in_workspace_snapshots(dir.path()).unwrap());
+        assert!(!legacy.exists());
+        assert!(!purge_legacy_in_workspace_snapshots(dir.path()).unwrap());
+    }
 }

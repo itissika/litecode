@@ -297,6 +297,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn read_rss_kb_positive_on_linux() {
+        if std::path::Path::new("/proc/self/status").exists() {
+            let rss = read_rss_kb().expect("VmRSS on linux");
+            assert!(rss > 0, "rss should be positive, got {rss}");
+            let pid_rss = read_rss_kb_for_pid(std::process::id()).expect("pid rss");
+            assert!(pid_rss > 0);
+        }
+    }
+
+    #[test]
     #[cfg(windows)]
     fn read_rss_kb_positive_on_windows() {
         let rss = read_rss_kb().expect("working set on windows");
@@ -309,6 +319,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sum_rss_empty_is_zero() {
+        assert_eq!(sum_rss_kb_for_pids(&[]), Some(0));
+    }
+
+    fn ppid_map(pairs: &[(u32, u32)]) -> std::collections::HashMap<u32, Vec<u32>> {
+        // (ppid, pid)
+        let mut map: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        for &(ppid, pid) in pairs {
+            map.entry(ppid).or_default().push(pid);
+        }
+        map
+    }
+
+    #[test]
+    fn descendants_include_root_and_transitive_children() {
+        // 1 → 2 → 3, plus 1 → 4
+        let map = ppid_map(&[(1, 2), (2, 3), (1, 4)]);
+        let mut got = descendants_from_ppid_map(&map, &[1]);
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn descendants_survive_pid_reuse_cycles() {
+        // PID reuse can make the ppid map cyclic: 10 → 11 → 10.
+        let map = ppid_map(&[(10, 11), (11, 10)]);
+        let mut got = descendants_from_ppid_map(&map, &[10]);
+        got.sort_unstable();
+        assert_eq!(got, vec![10, 11]);
+    }
+
+    #[test]
+    fn descendants_skip_unrelated_subtrees() {
+        let map = ppid_map(&[(1, 2), (9, 8)]);
+        let mut got = descendants_from_ppid_map(&map, &[1]);
+        got.sort_unstable();
+        assert_eq!(got, vec![1, 2]);
+    }
+
+    #[test]
+    fn descendants_empty_roots_is_empty() {
+        let map = ppid_map(&[(1, 2)]);
+        assert!(descendants_from_ppid_map(&map, &[]).is_empty());
+    }
 
     #[test]
     fn descendant_pids_sees_spawned_child() {

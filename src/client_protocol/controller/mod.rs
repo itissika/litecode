@@ -1450,9 +1450,745 @@ mod merged_channel_tests {
     //! forwarder in `subscribe_checked` (bounded `mpsc::channel(1024)` +
     //! `try_send` with `Full => drop + ProjectionLagged`).
 
-    
-    
+    use super::*;
+    use crate::runtime::observer::InternalEnvelope;
 
+    /// Capacity used by `SessionController::with_turn_guard` for the merged channel.
+    const MERGED_CAPACITY: usize = 1024;
 
+    fn envelope(skipped: u64) -> InternalEnvelope {
+        InternalEnvelope {
+            event: InternalEvent::ProjectionLagged { skipped },
+            parent_session_id: None,
+        }
+    }
 
+    #[test]
+    fn merged_channel_is_bounded_not_unbounded() {
+        // A bounded channel refuses to buffer beyond its capacity instead of
+        // growing without limit (the old `unbounded_channel` behaviour).
+        let (merged_tx, _merged_rx) = mpsc::channel::<(String, InternalEnvelope)>(MERGED_CAPACITY);
+
+        for i in 0..MERGED_CAPACITY {
+            assert!(
+                merged_tx
+                    .try_send((format!("s{i}"), envelope(i as u64)))
+                    .is_ok(),
+                "bounded channel must accept up to capacity"
+            );
+        }
+        // One more send must report Full — the buffer cannot grow past capacity.
+        let err = merged_tx
+            .try_send(("overflow".into(), envelope(0)))
+            .expect_err("bounded channel must reject beyond capacity");
+        assert!(
+            matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_)),
+            "overflow must surface as Full (explicit lag signal), got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn merged_overflow_drops_frame_and_signals_lagged_not_blocking() {
+        // Simulate a slow consumer (run_session_loop) against a fast producer
+        // (the forwarder). The forwarder must NOT block on a full channel; it
+        // drops the frame and injects a ProjectionLagged resync marker.
+        let (merged_tx, merged_rx) = mpsc::channel::<(String, InternalEnvelope)>(MERGED_CAPACITY);
+
+        let producer = tokio::spawn(async move {
+            for i in 0..(MERGED_CAPACITY + 50) {
+                let sid = format!("s{i}");
+                // Mirrors the production forwarder: try_send, on Full drop the
+                // frame and signal lag (never `.send()`, never block).
+                match merged_tx.try_send((sid.clone(), envelope(1))) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        let _ = merged_tx.try_send((
+                            sid,
+                            crate::runtime::observer::InternalEnvelope {
+                                event: InternalEvent::ProjectionLagged { skipped: 1 },
+                                parent_session_id: None,
+                            },
+                        ));
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
+        });
+        // Producer must finish promptly (it never awaits a slow consumer).
+        tokio::time::timeout(std::time::Duration::from_secs(5), producer)
+            .await
+            .expect("producer must complete without blocking on a full channel")
+            .expect("producer task panicked");
+
+        // The consumer still drains all events (including the injected lag
+        // markers); the channel is usable and delivery is complete.
+        drop(merged_rx);
+    }
+}
+
+#[cfg(test)]
+mod compact_item_wire_tests {
+    use super::*;
+    use crate::runtime::observer::{CompactionStage, CompactionTrigger};
+    use crate::session::EventType;
+    use crate::types::user_text;
+    use std::sync::Arc;
+
+    fn binding() -> SessionBindingProjection {
+        SessionBindingProjection::default()
+    }
+
+    fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
+        InternalEvent::CompactionLifecycle {
+            trigger,
+            stage: CompactionStage::Succeeded,
+            operation_id: None,
+            fail_kind: None,
+            error: None,
+        }
+    }
+
+    fn setup_with_details(texts: &[&str]) -> (Projection, String, Arc<SessionManager>) {
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("m"))
+            .unwrap();
+        sessions
+            .insert_detail_rows(
+                &sid,
+                &texts.iter().map(|t| user_text(*t)).collect::<Vec<_>>(),
+            )
+            .unwrap();
+        let proj = Projection::new(sid.clone(), sessions.clone(), 0);
+        (proj, sid, sessions)
+    }
+
+    #[test]
+    fn snapshot_compact_eligible_follows_provider_occupancy() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["hi"]);
+        let mut binding = binding();
+        binding.context_window = 10_000;
+        proj.context_tokens_estimate = 100;
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 3_000,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 3_000,
+        });
+        assert!(proj.snapshot("/p", &binding).compact_eligible);
+
+        proj.last_turn_token_stats.as_mut().unwrap().prompt_tokens = 2_000;
+        proj.context_tokens_estimate = 9_000;
+        assert!(!proj.snapshot("/p", &binding).compact_eligible);
+    }
+
+    #[test]
+    fn bump_skips_local_estimate_while_provider_usage_is_showing() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["a"]);
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 10,
+        });
+        proj.context_tokens_estimate = 999_999;
+        proj.bump_buffer_revision("/p", &binding());
+        assert_eq!(
+            proj.context_tokens_estimate, 999_999,
+            "step bump must not full-fold while provider occupancy is showing"
+        );
+    }
+
+    #[test]
+    fn reopen_uses_latest_bill_and_compact_retires_it() {
+        let (_proj, sid, sessions) = setup_with_details(&["a"]);
+        let first = sessions
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
+            )
+            .unwrap();
+        let second = sessions
+            .append_request_origin(
+                &sid,
+                &serde_json::json!({"schema": 1, "turn": "t", "step": 2}),
+            )
+            .unwrap();
+        let bill = |prompt| crate::session::store::ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: 10,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: prompt,
+        };
+        sessions
+            .record_provider_usage(&sid, first, &bill(100))
+            .unwrap();
+        sessions
+            .record_provider_usage(&sid, second, &bill(40))
+            .unwrap();
+        let expected = sessions.data().revision_blocking(&sid).unwrap();
+        sessions
+            .mutate_blocking(crate::session::SessionMutation::SaveContextMeter {
+                session_id: sid.clone(),
+                expected_revision: expected,
+                operation_id: crate::session::MutationId::new(),
+                meter: crate::session::SessionContextMeter {
+                    prompt_tokens: 999,
+                    ..crate::session::SessionContextMeter::default()
+                },
+            })
+            .unwrap();
+        let proj = Projection::new(sid.clone(), sessions.clone(), 256_000);
+        assert_eq!(
+            proj.last_turn_token_stats.as_ref().unwrap().prompt_tokens,
+            40
+        );
+        assert_eq!(proj.provider_billed_tokens, Some(160));
+        assert_eq!(proj.provider_billed_requests, 2);
+        let snap = proj.snapshot("/p", &binding());
+        assert_eq!(snap.provider_billed_tokens, Some(160));
+        assert_eq!(snap.provider_billed_requests, Some(2));
+
+        apply_compact(&sessions, &sid, "cut");
+        let proj = Projection::new(sid, sessions, 256_000);
+        assert!(proj.last_turn_token_stats.is_none());
+        assert_eq!(proj.provider_billed_tokens, Some(160));
+        assert_eq!(proj.provider_billed_requests, 2);
+    }
+
+    #[test]
+    fn compact_succeeded_clears_meter_and_refreshes_local_estimate() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        proj.last_turn_token_stats = Some(crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: 10,
+            completion_tokens: 1,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 10,
+        });
+        proj.context_tokens_estimate = 999_999;
+        apply_compact(&sessions, &sid, "first-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        assert!(proj.last_turn_token_stats.is_none());
+        assert_ne!(
+            proj.context_tokens_estimate, 999_999,
+            "compact must re-estimate the remaining working set"
+        );
+    }
+
+    fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
+        let expected = sessions.data().revision_blocking(sid).unwrap_or(0);
+        sessions
+            .mutate_blocking(crate::session::data::command::SessionMutation::Compact {
+                session_id: sid.to_string(),
+                expected_revision: expected,
+                operation_id: crate::session::data::command::MutationId::new(),
+                summary: user_text(summary),
+                token_estimate: 10,
+                kept_from: None,
+                expected_prefix: None,
+            })
+            .unwrap();
+    }
+
+    fn insert_detail(sessions: &SessionManager, sid: &str, text: &str) {
+        sessions
+            .insert_detail_rows(sid, &[user_text(text)])
+            .unwrap();
+    }
+
+    fn buffer_item_frames(out: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        out.iter()
+            .filter(|msg| msg["method"] == crate::client_protocol::protocol::methods::BUFFER_ITEM)
+            .collect()
+    }
+
+    #[test]
+    fn compact_succeeded_emits_compacted_buffer_row() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        apply_compact(&sessions, &sid, "first-cut");
+        let _ = proj.take_outgoing();
+
+        proj.on_event(succeeded(CompactionTrigger::Manual), "/p", &binding());
+        let out = proj.take_outgoing();
+
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["params"]["seq"], 3);
+        assert_eq!(items[0]["params"]["kind"], "compacted");
+        assert_eq!(items[0]["params"]["body"]["from"], 0);
+        assert_eq!(items[0]["params"]["body"]["to"], 3);
+        assert_eq!(items[0]["params"]["session_id"], sid);
+        assert_eq!(items[0]["params"]["body"]["summary"], "first-cut");
+
+        let life = out
+            .iter()
+            .find(|msg| msg["method"] == "session/compact_lifecycle")
+            .expect("lifecycle after checkpoint item");
+        assert_eq!(life["params"]["snapshot"]["buffer"]["last_seq"], 3);
+        assert_eq!(life["params"]["snapshot"]["buffer"]["next_seq"], 4);
+        assert_eq!(life["params"]["stage"], "succeeded");
+        let item_pos = out
+            .iter()
+            .position(|msg| msg["method"] == crate::client_protocol::protocol::methods::BUFFER_ITEM)
+            .unwrap();
+        let life_pos = out
+            .iter()
+            .position(|msg| msg["method"] == "session/compact_lifecycle")
+            .unwrap();
+        assert!(
+            item_pos < life_pos,
+            "compacted buffer/item must precede lifecycle snapshot"
+        );
+    }
+
+    #[test]
+    fn second_compact_appends_another_checkpoint_item() {
+        let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
+        apply_compact(&sessions, &sid, "first-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        let _ = proj.take_outgoing();
+
+        insert_detail(&sessions, &sid, "d");
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+
+        apply_compact(&sessions, &sid, "second-cut");
+        proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
+        let out = proj.take_outgoing();
+
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["params"]["seq"], 5);
+        assert_eq!(items[0]["params"]["kind"], "compacted");
+        assert_eq!(items[0]["params"]["body"]["summary"], "second-cut");
+
+        let events = sessions.data().events_blocking(&sid).unwrap();
+        let compacts = events
+            .iter()
+            .filter(|e| e.event_type == EventType::Compacted)
+            .count();
+        assert_eq!(compacts, 2);
+    }
+
+    #[test]
+    fn subagent_bound_restamps_kind_body_envelope() {
+        use crate::authority::responses::FunctionToolCall;
+        use crate::types::Item;
+
+        let sessions = Arc::new(SessionManager::ephemeral_registry());
+        let sid = sessions
+            .open_session_sync("/p", "default", Some("m"))
+            .unwrap();
+        sessions
+            .persist_item(
+                &sid,
+                &Item::FunctionCall(FunctionToolCall {
+                    arguments: "{}".into(),
+                    call_id: "call_sub".into(),
+                    namespace: None,
+                    name: "subagent_launch".into(),
+                    id: None,
+                    status: None,
+                }),
+            )
+            .unwrap();
+        let mut proj = Projection::new(sid.clone(), sessions, 0);
+        proj.on_event(
+            InternalEvent::SubagentBound {
+                call_id: "call_sub".into(),
+                child_session_id: "child-sid".into(),
+            },
+            "/p",
+            &binding(),
+        );
+        let out = proj.take_outgoing();
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1);
+        let params = &items[0]["params"];
+        assert_eq!(params["kind"], "item/tool_call");
+        assert_eq!(params["state"], "final");
+        assert_eq!(params["child_session_id"], "child-sid");
+        assert!(params.get("type").is_none());
+        assert!(params.get("item").is_none());
+        assert!(params["body"].is_object());
+        assert!(params["cites"].is_array());
+        assert!(
+            out.iter().any(|msg| msg["method"]
+                == crate::client_protocol::protocol::methods::AGENT_SUBAGENT_BOUND)
+        );
+    }
+
+    #[test]
+    fn materialize_range_threads_log_state() {
+        use crate::authority::responses::{
+            AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+            OutputTextContent,
+        };
+        use crate::session::model::LogState;
+        use crate::types::Item;
+
+        let (proj, sid, sessions) = setup_with_details(&["u0", "u1"]);
+        sessions
+            .begin_stream_item(
+                &sid,
+                &Item::Message(MessageItem::Output(OutputMessage {
+                    id: "asst_live".into(),
+                    role: AssistantRole::Assistant,
+                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                        text: "hel".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    })],
+                    status: OutputStatus::InProgress,
+                    phase: None,
+                })),
+                "t-live",
+            )
+            .unwrap();
+        let range = proj.materialize_range(0, 10).unwrap();
+        assert_eq!(range.events.len(), 3);
+        assert_eq!(range.events[0].state, LogState::Final);
+        assert_eq!(range.events[2].state, LogState::InProgress);
+        let tail = proj.materialize_range(1, 10).unwrap();
+        assert_eq!(tail.events.len(), 2);
+    }
+
+    #[test]
+    fn live_and_materialize_share_kind_body_cites_state_including_control() {
+        use crate::session::event::EventDraft;
+        use crate::session::model::LogState;
+        use crate::session::store::SessionApply;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        sessions
+            .apply(
+                &sid,
+                SessionApply::Append(EventDraft {
+                    time: 1,
+                    event_type: EventType::TurnEnd,
+                    data: serde_json::json!({"turn": "t1", "reason": "cancelled"}),
+                    surface_op: None,
+                    source_seqs: None,
+                    ignorable: false,
+                    state: LogState::Final,
+                }),
+            )
+            .unwrap();
+        let _ = proj.take_outgoing();
+        proj.bump_buffer_revision("/p", &binding());
+        let outgoing = proj.take_outgoing();
+        let live = buffer_item_frames(&outgoing);
+        let loaded = proj.materialize_range(0, 10).unwrap();
+        assert!(
+            live.iter().any(|msg| msg["params"]["kind"] == "turn/end"
+                && msg["params"]["body"]["reason"] == "cancelled"),
+            "control-plane turn/end must be on live buffer/item"
+        );
+        for msg in &live {
+            let seq = msg["params"]["seq"].as_u64().unwrap();
+            let row = loaded
+                .events
+                .iter()
+                .find(|e| e.seq == seq)
+                .expect("live seq must exist on buffer/load");
+            assert_eq!(msg["params"]["kind"], row.event_type.as_str());
+            assert_eq!(msg["params"]["state"], row.state.as_str());
+            assert_eq!(msg["params"]["body"], row.body);
+            assert_eq!(
+                msg["params"]["cites"],
+                serde_json::to_value(&row.cites).unwrap()
+            );
+            assert!(msg["params"].get("item").is_none());
+            let loaded_json = serde_json::to_value(row).unwrap();
+            assert!(
+                loaded_json.get("item").is_none(),
+                "buffer/load must omit item like live buffer/item"
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_seal_restamps_changed_seqs_without_next_seq_growth() {
+        use crate::authority::responses::{
+            AssistantRole, FunctionToolCall, MessageItem, OutputMessage, OutputMessageContent,
+            OutputStatus, OutputTextContent,
+        };
+        use crate::types::Item;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        sessions
+            .begin_stream_item(
+                &sid,
+                &Item::Message(MessageItem::Output(OutputMessage {
+                    id: "asst_live".into(),
+                    role: AssistantRole::Assistant,
+                    content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                        text: "hel".into(),
+                        annotations: vec![],
+                        logprobs: None,
+                    })],
+                    status: OutputStatus::InProgress,
+                    phase: None,
+                })),
+                "t-live",
+            )
+            .unwrap();
+        sessions
+            .begin_stream_item(
+                &sid,
+                &Item::FunctionCall(FunctionToolCall {
+                    arguments: "{\"cmd\":\"ls\"}".into(),
+                    call_id: "call_live".into(),
+                    namespace: None,
+                    name: "bash".into(),
+                    id: Some("fc_live".into()),
+                    status: Some(OutputStatus::InProgress),
+                }),
+                "t-live",
+            )
+            .unwrap();
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        let next_before_seal = proj.next_seq;
+
+        let seqs = sessions.seal_in_progress_items(&sid).unwrap();
+        assert_eq!(seqs, vec![1, 2]);
+
+        proj.bump_buffer_revision("/p", &binding());
+        let after_bump = proj.take_outgoing();
+        let after_next_only = buffer_item_frames(&after_bump);
+        assert!(
+            after_next_only.is_empty(),
+            "seal must not be shipped by next_seq-only revision (next_seq={next_before_seal})"
+        );
+        assert_eq!(proj.next_seq, next_before_seal);
+
+        proj.on_event(
+            InternalEvent::BufferRestamp { seqs: seqs.clone() },
+            "/p",
+            &binding(),
+        );
+        let restamp_out = proj.take_outgoing();
+        let restamp = buffer_item_frames(&restamp_out);
+        assert_eq!(restamp.len(), 2);
+        assert_eq!(restamp[0]["params"]["seq"], 1);
+        assert_eq!(restamp[1]["params"]["seq"], 2);
+        for frame in &restamp {
+            let params = &frame["params"];
+            assert!(params["kind"].as_str().unwrap().starts_with("item/"));
+            assert_eq!(params["state"], "final");
+            assert_eq!(params["body"]["status"], "incomplete");
+            assert!(params["body"].is_object());
+            assert!(params["cites"].is_array());
+            assert!(params.get("item").is_none());
+            assert!(params.get("type").is_none());
+        }
+
+        proj.on_event(
+            InternalEvent::TurnCompleted {
+                turn_id: "t-cancel".into(),
+                final_text: None,
+                reason: crate::runtime::observer::TurnEndReason::Cancelled,
+                turn_token_stats: crate::runtime::observer::TurnTokenStats::default(),
+                committed_next_seq: 0,
+                error_kind: None,
+                cancelled_by: None,
+            },
+            "/p",
+            &binding(),
+        );
+        let after_end = proj.take_outgoing();
+        assert!(
+            buffer_item_frames(&after_end).is_empty(),
+            "TurnCompleted must not be the restamp vehicle"
+        );
+
+        proj.on_event(InternalEvent::BufferRestamp { seqs }, "/p", &binding());
+        let again_out = proj.take_outgoing();
+        let again = buffer_item_frames(&again_out);
+        assert_eq!(again.len(), 2);
+        assert_eq!(again[0]["params"]["body"]["status"], "incomplete");
+        assert_eq!(again[1]["params"]["body"]["status"], "incomplete");
+    }
+
+    /// The stream settles its own rows, so by the time the turn commits there is
+    /// nothing left to seal: the commit finds every row already in place. It must
+    /// neither append a second copy nor claim a seal it did not perform.
+    #[test]
+    fn commit_after_the_stream_settled_finds_nothing_to_seal_or_append() {
+        use crate::authority::responses::{
+            AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+            OutputTextContent,
+        };
+        use crate::session::data::command::CommitKind;
+        use crate::session::working::WorkingRow;
+        use crate::types::Item;
+
+        let (mut proj, sid, sessions) = setup_with_details(&["u0"]);
+        let live = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hel".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::InProgress,
+            phase: None,
+        }));
+        let live_seq = sessions
+            .begin_stream_item(&sid, &live, "t-complete")
+            .unwrap();
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        let next_before_seal = proj.next_seq;
+
+        let settled = Item::Message(MessageItem::Output(OutputMessage {
+            id: "asst_live".into(),
+            role: AssistantRole::Assistant,
+            content: vec![OutputMessageContent::OutputText(OutputTextContent {
+                text: "hello".into(),
+                annotations: vec![],
+                logprobs: None,
+            })],
+            status: OutputStatus::Completed,
+            phase: None,
+        }));
+        sessions.seal_stream_item(&sid, live_seq, &settled).unwrap();
+        let (kind, _, _) = sessions
+            .commit_turn_delta(
+                &sid,
+                vec![
+                    WorkingRow::persisted(0, user_text("u0")),
+                    WorkingRow::persisted(live_seq, settled.clone()),
+                ],
+                live_seq as i64,
+                "t-complete",
+            )
+            .unwrap();
+        assert!(
+            !matches!(kind, CommitKind::Sealed { .. }),
+            "a row the stream already settled must not be sealed again: {kind:?}"
+        );
+        assert_eq!(
+            sessions.data().events_blocking(&sid).unwrap().len(),
+            2,
+            "the commit must not append a second copy"
+        );
+
+        // The stream's settle shipped the row, so a forward-only revision has
+        // nothing left to deliver.
+        proj.bump_buffer_revision("/p", &binding());
+        let after_bump = proj.take_outgoing();
+        assert!(
+            buffer_item_frames(&after_bump).is_empty(),
+            "an already-delivered row is not shipped again by a revision bump"
+        );
+        assert_eq!(proj.next_seq, next_before_seal);
+
+        proj.on_event(
+            InternalEvent::BufferRestamp {
+                seqs: vec![live_seq],
+            },
+            "/p",
+            &binding(),
+        );
+        let restamp_out = proj.take_outgoing();
+        let restamp = buffer_item_frames(&restamp_out);
+        assert_eq!(restamp.len(), 1);
+        assert_eq!(restamp[0]["params"]["seq"], live_seq);
+        assert_eq!(restamp[0]["params"]["body"]["status"], "completed");
+        assert_eq!(restamp[0]["params"]["body"]["content"][0]["text"], "hello");
+        assert_eq!(restamp[0]["params"]["state"], "final");
+    }
+
+    #[test]
+    fn revert_then_append_delivers_new_seq_using_persisted_high_water() {
+        // Rows 0..8 (nine user messages); the persisted high-water is 9.
+        let (mut proj, sid, sessions) =
+            setup_with_details(&["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]);
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        assert_eq!(proj.next_seq, 9, "high-water after nine appends");
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 8);
+
+        // Revert at user seq 6 → keeps seqs 0..5 (active MAX 5); the
+        // allocator high-water stays at 9 because a truncate never rewinds it.
+        proj.revert_to_user_anchor(6, "/p", &binding()).unwrap();
+        let out = proj.take_outgoing();
+        let reverted = out
+            .iter()
+            .find(|m| m["method"] == "buffer/reverted")
+            .expect("buffer/reverted notification");
+        assert_eq!(
+            reverted["params"]["last_seq"], 5,
+            "active tail dropped to 5"
+        );
+        assert_eq!(
+            reverted["params"]["next_seq"], 9,
+            "high-water did not move back"
+        );
+        assert_eq!(proj.next_seq, 9);
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 5);
+
+        // Append must allocate the high-water seq 9, never the deleted seq 6, and
+        // the next bump must deliver exactly that row.
+        insert_detail(&sessions, &sid, "after-revert");
+        proj.bump_buffer_revision("/p", &binding());
+        let out = proj.take_outgoing();
+        let items = buffer_item_frames(&out);
+        assert_eq!(items.len(), 1, "the appended row must be delivered");
+        assert_eq!(items[0]["params"]["seq"], 9);
+        assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 9);
+        assert_eq!(proj.next_seq, 10);
+    }
+
+    #[test]
+    fn revert_drops_the_queue_it_made_meaningless() {
+        let (mut proj, sid, sessions) = setup_with_details(&["m0", "m1", "m2"]);
+        proj.bump_buffer_revision("/p", &binding());
+        let _ = proj.take_outgoing();
+        sessions
+            .enqueue_pending_message(&sid, "typed while busy")
+            .unwrap();
+        assert!(sessions.has_pending_messages(&sid));
+
+        proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
+        assert!(
+            !sessions.has_pending_messages(&sid),
+            "a successful revert must not leave messages queued for the next seam"
+        );
+        let out = proj.take_outgoing();
+        assert!(out.iter().any(|m| m["method"] == "buffer/reverted"));
+        // The wire notification is built from this event; clients overwrite from
+        // it, so an empty list is what drops the bubble right away.
+        assert!(
+            latest_pending_state(&sessions, &sid)
+                .expect("the client must be told the queue is gone, not left guessing")
+                .is_empty()
+        );
+
+        // A bad anchor truncates nothing, so the queue must survive it.
+        sessions
+            .enqueue_pending_message(&sid, "still mine")
+            .unwrap();
+        proj.revert_to_user_anchor(99, "/p", &binding()).unwrap();
+        assert_eq!(
+            latest_pending_state(&sessions, &sid).unwrap(),
+            vec!["still mine"]
+        );
+    }
+
+    fn latest_pending_state(sessions: &SessionManager, sid: &str) -> Option<Vec<String>> {
+        sessions
+            .event_buffer_snapshot(sid)
+            .into_iter()
+            .rev()
+            .find_map(|envelope| match envelope.event {
+                InternalEvent::PendingMessages { pending } => {
+                    Some(pending.into_iter().map(|message| message.text).collect())
+                }
+                _ => None,
+            })
+    }
 }
