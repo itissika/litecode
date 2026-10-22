@@ -1942,6 +1942,28 @@ pub fn refresh_from_source(reader: &SessionDataReader, data_root: &Path) -> Resu
     unreachable!("the loop either returns a count or an error")
 }
 
+/// Refresh against an already-read corpus.
+///
+/// Same reconciliation, but the bodies are supplied instead of fetched — used by
+/// the equivalence gate, which must be able to present a corpus that is not just
+/// "whatever the store currently holds".
+#[cfg(test)]
+pub fn refresh_index(rows: &[SearchableRow], data_root: &Path) -> Result<usize> {
+    let path = sparse_index_path(data_root);
+    let source_keys: Vec<(String, i64)> =
+        rows.iter().map(|r| (r.session_id.clone(), r.seq)).collect();
+    let mut conn = open(&path)?;
+    let plan = plan_reconcile(&conn, &source_keys)?;
+    let wanted: HashSet<(String, i64)> = plan.to_add.iter().cloned().collect();
+    let rows: Vec<SearchableRow> = rows
+        .iter()
+        .filter(|r| wanted.contains(&(r.session_id.clone(), r.seq)))
+        .cloned()
+        .collect();
+    let changed = apply_plan(&mut conn, &plan, &rows, data_root)?;
+    Ok(changed)
+}
+
 fn ensure_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

@@ -9,15 +9,11 @@ mod corpus;
 mod dense_parity;
 mod derive;
 mod echo;
-#[cfg(test)]
-mod golden;
 mod lexical;
 #[cfg(test)]
 mod parity;
 mod query_plan;
 mod ranking;
-#[cfg(test)]
-mod relevance;
 mod semantic_index;
 mod slots;
 mod sparse;

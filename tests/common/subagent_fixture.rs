@@ -41,6 +41,9 @@ pub struct SubagentHarness {
     pub parent_id: String,
 }
 
+// 共享 harness：各 test crate 只用其中一部分（stop/list/wait_for 等），
+// 未用到的 crate 会误报 dead_code，故整块放行。
+#[allow(dead_code)]
 impl SubagentHarness {
     pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
         Self::with_subagent_max_steps(provider, 2)
@@ -111,10 +114,6 @@ impl SubagentHarness {
             runtime,
             parent_id,
         }
-    }
-
-    pub fn project(&self) -> String {
-        self.dir.path().to_string_lossy().to_string()
     }
 
     pub fn launch_tool(&self) -> SubagentLaunchTool {
@@ -233,13 +232,6 @@ impl SubagentHarness {
 
     pub fn wait_child_settled(&self, child_id: &str) {
         self.wait_child_turn(child_id);
-    }
-
-    pub fn wait_mailbox(&self, parent_id: &str) {
-        self.wait_for(
-            || self.runtime.subagent_hub.has_pending(parent_id),
-            "completion reference",
-        );
     }
 
     pub fn wait_for(&self, mut predicate: impl FnMut() -> bool, what: &str) {

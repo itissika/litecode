@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use crate::config::SettingsWriter;
@@ -97,8 +96,8 @@ struct SpawnEnv {
     _dir: tempfile::TempDir,
     sessions: Arc<SessionManager>,
     parent: String,
-    writer: SettingsWriter,
-    revision: Arc<AtomicU64>,
+    /// Held only to keep the settings writer alive for the env's lifetime.
+    _writer: SettingsWriter,
     /// Parent-side runtime handle whose `resolved` is the snapshot a parent
     /// tool list would have been built against at construction time.
     runtime: RuntimeHandle,
@@ -166,8 +165,7 @@ async fn spawn_env(explore_model: &str) -> SpawnEnv {
         _dir: dir,
         sessions,
         parent,
-        writer,
-        revision,
+        _writer: writer,
         runtime,
     }
 }

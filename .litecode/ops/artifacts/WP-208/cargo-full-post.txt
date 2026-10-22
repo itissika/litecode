@@ -1,4 +1,3 @@
-   Compiling litecode v0.2.6 (/workspace/litecode)
 warning: unused import: `persist_usearch`
   --> src/engines/code_search/mod.rs:77:24
    |
@@ -30,46 +29,6 @@ warning: unused import: `planner::EditSpec`
     |
 215 | pub(crate) use planner::EditSpec;
     |                ^^^^^^^^^^^^^^^^^
-
-warning: unused doc comment
-   --> src/context_pipeline/compact.rs:526:1
-    |
-526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
-    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
-    |
-    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
-    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused doc comment
-   --> src/engines/code_search/index_status.rs:256:1
-    |
-256 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
-257 | | /// progress). `total == None` = still scanning. No-op without a running job.
-    | |_----------------------------------------------------------------------------^
-    |   |
-    |   rustdoc does not generate documentation for macro invocations
-    |
-    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
-
-warning: unused imports: `retain_own_reasoning`, `strip_foreign_ciphertext`, and `strip_rebased_signatures`
-  --> src/llm/mod.rs:29:5
-   |
-29 |     retain_own_reasoning, strip_foreign_ciphertext, strip_rebased_signatures,
-   |     ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
-
-warning: duplicated attribute
-   --> src/tool/registry.rs:769:5
-    |
-769 |     #[test]
-    |     ^^^^^^^
-    |
-    = note: `#[warn(duplicate_macro_attributes)]` on by default
-
-warning: unused import: `lock_excludes_cache_for_test`
-   --> src/workspace/filter/mod.rs:141:37
-    |
-141 | pub(crate) use workspace_excludes::{lock_excludes_cache_for_test, with_excludes_cache_for_test};
-    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 warning: unused variable: `workspace_root`
    --> src/engines/mod.rs:437:9
@@ -144,45 +103,45 @@ warning: function `persist_usearch` is never used
     |               ^^^^^^^^^^^^^^^
 
 warning: function `ambiguous_session_ref` is never used
-   --> src/engines/session_search/mod.rs:400:4
+   --> src/engines/session_search/mod.rs:396:4
     |
-400 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
+396 | fn ambiguous_session_ref(refer: &str, matches: &[String]) -> LitecodeError {
     |    ^^^^^^^^^^^^^^^^^^^^^
 
 warning: struct `MatchHaystack` is never constructed
-    --> src/engines/session_search/mod.rs:1060:19
+    --> src/engines/session_search/mod.rs:1056:19
      |
-1060 | pub(crate) struct MatchHaystack {
+1056 | pub(crate) struct MatchHaystack {
      |                   ^^^^^^^^^^^^^
 
 warning: function `normalize_for_match` is never used
-    --> src/engines/session_search/mod.rs:1072:4
+    --> src/engines/session_search/mod.rs:1068:4
      |
-1072 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
+1068 | fn normalize_for_match(text: &str) -> (String, Vec<usize>) {
      |    ^^^^^^^^^^^^^^^^^^^
 
 warning: function `prepare_haystack` is never used
-    --> src/engines/session_search/mod.rs:1098:15
+    --> src/engines/session_search/mod.rs:1094:15
      |
-1098 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
+1094 | pub(crate) fn prepare_haystack(text: &str) -> MatchHaystack {
      |               ^^^^^^^^^^^^^^^^
 
 warning: function `fuzzy_edit_budget` is never used
-    --> src/engines/session_search/mod.rs:1117:4
+    --> src/engines/session_search/mod.rs:1113:4
      |
-1117 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
+1113 | fn fuzzy_edit_budget(needle_chars: usize) -> usize {
      |    ^^^^^^^^^^^^^^^^^
 
 warning: function `match_in_haystack` is never used
-    --> src/engines/session_search/mod.rs:1132:15
+    --> src/engines/session_search/mod.rs:1128:15
      |
-1132 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
+1128 | pub(crate) fn match_in_haystack(hs: &MatchHaystack, needle: &str) -> Option<(f64, usize, usize)> {
      |               ^^^^^^^^^^^^^^^^^
 
 warning: function `map_span` is never used
-    --> src/engines/session_search/mod.rs:1199:4
+    --> src/engines/session_search/mod.rs:1195:4
      |
-1199 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
+1195 | fn map_span(hs: &MatchHaystack, char_start: usize, char_end: usize) -> (usize, usize) {
      |    ^^^^^^^^
 
 warning: function `uncovered_chars` is never used
@@ -377,9 +336,9 @@ warning: multiple methods are never used
     |        ^^^^^^^^^^^^^^
 
 warning: function `like_match_span` is never used
-    --> src/engines/session_search/sparse.rs:2092:4
+    --> src/engines/session_search/sparse.rs:2114:4
      |
-2092 | fn like_match_span(text: &str, needle: &str, pos: usize) -> (usize, usize) {
+2114 | fn like_match_span(text: &str, needle: &str, pos: usize) -> (usize, usize) {
      |    ^^^^^^^^^^^^^^^
 
 warning: method `thinking_dropped` is never used
@@ -543,67 +502,6 @@ warning: variant `Failed` is never constructed
 ...
 11 |     Failed(String),
    |     ^^^^^^
-
-warning: unused import: `sha2::Digest`
- --> src/lsp/install/github_tests.rs:6:9
-  |
-6 |     use sha2::Digest;
-  |         ^^^^^^^^^^^^
-
-warning: type `edit::matcher::RejectReason` is more private than the item `PlanFail::Reject::0`
-  --> src/tools/edit/planner.rs:93:12
-   |
-93 |     Reject(RejectReason),
-   |            ^^^^^^^^^^^^ field `PlanFail::Reject::0` is reachable at visibility `pub(crate)`
-   |
-note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
-  --> src/tools/edit/matcher.rs:18:1
-   |
-18 | pub(super) enum RejectReason {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   = note: `#[warn(private_interfaces)]` on by default
-
-warning: function `reject_all_pending_asks` is never used
-    --> src/client_protocol/connection.rs:1588:4
-     |
-1588 | fn reject_all_pending_asks(
-     |    ^^^^^^^^^^^^^^^^^^^^^^^
-     |
-     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: method `path` is never used
-  --> src/session/data/sqlite/conn.rs:65:12
-   |
-19 | impl SharedDb {
-   | ------------- method in this implementation
-...
-65 |     pub fn path(&self) -> &Path {
-   |            ^^^^
-
-warning: fields `diagnostics_omitted`, `tool_counts`, and `failure_stack` are never read
-  --> src/tools/code/render.rs:61:9
-   |
-48 | pub(super) struct RunReport {
-   |                   --------- fields in this struct
-...
-61 |     pub diagnostics_omitted: usize,
-   |         ^^^^^^^^^^^^^^^^^^^
-62 |     pub tool_counts: BTreeMap<String, usize>,
-   |         ^^^^^^^^^^^
-...
-71 |     pub failure_stack: Option<String>,
-   |         ^^^^^^^^^^^^^
-
-warning: fields `writer` and `revision` are never read
-   --> src/tools/subagent/spawn_contract.rs:100:5
-    |
- 96 | struct SpawnEnv {
-    |        -------- fields in this struct
-...
-100 |     writer: SettingsWriter,
-    |     ^^^^^^
-101 |     revision: Arc<AtomicU64>,
-    |     ^^^^^^^^
 
 warning: `litecode` (lib) generated 56 warnings (run `cargo fix --lib -p litecode` to apply 7 suggestions)
 warning: unused import: `session_data_fixture::SessionDataFixture`
@@ -953,56 +851,13 @@ warning: field `resolved` is never read
 38 |     pub resolved: ResolvedConfig,
    |         ^^^^^^^^
 
-warning: multiple methods are never used
-   --> tests/common/subagent_fixture.rs:116:12
-    |
- 44 | impl SubagentHarness {
-    | -------------------- methods in this implementation
-...
-116 |     pub fn project(&self) -> String {
-    |            ^^^^^^^
-...
-131 |     pub fn wait_tool(&self) -> SubagentWaitTool {
-    |            ^^^^^^^^^
-...
-135 |     pub fn stop_tool(&self) -> SubagentStopTool {
-    |            ^^^^^^^^^
-...
-139 |     pub fn list_tool(&self) -> SubagentListTool {
-    |            ^^^^^^^^^
-...
-143 |     pub fn send_tool(&self) -> SubagentSendTool {
-    |            ^^^^^^^^^
-...
-147 |     pub async fn send(&self, call_id: &str, child_id: &str, message: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-173 |     pub async fn wait(&self, call_id: &str, input: serde_json::Value) -> ToolCallResult {
-    |                  ^^^^
-...
-178 |     pub async fn stop(&self, call_id: &str, child_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-187 |     pub async fn list(&self, call_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-224 |     pub fn wait_child_turn(&self, child_id: &str) {
-    |            ^^^^^^^^^^^^^^^
-...
-234 |     pub fn wait_child_settled(&self, child_id: &str) {
-    |            ^^^^^^^^^^^^^^^^^^
-...
-238 |     pub fn wait_mailbox(&self, parent_id: &str) {
-    |            ^^^^^^^^^^^^
-
 warning: function `test_db_path` is never used
   --> tests/common/workspace_fixture.rs:20:8
    |
 20 | pub fn test_db_path(dir: &Path) -> String {
    |        ^^^^^^^^^^^^
 
-warning: `litecode` (lib test) generated 56 warnings (45 duplicates) (run `cargo fix --lib -p litecode --tests` to apply 2 suggestions)
-warning: `litecode` (test "wp098_follow_up_queue") generated 47 warnings (run `cargo fix --test "wp098_follow_up_queue" -p litecode` to apply 9 suggestions)
+warning: `litecode` (test "wp098_follow_up_queue") generated 46 warnings (run `cargo fix --test "wp098_follow_up_queue" -p litecode` to apply 9 suggestions)
 warning: unused imports: `TestAgentSpec`, `build_runtime_with_provider_and_observer`, `build_runtime_with_provider`, `test_agent`, `test_resolved_with_budget`, `test_sessions_manager`, and `test_turn_binding`
   --> tests/common/mod.rs:22:5
    |
@@ -1011,11 +866,11 @@ warning: unused imports: `TestAgentSpec`, `build_runtime_with_provider_and_obser
 23 |     test_agent, test_resolved, test_resolved_with_budget, test_sessions_manager, test_turn_binding,
    |     ^^^^^^^^^^                 ^^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
 
-warning: function `binding_safe_for` is never used
-  --> tests/common/bindings.rs:18:8
+warning: struct `CapturedLlmRequest` is never constructed
+  --> tests/common/recording_provider.rs:15:12
    |
-18 | pub fn binding_safe_for(tool_id: &str) -> AgentToolBinding {
-   |        ^^^^^^^^^^^^^^^^
+15 | pub struct CapturedLlmRequest {
+   |            ^^^^^^^^^^^^^^^^^^
    |
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
@@ -1024,12 +879,6 @@ warning: function `test_agent` is never used
    |
 39 | pub fn test_agent(tools: Vec<String>, _permission: &str, max_steps: u32) -> TestAgentSpec {
    |        ^^^^^^^^^^
-
-warning: function `test_resolved` is never used
-  --> tests/common/runtime.rs:58:8
-   |
-58 | pub fn test_resolved(agent_name: &str, tool_names: &[String]) -> ResolvedConfig {
-   |        ^^^^^^^^^^^^^
 
 warning: function `build_runtime_with_provider` is never used
    --> tests/common/runtime.rs:158:8
@@ -1043,96 +892,17 @@ warning: function `build_runtime_with_provider_and_observer` is never used
 168 | pub fn build_runtime_with_provider_and_observer(
     |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: function `default_test_catalog` is never used
-   --> tests/common/seed.rs:135:8
-    |
-135 | pub fn default_test_catalog() -> Arc<ProviderCatalog> {
-    |        ^^^^^^^^^^^^^^^^^^^^
-
-warning: constant `PARENT_AGENT` is never used
-  --> tests/common/subagent_fixture.rs:30:11
-   |
-30 | pub const PARENT_AGENT: &str = "default";
-   |           ^^^^^^^^^^^^
-
-warning: constant `SUBAGENT_AGENT` is never used
-  --> tests/common/subagent_fixture.rs:31:11
-   |
-31 | pub const SUBAGENT_AGENT: &str = "reviewer";
-   |           ^^^^^^^^^^^^^^
-
-warning: struct `SubagentHarness` is never constructed
-  --> tests/common/subagent_fixture.rs:36:12
+warning: fields `dir` and `resolved` are never read
+  --> tests/common/subagent_fixture.rs:37:9
    |
 36 | pub struct SubagentHarness {
-   |            ^^^^^^^^^^^^^^^
+   |            --------------- fields in this struct
+37 |     pub dir: tempfile::TempDir,
+   |         ^^^
+38 |     pub resolved: ResolvedConfig,
+   |         ^^^^^^^^
 
-warning: multiple associated items are never used
-   --> tests/common/subagent_fixture.rs:45:12
-    |
- 44 | impl SubagentHarness {
-    | -------------------- associated items in this implementation
- 45 |     pub fn new(provider: Arc<dyn LlmProvider>) -> Self {
-    |            ^^^
-...
- 49 |     pub fn with_subagent_max_steps(
-    |            ^^^^^^^^^^^^^^^^^^^^^^^
-...
-116 |     pub fn project(&self) -> String {
-    |            ^^^^^^^
-...
-120 |     pub fn launch_tool(&self) -> SubagentLaunchTool {
-    |            ^^^^^^^^^^^
-...
-131 |     pub fn wait_tool(&self) -> SubagentWaitTool {
-    |            ^^^^^^^^^
-...
-135 |     pub fn stop_tool(&self) -> SubagentStopTool {
-    |            ^^^^^^^^^
-...
-139 |     pub fn list_tool(&self) -> SubagentListTool {
-    |            ^^^^^^^^^
-...
-143 |     pub fn send_tool(&self) -> SubagentSendTool {
-    |            ^^^^^^^^^
-...
-147 |     pub async fn send(&self, call_id: &str, child_id: &str, message: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-156 |     pub fn exec_ctx(&self, call_id: &str) -> ToolExecutionContext {
-    |            ^^^^^^^^
-...
-168 |     pub async fn launch(&self, call_id: &str, input: serde_json::Value) -> ToolCallResult {
-    |                  ^^^^^^
-...
-173 |     pub async fn wait(&self, call_id: &str, input: serde_json::Value) -> ToolCallResult {
-    |                  ^^^^
-...
-178 |     pub async fn stop(&self, call_id: &str, child_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-187 |     pub async fn list(&self, call_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-194 |     pub async fn launch_reviewer(&self, call_id: &str, prompt: &str) -> String {
-    |                  ^^^^^^^^^^^^^^^
-...
-214 |     pub fn child_id(result: &ToolCallResult) -> String {
-    |            ^^^^^^^^
-...
-224 |     pub fn wait_child_turn(&self, child_id: &str) {
-    |            ^^^^^^^^^^^^^^^
-...
-234 |     pub fn wait_child_settled(&self, child_id: &str) {
-    |            ^^^^^^^^^^^^^^^^^^
-...
-238 |     pub fn wait_mailbox(&self, parent_id: &str) {
-    |            ^^^^^^^^^^^^
-...
-245 |     pub fn wait_for(&self, mut predicate: impl FnMut() -> bool, what: &str) {
-    |            ^^^^^^^^
-
-warning: `litecode` (test "agent_loop") generated 51 warnings (40 duplicates) (run `cargo fix --test "agent_loop" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "agent_loop") generated 45 warnings (39 duplicates) (run `cargo fix --test "agent_loop" -p litecode` to apply 1 suggestion)
 warning: unused import: `strip_verbatim`
  --> tests/workspace_path_consumer.rs:6:41
   |
@@ -1184,13 +954,7 @@ warning: value assigned to `turn` is never read
     |
     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
 
-warning: struct `PersistSnapshot` is never constructed
-  --> tests/common/fake_deps.rs:41:12
-   |
-41 | pub struct PersistSnapshot {
-   |            ^^^^^^^^^^^^^^^
-
-warning: `litecode` (test "turn_prefix_stability") generated 42 warnings (37 duplicates) (run `cargo fix --test "turn_prefix_stability" -p litecode` to apply 3 suggestions)
+warning: `litecode` (test "turn_prefix_stability") generated 37 warnings (33 duplicates) (run `cargo fix --test "turn_prefix_stability" -p litecode` to apply 3 suggestions)
 warning: unused imports: `FakeAgentDeps`, `assistant_text_item`, and `function_call_item`
   --> tests/common/mod.rs:15:21
    |
@@ -1220,12 +984,20 @@ warning: function `assistant_text_item` is never used
    |
 13 | pub fn assistant_text_item(text: &str, id: &str) -> Item {
    |        ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
 warning: function `function_call_item` is never used
   --> tests/common/fake_deps.rs:28:8
    |
 28 | pub fn function_call_item(call_id: &str, name: &str, arguments: &str, id: &str) -> Item {
    |        ^^^^^^^^^^^^^^^^^^
+
+warning: struct `PersistSnapshot` is never constructed
+  --> tests/common/fake_deps.rs:41:12
+   |
+41 | pub struct PersistSnapshot {
+   |            ^^^^^^^^^^^^^^^
 
 warning: associated items `from_db_path`, `db_path`, `reader`, `insert_items`, `operation_id`, and `mutate` are never used
   --> tests/common/session_data_fixture.rs:31:12
@@ -1251,15 +1023,7 @@ warning: associated items `from_db_path`, `db_path`, `reader`, `insert_items`, `
 69 |     pub fn mutate(&self, mutation: SessionMutation) -> litecode::session::CommitReceipt {
    |            ^^^^^^
 
-warning: function `assistant_text_item` is never used
-  --> tests/common/fake_deps.rs:13:8
-   |
-13 | pub fn assistant_text_item(text: &str, id: &str) -> Item {
-   |        ^^^^^^^^^^^^^^^^^^^
-   |
-   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: `litecode` (test "subscribe_bash_hydration") generated 51 warnings (46 duplicates) (run `cargo fix --test "subscribe_bash_hydration" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "subscribe_bash_hydration") generated 46 warnings (40 duplicates) (run `cargo fix --test "subscribe_bash_hydration" -p litecode` to apply 2 suggestions)
 warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_PROVIDER_ID`, `TestGlobalDb`, `TestServeFixture`, `build_global_with_custom_tool`, `build_global_with_mcp_server`, `catalog_for_db`, `default_test_catalog`, `default_test_global`, `fresh_test_global_db`, `insert_test_llm_registry`, `seed_global_db`, `seed_test_catalog_with`, `seed_test_catalog`, `test_catalog_toml_windows`, `test_catalog_toml`, `test_catalog_windows`, `test_catalog`, `test_serve_settings_with_db`, and `test_serve_settings`
   --> tests/common/mod.rs:27:5
    |
@@ -1284,28 +1048,8 @@ warning: field `dir` is never read
 37 |     pub dir: tempfile::TempDir,
    |         ^^^
 
-warning: methods `project`, `stop_tool`, `stop`, `wait_mailbox`, and `wait_for` are never used
-   --> tests/common/subagent_fixture.rs:116:12
-    |
- 44 | impl SubagentHarness {
-    | -------------------- methods in this implementation
-...
-116 |     pub fn project(&self) -> String {
-    |            ^^^^^^^
-...
-135 |     pub fn stop_tool(&self) -> SubagentStopTool {
-    |            ^^^^^^^^^
-...
-178 |     pub async fn stop(&self, call_id: &str, child_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-238 |     pub fn wait_mailbox(&self, parent_id: &str) {
-    |            ^^^^^^^^^^^^
-...
-245 |     pub fn wait_for(&self, mut predicate: impl FnMut() -> bool, what: &str) {
-    |            ^^^^^^^^
-
-warning: `litecode` (test "subagent_session_isolation") generated 50 warnings (49 duplicates)
+warning: `litecode` (test "subagent_session_isolation") generated 47 warnings (47 duplicates)
+warning: `litecode` (test "subagent_child_turn_contract") generated 47 warnings (45 duplicates) (run `cargo fix --test "subagent_child_turn_contract" -p litecode` to apply 1 suggestion)
 warning: unused imports: `fixture_responses_sse`, `text_only_completed_sse`, and `tool_call_completed_sse`
   --> tests/common/mod.rs:19:5
    |
@@ -1385,13 +1129,7 @@ warning: function `usage_text_sse` is never used
     |
     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
-warning: function `binding_safe_for` is never used
-  --> tests/common/bindings.rs:18:8
-   |
-18 | pub fn binding_safe_for(tool_id: &str) -> AgentToolBinding {
-   |        ^^^^^^^^^^^^^^^^
-
-warning: `litecode` (test "subagent_child_turn_contract") generated 48 warnings (45 duplicates) (run `cargo fix --test "subagent_child_turn_contract" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "stage_a_ctx_consistency") generated 55 warnings (44 duplicates) (run `cargo fix --test "stage_a_ctx_consistency" -p litecode` to apply 9 suggestions)
 warning: field `dir` is never read
   --> tests/session_list_empty_filter.rs:20:5
    |
@@ -1402,7 +1140,13 @@ warning: field `dir` is never read
    |
    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
-warning: `litecode` (test "stage_a_ctx_consistency") generated 60 warnings (48 duplicates) (run `cargo fix --test "stage_a_ctx_consistency" -p litecode` to apply 9 suggestions)
+warning: function `assistant_text_item` is never used
+  --> tests/common/fake_deps.rs:13:8
+   |
+13 | pub fn assistant_text_item(text: &str, id: &str) -> Item {
+   |        ^^^^^^^^^^^^^^^^^^^
+
+warning: `litecode` (test "session_list_empty_filter") generated 52 warnings (50 duplicates)
 warning: field `dir` is never read
   --> tests/common/session_data_fixture.rs:13:9
    |
@@ -1441,8 +1185,110 @@ warning: multiple associated items are never used
 69 |     pub fn mutate(&self, mutation: SessionMutation) -> litecode::session::CommitReceipt {
    |            ^^^^^^
 
-warning: `litecode` (test "session_list_empty_filter") generated 58 warnings (57 duplicates)
-warning: `litecode` (test "session_data_fault") generated 56 warnings (54 duplicates)
+warning: `litecode` (test "session_data_fault") generated 50 warnings (48 duplicates)
+warning: `litecode` (test "session_data_consistency") generated 50 warnings (50 duplicates)
+warning: unused doc comment
+   --> src/context_pipeline/compact.rs:526:1
+    |
+526 | /// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src/engines/code_search/index_status.rs:256:1
+    |
+256 | / /// Report chunk-exact progress for the in-flight job (keeps status + legacy
+257 | | /// progress). `total == None` = still scanning. No-op without a running job.
+    | |_----------------------------------------------------------------------------^
+    |   |
+    |   rustdoc does not generate documentation for macro invocations
+    |
+    = help: to document an item produced by a macro, the macro must produce the documentation as part of its expansion
+
+warning: unused imports: `retain_own_reasoning`, `strip_foreign_ciphertext`, and `strip_rebased_signatures`
+  --> src/llm/mod.rs:29:5
+   |
+29 |     retain_own_reasoning, strip_foreign_ciphertext, strip_rebased_signatures,
+   |     ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: duplicated attribute
+   --> src/tool/registry.rs:769:5
+    |
+769 |     #[test]
+    |     ^^^^^^^
+    |
+    = note: `#[warn(duplicate_macro_attributes)]` on by default
+
+warning: unused import: `lock_excludes_cache_for_test`
+   --> src/workspace/filter/mod.rs:141:37
+    |
+141 | pub(crate) use workspace_excludes::{lock_excludes_cache_for_test, with_excludes_cache_for_test};
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `sha2::Digest`
+ --> src/lsp/install/github_tests.rs:6:9
+  |
+6 |     use sha2::Digest;
+  |         ^^^^^^^^^^^^
+
+warning: type `edit::matcher::RejectReason` is more private than the item `PlanFail::Reject::0`
+  --> src/tools/edit/planner.rs:93:12
+   |
+93 |     Reject(RejectReason),
+   |            ^^^^^^^^^^^^ field `PlanFail::Reject::0` is reachable at visibility `pub(crate)`
+   |
+note: but type `edit::matcher::RejectReason` is only usable at visibility `pub(in crate::tools::edit)`
+  --> src/tools/edit/matcher.rs:18:1
+   |
+18 | pub(super) enum RejectReason {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(private_interfaces)]` on by default
+
+warning: function `reject_all_pending_asks` is never used
+    --> src/client_protocol/connection.rs:1588:4
+     |
+1588 | fn reject_all_pending_asks(
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: methods `indexed_rows` and `indexed_state` are never used
+   --> src/engines/session_search/parity.rs:189:8
+    |
+110 | impl Fixture {
+    | ------------ methods in this implementation
+...
+189 |     fn indexed_rows(&self) -> Vec<String> {
+    |        ^^^^^^^^^^^^
+...
+193 |     fn indexed_state(&self) -> Vec<String> {
+    |        ^^^^^^^^^^^^^
+
+warning: method `path` is never used
+  --> src/session/data/sqlite/conn.rs:65:12
+   |
+19 | impl SharedDb {
+   | ------------- method in this implementation
+...
+65 |     pub fn path(&self) -> &Path {
+   |            ^^^^
+
+warning: fields `diagnostics_omitted`, `tool_counts`, and `failure_stack` are never read
+  --> src/tools/code/render.rs:61:9
+   |
+48 | pub(super) struct RunReport {
+   |                   --------- fields in this struct
+...
+61 |     pub diagnostics_omitted: usize,
+   |         ^^^^^^^^^^^^^^^^^^^
+62 |     pub tool_counts: BTreeMap<String, usize>,
+   |         ^^^^^^^^^^^
+...
+71 |     pub failure_stack: Option<String>,
+   |         ^^^^^^^^^^^^^
+
 warning: unused imports: `CapturedLlmRequest` and `capture_request`
   --> tests/common/mod.rs:17:30
    |
@@ -1461,8 +1307,8 @@ warning: fields `instructions` and `tools` are never read
    |
    = note: `CapturedLlmRequest` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
 
-warning: `litecode` (test "session_data_consistency") generated 56 warnings (56 duplicates)
-warning: `litecode` (test "run_code_model_view") generated 46 warnings (44 duplicates) (run `cargo fix --test "run_code_model_view" -p litecode` to apply 1 suggestion)
+warning: `litecode` (lib test) generated 56 warnings (45 duplicates) (run `cargo fix --lib -p litecode --tests` to apply 2 suggestions)
+warning: `litecode` (test "run_code_model_view") generated 40 warnings (38 duplicates) (run `cargo fix --test "run_code_model_view" -p litecode` to apply 1 suggestion)
 warning: unused imports: `AgentToolBinding` and `ToolPreset`
   --> tests/optional_lsp.rs:10:46
    |
@@ -1523,8 +1369,8 @@ warning: unused import: `litecode::tools::write::WriteTool`
 573 |     use litecode::tools::write::WriteTool;
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "pending_messages") generated 52 warnings (52 duplicates)
-warning: `litecode` (test "optional_lsp") generated 62 warnings (54 duplicates) (run `cargo fix --test "optional_lsp" -p litecode` to apply 8 suggestions)
+warning: `litecode` (test "pending_messages") generated 46 warnings (46 duplicates)
+warning: `litecode` (test "optional_lsp") generated 57 warnings (49 duplicates) (run `cargo fix --test "optional_lsp" -p litecode` to apply 8 suggestions)
 warning: multiple associated items are never used
   --> tests/common/session_data_fixture.rs:31:12
    |
@@ -1552,6 +1398,7 @@ warning: multiple associated items are never used
 69 |     pub fn mutate(&self, mutation: SessionMutation) -> litecode::session::CommitReceipt {
    |            ^^^^^^
 
+warning: `litecode` (test "issue_032_changed_files_restore") generated 50 warnings (49 duplicates)
 warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `TEST_PRIMARY_MODEL_REF`, `TEST_PROVIDER_ID`, `TestGlobalDb`, `TestServeFixture`, `build_global_with_custom_tool`, `build_global_with_mcp_server`, `catalog_for_db`, `default_test_catalog`, `default_test_global`, `fresh_test_global_db`, `insert_test_llm_registry`, `seed_global_db`, `seed_test_catalog_with`, `seed_test_catalog`, `test_catalog_toml_windows`, `test_catalog_toml`, `test_catalog_windows`, `test_catalog`, and `test_serve_settings`
   --> tests/common/mod.rs:27:5
    |
@@ -1568,7 +1415,6 @@ warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "issue_032_changed_files_restore") generated 56 warnings (55 duplicates)
 warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `TEST_PROVIDER_ID`, `TestGlobalDb`, `TestServeFixture`, `build_global_with_custom_tool`, `build_global_with_mcp_server`, `catalog_for_db`, `default_test_catalog`, `default_test_global`, `fresh_test_global_db`, `insert_test_llm_registry`, `seed_global_db`, `seed_test_catalog_with`, `seed_test_catalog`, `test_catalog_toml_windows`, `test_catalog_toml`, `test_catalog_windows`, `test_catalog`, `test_serve_settings_with_db`, and `test_serve_settings`
   --> tests/common/mod.rs:27:5
    |
@@ -1593,9 +1439,11 @@ warning: associated function `with_text_response` is never used
 ...
 114 |     pub fn with_text_response(text: &str) -> Self {
     |            ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
 
-warning: `litecode` (test "g3_auth") generated 56 warnings (55 duplicates) (run `cargo fix --test "g3_auth" -p litecode` to apply 1 suggestion)
-warning: `litecode` (test "compact_failure_calibers") generated 49 warnings (47 duplicates) (run `cargo fix --test "compact_failure_calibers" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "g3_auth") generated 50 warnings (49 duplicates) (run `cargo fix --test "g3_auth" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "compact_failure_calibers") generated 43 warnings (41 duplicates) (run `cargo fix --test "compact_failure_calibers" -p litecode` to apply 1 suggestion)
 warning: unused import: `recording_sink`
   --> tests/common/mod.rs:16:22
    |
@@ -1656,8 +1504,8 @@ warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "workspace_process_contract") generated 43 warnings (39 duplicates) (run `cargo fix --test "workspace_process_contract" -p litecode` to apply 3 suggestions)
-warning: `litecode` (test "agent_e2e_responses") generated 52 warnings (50 duplicates) (run `cargo fix --test "agent_e2e_responses" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "workspace_process_contract") generated 39 warnings (35 duplicates) (run `cargo fix --test "workspace_process_contract" -p litecode` to apply 3 suggestions)
+warning: `litecode` (test "agent_e2e_responses") generated 46 warnings (44 duplicates) (run `cargo fix --test "agent_e2e_responses" -p litecode` to apply 2 suggestions)
 warning: unused imports: `TestAgentSpec`, `build_runtime_with_provider_and_observer`, `build_runtime_with_provider`, `test_resolved_with_budget`, `test_sessions_manager`, and `test_turn_binding`
   --> tests/common/mod.rs:22:5
    |
@@ -1682,7 +1530,8 @@ warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `
 32 |     test_serve_settings, test_serve_settings_with_db,
    |                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "workspace_api") generated 48 warnings (46 duplicates) (run `cargo fix --test "workspace_api" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "workspace_api") generated 43 warnings (41 duplicates) (run `cargo fix --test "workspace_api" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "terminal_ws_isolation") generated 50 warnings (50 duplicates)
 warning: associated function `with_text` is never used
   --> tests/common/scripted_provider.rs:33:12
    |
@@ -1700,36 +1549,8 @@ warning: associated function `ignore_cancel` is never used
 81 |     pub fn ignore_cancel() -> Self {
    |            ^^^^^^^^^^^^^
 
-warning: `litecode` (test "terminal_ws_isolation") generated 56 warnings (56 duplicates)
-warning: fields `dir` and `resolved` are never read
-  --> tests/common/subagent_fixture.rs:37:9
-   |
-36 | pub struct SubagentHarness {
-   |            --------------- fields in this struct
-37 |     pub dir: tempfile::TempDir,
-   |         ^^^
-38 |     pub resolved: ResolvedConfig,
-   |         ^^^^^^^^
-
-warning: methods `project`, `list_tool`, `list`, and `wait_mailbox` are never used
-   --> tests/common/subagent_fixture.rs:116:12
-    |
- 44 | impl SubagentHarness {
-    | -------------------- methods in this implementation
-...
-116 |     pub fn project(&self) -> String {
-    |            ^^^^^^^
-...
-139 |     pub fn list_tool(&self) -> SubagentListTool {
-    |            ^^^^^^^^^
-...
-187 |     pub async fn list(&self, call_id: &str) -> ToolCallResult {
-    |                  ^^^^
-...
-238 |     pub fn wait_mailbox(&self, parent_id: &str) {
-    |            ^^^^^^^^^^^^
-
-warning: `litecode` (test "subagent_tool_pipeline") generated 49 warnings (47 duplicates)
+warning: `litecode` (test "subagent_tool_pipeline") generated 46 warnings (44 duplicates)
+warning: `litecode` (test "subagent_send") generated 44 warnings (44 duplicates)
 warning: unused imports: `TestAgentSpec`, `build_runtime_with_provider_and_observer`, `build_runtime_with_provider`, `test_agent`, `test_resolved_with_budget`, and `test_turn_binding`
   --> tests/common/mod.rs:22:5
    |
@@ -1752,8 +1573,8 @@ warning: unused imports: `TestGlobalDb`, `TestServeFixture`, `build_global_with_
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "subagent_send") generated 45 warnings (43 duplicates)
-warning: `litecode` (test "settings_api") generated 51 warnings (49 duplicates) (run `cargo fix --test "settings_api" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "settings_api") generated 45 warnings (43 duplicates) (run `cargo fix --test "settings_api" -p litecode` to apply 2 suggestions)
+warning: `litecode` (test "session_transcript") generated 51 warnings (51 duplicates)
 warning: associated items `from_db_path`, `db_path`, `reader`, `operation_id`, and `mutate` are never used
   --> tests/common/session_data_fixture.rs:31:12
    |
@@ -1775,10 +1596,10 @@ warning: associated items `from_db_path`, `db_path`, `reader`, `operation_id`, a
 69 |     pub fn mutate(&self, mutation: SessionMutation) -> litecode::session::CommitReceipt {
    |            ^^^^^^
 
-warning: `litecode` (test "session_transcript") generated 57 warnings (57 duplicates)
-warning: `litecode` (test "session_delete") generated 51 warnings (50 duplicates)
-warning: `litecode` (test "session_data_crud") generated 56 warnings (56 duplicates)
-warning: `litecode` (test "session_data_concurrency") generated 56 warnings (56 duplicates)
+warning: `litecode` (test "session_delete") generated 46 warnings (45 duplicates)
+warning: `litecode` (test "session_data_crud") generated 50 warnings (50 duplicates)
+warning: `litecode` (test "session_data_concurrency") generated 50 warnings (50 duplicates)
+warning: `litecode` (test "permission_pipeline") generated 51 warnings (51 duplicates)
 warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `TEST_PRIMARY_MODEL_REF`, `TEST_PROVIDER_ID`, `TestGlobalDb`, `TestServeFixture`, `build_global_with_custom_tool`, `build_global_with_mcp_server`, `default_test_global`, `fresh_test_global_db`, `seed_global_db`, `seed_test_catalog_with`, `test_catalog_toml_windows`, `test_catalog_toml`, `test_catalog_windows`, `test_catalog`, `test_serve_settings_with_db`, and `test_serve_settings`
   --> tests/common/mod.rs:27:5
    |
@@ -1795,8 +1616,8 @@ warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "permission_pipeline") generated 55 warnings (55 duplicates)
-warning: `litecode` (test "optional_p0") generated 53 warnings (52 duplicates) (run `cargo fix --test "optional_p0" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "optional_p0") generated 48 warnings (47 duplicates) (run `cargo fix --test "optional_p0" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "optional_code_search") generated 51 warnings (51 duplicates)
 warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `TEST_PROVIDER_ID`, `TestGlobalDb`, `TestServeFixture`, `build_global_with_custom_tool`, `build_global_with_mcp_server`, `default_test_catalog`, `default_test_global`, `fresh_test_global_db`, `seed_global_db`, `seed_test_catalog_with`, `test_catalog_toml_windows`, `test_catalog_toml`, `test_catalog_windows`, `test_catalog`, `test_serve_settings_with_db`, and `test_serve_settings`
   --> tests/common/mod.rs:27:5
    |
@@ -1813,8 +1634,7 @@ warning: unused imports: `TEST_CATALOG_ENDPOINT`, `TEST_COMPACTION_MODEL_REF`, `
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "optional_code_search") generated 56 warnings (56 duplicates)
-warning: `litecode` (test "manual_compact_e2e") generated 49 warnings (48 duplicates) (run `cargo fix --test "manual_compact_e2e" -p litecode` to apply 1 suggestion)
+warning: `litecode` (test "manual_compact_e2e") generated 44 warnings (43 duplicates) (run `cargo fix --test "manual_compact_e2e" -p litecode` to apply 1 suggestion)
 warning: unused import: `std::time::Duration`
  --> tests/f2_lock_scope.rs:7:5
   |
@@ -1839,61 +1659,61 @@ warning: unused imports: `TEST_COMPACTION_MODEL_REF`, `TEST_PRIMARY_MODEL_REF`, 
 32 |     test_serve_settings, test_serve_settings_with_db,
    |     ^^^^^^^^^^^^^^^^^^^
 
-warning: `litecode` (test "f2_lock_scope") generated 54 warnings (52 duplicates) (run `cargo fix --test "f2_lock_scope" -p litecode` to apply 2 suggestions)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 45.22s
+warning: `litecode` (test "f2_lock_scope") generated 48 warnings (46 duplicates) (run `cargo fix --test "f2_lock_scope" -p litecode` to apply 2 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
      Running unittests src/lib.rs (target/debug/deps/litecode-df70069cd3fb447a)
 
-running 535 tests
+running 538 tests
 test agent::core::pending_continue_tests::stop_check_continues_once_for_a_queued_message ... ok
 test client_protocol::connection::ask_loop_tests::wp091_agent_cancel_reports_false_when_idle ... ok
+test client_protocol::connection::ask_loop_tests::wp091_agent_run_on_child_rejected_readonly ... ok
+test client_protocol::connection::ask_loop_tests::wp091_agent_cancel_child_writes_parent_notice_no_wake ... ok
 test client_protocol::connection::ask_loop_tests::wp091_delete_parent_with_running_child_returns_descendant_running ... ok
 test client_protocol::connection::ask_loop_tests::wp091_delete_running_child_rejected ... ok
-test client_protocol::connection::ask_loop_tests::wp091_agent_cancel_child_writes_parent_notice_no_wake ... ok
 test client_protocol::connection::ask_loop_tests::wp091_delete_child_tombstone_and_notice ... ok
-test client_protocol::connection::ask_loop_tests::unknown_grant_is_buffered_as_stray_then_consumed ... ok
+test client_protocol::connection::ask_loop_tests::wp091_enqueue_on_running_child_rejected_readonly ... ok
 test client_protocol::connection::ask_loop_tests::wp091_buffer_load_returns_subagent_binding_states ... ok
-test client_protocol::connection::ask_loop_tests::wp091_agent_run_on_child_rejected_readonly ... ok
 test client_protocol::connection::compact_error_tests::g4_compact_while_running_is_agent_already_running_retryable ... ok
 test client_protocol::connection::pending_ask_tests::abort_all_pending_is_aborted_not_deny ... ok
 test client_protocol::connection::pending_ask_tests::concurrent_asks_resolve_independently ... ok
 test client_protocol::connection::pending_ask_tests::matching_accept_resolves_allow ... ok
 test client_protocol::connection::pending_ask_tests::matching_reject_resolves_deny ... ok
 test client_protocol::connection::pending_ask_tests::retain_pending_on_disconnect_does_not_deny ... ok
-test client_protocol::connection::ask_loop_tests::wp091_list_sessions_includes_empty_child ... ok
-test client_protocol::controller::compact_item_wire_tests::cancel_seal_restamps_changed_seqs_without_next_seq_growth ... ok
-test client_protocol::connection::ask_loop_tests::wp091_enqueue_on_running_child_rejected_readonly ... ok
-test client_protocol::connection::ask_loop_tests::wp099_user_cancel_child_notice_by_user_and_no_wake ... ok
+test client_protocol::connection::ask_loop_tests::wp091_pending_enqueue_on_child_rejected_readonly ... ok
+test client_protocol::connection::ask_loop_tests::wp091_retry_on_child_rejected_readonly ... ok
 test client_protocol::project::wp025_turn_error_tests::auto_compact_failure_maps_to_compaction_failed_not_retryable ... ok
 test client_protocol::project::wp186_pending_permissions_tests::pending_permissions_matches_frozen_shape_fields ... ok
-test client_protocol::project::wp186_pending_permissions_tests::turn_awaiting_permission_derived_from_list_len ... ok
 test client_protocol::project::wp186_pending_permissions_tests::snapshot_always_serializes_pending_permissions_even_when_empty ... ok
+test client_protocol::project::wp186_pending_permissions_tests::turn_awaiting_permission_derived_from_list_len ... ok
 test client_protocol::project::wp186_pending_permissions_tests::wire_phase_writes_waiting_for_user_reads_alias ... ok
 test client_protocol::protocol::tests::buffer_load_result_is_a_seq_window ... ok
+test client_protocol::connection::ask_loop_tests::wp091_list_sessions_includes_empty_child ... ok
 test client_protocol::connection::ask_loop_tests::wp099_child_still_readonly_for_user ... ok
-test client_protocol::connection::ask_loop_tests::wp091_retry_on_child_rejected_readonly ... ok
-test client_protocol::connection::ask_loop_tests::wp091_pending_enqueue_on_child_rejected_readonly ... ok
-test client_protocol::controller::compact_item_wire_tests::revert_then_append_delivers_new_seq_using_persisted_high_water ... ok
-test client_protocol::connection::ask_loop_tests::wp099_session_info_last_turn_cancelled_by_user_parent_null ... ok
+test client_protocol::connection::ask_loop_tests::unknown_grant_is_buffered_as_stray_then_consumed ... ok
+test client_protocol::connection::ask_loop_tests::wp099_user_cancel_child_notice_by_user_and_no_wake ... ok
 test client_protocol::status_track::tests::installed_hook_is_registered ... ok
-test client_protocol::status_track::tests::turn_finished_event_carries_cancelled_by ... ok
 test client_protocol::status_track::tests::last_turn_cancelled_by_survives_reload ... ok
+test client_protocol::status_track::tests::turn_finished_event_carries_cancelled_by ... ok
+test client_protocol::connection::ask_loop_tests::wp099_session_info_last_turn_cancelled_by_user_parent_null ... ok
 test client_protocol::status_track::tests::turn_end_cancelled_by_user_parent_null ... ok
 test client_protocol::ws::wp166_tests::serve_state_does_not_run_snapshot_maintenance_inline ... ok
 test client_protocol::ws::wp166_tests::session_list_error_emits_operation_error_and_rpc_error ... ok
-test client_protocol::ws::wp166_tests::session_list_fastlane_matches_controller_list ... ok
+test client_protocol::controller::compact_item_wire_tests::cancel_seal_restamps_changed_seqs_without_next_seq_growth ... ok
+test client_protocol::controller::compact_item_wire_tests::revert_then_append_delivers_new_seq_using_persisted_high_water ... ok
 test client_protocol::ws::wp166_tests::session_list_not_blocked_by_inflight_subscribe ... ok
-test config::global_db::migrate::tests::config_global_db_wrong_user_version_fails_closed ... ok
+test client_protocol::ws::wp166_tests::session_list_fastlane_matches_controller_list ... ok
 test config::global_db::migrate::tests::config_global_db_migration_v0_to_current ... ok
+test config::global_db::migrate::tests::config_global_db_wrong_user_version_fails_closed ... ok
 test config::global_db::migrate::tests::re_running_the_migration_is_a_noop ... ok
-test config::global_db::seed::tests::migration_fills_missing_primary_code_search_only ... ok
 test config::global_db::seed::tests::ensure_prunes_rows_that_violate_role_rules ... ok
+test config::global_db::seed::tests::migration_fills_missing_primary_code_search_only ... ok
 test config::global_db::seed::tests::migration_keeps_existing_false_row ... ok
 test config::global_db::seed::tests::migration_runs_once_on_repeated_startup ... ok
 test config::manager::tests::validate_subagent_cannot_bind_subagent_series ... ok
 test config::path::tests::canon_abs_resolves_symlink ... ok
-test config::global_db::seed::tests::seed_plants_default_orchestrator_explore_and_general ... ok
 test config::path::tests::strip_uppercases_drive_letter ... ok
 test config::path::tests::strip_verbatim_drive_and_unc ... ok
+test config::global_db::seed::tests::seed_plants_default_orchestrator_explore_and_general ... ok
 test client_protocol::ws::wp166_tests::startup_settled_fires_without_list_or_new ... ok
 test config::settings_writer::tests::model_switch_rejects_a_reference_the_catalog_does_not_declare ... ok
 test config::settings_writer::tests::workspace_custom_without_rules_hides_global_rules ... ok
@@ -1904,12 +1724,12 @@ test config::workspace::tests::load_workspace_state_deferred_does_not_warm ... o
 test config::settings_writer::tests::write_agent_existing_agent_switched_to_primary_not_auto_bound ... ok
 test context_pipeline::budget::tests::compact_retires_the_in_memory_bill_and_the_stored_one ... ok
 test context_pipeline::budget::tests::manual_compact_gate_is_inclusive_at_thirty_percent ... ok
-test config::settings_writer::tests::write_agent_new_primary_missing_code_search_binds_true ... ok
+test client_protocol::ws::wp166_tests::subscribe_unsubscribe_order_preserved_with_list ... ok
 test context_pipeline::budget::tests::rewritten_view_does_not_reuse_a_provider_bill ... ok
+test config::settings_writer::tests::write_agent_new_primary_missing_code_search_binds_true ... ok
 test context_pipeline::budget::tests::provider_bill_covers_its_prefix_and_estimates_only_the_suffix ... ok
 test context_pipeline::compact::tests::compact_request_disables_thinking_and_uses_caller_cap ... ok
 test context_pipeline::compact::tests::compact_persist_ok_reload_err_keeps_db_truth ... ok
-test client_protocol::ws::wp166_tests::subscribe_unsubscribe_order_preserved_with_list ... ok
 test config::workspace::tests::load_workspace_state_uses_external_snapshots_dir ... ok
 test context_pipeline::compact::tests::compact_request_observes_cancel_while_waiting ... ok
 test context_pipeline::env::tests::build_context_copies_process_snapshot_and_ignores_disk ... ok
@@ -1937,22 +1757,24 @@ test context_pipeline::compact::tests::compact_request_times_out_on_silent_provi
 test context_pipeline::compact::tests::low_provider_bill_does_not_compact_a_hot_local_estimate ... ok
 test engines::code_search::cool_tests::pending_blocks_cool_drop ... ok
 test context_pipeline::compact::tests::provider_bill_over_threshold_compacts_then_the_bill_stays_retired ... ok
-test client_protocol::ws::wp166_tests::no_projection_frames_stranded_after_fastlane_list ... ok
-test engines::code_search::reconcile::tests::crash_between_index_commit_and_stamps_rereads_never_misses ... ok
 test client_protocol::ws::wp166_tests::startup_settled_fires_on_first_new_reply_only ... ok
+test engines::code_search::reconcile::tests::crash_between_index_commit_and_stamps_rereads_never_misses ... ok
+test client_protocol::ws::wp166_tests::no_projection_frames_stranded_after_fastlane_list ... ok
 test client_protocol::ws::wp166_tests::gc_stale_empty_sessions_deferred_until_settled ... ok
+test engines::code_search::wp143_tests::crash_between_compaction_renames_keeps_chunks_and_vectors_one_to_one ... ok
+test engines::session_search::parity::a_reconciled_index_equals_a_clean_rebuild ... ok
+test engines::session_search::semantic_index::tests::wp135_index_error_is_failed_index_failed_and_clears_on_success ... ok
 test engines::session_search::tests::gate_drops_weak_semantic ... ok
 test engines::session_search::tests::gate_keeps_strong_semantic ... ok
-test engines::code_search::wp143_tests::crash_between_compaction_renames_keeps_chunks_and_vectors_one_to_one ... ok
 test engines::session_search::dense_parity::an_appended_dense_index_equals_a_clean_rebuild ... ok
-test engines::session_search::semantic_index::tests::wp135_index_error_is_failed_index_failed_and_clears_on_success ... ok
+test engines::session_search::parity::incremental_derive_matches_a_full_build_field_by_field ... ok
 test engines::session_search::tests::context_window_exclude_drops_live_seqs_keeps_archive ... ok
 test engines::session_search::tests::agent_view_spills_the_remainder_into_a_named_file ... ok
 test knowledge::index::tests::every_file_is_parsed_once_per_stamp ... ok
-test knowledge::spec_tests::directory_texts_match_the_status ... ok
-test knowledge::spec_tests::lines_on_a_symbol_are_invalid_lines_in_the_snapshot ... ok
-test knowledge::index::tests::the_turn_reads_the_snapshot_only ... ok
 test engines::session_search::tests::lane_state::a_broken_index_is_an_error_not_an_empty_result ... ok
+test knowledge::index::tests::the_turn_reads_the_snapshot_only ... ok
+test knowledge::spec_tests::lines_on_a_symbol_are_invalid_lines_in_the_snapshot ... ok
+test knowledge::spec_tests::directory_texts_match_the_status ... ok
 test engines::session_search::tests::session_text_search_finds_seeded_transcript ... ok
 test knowledge::status::tests::classes_cover_errors_warnings_and_enabled ... ok
 test llm::codec::chat::tests::recorded_reasoning_is_replayed_as_reasoning_content ... ok
@@ -1960,19 +1782,20 @@ test llm::codec::chat::tests::stream_text_only_becomes_an_assistant_message ... 
 test llm::codec::chat::tests::stream_tool_call_opens_the_item_before_the_arguments_delta ... ok
 test llm::codec::chat::tests::stream_usage_lands_on_the_terminal_response ... ok
 test llm::codec::chat::tests::stream_whitespace_only_content_leaves_no_message_item ... ok
-test llm::codec::chat_synth::tests::whitespace_only_content_never_births_a_message ... ok
 test llm::codec::chat::tests::tools_and_reasoning_replay_into_one_assistant_turn ... ok
-test llm::codec::http::tests::empty_stream_loss_on_a_spent_budget_emits_failed ... ok
+test llm::codec::chat_synth::tests::whitespace_only_content_never_births_a_message ... ok
 test engines::session_search::tests::lane_state::a_stale_index_is_caught_up_behind_the_query ... ok
-test llm::codec::http::tests::send_cancellable_does_not_retry_explicit_client_failure ... ok
+test llm::codec::http::tests::empty_stream_loss_on_a_spent_budget_emits_failed ... ok
 test llm::codec::http::tests::cancel_while_waiting_does_not_emit_failed ... ok
+test llm::codec::http::tests::send_cancellable_does_not_retry_explicit_client_failure ... ok
+test knowledge::spec_tests::resolution_follows_the_spec ... ok
 test llm::codec::http::tests::send_cancellable_returns_canceled_when_token_fires ... ok
 test llm::codec::messages::tests::a_missing_tool_result_is_repaired ... ok
 test llm::codec::messages::tests::cancel_after_a_delta_seals_incomplete ... ok
 test llm::codec::messages::tests::disconnect_after_items_keeps_the_partial ... ok
-test engines::session_search::semantic_index::tests::wp135_incremental_scans_then_embeds_from_kept_chunks ... ok
+test engines::session_search::semantic_index::tests::wp144_bytes_per_batch_independent_of_index_size ... ok
 test llm::codec::messages::tests::later_turn_extends_the_previous_messages_prefix ... ok
-test knowledge::spec_tests::resolution_follows_the_spec ... ok
+test knowledge::index::tests::incremental_equals_from_scratch_over_random_edits ... ok
 test llm::codec::messages::tests::stream_round_trip_keeps_the_signature_and_sends_the_version_header ... ok
 test llm::codec::messages::tests::thinking_and_tool_signatures_round_trip_inside_the_open_turn ... ok
 test llm::codec::messages_synth::tests::message_start_records_dropped_thinking_without_changing_the_stream ... ok
@@ -1981,7 +1804,7 @@ test llm::codec::messages_synth::tests::thinking_text_and_tool_round_trip_with_t
 test llm::codec::responses::tests::cancel_after_a_delta_seals_incomplete ... ok
 test llm::codec::responses::tests::cancel_before_any_event_is_canceled ... ok
 test llm::codec::responses::tests::keepalive_between_events_does_not_abort_the_stream ... ok
-test knowledge::index::tests::incremental_equals_from_scratch_over_random_edits ... ok
+test llm::codec::http::tests::retry_emits_waiting_then_connecting_then_cleared ... ok
 test llm::codec::responses::tests::plain_model_sends_the_authority_shape ... ok
 test llm::codec::responses::tests::stream_events_are_forwarded_and_items_come_from_the_terminal ... ok
 test llm::codec::responses::tests::summary_replay_sends_own_id_and_summary_text ... ok
@@ -1994,7 +1817,7 @@ test llm::codec::responses_harden::tests::tool_call_string_arguments_stay_verbat
 test llm::codec::sse::tests::crlf_lines_strip_cr ... ok
 test llm::codec::sse::tests::leading_bom_is_stripped_once ... ok
 test llm::codec::sse::tests::multibyte_char_split_across_chunks_is_preserved ... ok
-test llm::codec::sse::tests::oversized_line_is_a_hard_error ... ok
+test llm::codec::http::tests::send_cancellable_retries_transient_status_before_stream_starts ... ok
 test llm::codec::sse::tests::skips_noise ... ok
 test llm::codec::sse::tests::trailing_line_without_newline_is_kept_for_finish ... ok
 test llm::codec::stream_contract::tests::delta_before_added_synthesizes_added_first ... ok
@@ -2023,14 +1846,14 @@ test lsp::conn::tests::content_modified_resolve_is_cancelled_once ... ok
 test lsp::conn::tests::content_modified_semantic_tokens_is_cancelled_once ... ok
 test lsp::conn::tests::diagnostics_are_current_rejects_stale_cache ... ok
 test lsp::conn::tests::dispatch_out_of_order_responses ... ok
-test llm::codec::http::tests::retry_emits_waiting_then_connecting_then_cleared ... ok
+test llm::codec::sse::tests::oversized_line_is_a_hard_error ... ok
 test lsp::conn::tests::is_content_modified_matches_only_32801 ... ok
-test llm::codec::http::tests::send_cancellable_retries_transient_status_before_stream_starts ... ok
-test llm::codec::messages::tests::empty_stream_retries_until_a_terminal_arrives ... ok
+test knowledge::spec_tests::oversized_and_binary_files_are_unreadable_everywhere ... ok
+test lsp::conn::tests::unversioned_publish_after_change_is_silence_not_stale_errors ... ok
 test lsp::conn::tests::wait_returns_current_clean_cache_without_blocking ... ok
 test lsp::conn::tests::wait_returns_current_errors_without_blocking ... ok
 test lsp::deps::tests::rust_analyzer_symlink_to_rustup_spawns_as_rust_analyzer ... ok
-test lsp::conn::tests::unversioned_publish_after_change_is_silence_not_stale_errors ... ok
+test lsp::conn::tests::wait_ignores_stale_publish_and_keeps_waiting_for_current ... ok
 test lsp::format::tests::display_path_does_not_resolve_symlinks ... ok
 test lsp::format::tests::display_path_tries_roots_in_order ... ok
 test lsp::format::tests::location_inside_workspace_is_relative ... ok
@@ -2041,49 +1864,49 @@ test lsp::install::adapters::typescript::tests::pins_typescript_below_7 ... ok
 test lsp::install::github_tests::tests::asset_exact_name_skips_vsix ... ok
 test lsp::install::npm::tests::npm_is_invoked_as_the_shim_not_via_cmd_exe ... ok
 test lsp::project_root::tests::monorepo_ts_file_resolves_to_web_subdir ... ok
-test lsp::conn::tests::edit_fix_must_not_echo_previous_round_error ... ok
 test lsp::project_root::tests::rust_analyzer_uses_cargo_workspace_not_member_crate ... ok
 test lsp::project_root::tests::rust_nested_crate_outside_workspace_members_keeps_own_root ... ok
 test lsp::server::tests::diagnostics_gate_table ... ok
 test lsp::server::tests::index_not_ready_error_maps_to_unavailable_wording ... ok
 test lsp::server::tests::nav_empty_symbols_by_array_len ... ok
+test lsp::sweep_gate::tests::gate_opens_when_sweep_panics ... ok
 test lsp::sweep_gate::tests::second_start_is_noop_after_open ... ok
-test llm::codec::messages::tests::stream_error_before_items_retries_and_after_items_preserves ... ok
+test lsp::conn::tests::edit_fix_must_not_echo_previous_round_error ... ok
 test lsp::sweep_gate::tests::wait_passes_when_never_armed ... ok
 test lsp::tests::coverage_requires_active_and_configured_command ... ok
-test lsp::sweep_gate::tests::gate_opens_when_sweep_panics ... ok
+test lsp::deps::tests::rustup_link_without_component_is_unavailable ... ok
 test lsp::tests::file_to_uri_strips_verbatim_prefix ... ok
 test lsp::tests::normalize_windows_verbatim_file_uri ... ok
-test lsp::conn::tests::wait_ignores_stale_publish_and_keeps_waiting_for_current ... ok
-test lsp::deps::tests::rustup_link_without_component_is_unavailable ... ok
-test lsp::tests::publish_diagnostics_uri_matches_mangled_verbatim ... ok
-test knowledge::spec_tests::oversized_and_binary_files_are_unreadable_everywhere ... ok
-test lsp::tests::restart_after_failed_probe_says_hub_not_active ... ok
-test lsp::tests::uri_to_path_recovers_mangled_verbatim_file_uri ... ok
-test lsp::tests::probe_failure_deactivates_hub_and_reports_original_error ... ok
+test llm::codec::messages::tests::empty_stream_retries_until_a_terminal_arrives ... ok
 test lsp::tests::deferred_activate_runs_no_probe_until_first_need ... ok
-test mcp::client::tests::r1_skips_notification_before_response ... ok
+test lsp::tests::publish_diagnostics_uri_matches_mangled_verbatim ... ok
+test lsp::tests::probe_failure_deactivates_hub_and_reports_original_error ... ok
+test llm::codec::messages::tests::stream_error_before_items_retries_and_after_items_preserves ... ok
+test lsp::tests::uri_to_path_recovers_mangled_verbatim_file_uri ... ok
 test lsp::sweep_gate::tests::wait_blocks_until_sweep_returns ... ok
+test lsp::tests::restart_after_failed_probe_says_hub_not_active ... ok
+test mcp::client::tests::r1_skips_notification_before_response ... ok
 test lsp::tests::probe_runs_once_per_activation ... ok
-test engines::session_search::semantic_index::tests::wp144_bytes_per_batch_independent_of_index_size ... ok
-test optional::tests::defer_reconcile_builds_no_client ... ok
+test lsp::tests::spawn_ls_waits_for_sweep_gate ... ok
 test optional::tests::concurrent_first_calls_build_once ... ok
+test optional::tests::defer_reconcile_builds_no_client ... ok
 test optional::tests::ensure_warm_builds_once_and_reuses ... ok
 test optional::tests::failed_build_is_not_cached_and_retries ... ok
+test optional::tests::poisoned_state_lock_does_not_cascade_panics ... ok
 test optional::tests::settings_reconcile_rebuilds_immediately ... ok
 test optional::tests::stopped_engine_is_not_rebuilt ... ok
 test permission::engine::tests::a_tool_named_run_code_keeps_safe_deny ... ok
 test permission::engine::tests::reserved_names_keep_the_safe_binding ... ok
-test optional::tests::poisoned_state_lock_does_not_cascade_panics ... ok
 test permission::engine::tests::subagent_turns_safe_ask_into_deny ... ok
 test permission::evaluate::tests::first_matching_rule_wins ... ok
-test permission::grants::tests::expired_grant_is_skipped ... ok
 test permission::floor::tests::run_hits_the_dangerous_command_floor ... ok
+test permission::grants::tests::expired_grant_is_skipped ... ok
 test permission::grants::tests::wp081_legacy_q0_free_text_always_true ... ok
 test permission::sinks::tests::cancelling_sink_returns_aborted_not_deny ... ok
 test provider_catalog::tests::codec_capability_mismatch_is_refused_not_trimmed ... ok
 test provider_catalog::tests::embedded_catalog_is_valid_and_complete ... ok
 test provider_catalog::tests::references_are_provider_slash_model_and_lookup_splits_once ... ok
+test provider_catalog::tests::request_url_comes_from_endpoint_type ... ok
 test provider_catalog::tests::shared_catalog_is_the_embedded_seed_and_does_not_read_a_file ... ok
 test provider_catalog::tests::unknown_field_is_refused ... ok
 test ptc::engine::settle_tests::cancel_during_drain_keeps_the_value ... ok
@@ -2091,100 +1914,98 @@ test ptc::engine::settle_tests::other_drain_failures_replace_success ... ok
 test ptc::engine::settle_tests::success_is_not_rewritten_when_the_clock_is_already_exhausted ... ok
 test ptc::engine::settle_tests::timeout_during_drain_keeps_the_returned_value ... ok
 test ptc::output::tests::push_keeps_the_fitting_prefix ... ok
-test provider_catalog::tests::request_url_comes_from_endpoint_type ... ok
+test mcp::client::tests::r3_cancel_marks_dirty_next_client_ok ... ok
 test ptc::tests::budget_interrupts_infinite_loop ... ok
 test ptc::tests::cancel_grace_records_unfinished ... ok
 test ptc::tests::cancel_while_awaiting_host ... ok
-test lsp::tests::spawn_ls_waits_for_sweep_gate ... ok
+test ptc::tests::cancel_while_js_running_cancels_inflight ... ok
 test ptc::tests::caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed ... ok
 test ptc::tests::deep_nesting_does_not_crash ... ok
-test ptc::tests::cancel_while_js_running_cancels_inflight ... ok
+test ptc::tests::dense_array_within_output_budget ... ok
 test ptc::tests::dropped_undefined_list_is_capped_with_more_count ... ok
-test mcp::client::tests::r3_cancel_marks_dirty_next_client_ok ... ok
 test ptc::tests::host_integer_above_safe_range_is_rejected ... ok
 test ptc::tests::host_receives_extra_arguments_as_a_json_array ... ok
-test ptc::tests::dense_array_within_output_budget ... ok
+test ptc::tests::illegal_arguments_skip_host ... ok
+test ptc::tests::illegal_output_values ... ok
 test ptc::tests::memory_exhaustion_stays_sealed_when_the_program_catches_it ... ok
 test ptc::tests::memory_limit ... ok
 test ptc::tests::no_ambient_capabilities ... ok
-test ptc::tests::illegal_arguments_skip_host ... ok
 test ptc::tests::output_limit_counts_final_value ... ok
 test ptc::tests::output_limit_keeps_log_prefix ... ok
-test ptc::tests::stack_limit ... ok
 test ptc::tests::sparse_huge_array_rejected_before_allocation ... ok
-test ptc::tests::illegal_output_values ... ok
+test ptc::tests::stack_limit ... ok
+test ptc::tests::budget_pause_is_not_charged ... ok
 test ptc::tests::stack_overflow_caught_then_immediate_return_is_still_sealed ... ok
 test ptc::tests::stack_overflow_stays_sealed_when_the_program_catches_it ... ok
 test ptc::tests::success_survives_budget_expiry_at_return ... ok
 test ptc::tests::tool_error_is_catchable_and_instanceof ... ok
+test ptc::tests::unawaited_calls_are_waited_and_recorded ... ok
 test ptc::tests::uncaught_tool_error_keeps_code ... ok
 test ptc::tests::undefined_in_arguments_is_dropped_silently ... ok
 test ptc::tests::undefined_in_result_is_stripped_or_nulled_and_reported ... ok
 test ptc::tests::user_exceptions_are_not_classified_by_message ... ok
-test ptc::tests::unawaited_calls_are_waited_and_recorded ... ok
 test reminder::engine::tests::restore_fires_once_after_compaction ... ok
-test reminder::mentions::tests::user_row_is_followed_by_a_hidden_mentions_reminder_and_revert_drops_both ... ok
+test ptc::tests::success_cancels_inflight_calls ... ok
+test reminder::mentions::tests::unchanged_symbol_is_not_attached_again_until_the_body_changes ... ok
 test reminder::sources::tests::env_emits_once_until_snapshot_changes ... ok
 test reminder::sources::tests::tasks_restore_only_after_compaction_and_once ... ok
-test reminder::mentions::tests::unchanged_symbol_is_not_attached_again_until_the_body_changes ... ok
 test runtime::bash_auto_turn::tests::busy_session_leaves_mailbox ... ok
 test runtime::bash_auto_turn::tests::idle_without_subscribers_does_not_reserve ... ok
+test reminder::mentions::tests::user_row_is_followed_by_a_hidden_mentions_reminder_and_revert_drops_both ... ok
 test runtime::exec::estimate_body_bytes_tests::body_bytes_reflects_instructions ... ok
 test runtime::observer::tests::turn_end_reason_log_schema_is_snake_case_for_every_variant ... ok
 test runtime::observer::tests::turn_error_kind_serializes_snake_case ... ok
 test runtime::bash_auto_turn::tests::ui_kill_while_busy_prepares_user_stopped_reminder_once_idle ... ok
-test runtime::pending_auto_turn::tests::busy_session_leaves_the_queue_alone ... ok
 test runtime::pending_auto_turn::tests::child_uses_deny_sink_regardless_of_last_sink ... ok
+test runtime::pending_auto_turn::tests::busy_session_leaves_the_queue_alone ... ok
 test runtime::pending_auto_turn::tests::idle_flush_reserves_claims_and_persists_one_user_row ... ok
-test ptc::tests::budget_pause_is_not_charged ... ok
-test runtime::pending_auto_turn::tests::runtime_queue_multiple_runs_one_turn_each_fifo ... ok
-test ptc::tests::success_cancels_inflight_calls ... ok
 test runtime::pending_auto_turn::tests::runtime_stop_and_send_starting_window ... ok
-test runtime::stream_projection::tests::an_item_the_call_never_confirmed_settles_incomplete ... ok
+test runtime::pending_auto_turn::tests::runtime_queue_multiple_runs_one_turn_each_fifo ... ok
+test runtime::stream_projection::tests::a_streamed_item_settles_into_the_row_it_opened ... ok
+test runtime::stream_projection::tests::a_call_that_reuses_a_provider_id_opens_a_new_row ... ok
+test runtime::stream_projection::tests::a_write_the_session_refuses_fails_the_call ... ok
 test runtime::stream_projection::tests::same_call_identity_conflicts_fail_closed ... ok
 test runtime::stream_projection::tests::terminal_duplicate_id_fails_closed ... ok
-test runtime::stream_projection::tests::a_write_the_session_refuses_fails_the_call ... ok
-test runtime::stream_projection::tests::a_streamed_item_settles_into_the_row_it_opened ... ok
-test serve::run::tests::loopback_only_rejects_non_loopback_even_with_auth ... ok
 test runtime::stream_projection::tests::update_stream_item_failure_fails_settle_and_still_seals ... ok
+test runtime::stream_projection::tests::an_item_the_call_never_confirmed_settles_incomplete ... ok
+test serve::run::tests::loopback_only_rejects_non_loopback_even_with_auth ... ok
 test runtime::subagent_auto_turn::tests::child_uses_deny_sink_regardless_of_last_sink ... ok
 test session::data::final_immutability_tests::a_restart_seals_an_in_flight_call_and_appends_its_interrupt_result ... ok
-test session::data::final_immutability_tests::a_restart_seals_rows_the_previous_run_left_in_flight ... ok
 test session::data::final_immutability_tests::a_finalised_row_is_never_rewritten ... ok
+test session::data::final_immutability_tests::reopen_after_revert_does_not_reuse_a_deleted_seq ... ok
+test session::data::final_immutability_tests::a_restart_seals_rows_the_previous_run_left_in_flight ... ok
 test session::data::sqlite::ops::tests::persist_receipt_deleted_rejects_surviving_session_row ... ok
 test session::data::sqlite::schema::tests::existing_session_db_backfills_next_seq_to_max_plus_one ... ok
-test session::data::final_immutability_tests::reopen_after_revert_does_not_reuse_a_deleted_seq ... ok
 test session::data::final_immutability_tests::sealing_a_settled_row_is_refused ... ok
 test session::data::sqlite::session::tests::compact_never_deletes_historical_detail_rows ... ok
 test session::data::sqlite::session::tests::compact_summary_agent_view_is_assistant_and_survives_reload ... ok
-test session::data::sqlite::session::tests::in_progress_item_is_retrievable_and_seal_keeps_seq ... ok
-test session::data::sqlite::session::tests::load_events_roundtrip_append_origin_is_contiguous_seq ... ok
-test session::data::sqlite::session::tests::incremental_surface_matches_fold_after_compact_and_append ... ok
 test session::data::sqlite::session::tests::a_crashed_turn_is_sealed_incomplete_and_its_continuation_appends ... ok
+test session::data::sqlite::session::tests::in_progress_item_is_retrievable_and_seal_keeps_seq ... ok
+test session::data::sqlite::session::tests::incremental_surface_matches_fold_after_compact_and_append ... ok
+test session::data::sqlite::session::tests::load_events_roundtrip_append_origin_is_contiguous_seq ... ok
 test session::data::sqlite::session::tests::reopen_after_truncate_keeps_high_water_and_appends_into_the_hole ... ok
 test session::data::sqlite::session::tests::revert_retaining_earlier_compact_restores_pointers ... ok
-test session::data::sqlite::session::tests::writer_working_set_matches_fold_after_append_and_keep_recent_compact ... ok
 test session::data::sqlite::session::tests::truncate_then_append_does_not_reuse_deleted_seqs ... ok
-test session::manager::child_session_tests::begin_turn_rejects_second_while_running ... ok
+test session::data::sqlite::session::tests::writer_working_set_matches_fold_after_append_and_keep_recent_compact ... ok
 test session::delete::tests::remove_session_returns_descendants_sorted_root_last ... ok
 test session::delete::tests::tombstone_survives_reload ... ok
+test session::manager::child_session_tests::begin_turn_rejects_second_while_running ... ok
 test session::manager::child_session_tests::cancel_during_starting_turn_cancels_on_start ... ok
-test session::manager::child_session_tests::cancel_leaves_pending_queue_intact ... ok
 test session::manager::child_session_tests::cancel_turn_sync_reports_idle_when_nothing_running ... ok
+test session::manager::child_session_tests::cancel_leaves_pending_queue_intact ... ok
 test session::manager::child_session_tests::compact_lease_atomically_blocks_turn_and_revert ... ok
-test session::manager::child_session_tests::finish_turn_clears_running_immediately_and_allows_rebegin ... ok
 test session::manager::child_session_tests::delete_operation_is_blocked_by_active_descendant_turns ... ok
+test session::manager::child_session_tests::finish_turn_clears_running_immediately_and_allows_rebegin ... ok
 test session::manager::child_session_tests::g3_turn_finished_reason_non_empty_on_error_termination ... ok
 test session::manager::child_session_tests::g4_g5_compact_rejected_while_running_and_turn_restarts_after_error ... ok
 test session::manager::child_session_tests::revert_during_running_turn_waits_for_finish_and_holds_exclusive_lease ... ok
-test runtime::stream_projection::tests::a_call_that_reuses_a_provider_id_opens_a_new_row ... ok
 test session::manager::child_session_tests::s1_reopen_prune_keeps_revision_in_sync ... ok
 test session::manager::child_session_tests::start_turn_fanout_spawn_failure_rolls_back_running_and_turn_guard ... ok
 test session::manager::child_session_tests::turn_reservation_closes_pre_spawn_idle_window ... ok
 test session::manager::pending_message_tests::a_failed_revert_keeps_the_queue ... ok
 test session::manager::child_session_tests::turn_status_hook_fires_on_start_and_release ... ok
-test session::manager::pending_message_tests::a_reverted_log_drops_the_queue_it_made_meaningless ... ok
 test session::manager::pending_message_tests::claim_only_for_the_running_turn_and_restore_prepends ... ok
+test session::manager::pending_message_tests::a_reverted_log_drops_the_queue_it_made_meaningless ... ok
 test session::manager::pending_message_tests::enqueue_remove_and_claim_never_touch_the_log ... ok
 test session::manager::request_origin_tests::failed_model_change_rolls_back_state_and_event_together ... ok
 test session::manager::request_origin_tests::model_change_commits_state_and_control_plane_row_together ... ok
@@ -2195,18 +2016,20 @@ test session::snapshot::tests::restore_missing_track_ref_is_unavailable ... ok
 test session::snapshot::tests::snapshot_track_skips_nested_git_dir_entry ... ok
 test session::snapshot::tests::track_before_warm_matches_warm_then_track ... ok
 test session::snapshot::tests::warm_then_incremental_edit_restore ... ok
+test mcp::client::tests::r2_hang_times_out_and_marks_dirty ... ok
 test terminal::agent_jobs::tests::foreground_cancel_kills_and_skips_mailbox ... ok
+test engines::session_search::semantic_index::tests::wp135_incremental_scans_then_embeds_from_kept_chunks ... ok
 test terminal::agent_jobs::tests::undetached_finish_skips_mailbox_and_exit_handler ... ok
 test terminal::agent_jobs::tests::wait_async_times_out_while_job_stays_alive ... ok
 test terminal::pty::tests::drain_utf8_keeps_a_cjk_character_split_across_chunks ... ok
-test terminal::tee::tests::file_stops_at_max_and_flags_truncation ... ok
+test engines::session_search::parity::incremental_derive_from_a_partial_index_matches_a_full_build ... ok
 test terminal::tests::ids_are_unguessable_uuid_and_distinct ... ok
-test terminal::tests::kill_rejects_human_pty_id ... ok
+test terminal::tee::tests::file_stops_at_max_and_flags_truncation ... ok
 test terminal::tests::kill_unknown_or_guessed_id_is_rejected ... ok
 test tool::code_manifest::tests::rejects_tools_without_a_data_contract ... ok
 test tool::executor::code_caller_contract_tests::unknown_parameter_is_invalid_input ... ok
+test terminal::tests::kill_rejects_human_pty_id ... ok
 test terminal::agent_jobs::tests::kill_registered_kills_pid_and_marks_user_killed ... ok
-test mcp::client::tests::r2_hang_times_out_and_marks_dirty ... ok
 test tool::executor::tests::completed_tool_result_wins_over_late_cancellation ... ok
 test tool::executor::tests::invalid_json_arguments_are_not_swallowed ... ok
 test tool::executor::tests::partition_splits_same_path_read_and_write ... ok
@@ -2259,7 +2082,7 @@ test tools::code_search::tests::warm_stale_is_searchable_without_warm_wait ... o
 test tools::code_search::tests::warming_returns_immediately_without_sleeping ... ok
 test tools::custom::tests::child_ignoring_stdin_is_not_a_broken_pipe_failure ... ok
 test terminal::agent_jobs::tests::detached_read_continues_after_nested_cancel ... ok
-test tools::custom::tests::finished_reaps_grandchild_holding_stdout ... ok
+test mcp::client::tests::drop_reaps_grandchild_process ... ok
 test tools::edit::matcher::tests::structural_prefix_and_indent_block_before_apply ... ok
 test tools::edit::python_indent::two_space_vs_four_space_is_whitespace_only_reject ... ok
 test tools::edit::tests::edit_tool_cancel_before_write ... ok
@@ -2267,21 +2090,21 @@ test tools::edit::tests::edit_tool_rejects_nul_bytes ... ok
 test tools::edit::tests::edit_tool_schema_accepts_flat_shape_rejects_old ... ok
 test tools::edit::tests::edit_tool_wire_multiple_matches ... ok
 test tools::edit::tests::empty_new_string_deletes_old ... ok
+test mcp::client::tests::kill_reaps_grandchild_process ... ok
 test tools::edit::tests::failure_message_tests::edit_failure_resolves_with_message ... ok
-test tools::edit::tests::single_success_reports_edit_result ... ok
 test tools::edit::tests::unmatched_reports_no_match_without_applying ... ok
-test tools::glob::tests::basename_glob_recurses ... ok
+test tools::edit::tests::single_success_reports_edit_result ... ok
 test tools::glob::tests::cancelled_glob_stops_before_walking ... ok
-test tools::glob::tests::default_filters_hide_gitignored ... ok
+test tools::glob::tests::basename_glob_recurses ... ok
 test tools::glob::tests::parent_dir_pattern_is_invalid_input ... ok
-test tool::executor::tests::committed_result_wins_over_tool_timeout ... ok
+test tools::custom::tests::finished_reaps_grandchild_holding_stdout ... ok
 test tools::grep::message_contract_tests::grep_message_binary_file ... ok
-test tools::grep::message_contract_tests::grep_message_glob_empty ... ok
+test tools::glob::tests::default_filters_hide_gitignored ... ok
 test tools::grep::message_contract_tests::grep_message_path_excluded ... ok
-test tools::grep::tests::a_bare_brace_is_invalid_regex ... ok
+test tools::grep::message_contract_tests::grep_message_glob_empty ... ok
 test tools::grep::tests::blank_glob_is_invalid_input ... ok
+test tools::grep::tests::a_bare_brace_is_invalid_regex ... ok
 test tools::grep::tests::limit_bounds_hits_and_notes_truncation ... ok
-test tools::glob::tests::truncates_with_message ... ok
 test tools::grep::tests::wide_search_never_writes_a_spill_file ... ok
 test tools::kill::tests::unknown_id_is_not_found ... ok
 test tools::lsp::tests::absolute_outside_root_rejected ... ok
@@ -2306,12 +2129,12 @@ test tools::read::tests::test_read_long_line_is_capped_in_text ... ok
 test tools::read::tests::test_read_start_line_past_end_resolves_empty ... ok
 test tools::read::tests::test_read_with_start_line_and_limit ... ok
 test tools::run::tests::fast_command_returns_exit_code ... ok
-test tool::executor::tests::blocking_tool_is_interrupted_by_pipeline_timeout ... ok
+test tools::glob::tests::truncates_with_message ... ok
 test tools::run_lock_gate::cancel_before_spawn_releases_when_the_call_ends ... ok
 test tools::run_lock_gate::dropped_in_flight_future_releases_and_panic_unwind_releases ... ok
+test tool::executor::tests::committed_result_wins_over_tool_timeout ... ok
+test tool::executor::tests::blocking_tool_is_interrupted_by_pipeline_timeout ... ok
 test tools::run::tests::long_command_returns_null_exit_and_keeps_job ... ok
-test mcp::client::tests::drop_reaps_grandchild_process ... ok
-test mcp::client::tests::kill_reaps_grandchild_process ... ok
 test tools::run_lock_gate::spawn_failure_releases_locks ... ok
 test tools::run_lock_gate::four_parallel_write_runs_finish_in_about_one_second ... ok
 test tools::session_search::tests::a_result_over_budget_names_the_file_that_holds_the_rest ... ok
@@ -2321,7 +2144,7 @@ test tools::session_search::tests::semantic_unavailable_is_explicit_and_leads_wi
 test tools::subagent::hub::tests::hub_lagged_rescan_dedups_per_child ... ok
 test tools::run_lock_gate::window_is_capped_by_run_code_deadline ... ok
 test tools::custom::tests::finished_kills_orphaned_grandchild_before_side_effect ... ok
-test tools::kill::tests::kill_stops_process_and_notes_output ... ok
+test tools::run_lock_gate::locks_release_after_spawn_while_command_still_runs ... ok
 test tools::webfetch::tests::non_http_scheme_is_hard_invalid_input ... ok
 test tools::webfetch::tests::not_warmed_is_hard_unavailable ... ok
 test tools::webfetch::tests::private_ip_is_hard_permission_denied ... ok
@@ -2345,15 +2168,26 @@ test workspace::file_ops::tests::atomic_create_fails_if_exists_without_clobber .
 test workspace::file_ops::tests::atomic_write_creates_file_with_content ... ok
 test workspace::file_ops::tests::atomic_write_preserves_execute_bit_on_overwrite ... ok
 test workspace::file_ops::tests::atomic_write_preserves_hardlink_inode ... ok
-test tools::run_lock_gate::locks_release_after_spawn_while_command_still_runs ... ok
 test workspace::file_ops::tests::atomic_write_writes_through_symlink ... ok
-test workspace::filter::path::tests::cheap_rel_under_rejects_outside ... ok
 test workspace::filter::index_policy::tests::search_exclude_does_not_gate_code_index_queue ... ok
-test workspace::git::tests::git_commands_skip_optional_index_locks ... ok
+test workspace::filter::path::tests::cheap_rel_under_rejects_outside ... ok
 test workspace::filter::path::tests::rel_path_ctx_rejects_outside ... ok
+test workspace::git::tests::git_commands_skip_optional_index_locks ... ok
 test workspace::git::tests::git_dir_is_snapshot_detects_shadow_repo ... ok
-Initialized empty Git repository in /tmp/.tmpMVlbqm/.git/
-Initialized empty Git repository in /tmp/.tmpWTBBSX/.git/
+Initialized empty Git repository in /tmp/.tmpGinYHe/.git/
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: is subject to change. To configure the initial branch name to use in all
+hint: of your new repositories, which will suppress this warning, call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+Initialized empty Git repository in /tmp/.tmp4flye9/snap/
+test workspace::git::tests::inherited_git_dir_env_does_not_select_snapshot_repo ... ok
+Initialized empty Git repository in /tmp/.tmpeV5A4P/.git/
 test workspace::git::tests::path_escape_is_rejected ... ok
 test workspace::sandbox::tests::rejects_parent_dir_escape ... ok
 test workspace::sandbox::tests::root_is_lap_not_verbatim ... ok
@@ -2374,18 +2208,7 @@ test workspace::watcher::tests::atomic_save_overwrite_is_reclassified_as_modifie
 test workspace::watcher::tests::delete_then_recreate_coalesces_to_modified ... ok
 test workspace::watcher::tests::paths_outside_root_are_ignored ... ok
 test workspace::watcher::tests::rescan_flag_and_overflow_request_full_rescan ... ok
-hint: Using 'master' as the name for the initial branch. This default branch name
-hint: is subject to change. To configure the initial branch name to use in all
-hint: of your new repositories, which will suppress this warning, call:
-hint:
-hint: 	git config --global init.defaultBranch <name>
-hint:
-hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
-hint: 'development'. The just-created branch can be renamed via this command:
-hint:
-hint: 	git branch -m <name>
-Initialized empty Git repository in /tmp/.tmpxXYVB1/snap/
-test workspace::git::tests::inherited_git_dir_env_does_not_select_snapshot_repo ... ok
+test tools::kill::tests::kill_stops_process_and_notes_output ... ok
 test tools::run_lock_gate::short_command_returns_exit_code_in_foreground ... ok
 test terminal::agent_jobs::tests::foreground_timeout_promotes_without_killing ... ok
 test tools::wait::tests::wait_until_exit_sets_code ... ok
@@ -2393,7 +2216,7 @@ test tools::wait::tests::wait_timeout_keeps_null_exit ... ok
 test llm::codec::responses::tests::non_event_stream_content_type_surfaces_the_proxy_body ... ok
 test tools::subagent::spawn_contract::child_calls_agent_provider_endpoint_not_parent_provider ... ok
 
-test result: ok. 535 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 24.78s
+test result: ok. 538 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.52s
 
      Running unittests src/main.rs (target/debug/deps/litecode-b0a0faef2d61f760)
 
@@ -2406,26 +2229,26 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 5 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
+test agent_e2e_responses_text_only ... ok
 test agent_e2e_incomplete_seals_text_to_disk ... ok
 test agent_e2e_responses_tool_loop_hits_max_steps ... ok
-test agent_e2e_responses_text_only ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
 
      Running tests/agent_loop.rs (target/debug/deps/agent_loop-15c37951f282d369)
 
 running 11 tests
+test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test auto_compact_fail_stops_turn_without_model_call ... ok
 test persist_failure_rolls_back_working_set ... ok
+test auto_compact_fail_stops_turn_without_model_call ... ok
 test max_steps_with_perpetual_tools ... ok
-test cancelled_after_model_persists_output ... ok
 test cancelled_after_stream_skips_tool_execution ... ok
+test incomplete_function_call_is_not_executed ... ok
+test single_text_response_stops_loop ... ok
+test cancelled_after_model_persists_output ... ok
 test cancel_during_auto_compact_is_cancelled_without_model_call ... ok
 test tool_step_persists_function_call_before_output ... ok
-test incomplete_function_call_is_not_executed ... ok
-test common::permission::test_auto_approve_sink_approves_ask ... ok
-test single_text_response_stops_loop ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -2465,8 +2288,8 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/code_index_tick_death_list.rs (target/debug/deps/code_index_tick_death_list-3166554ad68d22ad)
 
 running 2 tests
-test manual_refresh_does_not_merge_plans_for_execution ... ok
 test code_index_tick_never_builds_or_cools ... ok
+test manual_refresh_does_not_merge_plans_for_execution ... ok
 
 test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -2478,7 +2301,7 @@ test notify_fs_changes_then_search_hits_new_file ... ok
 test refresh_stays_incremental_when_all_files_dirty ... ok
 test refresh_incremental_then_rebuild_when_meta_incompatible ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
 
      Running tests/code_surface.rs (target/debug/deps/code_surface-d40c833de66fc083)
 
@@ -2487,14 +2310,14 @@ test edit_write::direct_edit_and_write_are_refused_before_authorization ... ok
 test edit_write::nested_write_approval_denial_does_not_apply_the_edit ... ok
 test edit_write::nested_write_sensitive_path_is_denied_by_the_same_floor ... ok
 test projection::code_call_keeps_the_tools_own_permission_and_does_not_execute_a_deny ... ok
-test projection::code_call_of_invisible_tool_is_not_found_and_does_not_run ... ok
-test projection::code_success_without_matching_data_is_an_internal_error ... ok
-test projection::code_transport_is_allowed_by_identity_not_by_name ... ok
-test projection::missing_or_unrenderable_code_tool_leaves_both_surfaces ... ok
 test edit_write::cancelled_run_code_seals_an_in_flight_write_and_edit ... ok
+test projection::code_call_of_invisible_tool_is_not_found_and_does_not_run ... ok
+test projection::code_transport_is_allowed_by_identity_not_by_name ... ok
+test projection::code_success_without_matching_data_is_an_internal_error ... ok
+test projection::missing_or_unrenderable_code_tool_leaves_both_surfaces ... ok
 test approval_locks::approval_pending_does_not_preclaim_the_same_path ... ok
-test approval_concurrency::approval_pending_does_not_lock_other_calls ... ok
 test edit_write::two_nested_writes_leave_one_complete_file_and_sequential_writes_both_apply ... ok
+test approval_concurrency::approval_pending_does_not_lock_other_calls ... ok
 test run_code_only::direct_code_tools_are_refused_and_succeed_through_run_code ... ok
 test run_code_only::cancellation_seals_in_flight_nested_calls ... ok
 test approval_locks::cancel_before_approval_does_not_write_later ... ok
@@ -2524,7 +2347,7 @@ test manual_compact_failure_releases_lease_for_retry ... ok
 test compact_failure_restores_transcript_snapshot ... ok
 test auto_compact_failure_restores_pipeline_working_set ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
 
      Running tests/f2_lock_scope.rs (target/debug/deps/f2_lock_scope-cb76ec5fbce88bf0)
 
@@ -2534,13 +2357,13 @@ test common::permission::recording_sink_records_and_returns_response ... ok
 test concurrent_commit_partial_does_not_lose_updates ... ok
 test session_mutation_does_not_hold_records_lock ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
 
      Running tests/g3_auth.rs (target/debug/deps/g3_auth-bfd6fde967746c42)
 
 running 5 tests
-test common::permission::recording_sink_records_and_returns_response ... ok
 test common::permission::test_auto_approve_sink_approves_ask ... ok
+test common::permission::recording_sink_records_and_returns_response ... ok
 test ws_handshake_rejects_cross_origin ... ok
 test api_rejects_query_token_and_accepts_bearer_only ... ok
 test ws_handshake_allows_localhost_origins_including_ipv6_loopback ... ok
@@ -2553,19 +2376,19 @@ running 2 tests
 test config_global_db_migration_and_seed ... ok
 test legacy_role_rule_rows_are_repaired_on_load ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
      Running tests/issue_032_changed_files_restore.rs (target/debug/deps/issue_032_changed_files_restore-94ece3464b310f4c)
 
 running 6 tests
 test common::permission::recording_sink_records_and_returns_response ... ok
 test common::permission::test_auto_approve_sink_approves_ask ... ok
-test t4_empty_changed_skips_restore ... ok
-test t3_successful_files_changed_does_not_restore ... ok
 test t2_files_changed_append_failure_soft_restores ... ok
+test t3_successful_files_changed_does_not_restore ... ok
+test t4_empty_changed_skips_restore ... ok
 test t1_spine_failure_restores_changed_files_for_next_seam ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
 
      Running tests/manual_compact_e2e.rs (target/debug/deps/manual_compact_e2e-2cd7d90580ff1ff2)
 
@@ -2575,7 +2398,7 @@ test common::permission::recording_sink_records_and_returns_response ... ok
 test manual_compact_failure_e2e_releases_lease_and_retry_starts ... ok
 test manual_compact_retry_after_failure_completes ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.55s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
 
      Running tests/mcp_integration.rs (target/debug/deps/mcp_integration-66b305c70be62062)
 
@@ -2587,33 +2410,33 @@ test catalog_and_bind_exposes_echo_and_round_trips ... ok
 test pool_rebuilds_after_crash ... ok
 test execute_stays_pending_while_hang_blocks_on_hub ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.04s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s
 
      Running tests/optional_code_search.rs (target/debug/deps/optional_code_search-cd6a94512aaba19f)
 
 running 10 tests
-test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test catalog_lists_tool_while_warming_and_after_warm ... ok
+test common::permission::test_auto_approve_sink_approves_ask ... ok
 test engine_desired_off_stops_engine ... ok
-test worker_crash_demotes_engine ... ok
-test warmup_loads_compatible_index_without_full_rebuild ... ok
+test catalog_lists_tool_while_warming_and_after_warm ... ok
 test pipeline_version_change_triggers_rebuild ... ok
+test warmup_loads_compatible_index_without_full_rebuild ... ok
+test worker_crash_demotes_engine ... ok
 test code_index_tick_syncs_without_refresh ... ok
 test code_search_lifecycle_rebuild_stale_consume_stop ... ok
 test stop_during_warmup_leaves_no_zombie_worker ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
 
      Running tests/optional_lsp.rs (target/debug/deps/optional_lsp-cc24c8b4e2df0fde)
 
 running 15 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test engines_json_off_no_lsp_tool ... ok
 test edit_fix_must_not_echo_previous_lsp_error ... ok
+test engines_json_off_no_lsp_tool ... ok
 test get_diagnostics_rpc_does_not_deadlock ... ok
-kill: (635606): No such process
+kill: (681470): No such process
 test hub_drop_kills_spawned_server_process ... ok
 test idle_reclaim_during_diagnostics_does_not_panic ... ok
 test overlapping_hovers_match_out_of_order_ids ... ok
@@ -2625,7 +2448,7 @@ test write_with_warm_lsp_appends_only_when_errors_arrive ... ok
 test write_with_warm_lsp_but_no_errors_stays_clean ... ok
 test write_without_lsp_warm_never_appends_diagnostics ... ok
 
-test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.87s
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 16.81s
 
      Running tests/optional_p0.rs (target/debug/deps/optional_p0-f42f56bfddcc3883)
 
@@ -2635,32 +2458,32 @@ test common::permission::recording_sink_records_and_returns_response ... ok
 test network_core_engines_always_warmup ... ok
 test settings_reload_reconciles_engine_manager ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
      Running tests/pending_messages.rs (target/debug/deps/pending_messages-69fc25a620d0ad14)
 
 running 4 tests
-test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
+test common::permission::test_auto_approve_sink_approves_ask ... ok
 test queued_message_is_injected_at_the_tool_loop_seam ... ok
 test queued_message_during_final_response_extends_the_turn ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
 
      Running tests/permission_pipeline.rs (target/debug/deps/permission_pipeline-65a08d016ea5e005)
 
 running 13 tests
-test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test authorize_ask_aborted_is_not_deny ... ok
+test common::permission::test_auto_approve_sink_approves_ask ... ok
 test authorize_ask_denied_by_sink ... ok
-test safe_glob_outside_workspace_denies_via_path_arg ... ok
-test authorize_ask_always_grants_same_rule_only ... ok
-test authorize_floor_deny_ignores_always_grant ... ok
-test floor_blocks_sensitive_commands_under_unrestricted_all_preset ... ok
-test authorize_invalid_json_arguments_denied ... ok
-test floor_sensitive_write_blocks_even_under_all_and_always_grant ... ok
 test authorize_subagent_ask_denied_without_sink ... ok
+test authorize_ask_always_grants_same_rule_only ... ok
+test safe_glob_outside_workspace_denies_via_path_arg ... ok
+test authorize_floor_deny_ignores_always_grant ... ok
+test authorize_invalid_json_arguments_denied ... ok
+test authorize_ask_aborted_is_not_deny ... ok
+test floor_blocks_sensitive_commands_under_unrestricted_all_preset ... ok
+test floor_sensitive_write_blocks_even_under_all_and_always_grant ... ok
 test grant_is_rule_and_agent_scoped ... ok
 test safe_run_matrix_readonly_allow_others_deny_floor_hard_deny ... ok
 
@@ -2677,7 +2500,7 @@ test a_second_argument_is_a_catchable_type_error ... ok
 test timeout_keeps_the_log_tail_and_names_the_budget ... ok
 test large_result_is_budgeted_in_the_request ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
 
      Running tests/serve_bind_auth.rs (target/debug/deps/serve_bind_auth-b20c4ba5af7d796b)
 
@@ -2700,17 +2523,17 @@ test common::permission::recording_sink_records_and_returns_response ... ok
 test same_revision_double_append_one_conflict ... ok
 test append_then_delete_late_commit_conflicts ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
 
      Running tests/session_data_consistency.rs (target/debug/deps/session_data_consistency-702fd3758f3093a2)
 
 running 4 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test hot_transcript_matches_committed_log ... ok
 test change_log_tracks_each_successful_mutation ... ok
+test hot_transcript_matches_committed_log ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
 
      Running tests/session_data_crud.rs (target/debug/deps/session_data_crud-cfd36419e8b8c44d)
 
@@ -2722,7 +2545,7 @@ test conflict_on_stale_revision ... ok
 test idempotent_operation_id_returns_same_receipt ... ok
 test create_append_meta_delete ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
 
      Running tests/session_data_fault.rs (target/debug/deps/session_data_fault-1a8effc59b71d8bb)
 
@@ -2732,14 +2555,14 @@ test common::permission::recording_sink_records_and_returns_response ... ok
 test fault_before_commit_rolls_back ... ok
 test fault_after_commit_keeps_rows_and_operation_is_idempotent ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
 
      Running tests/session_data_lifecycle.rs (target/debug/deps/session_data_lifecycle-dcb4fb4d3654cd5e)
 
 running 1 test
 test queue_capacity_keeps_overflow_pending_until_cancelled ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
 
      Running tests/session_data_sql_death_list.rs (target/debug/deps/session_data_sql_death_list-bd3252a02418c036)
 
@@ -2754,7 +2577,7 @@ test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
 test delete_listed_idle_session_after_cold_start_without_subscribe ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
 
      Running tests/session_list_empty_filter.rs (target/debug/deps/session_list_empty_filter-7efce590e7e643f3)
 
@@ -2794,7 +2617,7 @@ test settings_provider_key_write_is_effective_next_turn ... ok
 test settings_provider_key_write_bumps_revision_and_masks_secret ... ok
 test settings_retrieval_refresh_endpoint_accepts_when_cold ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.08s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.33s
 
      Running tests/stage_a_ctx_consistency.rs (target/debug/deps/stage_a_ctx_consistency-872abd4adeaa62f1)
 
@@ -2802,27 +2625,27 @@ running 14 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
 test commit_after_revert_discards_uncommitted_delta ... ok
-test manual_compact_bypasses_auto_threshold_and_preserves_full_history ... ok
 test keep_recent_skip_still_enforces_hard_limit_when_over_budget ... ok
+test manual_compact_bypasses_auto_threshold_and_preserves_full_history ... ok
 test compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail ... ok
-test compact_keeps_pending_tail_after_post_compact_reminder ... ok
-test compact_reminder_rides_on_checkpoint_not_extra_user_detail ... ok
 test compact_rebuild_does_not_repeat_kept_call_ids ... ok
+test compact_reminder_rides_on_checkpoint_not_extra_user_detail ... ok
+test compact_keeps_pending_tail_after_post_compact_reminder ... ok
 test compact_then_new_step_persists_and_resumes_full_content ... ok
 test pipeline_compact_reloads_working_set_from_fold ... ok
 test revert_contract_three_states ... ok
 test unanswered_calls_pad_llm_view_only_not_disk ... ok
 test real_usage_feeds_compaction_decision_input ... ok
 
-test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
 
      Running tests/startup_order_death_list.rs (target/debug/deps/startup_order_death_list-1599f97d5fecf0b3)
 
 running 4 tests
-test serve_run_does_not_sweep_inline ... ok
 test sweep_gate_has_no_timeout ... ok
-test every_spawn_waits_for_the_sweep_gate ... ok
 test serve_run_arms_sweep_before_ready_path ... ok
+test every_spawn_waits_for_the_sweep_gate ... ok
+test serve_run_does_not_sweep_inline ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -2835,7 +2658,7 @@ test child_identity_is_not_switchable_by_set_primary ... ok
 test completed_child_result_is_read_from_the_durable_turn ... ok
 test child_turn_reads_config_from_its_own_session_row ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
 
      Running tests/subagent_send.rs (target/debug/deps/subagent_send-12c573a10cd0261d)
 
@@ -2844,25 +2667,25 @@ test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
 test send_rejects_unknown_and_foreign_ids ... ok
 test send_to_busy_child_queues_without_starting_a_turn ... ok
-test concurrent_sends_only_one_wins ... ok
 test wait_returns_cancelled_when_user_stopped ... ok
+test concurrent_sends_only_one_wins ... ok
 test send_then_stop_cancels_the_new_turn ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
 
      Running tests/subagent_session_isolation.rs (target/debug/deps/subagent_session_isolation-eaa89fd47bc18099)
 
 running 8 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test remove_parent_cascades_child ... ok
 test missing_call_id_scope_errors_without_creating_child ... ok
+test remove_parent_cascades_child ... ok
 test failed_binding_aborts_orphan_child_session ... ok
 test parent_event_channel_does_not_receive_child_turn_events ... ok
 test subagent_launch_creates_durable_child_with_parent_link ... ok
 test child_exit_triggers_parent_auto_turn_reminder ... ok
 
-test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
 
      Running tests/subagent_tool_pipeline.rs (target/debug/deps/subagent_tool_pipeline-ef8bfabccdd98323)
 
@@ -2873,7 +2696,7 @@ test pipeline_runs_two_launches_concurrently ... ok
 test worker_panic_finishes_job_and_releases_session ... ok
 test parent_cancel_does_not_stop_background_child_and_stop_tool_can ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
 
      Running tests/subscribe_bash_hydration.rs (target/debug/deps/subscribe_bash_hydration-9b06902f7942775e)
 
@@ -2907,22 +2730,22 @@ test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
 test websocket_terminals_are_owner_isolated_and_disconnect_cleaned ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.78s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.83s
 
      Running tests/turn_prefix_stability.rs (target/debug/deps/turn_prefix_stability-c98a6302792fd443)
 
 running 11 tests
-test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
+test common::permission::test_auto_approve_sink_approves_ask ... ok
 test persist_item_reused_message_id_must_not_rewrite_final_row ... ok
 test persist_item_reused_function_call_id_must_not_rewrite_final_row ... ok
 test next_turn_reload_must_keep_sent_row_when_provider_reuses_id ... ok
 test state_reminders_only_append_across_steps ... ok
-test restore_row_lands_after_compacted_and_prefix_stays ... ok
 test job_exit_mid_turn_does_not_rewrite_already_sent_prefix ... ok
+test restore_row_lands_after_compacted_and_prefix_stays ... ok
 test prepare_after_stream_persist_seal_keeps_prior_prefix ... ok
-test tool_loop_llm_request_prefix_json_is_stable ... ok
 test code_mode_tool_list_prefix_stays_stable_across_the_turn ... ok
+test tool_loop_llm_request_prefix_json_is_stable ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
 
@@ -2937,15 +2760,15 @@ test revert_then_append_does_not_reuse_deleted_seq ... ok
 test compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers ... ok
 test second_compact_appends_new_seq_and_keeps_both_checkpoints ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
 
      Running tests/working_set_identity.rs (target/debug/deps/working_set_identity-61cf70465a2ca043)
 
 running 5 tests
-test append_rows_reader_working_set_matches_full_fold ... ok
 test pipeline_begin_turn_pending_tail_has_no_log_seq ... ok
-test keep_recent_compact_reader_matches_fold_checkpoint_then_kept ... ok
+test append_rows_reader_working_set_matches_full_fold ... ok
 test commit_applied_window_matches_fold ... ok
+test keep_recent_compact_reader_matches_fold_checkpoint_then_kept ... ok
 test revert_then_commit_discard_returns_fold_window_and_does_not_append ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
@@ -2955,28 +2778,28 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 7 tests
 test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
-test workspace_rejects_path_escape ... ok
-Initialized empty Git repository in /tmp/.tmpGaXQmQ/.git/
-[main (root-commit) d48cf97] add a
+Initialized empty Git repository in /tmp/.tmpHkDzn1/.git/
+test workspace_git_stage_commit_and_rejects_escape ... ok
+test workspace_preview_reads_and_open_guards ... ok
+test workspace_citations_resolve_without_file_bodies ... ok
+Initialized empty Git repository in /tmp/.tmp0WV3R8/.git/
+[main (root-commit) 71a104e] add a
  1 file changed, 1 insertion(+)
  create mode 100644 a.txt
-[main 1a9b3a1] add bin
+[main 1bdb4fb] add bin
  1 file changed, 0 insertions(+), 0 deletions(-)
  create mode 100644 bin.dat
 test workspace_git_show_head_index_and_rejects ... ok
-test workspace_citations_resolve_without_file_bodies ... ok
-Initialized empty Git repository in /tmp/.tmp2H2PFG/.git/
-test workspace_git_stage_commit_and_rejects_escape ... ok
-test workspace_preview_reads_and_open_guards ... ok
+test workspace_rejects_path_escape ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.70s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
 
      Running tests/workspace_path_consumer.rs (target/debug/deps/workspace_path_consumer-0ab189d0f0f8a174)
 
 running 3 tests
+test project_root_fallback_accepts_verbatim_under_lap_ws ... ok
 test rel_path_under_accepts_raw_canonicalize_form ... ok
 test active_paths_fallback_is_lap ... ok
-test project_root_fallback_accepts_verbatim_under_lap_ws ... ok
 
 test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -2992,8 +2815,8 @@ test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/workspace_path_lap.rs (target/debug/deps/workspace_path_lap-d112ad5e9d00c36c)
 
 running 4 tests
-test rel_path_ctx_matches_rel_path_under_and_rejects_outside ... ok
 test strip_verbatim_unc_keeps_unc_prefix ... ok
+test rel_path_ctx_matches_rel_path_under_and_rejects_outside ... ok
 test snapshot_id_stable_across_verbatim_and_lap_input ... ok
 test boot_sandbox_lsp_os_probe_roots_are_identical_lap ... ok
 
@@ -3009,7 +2832,7 @@ test load_workspace_state_sets_runtime_paths_without_chdir ... ok
 test agent_runtime_cwd_uses_resolved_workspace_not_process_cwd ... ok
 test workspace_open_http_endpoint_is_gone ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
      Running tests/wp028_probe_s1_xdev_move.rs (target/debug/deps/wp028_probe_s1_xdev_move-5f21be3893683b81)
 
@@ -3021,10 +2844,10 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/wp028_probe_s2_create_race.rs (target/debug/deps/wp028_probe_s2_create_race-1506b3f2a07d33ca)
 
 running 2 tests
-test probe_s2_write_file_bytes_no_overwrite_race ... ok
 test probe_s2_create_file_race ... ok
+test probe_s2_write_file_bytes_no_overwrite_race ... ok
 
-test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
 
      Running tests/wp098_follow_up_queue.rs (target/debug/deps/wp098_follow_up_queue-0e83abd4b447612d)
 
@@ -3033,10 +2856,15 @@ test common::permission::test_auto_approve_sink_approves_ask ... ok
 test common::permission::recording_sink_records_and_returns_response ... ok
 test runtime_stop_and_send_cancels_then_runs_new_turn_no_notice ... ok
 test runtime_queue_not_drained_at_step_seam ... ok
-test runtime_steer_still_injects_at_step_seam ... ok
 test runtime_main_session_pending_still_injects_at_seam ... ok
+test runtime_steer_still_injects_at_step_seam ... ok
 test stop_and_send_cancels_then_runs_follow_up_without_waking_parent ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
 
-EXIT 0
+   Doc-tests litecode
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
