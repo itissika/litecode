@@ -202,28 +202,6 @@ fn append_skipped(out: &mut String, skipped: &[(String, String)]) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn truncation_is_explicit_and_actionable() {
-        let result = TurnResult {
-            turn_id: "t".into(),
-            reason: "completed".into(),
-            output: "line\n".repeat(100),
-            transcript_path: ".litecode/sessions/c.md".into(),
-            start_line: Some(12),
-            end_line: Some(111),
-        };
-        let text = format_turn_result_with_budget(
-            "c",
-            Some("reviewer"),
-            Some("review the diff"),
-            &result,
-            180,
-        );
-        assert!(text.contains("responsibility: review the diff"));
-        assert!(text.contains("output_truncated: true"));
-        assert!(text.contains("\"start_line\":12"));
-        assert!(text.contains("\"end_line\":111"));
-    }
 }

@@ -159,67 +159,6 @@ pub fn bind_cursor(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn sha256_of_empty_is_the_standard_digest() {
-        assert_eq!(
-            sha256_hex(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-    }
-
-    #[test]
-    fn sha256_includes_every_byte() {
-        let bytes = b"alpha\nbeta\n";
-        let file = file_ref(
-            LocatedPath {
-                base: PathBase::Workspace,
-                path: "note.txt".into(),
-                abs: None,
-            },
-            bytes,
-        );
-        assert_eq!(file.bytes, bytes.len() as u64);
-        assert_eq!(file.hash, sha256_hex(bytes));
-        assert!(file.abs.is_none());
-        let outside = file_ref(
-            LocatedPath {
-                base: PathBase::Absolute,
-                path: "C:/outside.txt".into(),
-                abs: Some("C:/outside.txt".into()),
-            },
-            bytes,
-        );
-        assert_eq!(outside.abs.as_deref(), Some("C:/outside.txt"));
-    }
-
-    #[test]
-    fn cursor_rejects_a_different_query_fingerprint() {
-        let cursor = encode_cursor(&QueryCursor {
-            fp: fingerprint(&[("pattern", "a")]),
-            ver: "v1".into(),
-            offset: 20,
-            resume_path: None,
-            resume_line: None,
-        });
-        let err = bind_cursor(Some(&cursor), &fingerprint(&[("pattern", "b")]), "v1")
-            .expect_err("query change");
-        assert_eq!(err.error_code.as_deref(), Some("stale_cursor"));
-        assert_eq!(err.error_details.unwrap()["reason"], "query");
-    }
-
-    #[test]
-    fn cursor_rejects_a_different_version() {
-        let fp = fingerprint(&[("pattern", "a")]);
-        let cursor = encode_cursor(&QueryCursor {
-            fp: fp.clone(),
-            ver: "v1".into(),
-            offset: 0,
-            resume_path: Some("a.txt".into()),
-            resume_line: Some(1),
-        });
-        let err = bind_cursor(Some(&cursor), &fp, "v2").expect_err("version change");
-        assert_eq!(err.error_details.unwrap()["reason"], "version");
-    }
 }

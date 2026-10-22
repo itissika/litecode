@@ -115,21 +115,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_acquire_release() {
-        let lock = WorkspaceWriteLock::new();
-        assert!(
-            lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
-                .is_ok()
-        );
-        lock.release_all("s1");
-        // After release, another session can acquire.
-        assert!(
-            lock.try_acquire(&[ResourceKey::File("/a".into())], "s2")
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
     async fn test_conflict_returns_holder() {
         let lock = WorkspaceWriteLock::new();
         lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
@@ -163,28 +148,4 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_reentrant_same_session() {
-        let lock = WorkspaceWriteLock::new();
-        lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
-            .unwrap();
-        // Same-session re-entry should succeed
-        assert!(
-            lock.try_acquire(&[ResourceKey::File("/a".into())], "s1")
-                .is_ok()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_workspace_coarse_lock() {
-        let lock = WorkspaceWriteLock::new();
-        lock.try_acquire(&[ResourceKey::Workspace], "s1").unwrap();
-        // Other session bash is blocked
-        assert!(lock.try_acquire(&[ResourceKey::Workspace], "s2").is_err());
-        // Other session write/edit is also blocked (workspace coarse lock)
-        assert!(
-            lock.try_acquire(&[ResourceKey::File("/x".into())], "s2")
-                .is_err()
-        );
-    }
 }

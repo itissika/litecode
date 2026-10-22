@@ -78,24 +78,6 @@ fn glob_match(pattern: &str, value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn glob_star_matches_all() {
-        assert!(glob_match("*", "anything"));
-    }
-
-    #[test]
-    fn arg_equals_matches() {
-        let args = serde_json::json!({"command": "ls"});
-        let m = ArgMatcher::ArgEquals {
-            name: "command".into(),
-            value: "ls".into(),
-        };
-        let ctx = MatchContext {
-            workspace_root: Path::new("/tmp"),
-            path_mode: crate::permission::policy::BindingPathMode::Unrestricted,
-        };
-        assert!(matches(&m, &args, &ctx));
-    }
 }

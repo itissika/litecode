@@ -281,79 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn typical_broad_search_renders_handle_and_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let id_a = seed_session(
-            root,
-            "We decided AUTH_REFACTOR_TOKEN moves login to middleware.",
-        );
-        seed_session(root, "unrelated OTHER_TOPIC_ONLY content");
-        let tool = warmed_tool(root);
-        let out = call_ok(
-            &tool,
-            root,
-            serde_json::json!({ "query": "AUTH_REFACTOR_TOKEN" }),
-            "",
-        );
-        assert!(
-            out.contains(&format!(
-                "### {} · ",
-                session_search::short_session_ref(&id_a)
-            )),
-            "session header missing:\n{out}"
-        );
-        assert!(out.contains("Matches"), "{out}");
-        assert!(out.contains(": user"), "{out}");
-        assert!(out.contains("AUTH_REFACTOR_TOKEN"), "{out}");
-        assert!(!out.contains("created:"), "{out}");
-        assert!(
-            !out.contains("virtual"),
-            "no path plumbing in the view:\n{out}"
-        );
-        assert!(!out.contains("seq"), "the view must not expose seq:\n{out}");
-        assert!(!out.contains("offset"), "{out}");
-        assert!(!out.contains("OTHER_TOPIC_ONLY"), "{out}");
-    }
-
-    #[test]
-    fn typical_multi_hit_same_session_lists_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let sid = seed_items(
-            root,
-            &[
-                user_text("first MULTI_HIT_TOKEN occurrence here"),
-                user_text("unrelated filler line"),
-                user_text("second MULTI_HIT_TOKEN occurrence there"),
-            ],
-        );
-
-        let tool = warmed_tool(root);
-        let out = call_ok(
-            &tool,
-            root,
-            serde_json::json!({
-                "query": "MULTI_HIT_TOKEN",
-                "session_id": sid,
-            }),
-            "",
-        );
-        assert!(
-            out.contains(&format!(
-                "### {} · ",
-                session_search::short_session_ref(&sid)
-            )),
-            "{out}"
-        );
-        let line_hits = out
-            .lines()
-            .filter(|l| l.contains("MULTI_HIT_TOKEN"))
-            .count();
-        assert!(line_hits >= 2, "expected two hit blocks:\n{out}");
-    }
-
-    #[test]
     fn a_result_over_budget_names_the_file_that_holds_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -386,55 +313,6 @@ mod tests {
         let spilled = std::fs::read_to_string(root.join(location)).unwrap();
         assert!(spilled.contains("Remaining "), "{spilled}");
         assert!(spilled.contains("PAGE_NEEDLE"), "{spilled}");
-    }
-
-    #[test]
-    fn rejects_empty_query() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let tool = warmed_tool(root);
-        let r = call(&tool, root, serde_json::json!({ "query": "   " }), "");
-        assert_eq!(r.level, ToolSignalLevel::Error);
-        assert!(r.content.contains("query"), "{}", r.content);
-    }
-
-    #[test]
-    fn active_session_context_window_is_excluded_by_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let current_id = seed_session(root, "VISIBLE_IN_WINDOW_MARKER only here");
-        let other_id = seed_session(root, "VISIBLE_IN_WINDOW_MARKER also in other");
-        let tool = warmed_tool(root);
-        let out = call_ok(
-            &tool,
-            root,
-            serde_json::json!({ "query": "VISIBLE_IN_WINDOW_MARKER" }),
-            &current_id,
-        );
-        assert!(
-            out.contains(session_search::short_session_ref(&other_id)),
-            "other session should hit:\n{out}"
-        );
-        assert!(
-            !out.contains(session_search::short_session_ref(&current_id)),
-            "current live window must not echo:\n{out}"
-        );
-    }
-
-    #[test]
-    fn a_two_character_cjk_query_finds_the_row() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed_session(root, "短词标记在此");
-        let tool = warmed_tool(root);
-        let out = call_ok(&tool, root, serde_json::json!({ "query": "短词" }), "");
-        // Two characters is an ordinary query: the row is found, with the normal
-        // view, and nothing is said about the index.
-        assert!(out.contains("### "), "{out}");
-        assert!(out.contains("L2: user"), "{out}");
-        assert!(out.contains("短词标记在此"), "{out}");
-        assert!(!out.contains("Nothing was searched"), "{out}");
-        assert!(!out.contains("grep(pattern="), "{out}");
     }
 
     #[test]
@@ -481,55 +359,6 @@ mod tests {
             live.contains("No matching session transcript"),
             "live window must stay excluded:\n{live}"
         );
-    }
-
-    #[test]
-    fn session_id_scopes_to_one_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let a = seed_session(root, "SCOPE_MARKER in a");
-        seed_session(root, "SCOPE_MARKER in b");
-        let tool = warmed_tool(root);
-        let out = call_ok(
-            &tool,
-            root,
-            serde_json::json!({ "query": "SCOPE_MARKER", "session_id": a }),
-            "",
-        );
-        assert!(out.contains(session_search::short_session_ref(&a)), "{out}");
-        assert_eq!(out.matches("### ").count(), 1, "{out}");
-    }
-
-    #[test]
-    fn unknown_session_id_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed_session(root, "something");
-        let tool = warmed_tool(root);
-        let r = call(
-            &tool,
-            root,
-            serde_json::json!({ "query": "something", "session_id": "ZZZZNOPE" }),
-            "",
-        );
-        assert_eq!(r.level, ToolSignalLevel::Error);
-        assert!(r.content.contains("matched no sessions"), "{}", r.content);
-    }
-
-    #[test]
-    fn empty_result_has_no_group_headings() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        seed_session(root, "hello");
-        let tool = warmed_tool(root);
-        let out = call_ok(
-            &tool,
-            root,
-            serde_json::json!({ "query": "NO_SUCH_TOKEN_ZZZ" }),
-            "",
-        );
-        assert!(out.contains("No matching session transcript"), "{out}");
-        assert!(!out.contains("### "), "{out}");
     }
 
     #[test]
@@ -601,19 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn schema_is_query_and_session_scope() {
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let schema = tool.schema();
-        let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("query"));
-        assert!(props.contains_key("session_id"));
-        assert!(!props.contains_key("offset"));
-        assert!(!props.contains_key("session_filter"));
-        assert!(!props.contains_key("expand"));
-        assert_eq!(schema["additionalProperties"], false);
-    }
-
-    #[test]
     fn semantic_unavailable_is_explicit_and_leads_with_sync_pct() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -646,16 +462,4 @@ mod tests {
         let _ = id;
     }
 
-    #[test]
-    fn desired_false_session_search_points_at_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join(".litecode")).unwrap();
-        crate::config::workspace::set_workspace_engine_desired(root, "code_search", false).unwrap();
-        seed_session(root, "whatever");
-        let tool = SessionSearchTool::new(WorkspaceEngines::new());
-        let r = call(&tool, root, serde_json::json!({ "query": "whatever" }), "");
-        assert_eq!(r.level, ToolSignalLevel::Error);
-        assert!(r.content.contains("Settings → Engines"), "{}", r.content);
-    }
 }

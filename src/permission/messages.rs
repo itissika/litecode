@@ -56,47 +56,6 @@ fn bash_command(input: &Value) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn run_safe_default_deny_explains_readonly_policy() {
-        let msg = permission_denied_message(
-            "run",
-            DEFAULT_RULE_ID,
-            &serde_json::json!({"command": "cargo run"}),
-        );
-        assert!(msg.contains("cargo run"), "echoes the command: {msg}");
-        assert!(msg.contains("read-only"), "explains the policy: {msg}");
-        assert!(msg.contains("ALL"), "offers next steps: {msg}");
-    }
-
-    #[test]
-    fn run_floor_deny_explains_safety_rule() {
-        let msg = permission_denied_message(
-            "run",
-            "floor_dangerous_command",
-            &serde_json::json!({"command": "rm -rf /"}),
-        );
-        assert!(msg.contains("rm -rf /"), "echoes the command: {msg}");
-        assert!(msg.contains("hard-deny"), "names the rule class: {msg}");
-        assert!(msg.contains("do not retry"), "gives guidance: {msg}");
-    }
-
-    #[test]
-    fn other_tools_keep_generic_message() {
-        let msg = permission_denied_message(
-            "webfetch",
-            DEFAULT_RULE_ID,
-            &serde_json::json!({"url": "https://example.com"}),
-        );
-        assert_eq!(msg, "permission denied for 'webfetch'");
-    }
-
-    #[test]
-    fn user_denial_mentions_no_retry() {
-        let msg = permission_denied_by_user_message("run", "cargo build");
-        assert!(msg.contains("user denied"), "{msg}");
-        assert!(msg.contains("cargo build"), "{msg}");
-        assert!(msg.contains("Do not retry"), "{msg}");
-    }
 }

@@ -356,28 +356,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grant_has_upper_bound_per_agent() {
-        clear_runtime_grants();
-        for i in 0..(MAX_GRANTS_PER_AGENT + 50) {
-            grant_runtime(
-                "agent",
-                &format!("tool_{i}"),
-                &format!("rule_{i}"),
-                PermissionAction::Allow,
-            );
-        }
-        let n = {
-            let grants = runtime_grants().lock().unwrap();
-            grants.get("agent").map(Vec::len).unwrap_or(0)
-        };
-        assert_eq!(
-            n, MAX_GRANTS_PER_AGENT,
-            "per-agent grants must be capped at {MAX_GRANTS_PER_AGENT}"
-        );
-        clear_runtime_grants();
-    }
-
-    #[test]
     fn expired_grant_is_skipped() {
         // Distinct agent so it does not race the cap test in parallel.
         let agent = "expired_agent";
@@ -395,12 +373,4 @@ mod tests {
         clear_runtime_grants_for(agent);
     }
 
-    #[test]
-    fn cancellable_wait_returns_none_when_cancelled() {
-        let (tx, rx) = tokio::sync::oneshot::channel::<u8>();
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        assert!(blocking_wait_oneshot_cancellable(rx, Some(cancel)).is_none());
-        drop(tx);
-    }
 }

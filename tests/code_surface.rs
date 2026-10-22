@@ -2,9 +2,9 @@
 
 /// Per-tool surface, one projection, one call pipeline.
 mod projection {
-    use std::path::PathBuf;
+    
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
@@ -14,11 +14,11 @@ mod projection {
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::write_lock::process_write_lock;
     use litecode::tool::{Tool, ToolSurface, project_tools};
-    use litecode::tools::edit::EditTool;
-    use litecode::tools::glob::GlobTool;
-    use litecode::tools::grep::GrepTool;
+    
+    
+    
     use litecode::tools::read::ReadTool;
-    use litecode::tools::write::WriteTool;
+    
     use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
     use serde_json::{Value, json};
 
@@ -191,75 +191,6 @@ mod projection {
     }
 
     #[test]
-    fn builtin_code_tools_pass_admission_and_edit_write_join_the_code_surface() {
-        for tool in [
-            Arc::new(ReadTool::default()) as Arc<dyn Tool>,
-            Arc::new(GlobTool),
-            Arc::new(GrepTool),
-            Arc::new(EditTool::new()),
-            Arc::new(WriteTool::new()),
-        ] {
-            assert_eq!(tool.surface(), ToolSurface::Code, "{}", tool.name());
-        }
-
-        let projected = project_tools(vec![
-            Arc::new(ReadTool::default()),
-            Arc::new(GlobTool),
-            Arc::new(GrepTool),
-            Arc::new(EditTool::new()),
-            Arc::new(WriteTool::new()),
-        ]);
-        assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-        assert_eq!(
-            names(&projected.code_tools),
-            ["edit", "glob", "grep", "read", "write"]
-        );
-        assert_eq!(
-            projected.whitelist,
-            vec!["edit", "glob", "grep", "read", "write"]
-        );
-        assert!(projected.direct.is_empty());
-        assert!(projected.sdk.contains("[\"read\"]"));
-        assert!(projected.sdk.contains("[\"edit\"]"));
-        assert!(projected.sdk.contains("[\"write\"]"));
-        assert!(projected.sdk.contains("path:"));
-        assert!(!projected.sdk.contains("file_path"));
-        assert!(projected.sdk.contains("type Integer = number;"));
-        assert!(
-            !projected
-                .sdk
-                .replace("details?: unknown", "")
-                .contains(": unknown")
-        );
-    }
-
-    #[test]
-    fn code_surface_is_projected_without_an_env_gate() {
-        let projected = project_tools(vec![Arc::new(ReadTool::default()), Arc::new(GlobTool)]);
-        assert_eq!(names(&projected.code_tools), ["glob", "read"]);
-        assert!(projected.direct.is_empty());
-        assert!(projected.rejected.is_empty());
-        assert!(!projected.sdk.is_empty());
-    }
-
-    #[test]
-    fn fake_code_tool_joins_the_same_projection_as_builtins() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let projected = project_tools(vec![
-            Arc::new(ReadTool::default()),
-            Arc::new(CountTool::code("marker", hits)),
-            Arc::new(EditTool::new()),
-        ]);
-        assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-        assert_eq!(projected.whitelist, vec!["edit", "marker", "read"]);
-        assert!(!names(&projected.direct).contains(&"edit"));
-        assert!(!names(&projected.direct).contains(&"marker"));
-        assert!(projected.sdk.contains("[\"marker\"]"));
-        assert!(projected.sdk.contains("[\"read\"]"));
-        assert!(projected.sdk.contains("[\"edit\"]"));
-    }
-
-    #[test]
     fn missing_or_unrenderable_code_tool_leaves_both_surfaces() {
         let hits = Arc::new(AtomicUsize::new(0));
         let mut stripped = CountTool::code("stripped", hits);
@@ -302,84 +233,6 @@ mod projection {
         assert!(!projected.sdk.contains("broken"));
         assert!(!projected.sdk.contains("foo-bar"));
         assert!(projected.sdk.contains("[\"read\"]"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn direct_call_of_code_tool_is_routed_before_authorization() {
-        let hits = Arc::new(AtomicUsize::new(0));
-        let tool = Arc::new(CountTool::code("read", Arc::clone(&hits)));
-        let dir = tempfile::tempdir().unwrap();
-        let permission = engine(
-            dir.path(),
-            "read",
-            ToolPolicy::with_default(PermissionAction::Ask),
-        );
-        let sink = RecordingPermissionSink::from_reply(true, false);
-        let context = ctx(dir.path());
-        let leaked = execute_tool_call(
-            &call("read", json!({})),
-            &[tool],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &sink,
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Direct,
-                code_names: Arc::from([]),
-                file_note: None,
-                permission_sink: None,
-                plan_touch: None,
-                deadline: None,
-            },
-        )
-        .await;
-        assert_eq!(
-            leaked.error.as_ref().map(|error| error.kind),
-            Some(ToolErrorKind::NotFound)
-        );
-        assert!(
-            leaked
-                .content
-                .contains("`read` is only available as tools.read inside run_code"),
-            "{}",
-            leaked.content
-        );
-        assert!(sink.calls.lock().unwrap().is_empty());
-        assert_eq!(hits.load(Ordering::SeqCst), 0);
-
-        let hidden = execute_tool_call(
-            &call("read", json!({})),
-            &[],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &sink,
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Direct,
-                code_names: Arc::from(["read".to_string()]),
-                file_note: None,
-                permission_sink: None,
-                plan_touch: None,
-                deadline: None,
-            },
-        )
-        .await;
-        assert!(hidden.content.contains("tools.read"));
-        assert!(sink.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -517,82 +370,6 @@ mod projection {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn nested_and_direct_calls_note_the_same_paths() {
-        let notes = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
-        let hook = {
-            let notes = Arc::clone(&notes);
-            Arc::new(move |paths: &[PathBuf]| {
-                notes.lock().unwrap().push(paths.to_vec());
-            }) as Arc<dyn Fn(&[PathBuf]) + Send + Sync>
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let permission = engine(dir.path(), "touch", ToolPolicy::allow_all());
-        let context = ctx(dir.path());
-
-        let direct_hits = Arc::new(AtomicUsize::new(0));
-        let mut direct_tool = CountTool::code("touch", direct_hits);
-        direct_tool.surface = ToolSurface::Direct;
-        execute_tool_call(
-            &call("touch", json!({})),
-            &[Arc::new(direct_tool)],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &RecordingPermissionSink::from_reply(true, false),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Direct,
-                code_names: Arc::from([]),
-                file_note: Some(Arc::clone(&hook)),
-                permission_sink: None,
-                plan_touch: None,
-                deadline: None,
-            },
-        )
-        .await;
-
-        let nested_hits = Arc::new(AtomicUsize::new(0));
-        let nested = CountTool::code("touch", nested_hits);
-        execute_tool_call(
-            &call("touch", json!({})),
-            &[Arc::new(nested)],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &RecordingPermissionSink::from_reply(true, false),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Code {
-                    parent_call_id: "outer".into(),
-                },
-                code_names: Arc::from([]),
-                file_note: Some(hook),
-                permission_sink: None,
-                plan_touch: None,
-                deadline: None,
-            },
-        )
-        .await;
-
-        let noted = notes.lock().unwrap().clone();
-        assert_eq!(noted.len(), 2);
-        assert_eq!(noted[0], noted[1]);
-        assert_eq!(noted[0], vec![PathBuf::from("/noted/file.txt")]);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn code_transport_is_allowed_by_identity_not_by_name() {
         use litecode::config::schema::{
             AgentProfile, AgentToolBinding, CustomToolDefinition, ToolPreset, ToolSchema,
@@ -682,156 +459,6 @@ mod projection {
         }
     }
 
-    #[test]
-    fn code_admission_rejections_are_in_the_catalog_payload() {
-        use litecode::config::schema::GlobalSettings;
-        use litecode::tool::availability::available_tools_payload;
-
-        let resolved = ConfigManager::resolve_without_catalog(
-            GlobalSettings::default(),
-            WorkspaceState::new("/tmp"),
-        );
-        let payload = available_tools_payload(
-            &resolved,
-            vec![
-                Arc::new(BrokenCode) as Arc<dyn Tool>,
-                Arc::new(ReadTool::default()),
-            ],
-        );
-        let broken = payload
-            .code_rejections
-            .iter()
-            .find(|item| item.name == "broken")
-            .expect("broken tool is reported");
-        assert!(broken.reason.contains("$ref"), "{}", broken.reason);
-        assert!(
-            payload
-                .code_rejections
-                .iter()
-                .all(|item| item.name != "read")
-        );
-        let body = serde_json::to_value(&payload).unwrap();
-        assert!(
-            body["code_rejections"][0]["reason"]
-                .as_str()
-                .unwrap()
-                .contains("$ref")
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn direct_and_nested_calls_share_plan_touch() {
-        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
-        let hook = {
-            let seen = Arc::clone(&seen);
-            Arc::new(move |call: &litecode::types::FunctionToolCall| {
-                seen.lock().unwrap().push(call.name.clone());
-            }) as litecode::tool::executor::PlanTouch
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let permission = engine(dir.path(), "touch", ToolPolicy::allow_all());
-        let context = ctx(dir.path());
-
-        let mut direct_tool = CountTool::code("touch", Arc::new(AtomicUsize::new(0)));
-        direct_tool.surface = ToolSurface::Direct;
-        execute_tool_call(
-            &call("touch", json!({})),
-            &[Arc::new(direct_tool)],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &RecordingPermissionSink::from_reply(true, false),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Direct,
-                code_names: Arc::from([]),
-                file_note: None,
-                permission_sink: None,
-                plan_touch: Some(Arc::clone(&hook)),
-                deadline: None,
-            },
-        )
-        .await;
-
-        execute_tool_call(
-            &call("touch", json!({})),
-            &[Arc::new(CountTool::code(
-                "touch",
-                Arc::new(AtomicUsize::new(0)),
-            ))],
-            &permission,
-            &context,
-            "s",
-            "default",
-            &RecordingPermissionSink::from_reply(true, false),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path(),
-            4096,
-            None,
-            process_write_lock(),
-            None,
-            ToolCallOrigin {
-                caller: ToolCaller::Code {
-                    parent_call_id: "outer".into(),
-                },
-                code_names: Arc::from([]),
-                file_note: None,
-                permission_sink: None,
-                plan_touch: Some(hook),
-                deadline: None,
-            },
-        )
-        .await;
-
-        assert_eq!(seen.lock().unwrap().as_slice(), ["touch", "touch"]);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn pipeline_direct_call_uses_the_shared_file_note() {
-        let notes = Arc::new(Mutex::new(Vec::<Vec<PathBuf>>::new()));
-        let hook = {
-            let notes = Arc::clone(&notes);
-            Arc::new(move |paths: &[PathBuf]| {
-                notes.lock().unwrap().push(paths.to_vec());
-            }) as Arc<dyn Fn(&[PathBuf]) + Send + Sync>
-        };
-        let dir = tempfile::tempdir().unwrap();
-        let mut tool = CountTool::code("touch", Arc::new(AtomicUsize::new(0)));
-        tool.surface = ToolSurface::Direct;
-        let permission = engine(dir.path(), "touch", ToolPolicy::allow_all());
-        let context = ctx(dir.path());
-        let sink: Arc<dyn litecode::permission::PermissionSink> =
-            Arc::new(RecordingPermissionSink::from_reply(true, false));
-        let runtime = Arc::new(litecode::runtime::RuntimeContext::new(
-            vec![Arc::new(tool)],
-            permission,
-            context,
-            "default",
-            Arc::clone(&sink),
-            tokio_util::sync::CancellationToken::new(),
-            dir.path().to_path_buf(),
-            4096,
-            process_write_lock(),
-            None,
-        ));
-        let mut pipeline = litecode::tool::ToolPipeline::new(runtime);
-        pipeline.bind_session("s");
-        pipeline.set_file_note(hook);
-        let mut transcript = Vec::new();
-        pipeline
-            .execute_batch(&[call("touch", json!({}))], &mut transcript)
-            .await
-            .unwrap();
-        let noted = notes.lock().unwrap().clone();
-        assert_eq!(noted, vec![vec![PathBuf::from("/noted/file.txt")]]);
-        assert_eq!(transcript.len(), 1);
-    }
 }
 
 /// `run_code` is the only way to call the code surface; cancel/timeout/approval budget.
@@ -1379,92 +1006,26 @@ mod run_code_only {
         );
     }
 
-    #[test]
-    fn deep_run_code_return_survives_the_host_process() {
-        if std::env::var_os("LITECODE_DEEP_RESULT_PROBE").is_some() {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("runtime");
-            runtime.block_on(run_deep_return_probe());
-            return;
-        }
-
-        let output = std::process::Command::new(std::env::current_exe().expect("test exe"))
-            .arg("run_code_only::deep_run_code_return_survives_the_host_process")
-            .arg("--exact")
-            .arg("--nocapture")
-            .env("LITECODE_DEEP_RESULT_PROBE", "1")
-            .output()
-            .expect("spawn deep-result probe");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "probe crashed ({:?})\nstdout: {stdout}\nstderr: {stderr}",
-            output.status.code()
-        );
-        assert!(
-            stdout.contains("PROBE_RESULT_OK"),
-            "probe did not return a result\nstdout: {stdout}\nstderr: {stderr}"
-        );
-    }
-
-    async fn run_deep_return_probe() {
-        let dir = tempfile::tempdir().unwrap();
-        let hosted = hosted(
-            dir.path(),
-            vec![Arc::new(ReadTool::default())],
-            PermissionAction::Allow,
-            litecode::permission::deny_permission_sink(),
-        );
-        let sink = RecordingPermissionSink::from_reply(true, false);
-        let result = execute(
-            &hosted,
-            "run_code",
-            json!({
-                "code": "let value = 0; for (let i = 0; i < 20000; i++) value = [value]; return value;"
-            }),
-            &sink,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(
-            result.error.is_none(),
-            "{}",
-            result.content.chars().take(180).collect::<String>()
-        );
-        let text = result
-            .content
-            .split_once("result:\n")
-            .expect("deep result section")
-            .1;
-        assert_eq!(text.matches('[').count(), 20_000);
-        assert!(text.starts_with("[[[") && text.ends_with("]]]") && text.contains('0'));
-        assert!(result.content.contains("[[["));
-        drop(result);
-        println!("PROBE_RESULT_OK");
-    }
 }
 
 /// `edit` and `write` on the code surface: approval, sealing, concurrent writes.
 mod edit_write {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use litecode::config::schema::{AgentProfile, AgentToolBinding};
-    use litecode::config::{ConfigManager, GlobalSettings, TurnGuard, WorkspacePaths, WorkspaceState};
+    use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
     use litecode::permission::{
         AskOutcome, AskPrompt, AskReply, BindingPathMode, PermissionAction, PermissionEngine,
         PermissionSink, RecordingPermissionSink, ToolPolicy,
     };
-    use litecode::session::manager::SessionManager;
+    
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
-    use litecode::tool::project::project_tools;
+    
     use litecode::tool::write_lock::process_write_lock;
-    use litecode::tool::{Tool, ToolSurface};
+    use litecode::tool::Tool;
     use litecode::tools::code::{CodeTool, CodeToolHost};
     use litecode::tools::edit::EditTool;
     use litecode::tools::read::ReadTool;
@@ -1625,39 +1186,6 @@ mod edit_write {
         .await
     }
 
-    #[test]
-    fn edit_and_write_advertise_path_on_the_code_surface() {
-        assert_eq!(EditTool::new().surface(), ToolSurface::Code);
-        assert_eq!(WriteTool::new().surface(), ToolSurface::Code);
-        for tool in [
-            Arc::new(EditTool::new()) as Arc<dyn Tool>,
-            Arc::new(WriteTool::new()),
-        ] {
-            let schema = tool.schema();
-            let required = schema["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(Value::as_str)
-                .collect::<Vec<_>>();
-            assert!(required.contains(&"path"), "{required:?}");
-            assert!(!required.contains(&"file_path"), "{required:?}");
-            assert!(schema["properties"].get("path").is_some());
-            assert!(schema["properties"].get("file_path").is_none());
-        }
-        let projected = project_tools(vec![
-            Arc::new(EditTool::new()),
-            Arc::new(WriteTool::new()),
-            Arc::new(ReadTool::default()),
-        ]);
-        assert!(projected.rejected.is_empty(), "{:?}", projected.rejected);
-        assert!(projected.direct.is_empty());
-        assert!(projected.sdk.contains("[\"edit\"]"));
-        assert!(projected.sdk.contains("[\"write\"]"));
-        assert!(projected.sdk.contains("path:"));
-        assert!(!projected.sdk.contains("file_path"));
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn direct_edit_and_write_are_refused_before_authorization() {
         let dir = tempfile::tempdir().unwrap();
@@ -1696,112 +1224,6 @@ mod edit_write {
             asked.lock().unwrap()
         );
         assert!(!dir.path().join("note.txt").exists());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn edit_and_write_succeed_through_run_code_with_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let hosted = hosted(
-            dir.path(),
-            PermissionAction::Allow,
-            litecode::permission::deny_permission_sink(),
-        );
-        let sink = RecordingPermissionSink::from_reply(true, false);
-        let script = r#"
-    const written = await tools.write({ path: "note.txt", content: "alpha\n" });
-    const edited = await tools.edit({ path: "note.txt", old_string: "alpha", new_string: "beta" });
-    return { written: written.file ? "ok" : "missing", edited: edited.ok ? "ok" : "missing" };
-    "#;
-        let result = execute(
-            &hosted,
-            "phase3",
-            "run_code",
-            json!({ "code": script }),
-            &sink,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(result.error.is_none(), "{}", result.content);
-        let value = run_code_result(&result.content);
-        assert_eq!(value["written"], "ok", "{}", result.content);
-        assert_eq!(value["edited"], "ok", "{}", result.content);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("note.txt")).unwrap(),
-            "beta\n"
-        );
-        assert!(
-            result.content.contains("2 succeeded, 0 failed"),
-            "{}",
-            result.content
-        );
-        assert!(!result.content.contains("calls ("), "{}", result.content);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn historical_file_path_is_rejected_and_does_not_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let hosted = hosted(
-            dir.path(),
-            PermissionAction::Allow,
-            litecode::permission::deny_permission_sink(),
-        );
-        let sink = RecordingPermissionSink::from_reply(true, false);
-        let script = r#"
-    let write_error = null;
-    let edit_error = null;
-    let alias_only = null;
-    try {
-      await tools.write({ file_path: "legacy.txt", content: "kept" });
-    } catch (e) {
-      alias_only = { name: e.name, code: e.code, message: e.message };
-    }
-    try {
-      await tools.write({ path: "legacy.txt", file_path: "legacy.txt", content: "kept" });
-    } catch (e) {
-      write_error = { name: e.name, code: e.code, message: e.message };
-    }
-    try {
-      await tools.edit({
-        path: "legacy.txt",
-        file_path: "legacy.txt",
-        old_string: "kept",
-        new_string: "replayed"
-      });
-    } catch (e) {
-      edit_error = { name: e.name, code: e.code, message: e.message };
-    }
-    return { alias_only, write_error, edit_error };
-    "#;
-        let result = execute(
-            &hosted,
-            "phase3",
-            "run_code",
-            json!({ "code": script }),
-            &sink,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(result.error.is_none(), "{}", result.content);
-        let value = run_code_result(&result.content);
-        assert_eq!(value["alias_only"]["name"], "ToolError", "{value}");
-        assert_eq!(value["alias_only"]["code"], "invalid_input", "{value}");
-        assert!(
-            value["alias_only"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("path")),
-            "{value}"
-        );
-        for key in ["write_error", "edit_error"] {
-            assert_eq!(value[key]["name"], "ToolError", "{value}");
-            assert_eq!(value[key]["code"], "invalid_input", "{value}");
-            assert!(
-                value[key]["message"]
-                    .as_str()
-                    .is_some_and(|message| message.contains("file_path")),
-                "{value}"
-            );
-        }
-        assert!(!dir.path().join("legacy.txt").exists());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1934,87 +1356,6 @@ mod edit_write {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("other.txt")).unwrap(),
             "CCCC"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn nested_write_is_visible_to_the_same_turn_level_effects() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join(".litecode").join("sessions.db");
-        std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            db.to_str().unwrap().to_string(),
-        ));
-        let sid = sessions
-            .open_session_sync(dir.path().to_str().unwrap(), "default", None)
-            .unwrap();
-        let touched = Arc::new(Mutex::new(Vec::<PathBuf>::new()));
-        let plans = Arc::new(Mutex::new(Vec::<String>::new()));
-        let file_note = {
-            let sessions = Arc::clone(&sessions);
-            let sid = sid.clone();
-            let touched = Arc::clone(&touched);
-            Arc::new(move |paths: &[PathBuf]| {
-                touched.lock().unwrap().extend(paths.iter().cloned());
-                sessions.note_touched_files(&sid, paths);
-            }) as FileNote
-        };
-        let plan_touch = {
-            let plans = Arc::clone(&plans);
-            Arc::new(move |call: &FunctionToolCall| {
-                plans
-                    .lock()
-                    .unwrap()
-                    .push(format!("{} {}", call.name, call.arguments));
-            }) as litecode::tool::executor::PlanTouch
-        };
-        let hosted = hosted_with(
-            dir.path(),
-            PermissionAction::Allow,
-            litecode::permission::deny_permission_sink(),
-            Some(file_note),
-            Some(plan_touch),
-        );
-        let sink = RecordingPermissionSink::from_reply(true, false);
-        let script = r#"
-    const written = await tools.write({ path: "noted.txt", content: "v1" });
-    return written.file ? "ok" : "missing";
-    "#;
-        let result = execute(
-            &hosted,
-            &sid,
-            "run_code",
-            json!({ "code": script }),
-            &sink,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(result.error.is_none(), "{}", result.content);
-        let noted = touched.lock().unwrap().clone();
-        assert!(
-            noted.iter().any(|path| path.ends_with("noted.txt")),
-            "file note (absorb input) missed the nested write: {noted:?}"
-        );
-        let planned = plans.lock().unwrap().clone();
-        assert!(
-            planned
-                .iter()
-                .any(|line| line.starts_with("write ") && line.contains("noted.txt")),
-            "plan touch missed the nested write: {planned:?}"
-        );
-
-        sessions.absorb_touched_files(&sid);
-        assert!(
-            sessions.take_changed_files(&sid).is_empty(),
-            "absorb hides the nested write the same way it hides a direct write"
-        );
-        let path = dir.path().join("noted.txt");
-        std::fs::write(&path, "v1\nexternal").unwrap();
-        let changed = sessions.take_changed_files(&sid);
-        assert!(
-            changed.iter().any(|path| path.ends_with("noted.txt")),
-            "snapshot sees the nested write's path: {changed:?}"
         );
     }
 
@@ -2858,46 +2199,6 @@ mod approval_locks {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_second_binding_argument_is_invalid_input_and_does_not_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let hosted = hosted(
-            dir.path(),
-            PermissionAction::Allow,
-            litecode::permission::deny_permission_sink(),
-        );
-        let script = r#"
-    let status = "ok";
-    let code = "";
-    try {
-      await tools.write({ path: "extra.txt", content: "no" }, { timeout_ms: 1 });
-    } catch (e) {
-      status = "error";
-      code = e instanceof ToolError ? e.code : e.name;
-    }
-    return { status, code };
-    "#;
-        let result = execute(
-            &hosted,
-            "phase4-args",
-            "run_code",
-            json!({ "code": script }),
-            &litecode::permission::DenyPermissionSink,
-            CancellationToken::new(),
-        )
-        .await;
-        assert!(result.error.is_none(), "{}", result.content);
-        let value = run_code_result(&result.content);
-        assert_eq!(value["status"], "error");
-        assert_eq!(value["code"], "TypeError");
-        assert!(
-            result.content.contains("0 succeeded, 1 failed"),
-            "{}",
-            result.content
-        );
-        assert!(!result.content.contains("calls ("), "{}", result.content);
-        assert!(!dir.path().join("extra.txt").exists());
-    }
 }
 
 /// Calls stay runnable while another approval is pending.

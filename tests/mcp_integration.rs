@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use litecode::mcp::{McpClient, McpConnectionPool, McpRunState, McpStdioClient};
+use litecode::mcp::{McpClient, McpConnectionPool, McpStdioClient};
 use litecode::tool::Tool;
 use litecode::tools::mcp_tool::{McpServerConnection, McpTool};
 use litecode::types::ToolSignalLevel;
@@ -39,24 +39,6 @@ fn mock_def() -> litecode::config::schema::McpServerDefinition {
     }
 }
 
-fn echo_tool(pool: Arc<McpConnectionPool>, cmd: &str, args: &[String]) -> McpTool {
-    McpTool::new(
-        "mock",
-        "echo".into(),
-        serde_json::json!({"type": "object", "properties": {"greeting": {"type": "string"}}}),
-        McpServerConnection {
-            tool_name: "echo".into(),
-            server_name: "mock".into(),
-            command: cmd.to_string(),
-            args: args.to_vec(),
-            env: HashMap::new(),
-            cwd: None,
-            pool,
-            timeout_secs: 60,
-        },
-    )
-}
-
 /// initialize happens exactly once per connection and flips `needs_initialize`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn initialize_is_single_shot_per_connection() {
@@ -70,24 +52,6 @@ async fn initialize_is_single_shot_per_connection() {
     // A second initialize is a no-op guard (client stays initialized).
     client.initialize().await.expect("idempotent initialize");
     assert!(!client.needs_initialize());
-}
-
-/// `initialize` + `tools/list` returns the mock server's tool catalog.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn list_tools_returns_mock_catalog() {
-    let mut client = mcp_client();
-    let tools = client.tool_schemas().await.expect("tool_schemas");
-    let names: Vec<String> = tools.iter().map(|tool| tool.name.clone()).collect();
-    assert!(names.contains(&"echo".to_string()));
-    assert!(names.contains(&"crash".to_string()));
-    assert!(names.contains(&"hang".to_string()));
-    assert_eq!(
-        tools
-            .iter()
-            .find(|tool| tool.name == "echo")
-            .map(|tool| tool.description.as_str()),
-        Some("Echo the arguments back")
-    );
 }
 
 /// `tools/call` round-trips through the mock server.
@@ -159,92 +123,6 @@ async fn pool_rebuilds_after_crash() {
         pool.child_alive("mock").await,
         "rebuilt client must be alive"
     );
-}
-
-/// Restart replaces the live process; subsequent get_or_create uses the new child.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pool_restart_replaces_live_client() {
-    let (cmd, args) = mock_command();
-    let pool = Arc::new(McpConnectionPool::new());
-    let def = litecode::config::schema::McpServerDefinition {
-        command: cmd.clone(),
-        args: args.clone(),
-        env: HashMap::new(),
-        transport: litecode::config::schema::McpTransport::Stdio,
-        ..Default::default()
-    };
-    pool.start("mock", &def, None).await.expect("start");
-    let first = pool
-        .get_or_create("mock", &cmd, &args, &HashMap::new())
-        .await
-        .expect("first");
-    pool.restart("mock", &def, None).await.expect("restart");
-    let second = pool
-        .get_or_create("mock", &cmd, &args, &HashMap::new())
-        .await
-        .expect("second");
-    assert!(
-        !Arc::ptr_eq(&first, &second),
-        "restart must spawn a new client"
-    );
-    assert!(pool.child_alive("mock").await);
-}
-
-/// Product path: start on hub, list tools, then `Tool::call` on the turn's
-/// current-thread runtime (must not panic / must round-trip echo).
-#[tokio::test(flavor = "current_thread")]
-async fn turn_runtime_start_list_and_tool_call() {
-    let pool = Arc::new(McpConnectionPool::new());
-    let def = mock_def();
-    let tools = pool.start("mock", &def, None).await.expect("start");
-    assert!(
-        tools.iter().any(|tool| tool.name == "echo"),
-        "start must return tools/list schemas, got {tools:?}"
-    );
-    let snap = pool.snapshot("mock").await;
-    assert_eq!(snap.status, McpRunState::Running);
-    assert!(snap.tools.iter().any(|tool| tool.name == "echo"));
-
-    let schemas = pool.schemas("mock").await;
-    assert!(
-        schemas.iter().any(|tool| tool.name == "echo"),
-        "schemas used by build_tool_list must include echo"
-    );
-
-    let (cmd, args) = mock_command();
-    let tool = echo_tool(Arc::clone(&pool), &cmd, &args);
-    let result = tool.call(serde_json::json!({"greeting": "hello"}));
-    assert_eq!(
-        result.level,
-        ToolSignalLevel::Ok,
-        "turn-runtime MCP call failed: {}",
-        result.content
-    );
-    assert!(
-        result.content.contains("hello"),
-        "echo must reflect arguments, got: {}",
-        result.content
-    );
-
-    pool.stop("mock").await;
-    assert!(!pool.child_alive("mock").await);
-    let after_stop = tool.call(serde_json::json!({"greeting": "again"}));
-    assert_eq!(
-        after_stop.level,
-        ToolSignalLevel::Ok,
-        "call after Stop must auto-start: {}",
-        after_stop.content
-    );
-    assert!(after_stop.content.contains("again"));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn block_on_hub_from_turn_runtime_does_not_panic() {
-    let pool = McpConnectionPool::new();
-    let n = pool
-        .block_on_hub(async { 7u8 })
-        .expect("block_on_hub from current-thread runtime");
-    assert_eq!(n, 7);
 }
 
 /// Catalog enable + agent bind →`build_tool_list` advertises

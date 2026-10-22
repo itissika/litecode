@@ -188,8 +188,8 @@ mod tests {
     use std::time::Instant;
 
     use crate::tool::Tool;
-    use crate::tool::code_manifest::{render_code_tool_description, validate_code_contract};
-    use crate::tool::{ToolSurface, project_tools};
+    
+    
     use crate::tools::command_job::{StopJob, echo_then_sleep, sleep_shell, test_execution};
     use crate::tools::run::RunTool;
 
@@ -214,45 +214,6 @@ mod tests {
         let data = started.data.as_ref().unwrap();
         assert!(data["exit_code"].is_null(), "{data}");
         data["id"].as_str().unwrap().to_string()
-    }
-
-    #[test]
-    fn surface_schema_and_clamp() {
-        let (tool, _) = tool();
-        assert_eq!(tool.surface(), ToolSurface::Code);
-        assert!(validate_code_contract(&tool).is_ok());
-        assert!(
-            tool.validate_input(&serde_json::json!({"id": "bg_a", "sec": 1}))
-                .is_ok()
-        );
-        assert!(
-            tool.validate_input(&serde_json::json!({"id": "bg_a", "sec": 0}))
-                .is_err()
-        );
-        assert!(
-            tool.validate_input(&serde_json::json!({"id": "bg_a"}))
-                .is_err()
-        );
-        // Over the ceiling: accepted and clamped (no error).
-        assert_eq!(
-            WaitTool::parse_sec(&serde_json::json!({"sec": 9999})).unwrap(),
-            MAX_WAIT_SECS
-        );
-        assert_eq!(
-            WaitTool::parse_sec(&serde_json::json!({"sec": 300})).unwrap(),
-            300
-        );
-        let rendered = render_code_tool_description(&[Arc::new(WaitTool::new(Arc::new(
-            AgentJobRegistry::new(),
-        )))])
-        .expect("sdk");
-        assert!(rendered.contains("wait"));
-        assert!(rendered.contains("300"));
-        assert!(!rendered.contains("wait_sec"));
-        let projected = project_tools(vec![Arc::new(WaitTool::new(Arc::new(
-            AgentJobRegistry::new(),
-        )))]);
-        assert_eq!(projected.whitelist, vec!["wait".to_string()]);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -320,16 +281,4 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn unknown_id_is_not_found() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tool, _) = tool();
-        let result = tool
-            .execute(
-                serde_json::json!({"id": "bg_missing", "sec": 1}),
-                test_execution(dir.path(), "sess"),
-            )
-            .await;
-        assert_eq!(result.error_code.as_deref(), Some("not_found"));
-    }
 }

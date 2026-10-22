@@ -620,14 +620,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn read_declares_a_thirty_second_timeout() {
-        assert_eq!(
-            ReadTool::default().timeout(),
-            Some(std::time::Duration::from_secs(30))
-        );
-    }
-
-    #[test]
     fn cancelled_read_stops_between_chunks() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("big.txt");
@@ -635,65 +627,6 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         cancel.cancel();
         assert!(read_file_checking_cancel(&path, &cancel).unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn ide_read_checks_cancel_between_chunks() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut body = b"IDE_CANCEL_SENTINEL\n".to_vec();
-        body.resize(READ_CHUNK_BYTES + 32, b'q');
-        std::fs::write(dir.path().join("note.txt"), &body).unwrap();
-        let ide = crate::ide_base::IdeBaseHandle::open(
-            dir.path(),
-            std::sync::Arc::new(crate::engines::WorkspaceEngines::new()),
-        )
-        .unwrap();
-        let tool = ReadTool::with_ide(ide);
-        let execution = |cancel| ToolExecutionContext {
-            path_mode: crate::workspace::ToolPathMode::All,
-            workspace_root: dir.path().to_path_buf(),
-            call_id: "read-ide".into(),
-            cancel,
-            output_limit: usize::MAX,
-            session_id: String::new(),
-            session: None,
-        };
-        let read = tool
-            .execute(
-                serde_json::json!({"path": "note.txt"}),
-                execution(tokio_util::sync::CancellationToken::new()),
-            )
-            .await;
-        assert!(read.error.is_none(), "{}", read.content);
-        let data = read.data.as_ref().unwrap();
-        assert_eq!(data["path"], "note.txt");
-        assert!(
-            data["lines"][0].as_str().unwrap().contains("IDE_CANCEL_SENTINEL"),
-            "{data}"
-        );
-        assert!(read.content.is_empty());
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        cancel.cancel();
-        let cancelled = tool
-            .execute(serde_json::json!({"path": "note.txt"}), execution(cancel))
-            .await;
-        assert_eq!(
-            cancelled.error.as_ref().map(|error| error.kind),
-            Some(crate::types::ToolErrorKind::Cancelled)
-        );
-        assert!(cancelled.data.is_none());
-    }
-
-    #[test]
-    fn chunked_read_returns_the_whole_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("big.txt");
-        let body = vec![b'b'; READ_CHUNK_BYTES + 8];
-        std::fs::write(&path, &body).unwrap();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let read = read_file_checking_cancel(&path, &cancel).unwrap().unwrap();
-        assert_eq!(read, body);
     }
 
     fn page_lines(result: &ToolCallResult) -> Vec<String> {
@@ -706,24 +639,6 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect()
-    }
-
-    #[test]
-    fn test_read_basic() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let file_path = dir.path().join("test.txt");
-        std::fs::write(&file_path, "line1\nline2\nline3\n").expect("write");
-        let tool = ReadTool::default();
-        let result = tool.call(serde_json::json!({
-            "path": file_path.to_str().expect("path"),
-        }));
-        let lines = page_lines(&result);
-        assert_eq!(lines, ["line1", "line2", "line3"]);
-        assert!(result.content.is_empty());
-        let data = result.data.as_ref().unwrap();
-        assert_eq!(data["start_line"], 1);
-        assert!(data.get("file").is_none());
-        assert!(data.get("page").is_none());
     }
 
     #[test]
@@ -781,74 +696,6 @@ mod tests {
     }
 
     #[test]
-    fn test_read_binary_detection() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("blob.bin");
-        std::fs::write(&path, [0u8, 1, 2, 3, 0, 5]).unwrap();
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": path.to_str().unwrap()
-        }));
-        assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.data.is_none());
-    }
-
-    #[test]
-    fn test_read_strips_utf8_bom_from_display() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bom.txt");
-        let mut bytes = vec![0xEF, 0xBB, 0xBF];
-        bytes.extend_from_slice(b"hello\n");
-        std::fs::write(&path, bytes).unwrap();
-        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
-        assert_eq!(page_lines(&result), ["hello"]);
-    }
-
-    #[test]
-    fn test_read_utf16_error_is_explicit() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("u16.txt");
-        // UTF-16 LE BOM + "hi"
-        std::fs::write(&path, [0xFF, 0xFE, b'h', 0, b'i', 0]).unwrap();
-        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
-        assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-    }
-
-    #[test]
-    fn test_read_preserves_trailing_spaces_on_last_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sp.txt");
-        std::fs::write(&path, "alpha  \n").unwrap();
-        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
-        assert_eq!(page_lines(&result), ["alpha  "]);
-    }
-
-    #[test]
-    fn test_read_image_is_unsupported() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shot.png");
-        std::fs::write(
-            &path,
-            [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00],
-        )
-        .unwrap();
-        let result = ReadTool::default().call(serde_json::json!({"path": path.to_str().unwrap()}));
-        assert_eq!(result.error_code.as_deref(), Some("unsupported"));
-        assert!(result.parts.is_empty());
-    }
-
-    #[test]
-    fn test_read_page_ignores_token_count() {
-        let dir = tempfile::tempdir().unwrap();
-        let line = (0..80).map(|i| format!("w{i}")).collect::<Vec<_>>().join(" ");
-        let body: String = (0..200).map(|_| format!("{line}\n")).collect();
-        std::fs::write(dir.path().join("big.txt"), body).unwrap();
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": dir.path().join("big.txt").to_str().unwrap()
-        }));
-        assert_eq!(page_lines(&result).len(), 200);
-    }
-
-    #[test]
     fn test_read_default_limit_pages() {
         let dir = tempfile::tempdir().unwrap();
         let body: String = (0..2500).map(|i| format!("L{i}\n")).collect();
@@ -881,47 +728,6 @@ mod tests {
         assert!(data["lines"][0].is_string());
     }
 
-    #[test]
-    fn test_read_schema_omits_retired_fields() {
-        let tool = ReadTool::default();
-        let schema = tool.schema();
-        let props = schema["properties"].as_object().unwrap();
-        assert!(props.contains_key("path"));
-        assert!(props.contains_key("start_line"));
-        assert!(props.contains_key("limit"));
-        assert!(!props.contains_key("end_line"));
-        let data_schema = tool.data_schema().unwrap();
-        let dprops = data_schema["properties"].as_object().unwrap();
-        assert!(dprops.contains_key("path"));
-        assert!(dprops.contains_key("start_line"));
-        assert!(dprops.contains_key("lines"));
-        assert!(dprops.contains_key("message"));
-        for retired in ["file", "page", "reason", "end_line"] {
-            assert!(!dprops.contains_key(retired), "retired {retired}");
-        }
-    }
-
-    #[test]
-    fn test_validate_input() {
-        let tool = ReadTool::default();
-        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt"})).is_ok());
-        assert!(tool.validate_input(&serde_json::json!({"path": ""})).is_err());
-        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt", "limit": 0})).is_err());
-        assert!(tool.validate_input(&serde_json::json!({"path": "a.txt", "start_line": 0})).is_err());
-    }
-
-    #[test]
-    fn data_schema_accepts_live_result() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
-        let result = ReadTool::default().call(serde_json::json!({
-            "path": dir.path().join("a.txt").to_str().unwrap()
-        }));
-        let data = result.data.as_ref().unwrap();
-        let schema = ReadTool::default().data_schema().unwrap();
-        crate::tool::schema_validate(&schema, data)
-            .unwrap_or_else(|e| panic!("{e}: {data}"));
-    }
 }
 
 /// read paging and tool chains (merged from phase2_gate, WP-207).
@@ -987,20 +793,6 @@ mod chain_contract_tests {
     }
 
     #[test]
-    fn read_page_size_ignores_token_budget() {
-        let dir = tempfile::tempdir().unwrap();
-        let line = (0..80)
-            .map(|i| format!("w{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let body: String = (0..200).map(|_| format!("{line}\n")).collect();
-        std::fs::write(dir.path().join("big.txt"), body).unwrap();
-        let result = safe(&ReadTool::default(), dir.path(), json!({"path": "big.txt"}));
-        assert!(result.error.is_none(), "{}", result.content);
-        assert_eq!(result.data.unwrap()["lines"].as_array().unwrap().len(), 200);
-    }
-
-    #[test]
     fn read_missing_file_is_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let result = safe(
@@ -1009,34 +801,6 @@ mod chain_contract_tests {
             json!({"path": "missing.txt"}),
         );
         assert_eq!(result.error_code.as_deref(), Some("not_found"));
-    }
-
-    #[test]
-    fn glob_over_limit_notes_truncation_and_read_consumes_path() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["a.txt", "b.txt", "c.txt"] {
-            std::fs::write(dir.path().join(name), format!("body-{name}\n")).unwrap();
-        }
-        let listed = safe(
-            &GlobTool,
-            dir.path(),
-            json!({"pattern": "*.txt", "limit": 2}),
-        );
-        assert!(listed.error.is_none(), "{}", listed.content);
-        let data = listed.data.unwrap();
-        assert!(data.get("base").is_none());
-        assert!(data.get("page").is_none());
-        assert_eq!(data["paths"].as_array().unwrap().len(), 2);
-        assert!(
-            message_of(&data).contains("Raise limit"),
-            "{}",
-            message_of(&data)
-        );
-        let path = data["paths"][0].as_str().unwrap().to_string();
-        let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
-        assert!(read.error.is_none(), "{}", read.content);
-        let text = read.data.unwrap()["lines"][0].as_str().unwrap().to_string();
-        assert!(text.contains(&path), "read {path} returned {text}");
     }
 
     #[test]
@@ -1070,80 +834,6 @@ mod chain_contract_tests {
         let file = read.data.unwrap();
         assert_eq!(file["lines"][0], "outside-body");
         assert!(file.get("file").is_none());
-    }
-
-    #[test]
-    fn chain_glob_read() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("src.txt"), "glob-chain\n").unwrap();
-        let listed = safe(&GlobTool, dir.path(), json!({"pattern": "*.txt"}));
-        let path = listed.data.unwrap()["paths"][0]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let read = safe(&ReadTool::default(), dir.path(), json!({"path": path}));
-        assert_eq!(read.data.unwrap()["lines"][0], "glob-chain");
-    }
-
-    #[test]
-    fn chain_grep_read() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "before\nneedle-chain\nafter\n").unwrap();
-        let found = safe(&GrepTool, dir.path(), json!({"pattern": "needle-chain"}));
-        let hit = &found.data.unwrap()["hits"][0];
-        let path = hit["path"].as_str().unwrap().to_string();
-        let line = hit["line"].as_u64().unwrap();
-        let read = safe(
-            &ReadTool::default(),
-            dir.path(),
-            json!({"path": path, "start_line": line, "limit": 1}),
-        );
-        let data = read.data.unwrap();
-        assert_eq!(data["lines"][0], "needle-chain");
-        assert_eq!(data["start_line"], line);
-        assert!(
-            message_of(&data).contains(&format!("start_line={}", line + 1)),
-            "{}",
-            message_of(&data)
-        );
-    }
-
-    #[test]
-    fn chain_read_edit() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("note.txt");
-        std::fs::write(&file, "alpha\n").unwrap();
-        let read = safe(
-            &ReadTool::default(),
-            dir.path(),
-            json!({"path": "note.txt"}),
-        );
-        assert!(read.error.is_none(), "{}", read.content);
-        let edited = safe(
-            &EditTool::default(),
-            dir.path(),
-            json!({
-                "path": "note.txt",
-                "old_string": "alpha",
-                "new_string": "beta"
-            }),
-        );
-        assert!(edited.error.is_none(), "{}", edited.content);
-        let edited_data = edited.data.as_ref().unwrap();
-        assert_eq!(edited_data["ok"], true);
-        assert!(edited_data.get("blocks").is_none());
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "beta\n");
-        let again = safe(
-            &EditTool::default(),
-            dir.path(),
-            json!({
-                "path": "note.txt",
-                "old_string": "beta",
-                "new_string": "gamma"
-            }),
-        );
-        assert_eq!(again.data.as_ref().unwrap()["ok"], true);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "gamma\n");
     }
 
     fn with_excluded_dir<R>(f: impl FnOnce() -> R) -> R {

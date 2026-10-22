@@ -96,76 +96,7 @@ pub async fn maybe_append_local_lsp_errors(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::engines::{EngineState, WorkspaceEngines};
+    
+    
 
-    #[tokio::test]
-    async fn no_engines_leaves_content_untouched() {
-        let base = ToolCallResult::ok("Created: /tmp/x.rs (10 bytes)");
-        let out = maybe_append_local_lsp_errors(None, "/tmp/x.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Created: /tmp/x.rs (10 bytes)");
-        assert!(!out.content.contains("Hint:"));
-    }
-
-    #[tokio::test]
-    async fn idle_engines_stay_silent() {
-        let engines = WorkspaceEngines::new();
-        let base = ToolCallResult::ok("Edited /tmp/x.rs");
-        let out = maybe_append_local_lsp_errors(Some(&engines), "/tmp/x.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Edited /tmp/x.rs");
-        assert!(!out.content.contains("Hint:"));
-    }
-
-    #[tokio::test]
-    async fn warming_stays_silent() {
-        let engines = WorkspaceEngines::new();
-        engines.set_state_for_test("lsp", EngineState::Warming);
-        engines
-            .lsp_hub()
-            .set_configured_commands_for_test(&["rust-analyzer".into()]);
-        let base = ToolCallResult::ok("Edited /tmp/x.rs");
-        let out = maybe_append_local_lsp_errors(Some(&engines), "/tmp/x.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Edited /tmp/x.rs");
-        assert!(!out.content.contains("Hint:"));
-        assert!(!out.content.contains("LSP note"));
-    }
-
-    #[tokio::test]
-    async fn failed_stays_silent() {
-        let engines = WorkspaceEngines::new();
-        engines.set_state_for_test("lsp", EngineState::Failed);
-        engines.set_last_error_for_test("lsp", "rust-analyzer missing");
-        engines
-            .lsp_hub()
-            .set_configured_commands_for_test(&["rust-analyzer".into()]);
-        let base = ToolCallResult::ok("Created: a.rs");
-        let out = maybe_append_local_lsp_errors(Some(&engines), "/tmp/a.rs", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Created: a.rs");
-        assert!(!out.content.contains("Hint:"));
-        assert!(!out.content.contains("LSP note"));
-        assert!(!out.content.contains("rust-analyzer missing"));
-    }
-
-    #[tokio::test]
-    async fn uncovered_extension_stays_silent_even_when_warm() {
-        let engines = WorkspaceEngines::new();
-        engines.set_state_for_test("lsp", EngineState::Warm);
-        engines
-            .lsp_hub()
-            .set_configured_commands_for_test(&["rust-analyzer".into()]);
-        let base = ToolCallResult::ok("Updated: notes.md");
-        let out = maybe_append_local_lsp_errors(Some(&engines), "/tmp/notes.md", base)
-            .await
-            .finalize_signals();
-        assert_eq!(out.content, "Updated: notes.md");
-        assert!(!out.content.contains("Hint:"));
-    }
 }

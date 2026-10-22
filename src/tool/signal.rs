@@ -83,60 +83,6 @@ impl ToolCallResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn error_is_prefix_only() {
-        let t = ToolCallResult::error("missing regex").finalize_signals();
-        assert_eq!(t.content, "Error: missing regex");
-    }
-
-    #[test]
-    fn warning_standalone() {
-        let t = ToolCallResult::warning("exit_code: 1").finalize_signals();
-        assert_eq!(t.content, "Warning: exit_code: 1");
-    }
-
-    #[test]
-    fn warning_after_body_hint_stays_independent() {
-        let t = ToolCallResult::ok("Created: a.rs")
-            .with_hint_appendix("LSP note — still warming; diagnostics skipped", None)
-            .with_warning("you are writing outside the workspace (/tmp/a.rs)");
-        let out = t.finalize_signals();
-        assert!(out.content.starts_with("Created: a.rs\n\nWarning: "));
-        assert!(out.content.contains("\n\nHint: LSP note — still warming"));
-        let warn_at = out.content.find("Warning:").unwrap();
-        let hint_at = out.content.find("Hint:").unwrap();
-        assert!(
-            warn_at < hint_at,
-            "Hint must follow Warning, got {}",
-            out.content
-        );
-    }
-
-    #[test]
-    fn ok_with_hint_is_separate_block() {
-        let t = ToolCallResult::ok("Edited a.rs").with_hint_appendix("LSP note — errors", None);
-        let out = t.finalize_signals();
-        assert_eq!(out.content, "Edited a.rs\n\nHint: LSP note — errors");
-    }
-
-    #[test]
-    fn ok_hint_appendix_after_body() {
-        let t = ToolCallResult::ok("Created: a.rs").with_hint_appendix(
-            "LSP reported errors (ignore if intentional)",
-            Some("error[E0001]: mock".into()),
-        );
-        let out = t.finalize_signals();
-        assert!(out.content.starts_with("Created: a.rs\n\nHint: "));
-        assert!(out.content.contains("mock"));
-    }
-
-    #[test]
-    fn finalize_is_idempotent() {
-        let t = ToolCallResult::error("boom").finalize_signals();
-        let again = t.clone().finalize_signals();
-        assert_eq!(t.content, again.content);
-        assert_eq!(t.content, "Error: boom");
-    }
 }

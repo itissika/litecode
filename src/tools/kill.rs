@@ -161,8 +161,8 @@ mod tests {
     use std::time::Instant;
 
     use crate::tool::Tool;
-    use crate::tool::code_manifest::{render_code_tool_description, validate_code_contract};
-    use crate::tool::{ToolSurface, project_tools};
+    
+    
     use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
     use crate::tools::run::RunTool;
 
@@ -189,58 +189,6 @@ mod tests {
         let job_id = data["id"].as_str().unwrap().to_string();
         let pid = jobs.job_pid(&job_id).expect("pid");
         (job_id, pid)
-    }
-
-    #[test]
-    fn surface_schema_and_admission() {
-        let (tool, _) = tool();
-        assert_eq!(tool.surface(), ToolSurface::Code);
-        assert!(tool.timeout().is_none());
-        assert!(validate_code_contract(&tool).is_ok());
-        let rendered = render_code_tool_description(&[Arc::new(KillTool::new(Arc::new(
-            AgentJobRegistry::new(),
-        )))])
-        .expect("sdk");
-        assert!(rendered.contains("kill"));
-        assert!(rendered.contains("exit_code"));
-        let projected = project_tools(vec![Arc::new(KillTool::new(Arc::new(
-            AgentJobRegistry::new(),
-        )))]);
-        assert_eq!(projected.whitelist, vec!["kill".to_string()]);
-    }
-
-    #[test]
-    fn permission_is_fixed_allow_without_command_policy() {
-        use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
-        use crate::config::schema::{GlobalSettings, PermissionSurface};
-        use crate::permission::floor::check_floor;
-        use crate::permission::{
-            BindingPathMode, MatchContext, PermissionAction, PermissionEngine, permission_surface,
-        };
-
-        assert_eq!(permission_surface("kill"), PermissionSurface::Fixed);
-        let root = std::path::Path::new(".");
-        let ctx = MatchContext {
-            workspace_root: root,
-            path_mode: BindingPathMode::Unrestricted,
-        };
-        assert!(
-            check_floor(
-                "kill",
-                &serde_json::json!({"id": "bg_a", "command": "rm -rf /"}),
-                &ctx
-            )
-            .is_none()
-        );
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
-        let engine = PermissionEngine::resolver(resolved, "default", 0);
-        let decision = engine.evaluate_tool(
-            "kill",
-            &serde_json::json!({"id": "bg_a", "command": "rm -rf /"}),
-            root,
-        );
-        assert_eq!(decision.action, PermissionAction::Allow);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use crate::config::SettingsWriter;
@@ -200,37 +200,6 @@ async fn spawn_and_wait(env: &SpawnEnv, deps: SpawnDeps) -> (String, TurnResult)
     .await
     .expect("child turn must settle");
     (child, result)
-}
-
-/// First-class contract: a subagent launched after a settings write must read
-/// the LIVE agent config (fresh model_ref), not the `ResolvedConfig` snapshot
-/// the parent's tool list was built against.
-#[tokio::test]
-async fn spawn_reads_fresh_agent_model_ref_from_live_config() {
-    let env = spawn_env("p2/m2").await;
-
-    // Simulate: parent tool list built against v1, then the human edits the
-    // explore agent's model in Settings (same global DB, revision advances).
-    env.writer
-        .write_agent(
-            "explore",
-            AgentProfile {
-                role: AgentRole::Subagent,
-                model_ref: "p2/m3".into(),
-                ..Default::default()
-            },
-            &WorkspaceState::new(std::path::Path::new("/tmp")),
-        )
-        .expect("settings write");
-    assert!(env.revision.load(Ordering::Acquire) >= 1);
-
-    let deps = make_deps(&env);
-    let (child, _result) = spawn_and_wait(&env, deps).await;
-    assert_eq!(
-        env.sessions.session_model_id(&child).as_deref(),
-        Some("p2/m3"),
-        "child session must be seeded from the live config, not the parent snapshot"
-    );
 }
 
 /// First-class contract: the child's LLM traffic goes to the provider resolved

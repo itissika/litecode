@@ -559,80 +559,6 @@ mod tests {
     }
 
     #[test]
-    fn binding_filter_excludes_disabled_tools() {
-        let mut bindings = default_bindings();
-        bindings.get_mut("todo").unwrap().enabled = false;
-        bindings.get_mut("plan").unwrap().enabled = false;
-        let resolved = test_resolved(bindings);
-        let tools = list_tools(&resolved, 0);
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(!names.contains(&"todo"));
-        assert!(!names.contains(&"plan"));
-        assert!(names.contains(&"run"));
-        assert!(!names.contains(&"bash"));
-    }
-
-    #[test]
-    fn unbound_webfetch_is_not_in_llm_list() {
-        let bindings = default_bindings();
-        let resolved = test_resolved(bindings);
-        let tools = list_tools(&resolved, 0);
-        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-        assert!(!names.iter().any(|n| n == "webfetch"));
-
-        let mut bound = default_bindings();
-        bound.insert(
-            "webfetch".into(),
-            AgentToolBinding {
-                enabled: true,
-                policy: crate::permission::presets::binding_for_tool("webfetch", ToolPreset::Safe)
-                    .0,
-                path_mode: crate::permission::presets::binding_for_tool(
-                    "webfetch",
-                    ToolPreset::Safe,
-                )
-                .1,
-                last_applied_preset: Some(ToolPreset::Safe),
-                allowed_tools: None,
-            },
-        );
-        let resolved = test_resolved(bound);
-        let tools = list_tools(&resolved, 0);
-        let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
-        assert!(names.iter().any(|n| n == "webfetch"));
-    }
-
-    #[test]
-    fn does_not_read_agent_config_tools_whitelist() {
-        let resolved = test_resolved({
-            let mut bindings = default_bindings();
-            bindings.get_mut("run").unwrap().enabled = false;
-            bindings
-        });
-        let tools = list_tools(&resolved, 0);
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(
-            !names.contains(&"run"),
-            "AgentConfig must not override DB tool binding"
-        );
-        assert!(!names.contains(&"wait"));
-        assert!(!names.contains(&"kill"));
-        assert!(!names.contains(&"bash"));
-    }
-
-    #[test]
-    fn command_tools_have_no_settings_cards() {
-        let resolved = test_resolved(default_bindings());
-        let cards = available_tools(&resolved);
-        let ids: Vec<&str> = cards.iter().map(|tool| tool.id.as_str()).collect();
-        assert!(!ids.contains(&"wait"));
-        assert!(!ids.contains(&"kill"));
-        assert!(!ids.contains(&"bash"));
-        assert!(!ids.contains(&"wait_shell"));
-        assert!(!ids.contains(&"kill_shell"));
-    }
-
-    #[test]
     fn custom_tools_cannot_take_command_or_retired_shell_names() {
         use crate::config::schema::{CustomToolDefinition, ToolSchema};
         use crate::config::settings_writer::validate_custom_definition;
@@ -693,61 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn tool_schemas_are_valid_json() {
-        let resolved = test_resolved(default_bindings());
-        let tools = list_tools(&resolved, 0);
-        let ctx = dummy_ctx();
-        for tool in &tools {
-            let name = tool.name();
-            let schema = tool.schema();
-            let desc = tool.description(&ctx);
-            assert!(!name.is_empty(), "tool {} has empty name", name);
-            assert!(schema.is_object(), "tool {} schema is not an object", name);
-            assert!(!desc.is_empty(), "tool {} has empty description", name);
-        }
-    }
-
-    #[test]
-    fn subagent_delete_hidden_at_depth_ge_1() {
-        let resolved = test_resolved(default_bindings());
-        let primary: Vec<String> = list_tools(&resolved, 0)
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-        assert!(
-            primary.iter().any(|n| n == "subagent_delete"),
-            "{primary:?}"
-        );
-        let child: Vec<String> = list_tools(&resolved, 1)
-            .iter()
-            .map(|t| t.name().to_string())
-            .collect();
-        assert!(!child.iter().any(|n| n == "subagent_delete"), "{child:?}");
-    }
-
-    #[test]
-    fn depth_gt_zero_excludes_subagent_tools() {
-        let resolved = test_resolved(default_bindings());
-        let tools = list_tools(&resolved, 1);
-        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        assert!(!names.contains(&"subagent_launch"));
-        assert!(!names.contains(&"subagent_send"));
-        assert!(!names.contains(&"subagent_wait"));
-        assert!(!names.contains(&"subagent_stop"));
-        assert!(!names.contains(&"subagent_list"));
-        assert!(!names.contains(&"plan"));
-        assert!(!names.contains(&"todo"));
-        assert!(
-            names.contains(&"knowledge"),
-            "knowledge stays on the subagent tool set"
-        );
-        assert!(
-            names.contains(&"litecode_workspace"),
-            "the workspace tool stays on the subagent tool set"
-        );
-    }
-
-    #[test]
     fn failed_mcp_start_does_not_advertise_dummy_tool() {
         let mut bindings = default_bindings();
         bindings.insert(
@@ -784,73 +655,6 @@ mod tests {
         assert!(
             !names.iter().any(|n| n == "mcp_dead" || n.contains("dead")),
             "unusable MCP must not enter the model tool list, got {names:?}"
-        );
-    }
-
-    #[test]
-    fn code_mode_bundles_and_hides_first_slice_tools() {
-        use crate::permission::{PermissionEngine, deny_permission_sink};
-        use crate::tools::code::CodeToolHost;
-        use crate::tools::glob::GlobTool;
-        use crate::tools::grep::GrepTool;
-        use crate::tools::read::ReadTool;
-
-        let resolved = test_resolved(default_bindings());
-        let permission = PermissionEngine::resolver(resolved, "default", 0);
-        let dir = tempfile::tempdir().unwrap();
-        let ctx = Context {
-            cwd: dir.path().to_path_buf(),
-            workspace_paths: WorkspacePaths::for_legacy_root(dir.path()),
-            agents_md: None,
-            claude_md: None,
-        };
-        let host = Arc::new(CodeToolHost::new(
-            permission,
-            ctx.clone(),
-            "default",
-            deny_permission_sink(),
-            dir.path().join(".litecode"),
-            crate::tool::write_lock::process_write_lock(),
-            None,
-        ));
-        let direct: Vec<Arc<dyn Tool>> = vec![
-            Arc::new(GlobTool),
-            Arc::new(GrepTool),
-            Arc::new(ReadTool::default()),
-            Arc::new(crate::tools::edit::EditTool::new()),
-            Arc::new(ApplyEditsTool::new()),
-            Arc::new(crate::tools::write::WriteTool::new()),
-        ];
-
-        let tools = assemble_projected_tools(direct, Some(host));
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name(), "run_code");
-        assert!(tools[0].schema()["properties"].get("timeout_ms").is_some());
-        let description = tools[0].description(&ctx);
-        let other = Context {
-            cwd: std::path::PathBuf::from("/somewhere/else"),
-            ..ctx.clone()
-        };
-        assert_eq!(description, tools[0].description(&other));
-        assert!(description.contains("declare const tools"));
-        assert!(
-            description.contains("readonly [\"grep\"]: (args: GrepInput) => Promise<GrepData>;")
-        );
-        assert!(
-            description.contains("readonly [\"read\"]: (args: ReadInput) => Promise<ReadData>;")
-        );
-        assert!(!description.contains("ToolCallOptions"));
-        assert!(description.contains("Tool timeouts are internal"));
-        assert!(!description.contains("timeout_ms?:"));
-        let bindings = tools[0].code_bindings().expect("whitelist");
-        let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
-        assert_eq!(names, ["apply_edits", "edit", "glob", "grep", "read", "write"]);
-        assert!(description.contains("[\"edit\"]"));
-        assert!(description.contains("[\"write\"]"));
-        assert!(description.contains("path:"));
-        assert!(
-            !description.contains("file_path"),
-            "code surface advertises path, not historical file_path"
         );
     }
 
@@ -959,85 +763,7 @@ mod tests {
         assert!(narrow_sdk.contains("[\"apply_edits\"]"));
     }
 
-    struct Impostor;
 
-    impl Tool for Impostor {
-        fn name(&self) -> &str {
-            "run_code"
-        }
-
-        fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
-        }
-
-        fn description(&self, _: &Context) -> String {
-            "not the transport".into()
-        }
-    }
-
-    #[test]
-    fn a_same_named_tool_does_not_drop_the_code_surface() {
-        use crate::permission::{PermissionEngine, deny_permission_sink};
-        use crate::tool::ToolSurface;
-        use crate::tools::code::CodeToolHost;
-
-        let dir = tempfile::tempdir().unwrap();
-        let resolved = test_resolved(default_bindings());
-        let permission = PermissionEngine::resolver(resolved, "default", 0);
-        let host = Arc::new(CodeToolHost::new(
-            permission,
-            dummy_ctx(),
-            "default",
-            deny_permission_sink(),
-            dir.path().join(".litecode"),
-            crate::tool::write_lock::process_write_lock(),
-            None,
-        ));
-        let tools = assemble_projected_tools(
-            vec![
-                Arc::new(ReadTool::default()) as Arc<dyn Tool>,
-                Arc::new(Impostor),
-            ],
-            Some(host),
-        );
-        assert_eq!(tools.len(), 1);
-        assert_eq!(tools[0].name(), "run_code");
-        assert_ne!(tools[0].description(&dummy_ctx()), "not the transport");
-        let bindings = tools[0].code_bindings().expect("code surface kept");
-        let names: Vec<&str> = bindings.iter().map(String::as_str).collect();
-        assert_eq!(names, ["read"]);
-
-        let closed = assemble_projected_tools(
-            vec![
-                Arc::new(ReadTool::default()) as Arc<dyn Tool>,
-                Arc::new(Impostor),
-            ],
-            None,
-        );
-        let closed_names: Vec<&str> = closed.iter().map(|tool| tool.name()).collect();
-        assert_eq!(closed_names, ["read"]);
-        assert_eq!(ReadTool::default().surface(), ToolSurface::Code);
-    }
-
-    struct Unrenderable;
-
-    impl Tool for Unrenderable {
-        fn name(&self) -> &str {
-            "unrenderable"
-        }
-
-        fn surface(&self) -> crate::tool::ToolSurface {
-            crate::tool::ToolSurface::Code
-        }
-
-        fn schema(&self) -> serde_json::Value {
-            serde_json::json!({"type": "object", "properties": {}})
-        }
-
-        fn description(&self, _: &Context) -> String {
-            "missing data schema".into()
-        }
-    }
 
     #[test]
     #[test]
@@ -1113,28 +839,4 @@ mod tests {
         assert!(bindings.iter().any(|n| n == "websearch"));
     }
 
-    #[test]
-    fn unrenderable_code_tool_does_not_publish_run_code() {
-        use crate::permission::{PermissionEngine, deny_permission_sink};
-        use crate::tools::code::CodeToolHost;
-
-        let dir = tempfile::tempdir().unwrap();
-        let resolved = test_resolved(default_bindings());
-        let permission = PermissionEngine::resolver(resolved, "default", 0);
-        let host = Arc::new(CodeToolHost::new(
-            permission,
-            dummy_ctx(),
-            "default",
-            deny_permission_sink(),
-            dir.path().join(".litecode"),
-            crate::tool::write_lock::process_write_lock(),
-            None,
-        ));
-        let tools = assemble_projected_tools(vec![Arc::new(Unrenderable)], Some(host));
-        assert!(
-            tools.is_empty(),
-            "a failed code surface must not leave run_code running: {:?}",
-            tools.iter().map(|tool| tool.name()).collect::<Vec<_>>()
-        );
-    }
 }

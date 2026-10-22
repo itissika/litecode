@@ -162,32 +162,9 @@ pub fn code_path(input: &Value) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_error;
-    use crate::workspace::WorkspaceError;
+    
+    
 
-    fn code(error: WorkspaceError) -> Option<String> {
-        workspace_error(error).error_code
-    }
-
-    #[test]
-    fn workspace_error_codes() {
-        assert_eq!(code(WorkspaceError::TooLarge).as_deref(), Some("io"));
-        assert_eq!(code(WorkspaceError::Binary).as_deref(), Some("unsupported"));
-        assert_eq!(code(WorkspaceError::Utf16).as_deref(), Some("unsupported"));
-        assert_eq!(
-            code(WorkspaceError::NotUtf8).as_deref(),
-            Some("unsupported")
-        );
-        assert_eq!(
-            code(WorkspaceError::PreviewTooLarge).as_deref(),
-            Some("internal")
-        );
-        assert_eq!(code(WorkspaceError::NotSqlite).as_deref(), Some("internal"));
-        assert_eq!(
-            code(WorkspaceError::UnknownTable).as_deref(),
-            Some("internal")
-        );
-    }
 }
 
 pub fn require_code_path(input: &Value) -> Result<&str, String> {

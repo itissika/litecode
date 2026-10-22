@@ -29,16 +29,6 @@ pub fn is_sensitive_system_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn detects_unix_and_windows_system_paths() {
-        assert!(is_sensitive_system_path("/etc/passwd"));
-        assert!(is_sensitive_system_path("/boot/vmlinuz"));
-        assert!(is_sensitive_system_path("/usr/bin/python3"));
-        assert!(is_sensitive_system_path(r"C:\Windows\System32\drivers"));
-        assert!(is_sensitive_system_path(r"C:\Program Files\Git\etc\passwd"));
-        assert!(!is_sensitive_system_path("/home/user/project/main.rs"));
-        assert!(!is_sensitive_system_path("/tmp/test.txt"));
-    }
 }

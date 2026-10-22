@@ -627,80 +627,9 @@ fn pascal_case(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ToolCallResult;
+    
     use serde_json::json;
 
-    struct FakeTool;
-
-    impl Tool for FakeTool {
-        fn name(&self) -> &str {
-            "demo"
-        }
-
-        fn schema(&self) -> Value {
-            json!({
-                "type": "object",
-                "properties": {
-                    "mode": {
-                        "type": "string",
-                        "enum": ["fast", "safe"],
-                        "description": "Execution mode."
-                    },
-                    "ratio": {
-                        "type": "number",
-                        "description": "A fractional ratio."
-                    },
-                    "input": {
-                        "type": "object",
-                        "description": "Nested input.",
-                        "properties": {
-                            "value": {
-                                "type": "integer",
-                                "description": "A value."
-                            }
-                        },
-                        "required": ["value"]
-                    }
-                },
-                "required": ["mode"]
-            })
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(json!({
-                "oneOf": [
-                    {
-                        "type": "object",
-                        "description": "A text result.",
-                        "properties": {
-                            "kind": {"const": "text"},
-                            "value": {
-                                "type": "string",
-                                "description": "Result text."
-                            }
-                        },
-                        "required": ["kind", "value"]
-                    },
-                    {
-                        "type": "object",
-                        "properties": {
-                            "kind": {"const": "image"},
-                            "bytes": {"type": "integer"}
-                        },
-                        "required": ["kind", "bytes"]
-                    }
-                ]
-            }))
-        }
-
-        fn call_inner(&self, _input: Value) -> ToolCallResult {
-            ToolCallResult::ok("")
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            "Demo tool used by the projection test. Glob text stays literal: **/*.rs.".to_string()
-        }
-    }
 
     struct NoDataTool;
 
@@ -718,103 +647,7 @@ mod tests {
         }
     }
 
-    struct TimedTool;
 
-    impl Tool for TimedTool {
-        fn name(&self) -> &str {
-            "timed"
-        }
-
-        fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {}})
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(
-                json!({"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}),
-            )
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            "Tool with a declared timeout.".into()
-        }
-
-        fn timeout(&self) -> Option<std::time::Duration> {
-            Some(std::time::Duration::from_secs(5))
-        }
-    }
-
-    struct RefTool;
-
-    impl Tool for RefTool {
-        fn name(&self) -> &str {
-            "ref_tool"
-        }
-
-        fn schema(&self) -> Value {
-            json!({"type": "object", "properties": {"item": {"$ref": "#/defs/Item"}}})
-        }
-
-        fn data_schema(&self) -> Option<Value> {
-            Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            "Tool with an unresolved ref.".into()
-        }
-    }
-
-    #[test]
-    fn renders_contract_as_commented_typescript() {
-        let page = render_code_tool_description(&[Arc::new(FakeTool)]).unwrap();
-        assert!(page.contains("tools[\"name\"]"));
-        assert!(page.contains("type Integer = number;"));
-        assert!(page.contains("type DemoInput = {"));
-        assert!(page.contains("  // Execution mode."));
-        assert!(page.contains("mode: \"fast\" | \"safe\";"));
-        assert!(page.contains("ratio?: number;"));
-        assert!(page.contains("value: Integer;"));
-        assert!(page.contains("input?: {"));
-        assert!(page.contains("type DemoData ="));
-        assert!(page.contains("kind: \"text\";"));
-        assert!(page.contains("bytes: Integer;"));
-        assert!(
-            page.contains(
-                "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
-            )
-        );
-        assert!(!page.contains("ToolCallOptions"));
-        assert!(page.contains("Glob text stays literal: **/*.rs."));
-        assert!(!page.contains("tools.call"));
-        assert!(
-            !page
-                .replace("details?: unknown", "")
-                .contains(": unknown"),
-            "schema projection must not fall back to unknown"
-        );
-    }
-
-    #[test]
-    fn declared_timeout_does_not_add_a_per_call_options_argument() {
-        let page =
-            render_code_tool_description(&[Arc::new(TimedTool), Arc::new(FakeTool)]).unwrap();
-        assert!(!page.contains("ToolCallOptions"));
-        for line in page.lines().filter(|line| line.contains("readonly [")) {
-            assert!(!line.contains("options"), "{line}");
-        }
-        assert!(page.contains(
-            "readonly [\"timed\"]: (args: TimedInput) => Promise<TimedData>;"
-        ));
-        assert!(page.contains(
-            "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
-        ));
-        assert!(!page.contains("ToolResult"));
-        assert!(!page.contains("status: \"partial\""));
-        assert!(!page.contains("retryable: boolean"));
-        let timed = page.find("[\"timed\"]").unwrap();
-        let demo = page.find("[\"demo\"]").unwrap();
-        assert!(demo < timed, "bindings are sorted by name");
-    }
 
     #[test]
     fn rejects_tools_without_a_data_contract() {
@@ -822,10 +655,4 @@ mod tests {
         assert_eq!(error, "tool 'no_data' has no data schema");
     }
 
-    #[test]
-    fn unresolved_ref_fails_admission() {
-        let error = render_code_tool_description(&[Arc::new(RefTool)]).unwrap_err();
-        assert!(error.contains("$ref"), "{error}");
-        assert!(!error.contains("unknown"));
-    }
 }

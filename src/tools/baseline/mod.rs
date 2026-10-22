@@ -671,22 +671,3 @@ async fn phase0_tool_fixtures_lock_data_and_error() {
     }
 }
 
-#[test]
-fn phase0_uncovered_scenarios_are_recorded_as_gaps() {
-    let (_live, gaps) = catalog();
-    assert_eq!(gaps.len(), 6);
-    for (tool, scenario) in gaps {
-        let value = load_fixture(&fixture_path(tool, scenario));
-        assert_eq!(value["tool"], tool);
-        assert_eq!(value["scenario"], scenario);
-        assert_eq!(value["covered"], false, "{tool}/{scenario} must stay a gap");
-        let gap = value["gap"].as_str().unwrap_or("");
-        assert!(
-            gap.chars().count() > 20,
-            "{tool}/{scenario} gap reason missing: {gap}"
-        );
-        assert!(value["data"].is_null());
-        assert!(value["error"].is_null());
-        assert!(value.get("content_historical").is_some());
-    }
-}

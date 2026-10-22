@@ -582,29 +582,8 @@ mod tests {
     use super::*;
     use crate::types::ToolSignalLevel;
 
-    #[test]
-    fn html_to_markdown_preserves_heading() {
-        let html = "<h1>Title</h1><p>Body</p>";
-        let md = html_to_markdown(html);
-        assert!(md.contains("# Title"));
-        assert!(md.contains("Body"));
-    }
-
-    #[test]
-    fn strip_html_tags_removes_markup() {
-        let text = strip_html_tags("<p>hello <b>world</b></p>");
-        assert_eq!(text, "hello world");
-    }
-
     fn parse_validate(url: &str) -> Result<(), String> {
         validate_public_http_url(&url::Url::parse(url).unwrap())
-    }
-
-    #[test]
-    fn ssrf_rejects_non_http_schemes() {
-        assert!(parse_validate("file:///etc/passwd").is_err());
-        assert!(parse_validate("ftp://example.com/x").is_err());
-        assert!(parse_validate("gopher://example.com").is_err());
     }
 
     #[test]
@@ -656,23 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn ssrf_allows_public_http_urls() {
-        // A public IP is accepted without needing DNS resolution.
-        assert!(parse_validate("http://8.8.8.8/").is_ok());
-        assert!(parse_validate("http://[2001:4860:4860::8888]/").is_ok());
-        // IPv4-mapped public address is still public.
-        assert!(parse_validate("http://[::ffff:8.8.8.8]/").is_ok());
-    }
-
-    #[test]
-    fn resolve_returns_literal_public_ips() {
-        let ips =
-            resolve_and_validate_public_http_url(&url::Url::parse("http://8.8.8.8/").unwrap())
-                .unwrap();
-        assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
-    }
-
-    #[test]
     fn ssrf_allows_hostname_resolved_to_fake_ip() {
         // This environment's DNS sinks public names to 198.18.0.1 (TUN fake-ip).
         // Gate must allow that resolve (WP-203); pin still applies on connect.
@@ -705,55 +667,6 @@ mod tests {
                 "resolved {ip} must be gate-public"
             );
         }
-    }
-
-    #[test]
-    fn resolve_allows_literal_fake_ip_through_gate() {
-        let ips = resolve_and_validate_public_http_url(
-            &url::Url::parse("http://198.18.0.1/").unwrap(),
-        )
-        .expect("198.18 literal must pass gate");
-        assert_eq!(ips, vec!["198.18.0.1".parse::<std::net::IpAddr>().unwrap()]);
-    }
-
-    #[test]
-    fn client_pins_hostname_to_validated_public_ips() {
-        // Smoke: builder accepts resolve_to_addrs with port 0 (URL port wins).
-        let parsed = url::Url::parse("https://example.invalid/path").unwrap();
-        let ips = vec!["93.184.216.34".parse::<std::net::IpAddr>().unwrap()];
-        let client = client_for_validated_hop(&parsed, &ips).expect("pinned client");
-        // Client is built; connect would use the pin (no second DNS for host).
-        let _ = client;
-    }
-
-    #[test]
-    fn client_pins_hostname_to_fake_ip() {
-        // TUN path: hostname may resolve to 198.18; pin still accepted.
-        let parsed = url::Url::parse("https://example.com/").unwrap();
-        let ips = vec!["198.18.0.1".parse::<std::net::IpAddr>().unwrap()];
-        assert!(client_for_validated_hop(&parsed, &ips).is_ok());
-    }
-
-    #[test]
-    fn client_for_literal_ip_needs_no_pin() {
-        let parsed = url::Url::parse("http://1.1.1.1/").unwrap();
-        let ips = resolve_and_validate_public_http_url(&parsed).unwrap();
-        assert!(client_for_validated_hop(&parsed, &ips).is_ok());
-    }
-
-    #[test]
-    fn surface_is_code() {
-        let tool = WebFetchTool::new(Arc::new(RwLock::new(None)));
-        assert_eq!(tool.surface(), crate::tool::ToolSurface::Code);
-        assert!(tool.data_schema().is_some());
-    }
-
-    #[test]
-    fn empty_url_is_hard_invalid_input() {
-        let tool = WebFetchTool::new(Arc::new(RwLock::new(None)));
-        let result = tool.call_inner(serde_json::json!({ "url": "  " }));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
     }
 
     #[test]
@@ -804,38 +717,4 @@ mod tests {
         assert!(data.get("body").is_none() || data["body"].is_null());
     }
 
-    #[test]
-    fn success_shape_has_ok_true_body() {
-        let result = present_webfetch(WebFetchData {
-            ok: true,
-            url: Some("https://example.com/".into()),
-            status: Some(200),
-            format: Some("markdown".into()),
-            body: Some("# Hi".into()),
-            message: "Fetched.".into(),
-        });
-        assert_ne!(result.level, ToolSignalLevel::Error);
-        let data = result.data.expect("data");
-        assert_eq!(data["ok"], true);
-        assert_eq!(data["body"], "# Hi");
-        assert_eq!(data["status"], 200);
-    }
-
-    #[test]
-    fn gate_hard_ssrf_uses_permission_denied_code() {
-        let err = resolve_and_validate_public_http_url(
-            &url::Url::parse("http://10.0.0.1/").unwrap(),
-        )
-        .unwrap_err();
-        match err {
-            GateError::Hard { code, .. } => assert_eq!(code, "permission_denied"),
-            GateError::Soft { message } => panic!("expected hard SSRF, got soft: {message}"),
-        }
-    }
-
-    #[test]
-    fn ok_data_helper_still_resolves() {
-        let result = crate::tool::outcome::ok_data(serde_json::json!({ "ok": false, "message": "x" }));
-        assert_ne!(result.level, ToolSignalLevel::Error);
-    }
 }

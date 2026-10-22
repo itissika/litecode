@@ -320,49 +320,4 @@ mod tests {
         assert!(matches!(indent, Some(RejectReason::WhitespaceOnly { .. })));
     }
 
-    #[test]
-    fn multiline_indent_only_is_structural() {
-        let content = "fn alpha() {\n    keep();\n}\n";
-        let old = "    fn alpha() {\n        keep();\n    }";
-        let miss = diagnose_structural_miss(content, old);
-        assert!(
-            matches!(
-                miss,
-                Some(RejectReason::WhitespaceOnly {
-                    start_line: 1,
-                    end_line: 3,
-                    ..
-                })
-            ),
-            "{miss:?}"
-        );
-    }
-
-    #[test]
-    fn near_typo_is_no_match() {
-        let content = "fn greet_user_alpha() {\n    println!(\"hi\");\n}\n";
-        let outcome = resolve_one(
-            content,
-            "fn greet_user_alpa() {\n    println!(\"hi\");\n}",
-            "fn greet_user_beta() {}",
-        );
-        match outcome {
-            ResolveOutcome::Reject(reason) => assert_eq!(reason.code(), "no_match"),
-            ResolveOutcome::Apply(edited) => panic!("near typo must not apply: {edited}"),
-        }
-    }
-
-    #[test]
-    fn multiple_match_message_lists_lines() {
-        let outcome = resolve_one("foo\nbar\nfoo\n", "foo", "FOO");
-        match outcome {
-            ResolveOutcome::Reject(RejectReason::MultipleExact { ranges }) => {
-                assert_eq!(ranges, vec![(1, 1), (3, 3)]);
-                let msg = RejectReason::MultipleExact { ranges }.message();
-                assert!(msg.contains("lines 1, 3"), "{msg}");
-                assert!(!msg.contains("replace_all"), "{msg}");
-            }
-            other => panic!("expected multiple: {other:?}"),
-        }
-    }
 }

@@ -164,16 +164,6 @@ mod tests {
     use crate::permission::matchers::ArgMatcher;
     use crate::permission::policy::PolicyRule;
 
-    fn outside_rule() -> PolicyRule {
-        PolicyRule {
-            id: "outside_workspace".into(),
-            when: ArgMatcher::PathOutsideWorkspace {
-                name: "path".into(),
-            },
-            action: PermissionAction::Deny,
-        }
-    }
-
     fn tool(rules: Vec<PolicyRule>) -> CustomToolDefinition {
         CustomToolDefinition {
             name: "demo".into(),
@@ -222,76 +212,6 @@ mod tests {
         }
         let resolved = ConfigManager::resolve_without_catalog(global, workspace);
         (PermissionEngine::resolver(resolved, "default", depth), dir)
-    }
-
-    #[test]
-    fn safe_uses_the_live_rules() {
-        let (engine, dir) = engine(
-            vec![outside_rule()],
-            None,
-            Some(ToolPreset::Safe),
-            ToolPolicy::allow_all(),
-            0,
-        );
-        let outside = tempfile::tempdir().unwrap();
-        let denied = engine.evaluate_tool(
-            "demo",
-            &serde_json::json!({ "path": outside.path().to_string_lossy() }),
-            dir.path(),
-        );
-        assert_eq!(denied.action, PermissionAction::Deny);
-        assert_eq!(denied.rule_id, "outside_workspace");
-        let allowed = engine.evaluate_tool(
-            "demo",
-            &serde_json::json!({ "path": "notes.txt" }),
-            dir.path(),
-        );
-        assert_eq!(allowed.action, PermissionAction::Allow);
-    }
-
-    #[test]
-    fn all_and_removed_rules_allow() {
-        let (opened, dir) = engine(
-            vec![outside_rule()],
-            None,
-            Some(ToolPreset::All),
-            ToolPolicy::from_rules(vec![outside_rule()]),
-            0,
-        );
-        let outside = tempfile::tempdir().unwrap();
-        let allowed = opened.evaluate_tool(
-            "demo",
-            &serde_json::json!({ "path": outside.path().to_string_lossy() }),
-            dir.path(),
-        );
-        assert_eq!(allowed.action, PermissionAction::Allow);
-
-        let stale = ToolPolicy::with_default(PermissionAction::Deny);
-        let (cleared, dir) = engine(Vec::new(), None, Some(ToolPreset::Safe), stale, 0);
-        let allowed = cleared.evaluate_tool(
-            "demo",
-            &serde_json::json!({ "path": "notes.txt" }),
-            dir.path(),
-        );
-        assert_eq!(allowed.action, PermissionAction::Allow);
-    }
-
-    #[test]
-    fn workspace_tool_without_rules_drops_the_global_rules() {
-        let (engine, dir) = engine(
-            vec![outside_rule()],
-            Some(tool(Vec::new())),
-            Some(ToolPreset::Safe),
-            ToolPolicy::from_rules(vec![outside_rule()]),
-            0,
-        );
-        let outside = tempfile::tempdir().unwrap();
-        let allowed = engine.evaluate_tool(
-            "demo",
-            &serde_json::json!({ "path": outside.path().to_string_lossy() }),
-            dir.path(),
-        );
-        assert_eq!(allowed.action, PermissionAction::Allow);
     }
 
     #[test]

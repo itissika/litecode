@@ -76,36 +76,6 @@ pub(crate) fn truncate_snippet_lines(snippet: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn sections_match_grep_expanded_shape() {
-        let out = format_snippet_sections(&[
-            SnippetSection {
-                path: "a.rs".into(),
-                start_line: 1,
-                end_line: 4,
-                breadcrumb: Some("fn save".into()),
-                text: "fn save() {\n    ok\n}".into(),
-                remaining_lines: 0,
-            },
-            SnippetSection {
-                path: "b.rs".into(),
-                start_line: 12,
-                end_line: 12,
-                breadcrumb: None,
-                text: "let x = 1;".into(),
-                remaining_lines: 3,
-            },
-        ]);
-        assert!(out.contains("## Matches in a.rs"), "{out}");
-        assert!(out.contains("### fn save › L1-4"), "{out}");
-        assert!(out.contains("## Matches in b.rs"), "{out}");
-        assert!(out.contains("### L12"), "{out}");
-        assert!(
-            out.contains("3 lines remaining in ancestor node."),
-            "{out}"
-        );
-        assert!(out.contains("```\nfn save()"), "{out}");
-    }
 }

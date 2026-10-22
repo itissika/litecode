@@ -362,12 +362,6 @@ impl AgentJobRegistry {
         g.jobs.get(id).is_some_and(|rec| rec.detached)
     }
 
-    #[cfg(test)]
-    pub(crate) fn session_has_job(&self, session_id: &str) -> bool {
-        let g = self.inner.lock().expect("jobs lock");
-        g.jobs.values().any(|rec| rec.session_id == session_id)
-    }
-
     /// Snapshot used by wait/kill/reminder formatting (same fields as an exit notice).
     pub fn notice_snapshot(&self, id: &str) -> Option<ExitNotice> {
         let g = self.inner.lock().expect("jobs lock");

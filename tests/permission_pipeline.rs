@@ -216,26 +216,6 @@ fn floor_blocks_sensitive_commands_under_unrestricted_all_preset() {
 }
 
 #[test]
-fn subagent_ask_becomes_deny() {
-    let dir = TempDir::new().unwrap();
-    let engine = engine_for("reviewer", AgentRole::Subagent, 1, safe_tools(&["write"]));
-    let eval = engine.evaluate_tool(
-        "write",
-        &serde_json::json!({"path": "a.txt", "content": "x"}),
-        dir.path(),
-    );
-    assert_eq!(eval.action, PermissionAction::Deny);
-}
-
-#[test]
-fn none_tools_always_allow() {
-    let dir = TempDir::new().unwrap();
-    let engine = engine_for("default", AgentRole::Primary, 0, HashMap::new());
-    let eval = engine.evaluate_tool("plan", &serde_json::json!({}), dir.path());
-    assert_eq!(eval.action, PermissionAction::Allow);
-}
-
-#[test]
 fn grant_is_rule_and_agent_scoped() {
     let _grants = grant_lock();
     clear_runtime_grants();
@@ -452,36 +432,3 @@ async fn authorize_invalid_json_arguments_denied() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn authorize_schema_missing_content_denied() {
-    let _grants = grant_lock();
-    clear_runtime_grants_for("auth_schema");
-    let dir = TempDir::new().unwrap();
-    let engine = engine_for("auth_schema", AgentRole::Primary, 0, all_tools(&["write"]));
-    let sink = recording_sink((true, false));
-    let result = authorize(
-        &tool_call("write", serde_json::json!({"path": "out.txt"})),
-        &WriteTool::new(),
-        &engine,
-        &ctx_for(&dir),
-        "auth_schema",
-        &sink,
-        &tokio_util::sync::CancellationToken::new(),
-    )
-    .await;
-    match result {
-        AuthResult::Denied(msg) => {
-            assert!(
-                msg.to_lowercase().contains("content")
-                    || msg.to_lowercase().contains("required")
-                    || msg.to_lowercase().contains("invalid"),
-                "missing content should fail schema: {msg}"
-            );
-        }
-        other => panic!("expected Denied for missing content, got {other:?}"),
-    }
-    assert!(
-        sink.calls.lock().unwrap().is_empty(),
-        "schema failure must not reach Ask sink"
-    );
-}

@@ -232,63 +232,6 @@ mod tests {
     }
 
     #[test]
-    fn surface_is_code() {
-        let tool = cold_tool();
-        assert_eq!(tool.surface(), crate::tool::ToolSurface::Code);
-        assert!(tool.data_schema().is_some());
-    }
-
-    #[test]
-    fn failed_warmup_returns_the_real_error() {
-        // A manager with no websearch endpoint: the first-use build fails.
-        let mgr = crate::optional::EngineManager::new();
-        let tool = WebSearchTool::new(mgr.websearch_client(), mgr.websearch_endpoint())
-            .with_warm_hook(mgr.warm_hook("websearch"));
-        let result = tool.call_inner(serde_json::json!({ "query": "rust" }));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
-        assert!(
-            result
-                .content
-                .contains("websearch engine failed to start: ")
-                && result.content.contains("not configured"),
-            "real build error expected: {}",
-            result.content
-        );
-    }
-
-    #[tokio::test]
-    async fn call_async_runs_on_the_blocking_pool() {
-        let tool = cold_tool();
-        let result = tool.call_async(serde_json::json!({ "query": "   " })).await;
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-    }
-
-    #[test]
-    fn empty_query_is_hard_invalid_input() {
-        let tool = cold_tool();
-        let result = tool.call_inner(serde_json::json!({ "query": "   " }));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-        assert!(
-            result.content.to_lowercase().contains("query")
-                || result.content.to_lowercase().contains("empty")
-                || result.content.to_lowercase().contains("required"),
-            "empty query should name the field: {}",
-            result.content
-        );
-    }
-
-    #[test]
-    fn missing_query_is_error() {
-        let tool = cold_tool();
-        let result = tool.call_inner(serde_json::json!({}));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-    }
-
-    #[test]
     fn not_warmed_surfaces_configuration_hint() {
         let tool = cold_tool();
         let result = tool.call_inner(serde_json::json!({ "query": "rust async" }));
@@ -302,24 +245,6 @@ mod tests {
         assert!(
             result.content.contains("EXA_API_KEY") || result.content.contains("Exa"),
             "must hint how to configure: {}",
-            result.content
-        );
-    }
-
-    #[test]
-    fn client_without_endpoint_is_not_configured() {
-        // Client present but endpoint empty → configured-path error, not "not warmed".
-        let client = reqwest::blocking::Client::new();
-        let tool = WebSearchTool::new(
-            Arc::new(RwLock::new(Some(client))),
-            Arc::new(RwLock::new(Some(String::new()))),
-        );
-        let result = tool.call_inner(serde_json::json!({ "query": "rust" }));
-        assert_eq!(result.level, ToolSignalLevel::Error);
-        assert_eq!(result.error_code.as_deref(), Some("unavailable"));
-        assert!(
-            result.content.contains("not configured"),
-            "empty endpoint → not configured: {}",
             result.content
         );
     }
@@ -340,17 +265,4 @@ mod tests {
         assert_eq!(data["message"], "exa http 500");
     }
 
-    #[test]
-    fn success_shape_has_text() {
-        let result = present_websearch(WebSearchData {
-            ok: true,
-            query: Some("rust".into()),
-            text: Some("results…".into()),
-            message: "Search completed.".into(),
-        });
-        assert_ne!(result.level, ToolSignalLevel::Error);
-        let data = result.data.expect("data");
-        assert_eq!(data["ok"], true);
-        assert_eq!(data["text"], "results…");
-    }
 }

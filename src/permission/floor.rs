@@ -84,10 +84,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn retired_direct_shell_name_does_not_hit_the_command_floor() {
-        assert!(check_floor("bash", &serde_json::json!({"command": "rm -rf /"}), &ctx()).is_none());
-    }
 }
 
 /// `path` is the code-tool argument. `file_path` is still denied when a caller

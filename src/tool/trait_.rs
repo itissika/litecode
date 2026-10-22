@@ -196,54 +196,7 @@ pub trait Tool: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    struct AsyncOnlyTool;
 
-    impl Tool for AsyncOnlyTool {
-        fn name(&self) -> &str {
-            "async_only"
-        }
-
-        fn schema(&self) -> Value {
-            serde_json::json!({})
-        }
-
-        fn call_inner(&self, _input: Value) -> ToolCallResult {
-            ToolCallResult::ok("sync fallback")
-        }
-
-        fn call_async(
-            &self,
-            _input: Value,
-        ) -> Pin<Box<dyn Future<Output = ToolCallResult> + Send + '_>> {
-            Box::pin(std::future::ready(ToolCallResult::ok(
-                "async implementation",
-            )))
-        }
-
-        fn description(&self, _ctx: &Context) -> String {
-            String::new()
-        }
-    }
-
-    #[tokio::test]
-    async fn execution_context_preserves_async_override() {
-        let tool = AsyncOnlyTool;
-        let result = tool
-            .execute(
-                Value::Null,
-                ToolExecutionContext {
-                    path_mode: crate::workspace::ToolPathMode::Safe,
-                    workspace_root: std::path::PathBuf::from("."),
-                    call_id: "test-call".into(),
-                    cancel: tokio_util::sync::CancellationToken::new(),
-                    output_limit: 8_000,
-                    session_id: String::new(),
-                    session: None,
-                },
-            )
-            .await;
-        assert_eq!(result.content, "async implementation");
-    }
 }

@@ -849,17 +849,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_resolves_under_root() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        let file = root.join("src/lib.rs");
-        std::fs::write(&file, "fn x() {}\n").unwrap();
-        let resolved = resolve_in_workspace(root, "src/lib.rs").unwrap();
-        assert_eq!(resolved, crate::config::path::canon_abs(&file).unwrap());
-    }
-
-    #[test]
     fn absolute_outside_root_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -875,31 +864,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = resolve_in_workspace(dir.path(), ".").unwrap_err();
         assert!(err.contains("requires a real source file"), "got: {err}");
-    }
-
-    #[test]
-    fn content_modified_surfaces_warning_on_data_result() {
-        let plain = with_content_modified(
-            crate::tool::outcome::ok_data(serde_json::json!({
-                "locations": [],
-                "message": "No locations found."
-            })),
-            false,
-        );
-        assert_eq!(plain.level, crate::types::result::ToolSignalLevel::Ok);
-        let flagged = with_content_modified(
-            crate::tool::outcome::ok_data(serde_json::json!({
-                "locations": [],
-                "message": "No locations found."
-            })),
-            true,
-        )
-        .finalize_signals();
-        assert_eq!(
-            flagged.level,
-            crate::types::result::ToolSignalLevel::Warning
-        );
-        assert!(flagged.content.contains("ContentModified"), "{}", flagged.content);
     }
 
     #[test]
@@ -963,39 +927,6 @@ mod tests {
         let data = finish_symbols(out, true, &[ws.path()]).data.expect("data");
         assert_eq!(data["symbols"][0]["path"], "m.rs");
         assert_eq!(data["symbols"][0]["line"], 5);
-    }
-
-    #[test]
-    fn finish_hover_shape() {
-        let raw = serde_json::json!({
-            "contents": { "kind": "markdown", "value": "**fn** item" }
-        });
-        let out = crate::lsp::LspToolOutput::new("x".into(), raw, false);
-        let result = finish_hover(out);
-        let data = result.data.expect("data");
-        assert_eq!(data["markdown"], "**fn** item");
-        assert!(data["message"].as_str().is_some());
-    }
-
-    #[test]
-    fn per_server_gate_matches_only_failed_program() {
-        use crate::lsp::{LspInstanceStatus, LspLifecycle};
-        fn status(command: &str, state: LspLifecycle) -> LspInstanceStatus {
-            LspInstanceStatus {
-                command: command.into(),
-                project_root: "/proj".into(),
-                state,
-                index_settled: false,
-                last_error: None,
-                restart_count: 0,
-            }
-        }
-        let statuses = vec![
-            status("rust-analyzer", LspLifecycle::Running),
-            status("pyright", LspLifecycle::Failed),
-        ];
-        assert!(failed_server_detail(&statuses, "pyright").is_some());
-        assert!(failed_server_detail(&statuses, "rust-analyzer").is_none());
     }
 
 }

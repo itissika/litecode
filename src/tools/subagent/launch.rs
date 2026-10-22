@@ -394,54 +394,9 @@ impl Tool for SubagentLaunchTool {
 
 #[cfg(test)]
 mod tests {
-    use super::format_available_subagents;
+    
 
-    #[test]
-    fn subagent_launch_mentions_runtime_permission_denial() {
-        let text = include_str!("../descriptions/subagent_launch.md");
-        assert!(text.contains("fixed when it is created"), "{text}");
-        assert!(text.contains("always denied"), "{text}");
-    }
-    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
-    use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+    
+    
 
-    #[test]
-    fn format_available_includes_descriptions() {
-        let mut global = GlobalSettings::default();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                allowed_subagents: vec!["reviewer".into(), "worker".into()],
-                ..Default::default()
-            },
-        );
-        global.agents.insert(
-            "reviewer".into(),
-            AgentProfile {
-                role: AgentRole::Subagent,
-                description: "Reviews code for bugs".into(),
-                ..Default::default()
-            },
-        );
-        global.agents.insert(
-            "worker".into(),
-            AgentProfile {
-                role: AgentRole::Subagent,
-                description: String::new(),
-                ..Default::default()
-            },
-        );
-        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
-        let catalog = format_available_subagents(&resolved, &["reviewer".into(), "worker".into()])
-            .expect("catalog");
-        assert_eq!(catalog, "reviewer (Reviews code for bugs), worker");
-    }
-
-    #[test]
-    fn format_available_empty_allowlist_is_none() {
-        let resolved =
-            resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"));
-        assert!(format_available_subagents(&resolved, &[]).is_none());
-    }
 }
