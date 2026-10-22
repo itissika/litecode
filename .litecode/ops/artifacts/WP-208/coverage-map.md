@@ -1,3 +1,5 @@
+> **已作废（2026-10-22，GM 选 A）**：本文件基于已 revert 的 D1–D5 删除，现以 core-chains.md 为准。
+
 # WP-208 核心链路覆盖地图（lib；3acfe31 → HEAD cb5f33f）
 
 tests/ 未改（D6 已 stash 未提交）。lib：2212 → 811。

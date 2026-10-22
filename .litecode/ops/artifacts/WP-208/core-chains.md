@@ -1,0 +1,1062 @@
+# WP-208 核心链路 → 守护测试（基准 3acfe31）
+
+> 不设数量目标，不删任何测试。守护测试 = 该链路下在 D1–D5 筛选中被判为必须保留的测试 ∪ 名称命中并发/锁/封口/数据不丢/安全关键词的高风险测试（避免重复：每条测试只归一条链路）。
+> 旧 `coverage-map.md` 已作废。tests/ 未经筛选，440 条整体列为守护（待后续逐文件复核）。源码计数 2668 与 `--list` 2714 的差为宏生成/参数化测试。
+
+## run_code/ptc · JS↔Rust 值边界：undefined 剥离/置 null 并报告路径，bigint/symbol/function 带 path 报错（4）
+- `src/ptc/tests.rs` :: `dropped_undefined_list_is_capped_with_more_count`
+- `src/ptc/tests.rs` :: `host_receives_extra_arguments_as_a_json_array`
+- `src/ptc/tests.rs` :: `undefined_in_arguments_is_dropped_silently`
+- `src/ptc/tests.rs` :: `undefined_in_result_is_stripped_or_nulled_and_reported`
+
+## run_code/ptc · 预算/取消/超时封口：死循环被打断、await 宿主时可取消、grace 记录未完成调用（10）
+- `src/ptc/engine.rs` :: `cancel_during_drain_keeps_the_value`
+- `src/ptc/engine.rs` :: `timeout_during_drain_keeps_the_returned_value`
+- `src/ptc/tests.rs` :: `budget_interrupts_infinite_loop`
+- `src/ptc/tests.rs` :: `budget_pause_is_not_charged`
+- `src/ptc/tests.rs` :: `cancel_grace_records_unfinished`
+- `src/ptc/tests.rs` :: `cancel_while_awaiting_host`
+- `src/ptc/tests.rs` :: `cancel_while_js_running_cancels_inflight`
+- `src/ptc/tests.rs` :: `dense_array_within_output_budget`
+- `src/ptc/tests.rs` :: `success_cancels_inflight_calls`
+- `src/ptc/tests.rs` :: `success_survives_budget_expiry_at_return`
+
+## run_code/ptc · 栈与内存封口：栈溢出/OOM 不可被 JS 捕获，失败分类正确（10）
+- `src/ptc/tests.rs` :: `caught_allocation_failure_is_memory_when_the_stack_watch_is_disarmed`
+- `src/ptc/tests.rs` :: `exception_includes_stack`
+- `src/ptc/tests.rs` :: `exception_keeps_stack`
+- `src/ptc/tests.rs` :: `memory_exhaustion_stays_sealed_when_the_program_catches_it`
+- `src/ptc/tests.rs` :: `memory_limit`
+- `src/ptc/tests.rs` :: `sparse_huge_array_rejected_before_allocation`
+- `src/ptc/tests.rs` :: `stack_limit`
+- `src/ptc/tests.rs` :: `stack_overflow_caught_then_immediate_return_is_still_sealed`
+- `src/ptc/tests.rs` :: `stack_overflow_stays_sealed_when_the_program_catches_it`
+- `src/ptc/tests.rs` :: `syntax_error_on_the_second_line_keeps_stack_and_location`
+
+## run_code · 结果渲染预算：log/result 截断、data 不泄入 content、失败调用计数（16）
+- `src/tools/code.rs` :: `a_second_javascript_argument_is_rejected_before_the_tool_runs`
+- `src/tools/code.rs` :: `permission_denial_is_counted_as_a_failed_settled_call`
+- `src/tools/code.rs` :: `render_run_output_attaches_by_tool_data_without_leaking_into_content`
+- `src/tools/code/render.rs` :: `a_log_that_fills_its_budget_keeps_a_short_result_verbatim`
+- `src/tools/code/render.rs` :: `cjk_result_stays_valid_utf8_inside_the_budget`
+- `src/tools/code/render.rs` :: `default_view_stays_inside_the_budget_without_legacy_sections`
+- `src/tools/code/render.rs` :: `dropped_undefined_line_sits_in_the_head`
+- `src/tools/code/render.rs` :: `output_limit_mark_survives_an_overlong_last_line`
+- `src/tools/code_search.rs` :: `agent_view_tight_budget_drops_to_context_without_breadcrumb`
+- `src/tools/code_search.rs` :: `agent_view_tiny_budget_truncates_hit_count`
+- `src/tools/code_search.rs` :: `fence_escapes_backticks_in_source`
+- `src/tools/code_search.rs` :: `indexing_wait_message_reads_job_json`
+- `src/tools/code_search.rs` :: `warm_busy_worker_returns_warming_without_blocking`
+- `src/tools/code_search.rs` :: `warm_refresh_busy_does_not_block_on_wait`
+- `src/tools/code_search.rs` :: `warm_refreshing_does_not_block_on_wait`
+- `src/tools/code_search.rs` :: `warm_stale_is_searchable_without_warm_wait`
+
+## tools · read：分页/EOF 空 lines/not_found/越界路径/取消（8）
+- `src/tools/read.rs` :: `cancelled_read_stops_between_chunks`
+- `src/tools/read.rs` :: `glob_over_limit_notes_truncation_and_read_consumes_path`
+- `src/tools/read.rs` :: `ide_read_checks_cancel_between_chunks`
+- `src/tools/read.rs` :: `outside_workspace_paths_noted`
+- `src/tools/read.rs` :: `read_declares_a_thirty_second_timeout`
+- `src/tools/read.rs` :: `read_missing_file_is_not_found`
+- `src/tools/read.rs` :: `read_page_size_ignores_token_budget`
+- `src/tools/read.rs` :: `test_read_with_start_line_and_limit`
+
+## tools · grep：命中形状 hits、二进制/排除/空 glob 状态、非法正则（8）
+- `src/tools/grep.rs` :: `a_bare_brace_is_invalid_regex`
+- `src/tools/grep.rs` :: `a_path_outside_the_mode_is_reported_not_panicking`
+- `src/tools/grep.rs` :: `blank_glob_is_invalid_input`
+- `src/tools/grep.rs` :: `grep_message_binary_file`
+- `src/tools/grep.rs` :: `grep_message_glob_empty`
+- `src/tools/grep.rs` :: `grep_message_path_excluded`
+- `src/tools/grep.rs` :: `limit_bounds_hits_and_notes_truncation`
+- `src/tools/grep.rs` :: `wide_search_never_writes_a_spill_file`
+
+## tools · glob：basename 任意深度匹配、..拒绝、取消（3）
+- `src/tools/glob.rs` :: `cancelled_glob_stops_before_walking`
+- `src/tools/glob.rs` :: `matcher_supports_braces`
+- `src/tools/glob.rs` :: `parent_dir_pattern_is_invalid_input`
+
+## tools · write：expected_hash stale/匹配、create-only、原子写、敏感路径（8）
+- `src/tools/write.rs` :: `external_all_write_skips_workspace_change`
+- `src/tools/write.rs` :: `test_sensitive_path_detection`
+- `src/tools/write.rs` :: `test_write_atomic`
+- `src/tools/write.rs` :: `write_create_only_with_expected_hash_on_missing_file_is_invalid_input`
+- `src/tools/write.rs` :: `write_declares_a_thirty_second_timeout`
+- `src/tools/write.rs` :: `write_expected_hash_match_returns_file_ref`
+- `src/tools/write.rs` :: `write_expected_hash_mismatch_is_stale`
+- `src/tools/write.rs` :: `write_expected_hash_on_missing_file_does_not_create`
+
+## tools · edit：扁平 old/new/replace_all 契约、多匹配报行、结构化缩进匹配（13）
+- `src/tools/edit/matcher.rs` :: `multiline_indent_only_is_structural`
+- `src/tools/edit/matcher.rs` :: `multiple_match_message_lists_lines`
+- `src/tools/edit/matcher.rs` :: `structural_prefix_and_indent_block_before_apply`
+- `src/tools/edit/planner.rs` :: `parse_rejects_replace_all_and_expected_hash`
+- `src/tools/edit/planner.rs` :: `plan_one_empty_new_deletes`
+- `src/tools/edit/planner.rs` :: `plan_one_unique_and_multiple`
+- `src/tools/edit/python_indent.rs` :: `multiple_exact_rejects_without_replace_all`
+- `src/tools/edit/python_indent.rs` :: `tabs_vs_spaces_is_whitespace_only_reject`
+- `src/tools/edit/python_indent.rs` :: `two_space_vs_four_space_is_whitespace_only_reject`
+- `src/tools/edit/tests.rs` :: `edit_declares_a_thirty_second_timeout`
+- `src/tools/edit/tests.rs` :: `edit_tool_cancel_before_write`
+- `src/tools/edit/tests.rs` :: `edit_tool_rejects_nul_bytes`
+- `src/tools/edit/tests.rs` :: `edit_tool_rejects_utf16`
+
+## tools · run：前台 30s 窗/后台 promote、锁只持有到 spawn（并行不串行化）（17）
+- `src/tools/kill.rs` :: `kill_stops_process_and_notes_output`
+- `src/tools/kill.rs` :: `permission_is_fixed_allow_without_command_policy`
+- `src/tools/kill.rs` :: `unknown_id_is_not_found`
+- `src/tools/run.rs` :: `cancel_before_spawn_rejects`
+- `src/tools/run.rs` :: `fast_command_returns_exit_code`
+- `src/tools/run.rs` :: `validate_rejects_empty_command`
+- `src/tools/run.rs` :: `wait_yields_so_cancel_can_run`
+- `src/tools/run_lock_gate.rs` :: `cancel_before_spawn_releases_when_the_call_ends`
+- `src/tools/run_lock_gate.rs` :: `dropped_in_flight_future_releases_and_panic_unwind_releases`
+- `src/tools/run_lock_gate.rs` :: `four_parallel_write_runs_finish_in_about_one_second`
+- `src/tools/run_lock_gate.rs` :: `locks_release_after_spawn_while_command_still_runs`
+- `src/tools/run_lock_gate.rs` :: `short_command_returns_exit_code_in_foreground`
+- `src/tools/run_lock_gate.rs` :: `spawn_failure_releases_locks`
+- `src/tools/run_lock_gate.rs` :: `window_is_capped_by_run_code_deadline`
+- `src/tools/wait.rs` :: `unknown_id_is_not_found`
+- `src/tools/wait.rs` :: `wait_timeout_keeps_null_exit`
+- `src/tools/wait.rs` :: `wait_until_exit_sets_code`
+
+## tools · lsp 七工具：越界/目录拒绝、冷启动 unavailable、ContentModified 警告（9）
+- `src/tools/lsp.rs` :: `absolute_outside_root_rejected`
+- `src/tools/lsp.rs` :: `all_code_tools_are_code_surface_no_direct_lsp`
+- `src/tools/lsp.rs` :: `content_modified_surfaces_warning_on_data_result`
+- `src/tools/lsp.rs` :: `directory_rejected`
+- `src/tools/lsp.rs` :: `finish_locations_relative_inside_absolute_outside`
+- `src/tools/lsp.rs` :: `index_not_ready_rejects_unavailable_for_symbols_and_diagnostics`
+- `src/tools/lsp_feedback.rs` :: `failed_stays_silent`
+- `src/tools/lsp_feedback.rs` :: `uncovered_extension_stays_silent_even_when_warm`
+- `src/tools/lsp_feedback.rs` :: `warming_stays_silent`
+
+## tools · webfetch/websearch：SSRF 硬拒、非 http 拒绝（5）
+- `src/tools/webfetch.rs` :: `gate_hard_ssrf_uses_permission_denied_code`
+- `src/tools/webfetch.rs` :: `non_http_scheme_is_hard_invalid_input`
+- `src/tools/webfetch.rs` :: `private_ip_is_hard_permission_denied`
+- `src/tools/webfetch.rs` :: `ssrf_allows_benchmarking_fake_ip_range`
+- `src/tools/webfetch.rs` :: `ssrf_rejects_loopback_and_private_ips`
+
+## tools · session_search 工具：溢出文件可读、hit 行与虚拟 read 一致（WP-205）（4）
+- `src/tools/session_search.rs` :: `a_result_over_budget_names_the_file_that_holds_the_rest`
+- `src/tools/session_search.rs` :: `compacted_history_below_kept_from_seq_remains_searchable`
+- `src/tools/session_search.rs` :: `rejects_empty_query`
+- `src/tools/session_search.rs` :: `semantic_unavailable_is_explicit_and_leads_with_sync_pct`
+
+## tool · 资源锁：读写锁公平、取消排队、key 规范化（13）
+- `src/tool/resource_gate.rs` :: `a_waiting_writer_is_not_skipped_by_a_later_reader`
+- `src/tool/resource_gate.rs` :: `cancel_while_queued_does_not_enter`
+- `src/tool/resource_gate.rs` :: `distinct_write_keys_do_not_block_each_other`
+- `src/tool/resource_gate.rs` :: `file_resource_key_folds_dot_parent_and_separators`
+- `src/tool/resource_gate.rs` :: `five_tools_declare_shared_reads_and_exclusive_writes`
+- `src/tool/resource_gate.rs` :: `multi_key_acquires_in_sorted_order_do_not_deadlock`
+- `src/tool/resource_gate.rs` :: `readers_share_and_a_writer_excludes_them`
+- `src/tool/resource_gate.rs` :: `same_key_writes_finish_in_submission_order`
+- `src/tool/write_lock.rs` :: `test_acquire_release`
+- `src/tool/write_lock.rs` :: `test_conflict_returns_holder`
+- `src/tool/write_lock.rs` :: `test_no_partial_acquire`
+- `src/tool/write_lock.rs` :: `test_reentrant_same_session`
+- `src/tool/write_lock.rs` :: `test_workspace_coarse_lock`
+
+## tool · 执行器：审批/取消/超时、committed 结果优先、未知参数 invalid_input（8）
+- `src/tool/executor.rs` :: `blocking_tool_is_interrupted_by_pipeline_timeout`
+- `src/tool/executor.rs` :: `cancellable_tools_opt_in_and_the_default_is_off`
+- `src/tool/executor.rs` :: `committed_result_wins_over_tool_timeout`
+- `src/tool/executor.rs` :: `completed_tool_result_wins_over_late_cancellation`
+- `src/tool/executor.rs` :: `cross_session_lock_follows_effect_writes`
+- `src/tool/executor.rs` :: `partition_keeps_different_path_reads_concurrent`
+- `src/tool/executor.rs` :: `unknown_parameter_is_invalid_input`
+- `src/tool/executor.rs` :: `write_outside_workspace_reports_path_outside_workspace`
+
+## tool · 契约快照：SDK fixture 与 tool data/error baseline（4）
+- `src/tool/sdk_snapshot.rs` :: `phase0_run_code_sdk_snapshot`
+- `src/tool/sdk_snapshot.rs` :: `sdk_hash_is_stable_for_the_same_tool_set_under_different_cwd_and_permission`
+- `src/tools/baseline/mod.rs` :: `phase0_tool_fixtures_lock_data_and_error`
+- `src/tools/baseline/mod.rs` :: `phase0_uncovered_scenarios_are_recorded_as_gaps`
+
+## session · 持久化：crash 封口、seq 连续、final 不可改、blob 内容寻址、并发写（52）
+- `src/session/data/blob.rs` :: `put_is_content_addressed_and_idempotent`
+- `src/session/data/final_immutability_tests.rs` :: `a_finalised_row_is_never_rewritten`
+- `src/session/data/final_immutability_tests.rs` :: `a_restart_leaves_an_unanswered_call_that_later_history_follows`
+- `src/session/data/final_immutability_tests.rs` :: `a_restart_seals_an_in_flight_call_and_appends_its_interrupt_result`
+- `src/session/data/final_immutability_tests.rs` :: `a_restart_seals_rows_the_previous_run_left_in_flight`
+- `src/session/data/final_immutability_tests.rs` :: `a_restart_seals_unanswered_calls_left_at_the_tail`
+- `src/session/data/final_immutability_tests.rs` :: `reopen_after_revert_does_not_reuse_a_deleted_seq`
+- `src/session/data/final_immutability_tests.rs` :: `sealing_a_settled_row_is_refused`
+- `src/session/data/final_immutability_tests.rs` :: `sealing_leaves_no_row_in_flight`
+- `src/session/data/sqlite/schema.rs` :: `existing_session_db_backfills_next_seq_to_max_plus_one`
+- `src/session/data/sqlite/schema.rs` :: `fresh_sessions_table_has_next_seq_starting_at_zero`
+- `src/session/data/sqlite/schema.rs` :: `reminder_v7_rewrites_rows_without_moving_seq`
+- `src/session/data/sqlite/session.rs` :: `a_compaction_shadowed_identity_may_be_reused_as_a_new_row`
+- `src/session/data/sqlite/session.rs` :: `a_crashed_turn_is_sealed_incomplete_and_its_continuation_appends`
+- `src/session/data/sqlite/session.rs` :: `a_pending_tool_result_is_a_new_append_even_when_an_older_result_matches`
+- `src/session/data/sqlite/session.rs` :: `append_after_many_compact_shadows_uses_contiguous_next_seq`
+- `src/session/data/sqlite/session.rs` :: `apply_can_append_log_only_turn_start`
+- `src/session/data/sqlite/session.rs` :: `commit_delta_seals_existing_seq_instead_of_appending`
+- `src/session/data/sqlite/session.rs` :: `commit_of_unchanged_in_progress_payload_still_seals_the_row`
+- `src/session/data/sqlite/session.rs` :: `commit_orphan_cleanup_leaves_memory_untouched_when_tx_fails`
+- `src/session/data/sqlite/session.rs` :: `commit_same_tool_result_identity_with_new_content_appends_continuation`
+- `src/session/data/sqlite/session.rs` :: `compact_checkpoint_aborts_when_turn_view_shrunk`
+- `src/session/data/sqlite/session.rs` :: `compact_checkpoint_body_is_item_json`
+- `src/session/data/sqlite/session.rs` :: `compact_checkpoint_history_index_always_appends`
+- `src/session/data/sqlite/session.rs` :: `compact_checkpoint_points_at_original_kept_detail`
+- `src/session/data/sqlite/session.rs` :: `compact_keep_sets_spine_from_to_compact_seq_not_kept_detail`
+- `src/session/data/sqlite/session.rs` :: `compact_never_deletes_historical_detail_rows`
+- `src/session/data/sqlite/session.rs` :: `compact_replace_validates_endpoints_on_cached_nodes`
+- `src/session/data/sqlite/session.rs` :: `compact_shadowed_user_same_text_appends_new_seq`
+- `src/session/data/sqlite/session.rs` :: `compact_summary_agent_view_is_assistant_and_survives_reload`
+- `src/session/data/sqlite/session.rs` :: `default_no_compact_still_loads_all_detail`
+- `src/session/data/sqlite/session.rs` :: `empty_keep_compact_interval_is_half_open_to_compact_seq`
+- `src/session/data/sqlite/session.rs` :: `empty_session_compact_checkpoint_at_seq_zero_is_visible`
+- `src/session/data/sqlite/session.rs` :: `empty_session_compact_then_detail_keeps_summary_visible`
+- `src/session/data/sqlite/session.rs` :: `in_progress_item_is_retrievable_and_seal_keeps_seq`
+- `src/session/data/sqlite/session.rs` :: `incremental_surface_matches_fold_after_compact_and_append`
+- `src/session/data/sqlite/session.rs` :: `insert_detail_writes_append_surface_envelope`
+- `src/session/data/sqlite/session.rs` :: `load_events_range_is_half_open_seq_window`
+- `src/session/data/sqlite/session.rs` :: `load_events_roundtrip_append_origin_is_contiguous_seq`
+- `src/session/data/sqlite/session.rs` :: `nonempty_empty_keep_compact_is_summary_only_until_new_detail`
+- `src/session/data/sqlite/session.rs` :: `occupancy_uses_latest_bill_and_drops_it_after_compact`
+- `src/session/data/sqlite/session.rs` :: `pad_unanswered_calls_inserts_after_call_block`
+- `src/session/data/sqlite/session.rs` :: `reopen_after_truncate_keeps_high_water_and_appends_into_the_hole`
+- `src/session/data/sqlite/session.rs` :: `revert_preview_is_text_not_json_brace`
+- `src/session/data/sqlite/session.rs` :: `revert_retaining_earlier_compact_restores_pointers`
+- `src/session/data/sqlite/session.rs` :: `seal_in_progress_items_marks_incomplete_and_final`
+- `src/session/data/sqlite/session.rs` :: `seal_stream_item_is_refused_on_a_settled_row`
+- `src/session/data/sqlite/session.rs` :: `second_compact_replaces_seq_zero_checkpoint`
+- `src/session/data/sqlite/session.rs` :: `snip_stale_results_removes_orphan_outputs`
+- `src/session/data/sqlite/session.rs` :: `stream_lifecycle_keeps_one_row_at_one_seq`
+- `src/session/data/sqlite/session.rs` :: `truncate_then_append_does_not_reuse_deleted_seqs`
+- `src/session/data/sqlite/session.rs` :: `writer_working_set_matches_fold_after_append_and_keep_recent_compact`
+
+## session · manager turn 生命周期：取消/排队/compact lease（12）
+- `src/session/manager.rs` :: `a_reverted_log_drops_the_queue_it_made_meaningless`
+- `src/session/manager.rs` :: `cancel_during_starting_turn_cancels_on_start`
+- `src/session/manager.rs` :: `cancel_leaves_pending_queue_intact`
+- `src/session/manager.rs` :: `cancel_turn_sync_reports_idle_when_nothing_running`
+- `src/session/manager.rs` :: `claim_only_for_the_running_turn_and_restore_prepends`
+- `src/session/manager.rs` :: `compact_lease_atomically_blocks_turn_and_revert`
+- `src/session/manager.rs` :: `delete_operation_is_blocked_by_active_descendant_turns`
+- `src/session/manager.rs` :: `g3_turn_finished_reason_non_empty_on_error_termination`
+- `src/session/manager.rs` :: `g4_g5_compact_rejected_while_running_and_turn_restarts_after_error`
+- `src/session/manager.rs` :: `remove_parent_releases_running_child_turn_guard_and_cancels_child`
+- `src/session/manager.rs` :: `revert_cancels_descendant_turn_but_keeps_child_session`
+- `src/session/manager.rs` :: `turn_status_hook_fires_on_start_and_release`
+
+## context_pipeline · compaction 与预算：阈值、provider bill、keep_recent 不拆段、compact 失败保 DB 真值（19）
+- `src/context_pipeline/budget.rs` :: `compact_retires_the_in_memory_bill_and_the_stored_one`
+- `src/context_pipeline/budget.rs` :: `low_provider_bill_stays_under_threshold_when_local_estimate_is_over`
+- `src/context_pipeline/budget.rs` :: `manual_compact_gate_is_inclusive_at_thirty_percent`
+- `src/context_pipeline/compact.rs` :: `compact_persist_ok_reload_err_keeps_db_truth`
+- `src/context_pipeline/compact.rs` :: `compact_request_disables_thinking_and_uses_caller_cap`
+- `src/context_pipeline/compact.rs` :: `compact_request_observes_cancel_while_waiting`
+- `src/context_pipeline/compact.rs` :: `compact_request_returns_summary_on_provider_success`
+- `src/context_pipeline/compact.rs` :: `compact_request_times_out_on_silent_provider`
+- `src/context_pipeline/compact.rs` :: `compact_summary_drops_reasoning_items`
+- `src/context_pipeline/compact.rs` :: `compact_summary_empty_when_only_reasoning`
+- `src/context_pipeline/compact.rs` :: `low_provider_bill_does_not_compact_a_hot_local_estimate`
+- `src/context_pipeline/compact.rs` :: `provider_bill_over_threshold_compacts_then_the_bill_stays_retired`
+- `src/context_pipeline/keep_recent.rs` :: `assistant_segment_includes_function_calls_with_reasoning`
+- `src/context_pipeline/keep_recent.rs` :: `assistant_segment_not_split_between_reasoning_and_message`
+- `src/context_pipeline/keep_recent.rs` :: `compact_output_tokens_caps_above_product_limit`
+- `src/context_pipeline/keep_recent.rs` :: `compact_split_fits_under_history_budget`
+- `src/context_pipeline/keep_recent.rs` :: `serialize_strips_media_before_the_compact_prompt`
+- `src/context_pipeline/keep_recent.rs` :: `within_keep_or_empty_returns_none`
+- `src/context_pipeline/summary.rs` :: `compact_summary_is_assistant_message_not_user`
+
+## llm · provider 流式：sse 分帧、stream_contract、各 codec 文本/工具调用/终止/错误/取消封口（33）
+- `src/llm/codec/chat.rs` :: `encodes_system_and_user_messages_with_stream_usage`
+- `src/llm/codec/chat.rs` :: `stream_tool_call_opens_the_item_before_the_arguments_delta`
+- `src/llm/codec/chat.rs` :: `stream_usage_lands_on_the_terminal_response`
+- `src/llm/codec/chat.rs` :: `stream_whitespace_only_content_leaves_no_message_item`
+- `src/llm/codec/http.rs` :: `cancel_while_waiting_does_not_emit_failed`
+- `src/llm/codec/http.rs` :: `empty_stream_loss_on_a_spent_budget_emits_failed`
+- `src/llm/codec/http.rs` :: `send_cancellable_does_not_retry_explicit_client_failure`
+- `src/llm/codec/http.rs` :: `send_cancellable_retries_transient_status_before_stream_starts`
+- `src/llm/codec/http.rs` :: `send_cancellable_returns_canceled_when_token_fires`
+- `src/llm/codec/messages.rs` :: `cancel_after_a_delta_seals_incomplete`
+- `src/llm/codec/messages.rs` :: `empty_stream_retries_until_a_terminal_arrives`
+- `src/llm/codec/messages.rs` :: `stream_error_before_items_retries_and_after_items_preserves`
+- `src/llm/codec/messages_synth.rs` :: `message_start_records_dropped_thinking_without_changing_the_stream`
+- `src/llm/codec/messages_synth.rs` :: `parallel_tool_calls_keep_their_own_ids`
+- `src/llm/codec/responses.rs` :: `cancel_after_a_delta_seals_incomplete`
+- `src/llm/codec/responses.rs` :: `cancel_before_any_event_is_canceled`
+- `src/llm/codec/responses.rs` :: `keepalive_between_events_does_not_abort_the_stream`
+- `src/llm/codec/responses.rs` :: `non_event_stream_content_type_surfaces_the_proxy_body`
+- `src/llm/codec/responses.rs` :: `stream_events_are_forwarded_and_items_come_from_the_terminal`
+- `src/llm/codec/responses_harden.rs` :: `tool_call_object_arguments_become_a_json_string`
+- `src/llm/codec/responses_harden.rs` :: `tool_call_string_arguments_stay_verbatim`
+- `src/llm/codec/sse.rs` :: `crlf_lines_strip_cr`
+- `src/llm/codec/sse.rs` :: `leading_bom_is_stripped_once`
+- `src/llm/codec/sse.rs` :: `multibyte_char_split_across_chunks_is_preserved`
+- `src/llm/codec/stream_contract.rs` :: `failed_terminal_still_errors`
+- `src/llm/codec/stream_contract.rs` :: `incomplete_terminal_yields_items`
+- `src/llm/codec/stream_contract.rs` :: `output_item_done_replaces_the_streamed_shell`
+- `src/llm/codec/stream_contract.rs` :: `output_text_done_replaces_streamed_text`
+- `src/llm/codec/stream_contract.rs` :: `real_stream_shape_normalizes_to_one_item_per_id_in_order`
+- `src/llm/codec/stream_contract.rs` :: `resolve_empty_cancel_is_canceled`
+- `src/llm/codec/stream_contract.rs` :: `text_delta_seal_incomplete_without_terminal`
+- `src/llm/codec/wire_dump.rs` :: `messages_stream_folds_deltas_and_adds_cache_into_input`
+- `src/llm/codec/wire_dump.rs` :: `stream_fold_counts_both_dialects_and_the_terminal`
+
+## permission · 权限底线：preset/floor/subagent ask→deny、保留名 safe 绑定（24）
+- `src/permission/engine.rs` :: `a_tool_named_run_code_keeps_safe_deny`
+- `src/permission/engine.rs` :: `all_and_removed_rules_allow`
+- `src/permission/engine.rs` :: `reserved_names_keep_the_safe_binding`
+- `src/permission/engine.rs` :: `safe_uses_the_live_rules`
+- `src/permission/engine.rs` :: `subagent_turns_safe_ask_into_deny`
+- `src/permission/engine.rs` :: `workspace_tool_without_rules_drops_the_global_rules`
+- `src/permission/evaluate.rs` :: `first_matching_rule_wins`
+- `src/permission/floor.rs` :: `retired_direct_shell_name_does_not_hit_the_command_floor`
+- `src/permission/floor.rs` :: `run_hits_the_dangerous_command_floor`
+- `src/permission/grants.rs` :: `cancellable_wait_returns_none_when_cancelled`
+- `src/permission/grants.rs` :: `expired_grant_is_skipped`
+- `src/permission/grants.rs` :: `grant_has_upper_bound_per_agent`
+- `src/permission/grants.rs` :: `wp081_legacy_q0_free_text_always_true`
+- `src/permission/matchers.rs` :: `arg_equals_matches`
+- `src/permission/matchers.rs` :: `glob_star_matches_all`
+- `src/permission/messages.rs` :: `other_tools_keep_generic_message`
+- `src/permission/messages.rs` :: `run_floor_deny_explains_safety_rule`
+- `src/permission/messages.rs` :: `run_safe_default_deny_explains_readonly_policy`
+- `src/permission/messages.rs` :: `user_denial_mentions_no_retry`
+- `src/permission/presets.rs` :: `coding_safe_rules_stay_in_place`
+- `src/permission/presets.rs` :: `litecode_workspace_safe_asks_only_on_refresh`
+- `src/permission/presets.rs` :: `preset_surface_is_opt_in`
+- `src/permission/sensitive.rs` :: `detects_unix_and_windows_system_paths`
+- `src/permission/sinks.rs` :: `cancelling_sink_returns_aborted_not_deny`
+
+## 路径安全 · 越界/敏感/canonicalize/symlink/Windows 盘符 UNC（15）
+- `src/config/path.rs` :: `canon_abs_resolves_symlink`
+- `src/config/path.rs` :: `is_under_is_case_insensitive_on_windows`
+- `src/config/path.rs` :: `strip_uppercases_drive_letter`
+- `src/config/path.rs` :: `strip_verbatim_drive_and_unc`
+- `src/workspace/file_ops.rs` :: `atomic_write_writes_through_symlink`
+- `src/workspace/filter/path.rs` :: `cheap_rel_under_rejects_outside`
+- `src/workspace/filter/path.rs` :: `rel_path_ctx_rejects_outside`
+- `src/workspace/tool_path.rs` :: `all_allows_and_safe_rejects_external_absolute_path`
+- `src/workspace/tool_path.rs` :: `raw_path_outside_workspace_matches_resolved_boundary`
+- `src/workspace/tool_path.rs` :: `relative_traversal_is_rejected_in_all_modes`
+- `src/workspace/tool_path.rs` :: `symlinked_dir_escape_rejected_for_new_file`
+- `src/workspace/tool_path.rs` :: `symlinked_dir_escape_rejected_for_new_file_windows`
+- `src/workspace/tool_path.rs` :: `symlinked_subdir_escape_rejected_for_new_file`
+- `src/workspace/tool_path.rs` :: `unix_absolute_outside_workspace_safe_rejected`
+- `src/workspace/tool_path.rs` :: `unix_style_passwd_not_relative_traversal`
+
+## lsp · 冷启动/导航重试/ContentModified/stale publish/相对路径（16）
+- `src/lsp/conn.rs` :: `content_modified_resolve_is_cancelled_once`
+- `src/lsp/conn.rs` :: `content_modified_semantic_tokens_is_cancelled_once`
+- `src/lsp/conn.rs` :: `diagnostics_are_current_rejects_stale_cache`
+- `src/lsp/conn.rs` :: `unversioned_publish_after_change_is_silence_not_stale_errors`
+- `src/lsp/conn.rs` :: `wait_ignores_stale_publish_and_keeps_waiting_for_current`
+- `src/lsp/conn.rs` :: `wait_returns_current_clean_cache_without_blocking`
+- `src/lsp/conn.rs` :: `wait_returns_current_errors_without_blocking`
+- `src/lsp/deps.rs` :: `rustup_link_without_component_is_unavailable`
+- `src/lsp/format.rs` :: `location_inside_workspace_is_relative`
+- `src/lsp/format.rs` :: `workspace_symbol_paths_relative_inside_absolute_outside`
+- `src/lsp/install/github_tests.rs` :: `live_rust_analyzer_release_contains_exact_windows_and_linux_names`
+- `src/lsp/mod.rs` :: `publish_diagnostics_uri_matches_drive_case`
+- `src/lsp/server.rs` :: `index_not_ready_error_maps_to_unavailable_wording`
+- `src/lsp/server.rs` :: `publish_diagnostics_payload_extracts_array`
+- `src/lsp/sweep_gate.rs` :: `wait_blocks_until_sweep_returns`
+- `src/lsp/sweep_gate.rs` :: `wait_passes_when_never_armed`
+
+## terminal · agent_jobs：前台超时 promote 不杀、取消杀并跳过 mailbox、detach 续读（5）
+- `src/terminal/agent_jobs.rs` :: `detached_read_continues_after_nested_cancel`
+- `src/terminal/agent_jobs.rs` :: `foreground_cancel_kills_and_skips_mailbox`
+- `src/terminal/agent_jobs.rs` :: `foreground_timeout_promotes_without_killing`
+- `src/terminal/mod.rs` :: `kill_rejects_human_pty_id`
+- `src/terminal/mod.rs` :: `kill_unknown_or_guessed_id_is_rejected`
+
+## engines · session_search 引擎：溢出命名文件、排序、增量索引（10）
+- `src/engines/session_search/dense_parity.rs` :: `an_appended_dense_index_equals_a_clean_rebuild`
+- `src/engines/session_search/golden.rs` :: `golden_long_row_tiles_losslessly_within_budget`
+- `src/engines/session_search/mod.rs` :: `a_stale_index_is_caught_up_behind_the_query`
+- `src/engines/session_search/mod.rs` :: `agent_view_spills_the_remainder_into_a_named_file`
+- `src/engines/session_search/parity.rs` :: `a_rebuild_replaces_the_whole_index`
+- `src/engines/session_search/semantic_index.rs` :: `wp135_incremental_scans_then_embeds_from_kept_chunks`
+- `src/engines/session_search/semantic_index.rs` :: `wp135_index_error_is_failed_index_failed_and_clears_on_success`
+- `src/engines/session_search/semantic_index.rs` :: `wp144_bytes_per_batch_independent_of_index_size`
+- `src/engines/session_search/sparse.rs` :: `the_human_outranks_a_shorter_echo_that_repeats_the_phrase`
+- `src/engines/session_search/trimmer.rs` :: `a_result_under_the_budget_is_left_alone`
+
+## engines · code_search 索引：原子写/reconcile/cool drop/lexical 命中（8）
+- `src/engines/code_search/atomic.rs` :: `append_syncs_parent_dir_only_when_creating_the_file`
+- `src/engines/code_search/atomic.rs` :: `crash_between_renames_leaves_prefix_and_sweep_clears_tmp`
+- `src/engines/code_search/index_status.rs` :: `job_and_queue_writes_are_atomic`
+- `src/engines/code_search/mod.rs` :: `crash_between_compaction_renames_keeps_chunks_and_vectors_one_to_one`
+- `src/engines/code_search/mod.rs` :: `pending_blocks_cool_drop`
+- `src/engines/code_search/mod.rs` :: `tick_drains_queue_without_pending_hint`
+- `src/engines/code_search/reconcile.rs` :: `crash_between_index_commit_and_stamps_rereads_never_misses`
+- `src/engines/code_search/semantic_engine.rs` :: `borrow_lexical_wire_works_from_semantic_engine`
+
+## client_protocol · 连接握手鉴权、controller 权限往返、ws 隔离（13）
+- `src/client_protocol/connection.rs` :: `matching_reject_resolves_deny`
+- `src/client_protocol/connection.rs` :: `wp091_agent_run_on_child_rejected_readonly`
+- `src/client_protocol/connection.rs` :: `wp091_delete_running_child_rejected`
+- `src/client_protocol/connection.rs` :: `wp091_enqueue_on_running_child_rejected_readonly`
+- `src/client_protocol/connection.rs` :: `wp091_pending_enqueue_on_child_rejected_readonly`
+- `src/client_protocol/connection.rs` :: `wp091_retry_on_child_rejected_readonly`
+- `src/client_protocol/controller/mod.rs` :: `cancel_seal_restamps_changed_seqs_without_next_seq_growth`
+- `src/client_protocol/controller/mod.rs` :: `revert_then_append_delivers_new_seq_using_persisted_high_water`
+- `src/client_protocol/project.rs` :: `pending_permissions_matches_frozen_shape_fields`
+- `src/client_protocol/project.rs` :: `snapshot_always_serializes_pending_permissions_even_when_empty`
+- `src/client_protocol/project.rs` :: `turn_awaiting_permission_derived_from_list_len`
+- `src/client_protocol/protocol.rs` :: `buffer_load_result_is_a_seq_window`
+- `src/client_protocol/protocol.rs` :: `buffer_state_wire_is_seq_cursor_not_count_window`
+
+## 集成 tests/ · code surface / 权限管线 / session 数据并发与故障 / agent loop / 终端 / 子会话隔离 / MCP / LSP / 线协议（440）
+- `tests/agent_e2e_responses.rs` :: `agent_e2e_incomplete_seals_text_to_disk`
+- `tests/agent_e2e_responses.rs` :: `agent_e2e_responses_text_only`
+- `tests/agent_e2e_responses.rs` :: `agent_e2e_responses_tool_loop_hits_max_steps`
+- `tests/agent_e2e_responses.rs` :: `responses_fixtures_are_not_chat_dialect`
+- `tests/agent_loop.rs` :: `auto_compact_fail_stops_turn_without_model_call`
+- `tests/agent_loop.rs` :: `cancel_during_auto_compact_is_cancelled_without_model_call`
+- `tests/agent_loop.rs` :: `cancelled_after_model_persists_output`
+- `tests/agent_loop.rs` :: `cancelled_after_stream_skips_tool_execution`
+- `tests/agent_loop.rs` :: `cancelled_breaks_loop`
+- `tests/agent_loop.rs` :: `function_call_then_text_grows_transcript`
+- `tests/agent_loop.rs` :: `incomplete_function_call_is_not_executed`
+- `tests/agent_loop.rs` :: `max_steps_with_perpetual_tools`
+- `tests/agent_loop.rs` :: `persist_failure_rolls_back_working_set`
+- `tests/agent_loop.rs` :: `single_text_response_stops_loop`
+- `tests/agent_loop.rs` :: `tool_step_persists_function_call_before_output`
+- `tests/architecture_layers.rs` :: `runtime_and_protocol_do_not_open_child_sessions`
+- `tests/architecture_layers.rs` :: `session_layer_does_not_absorb_the_hub`
+- `tests/architecture_layers.rs` :: `tool_core_does_not_own_subagent_completion_delivery`
+- `tests/architecture_layers.rs` :: `tool_layer_does_not_finish_or_join_turns`
+- `tests/architecture_layers.rs` :: `tool_turn_helper_uses_human_reserve_then_spawn`
+- `tests/client_protocol_permission.rs` :: `permission_channel_round_trip`
+- `tests/client_protocol_permission.rs` :: `permission_request_serializes_request_id`
+- `tests/client_protocol_permission.rs` :: `server_hello_omits_llm_ecosystem`
+- `tests/client_protocol_permission.rs` :: `ws_bridge_approval_round_trip_with_free_text`
+- `tests/client_protocol_permission.rs` :: `ws_bridge_ask_user_questions_round_trip_with_answers_map`
+- `tests/client_protocol_permission.rs` :: `ws_permission_bridge_abort_on_cancel_is_not_deny`
+- `tests/client_protocol_permission.rs` :: `ws_permission_bridge_assigns_uuid_request_id`
+- `tests/client_protocol_project.rs` :: `bash_jobs_projects_to_bash_jobs_notification`
+- `tests/client_protocol_project.rs` :: `buffer_item_includes_child_session_id_when_set`
+- `tests/client_protocol_project.rs` :: `buffer_item_projects_to_buffer_item_notification`
+- `tests/client_protocol_project.rs` :: `buffer_item_replace_projects_surface_op_and_cut`
+- `tests/client_protocol_project.rs` :: `buffer_item_threads_current_state_not_hardcoded_final`
+- `tests/client_protocol_project.rs` :: `compact_lifecycle_auto_started_does_not_lock_session`
+- `tests/client_protocol_project.rs` :: `compact_lifecycle_started_projects_unified_wire`
+- `tests/client_protocol_project.rs` :: `control_plane_turn_end_is_on_buffer_item_not_views`
+- `tests/client_protocol_project.rs` :: `file_revert_updated_projects_session_snapshot`
+- `tests/client_protocol_project.rs` :: `llm_reconnect_projects_without_a_turn_id`
+- `tests/client_protocol_project.rs` :: `pending_messages_projects_the_full_authority_list`
+- `tests/client_protocol_project.rs` :: `permission_ask_projects_to_permission_request_with_session_id`
+- `tests/client_protocol_project.rs` :: `phase_changed_projects_to_turn_event`
+- `tests/client_protocol_project.rs` :: `plan_changed_projects_to_turn_event`
+- `tests/client_protocol_project.rs` :: `session_snapshot_includes_active_plan_path_when_set`
+- `tests/client_protocol_project.rs` :: `session_snapshot_includes_bash_when_set`
+- `tests/client_protocol_project.rs` :: `session_snapshot_includes_todos_when_set`
+- `tests/client_protocol_project.rs` :: `snapshot_notice_projects_to_turn_event`
+- `tests/client_protocol_project.rs` :: `stream_event_is_runtime_only_and_not_projected_to_wire`
+- `tests/client_protocol_project.rs` :: `structured_error_omitted_retryable_is_false`
+- `tests/client_protocol_project.rs` :: `subagent_bound_projects_to_agent_subagent_bound`
+- `tests/client_protocol_project.rs` :: `turn_completed_projects_to_turn_finished`
+- `tests/client_protocol_project.rs` :: `turn_finished_auto_compact_failure_is_compaction_failed`
+- `tests/client_protocol_project.rs` :: `turn_finished_marks_a_failed_reconnect_retryable`
+- `tests/client_protocol_project.rs` :: `turn_started_projects_to_turn_started_notification`
+- `tests/client_protocol_project.rs` :: `workspace_changed_projects_to_workspace_changed`
+- `tests/client_protocol_telemetry.rs` :: `log_line_roundtrip`
+- `tests/client_protocol_telemetry.rs` :: `log_subscribe_methods_are_jsonrpc`
+- `tests/client_protocol_telemetry.rs` :: `server_stats_roundtrip`
+- `tests/code_index_tick_death_list.rs` :: `code_index_tick_never_builds_or_cools`
+- `tests/code_index_tick_death_list.rs` :: `manual_refresh_does_not_merge_plans_for_execution`
+- `tests/code_search_ipc.rs` :: `notify_fs_changes_then_search_hits_new_file`
+- `tests/code_search_ipc.rs` :: `protocol_search_hit_roundtrip_serde`
+- `tests/code_search_ipc.rs` :: `refresh_honors_gitignore_switch_from_disk`
+- `tests/code_search_ipc.rs` :: `refresh_incremental_then_rebuild_when_meta_incompatible`
+- `tests/code_search_ipc.rs` :: `refresh_stays_incremental_when_all_files_dirty`
+- `tests/code_search_ipc.rs` :: `refresh_updates_when_dirty_is_mostly_deletes`
+- `tests/code_search_ipc.rs` :: `warmup_and_refresh_follow_disk_excludes`
+- `tests/code_search_ipc.rs` :: `warmup_existing_index_reconciles_without_digest`
+- `tests/code_search_ipc.rs` :: `warmup_session_index_reconciles_without_digest`
+- `tests/code_search_ipc.rs` :: `warmup_without_session_db_then_inject_session_lane`
+- `tests/code_search_ipc.rs` :: `worker_ping_initialize_warmup_search_shutdown`
+- `tests/code_surface.rs` :: `a_call_that_outlasts_the_grace_period_is_unsettled`
+- `tests/code_surface.rs` :: `a_second_binding_argument_is_invalid_input_and_does_not_write`
+- `tests/code_surface.rs` :: `approval_pending_does_not_lock_other_calls`
+- `tests/code_surface.rs` :: `approval_pending_does_not_preclaim_the_same_path`
+- `tests/code_surface.rs` :: `approval_wait_does_not_consume_the_program_budget`
+- `tests/code_surface.rs` :: `builtin_code_tools_pass_admission_and_edit_write_join_the_code_surface`
+- `tests/code_surface.rs` :: `cancel_before_approval_does_not_write_later`
+- `tests/code_surface.rs` :: `cancellation_seals_in_flight_nested_calls`
+- `tests/code_surface.rs` :: `cancelled_run_code_seals_an_in_flight_write_and_edit`
+- `tests/code_surface.rs` :: `code_admission_rejections_are_in_the_catalog_payload`
+- `tests/code_surface.rs` :: `code_call_keeps_the_tools_own_permission_and_does_not_execute_a_deny`
+- `tests/code_surface.rs` :: `code_call_of_invisible_tool_is_not_found_and_does_not_run`
+- `tests/code_surface.rs` :: `code_success_without_matching_data_is_an_internal_error`
+- `tests/code_surface.rs` :: `code_surface_is_projected_without_an_env_gate`
+- `tests/code_surface.rs` :: `code_transport_is_allowed_by_identity_not_by_name`
+- `tests/code_surface.rs` :: `conflicting_spellings_have_one_create_only_winner_and_a_read_waits_for_the_write`
+- `tests/code_surface.rs` :: `deep_run_code_return_survives_the_host_process`
+- `tests/code_surface.rs` :: `direct_and_nested_calls_share_plan_touch`
+- `tests/code_surface.rs` :: `direct_call_of_code_tool_is_routed_before_authorization`
+- `tests/code_surface.rs` :: `direct_code_tools_are_refused_and_succeed_through_run_code`
+- `tests/code_surface.rs` :: `direct_edit_and_write_are_refused_before_authorization`
+- `tests/code_surface.rs` :: `edit_and_write_advertise_path_on_the_code_surface`
+- `tests/code_surface.rs` :: `edit_and_write_succeed_through_run_code_with_path`
+- `tests/code_surface.rs` :: `fake_code_tool_joins_the_same_projection_as_builtins`
+- `tests/code_surface.rs` :: `grace_expiry_is_unsettled_and_the_later_denial_does_not_write`
+- `tests/code_surface.rs` :: `historical_file_path_is_rejected_and_does_not_write`
+- `tests/code_surface.rs` :: `missing_or_unrenderable_code_tool_leaves_both_surfaces`
+- `tests/code_surface.rs` :: `nested_and_direct_calls_note_the_same_paths`
+- `tests/code_surface.rs` :: `nested_write_approval_denial_does_not_apply_the_edit`
+- `tests/code_surface.rs` :: `nested_write_is_visible_to_the_same_turn_level_effects`
+- `tests/code_surface.rs` :: `nested_write_sensitive_path_is_denied_by_the_same_floor`
+- `tests/code_surface.rs` :: `outer_timeout_does_not_overwrite_a_completed_nested_result`
+- `tests/code_surface.rs` :: `pipeline_direct_call_uses_the_shared_file_note`
+- `tests/code_surface.rs` :: `two_nested_writes_leave_one_complete_file_and_sequential_writes_both_apply`
+- `tests/code_tool_runtime.rs` :: `code_tool_captures_logs_and_enforces_output_ledger`
+- `tests/code_tool_runtime.rs` :: `code_tool_has_no_process_filesystem_or_module_surface`
+- `tests/code_tool_runtime.rs` :: `code_tool_parallelizes_safe_calls_and_rejects_a_second_argument`
+- `tests/code_tool_runtime.rs` :: `code_tool_runs_real_bundle_with_data_only_results`
+- `tests/compact_failure_calibers.rs` :: `auto_compact_failure_restores_pipeline_working_set`
+- `tests/compact_failure_calibers.rs` :: `compact_failure_restores_transcript_snapshot`
+- `tests/compact_failure_calibers.rs` :: `manual_compact_failure_releases_lease_for_retry`
+- `tests/compact_failure_calibers.rs` :: `reconnect_then_auto_compact_failure_stops_turn`
+- `tests/compact_failure_calibers.rs` :: `reconnect_then_terminal_llm_error_stops_turn`
+- `tests/f2_lock_scope.rs` :: `concurrent_commit_partial_does_not_lose_updates`
+- `tests/f2_lock_scope.rs` :: `session_mutation_does_not_hold_records_lock`
+- `tests/g3_auth.rs` :: `api_rejects_query_token_and_accepts_bearer_only`
+- `tests/g3_auth.rs` :: `ws_handshake_allows_localhost_origins_including_ipv6_loopback`
+- `tests/g3_auth.rs` :: `ws_handshake_keeps_query_token_channel`
+- `tests/g3_auth.rs` :: `ws_handshake_rejects_cross_origin`
+- `tests/global_db_seed.rs` :: `config_global_db_migration_and_seed`
+- `tests/global_db_seed.rs` :: `legacy_role_rule_rows_are_repaired_on_load`
+- `tests/issue_032_changed_files_restore.rs` :: `t1_spine_failure_restores_changed_files_for_next_seam`
+- `tests/issue_032_changed_files_restore.rs` :: `t2_files_changed_append_failure_soft_restores`
+- `tests/issue_032_changed_files_restore.rs` :: `t3_successful_files_changed_does_not_restore`
+- `tests/issue_032_changed_files_restore.rs` :: `t4_empty_changed_skips_restore`
+- `tests/manual_compact_e2e.rs` :: `manual_compact_failure_e2e_releases_lease_and_retry_starts`
+- `tests/manual_compact_e2e.rs` :: `manual_compact_retry_after_failure_completes`
+- `tests/mcp_integration.rs` :: `block_on_hub_from_turn_runtime_does_not_panic`
+- `tests/mcp_integration.rs` :: `call_tool_round_trips`
+- `tests/mcp_integration.rs` :: `catalog_and_bind_exposes_echo_and_round_trips`
+- `tests/mcp_integration.rs` :: `execute_stays_pending_while_hang_blocks_on_hub`
+- `tests/mcp_integration.rs` :: `initialize_is_single_shot_per_connection`
+- `tests/mcp_integration.rs` :: `list_tools_returns_mock_catalog`
+- `tests/mcp_integration.rs` :: `pool_rebuilds_after_crash`
+- `tests/mcp_integration.rs` :: `pool_restart_replaces_live_client`
+- `tests/mcp_integration.rs` :: `pool_reuses_live_client_for_same_key`
+- `tests/mcp_integration.rs` :: `turn_runtime_start_list_and_tool_call`
+- `tests/optional_code_search.rs` :: `build_tool_list_includes_code_search_after_warmup`
+- `tests/optional_code_search.rs` :: `catalog_lists_tool_while_warming_and_after_warm`
+- `tests/optional_code_search.rs` :: `code_index_tick_syncs_without_refresh`
+- `tests/optional_code_search.rs` :: `code_search_lifecycle_rebuild_stale_consume_stop`
+- `tests/optional_code_search.rs` :: `embedder_id_recorded_in_meta_and_triggers_rebuild`
+- `tests/optional_code_search.rs` :: `engine_desired_off_stops_engine`
+- `tests/optional_code_search.rs` :: `engines_json_enables_code_search_for_workspace`
+- `tests/optional_code_search.rs` :: `hash_embedder_used_in_tests_without_model_download`
+- `tests/optional_code_search.rs` :: `per_workspace_indexes_are_isolated`
+- `tests/optional_code_search.rs` :: `pipeline_version_change_triggers_rebuild`
+- `tests/optional_code_search.rs` :: `small_repo_index_round_trip_and_query`
+- `tests/optional_code_search.rs` :: `stop_during_warmup_leaves_no_zombie_worker`
+- `tests/optional_code_search.rs` :: `unbind_does_not_stop_engine`
+- `tests/optional_code_search.rs` :: `warmup_creates_vectors_usearch`
+- `tests/optional_code_search.rs` :: `warmup_loads_compatible_index_without_full_rebuild`
+- `tests/optional_code_search.rs` :: `worker_crash_demotes_engine`
+- `tests/optional_code_search.rs` :: `workspace_init_creates_meta_without_vectors`
+- `tests/optional_lsp.rs` :: `agent_lsp_code_tools_line_character_scenarios`
+- `tests/optional_lsp.rs` :: `agent_lsp_tool_views_with_rust_analyzer`
+- `tests/optional_lsp.rs` :: `catalog_on_warmup_agent_definition_and_single_ls`
+- `tests/optional_lsp.rs` :: `completion_sees_did_change_version`
+- `tests/optional_lsp.rs` :: `disk_save_sync_updates_hub`
+- `tests/optional_lsp.rs` :: `edit_fix_must_not_echo_previous_lsp_error`
+- `tests/optional_lsp.rs` :: `edit_with_warm_lsp_appends_only_when_errors_arrive`
+- `tests/optional_lsp.rs` :: `editor_ws_rpc_matches_agent_tool_hub`
+- `tests/optional_lsp.rs` :: `engines_json_off_no_lsp_tool`
+- `tests/optional_lsp.rs` :: `get_diagnostics_rpc_does_not_deadlock`
+- `tests/optional_lsp.rs` :: `hub_drop_kills_spawned_server_process`
+- `tests/optional_lsp.rs` :: `idle_reclaim_during_diagnostics_does_not_panic`
+- `tests/optional_lsp.rs` :: `lsp_tool_document_symbol_works`
+- `tests/optional_lsp.rs` :: `monorepo_ts_file_resolves_web_project_root`
+- `tests/optional_lsp.rs` :: `overlapping_hovers_match_out_of_order_ids`
+- `tests/optional_lsp.rs` :: `request_timeout_does_not_kill_process`
+- `tests/optional_lsp.rs` :: `rust_analyzer_smoke`
+- `tests/optional_lsp.rs` :: `sync_then_feedback_on_current_thread_does_not_deadlock`
+- `tests/optional_lsp.rs` :: `write_ignores_slow_diagnostics_past_budget`
+- `tests/optional_lsp.rs` :: `write_ignores_warn_only_diagnostics`
+- `tests/optional_lsp.rs` :: `write_with_warm_lsp_appends_only_when_errors_arrive`
+- `tests/optional_lsp.rs` :: `write_with_warm_lsp_but_no_errors_stays_clean`
+- `tests/optional_lsp.rs` :: `write_without_lsp_warm_never_appends_diagnostics`
+- `tests/optional_p0.rs` :: `enable_code_search_engine_writes_engines_json_and_reload_restores_readiness`
+- `tests/optional_p0.rs` :: `network_core_engines_always_warmup`
+- `tests/optional_p0.rs` :: `seed_optional_builtins_are_engines_only`
+- `tests/optional_p0.rs` :: `settings_reload_reconciles_engine_manager`
+- `tests/optional_p0.rs` :: `stub_engine_warmup_reports_not_implemented`
+- `tests/optional_p0.rs` :: `webfetch_list_requires_bind_not_warmup`
+- `tests/pending_messages.rs` :: `queued_message_during_final_response_extends_the_turn`
+- `tests/pending_messages.rs` :: `queued_message_is_injected_at_the_tool_loop_seam`
+- `tests/pending_messages.rs` :: `the_seam_injection_announces_its_own_commit`
+- `tests/permission_pipeline.rs` :: `authorize_ask_aborted_is_not_deny`
+- `tests/permission_pipeline.rs` :: `authorize_ask_always_grants_same_rule_only`
+- `tests/permission_pipeline.rs` :: `authorize_ask_denied_by_sink`
+- `tests/permission_pipeline.rs` :: `authorize_floor_deny_ignores_always_grant`
+- `tests/permission_pipeline.rs` :: `authorize_invalid_json_arguments_denied`
+- `tests/permission_pipeline.rs` :: `authorize_schema_missing_content_denied`
+- `tests/permission_pipeline.rs` :: `authorize_subagent_ask_denied_without_sink`
+- `tests/permission_pipeline.rs` :: `floor_blocks_sensitive_commands_under_unrestricted_all_preset`
+- `tests/permission_pipeline.rs` :: `floor_sensitive_write_blocks_even_under_all_and_always_grant`
+- `tests/permission_pipeline.rs` :: `grant_is_rule_and_agent_scoped`
+- `tests/permission_pipeline.rs` :: `none_tools_always_allow`
+- `tests/permission_pipeline.rs` :: `safe_glob_outside_workspace_denies_via_path_arg`
+- `tests/permission_pipeline.rs` :: `safe_run_matrix_readonly_allow_others_deny_floor_hard_deny`
+- `tests/permission_pipeline.rs` :: `subagent_ask_becomes_deny`
+- `tests/run_code_model_view.rs` :: `a_second_argument_is_a_catchable_type_error`
+- `tests/run_code_model_view.rs` :: `caught_tool_error_is_counted_and_not_listed`
+- `tests/run_code_model_view.rs` :: `cjk_result_does_not_panic`
+- `tests/run_code_model_view.rs` :: `exception_shows_boom_and_the_adjusted_frame`
+- `tests/run_code_model_view.rs` :: `file_path_alias_is_rejected_without_reading`
+- `tests/run_code_model_view.rs` :: `large_result_is_budgeted_in_the_request`
+- `tests/run_code_model_view.rs` :: `many_reads_budget_the_ledger_and_mark_a_hidden_session_read`
+- `tests/run_code_model_view.rs` :: `missing_file_message_has_no_discovery_hint`
+- `tests/run_code_model_view.rs` :: `parent_glob_and_blank_grep_glob_are_invalid_input`
+- `tests/run_code_model_view.rs` :: `partial_edit_is_ok_fraction_and_a_diagnostic`
+- `tests/run_code_model_view.rs` :: `small_result_is_verbatim`
+- `tests/run_code_model_view.rs` :: `start_line_zero_is_invalid_input`
+- `tests/run_code_model_view.rs` :: `syntax_error_shows_the_source_line`
+- `tests/run_code_model_view.rs` :: `timeout_keeps_the_log_tail_and_names_the_budget`
+- `tests/run_code_model_view.rs` :: `uncaught_tool_error_names_the_call`
+- `tests/serve_bind_auth.rs` :: `bind_auth_matrix`
+- `tests/session_data_bootstrap.rs` :: `empty_workspace_opens_and_lists_nothing`
+- `tests/session_data_bootstrap.rs` :: `reopen_with_held_lease_is_readable`
+- `tests/session_data_concurrency.rs` :: `append_then_delete_late_commit_conflicts`
+- `tests/session_data_concurrency.rs` :: `same_revision_double_append_one_conflict`
+- `tests/session_data_concurrency.rs` :: `sixteen_sessions_hundred_appends_with_readers`
+- `tests/session_data_consistency.rs` :: `change_log_tracks_each_successful_mutation`
+- `tests/session_data_consistency.rs` :: `hot_transcript_matches_committed_log`
+- `tests/session_data_crud.rs` :: `commit_turn_delta_receipt_carries_user_preview`
+- `tests/session_data_crud.rs` :: `conflict_on_stale_revision`
+- `tests/session_data_crud.rs` :: `create_append_meta_delete`
+- `tests/session_data_crud.rs` :: `create_operation_id_is_idempotent`
+- `tests/session_data_crud.rs` :: `idempotent_operation_id_returns_same_receipt`
+- `tests/session_data_crud.rs` :: `parent_delete_cascades_child`
+- `tests/session_data_fault.rs` :: `fault_after_commit_keeps_rows_and_operation_is_idempotent`
+- `tests/session_data_fault.rs` :: `fault_before_begin_leaves_db_unchanged`
+- `tests/session_data_fault.rs` :: `fault_before_commit_rolls_back`
+- `tests/session_data_lifecycle.rs` :: `queue_capacity_keeps_overflow_pending_until_cancelled`
+- `tests/session_data_lifecycle.rs` :: `shutdown_drains_accepted_and_rejects_new`
+- `tests/session_data_sql_death_list.rs` :: `sessions_db_sql_and_rusqlite_stay_in_sqlite_module`
+- `tests/session_delete.rs` :: `delete_listed_idle_session_after_cold_start_without_subscribe`
+- `tests/session_delete.rs` :: `list_sessions_includes_child_parent_ids_and_assistant_preview`
+- `tests/session_list_empty_filter.rs` :: `busy_empty_session_is_listed_until_cold_start`
+- `tests/session_list_empty_filter.rs` :: `child_session_is_listed_with_parent_id`
+- `tests/session_list_empty_filter.rs` :: `cold_start_user_message_stays_listed`
+- `tests/session_list_empty_filter.rs` :: `empty_blob_refs_then_reopen_gc_still_listed`
+- `tests/session_list_empty_filter.rs` :: `empty_new_session_stays_hidden`
+- `tests/session_list_empty_filter.rs` :: `in_progress_assistant_with_user_stays_listed`
+- `tests/session_list_empty_filter.rs` :: `last_message_with_only_control_plane_rows_still_listed`
+- `tests/session_list_empty_filter.rs` :: `malformed_transcript_rows_still_listed_after_reopen`
+- `tests/session_list_empty_filter.rs` :: `missing_blob_files_still_listed_when_user_row_is_inline`
+- `tests/session_list_empty_filter.rs` :: `older_session_stays_listed_when_newer_is_poked`
+- `tests/session_list_empty_filter.rs` :: `spilled_assistant_survives_clean_reopen`
+- `tests/session_transcript.rs` :: `session_transcript_roundtrip_and_revert_on_workspace_db`
+- `tests/session_transcript.rs` :: `transcript_items_table_exists_after_session_data_bootstrap`
+- `tests/session_turn_entry.rs` :: `bash_idle_uses_human_turn_order_and_releases_on_failure`
+- `tests/session_turn_entry.rs` :: `fanout_does_not_specialize_child_exits`
+- `tests/session_turn_entry.rs` :: `session_layer_has_no_subagent_orchestrator`
+- `tests/session_turn_entry.rs` :: `session_module_does_not_declare_jobs_or_turn_entry`
+- `tests/settings_api.rs` :: `apply_refreshes_provider_api_key_after_settings_write`
+- `tests/settings_api.rs` :: `config_set_auth_token_rejected`
+- `tests/settings_api.rs` :: `config_set_rejects_during_turn`
+- `tests/settings_api.rs` :: `disabled_binding_changes_tools_count_after_reload`
+- `tests/settings_api.rs` :: `provider_key_write_pushes_models_changed_with_the_new_models`
+- `tests/settings_api.rs` :: `runtime_clone_reloads_stale_provider_after_settings_write`
+- `tests/settings_api.rs` :: `set_session_model_persists_selectable_catalog_ref`
+- `tests/settings_api.rs` :: `settings_agent_write_blocked_during_turn`
+- `tests/settings_api.rs` :: `settings_apply_preset_rewrites_policy_and_path_mode`
+- `tests/settings_api.rs` :: `settings_auth_endpoint_removed`
+- `tests/settings_api.rs` :: `settings_available_tools_includes_core`
+- `tests/settings_api.rs` :: `settings_custom_tool_crud_enable_bind_execute_and_delete`
+- `tests/settings_api.rs` :: `settings_custom_tool_rejects_builtin_id`
+- `tests/settings_api.rs` :: `settings_custom_tool_validation_rejects_bad_inputs`
+- `tests/settings_api.rs` :: `settings_custom_tool_write_blocked_during_turn`
+- `tests/settings_api.rs` :: `settings_delete_protected_agent_returns_400`
+- `tests/settings_api.rs` :: `settings_engine_enable_reflects_readiness_in_catalog_get`
+- `tests/settings_api.rs` :: `settings_engines_cheap_payload_includes_lsp_servers`
+- `tests/settings_api.rs` :: `settings_engines_detail_exposes_engine_native_state`
+- `tests/settings_api.rs` :: `settings_excludes_seed_and_put`
+- `tests/settings_api.rs` :: `settings_log_get_put`
+- `tests/settings_api.rs` :: `settings_lsp_stop_preserves_servers_and_clears_desired`
+- `tests/settings_api.rs` :: `settings_mcp_server_crud_catalog_and_stdio_probe`
+- `tests/settings_api.rs` :: `settings_mcp_server_rejects_builtin_id`
+- `tests/settings_api.rs` :: `settings_provider_key_delete_removes_models_from_active_models`
+- `tests/settings_api.rs` :: `settings_provider_key_write_bumps_revision_and_masks_secret`
+- `tests/settings_api.rs` :: `settings_provider_key_write_is_effective_next_turn`
+- `tests/settings_api.rs` :: `settings_put_agent_empty_model_ref_ok`
+- `tests/settings_api.rs` :: `settings_put_agent_expands_last_applied_preset_per_tool`
+- `tests/settings_api.rs` :: `settings_put_agent_keeps_dormant_mcp_bind`
+- `tests/settings_api.rs` :: `settings_put_agent_rejects_legacy_preset_field`
+- `tests/settings_api.rs` :: `settings_put_agent_unknown_tool_is_persisted`
+- `tests/settings_api.rs` :: `settings_put_empty_catalog_gone`
+- `tests/settings_api.rs` :: `settings_put_empty_provider_key_returns_400`
+- `tests/settings_api.rs` :: `settings_put_invalid_log_level_returns_400`
+- `tests/settings_api.rs` :: `settings_put_new_agent_creates_profile`
+- `tests/settings_api.rs` :: `settings_put_orphan_model_ref_returns_400`
+- `tests/settings_api.rs` :: `settings_put_subagent_strips_plan_and_todo_bindings`
+- `tests/settings_api.rs` :: `settings_put_subagent_strips_subagent_launch_binding`
+- `tests/settings_api.rs` :: `settings_put_unknown_provider_key_returns_404`
+- `tests/settings_api.rs` :: `settings_retrieval_engine_init_and_stop_use_engine_api`
+- `tests/settings_api.rs` :: `settings_retrieval_refresh_endpoint_accepts_when_cold`
+- `tests/settings_api.rs` :: `settings_summary_masks_api_key`
+- `tests/settings_api.rs` :: `settings_write_blocked_during_turn`
+- `tests/settings_api.rs` :: `write_log_level_reloadable_from_db`
+- `tests/settings_api.rs` :: `write_log_rejects_invalid_level_via_api`
+- `tests/stage_a_ctx_consistency.rs` :: `agent_persist_after_revert_does_not_replay_or_pad`
+- `tests/stage_a_ctx_consistency.rs` :: `commit_after_revert_discards_uncommitted_delta`
+- `tests/stage_a_ctx_consistency.rs` :: `commit_snips_memory_orphan_without_deleting_log_seq`
+- `tests/stage_a_ctx_consistency.rs` :: `commit_user_message_returns_session_preview`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_decision_tracks_real_provider_usage`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_keeps_pending_tail_after_post_compact_reminder`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_rebuild_does_not_repeat_kept_call_ids`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_reminder_rides_on_checkpoint_not_extra_user_detail`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_then_agent_run_persists_assistant`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_then_new_step_persists_and_resumes_full_content`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_then_send_message_matches_run_with_turn`
+- `tests/stage_a_ctx_consistency.rs` :: `compact_then_send_message_with_shadowed_tool_rows`
+- `tests/stage_a_ctx_consistency.rs` :: `idle_revert_truncates_log_for_next_begin_turn`
+- `tests/stage_a_ctx_consistency.rs` :: `keep_recent_skip_still_enforces_hard_limit_when_over_budget`
+- `tests/stage_a_ctx_consistency.rs` :: `keep_recent_skip_under_hard_limit_returns_ok_without_compact`
+- `tests/stage_a_ctx_consistency.rs` :: `llm_completed_emitted_and_last_request_usage_in_turn_stats`
+- `tests/stage_a_ctx_consistency.rs` :: `manual_compact_bypasses_auto_threshold_and_preserves_full_history`
+- `tests/stage_a_ctx_consistency.rs` :: `orphan_function_call_output_purged_from_db_in_commit_transaction`
+- `tests/stage_a_ctx_consistency.rs` :: `pipeline_compact_reloads_working_set_from_fold`
+- `tests/stage_a_ctx_consistency.rs` :: `real_usage_feeds_compaction_decision_input`
+- `tests/stage_a_ctx_consistency.rs` :: `resumed_session_cursor_initialized_from_max_seq`
+- `tests/stage_a_ctx_consistency.rs` :: `revert_contract_three_states`
+- `tests/stage_a_ctx_consistency.rs` :: `turn_completed_fires_after_db_commit`
+- `tests/stage_a_ctx_consistency.rs` :: `unanswered_calls_pad_llm_view_only_not_disk`
+- `tests/startup_order_death_list.rs` :: `attach_does_not_touch_legacy_text_index_inline`
+- `tests/startup_order_death_list.rs` :: `every_spawn_waits_for_the_sweep_gate`
+- `tests/startup_order_death_list.rs` :: `first_need_paths_probe_before_spawning`
+- `tests/startup_order_death_list.rs` :: `lsp_warmup_runs_no_subprocess`
+- `tests/startup_order_death_list.rs` :: `no_language_specific_branch_added`
+- `tests/startup_order_death_list.rs` :: `serve_run_arms_sweep_before_ready_path`
+- `tests/startup_order_death_list.rs` :: `serve_run_does_not_sweep_inline`
+- `tests/startup_order_death_list.rs` :: `serve_run_does_not_warm_optional_engines`
+- `tests/startup_order_death_list.rs` :: `sweep_gate_has_no_timeout`
+- `tests/subagent_child_turn_contract.rs` :: `child_binding_window_follows_its_own_context_mode`
+- `tests/subagent_child_turn_contract.rs` :: `child_identity_is_not_switchable_by_set_primary`
+- `tests/subagent_child_turn_contract.rs` :: `child_turn_reads_config_from_its_own_session_row`
+- `tests/subagent_child_turn_contract.rs` :: `completed_child_result_is_read_from_the_durable_turn`
+- `tests/subagent_child_turn_contract.rs` :: `completion_reminder_resolves_the_reference_at_delivery_time`
+- `tests/subagent_child_turn_contract.rs` :: `stop_after_completion_returns_the_last_durable_result`
+- `tests/subagent_child_turn_contract.rs` :: `turn_options_carry_identity_only`
+- `tests/subagent_child_turn_contract.rs` :: `wait_freezes_a_child_turn_and_returns_its_session_result`
+- `tests/subagent_send.rs` :: `concurrent_sends_only_one_wins`
+- `tests/subagent_send.rs` :: `send_rejects_unknown_and_foreign_ids`
+- `tests/subagent_send.rs` :: `send_schema_requires_id_and_message`
+- `tests/subagent_send.rs` :: `send_then_stop_cancels_the_new_turn`
+- `tests/subagent_send.rs` :: `send_to_busy_child_queues_without_starting_a_turn`
+- `tests/subagent_send.rs` :: `send_to_idle_child_runs_another_turn`
+- `tests/subagent_send.rs` :: `wait_returns_cancelled_when_user_stopped`
+- `tests/subagent_send.rs` :: `wait_returns_latest_only`
+- `tests/subagent_session_isolation.rs` :: `child_exit_triggers_parent_auto_turn_reminder`
+- `tests/subagent_session_isolation.rs` :: `child_lifecycle_is_broadcast_to_workspace`
+- `tests/subagent_session_isolation.rs` :: `failed_binding_aborts_orphan_child_session`
+- `tests/subagent_session_isolation.rs` :: `gc_skips_empty_child_while_parent_exists`
+- `tests/subagent_session_isolation.rs` :: `launch_ignores_model_and_max_steps_input`
+- `tests/subagent_session_isolation.rs` :: `launch_schema_exposes_only_team_assignment_fields`
+- `tests/subagent_session_isolation.rs` :: `missing_call_id_scope_errors_without_creating_child`
+- `tests/subagent_session_isolation.rs` :: `parent_event_channel_does_not_receive_child_turn_events`
+- `tests/subagent_session_isolation.rs` :: `remove_parent_after_child_turn_cascades_physically`
+- `tests/subagent_session_isolation.rs` :: `remove_parent_cascades_child`
+- `tests/subagent_session_isolation.rs` :: `subagent_bound_arrives_on_parent_before_tool_returns`
+- `tests/subagent_session_isolation.rs` :: `subagent_launch_creates_durable_child_with_parent_link`
+- `tests/subagent_session_isolation.rs` :: `subagent_list_reports_raw_session_statuses`
+- `tests/subagent_tool_pipeline.rs` :: `background_launch_returns_while_child_keeps_running`
+- `tests/subagent_tool_pipeline.rs` :: `child_exit_fires_hub_exit_handler`
+- `tests/subagent_tool_pipeline.rs` :: `execute_returns_while_child_llm_runs_on_other_thread`
+- `tests/subagent_tool_pipeline.rs` :: `launch_declares_pipeline_parallel_and_cancellable`
+- `tests/subagent_tool_pipeline.rs` :: `parent_cancel_does_not_stop_background_child_and_stop_tool_can`
+- `tests/subagent_tool_pipeline.rs` :: `pipeline_runs_two_launches_concurrently`
+- `tests/subagent_tool_pipeline.rs` :: `worker_panic_finishes_job_and_releases_session`
+- `tests/subscribe_bash_hydration.rs` :: `subscribe_hydrates_bash_jobs_and_clears_after_kill`
+- `tests/terminal_bypass_death_list.rs` :: `death_list_no_node_pty_in_desktop_or_web_package_json`
+- `tests/terminal_bypass_death_list.rs` :: `death_list_no_node_pty_require_in_desktop_web_src`
+- `tests/terminal_bypass_death_list.rs` :: `death_list_src_pty_symbols_only_in_terminal_module`
+- `tests/terminal_pty_contract.rs` :: `interactive_echo_round_trip`
+- `tests/terminal_ws_isolation.rs` :: `websocket_terminals_are_owner_isolated_and_disconnect_cleaned`
+- `tests/turn_prefix_stability.rs` :: `code_mode_tool_list_prefix_stays_stable_across_the_turn`
+- `tests/turn_prefix_stability.rs` :: `hanging_call_pad_is_stable_across_prepare_steps`
+- `tests/turn_prefix_stability.rs` :: `job_exit_mid_turn_does_not_rewrite_already_sent_prefix`
+- `tests/turn_prefix_stability.rs` :: `next_turn_reload_must_keep_sent_row_when_provider_reuses_id`
+- `tests/turn_prefix_stability.rs` :: `persist_item_reused_function_call_id_must_not_rewrite_final_row`
+- `tests/turn_prefix_stability.rs` :: `persist_item_reused_message_id_must_not_rewrite_final_row`
+- `tests/turn_prefix_stability.rs` :: `persist_roundtrip_preserves_item_json`
+- `tests/turn_prefix_stability.rs` :: `prepare_after_stream_persist_seal_keeps_prior_prefix`
+- `tests/turn_prefix_stability.rs` :: `restore_row_lands_after_compacted_and_prefix_stays`
+- `tests/turn_prefix_stability.rs` :: `state_reminders_only_append_across_steps`
+- `tests/turn_prefix_stability.rs` :: `tool_loop_llm_request_prefix_json_is_stable`
+- `tests/wire_seq_identity.rs` :: `compact_succeeded_checkpoint_item_precedes_lifecycle_and_matches_max_seq`
+- `tests/wire_seq_identity.rs` :: `compact_then_revert_after_checkpoint_keeps_compacted_seq`
+- `tests/wire_seq_identity.rs` :: `compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers`
+- `tests/wire_seq_identity.rs` :: `empty_session_cursor_is_minus_one_zero`
+- `tests/wire_seq_identity.rs` :: `revert_k1_emits_reverted_and_operation_snapshot_matching_max_seq`
+- `tests/wire_seq_identity.rs` :: `revert_then_append_does_not_reuse_deleted_seq`
+- `tests/wire_seq_identity.rs` :: `runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq`
+- `tests/wire_seq_identity.rs` :: `second_compact_appends_new_seq_and_keeps_both_checkpoints`
+- `tests/wire_seq_identity.rs` :: `step_committed_emits_only_new_seq_and_snapshot_matches_max`
+- `tests/wire_seq_identity.rs` :: `three_detail_rows_cursor_is_two_three`
+- `tests/wire_seq_identity.rs` :: `turn_finished_snapshot_next_seq_matches_db_max_plus_one`
+- `tests/working_set_identity.rs` :: `append_rows_reader_working_set_matches_full_fold`
+- `tests/working_set_identity.rs` :: `commit_applied_window_matches_fold`
+- `tests/working_set_identity.rs` :: `keep_recent_compact_reader_matches_fold_checkpoint_then_kept`
+- `tests/working_set_identity.rs` :: `pipeline_begin_turn_pending_tail_has_no_log_seq`
+- `tests/working_set_identity.rs` :: `revert_then_commit_discard_returns_fold_window_and_does_not_append`
+- `tests/workspace_api.rs` :: `workspace_citations_resolve_without_file_bodies`
+- `tests/workspace_api.rs` :: `workspace_file_crud`
+- `tests/workspace_api.rs` :: `workspace_git_show_head_index_and_rejects`
+- `tests/workspace_api.rs` :: `workspace_git_stage_commit_and_rejects_escape`
+- `tests/workspace_api.rs` :: `workspace_git_status_empty_when_not_a_repo`
+- `tests/workspace_api.rs` :: `workspace_glob_finds_nested_filename`
+- `tests/workspace_api.rs` :: `workspace_mkdir_rename_copy_blob`
+- `tests/workspace_api.rs` :: `workspace_preview_reads_and_open_guards`
+- `tests/workspace_api.rs` :: `workspace_rejects_path_escape`
+- `tests/workspace_api.rs` :: `workspace_tree_lists_files`
+- `tests/workspace_api.rs` :: `workspace_tree_reveal_returns_by_dir_ancestors`
+- `tests/workspace_path_consumer.rs` :: `active_paths_fallback_is_lap`
+- `tests/workspace_path_consumer.rs` :: `project_root_fallback_accepts_verbatim_under_lap_ws`
+- `tests/workspace_path_consumer.rs` :: `rel_path_under_accepts_raw_canonicalize_form`
+- `tests/workspace_path_consumer.rs` :: `scannable_files_lists_under_lap_root`
+- `tests/workspace_path_consumer.rs` :: `windows_verbatim_walk_path_relativizes`
+- `tests/workspace_path_death_list.rs` :: `death_list_no_bare_canonicalize_outside_path_module`
+- `tests/workspace_path_death_list.rs` :: `death_list_src_canonicalize_whitelist_is_only_path_rs`
+- `tests/workspace_path_death_list.rs` :: `death_list_web_no_silent_verbatim_strip`
+- `tests/workspace_path_lap.rs` :: `boot_sandbox_lsp_os_probe_roots_are_identical_lap`
+- `tests/workspace_path_lap.rs` :: `rel_path_ctx_matches_rel_path_under_and_rejects_outside`
+- `tests/workspace_path_lap.rs` :: `rel_path_under_uses_lap_compare`
+- `tests/workspace_path_lap.rs` :: `snapshot_id_stable_across_verbatim_and_lap_input`
+- `tests/workspace_path_lap.rs` :: `strip_verbatim_unc_keeps_unc_prefix`
+- `tests/workspace_path_lap.rs` :: `windows_raw_canonicalize_is_verbatim_then_strips_to_lap`
+- `tests/workspace_process_contract.rs` :: `agent_runtime_cwd_uses_resolved_workspace_not_process_cwd`
+- `tests/workspace_process_contract.rs` :: `load_workspace_state_sets_runtime_paths_without_chdir`
+- `tests/workspace_process_contract.rs` :: `workspace_lock_different_roots_can_coexist`
+- `tests/workspace_process_contract.rs` :: `workspace_lock_second_acquire_same_root_fails`
+- `tests/workspace_process_contract.rs` :: `workspace_open_http_endpoint_is_gone`
+- `tests/wp028_probe_s1_xdev_move.rs` :: `probe_s1_cross_device_overwrite_succeeds`
+- `tests/wp028_probe_s2_create_race.rs` :: `probe_s2_create_file_race`
+- `tests/wp028_probe_s2_create_race.rs` :: `probe_s2_write_file_bytes_no_overwrite_race`
+- `tests/wp098_follow_up_queue.rs` :: `runtime_main_session_pending_still_injects_at_seam`
+- `tests/wp098_follow_up_queue.rs` :: `runtime_queue_not_drained_at_step_seam`
+- `tests/wp098_follow_up_queue.rs` :: `runtime_steer_still_injects_at_step_seam`
+- `tests/wp098_follow_up_queue.rs` :: `runtime_stop_and_send_cancels_then_runs_new_turn_no_notice`
+- `tests/wp098_follow_up_queue.rs` :: `stop_and_send_cancels_then_runs_follow_up_without_waking_parent`
+
+## 回归测试（测试体/注释/名称含 WP-/ISSUE-/commit 引用，205）
+- `src/client_protocol/connection.rs` :: `g4_compact_while_running_is_agent_already_running_retryable` — WP-024
+- `src/client_protocol/connection.rs` :: `unknown_grant_is_buffered_as_stray_then_consumed` — WP-091, wp091
+- `src/client_protocol/connection.rs` :: `wp091_agent_cancel_child_writes_parent_notice_no_wake` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_agent_cancel_reports_false_when_idle` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_agent_run_on_child_rejected_readonly` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_buffer_load_returns_subagent_binding_states` — WP-099, wp091, wp099
+- `src/client_protocol/connection.rs` :: `wp091_delete_child_tombstone_and_notice` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_delete_parent_with_running_child_returns_descendant_running` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_delete_running_child_rejected` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_enqueue_on_running_child_rejected_readonly` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_list_sessions_includes_empty_child` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_pending_enqueue_on_child_rejected_readonly` — wp091
+- `src/client_protocol/connection.rs` :: `wp091_retry_on_child_rejected_readonly` — wp091
+- `src/client_protocol/connection.rs` :: `wp099_child_still_readonly_for_user` — wp091, wp099
+- `src/client_protocol/connection.rs` :: `wp099_session_info_last_turn_cancelled_by_user_parent_null` — wp091, wp099
+- `src/client_protocol/connection.rs` :: `wp099_user_cancel_child_notice_by_user_and_no_wake` — wp091, wp099
+- `src/client_protocol/project.rs` :: `auto_compact_failure_maps_to_compaction_failed_not_retryable` — ISSUE-036, wp025, wp186
+- `src/client_protocol/status_track.rs` :: `installed_hook_is_registered` — wp099
+- `src/client_protocol/status_track.rs` :: `last_turn_cancelled_by_survives_reload` — wp099
+- `src/client_protocol/status_track.rs` :: `turn_end_cancelled_by_user_parent_null` — wp099
+- `src/client_protocol/status_track.rs` :: `turn_finished_event_carries_cancelled_by` — wp099
+- `src/client_protocol/ws_wp166_tests.rs` :: `gc_stale_empty_sessions_deferred_until_settled` — WP-166, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `no_projection_frames_stranded_after_fastlane_list` — wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `serve_state_does_not_run_snapshot_maintenance_inline` — WP-166, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `session_list_error_emits_operation_error_and_rpc_error` — WP-166, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `session_list_fastlane_matches_controller_list` — WP-091, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `session_list_not_blocked_by_inflight_subscribe` — WP-091, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `startup_settled_fires_on_first_new_reply_only` — WP-166, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `startup_settled_fires_without_list_or_new` — WP-166, wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `subscribe_replay_frames_unchanged_with_concurrent_list` — wp166
+- `src/client_protocol/ws_wp166_tests.rs` :: `subscribe_unsubscribe_order_preserved_with_list` — wp166
+- `src/config/global_db/seed.rs` :: `migration_fills_missing_primary_code_search_only` — wp149
+- `src/config/global_db/seed.rs` :: `migration_keeps_existing_false_row` — wp149
+- `src/config/global_db/seed.rs` :: `migration_runs_once_on_repeated_startup` — wp149
+- `src/config/global_db/seed.rs` :: `seed_plants_default_orchestrator_explore_and_general` — WP-197
+- `src/config/settings_writer.rs` :: `commit_mixed_restores_file_when_db_step_fails` — ISSUE-017, WP-008
+- `src/config/settings_writer.rs` :: `commit_mixed_restores_file_when_validate_fails` — WP-149
+- `src/config/settings_writer.rs` :: `workspace_custom_without_rules_hides_global_rules` — ISSUE-017, WP-008
+- `src/config/settings_writer.rs` :: `write_agent_existing_agent_switched_to_primary_not_auto_bound` — wp149
+- `src/config/settings_writer.rs` :: `write_agent_new_primary_explicit_false_stays_false` — wp149
+- `src/config/settings_writer.rs` :: `write_agent_new_primary_missing_code_search_binds_true` — wp149
+- `src/config/workspace.rs` :: `load_workspace_state_deferred_does_not_warm` — WP-166
+- `src/config/workspace.rs` :: `load_workspace_state_uses_external_snapshots_dir` — WP-166
+- `src/context_pipeline/compact.rs` :: `compact_persist_ok_reload_err_keeps_db_truth` — ISSUE-035, WP-039, wp039
+- `src/context_pipeline/compact.rs` :: `compact_summary_empty_when_only_reasoning` — ISSUE-035, WP-039
+- `src/engines/code_search/index_status.rs` :: `corpus_job_scanning_then_embedding` — WP-143
+- `src/engines/code_search/index_status.rs` :: `decide_index_work_deletions_stay_on_update` — WP-057
+- `src/engines/code_search/index_status.rs` :: `decide_index_work_dirty_always_updates` — WP-057
+- `src/engines/code_search/index_status.rs` :: `queue_embed_dirty_keeps_deletes_on_update` — WP-057
+- `src/engines/code_search/index_status.rs` :: `removed_legacy_helpers_stay_gone` — WP-131
+- `src/engines/code_search/mod.rs` :: `done_monotonic_from_enqueue_to_end` — WP-131
+- `src/engines/code_search/mod.rs` :: `incremental_refresh_total_exact_with_delete_and_reindex` — WP-131
+- `src/engines/code_search/mod.rs` :: `maybe_cool_respects_zero_idle` — WP-143, wp143
+- `src/engines/code_search/mod.rs` :: `repair_invalidates_only_affected_stamps` — WP-143, WP143, wp143
+- `src/engines/code_search/mod.rs` :: `save_count_equals_batches_and_bytes_scale_with_batch` — wp143
+- `src/engines/code_search/mod.rs` :: `tick_drains_queue_without_pending_hint` — WP-131, wp131
+- `src/engines/code_search/mod.rs` :: `wp143_bench_first_build` — WP143, wp143
+- `src/engines/code_search/reconcile.rs` :: `crash_between_index_commit_and_stamps_rereads_never_misses` — WP-141, WP141
+- `src/engines/code_search/reconcile.rs` :: `index_cold_scan_queues_without_reload` — WP-141
+- `src/engines/code_search/reconcile.rs` :: `serve_scan_from_stamps_queues_without_runtime` — WP-141
+- `src/engines/code_search/reconcile.rs` :: `wp141_bench_stat_scan` — WP-141, WP141, wp141
+- `src/engines/code_search_engine.rs` :: `stop_kills_os_process_when_client_not_installed` — ISSUE-009, ISSUE-049
+- `src/engines/mod.rs` :: `code_index_tick_not_warm_queues_without_digest` — WP-141
+- `src/engines/mod.rs` :: `code_index_tick_sees_queue_without_pending_hint` — WP-131, WP-141
+- `src/engines/mod.rs` :: `code_index_tick_skip_conditions` — WP-131
+- `src/engines/mod.rs` :: `code_index_tick_skips_rebuild_work` — WP-079
+- `src/engines/mod.rs` :: `code_search_call_gate_ready_when_index_is_stale` — WP-057
+- `src/engines/mod.rs` :: `code_semantic_gate_ready_while_silent_refresh_busy` — WP-057
+- `src/engines/mod.rs` :: `consume_session_index_work_does_not_mark_code_refreshing` — WP-135
+- `src/engines/mod.rs` :: `manual_refresh_split_keeps_code_out_of_warming` — WP-079
+- `src/engines/mod.rs` :: `merge_index_work_prefers_rebuild` — WP-079
+- `src/engines/mod.rs` :: `session_semantic_gate_not_blocked_by_code_silent_refresh` — WP-057
+- `src/engines/mod.rs` :: `session_tick_drains_queue_without_pending_hint` — WP-135
+- `src/engines/mod.rs` :: `stop_clears_only_its_own_busy_flag` — WP-079
+- `src/engines/session_search/dense_parity.rs` :: `a_legacy_index_migrates_in_one_pass_without_re_embedding` — WP-144
+- `src/engines/session_search/relevance.rs` :: `the_evidence_behind_each_judged_hit_names_its_layer` — WP-130
+- `src/engines/session_search/semantic_index.rs` :: `a_dense_rebuild_keeps_the_sparse_index` — WP-135
+- `src/engines/session_search/semantic_index.rs` :: `session_index_round_trip_and_search` — WP-144
+- `src/engines/session_search/semantic_index.rs` :: `wp135_engine_state_maps_to_fail_reason` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_files_pending_is_exact_queued_sessions` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_incremental_scans_then_embeds_from_kept_chunks` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_index_error_is_failed_index_failed_and_clears_on_success` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_legacy_queue_without_kept_chunks_falls_back_to_indexed` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_live_running_is_not_cleared` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_main_process_tick_does_not_touch_worker_running_job` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_no_pending_hint_file_is_written` — WP-144, wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_rebuild_reports_embedding_then_ready_exact` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_reconcile_failure_never_leaves_running` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_reconcile_writes_scanning_before_cutting` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_records_are_written_atomically` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_stale_running_is_cleared_on_load_and_requeued` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_total_excludes_chunks_of_deleted_sessions` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp135_undesired_stopped_engine_is_not_failed` — wp135
+- `src/engines/session_search/semantic_index.rs` :: `wp144_build_is_searchable_and_refreshing_while_in_progress` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_bytes_per_batch_independent_of_index_size` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_commit_after_failed_commit_does_not_count_the_stale_tail` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_consume_with_unreadable_meta_errs_without_embedding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_corrupt_line_and_missing_chunks_log_salvage_instead_of_rebuilding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_corrupt_meta_is_the_only_case_that_drops_it` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_crash_after_commit_resumes_without_reembed` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_crash_before_checkpoint_redoes_one_batch` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_crash_between_chunks_and_settled_redoes_one_batch` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_crash_between_vectors_and_chunks_redoes_one_batch` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_crash_mid_migration_reruns_without_reembedding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_failed_reload_after_failed_commit_forces_reload_on_next_use` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_half_record_tail_is_cut_without_reembedding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_invalid_utf8_line_keeps_meta_and_redoes_only_its_rows` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_io_error_on_load_keeps_meta_and_retries` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_legacy_layout_migrates_without_reembedding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_load_failure_reason_is_typed` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_log_shorter_than_checkpoint_salvages_instead_of_rebuilding` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_meta_read_io_error_is_not_a_rebuild_and_keeps_the_logs` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_panic_mid_build_resumes_from_checkpoint` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_resume_progress_starts_from_committed_and_is_monotonic` — wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_sigkill_child_build` — WP144, wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_sigkill_mid_build_resumes_without_reembed` — WP144, wp144
+- `src/engines/session_search/semantic_index.rs` :: `wp144_sweep_removes_leftover_temps_on_load` — wp144
+- `src/knowledge/spec_tests.rs` :: `directory_texts_match_the_status` — WP-050
+- `src/knowledge/spec_tests.rs` :: `lines_on_a_symbol_are_invalid_lines_in_the_snapshot` — WP-050
+- `src/knowledge/spec_tests.rs` :: `oversized_and_binary_files_are_unreadable_everywhere` — WP-050
+- `src/lsp/mod.rs` :: `restart_server_rejects_unconfigured_command` — WP-167
+- `src/optional/mod.rs` :: `reconcile_starts_warmup_for_network_core` — WP-167
+- `src/optional/mod.rs` :: `settings_reconcile_rebuilds_immediately` — WP-167
+- `src/permission/grants.rs` :: `wp081_legacy_q0_free_text_always_true` — wp081
+- `src/ptc/tests.rs` :: `host_receives_extra_arguments_as_a_json_array` — WP-206
+- `src/ptc/tests.rs` :: `undefined_in_result_is_stripped_or_nulled_and_reported` — WP-206
+- `src/runtime/exec.rs` :: `body_bytes_reflects_instructions` — WP-090
+- `src/runtime/observer.rs` :: `turn_end_reason_log_schema_is_snake_case_for_every_variant` — WP-069
+- `src/runtime/observer.rs` :: `turn_error_kind_serializes_snake_case` — WP-069
+- `src/runtime/pending_auto_turn.rs` :: `child_uses_deny_sink_regardless_of_last_sink` — WP-098
+- `src/session/manager.rs` :: `begin_turn_rejects_second_while_running` — WP-024
+- `src/session/manager.rs` :: `cancel_during_starting_turn_cancels_on_start` — wp090
+- `src/session/manager.rs` :: `cancel_leaves_pending_queue_intact` — wp090
+- `src/session/manager.rs` :: `cancel_turn_sync_reports_idle_when_nothing_running` — wp090
+- `src/session/manager.rs` :: `g3_turn_finished_reason_non_empty_on_error_termination` — WP-024
+- `src/session/manager.rs` :: `g4_g5_compact_rejected_while_running_and_turn_restarts_after_error` — WP-024
+- `src/session/manager.rs` :: `s1_reopen_prune_keeps_revision_in_sync` — WP-024
+- `src/session/manager.rs` :: `turn_status_hook_fires_on_start_and_release` — wp090
+- `src/session/snapshot.rs` :: `maintain_reads_active_ids_under_lock_no_false_orphan` — WP-166
+- `src/session/snapshot.rs` :: `maintain_snapshots_waits_for_workspace_lock` — WP-166
+- `src/session/snapshot.rs` :: `snapshot_track_skips_nested_git_dir_entry` — WP-166
+- `src/session/snapshot.rs` :: `track_before_warm_matches_warm_then_track` — WP-166
+- `src/tool/executor.rs` :: `shell_exit_does_not_wrap_reminder` — WP-207
+- `src/tool/registry.rs` :: `core_bindings_produce_full_builtin_list` — WP-057, WP-197
+- `src/tools/ask_user.rs` :: `validate_rejects_single_option` — WP-050
+- `src/tools/code_search.rs` :: `indexing_wait_message_reads_job_json` — WP-143
+- `src/tools/code_search.rs` :: `warm_stale_is_searchable_without_warm_wait` — WP-057, WP-061
+- `src/tools/custom.rs` :: `child_ignoring_stdin_is_not_a_broken_pipe_failure` — WP-018
+- `src/tools/custom.rs` :: `finished_kills_orphaned_grandchild_before_side_effect` — ISSUE-039
+- `src/tools/custom.rs` :: `finished_reaps_grandchild_holding_stdout` — ISSUE-039
+- `src/tools/custom.rs` :: `malformed_envelope_hard_fails` — WP-018
+- `src/tools/custom.rs` :: `timeout_kills_grandchild_process` — ISSUE-039
+- `src/tools/edit/tests.rs` :: `empty_new_string_deletes_old` — WP-207
+- `src/tools/grep.rs` :: `examine_cap_bounds_hits_in_message` — WP-207
+- `src/tools/lsp.rs` :: `finish_locations_relative_inside_absolute_outside` — WP-206
+- `src/tools/lsp.rs` :: `index_not_ready_rejects_unavailable_for_symbols_and_diagnostics` — WP-206
+- `src/tools/plan.rs` :: `test_create_rejected_does_not_create_file` — WP-050
+- `src/tools/read.rs` :: `data_schema_accepts_live_result` — WP-207
+- `src/tools/run.rs` :: `fast_command_returns_exit_code` — wp197
+- `src/tools/run.rs` :: `long_command_returns_null_exit_and_keeps_job` — wp197
+- `src/tools/run_lock_gate.rs` :: `four_parallel_write_runs_finish_in_about_one_second` — wp206
+- `src/tools/subagent/hub.rs` :: `hub_lagged_rescan_dedups_per_child` — ISSUE-054
+- `src/tools/webfetch.rs` :: `ssrf_allows_benchmarking_fake_ip_range` — WP-203
+- `src/tools/webfetch.rs` :: `ssrf_allows_hostname_resolved_to_fake_ip` — WP-203
+- `src/tools/webfetch.rs` :: `ssrf_rejects_loopback_and_private_ips` — ISSUE-012, WP-203
+- `src/tools/write.rs` :: `virtual_session_path_is_read_only` — WP-207
+- `src/types/death_list_gate.rs` :: `session_seq_g1_envelope_vocab_matches_mental_model` — ISSUE-013
+- `src/types/death_list_gate.rs` :: `session_seq_g2_pipeline_reloads_fold_not_summary_plus_kept` — ISSUE-013
+- `src/workspace/service.rs` :: `rescan_signal_reaches_subscribers` — WP-141
+- `src/workspace/watcher.rs` :: `rescan_flag_and_overflow_request_full_rescan` — WP-141
+- `tests/agent_loop.rs` :: `cancel_during_auto_compact_is_cancelled_without_model_call` — ISSUE-033
+- `tests/client_protocol_project.rs` :: `turn_finished_auto_compact_failure_is_compaction_failed` — WP-024, WP-025, WP-069
+- `tests/client_protocol_project.rs` :: `turn_finished_marks_a_failed_reconnect_retryable` — WP-024, WP-025, WP-069
+- `tests/code_search_ipc.rs` :: `refresh_stays_incremental_when_all_files_dirty` — ISSUE-052, WP-057
+- `tests/issue_032_changed_files_restore.rs` :: `t1_spine_failure_restores_changed_files_for_next_seam` — issue_032
+- `tests/issue_032_changed_files_restore.rs` :: `t2_files_changed_append_failure_soft_restores` — issue_032
+- `tests/issue_032_changed_files_restore.rs` :: `t3_successful_files_changed_does_not_restore` — issue_032
+- `tests/issue_032_changed_files_restore.rs` :: `t4_empty_changed_skips_restore` — issue_032
+- `tests/manual_compact_e2e.rs` :: `manual_compact_failure_e2e_releases_lease_and_retry_starts` — WP-025
+- `tests/manual_compact_e2e.rs` :: `manual_compact_retry_after_failure_completes` — WP-025
+- `tests/optional_code_search.rs` :: `catalog_lists_tool_while_warming_and_after_warm` — WP-148
+- `tests/optional_code_search.rs` :: `code_index_tick_syncs_without_refresh` — WP-079
+- `tests/optional_code_search.rs` :: `code_search_lifecycle_rebuild_stale_consume_stop` — WP-143
+- `tests/optional_code_search.rs` :: `pipeline_version_change_triggers_rebuild` — WP-143
+- `tests/optional_code_search.rs` :: `warmup_loads_compatible_index_without_full_rebuild` — WP-143
+- `tests/optional_lsp.rs` :: `edit_with_warm_lsp_appends_only_when_errors_arrive` — WP-198
+- `tests/optional_lsp.rs` :: `idle_reclaim_during_diagnostics_does_not_panic` — WP-206
+- `tests/optional_lsp.rs` :: `rust_analyzer_smoke` — ISSUE-047
+- `tests/optional_p0.rs` :: `network_core_engines_always_warmup` — WP-167
+- `tests/optional_p0.rs` :: `settings_reload_reconciles_engine_manager` — WP-167
+- `tests/optional_p0.rs` :: `webfetch_list_requires_bind_not_warmup` — WP-167
+- `tests/settings_api.rs` :: `settings_retrieval_refresh_endpoint_accepts_when_cold` — WP-131
+- `tests/stage_a_ctx_consistency.rs` :: `manual_compact_bypasses_auto_threshold_and_preserves_full_history` — ISSUE-013
+- `tests/stage_a_ctx_consistency.rs` :: `pipeline_compact_reloads_working_set_from_fold` — ISSUE-013
+- `tests/startup_order_death_list.rs` :: `serve_run_does_not_sweep_inline` — WP-165
+- `tests/subagent_send.rs` :: `concurrent_sends_only_one_wins` — ISSUE-053, WP-092
+- `tests/subagent_send.rs` :: `send_to_busy_child_queues_without_starting_a_turn` — ISSUE-053, WP-092, WP-100
+- `tests/wp028_probe_s1_xdev_move.rs` :: `probe_s1_cross_device_overwrite_succeeds` — ISSUE-038, wp028
+- `tests/wp028_probe_s2_create_race.rs` :: `probe_s2_create_file_race` — wp028
+- `tests/wp028_probe_s2_create_race.rs` :: `probe_s2_write_file_bytes_no_overwrite_race` — wp028
+- `tests/wp098_follow_up_queue.rs` :: `runtime_main_session_pending_still_injects_at_seam` — wp098
+- `tests/wp098_follow_up_queue.rs` :: `runtime_queue_not_drained_at_step_seam` — wp098
+- `tests/wp098_follow_up_queue.rs` :: `runtime_steer_still_injects_at_step_seam` — wp098
+- `tests/wp098_follow_up_queue.rs` :: `runtime_stop_and_send_cancels_then_runs_new_turn_no_notice` — wp098
+- `tests/wp098_follow_up_queue.rs` :: `stop_and_send_cancels_then_runs_follow_up_without_waking_parent` — wp098
+
+## 汇总
+
+- 链路数：28
+- 守护测试：787
+- 回归测试：205（与守护重叠 64）
+- 守护∪回归：928 / 3acfe31 全量 2668（lib+tests/ 源码计数）
+- 清单外（候选待删，需逐条复核）：约 1740
