@@ -355,11 +355,8 @@ fn render_projection_page(
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_LINE_LIMIT);
     let total_lines = file.total_lines();
-    if start_line > total_lines && total_lines > 0 {
-        return coded(
-            "invalid_input",
-            format!("start_line {start_line} exceeds file length ({total_lines} lines)"),
-        );
+    if start_line > total_lines {
+        return past_eof_page(data_path, start_line, total_lines);
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -421,11 +418,8 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         .map(|n| n as usize)
         .unwrap_or(DEFAULT_LINE_LIMIT);
     let total_lines = lines.len();
-    if start_line > total_lines && total_lines > 0 {
-        return coded(
-            "invalid_input",
-            format!("start_line {start_line} exceeds file length ({total_lines} lines)"),
-        );
+    if start_line > total_lines {
+        return past_eof_page(path, start_line, total_lines);
     }
     let start = start_line.saturating_sub(1);
     let end = (start + limit).min(total_lines);
@@ -439,6 +433,14 @@ fn render_text_page(content: &str, input: &Value, path: &str) -> ToolCallResult 
         out.push(text);
     }
     finish_read(path, start_line, out, end, total_lines, "", line_capped)
+}
+
+/// `start_line` beyond the last line (including an empty file): resolve an
+/// empty window and say how long the file is, instead of rejecting.
+fn past_eof_page(path: &str, start_line: usize, total_lines: usize) -> ToolCallResult {
+    let message =
+        format!("File has {total_lines} lines; start_line {start_line} is past the end.");
+    finish_read(path, start_line, Vec::new(), total_lines, total_lines, &message, false)
 }
 
 fn finish_read(
@@ -746,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_start_line_past_end_errors() {
+    fn test_read_start_line_past_end_resolves_empty() {
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("test.txt");
         std::fs::write(&file_path, "only\n").unwrap();
@@ -754,8 +756,28 @@ mod tests {
             "path": file_path.to_str().unwrap(),
             "start_line": 5
         }));
-        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
-        assert!(result.content.contains("start_line"), "{}", result.content);
+        assert!(result.error_code.is_none(), "{}", result.content);
+        assert!(page_lines(&result).is_empty());
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["start_line"], 5);
+        let message = data["message"].as_str().unwrap();
+        assert!(message.contains("1 lines"), "{message}");
+        assert!(message.contains("start_line 5"), "{message}");
+    }
+
+    #[test]
+    fn test_read_empty_file_past_end_resolves_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("empty.txt");
+        std::fs::write(&file_path, "").unwrap();
+        let result = ReadTool::default().call(serde_json::json!({
+            "path": file_path.to_str().unwrap(),
+            "start_line": 3
+        }));
+        assert!(result.error_code.is_none(), "{}", result.content);
+        assert!(page_lines(&result).is_empty());
+        let message = result.data.as_ref().unwrap()["message"].as_str().unwrap();
+        assert!(message.contains("0 lines"), "{message}");
     }
 
     #[test]
