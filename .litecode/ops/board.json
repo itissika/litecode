@@ -14257,6 +14257,1320 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-189",
+      "domain": "team-ops",
+      "title": "分析：同 session 切 codec 稳定性（含 session/ctx）",
+      "result": "分析报告+可复现清单+方案",
+      "done_when": [
+        "有端到端数据流/不变式说明",
+        "≥1 条确定性复现（或证明当前 main 无法复现并写清已修点）",
+        "怀疑点分级列表含 session/ctx/codec",
+        "每条有方案选项与验收口径",
+        "明确现状稳或不稳及条件",
+        "方案经 GM 批准"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-189/",
+      "progress": "closed done by gm: 分析验收通过：有条件稳；数据流/不变式 I1–I12；复现 A+缺口 B；怀疑 15 条分级+方案；建议实现包 a–e。禁改产品码已遵守。report.md 齐。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "分析-only，不落实现。背景：同 session 切换不同 codec/模型时，agent loop 与模型能力反复出问题，已修过一轮仍不踏实；高度怀疑不只是 codec，session 与 context 也有结构性问题。目标：(1) 基于当前 main 厘清 codec×session×ctx 在切模型时的真实数据流与不变式；(2) 找出确定性可复现缺陷（步骤+期望+实际）；(3) 列出有证据支撑的架构怀疑点（按：未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角）；(4) 对每条给出修复方向/方案选项与验收口径；(5) 明确「现状是否已稳」的结论与仍 defer 项。禁止改产品代码；禁止借机做大重构实现。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-189 分析方案（backend_mid）— 同 session 切 codec/模型稳定性\n\n**口径：** 分析-only，**禁止改 `src/` / web / desktop**。产物在 `.litecode/ops/artifacts/WP-189/`。实现另立包，须本方案经 GM 批准且 `report.md` 结论落地后再开。\n\n**基线：** `main` @ `838b6ed`（与 origin/main 对齐）。轻量只读调研为主；重型 cargo 互斥 `LC_MIN_MEM_GIB=2`，本包默认不跑全量构建。\n\n---\n\n## 0. 交付物与验收映射\n\n| done_when | 产物位置 |\n|-----------|----------|\n| 端到端数据流/不变式 | `report.md` §数据流与不变式；附图可选 `flow.md` |\n| ≥1 条确定性复现（或「已无法复现+缺口」） | `report.md` §复现清单 + `repro/` 步骤与证据指针 |\n| 怀疑点分级（含 session/ctx/codec） | `report.md` §怀疑分级 |\n| 每条方案选项+验收口径 | 同上表内 |\n| 现状稳/不稳/有条件稳 | `report.md` §结论 |\n| 方案经 GM 批准 | 本 `plan.md` → submit → approve |\n\n---\n\n## 1. 问题框定\n\n**现象（Andy）：** 同一 session 切换不同 codec / 模型时，agent loop 与模型能力反复异常，修一轮仍不踏实。\n\n**工作假说（待证伪）：** 根因不只在 llm codec，也可能在 **session 绑定/落盘**、**context 视图与压缩**、以及 **runtime 切模型后的 turn 入口**（provider 解析/回放兼容）。\n\n**非目标：** 不改产品码；不塞 Obs/权限桥；不要求 FE 先改（仅记展示依赖）。\n\n---\n\n## 2. 已修线索核验（先做，再下结论）\n\n在 `838b6ed` 上只读核验以下提交的**覆盖面与缺口**（勿当已稳）：\n\n| Commit | 标题 | 分析要回答 |\n|--------|------|------------|\n| `eff191a` | fix(llm): 只丢掉仍对着旧前缀的 Messages 思考签名 | 覆盖哪些前缀/签名场景？同 session 切模型后旧签名是否仍泄漏？ |\n| `e0bb00f` | fix(llm): 前缀被改写后不再回放 Messages 思考签名 | 与 compact/media_budget/runtime 的耦合？切模型是否触发「前缀改写」路径？ |\n| `d46a8c6` | fix(context): 压缩只送纯文本并限制在压缩模型窗口内 | 压缩模型 ≠ 会话模型时的窗口/纯文本约束；切模型后 compact 是否用错窗口？ |\n\n产出：`coverage-notes.md`（中层汇总，可含子域只读 dig 摘录）→ 并入 `report.md`。\n\n现有测试锚点（只读对照，不强制本包重跑全量）：`tests/turn_prefix_stability.rs`、`tests/compact_failure_calibers.rs`、`tests/stage_a_ctx_consistency.rs`、`src/llm/replay_compat.rs`、`src/llm/codec/messages_synth.rs`；WP-178 H1 证据仅作「同族历史」参考，**不修 H1 codec**。\n\n---\n\n## 3. 域拆分（中层统筹；子域只读调研，不正式开实现子包）\n\n本包 **kind=direct**：调查由中层派读、汇总；**不**为分析再开大量子 WP。若报告建议实现，再另立修复包并按域拆。\n\n| 域 |  dig 焦点（切模型瞬间） | 主要路径线索 |\n|----|-------------------------|--------------|\n| **session** | session 上模型/codec/provider 绑定如何持久与切换；transcript 是否携带「产生方」元数据；切换是否清/不清 in-flight turn | `src/session/**`、`client_protocol` 切模型 RPC |\n| **context** | view / keep_recent / compact 是否假设「全程同一模型窗口」；切模型后前缀、摘要、媒体预算是否失效 | `src/context_pipeline/**`（含 `d46a8c6`） |\n| **provider / llm codec** | codec 选择、reasoning 回放兼容、wire model id；切 codec 后旧块如何编码 | `src/llm/**`、`replay_compat`、catalog（`eff191a`/`e0bb00f`） |\n| **runtime** | turn 入口 `llm_resolve`、前缀稳定性、loop 在切模型后是否仍握旧 resolve | `src/runtime/exec.rs`、`llm_resolve.rs` |\n| **FE（只记依赖）** | ModelSwitcher 是否只改本地展示、是否打到后端权威切换 | 不派前端改码；报告记依赖 |\n\n并行顺序：中层先出覆盖面笔记 → 同步派 session / context / provider / runtime **只读 dig**（各一份短笔记到 `WP-189/dig-<domain>.md`）→ 中层交叉审合成 `report.md`。\n\n---\n\n## 4. 分析步骤（批准后执行）\n\n1. **冻结基线：** 保持 `main` @ `838b6ed`；共享树切分支仍由中层串行；本包禁产品码改动。\n2. **覆盖面：** 完成 `coverage-notes.md`（§2 三 commit + 测试触达）。\n3. **数据流与不变式：** 画出「用户切模型 → session 写绑定 → 下一 turn llm_resolve → context view/compact → codec encode → provider」；列出必须保持的不变式（例：思考签名只属于产生它的前缀/provider；compact 窗口跟压缩模型；transcript 块可按产生方回放等）——待 dig 证实后写入报告。\n4. **复现：** 优先用现有单测/合成 fixture 找**确定性**失败；其次最小真机步骤（同 session：模型 A 产生 reasoning/tool → 切 B → 续聊/压缩）。若 main 已无法复现：写清已修点 + **仍无法证明稳定的缺口**（缺测、缺场景、缺观测）。\n5. **怀疑分级：** 未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角；每条含证据指针、涉及域、方案选项（≥1）、验收口径。\n6. **结论：** **稳 / 不稳 / 有条件稳** + 建议实现包切分（仍不实现）+ defer 项。\n7. **交付：** `deliver` 交 GM；附件 `report.md`（+ coverage/dig/repro）。\n\n---\n\n## 5. 复现口径（报告必须满足其一）\n\n**路径 A — 可复现：**  \n步骤、前置（模型对、是否已 compact、是否有 reasoning/tool）、期望、实际、证据（测试名 / 日志路径 / fixture）。\n\n**路径 B — 当前不可复现：**  \n列已修点（映射到三 commit + 测试）+ 缺口清单（未测组合：如 Responses↔Messages、compact 后切模型、子 agent 继承模型等）+ 建议补测/观测，**不得**据此写「已稳」除非缺口可接受并写明条件。\n\n---\n\n## 6. 风险与约束\n\n- 内存紧张：禁止本包独占重型全量 cargo；子域 dig 以读代码/既有测试输出为主。\n- 与 WP-175/178 H1：可引用证据，**本包不修 codec SSE**。\n- 与 WP-181/186–188：无关则不掺；若发现切模型与 waiting_for_user 同根，仅记依赖。\n\n---\n\n## 7. 时间盒（建议）\n\n批准后：覆盖面+数据流 0.5d → 四域 dig 并行 0.5–1d → 交叉审+报告 0.5d。阻塞只报「未决产品行为」级问题给 GM。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:05:44.184Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 分析-only，不落实现。背景：同 session 切换不同 codec/模型时，agent loop 与模型能力反复出问题，已修过一轮仍不踏实；高度怀疑不只是 codec，session 与 context 也有结构性问题。目标：(1) 基于当前 main 厘清 codec×session×ctx 在切模型时的真实数据流与不变式；(2) 找出确定性可复现缺陷（步骤+期望+实际）；(3) 列出有证据支撑的架构怀疑点（按：未决产品行为 > 产品缺陷 > 架构错误 > 常发 bug > 边角）；(4) 对每条给出修复方向/方案选项与验收口径；(5) 明确「现状是否已稳」的结论与仍 defer 项。禁止改产品代码；禁止借机做大重构实现。"
+        },
+        {
+          "ts": "2026-10-17T15:05:59.688Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: null -> \".litecode/ops/artifacts/WP-189/\""
+        },
+        {
+          "ts": "2026-10-17T15:07:07.333Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-189 分析方案（backend_mid）— 同 session 切 codec/模型稳定性\n\n**口径：** 分析-only，**禁止改 `src/"
+        },
+        {
+          "ts": "2026-10-17T15:07:07.538Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "分析方案已填：direct；先核三 commit 覆盖面，再派 session/ctx/provider/runtime 只读 dig，中层合成 report；禁改产品码"
+        },
+        {
+          "ts": "2026-10-17T15:07:17.613Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "分析方案批：direct 中层统筹；先核三 commit 覆盖面；四域只读 dig 再合成 report；复现路径 A/B 二选一；结论须稳/不稳/有条件稳；禁改产品码。可 dig。"
+        },
+        {
+          "ts": "2026-10-17T15:07:22.936Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "覆盖面+四域只读 dig → report"
+        },
+        {
+          "ts": "2026-10-17T15:13:51.693Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "有条件稳。report.md←coverage+四域 dig；Messages 前缀签名与 compact 窗已钉；跨 codec/model 端到端未证；怀疑 15 条；建议后续测优先包。禁改产品码已遵守。"
+        },
+        {
+          "ts": "2026-10-17T15:14:14.192Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "分析验收通过：有条件稳；数据流/不变式 I1–I12；复现 A+缺口 B；怀疑 15 条分级+方案；建议实现包 a–e。禁改产品码已遵守。report.md 齐。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-190",
+      "domain": "team-ops",
+      "title": "拣回：ops 易用度（原 WP-189 org/charter/request/zh）",
+      "result": "独立分支+拣回说明",
+      "done_when": [
+        "独立分支含原易用度实现",
+        "tools_version≥24 且命令可用",
+        "测试/validate 绿",
+        "未污染 WP-189 分析包",
+        "有拣回说明"
+      ],
+      "owner": "tools_steward",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-190/",
+      "progress": "closed done by gm: 拣回验收通过：ops/wp-190-ops-usability @96a3ae4；tv=24；wp.test 217/217；validate_all OK；WP-189 分析产物未改；未合 main。已 push 独立分支备份。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "将此前已验收但未 commit/push 的 ops 易用度实现（组织树推导、role-charter、request/handle/forward、中文报错；曾 tools_version=24）从 stash/临时提交拣回独立分支并恢复到可合入状态。不覆盖、不改写当前 WP-189（切 codec 分析包）。验收：独立分支上 registry tools_version≥24；org-tree/org-sync/role-charter/request 可用；wp.test 与 validate_all 绿；与 main@838b6ed 可 rebase/merge；产物与说明在本包 artifacts。禁止破坏性 reset/删 objects；禁止动 WP-189 分析产物。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-190 拣回方案（短）\n\n> owner：tools_steward · approver：gm  \n> 基线：`main@838b6ed` · 目标分支：`ops/wp-190-ops-usability`  \n> 原则：只拣回 ops 易用度实现；**不碰**当前 WP-189（切 codec 分析）；**不 drop** stash；不破坏性 reset / 不删 objects；合 main 等 GM/Andy 点头。\n\n## 1. 目标\n\n把原「WP-189 ops 易用度」（曾 done、tools_version=24：org 树 / charter / request·handle·forward / 中文报错）从 stash/临时对象拣到独立分支，恢复到可合入状态。\n\n## 2. 线索（只读，勿 drop）\n\n| 对象 | 用途 |\n|---|---|\n| `stash@{0}` / `b28b6fa` | 主实现：`wp.mjs`/`_lib.mjs`/`wp.test.mjs`/`registry.json`(tv=24)、`board.schema.json`、`validate.mjs` 等 |\n| `102f37f` | 原验收产物 + `context/constitution.md`（迁入 **WP-190** artifacts，不写回 WP-189） |\n| `stash@{1}` | 仅 board/log 碎片；**默认不整包应用**（易污染现看板） |\n\n## 3. 步骤\n\n1. `git fetch` 后从 `838b6ed` 建分支 `ops/wp-190-ops-usability`（不切丢他人工作：若当前脏树，先只读核对；用 `git worktree` 或干净 checkout 该分支，避免覆盖 WP-189 分析产物）。\n2. **工具文件整文件拣回**（来自 `stash@{0}` / `b28b6fa`）：  \n   `.litecode/ops/tools/{wp.mjs,_lib.mjs,wp.test.mjs,registry.json,board.md}`、`board.schema.json`、`validate.mjs`（及同 diff 内必要配套）。\n3. **board.json 手术合并**（禁止 `checkout stash -- board.json`）：  \n   - 保留现看板 WP-189 分析包及后续条目；  \n   - 仅并入 `org_nodes` / `ops_config` / agents 的 `node|superior|subordinates`；  \n   - 不把旧「ops 易用度」伪装成 WP-189；说明写进本包 `recovery.md`。\n4. 从 `102f37f` 拷贝原 acceptance/demo/plan 到 `.litecode/ops/artifacts/WP-190/`（可加前缀 `recovered-`）；补 `constitution.md` 若缺。\n5. 跑：`node --test .litecode/ops/tools/wp.test.mjs`、`node .litecode/ops/tools/validate_all.mjs`；抽查 `org-tree` / `role-charter` / `request` 帮助输出。\n6. 写 `artifacts/WP-190/recovery.md`（命令、来源对象、与 main 差异、未应用的 stash 部分）。\n7. 在独立分支上 **commit**（仅本分支；**不** push main、不自动合入）。deliver 口径：分支可合 + 测试绿 + recovery.md。\n\n## 4. handle 口径（拣回时保持）\n\n无 flag → 审批人自留；`--owner` 指定；`--intake` 才用 `intake_agent`（仅 ops/工具类）。\n\n## 5. 验收（done_when）\n\n- 独立分支含易用度实现且 `tools_version≥24`\n- `org-tree` / `org-sync` / `role-charter` / `request` 可用\n- `wp.test` + `validate_all` 绿\n- WP-189 分析产物未被改写\n- `recovery.md` 齐；合 main 等明示批准\n\n## 6. 不做\n\ndrop stash；破坏性 reset；删 `.git/objects`；覆盖 `.litecode/ops/artifacts/WP-189/`；未批准合 main。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:13:17.496Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 将此前已验收但未 commit/push 的 ops 易用度实现（组织树推导、role-charter、request/handle/forward、中文报错；曾 tools_version=24）从 stash/临时提交拣回独立分支并恢复到可合入状态。不覆盖、不改写当前 WP-189（切 codec 分析包）。验收：独立分支上 registry tools_version≥24；org-tree/org-sync/role-charter/request 可用；wp.test 与 validate_all 绿；与 main@838b6ed 可 rebase/merge；产物与说明在本包 artifacts。禁止破坏性 reset/删 objects；禁止动 WP-189 分析产物。"
+        },
+        {
+          "ts": "2026-10-17T15:13:24.039Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-190/\" -> \".litecode/ops/artifacts/WP-190/\""
+        },
+        {
+          "ts": "2026-10-17T15:13:53.070Z",
+          "actor": "tools_steward",
+          "action": "fill",
+          "note": "direct: # WP-190 拣回方案（短）\n\n> owner：tools_steward · approver：gm  \n> 基线：`main@838b6ed` · 目标"
+        },
+        {
+          "ts": "2026-10-17T15:13:53.239Z",
+          "actor": "tools_steward",
+          "action": "submit",
+          "note": "拣回短方案：独立分支从 stash0/b28b6fa 拣工具；board 手术合并；不碰 WP-189；不 drop stash"
+        },
+        {
+          "ts": "2026-10-17T15:14:14.015Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "拣回方案批：独立分支 ops/wp-190-ops-usability；整文件自 b28b6fa；board 手术合并保留分析 WP-189；不 drop stash、不合 main。可执行。"
+        },
+        {
+          "ts": "2026-10-17T15:14:23.414Z",
+          "actor": "tools_steward",
+          "action": "start",
+          "note": "拣回独立分支"
+        },
+        {
+          "ts": "2026-10-17T15:16:20.098Z",
+          "actor": "tools_steward",
+          "action": "deliver",
+          "note": "分支 ops/wp-190-ops-usability@96a3ae4 已拣回 tools_version=24（org-tree/charter/request/zh）；wp.test 217/217 + validate_all 绿；WP-189 arts sha 未变；recovery.md 齐；未合 main、未 drop stash。实现以独立分支为准，主仓 tools 仍为 21。"
+        },
+        {
+          "ts": "2026-10-17T15:18:03.612Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "拣回验收通过：ops/wp-190-ops-usability @96a3ae4；tv=24；wp.test 217/217；validate_all OK；WP-189 分析产物未改；未合 main。已 push 独立分支备份。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-191",
+      "domain": "team-ops",
+      "title": "实现：切模型/请求关键要素观测与显式告警",
+      "result": "观测出口+告警+合入 main",
+      "done_when": [
+        "有统一观测出口契约与关键要素清单",
+        "思考未回填/静默降智可检测并可 toast",
+        "至少若干关键异常有显式告警路径",
+        "不削弱现有签名/compact 整改",
+        "有测或可演示步骤",
+        "已合入并 push origin/main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-191/",
+      "progress": "closed done by gm: 验收通过：request_health 5/5、replay_compat 11/11；未改 strip/compact；projection_rewrote 观测缺口接受；已合 main 并 push origin/main @ acdb40c",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "增强观测与告警，不碰 WP-189 已指出、已落地的整改逻辑（签名剥离、compact 纯文本等）。钉死关键可观测元素；当请求实际发出但关键要素异常（尤其不回填思考导致的静默降智）时，经统一出口上报，并向用户显式 toast。须覆盖：turn bind vs sticky、request/header 归因、异源 reasoning/密文剥离计数、思考未回填/整段省略、投影改写、busy 切模型失败等。改完合入并推送 origin/main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-191 方案 — 切模型/请求关键要素观测与显式告警\n\n**口径（Andy / GM）：** 增强观测与告警；**尤其**「不回填思考→静默降智」须可检测 + 用户 toast。**不碰**已落地的签名剥离 / compact 纯文本与压缩窗整改。交付后 **合入并 push `origin/main`**。\n\n**基线：** `main` @ `838b6ed`（实现时以当时 main HEAD 为准）。  \n**依据：** WP-189 `report.md`（有条件稳；S1b/S2/S10 等观测缺口）。  \n**产物：** `.litecode/ops/artifacts/WP-191/`（本 plan；实现后 acceptance + 测/演示步骤）。\n\n---\n\n## 1. 目标与非目标\n\n| 做 | 不做 |\n|----|------|\n| 统一观测/告警出口 + 关键要素清单 | 重做 S1 show-once / S3 双窗策略 / S1b 产品取舍落地 |\n| 「思考未回填」可检测并可 toast | 改 `strip_*` / Rule 5 / compact 纯文本逻辑（只读其输出计数） |\n| busy set-model 失败对 FE 可感知 | Luna H1 SSE；WP-190 ops 易用度 |\n| 合入 push origin/main | 借机大重构 codec |\n\n---\n\n## 2. 现状可复用（只读确认，实现时钉 file:line）\n\n| 已有 | 缺口 |\n|------|------|\n| `build_model_request` 已算 `ciphertexts_stripped` / `rebased_stripped` / `reasoning_dropped`，打 `litecode.debug.llm_request` | 仅 tracing；未进 `InternalEvent` 全字段；无用户 toast 分档 |\n| `InternalEvent::LlmRequestBuilt` → `WireEvent::LlmRequestBuilt` | 字段偏 token/tools，缺 strip/降智/ bind vs sticky |\n| `InternalEvent::SnapshotNotice { level, message }` → FE toast 先例 | 未用于「请求健康 / 静默降智」 |\n| set-model busy → `operation_error` + `AgentAlreadyRunning` | FE 乐观切换回滚属前端；后端须保证错误码稳定可 toast |\n\n**原则：** 在 **单一路径**（`AgentSession::build_model_request` 末尾 / `emit_llm_request_built`）汇总健康快照并分档上报；**禁止**在 codec 各处分散 toast。\n\n---\n\n## 3. 统一出口契约\n\n### 3.1 事件（推荐）\n\n扩展现有 `LlmRequestBuilt`（或并列新增 `RequestHealth`——实现时二选一，**优先扩展**以免双通道）：\n\n```text\nLlmRequestBuilt / RequestHealth {\n  // 绑定\n  sticky_model_id: string          // session 行\n  turn_model_ref: string           // TurnLlmBinding.model_ref\n  turn_provider_id: string\n  turn_endpoint_type: string       // = request/header 将写入的 codec\n  bind_matches_sticky: bool        // turn resolve 是否等于 sticky（ensure 自愈后应为 true；false 必告警）\n\n  // 归因（本请求即将写入的 header 语义）\n  origin_provider_id / origin_endpoint_type / origin_model_ref\n\n  // 剥离计数（来自现有 strip 返回值，不改算法）\n  ciphertexts_stripped: u32\n  rebased_stripped: u32\n  reasoning_dropped: u32           // Summary 路径 retain_own；Ciphertext 路径用「整段省略」计数补齐见 §4\n\n  // 投影 / 前缀\n  rebased_true_count: u32          // view.rebased 中 true 个数\n  projection_rewrote: bool         // 本 view 是否发生 modality 投影改写（能检测则填；否则 false + 缺口记 acceptance）\n\n  // 分档\n  severity: \"silent\" | \"debug\" | \"toast\"\n  code: string                     // 稳定机器码，见 §3.2\n  message: string                  // 用户/日志文案（toast 用短句）\n}\n```\n\n- **silent：** 正常请求，要素齐全、无降智信号 → 只进 debug 日志 / 可选 wire（FE 默忽略）。\n- **debug：** 有剥离但策略内预期（如异源密文剥离且文本保留）→ wire + tracing，不 toast。\n- **toast：** 明确异常 / 静默降智 → **同时**发 `SnapshotNotice{level:\"warn\", message}`（或等价 notice）保证现有 FE toast 路径立刻可用；专用 `code` 留给 FE 精细文案。\n\n### 3.2 稳定 `code`（至少）\n\n| code | 触发 | severity |\n|------|------|----------|\n| `thinking_not_refilled` | §4 判据成立 | **toast** |\n| `reasoning_wholly_omitted` | 异源/策略导致整段 reasoning 从请求中消失且无文本保留 | toast |\n| `bind_sticky_mismatch` | `bind_matches_sticky == false` | toast |\n| `foreign_strip` | `ciphertexts_stripped > 0` 且文本仍保留 | debug |\n| `rebased_sig_strip` | `rebased_stripped > 0` | debug（正常 Rule 5） |\n| `projection_rewrite` | `projection_rewrote` | debug（S2 未修前不升 toast，只观测） |\n| `set_model_busy` | set-model 遇 AgentAlreadyRunning | toast（经 operation_error；见 §5） |\n\n---\n\n## 4. 「思考未回填 / 静默降智」判据（可测）\n\n在 **不改** strip/encode 行为前提下，于 encode **前**（strip 之后）判定：\n\n**Toast（`thinking_not_refilled`）当且仅当以下任一成立：**\n\n1. **`reasoning_dropped > 0`**（Summary 回放路径已整段丢掉异源 reasoning）；或  \n2. **Ciphertext 路径：** `ciphertexts_stripped > 0` **且** 同批被剥条目在 strip 后 **不再含任何 reasoning 文本块**（整段省略，不仅剥密文）——实现时在 `strip_foreign_ciphertext` **旁**增加只读计数 `reasoning_wholly_omitted`（若现函数已能区分「剥密文留文本」vs「整段 drop」，只导出计数；**禁止**改变去留策略）；或  \n3. **Messages：** 输入侧存在带签名/思考的 Reasoning item，encode 结果 **无** thinking 块发出，且原因不是「本 turn 新签尚未产生」（针对**历史**回放项）——用 strip/omit 计数或 encode 前后对比 fixture 断言。\n\n**不 toast：** 仅 `rebased_stripped`（Rule 5 预期）、仅密文剥离但文本 CoT 仍在、首包本就无历史思考。\n\n**验收测（必须）：** 合成 fixture：跨 provider/model 历史 reasoning → 构建请求 → 断言 `code=thinking_not_refilled`（或 `reasoning_wholly_omitted`）且 severity=toast；对照「同 model 续聊带签」→ silent/debug。\n\n---\n\n## 5. 要素覆盖映射\n\n| # | 要素 | 实现落点 |\n|---|------|----------|\n| 1 | turn bind vs sticky | `build_runtime` / `build_model_request` 读 session.model_id 与 `turn_llm.model_ref` 比较 → `bind_matches_sticky` |\n| 2 | request/header 归因 | 使用即将 `record_request_origin` 的 provider/endpoint/model_ref 填入事件 |\n| 3 | 异源剥离 / 整段省略 | 现有计数 + §4 只读补计 |\n| 4 | 思考未回填 | §4 → toast |\n| 5 | 投影改写 | view 构建处已有投影则打标传入 `build_model_request`；若本包成本过高可先 `projection_rewrote=false` + acceptance 记「观测缺口」，**不得**改投影语义 |\n| 6 | busy set-model | 保持 `operation_error`；acceptance 与前端中层对齐：FE 必须以错误回滚乐观 UI 并 toast（后端不改拒写逻辑） |\n\n---\n\n## 6. 域拆分与分工（kind=direct，中层统筹）\n\n| 域 | 职责 |\n|----|------|\n| **runtime** | 统一出口：扩展 `LlmRequestBuilt` + toast 级 `SnapshotNotice`；§4 判据；单测 |\n| **llm**（随 runtime） | 只读导出「整段省略」计数；**零**行为变更 |\n| **session / client_protocol** | 确认 set-model busy 错误码稳定；必要时补测；wire 字段投影 |\n| **前端中层** | FE toast：消费 `SnapshotNotice` / 新 code；busy set-model 回滚（中层发契约后并行，不阻塞后端合入；若 FE 未就绪，后端仍 push，wire 先行） |\n\n实现顺序：契约字段 → runtime 埋点+测 → protocol 投影 → 联调 FE → merge push main。\n\n重型：cargo 前报槽；`LC_MIN_MEM_GIB=2`。\n\n---\n\n## 7. 验收口径（对齐 done_when）\n\n1. 文档化要素清单 + 出口契约（本 plan §3 + acceptance）  \n2. 至少 1 条单测：`thinking_not_refilled`（或等价）可检测  \n3. 演示/测：人为触发整段省略 → 有 toast 级事件；正常续聊不误报  \n4. diff 证明未改 `strip_rebased_signatures` / compact 纯文本核心逻辑（允许旁路计数）  \n5. `git`：合入 `main` 并 **push origin/main**（Andy 已授权本包）\n\n---\n\n## 8. 风险\n\n- 误报 toast 骚扰 → 判据收紧为 §4，Rule 5 / 纯密文剥离不 toast  \n- FE 未跟上 → wire 先合入；SnapshotNotice 兼容现网 toast  \n- 与 WP-189 实现包边界：本包**只观测**，不修 S1/S2 行为\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:29:15.428Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 增强观测与告警，不碰 WP-189 已指出、已落地的整改逻辑（签名剥离、compact 纯文本等）。钉死关键可观测元素；当请求实际发出但关键要素异常（尤其不回填思考导致的静默降智）时，经统一出口上报，并向用户显式 toast。须覆盖：turn bind vs sticky、request/header 归因、异源 reasoning/密文剥离计数、思考未回填/整段省略、投影改写、busy 切模型失败等。改完合入并推送 origin/main。"
+        },
+        {
+          "ts": "2026-10-17T15:29:21.177Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-191/\" -> \".litecode/ops/artifacts/WP-191/\""
+        },
+        {
+          "ts": "2026-10-17T15:30:10.084Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-191 方案 — 切模型/请求关键要素观测与显式告警\n\n**口径（Andy / GM）：** 增强观测与告警；**尤其**「不回填思考→静默降智」须可"
+        },
+        {
+          "ts": "2026-10-17T15:30:10.237Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "方案：扩展 LlmRequestBuilt 统一出口+SnapshotNotice toast；思考未回填可测判据；不碰签名/compact；FE 串前端中层；交付 push main"
+        },
+        {
+          "ts": "2026-10-17T15:30:24.479Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "观测告警方案批：扩展 LlmRequestBuilt 统一出口 + SnapshotNotice toast；§4 思考未回填可测判据；不改 strip/compact；busy 靠稳定 operation_error+FE；交付 push origin/main。可实现。"
+        },
+        {
+          "ts": "2026-10-17T15:30:31.904Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "实现统一出口+思考未回填 toast；串 FE；不碰签名/compact"
+        },
+        {
+          "ts": "2026-10-17T16:13:17.397Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "cargo 补跑全绿 @2090cc0：request_health_tests 5/5（thinking_not_refilled×2、same_model_silent、foreign_strip_debug_not_toast、bind_mismatch_toast）+ replay_compat 11/11。验收见 .litecode/ops/artifacts/WP-191/acceptance.md；日志 cargo-request_health_tests.log、cargo-replay_compat.log；diff 摘要 diff-summary.md。projection_rewrote 固定 false 记为已知缺口。#5 合 main+push 待 GM 验收后执行。"
+        },
+        {
+          "ts": "2026-10-17T16:15:49.419Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：request_health 5/5、replay_compat 11/11；未改 strip/compact；projection_rewrote 观测缺口接受；已合 main 并 push origin/main @ acdb40c",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-192",
+      "domain": "client-ux",
+      "title": "FE: WP-191 toast SnapshotNotice + busy set-model rollback",
+      "result": "FE 测锁 + 必要时最小 web 改动",
+      "done_when": [
+        "SnapshotNotice warn→toast 有测",
+        "busy set-model 失败回滚+toast 有测",
+        "无 Rust 改动"
+      ],
+      "owner": "frontend_mid",
+      "reviewer": "frontend_mid",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-192/",
+      "progress": "closed done by frontend_mid: acceptance: SnapshotNotice warn toast + busy set-model operation_result locked by tests; fe-contract §6 met; no Rust",
+      "status_entered_at": null,
+      "parent": "WP-191",
+      "goal": "FE 侧：SnapshotNotice warn→toast 有测；busy set-model 失败经 operation_result(agent_already_running) toast+snapshot 回滚有测；无 Rust 改动。契约见 WP-191/fe-contract.md。",
+      "approver": "frontend_mid",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-192 — FE：WP-191 SnapshotNotice toast + busy set-model 回滚\n\n**parent：** WP-191　**owner / approver：** frontend_mid　**执行：** frontend（web）  \n**domain：** client-ux　**基线：** main（跟 WP-191）  \n**契约：** `.litecode/ops/artifacts/WP-191/fe-contract.md`（含 §6）  \n**产物目录：** `.litecode/ops/artifacts/WP-192/`\n\n## 目标\n\n1. 锁住现有 `snapshot_notice`：`level:\"warn\"` → 用户 toast（展示 `message`）。v1 **不**解析 code、**不**消费 `llm_request_built`。\n2. busy set-model：以出站 `operation_result`（`op=set_model`, `ok=false`, `error.code=agent_already_running`）为准回滚/保持 sticky UI + toast。RPC 本身成功，勿只靠 `sendRpc.reject`。错误结果**必带 snapshot**。\n3. **不必**补 `pendingModelId`（与 thinking 不同）；以测锁为主，现通路够用则不强改码。\n\n## 非目标\n\nRust；签名/compact；desktop 协议分叉；LlmRequestBuilt 精细 UI（fe-c 后置）；阻塞 WP-191 后端合入。\n\n## 拆分（本包 direct）\n\n| 项 | 内容 |\n|----|------|\n| A | SnapshotNotice warn→toast 测锁（`turnStore`） |\n| B | busy set-model `operation_result` 失败路径测锁（`sessionStore.onOperationResult`） |\n| C | 可选后置 — 不做 |\n\n## done_when\n\n- [ ] A：vitest 覆盖 warn `snapshot_notice` → toast\n- [ ] B：vitest 覆盖 `set_model` + `agent_already_running` + snapshot → toast 且 model 不脏\n- [ ] `web.md` + 测日志写入本目录\n- [ ] 未改 Rust；未 commit（除非 GM 另示）\n\n## 依据\n\nWP-191 plan §3/§5；WP-189 S10；fe-readiness.md；fe-contract.md §6。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-17T15:32:02.318Z",
+          "actor": "backend_mid",
+          "action": "create",
+          "note": "goal: FE 侧：SnapshotNotice warn→toast 有测；busy set-model 失败经 operation_result(agent_already_running) toast+snapshot 回滚有测；无 Rust 改动。契约见 WP-191/fe-contract.md。"
+        },
+        {
+          "ts": "2026-10-17T15:32:29.019Z",
+          "actor": "frontend_mid",
+          "action": "fill",
+          "note": "direct: # WP-192 — FE：WP-191 SnapshotNotice toast + busy set-model 回滚\n\n**parent：** WP-19"
+        },
+        {
+          "ts": "2026-10-17T15:32:29.175Z",
+          "actor": "frontend_mid",
+          "action": "submit",
+          "note": "FE toast+busy set-model test lock; contract fe-contract.md §6"
+        },
+        {
+          "ts": "2026-10-17T15:32:29.350Z",
+          "actor": "frontend_mid",
+          "action": "approve",
+          "note": "self-approve as approver; parallel with BE WP-191"
+        },
+        {
+          "ts": "2026-10-17T15:32:29.498Z",
+          "actor": "frontend_mid",
+          "action": "start",
+          "note": "dispatch frontend-web A+B test lock"
+        },
+        {
+          "ts": "2026-10-17T15:35:38.830Z",
+          "actor": "frontend_mid",
+          "action": "deliver",
+          "note": "A+B test lock PASS: vitest 67/67; no product code change; artifacts WP-192/web.md + wp192-vitest.txt"
+        },
+        {
+          "ts": "2026-10-17T15:35:38.997Z",
+          "actor": "frontend_mid",
+          "action": "close",
+          "note": "acceptance: SnapshotNotice warn toast + busy set-model operation_result locked by tests; fe-contract §6 met; no Rust",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-193",
+      "domain": "harness-core",
+      "title": "审阅：PTC/code 模式对 agent 的可理解与易用",
+      "result": ".litecode/ops/artifacts/WP-193/review.md",
+      "done_when": [
+        "总分结构可读报告已交付",
+        "GM确认易于阅读",
+        "已通过聊天发给Andy"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-193/",
+      "progress": "closed done by gm: GM审读：总分B+结构清晰可读；已聊天发给Andy；本包只审阅未改码",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "在 feat/tool-contract-ptc 上做架构与 agent 面审阅：优先架构、run_code 管线、若干 tool 设计；关注 agent 是否易理解易用，少陷工程细节与人类 UX。产物一份总分结构的可读报告 md（细节附录留档），GM 审阅后聊天发给 Andy 再封包。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-193 审阅 brief — PTC / code 模式（agent 面）\n\n**分支：** `feat/tool-contract-ptc`（实验分支；本地已切）  \n**口径（Andy）：** 架构优先 + run_code 管线 + 若干 tool 设计问题；**关注 agent 是否易理解、易用**；少陷工程细节与人类侧 UX。  \n**产物：** 一份**总分结构、易于阅读**的审阅报告 md（细节放附录留档）。GM 审读确认可读后，**通过聊天发给 Andy**，再封包。\n\n## 范围（做）\n1. **架构**：PTC/code 模式在 agent 工作流里的位置与边界是否清晰（相对 direct/普通工具调用）。\n2. **run_code 管线**：从「模型决定写代码 → 执行 → 拿回结果/错误」整条链路对 agent 是否可预测、可纠错（契约、失败形态、预算/超时语义等，写到「agent 怎么理解」为止）。\n3. **若干 tool 设计**：尤其进入 code 模式的文件类工具（read/edit/write 等）与 run_code 的配合；说明文案、成功/失败契约是否让模型少猜。\n4. **agent 体验轴**：易理解 / 易用 / 易排错 / 是否鼓励错误用法；对照 docs/ptc 章程与现行实现。\n\n## 非范围（不做或轻触）\n- 人类侧卡片/设置 UI 体验深挖（web 视图已删 run_code 专用展示，仅作事实备注）。\n- 纯工程债清单（性能、实现细节）除非直接损害 agent 可理解性。\n- 不要求改码；本包是审阅，结论可建议后续包。\n\n## 报告形态（硬性）\n- **前半：总分结构** — 总评（一句话 + 分数或档位）→ 若干大结论（每条一段可读散文，不是 bullet 海）。\n- **后半：附录** — 证据、文件路径、问题明细留档。\n- 路径：`.litecode/ops/artifacts/WP-193/review.md`\n- Andy 最终要的是「能一口气读完的报告」，不是密密麻麻问题清单。\n\n## 验收\n1. review.md 符合上述形态，GM 认为易于阅读。\n2. GM 已把报告正文（或精华）通过聊天发给 Andy。\n3. 可封包 close done。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-20T22:05:10.100Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 在 feat/tool-contract-ptc 上做架构与 agent 面审阅：优先架构、run_code 管线、若干 tool 设计；关注 agent 是否易理解易用，少陷工程细节与人类 UX。产物一份总分结构的可读报告 md（细节附录留档），GM 审阅后聊天发给 Andy 再封包。"
+        },
+        {
+          "ts": "2026-10-20T22:05:18.258Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-193 审阅 brief — PTC / code 模式（agent 面）\n\n**分支：** `feat/tool-contract-ptc`（实验分"
+        },
+        {
+          "ts": "2026-10-20T22:05:18.424Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-193/\" -> \".litecode/ops/artifacts/WP-193/\""
+        },
+        {
+          "ts": "2026-10-20T22:05:24.143Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "审阅口径见 brief：agent 面架构/run_code/tools；总分报告"
+        },
+        {
+          "ts": "2026-10-20T22:05:24.280Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：agent 面审阅；总分可读报告；少工程细节与人类 UX；交付 review.md 后 GM 聊天发给 Andy 再封。"
+        },
+        {
+          "ts": "2026-10-20T22:05:24.407Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "派 Runtime/Tools 等读 docs/ptc+实现，产出总分 review.md"
+        },
+        {
+          "ts": "2026-10-20T22:08:46.415Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "review.md 已交：总评 B+（契约/边界可用；data. 文案漂移与 edit 半成功等非 blocker）。产物：artifacts/WP-193/review.md；digs：dig-runtime.md / dig-tools.md / dig-mid-notes.md。本包未改码。"
+        },
+        {
+          "ts": "2026-10-20T22:09:07.871Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM审读：总分B+结构清晰可读；已聊天发给Andy；本包只审阅未改码",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-194",
+      "domain": "harness-core",
+      "title": "实现：PTC 描述/SDK 文案对齐裸 data",
+      "result": ".litecode/ops/artifacts/WP-194/acceptance.md",
+      "done_when": [
+        "描述与SDK无过时data.教法",
+        "行号与续页说法对齐",
+        "fixture/测试绿",
+        "diff证明未改执行核心"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-194/",
+      "progress": "closed done by gm: 验收通过：教法文案对齐裸 data；sdk_snapshot 2/2；已 push feat/tool-contract-ptc @ 242c5c9，未合 main",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 WP-193：① 五工具描述与 SDK 去掉 data. 前缀对齐裸 resolve；② 行号前缀说法改为勿从外层带行号文本粘贴，并补 PRELUDE 续页方言。只改教法文案，不改运行时契约。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-194 实现 brief — PTC 文案对齐（agent 教法）\n\n**分支：** `feat/tool-contract-ptc`（继续在实验分支上改，不推 main，除非 Andy 另说）  \n**来源：** WP-193 建议优先两项。  \n**口径：** 只改正文案/注释/PRELUDE，使描述与运行时「裸 resolve data」一致；**不改**工具运行时契约、权限、render、spill。\n\n## 要做\n1. **去掉 `data.` 信封腔：** 五工具描述（`src/tools/descriptions/{read,glob,grep,edit,write}.md`）与 SDK/绑定长注释（含 `src/tool/code_manifest.rs`、`src/tool/fixtures/run_code_sdk*` 等相关处）中，把 `data.file` / `data.lines` / `data.page` 等改为与运行时一致的裸字段名（`file` / `lines` / `page`…）。程序示例应写 `r.file` 而非 `r.data.file`。\n2. **行号前缀说法：** 把「不要带 read 行号前缀」类 direct 残留改成「勿从带行号的外层文本/账本粘贴再 edit」；并（可选但建议）在 PRELUDE 加一句续页方言：read 用 `start_line`，glob/grep 用 `cursor`。\n3. 同步任何会因文案字符串失败的 fixture/单测期望；改完自检描述与 SDK fixture 一致。\n\n## 不做\n- 不改 edit 半成功语义、不加强制查 `failed` 的运行时行为。\n- 不改 Promise.all / `.status` 的硬拦截（属下一档产品取舍）。\n- 不改人类侧 UI。\n\n## 验收\n1. 五工具描述 + SDK/PRELUDE 示例无过时的 `data.*` 成功路径教法（允许历史对比说明里提及旧信封，但须标明已废弃）。\n2. 行号/续页说法与 code 面一致。\n3. 相关 fixture/测试绿；diff 证明未改工具执行核心逻辑（或仅改注释字符串）。\n4. 产物：`artifacts/WP-194/` 含 diff 摘要与验收说明；合入当前实验分支（push 该分支即可，不要求合 main）。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T02:26:22.634Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 WP-193：① 五工具描述与 SDK 去掉 data. 前缀对齐裸 resolve；② 行号前缀说法改为勿从外层带行号文本粘贴，并补 PRELUDE 续页方言。只改教法文案，不改运行时契约。"
+        },
+        {
+          "ts": "2026-10-21T02:26:25.716Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-194 实现 brief — PTC 文案对齐（agent 教法）\n\n**分支：** `feat/tool-contract-ptc`（继续在实验分支"
+        },
+        {
+          "ts": "2026-10-21T02:26:25.922Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "文案对齐两点：去 data. + 行号/续页说法；不改运行时"
+        },
+        {
+          "ts": "2026-10-21T02:26:26.127Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：只改教法文案对齐裸 resolve；不改执行契约。交付验收+diff，合入 feat/tool-contract-ptc。"
+        },
+        {
+          "ts": "2026-10-21T02:26:26.308Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "派 Tools 改描述/SDK/PRELUDE+fixture"
+        },
+        {
+          "ts": "2026-10-21T03:48:21.389Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"chasing Tools; no product diff @ bd71f8c; mid takeover if s"
+        },
+        {
+          "ts": "2026-10-21T03:48:36.818Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"chasing Tools; no product diff @ bd71f8c; mid takeover if s -> \"mid takeover: editing descriptions/SDK/PRELUDE; Tools stood"
+        },
+        {
+          "ts": "2026-10-21T03:52:58.068Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "教法文案对齐裸 data；HEAD 242c5c9 pushed feat/tool-contract-ptc；sdk_snapshot 2/2；见 acceptance.md + diff-summary.md"
+        },
+        {
+          "ts": "2026-10-21T03:53:08.823Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：教法文案对齐裸 data；sdk_snapshot 2/2；已 push feat/tool-contract-ptc @ 242c5c9，未合 main",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-195",
+      "domain": "harness-core",
+      "title": "调研：bash 系列是否进 Code 模式",
+      "result": ".litecode/ops/artifacts/WP-195/report.md",
+      "done_when": [
+        "总分报告含倾向结论",
+        "回答bash设计是否要改",
+        "GM聊天发给Andy"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-195/",
+      "progress": "closed done by gm: GM审读：总分结论清晰（不进）；bash设计问答直接；缺dig-tools已注明可接受。已聊天发给Andy。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "分析 bash（及同族）进入 code 模式的可行性：挑战、风险、收益；以及 bash 工具设计本身是否需调整。产物总分可读报告，不改码。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-195 调研 brief — bash 系列是否进 Code 模式\n\n**分支：** `feat/tool-contract-ptc`（只读调研为主；不要求改码）  \n**口径（Andy）：** 分析 bash 系列能否进入 code 模式；挑战、风险、收益；**bash 工具本身设计是否要调整/修改**。  \n**产物：** 总分结构、易于阅读的调研报告 md（细节附录留档）；GM 审读后聊天发给 Andy，再封包。\n\n## 要答清的问题\n1. **能否 / 该不该** 把 bash（及同族：shell / 终端类若有多个）做成 Code 面工具（经 `tools.*` 在 `run_code` 内编排）？\n2. **挑战：** 与现有 Direct 面 bash 的权限/审批/超时/流式输出/交互/工作目录/并发模型如何对齐；与五文件工具 + run_code 预算/封口/unsettled 如何共存。\n3. **风险：** agent 误用、副作用不可见、绕过文件账本、权限面扩大、错误形态是否仍易理解。\n4. **收益：** 编排密度、少 round-trip、与 read/edit/write 同程序内组合等。\n5. **工具设计是否要改：** 若进 Code，参数/返回契约、流式/分块、审批挂起、失败码是否要相对今日 Direct bash 重新设计；若不进，Direct bash 是否仍建议小改以配合 code 生态。\n\n## 非范围\n- 本包不实现、不合 main；最多附「可选后续包」建议。\n- 少陷纯工程实现细节与人类 UI；站在 **agent 易理解/易用**。\n\n## 验收\n1. `artifacts/WP-195/report.md`：总分 + 大结论散文 + 附录证据。\n2. 明确给出倾向结论（进 / 不进 / 有条件进）及对「bash 设计要不要改」的直接回答。\n3. GM 审读后聊天发给 Andy，再 close。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T02:27:55.504Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 分析 bash（及同族）进入 code 模式的可行性：挑战、风险、收益；以及 bash 工具设计本身是否需调整。产物总分可读报告，不改码。"
+        },
+        {
+          "ts": "2026-10-21T02:27:55.674Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-195 调研 brief — bash 系列是否进 Code 模式\n\n**分支：** `feat/tool-contract-ptc`（只读调研为主；"
+        },
+        {
+          "ts": "2026-10-21T02:27:55.832Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "调研：bash进Code？挑战风险收益+设计是否要改"
+        },
+        {
+          "ts": "2026-10-21T02:27:56.010Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：只调研；总分报告；须给倾向结论与bash设计是否要改的直接答案。"
+        },
+        {
+          "ts": "2026-10-21T02:27:56.178Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "派 Tools/Runtime 对照章程与现行bash实现写报告"
+        },
+        {
+          "ts": "2026-10-21T03:48:46.844Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"aggregating report.md from dig-mid+dig-runtime; Tools dig m"
+        },
+        {
+          "ts": "2026-10-21T03:49:51.745Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "report.md 齐：倾向不进；材料 mid+runtime（缺 dig-tools，报告已注明）；扉页 Grok Bot 会话自动路由"
+        },
+        {
+          "ts": "2026-10-21T03:50:04.205Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "GM审读：总分结论清晰（不进）；bash设计问答直接；缺dig-tools已注明可接受。已聊天发给Andy。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-196",
+      "domain": "harness-core",
+      "title": "实现：bash 家族最低风险切口进 Code（防退化）",
+      "result": "Code 面可用的结构化 bash/命令能力 + 防退化教学/验收产物；推实验分支",
+      "done_when": [
+        "方案批准并落地：Code 可调、稳定 data、不堵预算；防退化验收过；测试绿；artifacts/WP-196 齐；未擅合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-196/",
+      "progress": "closed done by gm: 验收通过：run_command Code 前台契约齐；默认绑定隐藏 Direct bash 三件套（SEED 16）；单轨教法；cargo-hide-bash 37 passed；feat/tool-contract-ptc @ 17600f8 已 push 未合 main。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 Andy 纠正：最终要进 Code。选最低风险切口把 bash/命令能力送进 Code，使 agent 不再系统性退化到 Direct-only bash；满足 data/预算/结束语义等门槛子集；验收含防退化。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-196 方案 — bash 家族最低风险切口进 Code\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD 以开工时为准（现 `242c5c9`）  \n**依据：** brief；WP-195 `dig-runtime.md` §7 六条门槛；report §7 Andy 纠正（最终要进；「不进」作废）\n\n---\n\n## 1. 切口选择（最低风险）\n\n**选调研 B：新增 Code 面「前台可取消结构化执行」工具；现有 Direct 三件套（`bash` / `wait_shell` / `kill_shell`）暂留，专司长作业。**\n\n| 候选 | 判定 |\n|---|---|\n| A. 只改 `surface()` | **禁止**（brief + dig） |\n| B. 新前台结构化工具 | **本包采用** |\n| C. 三件套整体 code 化 | **不做**：须一次满足 §7 全部六条（含异步 wait、作业寿命 vs 封口、同面三件套），风险与范围显著更大，不是最低风险切口 |\n\n**为何 B 仍是最低风险：** 不碰现有作业协议与 kill/wait；新工具可按 Code 契约一次做对（稳定 `data`、不堵预算、结束即清进程）；Direct 长作业仍可用，但教学上不再当「改文件→跑测」默认逃逸口。\n\n**暂定工具名：** `run_command`（Code only；最终名落地前 Runtime 可在实现笔记里确认无冲突）。SDK：`tools.run_command(...)`。\n\n---\n\n## 2. 目标契约（对照 §7 本切口子集）\n\n1. **成功 `data`（稳定）：** 至少含 `status`（如 `exited`）、`exit_code`、有界输出摘要（head/tail 或截断字段）、超长时 `output_file`（路径）。非零退出码仍为**成功 resolve**（领域结果在 data 里），与文件工具一致；取消/内部失败走 error。\n2. **等待不堵预算：** 进程等待不得饿死 `run_code` 预算 watcher（不占死 current-thread 同步 `jobs.wait` 形态）；取消/超时在宽限内可见终态。单测或等价证明覆盖关键路径。\n3. **程序结束语义：** 本工具**不登记后台作业**；调用结束或取消 → **杀进程组**；不返回可跨调用的 `bash_id`。与 Direct `bash`「到点转后台」语义分离。\n4. **effects：** 命令可能改文件 → 声明/上报 `effects`（按现有 Code 工具惯例；Runtime 定最小实现）。\n5. **长日志：** 返回摘要 + `output_file`；agent 用 `tools.read` 分页，不把整日志塞进 64KB 视口。\n6. **同面：** 本工具仅 Code；不要求把 Direct 三件套搬进 Code。跨回合长作业仍走 Direct bash 三件套（教学标明场景）。\n\n**cwd：** 默认执行上下文 `workspace_root`（勿 `workdir: None` 读 LAP）。\n\n---\n\n## 3. 防退化（产品硬要求）\n\n- 典型路径「改文件 → 跑命令 → 看退出码再改」须可在**同一 `run_code` 程序**内用 `tools.edit/write` + `tools.run_command` 完成。\n- Direct `bash` **保留**，但描述/SDK/教学须写清：短测/构建编排优先 Code 内 `run_command`；Direct bash 用于需后台/跨回合 wait·kill 的长作业，**不是**该路径默认口。\n- 交付物附 **agent 视角最小场景说明**（acceptance 内一节）：退化前（Direct-only）vs 退化后应走的 Code 编排示例。\n\n---\n\n## 4. 分工与串并行\n\n| 域 | 职责 | 顺序 |\n|---|---|---|\n| **Runtime** | 实现 `run_command`：spawn、可取消等待、杀进程组、`data` schema、effects、准入/嵌套单测、预算共存证明 | **先**（持重型槽；cargo 前报 mid） |\n| **Tools** | 描述 md、`code_manifest`/SDK 绑定与示例、Direct bash 教法收窄（防逃逸）、fixture 快照 | Runtime 契约草稿稳定后 **并行** 文案；schema 以 Runtime 为准 |\n| **Provider** | 本包默认 **不派**（无 codec/请求面变更）；若投影/绑定暴露缺口再串 | — |\n| **mid** | 批计划、串重型槽、交叉审、防退化验收、artifacts、push 分支、deliver | 全程 |\n\n**禁区：** 不改无关权限 floor、人类 UI、无关 PTC 文案大扫；不擅合 main；不 commit 无关脏 ops board。\n\n---\n\n## 5. 验收对照 done_when\n\n1. Code 可调 `run_command`；成功稳定 `data`（状态/退出码/有界输出或 `output_file`）。\n2. 与预算共存；取消/超时语义写清 + 测覆盖。\n3. 防退化：描述/SDK/教学 + acceptance 场景说明。\n4. 相关 `cargo test` 绿；`artifacts/WP-196/{plan,diff-summary,acceptance}.md`。\n5. push `feat/tool-contract-ptc`；未合 main。\n\n---\n\n## 6. 风险与默认拍板（请 GM 批方案时一并确认）\n\n| # | 议题 | 本方案默认 |\n|---|---|---|\n| Q1 | 工具名 `run_command` | 采用；冲突则 Runtime 报 mid 改名 |\n| Q2 | Direct 三件套本包不改行为（仅教法） | 是 |\n| Q3 | 本包不做三件套 code 化 / 不做异步化旧 `jobs.wait` | 是 |\n| Q4 | 超时：单次调用上限（建议秒级封顶，与 run_code 预算协同；具体数值 Runtime 提案） | 实现时定，写入 acceptance |\n| Q5 | effects：最小「可能写 workspace」声明即可首期 | 是 |\n\n若 GM 要改选 C（三件套整体 code 化），请在 approve 注里推翻本方案并要求补论证。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T04:07:42.086Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 Andy 纠正：最终要进 Code。选最低风险切口把 bash/命令能力送进 Code，使 agent 不再系统性退化到 Direct-only bash；满足 data/预算/结束语义等门槛子集；验收含防退化。"
+        },
+        {
+          "ts": "2026-10-21T04:08:26.060Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-196 方案 — bash 家族最低风险切口进 Code\n\n**owner：** backend_mid  \n**分支：** `feat/tool-c"
+        },
+        {
+          "ts": "2026-10-21T04:08:26.206Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "切口 B：新 Code 工具 run_command（前台可取消+稳定 data）；Direct 三件套暂留+教法防退化；见 artifacts/WP-196/plan.md"
+        },
+        {
+          "ts": "2026-10-21T04:08:26.390Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-196\" -> \".litecode/ops/artifacts/WP-196/\""
+        },
+        {
+          "ts": "2026-10-21T04:08:26.520Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"plan awaiting approval by gm\" -> \"plan submitted; awaiting GM approve (cut B: run_command)\""
+        },
+        {
+          "ts": "2026-10-21T04:08:39.389Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批 B 切口：run_command（Code 前台可取消+稳定 data+结束杀进程组）；Q1–Q5 默认全认。Direct 三件套本包仅教法收窄。禁只改 surface / 禁三件套整体 code 化。批后 start 派 Runtime→Tools。"
+        },
+        {
+          "ts": "2026-10-21T04:08:46.293Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "切口 B 已批；派 Runtime 实现 run_command，Tools 待契约稳后教法"
+        },
+        {
+          "ts": "2026-10-21T04:08:46.448Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in progress\" -> \"in_progress: Runtime implementing run_command; Tools standb"
+        },
+        {
+          "ts": "2026-10-21T04:14:48.715Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"in_progress: Runtime implementing run_command; Tools standb -> \"Runtime impl landed; cargo cleared (~8Gi avail); Tools teac"
+        },
+        {
+          "ts": "2026-10-21T04:18:20.760Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"Runtime impl landed; cargo cleared (~8Gi avail); Tools teac -> \"Tools teaching done; waiting Runtime cargo+sdk_snapshot (+e"
+        },
+        {
+          "ts": "2026-10-21T04:18:42.993Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"Tools teaching done; waiting Runtime cargo+sdk_snapshot (+e -> \"Runtime: run_command 8ok; retesting sdk_snapshot + explore "
+        },
+        {
+          "ts": "2026-10-21T04:47:40.131Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"Runtime: run_command 8ok; retesting sdk_snapshot + explore  -> \"Andy口径: Direct bash默认关; Runtime隐藏+Tools重做单轨教法\""
+        },
+        {
+          "ts": "2026-10-21T04:47:48.946Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"Andy口径: Direct bash默认关; Runtime隐藏+Tools重做单轨教法\" -> \"Runtime hiding Direct bash family; prior tests green; Tools"
+        },
+        {
+          "ts": "2026-10-21T04:48:47.876Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"Runtime hiding Direct bash family; prior tests green; Tools -> \"Tools single-track teaching done; waiting Runtime default-h"
+        },
+        {
+          "ts": "2026-10-21T04:53:54.301Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "run_command Code-only + Direct bash默认关; HEAD 17600f8 pushed feat/tool-contract-ptc; hide-bash 37 passed; 见 acceptance.md"
+        },
+        {
+          "ts": "2026-10-21T04:53:54.473Z",
+          "actor": "backend_mid",
+          "action": "set",
+          "note": "progress: \"awaiting acceptance by gm\" -> \"delivered: 17600f8 pushed; awaiting GM acceptance\""
+        },
+        {
+          "ts": "2026-10-21T04:54:04.727Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：run_command Code 前台契约齐；默认绑定隐藏 Direct bash 三件套（SEED 16）；单轨教法；cargo-hide-bash 37 passed；feat/tool-contract-ptc @ 17600f8 已 push 未合 main。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-197",
+      "domain": "harness-core",
+      "title": "实现：shell run/wait/kill 精简契约（硬清历史）",
+      "result": "新三动作可用；旧契约清零；测绿；artifacts/WP-197",
+      "done_when": [
+        "三动作落地；旧符号/文案 grep 干净；wait 钳制；cargo 绿；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-197",
+      "progress": "closed done by gm: 验收通过：run/wait/kill Command；硬清旧 shell；测绿；25a15e1 未合 main。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 Andy 定稿落地：run/wait/kill + Command{id,exit_code,output}；wait(sec) 有界并静默钳制。不符合本设计的旧 shell/run_command/command_* 实现与文案全删一行不留。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-197 方案 — shell run/wait/kill 精简契约（硬清历史）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD `ab95a80`（已删 Direct bash；现存 `run_command` / `command_output` / `command_kill` 为本包删除对象）  \n**依据：** brief；Andy+GM 定稿硬清\n\n---\n\n## 1. 目标契约（唯一）\n\n```ts\ntools.run(command: string) -> Command\ntools.wait(id: string, sec: number) -> Command  // sec 必填；超上限静默钳制\ntools.kill(id: string) -> Command\n\ntype Command = {\n  id: string;\n  exit_code: number | null;  // null=未结束/无码\n  output: string;            // 始终有；截断/落盘路径/被杀说明写入文本\n};\n```\n\n- Code 面仅上述三动作；默认 shell 相关绑定只有它们。\n- 无 kind 三态、无 timeout/promote、无 run_in_background、无 stdout/stderr 双窗、无 command_output 方言。\n- **wait 上限默认 300s**（写入 description；模型给更大值静默钳到 300）。\n\n**工具注册名：** `run` / `wait` / `kill`（SDK `tools.run` / `tools.wait` / `tools.kill`）。若与既有非 shell 符号冲突，中层拍板加前缀 `shell_` 再报 GM——默认不加。\n\n---\n\n## 2. 硬清范围（一行不留）\n\n删除/改写直至 grep 干净：\n\n| 删 | 含 |\n|---|---|\n| 实现 | `run_command`、`command_output`、`command_kill`、相关 `command_job` 若只服务旧契约 |\n| 文案 | 对应 descriptions、Deprecated bash/wait_shell/kill_shell 残留 |\n| 绑定 | seed / registry / permission preset 名若只服务旧契约 |\n| 测/SDK | fixture、sdk_snapshot、相关 cargo 测改到新契约 |\n\n可复用底层：进程组、job 登记、输出截断/落盘——**仅作内部实现**，对外只暴露 Command 三字段。\n\n---\n\n## 3. 行为要点\n\n1. **run**：启命令 → 立即或短等后返回 Command（未结束则 `exit_code=null`，`output` 已有片段或说明）；登记可 wait/kill 的 id。\n2. **wait**：必填 sec；钳制后阻塞至结束或到期；到期未结束仍返回 Command（null exit + output 现状）。\n3. **kill**：杀进程组；返回 Command（被杀说明进 output）。\n4. **output**：主感知区；截断标注、落盘路径、被杀/超时说明全写进字符串；字段永远存在（可空串，不缺字段）。\n\n---\n\n## 4. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | 新三工具实现 + 硬删旧实现/绑定/测；底层 job 复用；投影默认仅三动作 |\n| **Tools** | description + SDK fixture + 单轨教法（只教 run/wait/kill）；扫残留文案 |\n| **mid** | 串槽、交叉审、grep 验收、acceptance/diff-summary、commit/push、deliver |\n\n串行：Runtime 先落实现与删除 → Tools 对齐教法/fixture（可叠 description 草稿）→ mid 收口测与 artifacts。\n\n---\n\n## 5. 验收（对照 brief）\n\n1. Code 默认绑定仅 `run`/`wait`/`kill`（shell 相关）。\n2. 仓内无旧符号/文案：`run_command`、`command_output`、`command_kill`、旧 bash/wait_shell/kill_shell 契约残留（grep）。\n3. 相关 cargo test 绿；`artifacts/WP-197/{acceptance,diff-summary}.md`。\n4. push `feat/tool-contract-ptc`；未合 main。\n\n---\n\n## 6. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 工具名 `run`/`wait`/`kill` | 采用 |\n| Q2 | wait 上限 300s 静默钳制 | 采用 |\n| Q3 | 硬删现行 run_command 三件套，无双轨/无逃生 | 是 |\n| Q4 | 不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T16:23:49.600Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 Andy 定稿落地：run/wait/kill + Command{id,exit_code,output}；wait(sec) 有界并静默钳制。不符合本设计的旧 shell/run_command/command_* 实现与文案全删一行不留。"
+        },
+        {
+          "ts": "2026-10-21T16:24:52.758Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-197 方案 — shell run/wait/kill 精简契约（硬清历史）\n\n**owner：** backend_mid  \n**分支：** `"
+        },
+        {
+          "ts": "2026-10-21T16:24:52.956Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "方案短稿：run/wait/kill + Command；硬删 run_command/command_*；wait 上限 300s；等批"
+        },
+        {
+          "ts": "2026-10-21T16:25:07.781Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：run/wait/kill + Command；wait 上限 300s 静默钳制；硬删旧契约一行不留；Q1–Q4 全认。批后 start。"
+        },
+        {
+          "ts": "2026-10-21T16:25:14.655Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q4 全认；派 Runtime 硬清实现，Tools 待命对齐教法"
+        },
+        {
+          "ts": "2026-10-21T17:07:38.267Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ 25a15e1；run/wait/kill+Command；测 21+2 sdk；acceptance 齐；未合 main"
+        },
+        {
+          "ts": "2026-10-21T17:07:51.645Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：run/wait/kill Command；硬清旧 shell；测绿；25a15e1 未合 main。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-198",
+      "domain": "harness-core",
+      "title": "实现：edit/apply_edits 精简契约（硬清）",
+      "result": "新契约可用；旧 edit 清零；测绿；artifacts/WP-198",
+      "done_when": [
+        "两工具落地；旧符号 grep 干净；cargo 绿；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-198",
+      "progress": "closed done by gm: 验收通过：edit/apply_edits EditResult；硬清旧 edit；43 passed；同 tip 25a15e1。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按定稿落地 edit+apply_edits；EditResult{ok,path,message}；串行失败跳过。不符合设计的旧 edit 契约全杀。有用状态反馈留在 message。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-198 方案 — edit / apply_edits 精简（硬清）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**串行：** **WP-197 重型槽优先**；本包可批可写码，**禁止与 197 同时重 cargo**。  \n**依据：** brief；Andy+GM 定稿硬清\n\n---\n\n## 1. 目标契约（唯一）\n\n```ts\ntools.edit({ path, old_string, new_string }) -> EditResult\ntools.apply_edits(edits: Array<{ path, old_string, new_string }>) -> { results: EditResult[] }\n// 串行；单项失败跳过继续\n\ntype EditResult = { ok: boolean; path: string; message: string };\n```\n\n- 入参 object bag（与 Code 习惯一致）。\n- `edit`：单文件单替换；匹配须唯一（多匹配失败，指引写进 `message`）。\n- `apply_edits`：数组串行；失败跳过继续；返回 `results` 与入参数组等长。\n- 空 `new_string` = 删除 `old_string`（保留现行语义）。\n- 有用失败指引（多匹配、未找到、权限等）**只**进 `message` 文本，不堆 details 树。\n\n---\n\n## 2. 硬清（一行不留）\n\n| 砍 | 说明 |\n|---|---|\n| `replace_all` | 参数与行为全删 |\n| `expected_hash` | 首期不做；相关 stale 结构化出口删 |\n| 旧多块 API | 单工具 `edits[]` 多块同 path 形态删除 |\n| 双出口 | 半成功 resolve vs 全失败 throw → 统一 resolve + `ok`/`message` |\n| 结构化报告 | `blocks`/`applied`/`failed`/`details`/`file.hash` 等旧出参全删 |\n\n可复用底层：精确匹配、CRLF/LF、BOM、写盘一次——**内部用**，对外只暴露 EditResult。\n\n---\n\n## 3. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | 新契约实现 + 硬删旧 edit API/测；默认绑定 `edit`+`apply_edits`；dig-runtime-impl |\n| **Tools** | description + SDK fixture + 单轨教法；扫残留 |\n| **mid** | 与 WP-197 串槽；交叉审；grep；acceptance/diff-summary；commit/push；deliver |\n\n顺序：方案批后 → Runtime（可与 197 实现期并行写码，**cargo 必须等 197 测完放槽**）→ Tools 对齐 → mid 收口。\n\n---\n\n## 4. 验收\n\n1. Code 面仅 `edit` + `apply_edits`；grep 无旧契约残留（`replace_all`/`expected_hash`/blocks 出参等）。\n2. 失败跳过续跑；`message` 保留有用指引。\n3. 相关 cargo 绿；`artifacts/WP-198/{acceptance,diff-summary}.md`；push 实验分支；未合 main。\n\n---\n\n## 5. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 工具名 `edit` / `apply_edits` | 采用 |\n| Q2 | 砍 replace_all + expected_hash（首期） | 是 |\n| Q3 | 统一 resolve + EditResult，无双出口 | 是 |\n| Q4 | 与 WP-197 串行重型槽（197 优先） | 是 |\n| Q5 | 不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T16:45:18.014Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按定稿落地 edit+apply_edits；EditResult{ok,path,message}；串行失败跳过。不符合设计的旧 edit 契约全杀。有用状态反馈留在 message。"
+        },
+        {
+          "ts": "2026-10-21T16:45:43.099Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-198 方案 — edit / apply_edits 精简（硬清）\n\n**owner：** backend_mid  \n**分支：** `feat/"
+        },
+        {
+          "ts": "2026-10-21T16:45:43.251Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "短方案：edit+apply_edits→EditResult；硬清旧多块/replace_all/hash/双出口；与 WP-197 串槽；等批"
+        },
+        {
+          "ts": "2026-10-21T16:45:55.068Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：edit+apply_edits；EditResult；硬清旧契约；Q1–Q5 全认。197 优先重型槽。另：内存门已改为 available≥2GiB（非 4.5Gi）；现≈2.9Gi 可跑 197 cargo。"
+        },
+        {
+          "ts": "2026-10-21T16:46:00.732Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q5 全认；写码可开，cargo 等 WP-197 测完"
+        },
+        {
+          "ts": "2026-10-21T17:07:38.430Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ 25a15e1；edit+apply_edits→EditResult；测 43；acceptance 齐；未合 main"
+        },
+        {
+          "ts": "2026-10-21T17:07:51.815Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：edit/apply_edits EditResult；硬清旧 edit；43 passed；同 tip 25a15e1。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-199",
+      "domain": "harness-core",
+      "title": "实现：grep/glob/read 精简（硬清冗余）",
+      "result": "三工具新契约；旧方言清零；测绿；artifacts/WP-199",
+      "done_when": [
+        "契约落地；旧符号 grep 干净；行号统一；cargo 绿；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-199",
+      "progress": "closed done by gm: 验收通过：grep/glob/read 精简；硬清 cursor/page/reason；行号统一；81+2 测绿；c688b0a 未合 main。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按定稿落地三件套；砍 cursor/reason/page 等冗余；统一行号心智；不符合设计的全杀；语言通用易懂。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-199 方案 — grep / glob / read 精简（硬清冗余）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD `25a15e1`  \n**依据：** brief；Andy+GM 定稿硬清  \n**内存：** available ≥ 2GiB 即可 cargo（中层串行放行）\n\n---\n\n## 1. 目标契约（唯一）\n\n```ts\ntools.grep({ pattern, path?, glob?, literal?, ignore_case?, limit? })\n  -> { hits: Array<{ path, line, text }>; message: string }\n\ntools.glob({ pattern, path?, limit? })\n  -> { paths: string[]; message: string }\n\ntools.read({ path, start_line?, limit? })\n  -> { path, start_line, lines: string[]; message: string }\n```\n\n- 入参 object bag。\n- **行号：** 全工具 1-based；grep `hits[].line`；read 保留入参/出参名 **`start_line`**（禁止改成 offset）。\n- 一次有界（limit）；搜到/没搜到；触顶/原因/截断说明进 **`message`**。\n- `hits[].text`：该行有界摘要（截断标注进 text 或 message，不另堆字段树）。\n- `read.lines`：字符串数组（该页行内容）；续读用更大 `start_line`，**无 cursor**。\n\n---\n\n## 2. 硬清（一行不留）\n\n| 砍 | 含 |\n|---|---|\n| 分页方言 | `cursor` / `stale_cursor` / `page` / `page.next` / `has_more` |\n| 枚举/树 | 多枚举 `reason`、`searched`、`base`、matches 旧字段树 |\n| grep 旧出参 | `matches`/`start_line`/`end_line`/`line_text`/`line_truncated` 等 → 统一 `hits[{path,line,text}]` |\n| glob 旧出参 | `base` workspace|absolute 双态等冗余；paths 一律工作区相对（除非实现必须绝对——默认相对，绝对只进 message 说明） |\n| read 旧面 | `end_line`、`file.hash`/`expected_hash`、`lines[].line_truncated` 结构、`reason` 枚举、`page.*` |\n| 未列入参 | brief 未列的旋钮（如 `include_ignored`）默认砍；若砍后无法搜 gitignore 外文件，message 说明，不另造方言 API |\n\n语言：教法通用易懂，禁止再造方言术语。\n\n---\n\n## 3. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | 三工具实现+硬删旧契约/测；默认绑定不变名；dig-runtime-impl |\n| **Tools** | description + SDK fixture + 单轨教法；扫残留方言 |\n| **mid** | 串槽、交叉审、grep 验收、acceptance/diff-summary、commit/push、deliver |\n\n顺序：Runtime 硬清 → Tools 对齐 → mid 收口。cargo 独占串行，门槛 ≥2GiB。\n\n---\n\n## 4. 验收\n\n1. 三工具按上契约；grep 活跃面无旧方言残留（cursor/stale_cursor/reason 枚举/searched/base/page 等）。\n2. 行号统一 1-based；read 仍 `start_line`；教法通用易懂。\n3. 相关 cargo 绿；`artifacts/WP-199/{acceptance,diff-summary}.md`；push 实验分支；未合 main。\n\n---\n\n## 5. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 出参形态按 brief（hits/paths/lines+message） | 采用 |\n| Q2 | 硬清 cursor/page/reason 树等 | 是 |\n| Q3 | read 保留 `start_line`，不改 offset | 是 |\n| Q4 | brief 未列旋钮（含 include_ignored）默认砍 | 是 |\n| Q5 | 不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T17:20:40.045Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按定稿落地三件套；砍 cursor/reason/page 等冗余；统一行号心智；不符合设计的全杀；语言通用易懂。"
+        },
+        {
+          "ts": "2026-10-21T17:20:59.629Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-199 方案 — grep / glob / read 精简（硬清冗余）\n\n**owner：** backend_mid  \n**分支：** `fea"
+        },
+        {
+          "ts": "2026-10-21T17:20:59.774Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "短方案：grep/glob/read 精简；硬清 cursor/page/reason；read 留 start_line；等批"
+        },
+        {
+          "ts": "2026-10-21T17:21:13.052Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：三件套契约；硬清 cursor/page/reason；read 保留 start_line；Q1–Q5 全认。批后 start。"
+        },
+        {
+          "ts": "2026-10-21T17:21:19.189Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q5 全认；派 Runtime 硬清，Tools 待命教法"
+        },
+        {
+          "ts": "2026-10-21T17:38:38.979Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ c688b0a；grep/glob/read 精简；测 81+2 sdk；acceptance 齐；未合 main"
+        },
+        {
+          "ts": "2026-10-21T17:38:48.954Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：grep/glob/read 精简；硬清 cursor/page/reason；行号统一；81+2 测绿；c688b0a 未合 main。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-200",
+      "domain": "harness-core",
+      "title": "实现：run_code 管线硬清冗余分层",
+      "result": "精简视图落地；旧分层清零；测绿；artifacts/WP-200；未合 main",
+      "done_when": [
+        "旧分层(failure/diagnostics/全量 ledger 等冗余)杀掉；模型视图=head+(自愿)logs+result；失败清晰成功静默；结果按窗尽量保；cargo 绿；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-200",
+      "progress": "closed done by gm: 验收通过：模型面 head+logs+result；硬清 failure/diagnostics/ledger；35+2 测绿；7dd9617/8905def 未合 main。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "砍掉 run_code 冗余分层与状态聚合噪音；过程失败可见、成功静默；结果按窗保留；工具自身信息还回工具；run_code 只保留不变量（跑不起来：行号+错因；跑起来：成功数/失败数/耗时）；参考 pi 对 agent 友好的宽容处理；硬清、不合 main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-200 方案 — run_code 管线硬清冗余分层\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD `c688b0a`  \n**依据：** brief；Andy+GM 定稿硬清；学 pi 宽容；现有 `src/tools/code/render.rs` 模型面  \n**内存：** available ≥ 2GiB 即可 cargo（中层串行放行）\n\n---\n\n## 1. 目标模型视图（唯一）\n\n默认 agent 面**只**三块，顺序固定：\n\n```\nHead\n[Logs?]     # 脚本自己写的过程日志；没有整段不出现；成功工具调用不自动占位\n[Result?]   # 脚本返回值按现有窗口策略尽量保留；失败尽量保已有 result/partial\n```\n\n### Head（不变量，一两行）\n\n| 情形 | 内容 |\n|---|---|\n| **跑不起来**（syntax / 校验失败 / 建 runtime 失败 / 未真正 drive 起来） | 精准：哪一行（+列若有）+ 错因；**不**堆完整 stack / 不复述工具信封 |\n| **跑起来了**（含 timeout/cancel/exception/uncaught ToolError 等过程失败） | **成功数 / 失败数 / 耗时**（一两行够用）；过程失败时 head 可带一行失败标签（如 timeout / uncaught ToolError code），**不**另开独立 failure 大段 |\n\n成功静默：无独立 failure / diagnostics / ledger / error_details 段。  \n失败可见：错因落在 head（及脚本自愿 logs / 保留的 result），不另堆观测层。\n\n### Logs / Result\n\n- Logs：仅 `console` 等脚本主动写出；空则整段省略。\n- Result：按现有 `RUN_CODE_VIEW_MAX_BYTES` 窗尽量保；失败**不空抹**已产出 value/partial（学 pi）。\n- 嵌套工具结果是脚本数据：默认不进主视图；模型要过程自己 `log`/`return`。\n- 工具契约错误归工具自己的 `{ok,message}`（或 `ToolError`）；**禁止**在 run_code 再包一层同义复述。\n\n---\n\n## 2. 硬清（默认模型面一行不留）\n\n| 砍（默认 agent 视图） | 现状位置 / 符号（示意） |\n|---|---|\n| 独立 **failure** 大段 | `render_failure`、FAILURE_CAP、failure 正文/stack 段 |\n| **diagnostics** 层 | `render_diagnostics`、`diagnostics:` 段、DIAGNOSTICS_CAP |\n| 全量成功+失败 **ledger** | `render_ledger` / `calls (N of M shown)`、LEDGER_CAP、逐 call 行 |\n| **error_details** 复述段 | `render_error_details`、ERRORS_CAP（与工具 message 重复） |\n| 与工具 ok+message / ToolError 同义的外层复述 | failure 段再写 `code: message`、ledger 行再挂 error 细节等 |\n| 其它「兼容观测」分层 | 凡不进 head/logs/result 的默认模型面段 |\n\n**内部通道：** host/测试/人看若仍需账本或诊断，可留内部结构与测通道；**不进**默认 `render_model_view`。能删的渲染路径/常量/测例期望一并删，**不双轨**（不保留「开关开旧面」）。\n\n**测例必须改写：** `tests/run_code_model_view.rs`、`render.rs` 单测等凡断言 `calls (`、`diagnostics:`、独立 failure 段、`ledger_reads_sessions` 依赖模型面文本的，改为断言 head/logs/result 形态。session-read 标记若仍产品需要，迁入 head 一句或内部通道——**默认不**靠全量 ledger 文本探测。\n\n---\n\n## 3. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | `RunReport`/`render_model_view` 收敛为 head+logs+result；硬删默认面 failure/diagnostics/ledger/error_details 渲染；补耗时进 head；失败保 partial；相关集成测改写；dig-runtime-impl |\n| **Tools** | run_code description / SDK fixture / 教法：只描述三块视图；扫残留「ledger/diagnostics/failure 段」文案；dig-tools-teaching |\n| **mid** | 串槽、交叉审、acceptance/diff-summary、commit/push、deliver |\n\n顺序：Runtime 硬清模型面 → Tools 对齐文案/fixture → mid 收口。cargo 独占串行，门槛 ≥2GiB。\n\n**非目标：** 不改 shell/edit/grep/glob/read 已定契约（除非为删 run_code 冗余所必需的最小触碰）；不合 main。\n\n---\n\n## 4. 验收\n\n1. 默认模型视图仅 head +（自愿）logs + result；冗余分层清零（代码与测例可证：`rg` 无默认面 `diagnostics:` / `calls (` ledger 段等）。\n2. 跑不起来：行+错清晰；跑起来：成功数/失败数/耗时；成功静默、失败可见。\n3. 结果按窗尽量保；失败不空抹。\n4. 相关 cargo 绿；`artifacts/WP-200/{acceptance,diff-summary,dig-*}.md`；push 实验分支；**未合 main**。\n\n---\n\n## 5. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 默认模型面只留 head + logs? + result?；硬清 failure/diagnostics/ledger/error_details 段 | 是 |\n| Q2 | Head「跑起来」含成功数/失败数/**耗时**（现 head 无耗时则补） | 是 |\n| Q3 | 失败保 partial result/logs；不空抹 | 是 |\n| Q4 | 内部诊断/账本可留测试或人看通道，**不进**默认 agent 视图；不双轨开关 | 是 |\n| Q5 | 不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T17:57:15.872Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 砍掉 run_code 冗余分层与状态聚合噪音；过程失败可见、成功静默；结果按窗保留；工具自身信息还回工具；run_code 只保留不变量（跑不起来：行号+错因；跑起来：成功数/失败数/耗时）；参考 pi 对 agent 友好的宽容处理；硬清、不合 main。"
+        },
+        {
+          "ts": "2026-10-21T17:57:24.906Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-200\" -> \".litecode/ops/artifacts/WP-200\""
+        },
+        {
+          "ts": "2026-10-21T17:58:19.985Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-200 方案 — run_code 管线硬清冗余分层\n\n**owner：** backend_mid  \n**分支：** `feat/tool-con"
+        },
+        {
+          "ts": "2026-10-21T17:58:22.451Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "run_code 模型面硬清：head+logs+result；砍 failure/diagnostics/ledger；等批"
+        },
+        {
+          "ts": "2026-10-21T17:58:30.081Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：Q1–Q5 全认；按 plan 硬清，不合 main。"
+        },
+        {
+          "ts": "2026-10-21T17:58:36.524Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q5 全认；派 Runtime 硬清 render 模型面"
+        },
+        {
+          "ts": "2026-10-21T18:15:04.705Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ 7dd9617 (产品 tip 8905def)；模型面 head+logs+result；测 35+2；未合 main"
+        },
+        {
+          "ts": "2026-10-21T18:15:13.531Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：模型面 head+logs+result；硬清 failure/diagnostics/ledger；35+2 测绿；7dd9617/8905def 未合 main。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-201",
+      "domain": "harness-core",
+      "title": "实现：run_code 人看聚合 data 通路（无前端）",
+      "result": "run_code ToolCallResult.data 含人看聚合；模型 content 不变脏；无 FE 实现；artifacts/WP-201；未合 main",
+      "done_when": [
+        "data 契约落地且稳定；content/模型面不塞按工具计数；通路可被 FE 读取（文档/缺口说明）；cargo 绿；无前端改动；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-201",
+      "progress": "closed done by gm: 验收通过：data 聚合稳定；content 不泄 by_tool；无 web/；b3e82f7/d97561b 未合 main。已知：contract_matrix/phase1 旧「无 data」断言留给后续对齐。",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "为人/前端准备 run_code 聚合调用计数等结构化 data：通路打通、契约稳定；默认模型视图仍只吃 content、不塞按工具明细；本包不做前端实现，可留出前端消费缺口说明供 Andy 本地实测。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-201 方案 — run_code 人看聚合 data（无前端）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** 叠在 WP-200 硬清之后的工作树（`duration_ms` / 成功失败计数已齐）；提交时 tip 以收口为准  \n**依据：** brief；与 WP-200 分工——200=模型 content；201=`ToolCallResult.data` 人看聚合  \n**内存：** available ≥ 2GiB；中层串行（**等 WP-200 Tools 收口+commit 后再开本包 cargo**，避免同槽互抢）\n\n---\n\n## 1. 目标契约（人看 / FE；模型不依赖）\n\n```ts\n// ToolCallResult.data for run_code（成功跑起来后必有；跑不起来可省略或极简）\n{\n  succeeded: number;   // 已结算成功工具调用（同 WP-200 Head）\n  failed: number;      // 已结算失败 / caught reject（同 WP-200）\n  duration_ms: number; // BudgetClock 墙钟 ms\n  by_tool: Record<string, { ok: number; fail: number }>;\n  // 可选极简：\n  ok?: boolean;           // 程序是否无 failure_kind（或等价）\n  failure_kind?: string;  // 有过程失败时；勿堆 ledger 全文\n  unsettled?: number;     // 若 >0；勿进 content 明细\n}\n```\n\n- 数据源：现有 `RunReport` / 内部 `CallLedger` 汇总；**禁止**把 `by_tool` 或 ledger 行塞回模型 `content`。\n- 跑不起来：`data` 省略或只带 `ok:false` + `failure_kind`；错因仍在 content head。\n- **禁止**改 `web/`；acceptance 写「前端消费缺口」。\n\n---\n\n## 2. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | `render_run_output`（或等价出口）填充稳定 `data`；单测证明形状与「content 无 by_tool 明细」；dig-runtime-impl |\n| **Tools** | 本包**默认不动**教法（人看字段不进模型 PRELUDE）；若 contract_matrix/SDK 强制声明 data 形状则最小补一句「人看聚合，模型忽略」 |\n| **mid** | 串在 WP-200 之后；交叉审；acceptance（含 FE 缺口：字段路径、示例 JSON、transcript/API 怎么读）；commit/push/deliver |\n\n顺序：WP-200 deliver 前本包只交方案；批后 **WP-200 合入实验分支 tip 后再实现**。\n\n---\n\n## 3. 验收\n\n1. 成功跑完的 `run_code` 出站带稳定 `data`；测可证。  \n2. `content` 无按工具名计数明细；与 WP-200 三块视图不冲突。  \n3. 无 `web/` 改动；`artifacts/WP-201/{acceptance,frontend-gap,diff-summary}.md`；cargo 绿；未合 main。\n\n---\n\n## 4. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | data 形状按上（succeeded/failed/duration_ms/by_tool + 可选 ok/failure_kind/unsettled） | 采用 |\n| Q2 | 计数口径与 WP-200 Head 一致（已结算；unsettled 另字段） | 是 |\n| Q3 | 不改 web/；acceptance 写 FE 消费缺口 | 是 |\n| Q4 | 实现排在 WP-200 tip 收口之后，避免 content/data 双轨回潮 | 是 |\n| Q5 | 不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T18:10:52.319Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 为人/前端准备 run_code 聚合调用计数等结构化 data：通路打通、契约稳定；默认模型视图仍只吃 content、不塞按工具明细；本包不做前端实现，可留出前端消费缺口说明供 Andy 本地实测。"
+        },
+        {
+          "ts": "2026-10-21T18:10:52.469Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-201\" -> \".litecode/ops/artifacts/WP-201\""
+        },
+        {
+          "ts": "2026-10-21T18:11:20.453Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-201 方案 — run_code 人看聚合 data（无前端）\n\n**owner：** backend_mid  \n**分支：** `feat/to"
+        },
+        {
+          "ts": "2026-10-21T18:11:20.601Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "人看 data 聚合；不改 web；等 200 tip 后实现"
+        },
+        {
+          "ts": "2026-10-21T18:11:27.750Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：Q1–Q5；叠 WP-200 tip 后做；不改 web；content 不塞 by_tool。"
+        },
+        {
+          "ts": "2026-10-21T18:15:04.842Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "叠 WP-200 tip 7dd9617；人看 data 聚合；不改 web"
+        },
+        {
+          "ts": "2026-10-21T18:21:20.915Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ d97561b (产品 tip b3e82f7)；人看 data 聚合；测 40；无 web；frontend-gap 齐；未合 main"
+        },
+        {
+          "ts": "2026-10-21T18:21:31.061Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收通过：data 聚合稳定；content 不泄 by_tool；无 web/；b3e82f7/d97561b 未合 main。已知：contract_matrix/phase1 旧「无 data」断言留给后续对齐。",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-202",
+      "domain": "harness-core",
+      "title": "实现：LSP 拆多工具+行列对齐并进 Code",
+      "result": "多工具契约落地；进 Code；无 Direct；测绿；artifacts；未合 main",
+      "done_when": [
+        "新多工具+行列；旧 text/单 lsp 方言清零；Code-only；cargo 绿；artifacts 齐；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-202",
+      "progress": "closed done by gm: acceptance PASS: seven snake Code LSP tools; text/单lsp清零; tip 643bcfd@feat/tool-contract-ptc; 未合main",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按业界主力：file+1-based line/character；砍行内 text 定位；拆成多个干净工具（definition/references/hover/diagnostics/documentSymbol/workspaceSymbol(+query)/goToImplementation）；底座已有能力挂到 agent 面；Code-only 无 Direct；硬清旧方言；不合 main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-202 方案 — LSP 拆多工具 + 行列对齐并进 Code\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD `d97561b`  \n**依据：** brief；Andy 2026-10-22 定稿硬清；Code-only  \n**内存：** available ≥ 2GiB；中层串行放行 cargo（优先本包，WP-203 串后）\n\n---\n\n## 1. 目标契约（唯一活跃面）\n\n七个**独立** Code 工具（object bag；无 Direct；无万能 `lsp`+action）：\n\n```ts\n// 定位类（需位置）：file_path + 1-based line + 1-based character；禁止 text\ntools.goToDefinition({ file_path, line, character })\n  -> { locations: Array<{ path, line, character, end_line?, end_character? }>; message: string }\n  // 或压平字符串 locations 列表 + message——实现选压平优先（跟现 format.rs），形状在 dig 钉死\n\ntools.findReferences({ file_path, line, character })\n  -> 同上 locations + message\n\ntools.hover({ file_path, line, character })\n  -> { markdown: string; message: string }   // 或 content 文本；禁生 LSP JSON\n\ntools.goToImplementation({ file_path, line, character })\n  -> locations + message\n\n// 文件级\ntools.diagnostics({ file_path })\n  -> { items: Array<{ severity, path, line, character, message }>; message: string }\n  // 压平优先\n\ntools.documentSymbol({ file_path })\n  -> { symbols: Array<{ name, kind, line, character, end_line?, end_character? }>; message: string }\n\n// 工作区检索：必带 query；可选 path 范围（底座已有则暴露，无则不造方言）\ntools.workspaceSymbol({ query, path? })\n  -> symbols + message\n```\n\n- **行/列：** 入参出参一律 **1-based** `line` + `character`（业界对齐；**砍**行内 `text` 定位）。\n- 输出继续走 hub/`format.rs` 压平（locations / symbols / hover markdown）；**禁止**把生 LSP JSON 丢给模型。\n- 入参 object bag；失败：可 catch 的 `ToolError` 或 `{…, message}`——跟现 Code 工具习惯，Runtime dig 钉死一种，不双轨。\n\n**工具名默认：** 采用 brief 所列 camelCase（`goToDefinition` 等），与 hub `normalize_lsp_action` 对齐；若与 Code 面 `read`/`grep` 命名风格冲突，见 Q1（可改为 snake，语义不变）。\n\n---\n\n## 2. 硬清（活跃面一行不留）\n\n| 砍 | 含 |\n|---|---|\n| 单工具 `lsp` + `action` bag | 注册、schema、教法、SDK、agent 绑定；优先**直接删除**活跃面（不留默认暴露的转发壳） |\n| `text` 定位 | 入参、教法、「从行内子串解析列」路径 |\n| 未列入操作 | callHierarchy / rename / Serena name_path；schema 枚举与教法禁止暗示 |\n| Direct 轨 | 无 Direct 版；`ToolSurface::Code` only |\n| 方言 | 旧 action 别名若仅服务单 `lsp` 则随壳删；hub 内 normalize 可留内部 |\n\n---\n\n## 3. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | 拆七工具实现；挂 hub（含已有 documentSymbol / workspaceSymbol / goToImplementation）；砍 text→character；删/退单 `lsp`；Code-only 注册；测改写；dig-runtime-impl |\n| **Tools** | 七份 description + SDK fixture/PRELUDE 绑定；扫残留 `lsp`/`text`/action 方言；dig-tools-teaching |\n| **mid** | 串槽（本包优先于 WP-203）；交叉审；acceptance/diff-summary；commit/push；deliver |\n\n顺序：Runtime 硬清 → Tools 对齐 → mid 收口。\n\n**非目标：** callHierarchy、rename、Serena、合 main、前端、libs。\n\n---\n\n## 4. 验收\n\n1. 七工具契约落地；旧 `text` / 单 `lsp` action 方言活跃面清零（`rg` 可证）。  \n2. Code-only；教法对齐 1-based line+character。  \n3. 相关 cargo 绿；`artifacts/WP-202`；push 实验分支；未合 main。\n\n---\n\n## 5. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 工具名用 brief camelCase（`goToDefinition`…） | 采用（可微调为 snake，语义不变须在 dig 声明） |\n| Q2 | 定位只用 `file_path`+1-based `line`+`character`；砍 `text` | 是 |\n| Q3 | 杀活跃面单 `lsp`（优先删除，不默认暴露转发壳） | 是 |\n| Q4 | Code-only；无 Direct | 是 |\n| Q5 | callHierarchy/rename 本包不做；不合 main | 是 |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T18:34:25.681Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按业界主力：file+1-based line/character；砍行内 text 定位；拆成多个干净工具（definition/references/hover/diagnostics/documentSymbol/workspaceSymbol(+query)/goToImplementation）；底座已有能力挂到 agent 面；Code-only 无 Direct；硬清旧方言；不合 main。"
+        },
+        {
+          "ts": "2026-10-21T18:34:33.529Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-202\" -> \".litecode/ops/artifacts/WP-202\""
+        },
+        {
+          "ts": "2026-10-21T18:35:17.818Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-202 方案 — LSP 拆多工具 + 行列对齐并进 Code\n\n**owner：** backend_mid  \n**分支：** `feat/too"
+        },
+        {
+          "ts": "2026-10-21T18:35:18.068Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "LSP 拆七工具+行列；砍 text/单 lsp；Code-only；等批"
+        },
+        {
+          "ts": "2026-10-21T18:35:28.950Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "批：Q2–Q5 认。Q1 定稿用 snake_case（go_to_definition 等），与 read/grep/run 一致；语义同 brief；dig 钉死。"
+        },
+        {
+          "ts": "2026-10-21T18:35:37.978Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q2–Q5 认；Q1 snake_case 工具名；派 Runtime"
+        },
+        {
+          "ts": "2026-10-21T18:54:03.823Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ b38ebc4（产品 tip 643bcfd）未合 main；七 snake LSP Code 工具+1-based coords；测 lsp13+reg30+opt32+sdk2；Settings 卡 stamp 另收口；未改 web/"
+        },
+        {
+          "ts": "2026-10-21T18:55:08.441Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "acceptance PASS: seven snake Code LSP tools; text/单lsp清零; tip 643bcfd@feat/tool-contract-ptc; 未合main",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-203",
+      "domain": "harness-core",
+      "title": "实现：webfetch/websearch 进 Code（软失败）",
+      "result": "web 进 Code；软失败；TUN 相关过度防御有结论或修复；未合 main",
+      "done_when": [
+        "Code-only；软失败可证；TUN/fetch 结论或修；cargo 绿；artifacts；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-203",
+      "progress": "closed done by gm: acceptance PASS: webfetch/websearch Code-only soft-fail + 198.18; tip 4f7b755@feat/tool-contract-ptc; 未合main",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "web 系列进 Code-only；业务/HTTP 失败不打崩整次 run_code（可 catch 数据或 ToolError）；协议/沙箱级另议；顺带核对 TUN/代理下 fetch 过度防御问题并尽量放开合理路径；不合 main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-203 方案 — webfetch / websearch 进 Code（软失败 + TUN）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（不合 main）  \n**基线：** HEAD `b38ebc4`（WP-202 tip）  \n**依据：** brief；Andy 2026-10-22；`dig-survey.md`  \n**内存：** available ≥ 2GiB；中层串行放行 cargo\n\n---\n\n## 1. 目标契约（唯一活跃面）\n\n两工具 **Code-only**（无 Direct）；名保持 `webfetch` / `websearch`；入参 object bag 不变：\n\n```ts\ntools.webfetch({ url, format? /* text|markdown|html，默认 markdown */ })\n  -> { ok: true,  url, status, format, body, message }\n  |  { ok: false, url?, status?, format?, message }   // 软失败：不 reject\n\ntools.websearch({ query })\n  -> { ok: true,  query, text, message }              // text=提供商压平正文；可另加 results[] 若底座已有\n  |  { ok: false, query?, message }\n```\n\n- 成功与软失败同走 `ok_data`（resolve，**不**变成 `ToolError` reject）。\n- `content` 可继续短确认/摘要；结构化以 `data` 为准（进 Code 必有 `data_schema`）。\n- 引擎 id / Warm 卡保留；只迁调用面。\n\n### 软失败 vs 硬错（Q1/Q5）\n\n| 类 | 出口 | 例 |\n|---|---|---|\n| **业务/HTTP 软** | `{ok:false,…,message}` resolve | 4xx/5xx、超时、DNS、body/redirect 读失败、Exa 业务/HTTP/parse |\n| **契约/配置/安全** | 可 catch `ToolError`（稳定 `error_code`） | 空/非法 url·query、非 http(s)、**SSRF 真非公网拒绝**、未 warm / 未配 Exa |\n| **升程序失败** | 仅协议/沙箱/宿主 | 多余参数、嵌套过深、surface mismatch、host panic、run_code 预算 |\n\n### TUN / SSRF（Q2）\n\n- **放行** `198.18.0.0/15`（fake-ip / 常见 TUN）：主机名解析到该段不再当 SSRF 拒；连接仍钉本趟解析 IP（现有 redirect 重校验保留）。\n- **坚持拒** RFC1918 / loopback / unspecified / link-local / fe80 / unique-local；**`100.64/10` 默认仍拒**（本包不加 Settings 开关）。\n- 同步 `knowledge/contracts/tools/webfetch-ssrf.md` + `ssrf_*` 测；字面公网 IP 行为不变。\n\n---\n\n## 2. 硬清\n\n| 砍 | 含 |\n|---|---|\n| Direct 活跃面 | 两工具 `surface → Code`；投影后 Direct 无名 |\n| 硬 error 打崩 run_code | HTTP/DNS/超时等改 `ok:false`；禁默认 `ToolCallResult::error` 走业务路径 |\n| 无结构 content-only | 补 `data_schema` + 稳定字段；填 `error_code`（硬错） |\n| 旧 SSRF 误伤 TUN | 分类器放宽 198.18；契约/测对齐 |\n\n无旧别名包袱。不改 libs / web / LSP。\n\n---\n\n## 3. 分工\n\n| 域 | 职责 |\n|---|---|\n| **Runtime** | surface=Code；`ok_data` 软失败；稳定 error_code；放宽 198.18；进 `builtin_code_surface_tools`（或等价 admission）；Direct 清零测；ssrf/软失败测；dig-runtime-impl；契约 md |\n| **Tools** | descriptions + PRELUDE 软失败句 + SDK fixture 两名；扫 Direct/硬崩文案；dig-tools-teaching |\n| **mid** | 串槽；交叉审；acceptance/diff-summary；commit/push；deliver |\n\n顺序：Runtime → Tools → mid。cargo 独占，门槛 ≥2GiB。\n\n---\n\n## 4. 验收\n\n1. 两工具 Code-only；Direct 清零；软失败可证（测：HTTP/DNS 等不打崩未 catch 的 run_code）。  \n2. TUN：主机名→198.18 可过门（测或 dig 实证）；真私网/回环仍拒。  \n3. 相关 cargo 绿；`artifacts/WP-203`；push 实验分支；**未合 main**；无 FE。\n\n---\n\n## 5. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 软失败形状：edit 风格 `{ok:false}` resolve（非默认 ToolError） | **是（A）** |\n| Q2 | 放行 198.18/15；拒 RFC1918/loopback/metadata；100.64 仍拒 | **是（A）** |\n| Q3 | 名保持 `webfetch` / `websearch` | **是** |\n| Q4 | 出参 `{ok,url,status?,format?,body?,message}` / search 对等 | **是（A）** |\n| Q5 | 未 warm/未配置/SSRF → ToolError；仅 HTTP/DNS/超时等软 | **是（B）** |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T18:34:25.817Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: web 系列进 Code-only；业务/HTTP 失败不打崩整次 run_code（可 catch 数据或 ToolError）；协议/沙箱级另议；顺带核对 TUN/代理下 fetch 过度防御问题并尽量放开合理路径；不合 main。"
+        },
+        {
+          "ts": "2026-10-21T18:34:33.691Z",
+          "actor": "gm",
+          "action": "set",
+          "note": "artifact_path: \".litecode/ops/artifacts/WP-203\" -> \".litecode/ops/artifacts/WP-203\""
+        },
+        {
+          "ts": "2026-10-21T18:59:45.961Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-203 方案 — webfetch / websearch 进 Code（软失败 + TUN）\n\n**owner：** backend_mid  \n*"
+        },
+        {
+          "ts": "2026-10-21T18:59:46.130Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "短方案：Code-only + ok:false 软失败；放行 198.18 TUN；名不变；Q1A/Q2A/Q3/Q4A/Q5B；基线 b38ebc4"
+        },
+        {
+          "ts": "2026-10-21T19:00:05.460Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1A ok:false soft; Q2A allow 198.18/15 reject RFC1918/loopback/100.64; Q3 keep names; Q4A structured data; Q5B warm/SSRF ToolError. 请 start 实现。"
+        },
+        {
+          "ts": "2026-10-21T19:00:12.345Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q5 全认；派 Runtime 硬清+软失败+198.18；Tools 待命"
+        },
+        {
+          "ts": "2026-10-21T19:12:14.616Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ 62ccead（产品 tip 4f7b755）未合 main；webfetch/websearch Code-only+软失败+198.18；测 34+sdk2；未改 web/"
+        },
+        {
+          "ts": "2026-10-21T19:13:13.058Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "acceptance PASS: webfetch/websearch Code-only soft-fail + 198.18; tip 4f7b755@feat/tool-contract-ptc; 未合main",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-204",
+      "domain": "harness-core",
+      "title": "分析：工具改造后提示词文本面查漏补缺",
+      "result": "可读审阅报告；冗余/矛盾/越界/系统提示渗入有结论与证据；建议可落到后续包",
+      "done_when": [
+        "review.md 覆盖冗余/精准/矛盾/工具域隔离/系统提示稳；证据可核；GM 认为可读并（必要时）聊天摘要给 Andy；可 close"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "done",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-204",
+      "progress": "closed done by gm: acceptance PASS: review 五轴可读；P1=PRELUDE可拔插闸+session_search去bash；未改码；精华已转 Andy",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "大量工具与管线改造后，审阅 agent 可见的整面提示词文本：有无冗余、是否精准、有无自相矛盾、各工具是否不溢出到其他工具域（Settings 可拔插）、系统固定提示词是否稳且未渗入单独工具用法与要求。产出可读审阅报告（总分+附录证据）；不要求本包改码；不合 main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "# WP-204 方案 — agent 可见提示词文本面查漏补缺（只读）\n\n**owner：** backend_mid  \n**分支：** `feat/tool-contract-ptc`（只读；不合 main）  \n**基线：** HEAD `62ccead`（WP-203 tip）  \n**依据：** brief；Andy 2026-10-22；对照 WP-196…203 硬清后活跃面  \n**性质：** **分析包**——产出 `review.md`；**本包不改码 / 不刷 fixture / 不 cargo**\n\n---\n\n## 1. 目标\n\n审阅模型回合里能读到的**整面提示词文本**，按五轴出结论 + 证据；明确「无需动 / 建议开实现包」清单，供 GM 聊天给 Andy。\n\n---\n\n## 2. Dig 范围（只读；全进 review 附录）\n\n| 层 | 路径 / 触点（示意；dig 时以实测为准） | 审什么 |\n|---|---|---|\n| **系统固定** | `src/context_pipeline/system.rs`；`src/config/global_db/builtin_prompts.rs`；runtime 拼装入口 | 跨工具不变量/工作流；是否点名或渗入单工具用法（轴 4/5） |\n| **Code / PRELUDE / SDK** | `src/tool/code_manifest.rs`（PRELUDE）；`src/tool/fixtures/run_code_sdk.{txt,sha256}` | 与 WP-197…203 契约一致；软硬失败句；是否残留 Direct/`lsp`+action/`text` 定位 |\n| **live descriptions** | `src/tools/descriptions/*.md`（现行全量） | 冗余/过期方言；工具间互渗；与实现不一致 |\n| **卡注入 / 绑定文案** | optional/引擎卡、Settings 可拔插相关注入（registry / availability / permission presets 旁路文案）；LSP 卡 id=`lsp` 注入七工具等 | 未绑是否仍被系统面强推；卡文是否泄漏他域要求 |\n| **对照基线** | WP-196…203 acceptance/plan + 现行 schema（registry） | 已硬清项是否仍出现在提示词 |\n\n非 dig：`web/` UX、libs、合 main、重做 WP-193 架构总评。\n\n---\n\n## 3. 五轴方法（每轴：结论 → 严重度 → 证据摘录）\n\n1. **冗余** — 同义反复、过期方言、与已硬清实现重复  \n2. **精准** — 契约/坐标/软硬失败是否跟实现一致（snake LSP、file_path+1-based、ok:false vs ToolError、198.18 等）  \n3. **自相矛盾** — 系统 vs 工具、PRELUDE vs description、工具 A vs B  \n4. **域隔离（可拔插）** — 单工具用法是否渗系统面或其他工具；未绑定是否被强推  \n5. **系统固定稳** — 固定层只谈不变量/工作流，不渗单工具要求  \n\n报告形态（brief）：一句话总评 → 五轴可读段（严重度大→小）→ 附录路径/摘录 → **无需动 / 建议后续实现包** 清单。\n\n---\n\n## 4. 分工\n\n| 角色 | 职责 |\n|---|---|\n| **mid** | 主导 dig + 写 `review.md`；交叉对照 WP-196…203；fill/submit/deliver |\n| **Tools** | 按需答疑 PRELUDE/descriptions/SDK 投影（不主动改码） |\n| **Runtime** | 按需答疑实现与提示词是否漂移（不主动改码） |\n\n无重型 cargo；无串槽冲突。\n\n---\n\n## 5. 验收\n\n1. `artifacts/WP-204/review.md` 覆盖五轴，证据可核。  \n2. 有明确「无需动 / 建议开实现包」清单。  \n3. 未改产品码；未合 main；GM 可读后可 close。\n\n---\n\n## 6. 拍板\n\n| # | 议题 | 默认 |\n|---|---|---|\n| Q1 | 本包只产出 review；发现的改码项一律建议后续包，不本包改 | **是** |\n| Q2 | dig 覆盖上表四层 + 对照 WP-196…203；不扩到 web/ UX | **是** |\n| Q3 | 严重度排序：未定产品行为/系统渗单工具 > 矛盾/过时方言 > 冗余措辞 | **是** |\n| Q4 | LSP 卡 stamp / contract_matrix 旧断言若仍仅测侧，提示词面无则记「另排测对齐」不扩本包 | **是** |\n| Q5 | 不合 main | **是** |\n\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-21T19:15:19.777Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 大量工具与管线改造后，审阅 agent 可见的整面提示词文本：有无冗余、是否精准、有无自相矛盾、各工具是否不溢出到其他工具域（Settings 可拔插）、系统固定提示词是否稳且未渗入单独工具用法与要求。产出可读审阅报告（总分+附录证据）；不要求本包改码；不合 main。"
+        },
+        {
+          "ts": "2026-10-21T19:15:48.309Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: # WP-204 方案 — agent 可见提示词文本面查漏补缺（只读）\n\n**owner：** backend_mid  \n**分支：** `feat/too"
+        },
+        {
+          "ts": "2026-10-21T19:15:48.465Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "只读审阅方案：系统固定/PRELUDE·SDK/descriptions/卡注入；五轴+review.md；不改码；Q1–Q5；基线 62ccead"
+        },
+        {
+          "ts": "2026-10-21T19:15:57.301Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1–Q5 全是。只读 review；五轴；不改码。请 start。"
+        },
+        {
+          "ts": "2026-10-21T19:16:02.624Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": "Q1–Q5 全认；只读 dig 四层→review.md；不改码"
+        },
+        {
+          "ts": "2026-10-21T19:18:27.473Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "feat/tool-contract-ptc @ 8f37382（只读 artifacts；产品 tip 仍 62ccead）未合 main；review 五轴齐；P1=PRELUDE 可拔插闸 + session_search 去 bash；不改码"
+        },
+        {
+          "ts": "2026-10-21T19:18:39.479Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "acceptance PASS: review 五轴可读；P1=PRELUDE可拔插闸+session_search去bash；未改码；精华已转 Andy",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-205",
+      "domain": "harness-core",
+      "title": "修复：session_search 溢出文件/虚拟 read 测试失败",
+      "result": "根因结论 + 修复；3 测绿；相关 session_search 测全绿；未合 main",
+      "done_when": [
+        "根因写入 dig；3 测绿；session_search 过滤全绿；artifacts；push 实验分支；未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "awaiting_approval",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-205",
+      "progress": "plan awaiting approval by gm",
+      "status_entered_at": "2026-10-22T00:19:01.665Z",
+      "parent": null,
+      "goal": "session_search 3 个既有失败测试（agent_view_spills_the_remainder_into_a_named_file / a_result_over_budget_names_the_file_that_holds_the_rest / search_hit_line_matches_virtual_read）：查清根因（产品缺陷还是测试过时），按根因修；结果里点名的溢出文件必须真能读到，hit 行与 read 一致。不合 main。",
+      "approver": "gm",
+      "content": {
+        "kind": "direct",
+        "text": "目标：修复 session_search 3 个既有失败测试，确认溢出文件可读、hit 行与虚拟 read 一致。\n根因（见 dig-survey.md）：测试过时。bd71f8c 删了 footer 的 \" — read or grep it\"，测试仍按 \" —\" 截路径；c688b0a(WP-199) read 改为结构化 data 并退役 end_line，测试仍读 content/传 end_line。\n方案：Tools 域，仅改测试：共用 helper 解析 \"are in <path>.\"（去尾句号）；虚拟 read 测试改 start_line+limit、断言 data.lines。可选 footer 路径加反引号。不改 read/spill 产品逻辑。\n验收：结果点名的溢出文件真能读到；hit 行与 read 一致；3 测变绿且 session_search 过滤全绿（cargo -j2，内存≥2GiB）；dig 写清根因；推实验分支 feat/tool-contract-ptc，不合 main。\n"
+      },
+      "history": [
+        {
+          "ts": "2026-10-22T00:17:19.954Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: session_search 3 个既有失败测试（agent_view_spills_the_remainder_into_a_named_file / a_result_over_budget_names_the_file_that_holds_the_rest / search_hit_line_matches_virtual_read）：查清根因（产品缺陷还是测试过时），按根因修；结果里点名的溢出文件必须真能读到，hit 行与 read 一致。不合 main。"
+        },
+        {
+          "ts": "2026-10-22T00:19:01.523Z",
+          "actor": "backend_mid",
+          "action": "fill",
+          "note": "direct: 目标：修复 session_search 3 个既有失败测试，确认溢出文件可读、hit 行与虚拟 read 一致。\n根因（见 dig-survey.md）：测试"
+        },
+        {
+          "ts": "2026-10-22T00:19:01.665Z",
+          "actor": "backend_mid",
+          "action": "submit",
+          "note": "根因=测试过时，见 dig-survey.md"
+        }
+      ]
     }
   ],
   "pipelines": [

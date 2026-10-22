@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-16T00:30:23.177Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-22T00:19:01.768Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -204,6 +204,23 @@
 | WP-185 | └ WP-182 desktop：同契约无分叉 | done | frontend_desktop | frontend_mid |
 | WP-183 | 实现：崩溃/回合失败可观测性 Obs（自 WP-180） | done | backend_mid | gm |
 | WP-188 | └ WP-183-a：runtime Obs-1/2 可观测性落地 | done | runtime | backend_mid |
+| WP-189 | 分析：同 session 切 codec 稳定性（含 session/ctx） | done | backend_mid | gm |
+| WP-190 | 拣回：ops 易用度（原 WP-189 org/charter/request/zh） | done | tools_steward | gm |
+| WP-191 | 实现：切模型/请求关键要素观测与显式告警 | done | backend_mid | gm |
+| WP-192 | └ FE: WP-191 toast SnapshotNotice + busy set-model rollback | done | frontend_mid | frontend_mid |
+| WP-193 | 审阅：PTC/code 模式对 agent 的可理解与易用 | done | backend_mid | gm |
+| WP-194 | 实现：PTC 描述/SDK 文案对齐裸 data | done | backend_mid | gm |
+| WP-195 | 调研：bash 系列是否进 Code 模式 | done | backend_mid | gm |
+| WP-196 | 实现：bash 家族最低风险切口进 Code（防退化） | done | backend_mid | gm |
+| WP-197 | 实现：shell run/wait/kill 精简契约（硬清历史） | done | backend_mid | gm |
+| WP-198 | 实现：edit/apply_edits 精简契约（硬清） | done | backend_mid | gm |
+| WP-199 | 实现：grep/glob/read 精简（硬清冗余） | done | backend_mid | gm |
+| WP-200 | 实现：run_code 管线硬清冗余分层 | done | backend_mid | gm |
+| WP-201 | 实现：run_code 人看聚合 data 通路（无前端） | done | backend_mid | gm |
+| WP-202 | 实现：LSP 拆多工具+行列对齐并进 Code | done | backend_mid | gm |
+| WP-203 | 实现：webfetch/websearch 进 Code（软失败） | done | backend_mid | gm |
+| WP-204 | 分析：工具改造后提示词文本面查漏补缺 | done | backend_mid | gm |
+| WP-205 | 修复：session_search 溢出文件/虚拟 read 测试失败 | awaiting_approval | backend_mid | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新
