@@ -93,6 +93,8 @@ pub struct ExitNotice {
     pub command_preview: String,
     /// True when the human stopped the job from the bash card (not a natural exit).
     pub user_killed: bool,
+    /// True when `tools.kill` stopped the job (no human reminder mailbox).
+    pub tool_killed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +114,7 @@ pub struct AgentJobRecord {
     pub exit_code: Option<u32>,
     pub started_at_ms: i64,
     pub user_killed: bool,
+    pub tool_killed: bool,
     workspace_root: PathBuf,
     /// Stderr log. `bash/tail` reads stdout; the tool result reads both.
     stderr_path: PathBuf,
@@ -131,6 +134,7 @@ impl AgentJobRecord {
             output_path: self.output_path.clone(),
             command_preview: self.command_preview.clone(),
             user_killed: self.user_killed,
+            tool_killed: self.tool_killed,
         }
     }
 }
@@ -350,7 +354,6 @@ impl AgentJobRegistry {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn job_pid(&self, id: &str) -> Option<u32> {
         let g = self.inner.lock().expect("jobs lock");
         g.jobs.get(id).and_then(|rec| rec.pid)
@@ -391,6 +394,26 @@ impl AgentJobRegistry {
             for n in q.iter_mut() {
                 if n.bash_id == id {
                     n.user_killed = true;
+                }
+            }
+        }
+    }
+
+    /// Latch a Code-surface `tools.kill` so wait can distinguish it from a
+    /// natural exit without setting `user_killed` (no human reminder).
+    pub fn mark_tool_kill(&self, id: &str) {
+        let mut g = self.inner.lock().expect("jobs lock");
+        let session_id = {
+            let Some(rec) = g.jobs.get_mut(id) else {
+                return;
+            };
+            rec.tool_killed = true;
+            rec.session_id.clone()
+        };
+        if let Some(q) = g.mailbox.get_mut(&session_id) {
+            for n in q.iter_mut() {
+                if n.bash_id == id {
+                    n.tool_killed = true;
                 }
             }
         }
@@ -684,6 +707,8 @@ impl AgentJobRegistry {
         };
         if user_killed {
             self.mark_user_kill(id);
+        } else {
+            self.mark_tool_kill(id);
         }
         if let Some(pid) = pid {
             kill_process_tree(pid);
@@ -735,6 +760,7 @@ impl AgentJobRegistry {
                 exit_code: None,
                 started_at_ms: now_unix_ms(),
                 user_killed: false,
+                tool_killed: false,
                 workspace_root: workspace_root.to_path_buf(),
                 stderr_path,
                 stderr_tee: Arc::new(Mutex::new(stderr)),
@@ -953,6 +979,7 @@ async fn run_pipe_supervisor(
             exit_code: None,
             started_at_ms: now_unix_ms(),
             user_killed: false,
+            tool_killed: false,
             workspace_root: request.workspace_root.clone(),
             stderr_path,
             stderr_tee: Arc::clone(&stderr_tee),
@@ -1196,6 +1223,7 @@ mod tests {
             exit_code: None,
             started_at_ms: now_unix_ms(),
             user_killed: false,
+            tool_killed: false,
             workspace_root: workspace.to_path_buf(),
             stderr_path,
             stderr_tee: Arc::new(Mutex::new(stderr)),

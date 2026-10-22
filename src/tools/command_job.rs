@@ -31,6 +31,9 @@ pub(crate) struct CommandData {
     pub shell: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Set when wait observes a tool-killed (or UI-killed) exit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub killed: Option<bool>,
 }
 
 /// Both streams of one job, already composed with their notes.
@@ -71,11 +74,15 @@ pub(crate) fn command_data_schema() -> serde_json::Value {
             },
             "ok": {
                 "type": "boolean",
-                "description": "False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success."
+                "description": "False on soft failures (path conversion, unreaped kill). Absent on ordinary success."
             },
             "reason": {
                 "type": "string",
-                "description": "Present with ok:false; path-conversion soft-fail uses invalid_args."
+                "description": "Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive."
+            },
+            "killed": {
+                "type": "boolean",
+                "description": "True when wait observes a kill (tools.kill or UI). Absent on natural exit."
             }
         },
         "required": ["id", "exit_code", "output", "stderr", "shell"]
@@ -244,23 +251,39 @@ pub(crate) fn present_command(
     output: JobOutput,
     message: Option<String>,
 ) -> ToolCallResult {
+    // WP-211: bare message means MSYS path-conversion soft-fail.
+    let soft_reason = message.as_ref().map(|_| "invalid_args");
+    present_command_full(id, exit_code, output, message, soft_reason, None)
+}
+
+/// Soft-fail / killed presentation shared by run / wait / kill.
+///
+/// When `soft_reason` is set, `ok` is false and `exit_code` is forced null so a
+/// numeric 0 cannot leak. `killed` is only set by wait when the exit was a kill.
+pub(crate) fn present_command_full(
+    id: impl Into<String>,
+    exit_code: Option<i32>,
+    output: JobOutput,
+    message: Option<String>,
+    soft_reason: Option<&str>,
+    killed: Option<bool>,
+) -> ToolCallResult {
     let id = id.into();
-    // WP-211: an MSYS path-conversion hint means the command shape is unsafe
-    // under Git Bash. Keep streams for diagnosis, but never report exit_code 0.
-    let pathconv = message.is_some();
-    let exit_code = if pathconv { None } else { exit_code };
+    let soft = soft_reason.is_some();
+    let exit_code = if soft { None } else { exit_code };
     let shown = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "null".into());
     crate::tool::outcome::ToolOutcome::ok(CommandData {
-        ok: pathconv.then_some(false),
-        reason: pathconv.then(|| "invalid_args".to_string()),
+        ok: soft.then_some(false),
+        reason: soft_reason.map(str::to_string),
         id: id.clone(),
         exit_code,
         output: output.stdout,
         stderr: output.stderr,
         shell: crate::terminal::decode::shell_identity(),
         message,
+        killed,
     })
     .into_call_result(format!("id: {id}\nexit_code: {shown}\n"))
 }
@@ -309,7 +332,6 @@ pub(crate) fn test_execution(
     }
 }
 
-#[cfg(test)]
 pub(crate) fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -418,4 +440,28 @@ mod tests {
             "must not report numeric exit_code 0: {serialized}"
         );
     }
+
+    #[test]
+    fn still_alive_soft_fail_presents_ok_false_with_null_exit_code() {
+        let result = present_command_full(
+            "bg_stuck",
+            Some(0),
+            JobOutput {
+                stdout: "out".into(),
+                stderr: "err".into(),
+            },
+            Some("kill signal sent but process still alive after reap wait".into()),
+            Some("still_alive"),
+            None,
+        );
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["ok"], false, "{data}");
+        assert_eq!(data["reason"], "still_alive", "{data}");
+        assert!(data["exit_code"].is_null(), "{data}");
+        assert!(data.get("killed").is_none() || data["killed"].is_null(), "{data}");
+        assert_eq!(data["output"], "out");
+        assert_eq!(data["stderr"], "err");
+    }
+
 }

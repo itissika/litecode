@@ -922,6 +922,11 @@ fn short_stack(stack: Option<&str>) -> Option<String> {
     let mut frames = Vec::new();
     for raw in stack.lines() {
         let frame = raw.trim();
+        // WP-212: drop the wrapper `<eval>` frame by name (line≤1 already
+        // covers the common `program.js:1` case; this catches any leftover).
+        if frame.contains("at <eval>") {
+            continue;
+        }
         let Some(start) = frame.find("program.js:") else {
             continue;
         };
@@ -1407,11 +1412,27 @@ mod tests {
         assert!(head.contains("line 3, column 14 · return null.x;"), "{head}");
         assert!(text.contains("stack:\n  at boom (line 3:14)"), "{text}");
         assert!(!text.contains("libs.js"), "{text}");
+        assert!(!text.contains("<eval>"), "{text}");
         assert!(text.contains("completed tool calls before the failure:\n#1 read path=a → ok: {\"ok\":true"), "{text}");
         assert!(text.contains("#2 grep pattern=x → failed(invalid_args): bad regex"), "{text}");
         // A successful run never prints the partial-results block.
         report.failure_kind = None;
         assert!(!render_model_view(&report).contains("completed tool calls"));
+    }
+
+    #[test]
+    fn short_stack_drops_eval_frames_by_name() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("x".into());
+        report.failure_location = Some(SourceLocation { line: 2, column: 1 });
+        report.source = "return 1;\nthrow new Error('x');".into();
+        report.failure_stack = Some(
+            "    at <eval> (program.js:3:1)\n    at boom (program.js:3:5)\n    at <eval> (program.js:9:9)".into(),
+        );
+        let text = render_model_view(&report);
+        assert!(text.contains("stack:\n  at boom (line 2:5)"), "{text}");
+        assert!(!text.contains("<eval>"), "{text}");
     }
 
     #[test]

@@ -60,17 +60,37 @@ impl KillTool {
         execution: &ToolExecutionContext,
         job_id: &str,
         exit_code: Option<i32>,
+        confirmed_dead: bool,
     ) -> ToolCallResult {
+        let notes: &[&str] = if confirmed_dead {
+            &["process was killed"]
+        } else {
+            &["kill signal sent but process still alive after reap wait"]
+        };
         let Some(output) = command_job::format_job_output(
             &self.jobs,
             job_id,
             &execution.workspace_root,
             exit_code,
-            &["process was killed"],
+            notes,
         ) else {
             return coded_error("io", "kill lost the job logs");
         };
-        present_command(job_id, exit_code, output, None)
+        if confirmed_dead {
+            present_command(job_id, exit_code, output, None)
+        } else {
+            command_job::present_command_full(
+                job_id,
+                None,
+                output,
+                Some(
+                    "kill signal sent but the process was still alive after the reap wait"
+                        .into(),
+                ),
+                Some("still_alive"),
+                None,
+            )
+        }
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -85,8 +105,12 @@ impl KillTool {
             return command_job::not_found(&self.jobs, &execution.session_id, &job_id);
         }
 
+        // Capture pid before seal so we can confirm death at the OS after reap.
+        let pid = self.jobs.job_pid(&job_id);
+
         // `user_killed` stays false. The human click is `kill_from_ui`, which
-        // leaves the mailbox notice. This path consumes it.
+        // leaves the mailbox notice. This path marks `tool_killed` and consumes
+        // the mailbox notice so no natural-exit reminder fires.
         let Some(killed) = self.jobs.kill_registered(&job_id, false) else {
             return command_job::not_found(&self.jobs, &execution.session_id, &job_id);
         };
@@ -94,7 +118,16 @@ impl KillTool {
         let exit_code = self
             .observed_exit(&job_id, killed.exit_code, &execution.cancel)
             .await;
-        self.present(&execution, &job_id, exit_code)
+        let confirmed_dead = exit_code.is_some()
+            || pid
+                .map(|pid| !command_job::pid_alive(pid))
+                .unwrap_or(true);
+        self.present(
+            &execution,
+            &job_id,
+            if confirmed_dead { exit_code } else { None },
+            confirmed_dead,
+        )
     }
 }
 
@@ -214,6 +247,8 @@ mod tests {
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["id"].as_str().unwrap().len() > 0, true);
+        assert_ne!(data.get("ok").and_then(|v| v.as_bool()), Some(false), "{data}");
+        assert!(data.get("reason").is_none() || data["reason"].is_null(), "{data}");
         assert!(
             data["output"]
                 .as_str()

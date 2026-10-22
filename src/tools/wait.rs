@@ -13,7 +13,7 @@ use crate::context_pipeline::Context;
 use crate::terminal::{AgentJobRegistry, WaitOutcome};
 use crate::tool::Tool;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::tools::command_job::{self, EndWait, present_command};
+use crate::tools::command_job::{self, EndWait};
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
 
@@ -50,8 +50,12 @@ impl WaitTool {
         job_id: &str,
         exit_code: Option<i32>,
         note: Option<&str>,
+        killed: bool,
     ) -> ToolCallResult {
-        let notes: Vec<&str> = note.into_iter().collect();
+        let mut notes: Vec<&str> = note.into_iter().collect();
+        if killed {
+            notes.push("process was killed");
+        }
         let Some(output) = command_job::format_job_output(
             &self.jobs,
             job_id,
@@ -61,7 +65,14 @@ impl WaitTool {
         ) else {
             return coded_error("io", "wait lost the job logs");
         };
-        present_command(job_id, exit_code, output, None)
+        command_job::present_command_full(
+            job_id,
+            exit_code,
+            output,
+            None,
+            None,
+            killed.then_some(true),
+        )
     }
 
     async fn run(&self, input: Value, execution: ToolExecutionContext) -> ToolCallResult {
@@ -97,17 +108,22 @@ impl WaitTool {
         drop(_waiter);
 
         match outcome {
-            WaitOutcome::Exited(notice) => self.present(
-                &execution,
-                &job_id,
-                command_job::code_i32(notice.exit_code),
-                None,
-            ),
+            WaitOutcome::Exited(notice) => {
+                let killed = notice.tool_killed || notice.user_killed;
+                self.present(
+                    &execution,
+                    &job_id,
+                    command_job::code_i32(notice.exit_code),
+                    None,
+                    killed,
+                )
+            }
             WaitOutcome::TimedOut => self.present(
                 &execution,
                 &job_id,
                 None,
                 Some("wait budget elapsed; process still running"),
+                false,
             ),
             WaitOutcome::Cancelled => coded_error("cancelled", "wait cancelled"),
             WaitOutcome::UnknownId(_) => {
@@ -248,6 +264,85 @@ mod tests {
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["exit_code"], 0);
         assert!(data["output"].as_str().unwrap().contains("ready"));
+    }
+
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_after_tool_kill_sets_killed_and_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-wait-killed";
+        let id = start_sleep(&jobs, dir.path(), session).await;
+        let _stop = StopJob {
+            jobs: Arc::clone(&jobs),
+            id: id.clone(),
+            session_id: session.into(),
+        };
+        let killer = crate::tools::kill::KillTool::new(Arc::clone(&jobs));
+        let killed = killer
+            .execute(
+                serde_json::json!({"id": id}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(killed.error.is_none(), "{killed:?}");
+        let result = tool
+            .execute(
+                serde_json::json!({"id": id, "sec": 5}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["killed"], true, "{data}");
+        assert!(
+            data["output"]
+                .as_str()
+                .unwrap()
+                .contains("process was killed"),
+            "{data}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_natural_nonzero_exit_has_no_killed_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-wait-exit1";
+        // Detach first (window 200ms), then exit 1 so the job stays registered.
+        let runner = RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(200));
+        let started = runner
+            .execute(
+                serde_json::json!({"command": format!("{}; exit 1", sleep_shell(1))}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(started.error.is_none(), "{started:?}");
+        let data = started.data.as_ref().unwrap();
+        assert!(data["exit_code"].is_null(), "must detach before exit: {data}");
+        let id = data["id"].as_str().unwrap().to_string();
+        let _stop = StopJob {
+            jobs: Arc::clone(&jobs),
+            id: id.clone(),
+            session_id: session.into(),
+        };
+        let result = tool
+            .execute(
+                serde_json::json!({"id": id, "sec": 10}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["exit_code"], 1, "{data}");
+        assert!(data.get("killed").is_none() || data["killed"].is_null(), "{data}");
+        assert!(
+            !data["output"]
+                .as_str()
+                .unwrap_or("")
+                .contains("process was killed"),
+            "{data}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
