@@ -15762,13 +15762,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "in_progress",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-208",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T01:58:28.613Z",
+      "progress": "in progress",
+      "status_entered_at": "2026-10-22T01:59:16.985Z",
       "parent": null,
       "goal": "按 Andy 方向激进删测：仅保留关键模块核心链路与真实回归测，全套降至约 1000 条以内，全量绿",
       "approver": "gm",
@@ -15794,6 +15794,52 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "dig+plan：2714→≤990，Q1-Q6"
+        },
+        {
+          "ts": "2026-10-22T01:59:07.344Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q6 按推荐；≤1000 硬上限；只删不改写"
+        },
+        {
+          "ts": "2026-10-22T01:59:16.985Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        }
+      ]
+    },
+    {
+      "id": "WP-209",
+      "domain": "harness-core",
+      "title": "run_code 模型视图整形：表格化/紧凑 JSON + token 预算 + 成功省略 logs",
+      "result": "整形+预算落地；测量表；SDK fixture 刷新；全量 cargo 绿；未合 main",
+      "done_when": [
+        "整形/回退/预算(含CJK)/logs 成功省略/失败保留/提示位置有测",
+        "测量表入 artifacts",
+        "全量 cargo test 绿",
+        "push feat/tool-contract-ptc",
+        "未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-209",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "降低 run_code 结果的上下文 token 成本：渲染层整形、cl100k token 预算、超限提示、PRELUDE 前置指引",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T02:05:46.002Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 降低 run_code 结果的上下文 token 成本：渲染层整形、cl100k token 预算、超限提示、PRELUDE 前置指引"
         }
       ]
     }

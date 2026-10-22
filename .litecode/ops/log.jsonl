@@ -1463,3 +1463,6 @@
 {"ts":"2026-10-22T01:56:23.619Z","kind":"wp_lifecycle","source":"gm","summary":"WP-208: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T01:58:28.556Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-208: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T01:58:28.690Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-208: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T01:59:07.417Z","kind":"wp_lifecycle","source":"gm","summary":"WP-208: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T01:59:17.056Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-208: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T02:05:46.086Z","kind":"wp_lifecycle","source":"gm","summary":"WP-209: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
