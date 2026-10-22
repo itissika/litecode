@@ -377,3 +377,4 @@
 {"event_id":"E-1792646695363-71300-watcher-restarted","ts":"2026-10-22T05:24:55.363Z","type":"team_ops.watcher_restarted","wp":null,"target":"gm"}
 {"event_id":"E-1792646806117-87620-WP210-approval_requested","ts":"2026-10-22T05:26:46.117Z","type":"team_ops.approval_requested","wp":"WP-210","target":"gm"}
 {"event_id":"E-1792648473043-26280-WP210-acceptance_requested","ts":"2026-10-22T05:54:33.043Z","type":"team_ops.acceptance_requested","wp":"WP-210","target":"gm"}
+{"event_id":"E-1792654122470-19100-WP211-approval_requested","ts":"2026-10-22T07:28:42.470Z","type":"team_ops.approval_requested","wp":"WP-211","target":"gm"}
