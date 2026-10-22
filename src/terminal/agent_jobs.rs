@@ -1135,16 +1135,27 @@ fn spawn_pipe_reader(
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; 8192];
+        // WP-210 F: UTF-8 first, then the ANSI code page (CP936 …); split
+        // characters wait for the next read instead of becoming U+FFFD.
+        let mut decoder = super::decode::StreamDecoder::platform();
         loop {
             match reader.read(&mut buf).await {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    let text = String::from_utf8_lossy(&buf[..n]);
-                    if let Ok(mut tee) = tee.lock() {
+                    let text = decoder.push(&buf[..n]);
+                    if !text.is_empty()
+                        && let Ok(mut tee) = tee.lock()
+                    {
                         tee.push_raw(&text);
                     }
                 }
             }
+        }
+        let rest = decoder.finish();
+        if !rest.is_empty()
+            && let Ok(mut tee) = tee.lock()
+        {
+            tee.push_raw(&rest);
         }
     })
 }

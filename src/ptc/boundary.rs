@@ -17,8 +17,6 @@
 //! accepted; `2^53` is rejected. Non-integer JSON numbers are injected as
 //! numbers because `serde_json` already stores them as `f64`.
 
-use std::collections::BTreeMap;
-
 use rquickjs::{Array, Atom, Ctx, Error, Exception, Filter, IntoJs, Object, Type, Value};
 use serde_json::{Map, Number};
 
@@ -45,7 +43,7 @@ enum Frame<'js> {
         array: Array<'js>,
     },
     Object {
-        map: BTreeMap<String, Json>,
+        map: Vec<(String, Json)>,
         keys: Vec<String>,
         index: usize,
         object: Object<'js>,
@@ -281,7 +279,7 @@ fn open_object<'js>(
         return Ok(ready(serde_json::Value::Object(Map::new())));
     }
     frames.push(Frame::Object {
-        map: BTreeMap::new(),
+        map: Vec::new(),
         keys,
         index: 0,
         object,
@@ -456,7 +454,7 @@ fn finish<'js>(
             map, keys, index, ..
         }) => {
             let key = keys[*index].clone();
-            map.insert(key, json);
+            map.push((key, json));
             *index += 1;
             *index == keys.len()
         }

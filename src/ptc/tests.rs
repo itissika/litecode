@@ -50,6 +50,7 @@ async fn run_with(
         budget,
         grace,
         cancel,
+        fs_root: None,
     })
     .await
 }
@@ -1125,3 +1126,27 @@ async fn undefined_in_arguments_is_dropped_silently() {
     assert_eq!(seen[0], json!({"a": 1, "c": [null, 2]}));
     assert_eq!(seen[1], json!(null));
 }
+
+#[tokio::test]
+async fn runtime_exception_reports_line_column_and_stack() {
+    let outcome = run("const a = 1;\nfunction boom() {\n  throw new Error('bad');\n}\nboom();", Vec::new()).await;
+    let failure = outcome.failure.as_ref().expect("exception");
+    assert_eq!(failure.kind, FailureKind::Exception);
+    let location = failure.location.expect("runtime exceptions carry a location");
+    assert_eq!((location.line, location.column), (3, 13), "{failure:?}");
+    let stack = failure.stack.as_deref().unwrap_or("");
+    assert!(stack.contains("program.js:"), "{stack}");
+}
+
+#[tokio::test]
+async fn object_keys_keep_agent_order_across_the_bridge() {
+    let echo = HostFn::new(|args, _, _, _| async move { Ok(args.into_value()) });
+    let outcome = run(
+        "const back = await tools.echo({zeta: 1, alpha: 2, mid: {y: 1, b: 2}});\nreturn {z: 1, a: back, m: 3};",
+        tools(vec![("echo", echo)]),
+    )
+    .await;
+    let text = serde_json::to_string(value_of(&outcome)).unwrap();
+    assert_eq!(text, r#"{"z":1,"a":{"zeta":1,"alpha":2,"mid":{"y":1,"b":2}},"m":3}"#);
+}
+

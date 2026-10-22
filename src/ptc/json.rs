@@ -6,7 +6,6 @@
 //! stack, the same way a manual dismantle would, so the derived impls never run
 //! on a deep tree.
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::ops::Deref;
@@ -42,7 +41,8 @@ impl Json {
         Self::new(Value::Array(values))
     }
 
-    pub(crate) fn from_object(map: BTreeMap<String, Json>) -> Self {
+    /// Keys keep the order given (agent order when built by the boundary).
+    pub(crate) fn from_object(map: Vec<(String, Json)>) -> Self {
         let mut values = serde_json::Map::new();
         for (key, child) in map {
             values.insert(key, child.into_value());
@@ -140,10 +140,7 @@ fn clone_value(root: &Value) -> Value {
             Task::EndObject(keys) => {
                 let start = built.len().saturating_sub(keys.len());
                 let children: Vec<Json> = built.drain(start..).collect();
-                let mut map = BTreeMap::new();
-                for (key, child) in keys.into_iter().zip(children) {
-                    map.insert(key, child);
-                }
+                let map: Vec<(String, Json)> = keys.into_iter().zip(children).collect();
                 built.push(Json::from_object(map));
             }
         }

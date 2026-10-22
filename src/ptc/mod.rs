@@ -19,6 +19,7 @@
 //! numbers are injected as numbers.
 
 mod boundary;
+mod fs;
 mod budget;
 mod calls;
 mod engine;
@@ -213,6 +214,9 @@ pub struct ExecuteRequest {
     /// cancels them. This is wall time and is not charged to `budget`.
     pub grace: Duration,
     pub cancel: CancellationToken,
+    /// Workspace root for the read-only `fs.ls/stat/exists` probes
+    /// (WP-210 I). `None` leaves `fs` undefined.
+    pub fs_root: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,6 +332,22 @@ impl Failure {
 
     pub(crate) fn exception(message: impl Into<String>, stack: Option<String>) -> Self {
         Self::new(FailureKind::Exception, message, stack, None)
+    }
+
+    /// Runtime exception: first `program.js` frame of the stack, mapped to the
+    /// user's source (wrapper line removed). Left unset when the throw site is
+    /// not in the user's code.
+    pub(crate) fn locate_runtime(mut self, source_lines: u32) -> Self {
+        if let Some((line, column)) = self.stack.as_deref().and_then(program_js_site) {
+            let adjusted = line.saturating_sub(1);
+            if adjusted >= 1 && adjusted <= source_lines {
+                self.location = Some(SourceLocation {
+                    line: adjusted,
+                    column,
+                });
+            }
+        }
+        self
     }
 
     pub(crate) fn timeout() -> Self {

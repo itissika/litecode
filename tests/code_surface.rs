@@ -833,7 +833,7 @@ mod run_code_only {
         assert_eq!(value["glob"], "ok", "{}", result.content);
         assert_eq!(value["grep"], "ok", "{}", result.content);
         assert!(
-            result.content.contains("3 succeeded, 0 failed"),
+            result.content.contains("tool calls: 3 ok / 0 failed"),
             "{}",
             result.content
         );
@@ -999,7 +999,7 @@ mod run_code_only {
             "timed-out nested call was not joined"
         );
         // The completed fast call stays counted as a success; only hold is cut off.
-        assert!(result.content.contains("1 succeeded"), "{}", result.content);
+        assert!(result.content.contains("tool calls: 1 ok"), "{}", result.content);
         assert_eq!(
             result.error.as_ref().map(|error| error.kind),
             Some(ToolErrorKind::Timeout)
@@ -1235,7 +1235,8 @@ mod edit_write {
         let script = r#"
     let status = "ok";
     try {
-      await tools.write({ path: "nope.txt", content: "secret-nope" });
+      const written = await tools.write({ path: "nope.txt", content: "secret-nope" });
+      if (written.ok === false) status = "error";
     } catch (e) {
       status = "error";
     }
@@ -1258,7 +1259,7 @@ mod edit_write {
         let value = run_code_result(&result.content);
         assert_eq!(value["status"], "error");
         assert!(
-            result.content.contains("0 succeeded, 1 failed"),
+            result.content.contains("tool calls: 0 ok / 1 failed"),
             "{}",
             result.content
         );
@@ -1286,7 +1287,8 @@ mod edit_write {
             r#"
     let status = "ok";
     try {{
-      await tools.write({{ path: {target:?}, content: "no" }});
+      const written = await tools.write({{ path: {target:?}, content: "no" }});
+      if (written.ok === false) status = "error";
     }} catch (e) {{
       status = "error";
     }}
@@ -1306,7 +1308,7 @@ mod edit_write {
         let value = run_code_result(&result.content);
         assert_eq!(value["status"], "error");
         assert!(
-            result.content.contains("0 succeeded, 1 failed"),
+            result.content.contains("tool calls: 0 ok / 1 failed"),
             "{}",
             result.content
         );
@@ -1598,13 +1600,18 @@ mod edit_write {
         bytes: results.map(result => result.status === "fulfilled" && result.value.file ? result.value.file.bytes : 0)
       };
     }
+    // WP-210 G: domain failures (not_found, permission…) resolve { ok: false }.
+    function must(result) {
+      if (result && result.ok === false) throw new Error(result.message || result.reason);
+      return result;
+    }
     async function lineText(result) {
       const line = result && result.lines && result.lines[0];
       return line ? line : "";
     }
     async function markerText(path) {
       try {
-        return await lineText(await tools.read({ path }));
+        return await lineText(must(await tools.read({ path })));
       } catch (e) {
         return "";
       }
@@ -1624,7 +1631,7 @@ mod edit_write {
       }
       const reads = await Promise.all(paths.map(async (path) => {
         try {
-          const result = await tools.read({ path });
+          const result = must(await tools.read({ path }));
           return { path, status: "ok", text: await lineText(result), message: "" };
         } catch (e) {
           return { path, status: "error", text: "", message: (e && e.message) || "" };
@@ -1640,7 +1647,7 @@ mod edit_write {
       }
       let after = { status: "error", text: "" };
       try {
-        after = { status: "ok", text: await lineText(await tools.read({ path: "held.txt" })) };
+        after = { status: "ok", text: await lineText(must(await tools.read({ path: "held.txt" }))) };
       } catch (e) {}
       return { saw, write, writeMessage, reads, after };
     }
@@ -1656,7 +1663,7 @@ mod edit_write {
       }
       let during = { status: "error", text: "" };
       try {
-        during = { status: "ok", text: await lineText(await tools.read({ path: readPath })) };
+        during = { status: "ok", text: await lineText(must(await tools.read({ path: readPath }))) };
       } catch (e) {}
       let write = "ok";
       let writeMessage = "";
@@ -1668,7 +1675,7 @@ mod edit_write {
       }
       let after = { status: "error", text: "" };
       try {
-        after = { status: "ok", text: await lineText(await tools.read({ path: readPath })) };
+        after = { status: "ok", text: await lineText(must(await tools.read({ path: readPath }))) };
       } catch (e) {}
       return {
         saw: saw !== "",
@@ -2044,8 +2051,10 @@ mod approval_locks {
         );
         let other = r#"
     try {
-      await tools.read({ path: "same.txt" });
-      throw new Error("read saw a file before the pending write was approved");
+      const probe = await tools.read({ path: "same.txt" });
+      if (probe.ok !== false) {
+        throw new Error("read saw a file before the pending write was approved");
+      }
     } catch (e) {
       if (!(e instanceof ToolError)) throw e;
     }
@@ -2082,7 +2091,7 @@ mod approval_locks {
             .unwrap();
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            result.content.contains("0 succeeded, 1 failed"),
+            result.content.contains("tool calls: 0 ok / 1 failed"),
             "{}",
             result.content
         );
@@ -2127,7 +2136,7 @@ mod approval_locks {
             .unwrap();
         assert!(
             result.content.contains("cancelled")
-                || result.content.contains("0 succeeded"),
+                || result.content.contains("tool calls: 0 ok"),
             "{}",
             result.content
         );

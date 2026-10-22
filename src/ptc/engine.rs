@@ -235,6 +235,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     ));
 
     let namespaces = request.namespaces.clone();
+    let fs_root = request.fs_root.clone();
     let installed = context
         .async_with({
             let calls = Arc::clone(&calls);
@@ -257,6 +258,9 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                     &faults,
                     &output,
                 )?;
+                if let Some(root) = &fs_root {
+                    install_fs(&ctx, root)?;
+                }
                 let saved = save_prototypes(&ctx)?;
                 *protos.borrow_mut() = Some(saved);
                 Ok(())
@@ -648,6 +652,50 @@ fn install_libs(ctx: &Ctx<'_>) -> Result<(), Failure> {
     );
     let libs = eval_object(ctx, &source)?;
     define_const(ctx, "libs", libs)
+}
+
+/// Read-only `fs` probes (WP-210 I). Synchronous, workspace-confined, no
+/// write/rm/mv. Results cross the boundary as JSON.
+fn install_fs<'js>(ctx: &Ctx<'js>, root: &std::path::Path) -> Result<(), Failure> {
+    let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
+    let fail = |error: rquickjs::Error| Failure::internal(error.to_string());
+    let path_arg = |ctx: &Ctx<'_>, args: &Rest<Value<'_>>, name: &str| -> rquickjs::Result<String> {
+        match args.0.first().and_then(|value| value.as_string()) {
+            Some(text) if args.0.len() == 1 => text.to_string(),
+            _ => Err(boundary::throw_type(ctx, &format!("fs.{name} takes one path string"))),
+        }
+    };
+    for name in ["ls", "stat"] {
+        let root = root.to_path_buf();
+        let function = Function::new(
+            ctx.clone(),
+            move |ctx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
+                let raw = path_arg(&ctx, &args, name)?;
+                let result = if name == "ls" {
+                    super::fs::ls(&root, &raw)
+                } else {
+                    super::fs::stat(&root, &raw)
+                };
+                boundary::to_js(&ctx, super::json::Json::new(result))
+                    .map_err(|message| boundary::throw_message(&ctx, &message))
+            },
+        )
+        .and_then(|function| function.with_name(name))
+        .map_err(fail)?;
+        object.set(name, function).map_err(fail)?;
+    }
+    let root = root.to_path_buf();
+    let exists = Function::new(
+        ctx.clone(),
+        move |ctx: Ctx<'_>, args: Rest<Value<'_>>| -> rquickjs::Result<bool> {
+            let raw = path_arg(&ctx, &args, "exists")?;
+            Ok(super::fs::exists(&root, &raw))
+        },
+    )
+    .and_then(|function| function.with_name("exists"))
+    .map_err(fail)?;
+    object.set("exists", exists).map_err(fail)?;
+    define_const(ctx, "fs", object)
 }
 
 fn install_console(
@@ -1132,7 +1180,7 @@ fn classify_value<'js>(
     {
         let mut failure = Failure::exception(thrown.message, thrown.stack);
         failure.tool_error = tool_error_info(ctx, value, saved.as_ref().unwrap());
-        return ProgramEnd::Failure(failure);
+        return ProgramEnd::Failure(failure.locate_runtime(source_lines));
     }
     if saved
         .as_ref()
@@ -1140,9 +1188,9 @@ fn classify_value<'js>(
     {
         let mut failure = Failure::exception(thrown.message, thrown.stack);
         failure.uncaught_type_error = true;
-        return ProgramEnd::Failure(failure);
+        return ProgramEnd::Failure(failure.locate_runtime(source_lines));
     }
-    ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))
+    ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack).locate_runtime(source_lines))
 }
 
 fn tool_error_info<'js>(

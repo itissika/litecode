@@ -83,13 +83,9 @@ return { ok: true };
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    // WP-209: logs collapse to one line on success; kept (tail, 2k tok) on failure.
-    assert!(
-        result.content.contains("logs omitted (2 lines)"),
-        "{}",
-        result.content
-    );
-    assert!(!result.content.contains("hello 42"), "{}", result.content);
+    // WP-210 D: success keeps the head of the logs within 200 tokens.
+    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
+    assert!(!result.content.contains("logs omitted"), "{}", result.content);
     assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
 
     let failing = FunctionToolCall {

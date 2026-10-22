@@ -1,10 +1,12 @@
 //! Model-facing text for one `run_code` execution.
 //!
-//! Default agent view is only three blocks: head, optional logs, optional result.
-//! Result: uniform object arrays render as `[N]{a,b}:` tables, everything else
-//! as compact JSON (strings verbatim), capped at [`RESULT_TOKEN_BUDGET`] cl100k
-//! tokens. Logs: one `logs omitted (N lines)` line on success; on failure the
-//! tail within [`FAILURE_LOGS_TOKEN_BUDGET`]. [`RUN_CODE_VIEW_MAX_BYTES`] stays as
+//! Default agent view: head, optional logs, optional partial results (failed
+//! runs only), optional result. Result: uniform object arrays render as
+//! `[N]{a,b}:` tables (columns in the agent's key order), everything else as
+//! compact JSON (strings verbatim), capped at [`RESULT_TOKEN_BUDGET`] cl100k
+//! tokens by structural degradation (WP-210 C). Logs: the head of the logs
+//! within [`SUCCESS_LOGS_TOKEN_BUDGET`] on success, the tail within
+//! [`FAILURE_LOGS_TOKEN_BUDGET`] on failure. [`RUN_CODE_VIEW_MAX_BYTES`] stays as
 //! a byte fallback. Cuts land on UTF-8 boundaries and say what was omitted. This module does not emit a JSON copy
 //! of the run.
 
@@ -34,6 +36,8 @@ pub(super) struct LedgerSnap {
     pub error_code: Option<String>,
     pub error_message: Option<String>,
     pub session_read: bool,
+    /// One-line result digest (WP-210 A); `None` while unsettled.
+    pub brief: Option<String>,
 }
 
 /// An uncaught `ToolError`, used for the header failure tag.
@@ -83,14 +87,20 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
     let fixed_len = joined_len(&fixed);
     let succeeded = report.failure_kind.is_none();
     let logs = if succeeded {
-        logs_omitted_line(report.logs.len())
+        render_success_logs(&report.logs, SUCCESS_LOGS_TOKEN_BUDGET)
     } else {
         render_failure_logs(&report.logs, FAILURE_LOGS_TOKEN_BUDGET, report.output_limited)
+    };
+    let partial = render_partial_results(report, RESULT_TOKEN_BUDGET);
+    let logs = match (logs, partial) {
+        (Some(logs), Some(partial)) => Some(format!("{logs}\n\n{partial}")),
+        (logs, None) => logs,
+        (None, partial) => partial,
     };
     let result_body = report
         .value
         .as_ref()
-        .map(|value| budget_result(&render_result_body(value), RESULT_TOKEN_BUDGET));
+        .map(|value| budget_value(value, RESULT_TOKEN_BUDGET));
     let mut text = assemble(&fixed, &logs, &result_body.as_ref().map(|b| format!("result:\n{b}")));
     if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
         return text;
@@ -122,16 +132,106 @@ pub(super) fn render_model_view(report: &RunReport) -> String {
 
 /// Token budget for the returned result body (cl100k), excluding the notice/marker.
 pub const RESULT_TOKEN_BUDGET: usize = 8_000;
-/// Token budget for logs on a failed run. Successful runs omit logs entirely.
+/// Token budget for logs on a failed run (the tail is kept).
 pub const FAILURE_LOGS_TOKEN_BUDGET: usize = 2_000;
+/// Token budget for logs on a successful run (the head is kept, WP-210 D/Q5).
+pub const SUCCESS_LOGS_TOKEN_BUDGET: usize = 200;
+/// Program frames shown under a runtime exception (WP-210 B/Q3).
+const STACK_FRAMES: usize = 5;
 const LOGS_FALLBACK_CAP: usize = 16 * 1024;
 
 fn count_tokens(text: &str) -> usize {
     crate::session::estimate::count_text_tokens(text)
 }
 
-fn logs_omitted_line(count: usize) -> Option<String> {
-    (count > 0).then(|| format!("logs omitted ({count} lines)"))
+/// Successful run: keep whole leading log lines within `budget` tokens, then
+/// one `… N lines omitted` line for the rest.
+fn render_success_logs(logs: &[(String, String)], budget: usize) -> Option<String> {
+    if logs.is_empty() {
+        return None;
+    }
+    let mut body = String::from("logs:");
+    let mut kept = 0usize;
+    for (level, message) in logs {
+        let line = format!("\n[{level}] {message}");
+        let candidate = format!("{body}{line}");
+        if count_tokens(&candidate) > budget {
+            break;
+        }
+        body = candidate;
+        kept += 1;
+    }
+    let omitted = logs.len() - kept;
+    if omitted > 0 {
+        body.push_str(&format!("\n… {omitted} lines omitted"));
+    }
+    Some(body)
+}
+
+/// Failed run that had started: one line per settled nested call so the
+/// work already done is not lost (WP-210 A/Q1). Same token budget as the
+/// result; whole lines are dropped from the end with `… N more`.
+fn render_partial_results(report: &RunReport, budget: usize) -> Option<String> {
+    if report.failure_kind.is_none() || did_not_start(report) {
+        return None;
+    }
+    let settled: Vec<&LedgerSnap> = report
+        .calls
+        .iter()
+        .filter(|call| call.brief.is_some())
+        .collect();
+    if settled.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = settled
+        .iter()
+        .map(|call| {
+            let status = if call.state.starts_with("error") {
+                match &call.error_code {
+                    Some(code) => format!("failed({code})"),
+                    None => "failed".to_string(),
+                }
+            } else if call.state == "cancelled" {
+                "cancelled".to_string()
+            } else {
+                "ok".to_string()
+            };
+            let brief = call.brief.as_deref().unwrap_or("");
+            let summary = if call.summary.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", call.summary)
+            };
+            format!("#{} {}{summary} → {status}: {brief}", call.seq, call.tool)
+        })
+        .collect();
+    let hidden = call_total(report).saturating_sub(report.calls.len());
+    let build = |count: usize| {
+        let mut out = String::from("completed tool calls before the failure:");
+        for line in &lines[..count] {
+            out.push('\n');
+            out.push_str(line);
+        }
+        let more = lines.len() - count + hidden;
+        if more > 0 {
+            out.push_str(&format!("\n… {more} more"));
+        }
+        out
+    };
+    let full = build(lines.len());
+    if full.len() <= budget || count_tokens(&full) <= budget {
+        return Some(full);
+    }
+    let (mut lo, mut hi) = (0usize, lines.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if count_tokens(&build(mid)) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    Some(build(lo))
 }
 
 fn format_ktok(tokens: usize) -> String {
@@ -142,24 +242,186 @@ fn format_ktok(tokens: usize) -> String {
     }
 }
 
-/// Keep `body` within `budget` cl100k tokens. Over budget: a notice line at the
-/// start, a whole-line prefix of the body, and a tail marker with the counts.
-/// A cheap byte check skips counting: every token covers at least one byte.
-fn budget_result(body: &str, budget: usize) -> String {
-    if body.len() <= budget {
-        return body.to_string();
-    }
-    let total = count_tokens(body);
-    if total <= budget {
-        return body.to_string();
-    }
-    let kept = token_prefix(body, budget);
-    let kept_tokens = count_tokens(kept);
+fn over_budget_notice(total: usize, budget: usize) -> String {
     format!(
-        "result {} tok exceeds {}; truncated — return summary/counts/paths\n{kept}\n… [truncated: {kept_tokens} of {total} tok]",
+        "result {} tok exceeds {}; truncated — return summary/counts/paths",
         format_ktok(total),
         format_ktok(budget),
     )
+}
+
+fn fits(text: &str, budget: usize) -> bool {
+    text.len() <= budget || count_tokens(text) <= budget
+}
+
+/// Render `value` within `budget` cl100k tokens (WP-210 C).
+///
+/// Strings are text: a whole-line prefix plus a tail marker. Structured values
+/// degrade structurally and stay valid JSON / whole table rows:
+/// 1. every array keeps its first K items, the rest become `"… N more"`
+///    (tables: one `… N more rows` line);
+/// 2. containers deeper than D become `"{…N keys}"` / `"[…N items]"`;
+/// 3. strings longer than S chars become `prefix…(N chars)`.
+///
+/// Each knob is the largest value that fits (binary search). Only the start
+/// is kept; the over-budget notice is the first line.
+fn budget_value(value: &Value, budget: usize) -> String {
+    let body = render_result_body(value);
+    if fits(&body, budget) {
+        return body;
+    }
+    let total = count_tokens(&body);
+    if let Value::String(_) = value {
+        let kept = token_prefix(&body, budget);
+        let kept_tokens = count_tokens(kept);
+        return format!(
+            "{}\n{kept}\n… [truncated: {kept_tokens} of {total} tok]",
+            over_budget_notice(total, budget)
+        );
+    }
+    let notice = over_budget_notice(total, budget);
+    let render = |shape: &Shape| render_result_body(&degrade(value, shape, 0));
+    let max_len = longest_array(value);
+    let mut shape = Shape { keep: max_len, depth: DEGRADE_MAX_DEPTH, chars: usize::MAX };
+    // 1. array length
+    let (mut lo, mut hi) = (0usize, max_len);
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        shape.keep = mid;
+        if fits(&render(&shape), budget) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    shape.keep = lo.max(1);
+    if fits(&render(&shape), budget) {
+        return format!("{notice}\n{}", render(&shape));
+    }
+    // 2. depth
+    let max_depth = depth_of(value);
+    let (mut lo, mut hi) = (1usize, max_depth.clamp(1, DEGRADE_MAX_DEPTH));
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        shape.depth = mid;
+        if fits(&render(&shape), budget) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    shape.depth = lo;
+    if fits(&render(&shape), budget) {
+        return format!("{notice}\n{}", render(&shape));
+    }
+    // 3. string length
+    let (mut lo, mut hi) = (0usize, longest_string(value));
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        shape.chars = mid;
+        if fits(&render(&shape), budget) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    shape.chars = lo;
+    let body = render(&shape);
+    if fits(&body, budget) {
+        return format!("{notice}\n{body}");
+    }
+    // Still over (e.g. a huge flat object): whole leading lines only.
+    let kept = token_prefix(&body, budget).to_string();
+    format!("{notice}\n{kept}\n… [truncated]")
+}
+
+const DEGRADE_MAX_DEPTH: usize = 256;
+
+struct Shape {
+    keep: usize,
+    depth: usize,
+    chars: usize,
+}
+
+fn more_marker(count: usize) -> Value {
+    Value::String(format!("… {count} more"))
+}
+
+fn is_more_marker(value: &Value) -> Option<usize> {
+    let text = value.as_str()?;
+    text.strip_prefix("… ")?.strip_suffix(" more")?.parse().ok()
+}
+
+/// Apply `shape` to a copy of `value`. Recursion is bounded by
+/// [`DEGRADE_MAX_DEPTH`]: anything deeper collapses to a placeholder.
+fn degrade(value: &Value, shape: &Shape, depth: usize) -> Value {
+    match value {
+        Value::Array(items) => {
+            if depth >= shape.depth && !items.is_empty() {
+                return Value::String(format!("[…{} items]", items.len()));
+            }
+            let keep = items.len().min(shape.keep);
+            let mut out: Vec<Value> = items[..keep]
+                .iter()
+                .map(|item| degrade(item, shape, depth + 1))
+                .collect();
+            if keep < items.len() {
+                out.push(more_marker(items.len() - keep));
+            }
+            Value::Array(out)
+        }
+        Value::Object(map) => {
+            if depth >= shape.depth && !map.is_empty() {
+                return Value::String(format!("{{…{} keys}}", map.len()));
+            }
+            Value::Object(
+                map.iter()
+                    .map(|(key, child)| (key.clone(), degrade(child, shape, depth + 1)))
+                    .collect(),
+            )
+        }
+        Value::String(text) => {
+            let count = text.chars().count();
+            if count > shape.chars {
+                let cut: String = text.chars().take(shape.chars).collect();
+                Value::String(format!("{cut}…({count} chars)"))
+            } else {
+                value.clone()
+            }
+        }
+        other => other.clone(),
+    }
+}
+
+fn walk_stats(value: &Value) -> (usize, usize, usize) {
+    // (longest array, max depth, longest string in chars), iterative.
+    let (mut array, mut depth, mut string) = (0usize, 0usize, 0usize);
+    let mut stack = vec![(value, 1usize)];
+    while let Some((node, level)) = stack.pop() {
+        depth = depth.max(level);
+        match node {
+            Value::Array(items) => {
+                array = array.max(items.len());
+                stack.extend(items.iter().map(|item| (item, level + 1)));
+            }
+            Value::Object(map) => stack.extend(map.values().map(|child| (child, level + 1))),
+            Value::String(text) => string = string.max(text.chars().count()),
+            _ => {}
+        }
+    }
+    (array, depth, string)
+}
+
+fn longest_array(value: &Value) -> usize {
+    walk_stats(value).0
+}
+
+fn depth_of(value: &Value) -> usize {
+    walk_stats(value).1
+}
+
+fn longest_string(value: &Value) -> usize {
+    walk_stats(value).2
 }
 
 /// Longest prefix within `budget` tokens. Cuts at a line end when at least one
@@ -306,9 +568,22 @@ fn compact_json(value: &Value) -> String {
 
 const TABLE_MIN_ROWS: usize = 3;
 
-/// Same key set (order ignored), all values primitive, at least 3 rows.
+/// Rows and the trailing `… N more` marker added by [`degrade`], if any.
+fn split_more(items: &[Value]) -> (&[Value], Option<usize>) {
+    match items.split_last() {
+        Some((last, rows)) => match is_more_marker(last) {
+            Some(count) => (rows, Some(count)),
+            None => (items, None),
+        },
+        None => (items, None),
+    }
+}
+
+/// Same key set (order ignored), all values primitive, at least 3 rows
+/// (counting rows cut by the budget).
 fn is_table(items: &[Value]) -> bool {
-    if items.len() < TABLE_MIN_ROWS {
+    let (items, more) = split_more(items);
+    if items.len() + more.unwrap_or(0) < TABLE_MIN_ROWS || items.is_empty() {
         return false;
     }
     let Some(Value::Object(first)) = items.first() else {
@@ -340,14 +615,17 @@ fn quote(text: &str) -> String {
 }
 
 /// `key[N]{a,b,c}:` then one `v1,v2,v3` row per element. Columns follow the
-/// first element's map iteration order (sorted keys with default serde_json).
+/// first element's key order, which is the agent's order (WP-210 E). Rows cut
+/// by the budget end the block with `… N more rows`.
 fn render_table(key: &str, items: &[Value]) -> String {
+    let (items, more) = split_more(items);
     let Some(Value::Object(first)) = items.first() else {
         return String::new();
     };
     let columns: Vec<&String> = first.keys().collect();
     let header: Vec<String> = columns.iter().map(|c| cell_text(c)).collect();
-    let mut out = format!("{key}[{}]{{{}}}:", items.len(), header.join(","));
+    let total = items.len() + more.unwrap_or(0);
+    let mut out = format!("{key}[{total}]{{{}}}:", header.join(","));
     for item in items {
         let Value::Object(map) = item else { continue };
         let row: Vec<String> = columns
@@ -356,6 +634,9 @@ fn render_table(key: &str, items: &[Value]) -> String {
             .collect();
         out.push('\n');
         out.push_str(&row.join(","));
+    }
+    if let Some(more) = more {
+        out.push_str(&format!("\n… {more} more rows"));
     }
     out
 }
@@ -471,7 +752,15 @@ fn remaining_after(fixed_len: usize) -> usize {
 
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
-    if let Some(line) = &report.dropped_undefined {
+    if report.failure_kind == Some(FailureKind::Exception)
+        && let Some(stack) = short_stack(report.failure_stack.as_deref())
+    {
+        parts.push(stack);
+    }
+    // WP-210 H: dropped-undefined paths only matter when the run failed.
+    if report.failure_kind.is_some()
+        && let Some(line) = &report.dropped_undefined
+    {
         parts.push(line.clone());
     }
     if !did_not_start(report) {
@@ -555,7 +844,7 @@ fn header_line(report: &RunReport) -> String {
     let duration = format!("{}ms", report.duration_ms);
     let mut line = if let Some(error) = &report.tool_error {
         format!(
-            "run_code failed: uncaught ToolError {} from call #{} {} {} · {success} succeeded, {failed} failed · {duration}",
+            "run_code failed: uncaught ToolError {} from call #{} {} {} · program: failed · tool calls: {success} ok / {failed} failed · {duration}",
             error.code, error.seq, error.tool, error.summary
         )
     } else if let Some(kind) = report.failure_kind {
@@ -565,8 +854,19 @@ fn header_line(report: &RunReport) -> String {
             failure_label(kind, report)
         };
         let mut line = format!(
-            "run_code failed: {label} · {success} succeeded, {failed} failed · {duration}"
+            "run_code failed: {label} · program: failed · tool calls: {success} ok / {failed} failed · {duration}"
         );
+        // WP-210 B: a runtime exception points at the user's line like a
+        // syntax error does.
+        if kind == FailureKind::Exception
+            && let Some(location) = report.failure_location
+        {
+            line.push_str(&format!(" · line {}, column {}", location.line, location.column));
+            if let Some(snippet) = source_line_snippet(&report.source, location.line) {
+                line.push_str(" · ");
+                line.push_str(&snippet);
+            }
+        }
         // Exception / illegal-output: one short cause on the head. Timeout /
         // cancel / limits already have a precise label — do not rehash.
         if matches!(
@@ -580,7 +880,7 @@ fn header_line(report: &RunReport) -> String {
         }
         line
     } else {
-        format!("run_code ok · {success} succeeded, {failed} failed · {duration}")
+        format!("run_code ok · program: ok · tool calls: {success} ok / {failed} failed · {duration}")
     };
     if session_read_mark(report) {
         line.push(' ');
@@ -612,6 +912,35 @@ fn wont_start_line(report: &RunReport) -> String {
         line.push_str(&detail);
     }
     line
+}
+
+/// Up to [`STACK_FRAMES`] frames from the user's program, with lines mapped
+/// to the user's source (wrapper line removed). Runtime/libs frames are
+/// dropped.
+fn short_stack(stack: Option<&str>) -> Option<String> {
+    let stack = stack?;
+    let mut frames = Vec::new();
+    for raw in stack.lines() {
+        let frame = raw.trim();
+        let Some(start) = frame.find("program.js:") else {
+            continue;
+        };
+        let rest = &frame[start + "program.js:".len()..];
+        let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let Ok(line) = rest[..digits].parse::<u32>() else {
+            continue;
+        };
+        if line <= 1 {
+            continue;
+        }
+        let tail = &rest[digits..];
+        let mapped = format!("{}line {}{}", &frame[..start], line - 1, tail);
+        frames.push(format!("  {mapped}"));
+        if frames.len() == STACK_FRAMES {
+            break;
+        }
+    }
+    (!frames.is_empty()).then(|| format!("stack:\n{}", frames.join("\n")))
 }
 
 fn source_line_snippet(source: &str, line: u32) -> Option<String> {
@@ -762,6 +1091,7 @@ mod tests {
             error_code: code.map(str::to_string),
             error_message: None,
             session_read: false,
+            brief: None,
         }
     }
 
@@ -800,6 +1130,10 @@ mod tests {
         let mut report = report();
         report.value = Some(Value::Null);
         report.dropped_undefined = Some("dropped undefined at a.b, c[2]".into());
+        // WP-210 H: a successful run does not mention dropped undefined.
+        assert!(!render_model_view(&report).contains("dropped undefined"));
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("boom".into());
         let text = render_model_view(&report);
         let head = text.split("result:").next().unwrap_or("");
         assert!(head.contains("dropped undefined at a.b, c[2]"), "{text}");
@@ -856,7 +1190,7 @@ mod tests {
         ];
         let text = render_model_view(&report);
         assert!(
-            text.starts_with("run_code ok · 1 succeeded, 2 failed · 12ms"),
+            text.starts_with("run_code ok · program: ok · tool calls: 1 ok / 2 failed · 12ms"),
             "{text}"
         );
         assert!(!text.contains("rejected"), "{text}");
@@ -879,7 +1213,7 @@ mod tests {
         let text = render_model_view(&report);
         assert!(
             text.starts_with(
-                "run_code failed: timeout after 120000ms · 3 succeeded, 0 failed · 120000ms"
+                "run_code failed: timeout after 120000ms · program: failed · tool calls: 3 ok / 0 failed · 120000ms"
             ),
             "{text}"
         );
@@ -924,8 +1258,8 @@ mod tests {
         ]));
         assert_eq!(
             result_of(&text),
-            // serde_json maps iterate in sorted key order here.
-            "[3]{hit,line,path}:\ntrue,1,a.rs\nfalse,2,b.rs\n,3.5,c.rs"
+            // WP-210 E: columns follow the first row's key order (agent order).
+            "[3]{path,line,hit}:\na.rs,1,true\nb.rs,2,false\nc.rs,3.5,"
         );
     }
 
@@ -967,7 +1301,7 @@ mod tests {
             "note": "x"
         }));
         let result = result_of(&text);
-        assert_eq!(result, "{\"note\":\"x\",\"total\":3}\nhits[3]{n,p}:\n1,a\n2,b\n3,c");
+        assert_eq!(result, "{\"total\":3,\"note\":\"x\"}\nhits[3]{p,n}:\na,1\nb,2\nc,3");
     }
 
     #[test]
@@ -1010,9 +1344,13 @@ mod tests {
         let text = ok_with(Value::Array(rows));
         let result = result_of(&text);
         let body: Vec<&str> = result.lines().collect();
-        assert!(body[1].starts_with("[5000]{line,path}:"), "{}", body[1]);
+        assert!(body[1].starts_with("[5000]{path,line}:"), "{}", body[1]);
+        // Whole rows only, then one `… N more rows` line (WP-210 C).
+        let marker = body[body.len() - 1];
+        let shown = body.len() - 3;
+        assert_eq!(marker, format!("… {} more rows", 5000 - shown), "{marker}");
         let last_row = body[body.len() - 2];
-        let (line, path) = last_row.split_once(',').unwrap();
+        let (path, line) = last_row.rsplit_once(',').unwrap();
         assert_eq!(path, format!("src/mod_{line}/file.rs"));
     }
 
@@ -1024,14 +1362,76 @@ mod tests {
     }
 
     #[test]
-    fn success_logs_collapse_to_one_line() {
+    fn success_logs_keep_the_head_within_200_tokens() {
         let mut report = report();
         report.logs = (0..7).map(|i| ("log".into(), format!("line {i}"))).collect();
         report.value = Some(Value::Null);
         let text = render_model_view(&report);
-        assert!(text.contains("\n\nlogs omitted (7 lines)\n\nresult:"), "{text}");
-        assert!(!text.contains("line 3"), "{text}");
-        assert!(!text.contains("logs:"), "{text}");
+        assert!(text.contains("\n\nlogs:\n[log] line 0\n"), "{text}");
+        assert!(text.contains("[log] line 6\n\nresult:"), "{text}");
+        assert!(!text.contains("omitted"), "{text}");
+
+        report.logs = (0..500)
+            .map(|i| ("log".into(), format!("step {i} doing some work here")))
+            .collect();
+        let text = render_model_view(&report);
+        let logs = text.split_once("\n\nlogs:").unwrap().1.split("\n\nresult:").next().unwrap();
+        assert!(logs.starts_with("\n[log] step 0 doing"), "{logs}");
+        let tail = logs.lines().last().unwrap();
+        assert!(tail.starts_with("… ") && tail.ends_with(" lines omitted"), "{tail}");
+        let kept: String = format!("logs:{}", logs.rsplit_once('\n').unwrap().0);
+        assert!(crate::session::estimate::count_text_tokens(&kept) <= SUCCESS_LOGS_TOKEN_BUDGET);
+    }
+
+    #[test]
+    fn failed_run_keeps_completed_calls_and_separates_program_from_tool_counts() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("Cannot read properties of null".into());
+        report.failure_location = Some(SourceLocation { line: 3, column: 14 });
+        report.source = "const a = await tools.read({path:'a'});\nconst b = 2;\nreturn null.x;".into();
+        report.failure_stack = Some(
+            "    at boom (program.js:4:14)\n    at <anonymous> (libs.js:9:1)\n    at <eval> (program.js:1:1)".into(),
+        );
+        let mut first = snap(1, "read", "path=a", "ok", None);
+        first.brief = Some("{\"ok\":true,\"lines\":[\"fn a\"]}".into());
+        let mut second = snap(2, "grep", "pattern=x", "error:invalid_args", Some("invalid_args"));
+        second.brief = Some("bad regex".into());
+        report.calls = vec![first, second];
+        let text = render_model_view(&report);
+        let head = text.lines().next().unwrap();
+        assert!(
+            head.starts_with("run_code failed: exception · program: failed · tool calls: 1 ok / 1 failed"),
+            "{head}"
+        );
+        assert!(head.contains("line 3, column 14 · return null.x;"), "{head}");
+        assert!(text.contains("stack:\n  at boom (line 3:14)"), "{text}");
+        assert!(!text.contains("libs.js"), "{text}");
+        assert!(text.contains("completed tool calls before the failure:\n#1 read path=a → ok: {\"ok\":true"), "{text}");
+        assert!(text.contains("#2 grep pattern=x → failed(invalid_args): bad regex"), "{text}");
+        // A successful run never prints the partial-results block.
+        report.failure_kind = None;
+        assert!(!render_model_view(&report).contains("completed tool calls"));
+    }
+
+    #[test]
+    fn over_budget_object_degrades_structurally_and_stays_valid_json() {
+        let items: Vec<Value> = (0..4_000)
+            .map(|i| serde_json::json!({"id": i, "tags": ["x", "y"], "note": "word ".repeat(10)}))
+            .collect();
+        let text = ok_with(serde_json::json!({"total": 4000, "items": items, "done": true}));
+        let result = result_of(&text);
+        let (notice, body) = result.split_once('\n').unwrap();
+        assert!(notice.contains("exceeds 8.0k; truncated"), "{notice}");
+        let parsed: Value = serde_json::from_str(body).expect("still valid JSON");
+        assert_eq!(parsed["total"], 4000);
+        assert_eq!(parsed["done"], true);
+        let kept = parsed["items"].as_array().unwrap();
+        let marker = kept.last().unwrap().as_str().unwrap();
+        assert_eq!(marker, format!("… {} more", 4000 - (kept.len() - 1)));
+        assert!(crate::session::estimate::count_text_tokens(body) <= RESULT_TOKEN_BUDGET);
+        // Key order of the agent survives degradation.
+        assert!(body.starts_with("{\"total\":4000,\"items\":["), "{}", &body[..40]);
     }
 
     #[test]

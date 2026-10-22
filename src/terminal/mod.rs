@@ -2,6 +2,7 @@
 
 mod agent_jobs;
 mod ansi;
+pub mod decode;
 mod error;
 mod pty;
 mod shell;

@@ -55,7 +55,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+encoding_rs = "0.8"
 # Code-mode JavaScript. QuickJS-NG via rquickjs, without rust-alloc (so the
 # memory limit stays active) and without a module loader. quickjs-libc is not
 # compiled, so the `std` and `os` modules are absent.

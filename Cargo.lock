@@ -1848,6 +1848,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "encoding_rs",
  "flate2",
  "futures-util",
  "git2",

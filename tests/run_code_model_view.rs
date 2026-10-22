@@ -109,20 +109,18 @@ async fn timeout_keeps_the_log_tail_and_names_the_budget() {
 async fn caught_tool_error_is_counted_and_not_listed() {
     let text = captured_run_code(
         r#"
-        try {
-          await tools.read({ path: "missing.txt" });
-        } catch (e) {
-          return [e instanceof ToolError, e.code, e.tool, typeof e.seq];
-        }
+        // WP-210 G: not_found is a domain failure and resolves { ok: false }.
+        const r = await tools.read({ path: "missing.txt" });
+        return [r.ok, r.reason, "read", typeof r.message];
         "#,
     )
     .await;
-    assert!(text.contains("true"), "{text}");
+    assert!(text.contains("false"), "{text}");
     assert!(text.contains("\"not_found\""), "{text}");
     assert!(text.contains("\"read\""), "{text}");
-    assert!(text.contains("\"number\""), "{text}");
+    assert!(text.contains("\"string\""), "{text}");
     assert!(
-        text.contains("0 succeeded, 1 failed"),
+        text.contains("tool calls: 0 ok / 1 failed"),
         "{text}"
     );
     assert!(!text.contains("rejected"), "{text}");
@@ -132,9 +130,15 @@ async fn caught_tool_error_is_counted_and_not_listed() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn uncaught_tool_error_names_the_call() {
-    let text = captured_run_code(r#"await tools.read({ path: "missing.txt" });"#).await;
+    // WP-210 G: not_found now resolves { ok: false }; a system code (conflict)
+    // still rejects with a ToolError.
+    let text = captured_run(
+        json!({ "code": r#"await tools.write({ path: "taken.txt", content: "x", create_only: true });"# }),
+        |root| std::fs::write(root.join("taken.txt"), "old").unwrap(),
+    )
+    .await;
     assert!(
-        text.contains("uncaught ToolError not_found from call #1 read path=missing.txt"),
+        text.contains("uncaught ToolError conflict from call #1 write path=taken.txt"),
         "{text}"
     );
     assert!(!text.contains("calls ("), "{text}");

@@ -180,6 +180,8 @@ struct LedgerLine {
     diagnostics: Vec<Diagnostic>,
     session_read: bool,
     priority: bool,
+    /// One-line result digest for the failure view (WP-210 A).
+    brief: Option<String>,
 }
 
 struct PendingCall {
@@ -270,6 +272,7 @@ impl CallLedger {
                 diagnostics: Vec::new(),
                 session_read,
                 priority: false,
+                brief: None,
             });
             return;
         }
@@ -290,7 +293,8 @@ impl CallLedger {
 
     fn record(&self, seq: u64, result: &ToolCallResult) {
         let outcome = call_outcome_label(result);
-        let error_code = call_error_code(result);
+        let error_code = call_error_code(result)
+            .or_else(|| outcome.strip_prefix("error:").map(str::to_string));
         let error_message = call_error_message(result);
         if let Some(code) = &error_code {
             let mut counts = self
@@ -300,6 +304,7 @@ impl CallLedger {
             *counts.entry(code.clone()).or_default() += 1;
         }
         let diagnostics = bounded_diagnostics(&result.diagnostics);
+        let brief = call_brief(result);
         let mut lines = self
             .lines
             .lock()
@@ -311,6 +316,7 @@ impl CallLedger {
                 line.error_code = error_code;
                 line.error_message = error_message;
                 line.diagnostics = diagnostics;
+                line.brief = Some(brief);
             }
             return;
         }
@@ -343,6 +349,7 @@ impl CallLedger {
                     diagnostics,
                     session_read: pending.session_read,
                     priority: true,
+                    brief: Some(brief),
                 });
             return;
         }
@@ -384,6 +391,7 @@ impl CallLedger {
                     diagnostics: Vec::new(),
                     session_read: pending.session_read,
                     priority: true,
+                    brief: None,
                 });
             } else if pending.session_read {
                 session_read_hidden = true;
@@ -411,6 +419,36 @@ impl CallLedger {
                 .clone(),
             session_read_hidden,
         }
+    }
+}
+
+const BRIEF_CAP: usize = 160;
+
+/// Short digest of one settled call: the error message, else the compact
+/// result data, else the first content line. UTF-8 safe, at most [`BRIEF_CAP`].
+fn call_brief(result: &ToolCallResult) -> String {
+    let text = if let Some(error) = result.error.as_ref().filter(|e| !e.message.is_empty()) {
+        error.message.clone()
+    } else if let Some(data) = result.data.as_ref() {
+        if let Some(message) = data
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty() && data.get("ok") == Some(&Value::Bool(false)))
+        {
+            message.to_string()
+        } else {
+            let bytes = crate::ptc::json_bytes(data).unwrap_or_default();
+            String::from_utf8_lossy(&bytes[..bytes.len().min(BRIEF_CAP * 4)]).into_owned()
+        }
+    } else {
+        result.content.lines().next().unwrap_or("").to_string()
+    };
+    let one_line = text.replace(['\n', '\r'], " ");
+    let cut = prefix_utf8(&one_line, BRIEF_CAP);
+    if cut.len() < one_line.len() {
+        format!("{cut}…")
+    } else {
+        cut.to_string()
     }
 }
 
@@ -446,6 +484,16 @@ fn call_outcome_label(result: &ToolCallResult) -> String {
     if result.error.is_some() || result.level == ToolSignalLevel::Error {
         let code = call_error_code(result).unwrap_or_else(|| "error".to_string());
         return format!("error:{code}");
+    }
+    // WP-210 G: a resolved `{ok:false}` is still a failed tool call in the head.
+    if let Some(data) = result.data.as_ref()
+        && data.get("ok") == Some(&Value::Bool(false))
+    {
+        let reason = data
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("not_ok");
+        return format!("error:{reason}");
     }
     "ok".to_string()
 }
@@ -644,6 +692,7 @@ impl CodeTool {
             },
             budget: Duration::from_millis(run_timeout_ms),
             grace: NESTED_CANCEL_GRACE,
+            fs_root: Some(execution.workspace_root.clone()),
             cancel: execution.cancel,
         };
         let outcome = ptc::execute(request).await;
@@ -995,6 +1044,7 @@ fn run_report(
             error_code: line.error_code.clone(),
             error_message: line.error_message.clone(),
             session_read: line.session_read,
+            brief: line.brief.clone(),
         });
     }
     let (diagnostics, diagnostics_omitted) = aggregate_diagnostics(&lines, omitted_diagnostics);
@@ -1168,7 +1218,7 @@ impl Tool for CodeTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data. A domain failure rejects ToolError; a protocol failure throws TypeError. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`, and the run head lists the dropped paths; undefined properties in tool arguments are dropped silently."
+                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data with a boolean `ok`; when the tool could not do the job it resolves `{ok:false, reason, message}`. Only system failures reject ToolError; program misuse throws TypeError. `fs.ls/stat/exists` are read-only workspace probes. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`; a failed run lists the dropped paths in its head. Undefined properties in tool arguments are dropped silently."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -1286,7 +1336,7 @@ mod outcome_tests {
         );
         // Unsettled is a head aside, not a ledger row; it is not counted as failed.
         assert!(text.contains("calls were still running"), "{text}");
-        assert!(text.contains("0 succeeded, 0 failed"), "{text}");
+        assert!(text.contains("tool calls: 0 ok / 0 failed"), "{text}");
         assert!(!text.contains("calls ("), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
     }
@@ -1312,7 +1362,7 @@ mod outcome_tests {
             &ToolCallResult::error_with_kind(ToolErrorKind::PermissionDenied, "denied", false),
             &completed,
         );
-        assert!(text.contains("0 succeeded, 1 failed"), "{text}");
+        assert!(text.contains("tool calls: 0 ok / 1 failed"), "{text}");
         assert!(!text.contains("calls ("), "{text}");
         assert!(!text.contains("#1 "), "{text}");
         assert!(!text.contains("@@run_code_data"), "{text}");
@@ -1367,7 +1417,7 @@ mod outcome_tests {
         let result = render_run_output(&ledger, &outcome, 120_000, "");
         assert!(result.error.is_none(), "{}", result.content);
         assert!(
-            result.content.starts_with("run_code ok · 1 succeeded, 1 failed · 42ms"),
+            result.content.starts_with("run_code ok · program: ok · tool calls: 1 ok / 1 failed · 42ms"),
             "{}",
             result.content
         );
