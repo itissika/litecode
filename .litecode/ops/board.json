@@ -15611,13 +15611,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-206",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-22T01:13:42.292Z",
+      "progress": "closed done by gm: 验收 PASS 8/8 @ c5cd966；并行 4×1s 单测 1.02s；9 条基线红另议；LSP 冷启动与 Windows 相对路径待真机复核",
+      "status_entered_at": null,
       "parent": null,
       "goal": "落实 Andy 拍板的 8 项 Code 模式测评修复（基线 feat/tool-contract-ptc@80c7a91）",
       "approver": "gm",
@@ -15661,6 +15661,48 @@
           "actor": "backend_mid",
           "action": "deliver",
           "note": "全量 9 条基线红（3 条经 236edfe 对照确认），见 acceptance.md"
+        },
+        {
+          "ts": "2026-10-22T01:21:16.276Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收 PASS 8/8 @ c5cd966；并行 4×1s 单测 1.02s；9 条基线红另议；LSP 冷启动与 Windows 相对路径待真机复核",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-207",
+      "domain": "harness-core",
+      "title": "测试瘦身：删迁移期 gate/过时测，修 stack overflow 分类，全量 cargo test 绿",
+      "result": "覆盖地图+删除清单；stack 修复+测试；cargo test（lib+tests/）全绿；未合 main",
+      "done_when": [
+        "覆盖地图入 artifacts",
+        "删除清单逐条有理由与替代覆盖",
+        "stack 两测绿且不可捕获",
+        "cargo test lib+tests 全绿",
+        "push feat/tool-contract-ptc",
+        "未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-207",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "清理测试膨胀：删除过时/冗余/低价值测试，保留核心路径覆盖地图，修 ptc 栈溢出可捕获 bug，lib+集成测试全绿",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T01:29:43.451Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 清理测试膨胀：删除过时/冗余/低价值测试，保留核心路径覆盖地图，修 ptc 栈溢出可捕获 bug，lib+集成测试全绿"
         }
       ]
     }
