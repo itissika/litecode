@@ -1593,11 +1593,23 @@ mod edit_write {
         tools.write({ path: a, content: bodyX, create_only: true }),
         tools.write({ path: b, content: bodyY, create_only: true })
       ]);
+      // WP-211: create_only conflict resolves { ok: false } instead of rejecting.
       return {
         name,
-        statuses: results.map(result => result.status === "fulfilled" ? "ok" : "error"),
-        messages: results.map(result => result.status === "rejected" ? ((result.reason && result.reason.message) || "") : ""),
-        bytes: results.map(result => result.status === "fulfilled" && result.value.file ? result.value.file.bytes : 0)
+        statuses: results.map(result => {
+          if (result.status !== "fulfilled") return "error";
+          if (result.value && result.value.ok === false) return "error";
+          return "ok";
+        }),
+        messages: results.map(result => {
+          if (result.status === "rejected") return (result.reason && result.reason.message) || "";
+          if (result.value && result.value.ok === false) return result.value.message || "";
+          return "";
+        }),
+        bytes: results.map(result => {
+          if (result.status !== "fulfilled" || (result.value && result.value.ok === false)) return 0;
+          return result.value.file ? result.value.file.bytes : 0;
+        })
       };
     }
     // WP-210 G: domain failures (not_found, permission…) resolve { ok: false }.

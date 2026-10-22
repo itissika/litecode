@@ -2,13 +2,12 @@ Return a summary (counts, paths, the few lines that matter), not raw bulk data. 
 Logs: on success only the first ~200 tokens of logs are shown, then `… N lines omitted`; on failure the last ~2k tokens. If you want to see progress, log sparingly: only the key lines.
 `code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous, read-only probes confined to the workspace (there is no write, rm, or mv; change files with `tools.write` / `tools.edit`). Standard JavaScript built-ins are available.
-Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation and a permission denial all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `conflict`, `stale`, `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`, `conflict`, `stale`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation, a permission denial, a write `create_only` conflict, and a stale `expected_hash` all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
 When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message,reason?}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Branch on `ok` or filter `results`.
 When `webfetch` / `websearch` appear below, network/provider outcomes (HTTP/DNS/timeout, Exa business failures) likewise resolve `ok: false`. `websearch` takes `top_k` (default 5, max 10) and resolves `results: [{title,url,snippet}]`. An unwarmed or unconfigured engine rejects `ToolError` `unavailable`.
 `run` resolves `output` (stdout only), `stderr`, and `shell` (the shell that ran it, e.g. `bash (MINGW64)` on Windows); output is decoded to UTF-8. A job `id` stays valid for `wait` / `kill` across later `run_code` calls in the same session while the job is still running.
 Use `Promise.allSettled` for a batch when calls may reject. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
-For code navigation (when the LSP engine is ready and these bindings appear below) use `go_to_definition`, `find_references`, `hover`, `diagnostics`, `document_symbol`, `workspace_symbol`, and `go_to_implementation` — never a single `lsp` tool, `action` bag, or row-inline `text` locator.
 A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. A read says `Showing lines…` / `Continue with start_line=` only when the file is not finished; continue with a larger `start_line`; do not pass a cursor or `page.next`.
 After a run you see a short head: `run_code ok` or `run_code failed: <cause>`, then `program: ok|failed` and `tool calls: N ok / M failed` (settled tool calls; `ok: false` results count as failed), and how long the run took in ms, or a precise line/error if the program never started. A runtime exception adds `line L, column C` and a short `stack:` of your frames. Unsettled in-flight calls, if any, are noted in that same head and are not counted; a session-store read may appear as a short note there too. Then logs (see above); on failure, one line per completed tool call before the failure so finished work is not lost; then your returned result. Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool—do not expect a second copy outside.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
@@ -94,7 +93,7 @@ declare const fs: {
 /** Any tool call resolves this when the tool did not get the job done. */
 type ToolFailure = {
   ok: false;
-  reason: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io";
+  reason: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io" | "conflict" | "stale";
   message: string;
 };
 
@@ -302,7 +301,6 @@ type KillInput = {
 
 // Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type KillData = {
-  ok: true;
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
   // Handle for later wait / kill in the same session.
@@ -315,6 +313,10 @@ type KillData = {
   stderr: string;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
+  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  ok?: boolean;
+  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  reason?: string;
 };
 
 type ReadInput = {
@@ -343,7 +345,6 @@ type RunInput = {
 
 // Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type RunData = {
-  ok: true;
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
   // Handle for later wait / kill in the same session.
@@ -356,6 +357,10 @@ type RunData = {
   stderr: string;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
+  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  ok?: boolean;
+  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  reason?: string;
 };
 
 type WaitInput = {
@@ -367,7 +372,6 @@ type WaitInput = {
 
 // Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type WaitData = {
-  ok: true;
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
   // Handle for later wait / kill in the same session.
@@ -380,6 +384,10 @@ type WaitData = {
   stderr: string;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
+  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  ok?: boolean;
+  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  reason?: string;
 };
 
 type WebfetchInput = {
@@ -446,7 +454,7 @@ type WriteInput = {
   path: string;
   // If true, refuse to overwrite an existing file (default: false)
   create_only?: boolean;
-  // sha256 of the current file bytes. Omit to skip the check. A mismatch rejects stale and does not write. Together with create_only, a missing file rejects invalid_input.
+  // sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale and does not write. Together with create_only, a missing file resolves ok:false reason invalid_args.
   expected_hash?: string;
 };
 
@@ -658,7 +666,7 @@ declare const tools: {
   // });
   // return { ok: edited.ok, edited, page1_message: page1.message, page2_len: page2.lines.length };
   readonly ["read"]: (args: ReadInput) => Promise<ReadData | ToolFailure>;
-  // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell`, and optional `message`. `id` is the handle for later `tools.wait` / `tools.kill` in this session, including later `run_code` calls while the job is still running. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is stdout only, always present (may be empty), plus any stdout truncation note, on-disk spill path, or status line; `stderr` holds stderr the same way. Both are decoded to UTF-8 (non-UTF-8 output such as CP936 is transcoded from the system code page). `shell` names the shell that ran the command: `bash (MINGW64)` on Windows with Git Bash, `powershell` without it, otherwise the login shell (`bash`, `sh`, …). Under Git Bash, POSIX-looking arguments such as `/c` are rewritten to Windows paths by MSYS; `message` warns when a command has one (write `//c`, or prefix `MSYS_NO_PATHCONV=1`). There is no `kind` and no wait-budget or background-mode parameters on this call.
+  // Run one shell command inside `run_code`. Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell`, and optional `message`. `id` is the handle for later `tools.wait` / `tools.kill` in this session, including later `run_code` calls while the job is still running. `exit_code` is an integer when the process has already exited, or `null` when it is still running. `output` is stdout only, always present (may be empty), plus any stdout truncation note, on-disk spill path, or status line; `stderr` holds stderr the same way. Both are decoded to UTF-8 (non-UTF-8 output such as CP936 is transcoded from the system code page). `shell` names the shell that ran the command: `bash (MINGW64)` on Windows with Git Bash, `powershell` without it, otherwise the login shell (`bash`, `sh`, …). Under Git Bash, POSIX-looking arguments such as `/c` are rewritten to Windows paths by MSYS; when a command has one, the call resolves `ok: false` with `reason` `invalid_args`, `exit_code` `null`, and a `message` (write `//c`, or prefix `MSYS_NO_PATHCONV=1`) — never a successful `exit_code` `0`. There is no `kind` and no wait-budget or background-mode parameters on this call.
   //
   // cwd is always the workspace root (not a persistent session). Chain with `&&` in one `command` when you need `cd` or env for that call only. A non-zero `exit_code` still resolves — branch on `exit_code` in the same program; do not treat non-zero as `ToolError`.
   //
@@ -742,7 +750,7 @@ declare const tools: {
   // });
   // return { hit: s, locations: def.locations, message: def.message };
   readonly ["workspace_symbol"]: (args: WorkspaceSymbolInput) => Promise<WorkspaceSymbolData | ToolFailure>;
-  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch rejects `ToolError` with `code` `stale` and `details.current_hash`, and does not write. If the file is missing, `expected_hash` alone rejects `not_found` and does not create the file. `create_only` on an existing file rejects `conflict`. `create_only` together with `expected_hash` when the file does not exist rejects `invalid_input` and does not create it. LSP errors from the written file are not in the resolved data—log or return them if you need them visible.
+  // Create a new file or overwrite an existing one. The result is `file` and `created`. `file` is the identity after the write (`path`, `hash`, `bytes`, and `abs` outside the workspace). `created` is true when the file did not exist before. Optional `expected_hash` is the sha256 of the current bytes. Omit it to skip the check. A mismatch resolves `ok: false` with `reason` `stale` (and `details.current_hash` on the underlying error), and does not write. If the file is missing, `expected_hash` alone resolves `ok: false` with `reason` `not_found` and does not create the file. `create_only` on an existing file resolves `ok: false` with `reason` `conflict`. `create_only` together with `expected_hash` when the file does not exist resolves `ok: false` with `reason` `invalid_args` and does not create it. LSP errors from the written file are not in the resolved data—log or return them if you need them visible.
   readonly ["write"]: (args: WriteInput) => Promise<WriteData | ToolFailure>;
 };
 ```

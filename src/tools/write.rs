@@ -103,7 +103,7 @@ impl Tool for WriteTool {
                 },
                 "expected_hash": {
                     "type": "string",
-                    "description": "sha256 of the current file bytes. Omit to skip the check. A mismatch rejects stale and does not write. Together with create_only, a missing file rejects invalid_input."
+                    "description": "sha256 of the current file bytes. Omit to skip the check. A mismatch resolves ok:false reason stale and does not write. Together with create_only, a missing file resolves ok:false reason invalid_args."
                 },
                 "create_only": {
                     "type": "boolean",

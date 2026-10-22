@@ -129,16 +129,38 @@ async fn caught_tool_error_is_counted_and_not_listed() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn uncaught_tool_error_names_the_call() {
-    // WP-210 G: not_found now resolves { ok: false }; a system code (conflict)
-    // still rejects with a ToolError.
+async fn write_conflict_resolves_ok_false() {
+    // WP-211: create_only conflict is a domain soft-fail, not an uncaught ToolError.
     let text = captured_run(
-        json!({ "code": r#"await tools.write({ path: "taken.txt", content: "x", create_only: true });"# }),
+        json!({ "code": r#"
+            const r = await tools.write({ path: "taken.txt", content: "x", create_only: true });
+            return [r.ok, r.reason, typeof r.message];
+        "# }),
         |root| std::fs::write(root.join("taken.txt"), "old").unwrap(),
     )
     .await;
+    assert!(text.contains("false"), "{text}");
+    assert!(text.contains("\"conflict\""), "{text}");
+    assert!(text.contains("tool calls: 0 ok / 1 failed"), "{text}");
+    assert!(!text.contains("uncaught ToolError"), "{text}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn uncaught_tool_error_names_the_call() {
+    // WP-211: conflict/stale soft-fail now; keep throw-naming coverage on a
+    // system code that still rejects (read of an image → unsupported).
+    let text = captured_run(
+        json!({ "code": r#"await tools.read({ path: "pic.png" });"# }),
+        |root| {
+            // Minimal PNG signature so read sniffs image/png and rejects.
+            let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+            png.extend_from_slice(&[0u8; 16]);
+            std::fs::write(root.join("pic.png"), png).unwrap();
+        },
+    )
+    .await;
     assert!(
-        text.contains("uncaught ToolError conflict from call #1 write path=taken.txt"),
+        text.contains("uncaught ToolError unsupported from call #1 read path=pic.png"),
         "{text}"
     );
     assert!(!text.contains("calls ("), "{text}");

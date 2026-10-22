@@ -17,13 +17,12 @@ const PRELUDE: &str = r#"Return a summary (counts, paths, the few lines that mat
 Logs: on success only the first ~200 tokens of logs are shown, then `… N lines omitted`; on failure the last ~2k tokens. If you want to see progress, log sparingly: only the key lines.
 `code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous, read-only probes confined to the workspace (there is no write, rm, or mv; change files with `tools.write` / `tools.edit`). Standard JavaScript built-ins are available.
-Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation and a permission denial all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `conflict`, `stale`, `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`, `conflict`, `stale`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation, a permission denial, a write `create_only` conflict, and a stale `expected_hash` all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
 When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message,reason?}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Branch on `ok` or filter `results`.
 When `webfetch` / `websearch` appear below, network/provider outcomes (HTTP/DNS/timeout, Exa business failures) likewise resolve `ok: false`. `websearch` takes `top_k` (default 5, max 10) and resolves `results: [{title,url,snippet}]`. An unwarmed or unconfigured engine rejects `ToolError` `unavailable`.
 `run` resolves `output` (stdout only), `stderr`, and `shell` (the shell that ran it, e.g. `bash (MINGW64)` on Windows); output is decoded to UTF-8. A job `id` stays valid for `wait` / `kill` across later `run_code` calls in the same session while the job is still running.
 Use `Promise.allSettled` for a batch when calls may reject. One uncaught rejection ends the program and cancels the other in-flight calls.
 LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
-For code navigation (when the LSP engine is ready and these bindings appear below) use `go_to_definition`, `find_references`, `hover`, `diagnostics`, `document_symbol`, `workspace_symbol`, and `go_to_implementation` — never a single `lsp` tool, `action` bag, or row-inline `text` locator.
 A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. A read says `Showing lines…` / `Continue with start_line=` only when the file is not finished; continue with a larger `start_line`; do not pass a cursor or `page.next`.
 After a run you see a short head: `run_code ok` or `run_code failed: <cause>`, then `program: ok|failed` and `tool calls: N ok / M failed` (settled tool calls; `ok: false` results count as failed), and how long the run took in ms, or a precise line/error if the program never started. A runtime exception adds `line L, column C` and a short `stack:` of your frames. Unsettled in-flight calls, if any, are noted in that same head and are not counted; a session-store read may appear as a short note there too. Then logs (see above); on failure, one line per completed tool call before the failure so finished work is not lost; then your returned result. Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool—do not expect a second copy outside.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
@@ -99,7 +98,7 @@ declare const fs: {
 /** Any tool call resolves this when the tool did not get the job done. */
 type ToolFailure = {
   ok: false;
-  reason: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io";
+  reason: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io" | "conflict" | "stale";
   message: string;
 };
 
@@ -693,6 +692,48 @@ mod tests {
     fn rejects_tools_without_a_data_contract() {
         let error = render_code_tool_description(&[Arc::new(NoDataTool)]).unwrap_err();
         assert_eq!(error, "tool 'no_data' has no data schema");
+    }
+
+    #[test]
+    fn unregistered_lsp_tools_do_not_appear_in_the_description() {
+        // WP-211: PRELUDE no longer hard-codes the seven LSP names. When those
+        // tools are not admitted (desired=false / not passed), neither the
+        // rendered SDK nor the projected whitelist may mention them.
+        let tools: Vec<Arc<dyn Tool>> = crate::tool::registry::builtin_code_surface_tools()
+            .into_iter()
+            .filter(|tool| {
+                !crate::tools::lsp::LSP_CODE_TOOL_NAMES
+                    .iter()
+                    .any(|name| *name == tool.name())
+            })
+            .collect();
+        assert!(
+            !tools.is_empty(),
+            "fixture must keep non-LSP code-surface tools"
+        );
+        let text = render_code_tool_description(&tools).expect("renders without LSP tools");
+        let projected = crate::tool::project::project_tools(tools);
+        for name in crate::tools::lsp::LSP_CODE_TOOL_NAMES {
+            // Match bindings / types, not the English word "diagnostics" in PRELUDE.
+            let binding = format!("[\"{name}\"]");
+            let dotted = format!("tools.{name}");
+            let type_base = code_type_base(name);
+            assert!(
+                !text.contains(&binding) && !text.contains(&dotted) && !text.contains(&type_base),
+                "description must not bind unadmitted `{name}` (binding/type):\n{text}"
+            );
+            assert!(
+                !projected.sdk.contains(&binding)
+                    && !projected.sdk.contains(&dotted)
+                    && !projected.sdk.contains(&type_base),
+                "projected sdk must not bind unadmitted `{name}`"
+            );
+            assert!(
+                !projected.whitelist.iter().any(|entry| entry == name),
+                "projected whitelist must not contain unadmitted `{name}`: {:?}",
+                projected.whitelist
+            );
+        }
     }
 
 }

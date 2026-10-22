@@ -15,6 +15,12 @@ use crate::types::ToolCallResult;
 /// Sole success shape for `run` / `wait` / `kill`.
 #[derive(Debug, Serialize)]
 pub(crate) struct CommandData {
+    /// Set explicitly on the MSYS pathconv soft-fail path (WP-211). Absent on
+    /// success so `with_ok_flag` fills `ok: true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ok: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub id: String,
     pub exit_code: Option<i32>,
     /// Stdout only, plus stdout notes / status lines (WP-210 F).
@@ -62,6 +68,14 @@ pub(crate) fn command_data_schema() -> serde_json::Value {
             "message": {
                 "type": "string",
                 "description": "Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say."
+            },
+            "ok": {
+                "type": "boolean",
+                "description": "False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success."
+            },
+            "reason": {
+                "type": "string",
+                "description": "Present with ok:false; path-conversion soft-fail uses invalid_args."
             }
         },
         "required": ["id", "exit_code", "output", "stderr", "shell"]
@@ -231,10 +245,16 @@ pub(crate) fn present_command(
     message: Option<String>,
 ) -> ToolCallResult {
     let id = id.into();
+    // WP-211: an MSYS path-conversion hint means the command shape is unsafe
+    // under Git Bash. Keep streams for diagnosis, but never report exit_code 0.
+    let pathconv = message.is_some();
+    let exit_code = if pathconv { None } else { exit_code };
     let shown = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "null".into());
     crate::tool::outcome::ToolOutcome::ok(CommandData {
+        ok: pathconv.then_some(false),
+        reason: pathconv.then(|| "invalid_args".to_string()),
         id: id.clone(),
         exit_code,
         output: output.stdout,
@@ -362,5 +382,40 @@ pub(crate) fn echo_then_sleep(text: &str, seconds: u64) -> String {
     #[cfg(not(windows))]
     {
         format!("echo {text}; sleep {seconds}")
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn msys_pathconv_hint_presents_ok_false_with_null_exit_code() {
+        let hint = crate::terminal::decode::msys_path_hint("cmd /c dir")
+            .expect("fixture command must trigger the hint");
+        let result = present_command(
+            "bg_test",
+            Some(0),
+            JobOutput {
+                stdout: "out".into(),
+                stderr: "err".into(),
+            },
+            Some(hint.clone()),
+        );
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["ok"], false, "{data}");
+        assert_eq!(data["reason"], "invalid_args", "{data}");
+        assert!(data["exit_code"].is_null(), "{data}");
+        assert_eq!(data["message"], hint, "{data}");
+        assert_eq!(data["output"], "out");
+        assert_eq!(data["stderr"], "err");
+        assert!(!data["shell"].as_str().unwrap().is_empty());
+        let serialized = serde_json::to_string(data).unwrap();
+        assert!(
+            !serialized.contains("\"exit_code\":0"),
+            "must not report numeric exit_code 0: {serialized}"
+        );
     }
 }

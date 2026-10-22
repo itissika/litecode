@@ -786,3 +786,6 @@ src/terminal/decode.rs::run_output_is_utf8_or_transcoded_from_the_ansi_code_page
 src/tool/outcome.rs::domain_failures_resolve_ok_false_and_system_failures_reject
 src/tools/run.rs::run_separates_stdout_from_stderr_and_names_the_shell
 src/tools/websearch.rs::websearch_top_k_yields_structured_results
+src/tools/command_job.rs::msys_pathconv_hint_presents_ok_false_with_null_exit_code
+src/tool/code_manifest.rs::unregistered_lsp_tools_do_not_appear_in_the_description
+tests/run_code_model_view.rs::write_conflict_resolves_ok_false

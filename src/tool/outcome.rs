@@ -217,8 +217,8 @@ pub fn program_result(result: &ToolCallResult) -> Result<Value, HostError> {
     program_error(result, code)
 }
 
-/// Domain codes that resolve `{ok:false}` (WP-210 G, Q10 enum). Everything
-/// else (conflict/stale, timeout, cancelled, unavailable, internal, …) still
+/// Domain codes that resolve `{ok:false}` (WP-210 G + WP-211). Everything
+/// else (stale_cursor, timeout, cancelled, unavailable, internal, …) still
 /// rejects `ToolError`.
 pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
     match code {
@@ -228,6 +228,8 @@ pub fn soft_failure_reason(code: &str) -> Option<&'static str> {
         "io" => Some("io"),
         "no_match" => Some("no_match"),
         "empty" => Some("empty"),
+        "conflict" => Some("conflict"),
+        "stale" => Some("stale"),
         _ => None,
     }
 }
@@ -302,9 +304,18 @@ mod tests {
             assert_eq!(value["reason"], reason, "{code}");
             assert_eq!(value["message"], format!("{code} happened"));
         }
+        // write conflict/stale resolve ok:false (WP-211); stale_cursor still rejects.
+        for (kind, code, reason) in [
+            (ToolErrorKind::Conflict, "conflict", "conflict"),
+            (ToolErrorKind::Conflict, "stale", "stale"),
+        ] {
+            let value = program_result(&coded(kind, code)).expect("resolves, not rejects");
+            assert_eq!(value["ok"], false, "{code}");
+            assert_eq!(value["reason"], reason, "{code}");
+        }
         // System failures still reject ToolError.
         for (kind, code) in [
-            (ToolErrorKind::Conflict, "stale"),
+            (ToolErrorKind::Conflict, "stale_cursor"),
             (ToolErrorKind::Timeout, "timeout"),
             (ToolErrorKind::Unavailable, "unavailable"),
             (ToolErrorKind::Internal, "internal"),
