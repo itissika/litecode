@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-22T01:51:51.061Z",
+  "updated_at": "2026-10-22T01:58:28.617Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -8610,6 +8610,24 @@
         "owner": "backend_mid",
         "path": [
           "WP-207"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1792634308613-98040-WP208-approval_requested",
+      "ts": "2026-10-22T01:58:28.613Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-208 plan awaiting approval by gm (owner backend_mid)",
+      "wp": "WP-208",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-208"
         ],
         "target": "gm"
       }
