@@ -16122,12 +16122,12 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "ready",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-213",
-      "progress": "plan approved by gm",
+      "progress": "closed done by gm: PASS acceptance @c81e566 on feat/tool-contract-ptc (pushed, not main): PRELUDE 8 prose lines 1676 chars (−69% / −71% cl100k); code schema −70% tokens; 18 tool md slimmed; SDK fixture refreshed 14126→7333 tok; harness/system/runtime zero touch; tip unblock cdc58f2 working_set_identity result_data; cargo-full + independent re-verify /tmp/wp213-cargo-full.txt both 857 passed/0 failed/0 ignored.",
       "status_entered_at": null,
       "parent": null,
       "goal": "压缩 Code 面 PRELUDE/工具 md：不说代码与运行时已编码的契约，补上多 agent 共享的怎么干活哲学；不污染系统提示词",
@@ -16160,6 +16160,25 @@
           "actor": "gm",
           "action": "approve",
           "note": "文案草案 A/B/C 通过；Q1-Q10 按推荐；零触碰 system prompt"
+        },
+        {
+          "ts": "2026-10-22T09:55:22.822Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T10:04:54.057Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T10:07:25.445Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "PASS acceptance @c81e566 on feat/tool-contract-ptc (pushed, not main): PRELUDE 8 prose lines 1676 chars (−69% / −71% cl100k); code schema −70% tokens; 18 tool md slimmed; SDK fixture refreshed 14126→7333 tok; harness/system/runtime zero touch; tip unblock cdc58f2 working_set_identity result_data; cargo-full + independent re-verify /tmp/wp213-cargo-full.txt both 857 passed/0 failed/0 ignored.",
+          "to": "done"
         }
       ]
     }

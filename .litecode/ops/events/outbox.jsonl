@@ -382,3 +382,4 @@
 {"event_id":"E-1792657127524-5490-WP212-approval_requested","ts":"2026-10-22T08:18:47.524Z","type":"team_ops.approval_requested","wp":"WP-212","target":"gm"}
 {"event_id":"E-1792657786260-66050-WP212-acceptance_requested","ts":"2026-10-22T08:29:46.260Z","type":"team_ops.acceptance_requested","wp":"WP-212","target":"gm"}
 {"event_id":"E-1792662874920-16180-WP213-approval_requested","ts":"2026-10-22T09:54:34.920Z","type":"team_ops.approval_requested","wp":"WP-213","target":"gm"}
+{"event_id":"E-1792663494058-16620-WP213-acceptance_requested","ts":"2026-10-22T10:04:54.058Z","type":"team_ops.acceptance_requested","wp":"WP-213","target":"gm"}
