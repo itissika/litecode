@@ -1482,3 +1482,4 @@
 {"ts":"2026-10-22T05:27:56.411Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T05:54:33.142Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T06:01:05.901Z","kind":"wp_lifecycle","source":"gm","summary":"WP-210: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T07:25:13.071Z","kind":"wp_lifecycle","source":"gm","summary":"WP-211: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
