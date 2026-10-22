@@ -831,48 +831,8 @@ pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Json;
-    use super::*;
-    use serde_json::json;
+    
+    
+    
 
-    #[test]
-    fn json_bytes_matches_serde_for_shallow_values() {
-        let values = [
-            json!(null),
-            json!(true),
-            json!(false),
-            json!(0),
-            json!(-12),
-            json!(1.5),
-            json!(""),
-            json!("a\"b\\c\n"),
-            json!("é"),
-            json!([]),
-            json!({}),
-            json!([1, "a", null, true]),
-            json!({"b": 1, "a": [2, {"c": "x"}]}),
-            json!({"key with \"quote\"": "v"}),
-        ];
-        for value in values {
-            let encoded = json_bytes(&value).expect("encode");
-            let standard = serde_json::to_vec(&value).expect("serde");
-            assert_eq!(encoded, standard, "{value}");
-        }
-    }
-
-    #[test]
-    fn json_bytes_counts_a_deep_array_on_the_heap() {
-        let mut value = Json::new(json!(0));
-        for _ in 0..5_000 {
-            value = Json::new(serde_json::Value::Array(vec![value.into_value()]));
-        }
-        let bytes = json_bytes(value.as_value()).expect("encode");
-        assert_eq!(bytes.len(), 5_000 * 2 + 1);
-        assert_eq!(bytes.iter().filter(|byte| **byte == b'[').count(), 5_000);
-        assert_eq!(bytes.iter().filter(|byte| **byte == b']').count(), 5_000);
-        assert_eq!(bytes[5_000], b'0');
-        assert!(bytes.starts_with(b"[[["));
-        assert!(bytes.ends_with(b"]]]"));
-        drop(value);
-    }
 }

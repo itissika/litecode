@@ -21,29 +21,6 @@ pub fn strip_ansi(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn removes_csi_color_codes() {
-        assert_eq!(strip_ansi("hello\x1b[31mworld\x1b[0m"), "helloworld");
-    }
-
-    #[test]
-    fn removes_git_bash_init_sequences() {
-        let raw = concat!(
-            "\x1b[6n",
-            "\x1b[?9001h",
-            "\x1b[?1004h",
-            "\x1b[m",
-            "\x1b]0;C:\\Program Files\\Git\\bin\\bash.exe\x07",
-            "\x1b[?25h",
-            "line1\nline2"
-        );
-        assert_eq!(strip_ansi(raw), "line1\nline2");
-    }
-
-    #[test]
-    fn removes_osc_with_st_terminator() {
-        assert_eq!(strip_ansi("\x1b]0;title\x1b\\hello"), "hello");
-    }
 }

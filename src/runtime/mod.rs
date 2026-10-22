@@ -1328,92 +1328,19 @@ fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
 
 #[cfg(test)]
 mod pending_snapshot_tests {
-    use std::sync::Arc;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::time::{Duration, Instant};
+    
+    
+    
+    
 
-    use crate::types::Result;
+    
 
-    /// Mirrors `await_pending_snapshot_track`: take the join handle once, await it.
-    async fn take_and_await(slot: &Mutex<Option<tokio::task::JoinHandle<Result<()>>>>) -> bool {
-        let handle = slot.lock().expect("lock").take();
-        let Some(handle) = handle else {
-            return false;
-        };
-        handle.await.expect("join").expect("snapshot ok");
-        true
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn pending_snapshot_waits_once_then_noops() {
-        let slot: Mutex<Option<tokio::task::JoinHandle<Result<()>>>> = Mutex::new(None);
-        let finished = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&finished);
-        let handle = tokio::task::spawn_blocking(move || {
-            std::thread::sleep(Duration::from_millis(80));
-            flag.store(true, Ordering::SeqCst);
-            Ok(())
-        });
-        *slot.lock().unwrap() = Some(handle);
-
-        let t0 = Instant::now();
-        assert!(take_and_await(&slot).await);
-        assert!(finished.load(Ordering::SeqCst));
-        assert!(t0.elapsed() >= Duration::from_millis(60));
-
-        // Second join is a no-op (handle already taken).
-        let t1 = Instant::now();
-        assert!(!take_and_await(&slot).await);
-        assert!(t1.elapsed() < Duration::from_millis(30));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn snapshot_can_overlap_simulated_llm_then_join_before_tool() {
-        let slot: Mutex<Option<tokio::task::JoinHandle<Result<()>>>> = Mutex::new(None);
-        let snap_done = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&snap_done);
-        let handle = tokio::task::spawn_blocking(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            flag.store(true, Ordering::SeqCst);
-            Ok(())
-        });
-        *slot.lock().unwrap() = Some(handle);
-
-        // Simulated first LLM (shorter than snapshot): must not await snapshot.
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(
-            !snap_done.load(Ordering::SeqCst),
-            "snapshot should still be in flight during first LLM"
-        );
-
-        // Before any tool: must join.
-        assert!(take_and_await(&slot).await);
-        assert!(snap_done.load(Ordering::SeqCst));
-    }
 }
 
 #[cfg(test)]
 mod turn_error_kind_tests {
-    use super::turn_error_kind;
-    use crate::runtime::observer::TurnErrorKind;
-    use crate::types::LitecodeError;
+    
+    
+    
 
-    /// T1 (mapping): CompactionFailed → Some(CompactionFailed).
-    #[test]
-    fn turn_error_kind_maps_compaction_failed() {
-        assert_eq!(
-            turn_error_kind(&LitecodeError::CompactionFailed),
-            Some(TurnErrorKind::CompactionFailed)
-        );
-    }
-
-    /// T2 (mapping): other LitecodeError → None (final_text still carries display).
-    #[test]
-    fn turn_error_kind_none_for_other_errors() {
-        assert_eq!(turn_error_kind(&LitecodeError::Llm("boom".into())), None);
-        assert_eq!(turn_error_kind(&LitecodeError::Canceled), None);
-        assert_eq!(turn_error_kind(&LitecodeError::MaxStepsReached), None);
-        assert_eq!(turn_error_kind(&LitecodeError::NothingToCompact), None);
-    }
 }

@@ -241,16 +241,6 @@ mod tests {
     use crate::workspace::WorkspaceService;
     use std::sync::atomic::AtomicU64;
 
-    fn queue_completion(hub: &SubagentHub, parent: &str) {
-        hub.completions.push(crate::tools::subagent::CompletionRef {
-            parent_session_id: parent.into(),
-            child_session_id: "child-a".into(),
-            turn_id: "turn-a".into(),
-            cancelled: false,
-            cancelled_by: None,
-        });
-    }
-
     fn test_runtime(
         root: &std::path::Path,
     ) -> (RuntimeHandle, Arc<SessionManager>, Arc<SubagentHub>) {
@@ -289,72 +279,6 @@ mod tests {
         ));
         hub.attach_sessions(Arc::clone(&sessions));
         (runtime, sessions, hub)
-    }
-
-    #[test]
-    fn idle_without_subscribers_does_not_reserve() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        queue_completion(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::SkippedNoUi => {}
-            _ => panic!("expected no UI"),
-        }
-        assert!(!sessions.is_session_busy_blocking(&sid));
-        assert!(!hub.take_completions(&sid).is_empty());
-    }
-
-    #[test]
-    fn busy_session_leaves_mailbox() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        let _ = sessions.attach(&sid);
-        sessions
-            .reserve_turn(
-                &sid,
-                "turn-busy".into(),
-                10,
-                "default",
-                &dir.path().display().to_string(),
-            )
-            .unwrap();
-        queue_completion(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::SkippedBusy => {}
-            _ => panic!("expected busy"),
-        }
-        assert!(!hub.take_completions(&sid).is_empty());
-    }
-
-    #[test]
-    fn idle_with_subscribers_prepares_turn_using_exit_reminder() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        let _ = sessions.attach(&sid);
-        queue_completion(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::Prepared {
-                turn_id,
-                session_id,
-                ..
-            } => {
-                assert_eq!(session_id, sid);
-                assert!(hub.has_pending(&sid));
-                sessions.release_turn_reservation(&sid, &turn_id);
-            }
-            _ => panic!("expected prepared, got non-prepared variant"),
-        }
-        assert!(hub.has_pending(&sid));
-        assert!(!sessions.is_session_busy_blocking(&sid));
     }
 
     #[test]

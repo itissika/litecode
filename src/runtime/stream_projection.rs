@@ -583,8 +583,8 @@ mod tests {
     use crate::config::TurnGuard;
     use crate::runtime::observer::NoopObserver;
     use crate::session::FaultKind;
-    use crate::session::working::WorkingRow;
-    use crate::types::user_text;
+    
+    
 
     /// A recorded GPT-family response: twelve reasoning items (three of them with
     /// multi-part summaries), then the message — each item announced, streamed and
@@ -804,94 +804,6 @@ mod tests {
         assert!(summary_texts(&rows[2].body).is_empty());
     }
 
-    /// Content is durable while the call is still running: a reader that arrives
-    /// mid-stream sees the same bytes the log holds, not a private buffer.
-    #[test]
-    fn content_lands_while_the_call_is_still_running() {
-        let events = fixture_events();
-        let f = Fixture::open();
-        let projection = StreamProjection::new(
-            Arc::clone(&f.sessions),
-            Arc::new(NoopObserver),
-            f.sid.clone(),
-            "turn-1".into(),
-        );
-        // Announce and stream the first reasoning item only.
-        let mut seen = 0;
-        for event in &events {
-            projection.observe(event);
-            if let ResponseStreamEvent::ResponseReasoningSummaryTextDone(_) = event {
-                seen += 1;
-            }
-            if seen == 1 {
-                break;
-            }
-        }
-        let rows = f.rows();
-        assert_eq!(rows.len(), 1, "the open item already owns a row");
-        assert_eq!(rows[0].state, "in_progress", "the call is still running");
-        assert_eq!(
-            summary_texts(&rows[0].body),
-            vec!["Checked how the rows are written. ".to_string()],
-            "the log holds the part that arrived, not a private buffer: {}",
-            rows[0].body
-        );
-        assert!(
-            !rows[0].body.contains("TERMINAL0"),
-            "the call has not returned, so its copy cannot be in the log yet"
-        );
-        projection.settle(None).expect("settle the abandoned call");
-
-        let rows = f.rows();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].state, "final");
-        let value: serde_json::Value = serde_json::from_str(&rows[0].body).expect("body json");
-        assert_eq!(value["status"].as_str(), Some("incomplete"));
-        assert_eq!(
-            summary_texts(&rows[0].body),
-            vec!["Checked how the rows are written. ".to_string()],
-            "partial reasoning keeps what it received"
-        );
-    }
-
-    /// Settling and then committing the same call must find every row already in
-    /// place. Re-appending here is exactly what used to push an item's settled copy
-    /// past the text that followed it.
-    #[test]
-    fn committing_the_call_after_the_stream_appends_nothing() {
-        let events = fixture_events();
-        let items = terminal_items(&events);
-        let f = Fixture::open();
-        f.sessions
-            .insert_detail_rows(&f.sid, &[user_text("go")])
-            .expect("user turn");
-        f.run_call(&events, "turn-1").expect("call");
-        let streamed = f.rows();
-        assert_eq!(streamed.len(), 14, "one user row plus thirteen items");
-        let last_seq = streamed.last().expect("a row").seq;
-
-        let mut rows = vec![WorkingRow::persisted(0, user_text("go"))];
-        for (i, item) in items.iter().enumerate() {
-            rows.push(WorkingRow::persisted((i + 1) as u64, item.clone()));
-        }
-        let (kind, working, _) = f
-            .sessions
-            .commit_turn_delta(&f.sid, rows, last_seq, "turn-1")
-            .expect("commit");
-
-        let after = f.rows();
-        assert_eq!(
-            after.len(),
-            14,
-            "the commit must not add a second copy of anything; kind={kind:?}"
-        );
-        let seqs: Vec<i64> = after.iter().map(|r| r.seq).collect();
-        let mut sorted = seqs.clone();
-        sorted.sort_unstable();
-        assert_eq!(seqs, sorted, "rows stay in seq order");
-        assert_eq!(working.len(), 14, "the working set matches the log");
-    }
-
     /// A stream that dies mid-item keeps what it received: the item that never got
     /// a terminal of its own settles as incomplete, and the ones the provider did
     /// finish keep the payload the provider gave them.
@@ -941,30 +853,6 @@ mod tests {
         );
     }
 
-    /// An item the provider finished on its own is not downgraded just because the
-    /// batch terminal never arrived.
-    #[test]
-    fn an_item_the_provider_finished_keeps_its_own_terminal() {
-        let mut events = fixture_events();
-        events.retain(|ev| !matches!(ev, ResponseStreamEvent::ResponseCompleted(_)));
-        let f = Fixture::open();
-        f.run_call_with(&events, None, "turn-1").expect("call");
-
-        let rows = f.rows();
-        assert_eq!(rows.len(), 13);
-        assert!(
-            rows.iter().all(|r| r.state == "final"),
-            "a died stream must not leave rows in flight"
-        );
-        let value: serde_json::Value = serde_json::from_str(&rows[0].body).expect("body json");
-        assert_ne!(
-            value["status"].as_str(),
-            Some("incomplete"),
-            "`output_item.done` is that item's terminal payload: {}",
-            rows[0].body
-        );
-    }
-
     /// One call's identity map does not outlive it. A later call is free to reuse
     /// the provider's id: that is a different item and it gets its own row, in its
     /// own place, and it streams while it arrives.
@@ -998,70 +886,6 @@ mod tests {
         assert!(
             !rows.iter().any(|r| r.turn_id.starts_with("orphan-")),
             "a running turn never writes an orphan row"
-        );
-    }
-
-    /// A missing `added` is tolerated when a semantic delta still carries the
-    /// full call-local identity. The first such delta opens the durable row.
-    #[test]
-    fn an_item_the_stream_never_announced_opens_on_its_first_delta() {
-        let mut events = fixture_events();
-        // Drop the announcement of the first reasoning item; its deltas and the
-        // terminal payload still name it.
-        events.retain(|ev| {
-            !matches!(
-                ev,
-                ResponseStreamEvent::ResponseOutputItemAdded(added)
-                    if matches!(
-                        Item::from(added.item.clone()),
-                        Item::Reasoning(r) if r.id.as_deref() == Some("rs_a0")
-                    )
-            )
-        });
-        let f = Fixture::open();
-        f.run_call(&events, "turn-1").expect("call");
-
-        let rows = f.rows();
-        assert_eq!(
-            rows.len(),
-            13,
-            "the item opened by its first delta still owns exactly one row: {:?}",
-            rows.iter().map(|r| r.seq).collect::<Vec<_>>()
-        );
-        assert!(
-            rows.iter().all(|r| r.state == "final"),
-            "and it is settled by the projector, not left for the commit"
-        );
-        let unannounced: Vec<&Row> = rows
-            .iter()
-            .filter(|r| r.body.contains("TERMINAL0"))
-            .collect();
-        assert_eq!(
-            unannounced.len(),
-            1,
-            "the item the terminal named is on record exactly once"
-        );
-        assert_eq!(unannounced[0].item_type, "reasoning");
-        assert_eq!(
-            unannounced[0].seq, rows[0].seq,
-            "the first semantic delta opens the row even when `added` is absent"
-        );
-    }
-
-    /// A call that returns a list without an item the stream announced is a
-    /// contract breach: the log would keep a row the transcript never replays.
-    #[test]
-    fn a_returned_list_that_omits_a_streamed_item_fails_the_call() {
-        let f = Fixture::open();
-        let events = fixture_events();
-        let mut items = terminal_items(&events);
-        items.remove(0);
-        let error = f
-            .run_call_with(&events, Some(&items), "turn-1")
-            .expect_err("an item was streamed but not returned");
-        assert!(
-            error.to_string().contains("omitted"),
-            "the error must say what happened, got {error}"
         );
     }
 

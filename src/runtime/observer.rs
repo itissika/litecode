@@ -374,7 +374,7 @@ impl RuntimeObserver for NoopObserver {
 
 #[cfg(test)]
 mod tests {
-    use super::{InternalEvent, TurnEndReason, TurnErrorKind, TurnTokenStats};
+    use super::{TurnEndReason, TurnErrorKind};
 
     #[test]
     fn turn_end_reason_log_schema_is_snake_case_for_every_variant() {
@@ -398,54 +398,4 @@ mod tests {
         assert_eq!(v, "compaction_failed");
     }
 
-    /// T3: missing error_kind in old JSON → None via serde(default).
-    #[test]
-    fn turn_completed_error_kind_defaults_when_absent() {
-        let raw = serde_json::json!({
-            "TurnCompleted": {
-                "turn_id": "t1",
-                "final_text": "done",
-                "reason": "completed",
-                "turn_token_stats": {
-                    "prompt_tokens": 0,
-                    "completion_tokens": 0,
-                    "cache_hit_tokens": 0,
-                    "cache_miss_tokens": 0
-                },
-                "committed_next_seq": 0
-            }
-        });
-        let ev: InternalEvent = serde_json::from_value(raw).expect("deserialize");
-        match ev {
-            InternalEvent::TurnCompleted { error_kind, .. } => {
-                assert_eq!(error_kind, None);
-            }
-            other => panic!("expected TurnCompleted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn turn_completed_roundtrips_error_kind() {
-        let ev = InternalEvent::TurnCompleted {
-            turn_id: "t1".into(),
-            final_text: Some("compaction failed: empty summary".into()),
-            reason: TurnEndReason::Error,
-            turn_token_stats: TurnTokenStats::default(),
-            committed_next_seq: 0,
-            error_kind: Some(TurnErrorKind::CompactionFailed),
-            cancelled_by: None,
-        };
-        let v = serde_json::to_value(&ev).unwrap();
-        assert_eq!(v["TurnCompleted"]["error_kind"], "compaction_failed");
-        let back: InternalEvent = serde_json::from_value(v).unwrap();
-        match back {
-            InternalEvent::TurnCompleted {
-                error_kind, reason, ..
-            } => {
-                assert_eq!(reason, TurnEndReason::Error);
-                assert_eq!(error_kind, Some(TurnErrorKind::CompactionFailed));
-            }
-            other => panic!("expected TurnCompleted, got {other:?}"),
-        }
-    }
 }

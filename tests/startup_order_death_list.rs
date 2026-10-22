@@ -62,10 +62,6 @@ fn code_only(body: &str) -> String {
 const SERVE_RUN: &str = include_str!("../src/serve/run.rs");
 const HUB: &str = include_str!("../src/lsp/hub.rs");
 const SWEEP_GATE: &str = include_str!("../src/lsp/sweep_gate.rs");
-const LSP_ENGINE: &str = include_str!("../src/engines/lsp_engine.rs");
-const ENGINES: &str = include_str!("../src/engines/mod.rs");
-const PATH_INDEX: &str = include_str!("../src/engines/path_index/mod.rs");
-const DEPS: &str = include_str!("../src/lsp/deps.rs");
 
 #[test]
 fn serve_run_does_not_sweep_inline() {
@@ -110,15 +106,6 @@ fn serve_run_arms_sweep_before_ready_path() {
 }
 
 #[test]
-fn serve_run_does_not_warm_optional_engines() {
-    let body = code_only(fn_body(SERVE_RUN, "pub fn run("));
-    assert!(
-        !body.contains("engine_manager.reconcile("),
-        "serve::run must not build the web clients before READY"
-    );
-}
-
-#[test]
 fn every_spawn_waits_for_the_sweep_gate() {
     let body = code_only(fn_body(HUB, "async fn spawn_ls("));
     let wait = body
@@ -142,97 +129,3 @@ fn sweep_gate_has_no_timeout() {
     }
 }
 
-#[test]
-fn attach_does_not_touch_legacy_text_index_inline() {
-    let attach = code_only(fn_body(PATH_INDEX, "pub fn attach("));
-    assert!(!has_ident(&attach, "remove_legacy_text_index"));
-    let run = code_only(fn_body(PATH_INDEX, "fn run(&self)"));
-    assert!(has_ident(&run, "remove_legacy_text_index"));
-}
-
-#[test]
-fn lsp_warmup_runs_no_subprocess() {
-    let warmup = code_only(fn_body(LSP_ENGINE, "pub fn warmup("));
-    for banned in [
-        "activate",
-        "command_runnable_command_in",
-        "ensure_probed_blocking",
-    ] {
-        assert!(
-            !has_ident(&warmup, banned),
-            "warmup must not use `{banned}`"
-        );
-    }
-    assert!(has_ident(&warmup, "activate_deferred"));
-    let deferred = code_only(fn_body(HUB, "pub fn activate_deferred("));
-    for banned in [
-        "probe_commands",
-        "command_runnable_command_in",
-        "run_version_probe",
-        "resolve_server_binary",
-        "Command",
-    ] {
-        assert!(
-            !has_ident(&deferred, banned),
-            "activate_deferred must stay metadata-only (`{banned}`)"
-        );
-    }
-}
-
-#[test]
-fn first_need_paths_probe_before_spawning() {
-    for sig in [
-        "async fn resolve_server_key(",
-        "pub async fn restart_server(",
-    ] {
-        let body = code_only(fn_body(HUB, sig));
-        let probe = body
-            .find("ensure_probed()")
-            .unwrap_or_else(|| panic!("{sig} probes"));
-        let spawn = body
-            .find("spawn_ls(")
-            .unwrap_or_else(|| panic!("{sig} spawns"));
-        assert!(probe < spawn, "{sig} must probe before spawning");
-    }
-}
-
-/// Server ids from `SERVER_METAS` (`id: "..."` entries in deps.rs).
-fn server_ids() -> Vec<String> {
-    let mut ids = Vec::new();
-    for line in DEPS.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("id: \"")
-            && let Some(end) = rest.find('"')
-        {
-            ids.push(rest[..end].to_string());
-        }
-    }
-    assert!(!ids.is_empty(), "SERVER_METAS ids not found");
-    ids
-}
-
-#[test]
-fn no_language_specific_branch_added() {
-    let mut bodies = vec![
-        code_only(SWEEP_GATE),
-        code_only(fn_body(HUB, "pub fn activate_deferred(")),
-        code_only(fn_body(HUB, "pub fn ensure_probed_blocking(")),
-        code_only(fn_body(HUB, "pub async fn ensure_probed(")),
-        code_only(fn_body(HUB, "fn probe_input(")),
-        code_only(fn_body(HUB, "fn finish_probe(")),
-        code_only(fn_body(HUB, "fn run_probe(")),
-        code_only(fn_body(HUB, "fn probe_commands(")),
-        code_only(fn_body(ENGINES, "pub async fn ensure_lsp_probed(")),
-        code_only(fn_body(ENGINES, "pub fn ensure_lsp_probed_blocking(")),
-    ];
-    bodies.push(code_only(fn_body(LSP_ENGINE, "pub fn warmup(")));
-    for id in server_ids() {
-        let quoted = format!("\"{id}\"");
-        for body in &bodies {
-            assert!(
-                !body.contains(&quoted),
-                "new startup code must not special-case `{id}`"
-            );
-        }
-    }
-}

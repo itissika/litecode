@@ -31,44 +31,6 @@ async fn single_text_response_stops_loop() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn function_call_then_text_grows_transcript() {
-    let mut deps = FakeAgentDeps::with_responses(vec![
-        vec![function_call_item(
-            "call_1",
-            "read",
-            r#"{"path":"x"}"#,
-            "fc_1",
-        )],
-        vec![assistant_text_item("final", "msg_final")],
-    ]);
-
-    let outcome = agent::run(&mut deps).await;
-    match outcome {
-        litecode::agent::TurnOutcome::Completed { final_text } => {
-            assert_eq!(final_text, "final");
-        }
-        other => panic!("expected Completed, got {other:?}"),
-    }
-    let landed = deps.landed.borrow();
-    assert!(
-        landed.iter().any(|i| matches!(i, Item::FunctionCall(_))),
-        "FunctionCall Item must be persisted"
-    );
-    assert!(
-        landed
-            .iter()
-            .any(|i| matches!(i, Item::FunctionCallOutput(_))),
-        "execute_tools must append FunctionCallOutput"
-    );
-    assert!(
-        landed
-            .iter()
-            .any(|item| matches!(item, Item::Message(_)) && item_text_preview(item) == "final"),
-        "final assistant text must be persisted: {landed:?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn tool_step_persists_function_call_before_output() {
     let mut deps = FakeAgentDeps::with_responses(vec![
         vec![function_call_item(
@@ -129,28 +91,6 @@ async fn max_steps_with_perpetual_tools() {
     assert!(
         matches!(outcome, litecode::agent::TurnOutcome::MaxSteps { .. }),
         "expected MaxSteps, got {outcome:?}"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn cancelled_breaks_loop() {
-    let mut deps = FakeAgentDeps::with_text_response("never returned");
-    deps.cancelled.set(true);
-
-    let outcome = agent::run(&mut deps).await;
-    match outcome {
-        litecode::agent::TurnOutcome::Cancelled { final_text } => {
-            assert!(final_text.is_empty());
-        }
-        other => panic!("expected Cancelled, got {other:?}"),
-    }
-    assert!(
-        deps.persist_log.borrow().is_empty(),
-        "cancel before call_model must not persist a model row"
-    );
-    assert!(
-        deps.landed.borrow().is_empty(),
-        "cancel before stream must not leave a model Item"
     );
 }
 

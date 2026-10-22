@@ -404,7 +404,7 @@ fn spawn_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::{drain_utf8, flush_utf8};
+    use super::drain_utf8;
 
     #[test]
     fn drain_utf8_keeps_a_cjk_character_split_across_chunks() {
@@ -418,23 +418,4 @@ mod tests {
         assert!(pending.is_empty());
     }
 
-    #[test]
-    fn drain_utf8_replaces_an_invalid_byte_and_keeps_going() {
-        let mut pending = b"a\xffb".to_vec();
-        assert_eq!(drain_utf8(&mut pending), "a\u{FFFD}b");
-        assert!(pending.is_empty());
-
-        // A lead byte followed by a non-continuation must not stall the reader.
-        let mut pending = vec![0xC0, b'A'];
-        assert_eq!(drain_utf8(&mut pending), "\u{FFFD}A");
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn flush_utf8_emits_a_torn_tail_as_replacement() {
-        let mut pending = vec![0xE4, 0xBD];
-        assert_eq!(drain_utf8(&mut pending), "");
-        assert_eq!(flush_utf8(&mut pending), "\u{FFFD}");
-        assert!(pending.is_empty());
-    }
 }

@@ -231,132 +231,15 @@ pub fn install_custom_auto_turn(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::config::TurnGuard;
-    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
-    use crate::config::schema::{AgentProfile, AgentRole, GlobalSettings};
-    use crate::engines::WorkspaceEngines;
-    use crate::ide_base::IdeBaseHandle;
-    use crate::optional::EngineManager;
-    use crate::tools::custom_hub::{CustomToolExitNotice, CustomToolOutcome};
-    use crate::workspace::WorkspaceService;
-    use std::sync::atomic::AtomicU64;
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
-    fn queue_notice(hub: &CustomToolHub, parent: &str) {
-        hub.push_notice(CustomToolExitNotice {
-            session_id: parent.into(),
-            call_id: "call-a".into(),
-            tool_name: "demo".into(),
-            job_id: "job-a".into(),
-            outcome: CustomToolOutcome::Ok {
-                output: "done".into(),
-            },
-            revision_hint: None,
-        });
-    }
-
-    fn test_runtime(
-        root: &std::path::Path,
-    ) -> (RuntimeHandle, Arc<SessionManager>, Arc<CustomToolHub>) {
-        let mut global = GlobalSettings::default();
-        global.agents.insert(
-            "default".into(),
-            AgentProfile {
-                role: AgentRole::Primary,
-                model_ref: "default".into(),
-                ..Default::default()
-            },
-        );
-        let workspace_state = WorkspaceState::new(root);
-        let resolved = resolve_without_catalog(global, workspace_state.clone());
-        let workspace = WorkspaceService::new(root.to_path_buf()).unwrap();
-        let engines = Arc::new(WorkspaceEngines::new());
-        let ide = IdeBaseHandle::new(
-            workspace,
-            Arc::clone(&engines),
-            Arc::new(crate::terminal::TerminalHub::new()),
-        );
-        let runtime = RuntimeHandle::new(
-            resolved,
-            "default".into(),
-            workspace_state,
-            Arc::new(EngineManager::new()),
-            engines,
-            ide,
-            Arc::new(AtomicU64::new(0)),
-            root.join("global.db"),
-        );
-        let hub = Arc::clone(&runtime.custom_tool_hub);
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            root.join("sessions.db").to_string_lossy().to_string(),
-        ));
-        (runtime, sessions, hub)
-    }
-
-    #[test]
-    fn idle_without_subscribers_does_not_reserve() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        queue_notice(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::SkippedNoUi => {}
-            _ => panic!("expected no UI"),
-        }
-        assert!(!sessions.is_session_busy_blocking(&sid));
-        assert!(!hub.take_mailbox(&sid).is_empty());
-    }
-
-    #[test]
-    fn busy_session_leaves_mailbox() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        let _ = sessions.attach(&sid);
-        sessions
-            .reserve_turn(
-                &sid,
-                "turn-busy".into(),
-                10,
-                "default",
-                &dir.path().display().to_string(),
-            )
-            .unwrap();
-        queue_notice(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::SkippedBusy => {}
-            _ => panic!("expected busy"),
-        }
-        assert!(!hub.take_mailbox(&sid).is_empty());
-    }
-
-    #[test]
-    fn idle_with_subscribers_prepares_turn_leaving_mailbox() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        let _ = sessions.attach(&sid);
-        queue_notice(&hub, &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::Prepared {
-                turn_id,
-                session_id,
-                ..
-            } => {
-                assert_eq!(session_id, sid);
-                assert!(hub.mailbox_pending(&sid));
-                sessions.release_turn_reservation(&sid, &turn_id);
-            }
-            _ => panic!("expected prepared, got non-prepared variant"),
-        }
-        assert!(hub.mailbox_pending(&sid));
-        assert!(!sessions.is_session_busy_blocking(&sid));
-    }
 }

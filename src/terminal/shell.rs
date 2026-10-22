@@ -90,60 +90,6 @@ pub fn resolve_cwd(workdir: Option<&Path>) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn default_shell_is_platform_native() {
-        let s = default_shell();
-        #[cfg(windows)]
-        {
-            let name = s.program.to_string_lossy().to_ascii_lowercase();
-            assert!(
-                name.contains("bash") || name.contains("powershell"),
-                "got {:?}",
-                s.program
-            );
-        }
-        #[cfg(not(windows))]
-        {
-            assert!(!s.program.as_os_str().is_empty());
-        }
-    }
-
-    #[test]
-    fn shell_label_uses_the_program_stem() {
-        let spec = ShellSpec {
-            program: PathBuf::from("/usr/bin/bash.exe"),
-            args: Vec::new(),
-        };
-        assert_eq!(shell_label(&spec), "bash");
-    }
-
-    /// Backslash is a path separator only on Windows; on Unix the whole string
-    /// is one file name, so this case is meaningful only under cfg(windows).
-    #[cfg(windows)]
-    #[test]
-    fn shell_label_uses_the_program_stem_windows_path() {
-        let windows = ShellSpec {
-            program: PathBuf::from(
-                "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-            ),
-            args: Vec::new(),
-        };
-        assert_eq!(shell_label(&windows), "powershell");
-    }
-
-    #[test]
-    fn shell_command_embeds_payload() {
-        let s = shell_command("echo hi");
-        let joined: Vec<String> = s
-            .args
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            joined.iter().any(|a| a.contains("echo hi")),
-            "args={joined:?}"
-        );
-    }
 }

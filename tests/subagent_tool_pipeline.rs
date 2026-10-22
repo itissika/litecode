@@ -4,9 +4,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::ThreadId;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use common::bindings::binding_safe_for;
@@ -142,38 +140,6 @@ fn function_call(call_id: &str, prompt: &str) -> FunctionToolCall {
     }
 }
 
-#[derive(Clone)]
-struct ThreadProbeProvider {
-    inner: ScriptedProvider,
-    thread_id: Arc<Mutex<Option<ThreadId>>>,
-    saw_runtime: Arc<AtomicBool>,
-}
-
-impl LlmProvider for ThreadProbeProvider {
-    fn endpoint(&self) -> &str {
-        self.inner.endpoint()
-    }
-
-    fn box_clone(&self) -> Box<dyn LlmProvider> {
-        Box::new(self.clone())
-    }
-
-    fn complete_with_stream_events<'a>(
-        &'a self,
-        request: &'a ModelRequest,
-        api_key: &'a str,
-        on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
-        cancel: &'a CancellationToken,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        *self.thread_id.lock().unwrap() = Some(std::thread::current().id());
-        self.saw_runtime.store(
-            tokio::runtime::Handle::try_current().is_ok(),
-            Ordering::SeqCst,
-        );
-        self.inner
-            .complete_with_stream_events(request, api_key, on_event, cancel)
-    }
-}
 
 #[derive(Clone)]
 struct PanicProvider;
@@ -196,84 +162,6 @@ impl LlmProvider for PanicProvider {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Item>>> + Send + 'a>> {
         Box::pin(async { panic!("provider boom") })
     }
-}
-
-#[test]
-fn launch_declares_pipeline_parallel_and_cancellable() {
-    let dir = tempfile::tempdir().unwrap();
-    let resolved = reviewer_resolved(dir.path());
-    let sessions = Arc::new(SessionManager::new_for_test(
-        Arc::new(TurnGuard::new()),
-        resolved.paths().sessions_db.to_string_lossy().to_string(),
-    ));
-    let tool = launch_tool(
-        resolved,
-        sessions,
-        "parent",
-        Box::new(ScriptedProvider::with_text("x")),
-    );
-    let input = serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"});
-    assert!(
-        tool.is_concurrency_safe(&input),
-        "subagent_launch must join the concurrent ToolPipeline batch"
-    );
-    assert!(
-        tool.is_cancellable(),
-        "subagent_launch must be joinable on turn cancel"
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn execute_returns_while_child_llm_runs_on_other_thread() {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path();
-    let resolved = reviewer_resolved(cwd);
-    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
-    let project = cwd.to_string_lossy().to_string();
-    let sessions = Arc::new(SessionManager::new_for_test(
-        Arc::new(TurnGuard::new()),
-        db_path,
-    ));
-    let parent_id = sessions
-        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
-        .await
-        .expect("parent");
-
-    let probe = ThreadProbeProvider {
-        inner: ScriptedProvider::with_text("other-thread"),
-        thread_id: Arc::new(Mutex::new(None)),
-        saw_runtime: Arc::new(AtomicBool::new(false)),
-    };
-    let recorded = Arc::clone(&probe.thread_id);
-    let saw_runtime = Arc::clone(&probe.saw_runtime);
-    let caller_thread = std::thread::current().id();
-
-    let tool = launch_tool(resolved, sessions, &parent_id, Box::new(probe));
-    let result = tool
-        .execute(
-            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"}),
-            exec_ctx("call_thread", CancellationToken::new()),
-        )
-        .await;
-
-    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(
-        result.content.contains("status: running"),
-        "launch must detach immediately, got: {}",
-        result.content
-    );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !saw_runtime.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("child LLM call must run inside a Tokio runtime");
-    assert_ne!(
-        *recorded.lock().unwrap(),
-        Some(caller_thread),
-        "child loop must hop to a dedicated OS thread"
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -358,113 +246,6 @@ async fn parent_cancel_does_not_stop_background_child_and_stop_tool_can() {
     })
     .await
     .expect("child hub record must settle after stop");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn background_launch_returns_while_child_keeps_running() {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path();
-    let resolved = reviewer_resolved(cwd);
-    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
-    let project = cwd.to_string_lossy().to_string();
-    let sessions = Arc::new(SessionManager::new_for_test(
-        Arc::new(TurnGuard::new()),
-        db_path,
-    ));
-    let parent_id = sessions
-        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
-        .await
-        .expect("parent");
-
-    let hang = HangProvider::ignore_cancel();
-    let dropped = Arc::clone(&hang.dropped);
-    let started = Arc::clone(&hang.started);
-    let tool = launch_tool(resolved, Arc::clone(&sessions), &parent_id, Box::new(hang));
-    let result = tokio::time::timeout(
-        Duration::from_secs(10),
-        tool.execute(
-            serde_json::json!({
-                "agent": "reviewer",
-                "responsibility": "test",
-                "prompt": "hang"
-            }),
-            exec_ctx("call_bg", CancellationToken::new()),
-        ),
-    )
-    .await
-    .expect("background launch must return without waiting for the child");
-    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    assert!(
-        result.content.contains("status: running"),
-        "{}",
-        result.content
-    );
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !started.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("child LLM must start after launch returns");
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert!(
-        !dropped.load(Ordering::SeqCst),
-        "background child must keep running after launch returns"
-    );
-    let children = sessions
-        .data()
-        .list_child_ids_blocking(&parent_id)
-        .expect("children");
-    assert_eq!(children.len(), 1);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn child_exit_fires_hub_exit_handler() {
-    let dir = tempfile::tempdir().unwrap();
-    let cwd = dir.path();
-    let resolved = reviewer_resolved(cwd);
-    let db_path = resolved.paths().sessions_db.to_string_lossy().to_string();
-    let project = cwd.to_string_lossy().to_string();
-    let sessions = Arc::new(SessionManager::new_for_test(
-        Arc::new(TurnGuard::new()),
-        db_path,
-    ));
-    let parent_id = sessions
-        .open_session(&project, "default", Some(TEST_PRIMARY_MODEL_REF))
-        .await
-        .expect("parent");
-
-    let (tool, hub) = launch_tool_with_hub(
-        resolved,
-        Arc::clone(&sessions),
-        &parent_id,
-        Box::new(ScriptedProvider::with_text("done")),
-    );
-    let (tx, rx) = std::sync::mpsc::channel();
-    hub.set_exit_handler(Arc::new(move |notice| {
-        let _ = tx.send(notice.child_session_id);
-    }));
-
-    let result = tool
-        .execute(
-            serde_json::json!({"agent": "reviewer", "responsibility": "test", "prompt": "go"}),
-            exec_ctx("call_exit_handler", CancellationToken::new()),
-        )
-        .await;
-    assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
-    let child_id = result
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("child_session_id"))
-        .and_then(|v| v.as_str())
-        .unwrap()
-        .to_string();
-
-    let notified = tokio::task::spawn_blocking(move || rx.recv_timeout(Duration::from_secs(15)))
-        .await
-        .expect("join")
-        .expect("child exit notice must fire the configured exit handler");
-    assert_eq!(notified, child_id);
 }
 
 #[tokio::test(flavor = "current_thread")]

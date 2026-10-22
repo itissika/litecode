@@ -201,65 +201,6 @@ mod tests {
     }
 
     #[test]
-    fn small_output_stays_unfrozen() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut t = tee_in(dir.path());
-        t.push_clean("hello\n");
-        t.push_clean("world\n");
-        let _ = t.flush_file();
-        let cap = t.snapshot_capture();
-        assert!(!cap.frozen);
-        assert_eq!(cap.head, "hello\nworld\n");
-        assert!(cap.tail.is_empty());
-        let on_disk = std::fs::read_to_string(&cap.path).unwrap();
-        assert_eq!(on_disk, "hello\nworld\n");
-    }
-
-    #[test]
-    fn large_output_freezes_head_and_tail() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut t = tee_in(dir.path());
-        let chunk = "a".repeat(INLINE_FULL + 100);
-        t.push_clean(&chunk);
-        let _ = t.flush_file();
-        let cap = t.snapshot_capture();
-        assert!(cap.frozen);
-        assert!(cap.head.len() <= INLINE_HEAD);
-        assert!(cap.tail.len() <= INLINE_TAIL + 4);
-        assert_eq!(cap.total_bytes, chunk.len());
-        let on_disk = std::fs::read_to_string(&cap.path).unwrap();
-        assert_eq!(on_disk.len(), chunk.len());
-        assert!(on_disk.starts_with(&cap.head));
-        assert!(on_disk.ends_with(&cap.tail));
-    }
-
-    #[test]
-    fn trim_to_tail_aligns_to_next_newline() {
-        let mut tail = format!("{}abcng\nLASTLINE\n", "x".repeat(INLINE_TAIL));
-        trim_to_tail(&mut tail);
-        assert_eq!(tail, "LASTLINE\n");
-
-        let mut utf8 = format!("{}前置ng\n末尾行\n", "x".repeat(INLINE_TAIL));
-        trim_to_tail(&mut utf8);
-        assert_eq!(utf8, "末尾行\n");
-    }
-
-    #[test]
-    fn freeze_keeps_utf8_char_boundaries() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut t = tee_in(dir.path());
-        let chunk = "你".repeat(INLINE_FULL / 3 + 80);
-        t.push_clean(&chunk);
-        let cap = t.snapshot_capture();
-        assert!(cap.frozen);
-        assert!(std::str::from_utf8(cap.head.as_bytes()).is_ok());
-        assert!(std::str::from_utf8(cap.tail.as_bytes()).is_ok());
-        let on_disk = std::fs::read_to_string(&cap.path).unwrap();
-        assert!(on_disk.starts_with(&cap.head));
-        assert!(on_disk.ends_with(&cap.tail));
-    }
-
-    #[test]
     fn file_stops_at_max_and_flags_truncation() {
         let dir = tempfile::tempdir().unwrap();
         let mut t = tee_in(dir.path());

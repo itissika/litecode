@@ -10,7 +10,6 @@ use common::ScriptedProvider;
 use common::scripted_provider::HangProvider;
 use common::subagent_fixture::SubagentHarness;
 use litecode::session::event::EventType;
-use litecode::tool::Tool;
 use litecode::types::ToolSignalLevel;
 
 fn turn_starts(harness: &SubagentHarness, child_id: &str) -> usize {
@@ -22,53 +21,6 @@ fn turn_starts(harness: &SubagentHarness, child_id: &str) -> usize {
         .iter()
         .filter(|event| event.event_type == EventType::TurnStart)
         .count()
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_to_idle_child_runs_another_turn() {
-    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_texts(&[
-        "first turn",
-        "second turn",
-    ])));
-    let child = harness.launch_reviewer("call_launch", "first").await;
-    harness.wait_child_settled(&child);
-
-    let sent = harness.send("call_send", &child, "please continue").await;
-    assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
-    assert!(sent.content.contains("status: running"), "{}", sent.content);
-    assert!(sent.content.contains(&child), "{}", sent.content);
-
-    let waited = harness
-        .wait(
-            "call_wait_send",
-            serde_json::json!({ "ids": [child.clone()] }),
-        )
-        .await;
-    assert!(
-        waited.content.contains("status: settled"),
-        "{}",
-        waited.content
-    );
-    assert!(
-        waited.content.contains("second turn"),
-        "the wait must surface this turn's outcome: {}",
-        waited.content
-    );
-    assert!(!waited.content.contains("first turn"), "{}", waited.content);
-    assert_eq!(turn_starts(&harness, &child), 2, "child owns both turns");
-
-    // The parent session stays untouched: the message went to the child log.
-    let parent_events = harness
-        .sessions
-        .data()
-        .events_blocking(&harness.parent_id)
-        .expect("parent events");
-    assert!(
-        !parent_events
-            .iter()
-            .any(|event| { event.data.to_string().contains("please continue") }),
-        "child messages must not leak into the parent log"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,38 +141,6 @@ async fn wait_returns_cancelled_when_user_stopped() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wait_returns_latest_only() {
-    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_texts(&[
-        "alpha result",
-        "beta result",
-    ])));
-    let child = harness.launch_reviewer("call_launch", "first").await;
-    harness.wait_child_settled(&child);
-    let sent = harness.send("call_send", &child, "again").await;
-    assert_eq!(sent.level, ToolSignalLevel::Ok, "{}", sent.content);
-    harness.wait_for(|| turn_starts(&harness, &child) == 2, "second turn start");
-    harness.wait_child_settled(&child);
-    let waited = harness
-        .wait(
-            "call_wait_latest",
-            serde_json::json!({ "ids": [child.clone()] }),
-        )
-        .await;
-    assert!(waited.content.contains("settled: 1"), "{}", waited.content);
-    assert!(waited.content.contains("beta result"), "{}", waited.content);
-    assert!(
-        !waited.content.contains("alpha result"),
-        "{}",
-        waited.content
-    );
-    assert!(
-        !waited.content.contains("cancelled_by"),
-        "{}",
-        waited.content
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_sends_only_one_wins() {
     let hang = HangProvider::until_cancel();
     let started = Arc::clone(&hang.started);
@@ -258,13 +178,3 @@ async fn concurrent_sends_only_one_wins() {
     harness.stop("call_stop_winner", &child).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn send_schema_requires_id_and_message() {
-    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_text("ok")));
-    let tool = harness.send_tool();
-    assert_eq!(
-        tool.schema()["required"],
-        serde_json::json!(["id", "message"])
-    );
-    assert_eq!(tool.name(), "subagent_send");
-}

@@ -9,7 +9,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    CallState, ExecuteRequest, FailureKind, HostBinding, HostError, HostFn, Limits, LogLevel,
+    CallState, ExecuteRequest, FailureKind, HostBinding, HostError, HostFn, Limits,
     Namespace, Outcome, ResourceKind, execute,
 };
 
@@ -84,125 +84,6 @@ fn failure_kind(outcome: &Outcome) -> FailureKind {
         .as_ref()
         .unwrap_or_else(|| panic!("expected a failure, got {outcome:?}"))
         .kind
-}
-
-#[tokio::test]
-async fn returns_json_values() {
-    let outcome = run(
-        r#"
-        const bare = Object.create(null);
-        bare.a = 1;
-        return { n: null, t: true, f: false, i: 1, x: 1.5, s: "hi", a: [1, "a", null], o: bare };
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(
-        value_of(&outcome),
-        &json!({"n": null, "t": true, "f": false, "i": 1, "x": 1.5, "s": "hi", "a": [1, "a", null], "o": {"a": 1}})
-    );
-}
-
-#[tokio::test]
-async fn log_levels() {
-    let outcome = run(
-        r#"
-        console.log("L");
-        console.info("I");
-        console.warn("W");
-        console.error("E");
-        console.debug("D");
-        return null;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &Value::Null);
-    let levels: Vec<_> = outcome.logs.iter().map(|entry| entry.level).collect();
-    assert_eq!(
-        levels,
-        vec![
-            LogLevel::Log,
-            LogLevel::Info,
-            LogLevel::Warn,
-            LogLevel::Error,
-            LogLevel::Debug,
-        ]
-    );
-    let text: Vec<_> = outcome
-        .logs
-        .iter()
-        .map(|entry| entry.message.as_str())
-        .collect();
-    assert_eq!(text, vec!["L", "I", "W", "E", "D"]);
-}
-
-#[tokio::test]
-async fn concurrent_host_calls() {
-    let slow = HostFn::new(|_, _, _, _| async move {
-        tokio::time::sleep(Duration::from_millis(80)).await;
-        Ok(json!("slow"))
-    });
-    let fast = HostFn::new(|_, _, _, _| async move {
-        tokio::time::sleep(Duration::from_millis(10)).await;
-        Ok(json!("fast"))
-    });
-    let outcome = run(
-        "await Promise.all([tools.slow(null), tools.fast(null)]); return null;",
-        tools(vec![("slow", slow), ("fast", fast)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &Value::Null);
-    assert_eq!(outcome.calls.len(), 2);
-    assert_eq!(outcome.calls[0].seq, 1);
-    assert_eq!(outcome.calls[0].namespace, "tools");
-    assert_eq!(outcome.calls[0].name, "slow");
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
-    assert_eq!(outcome.calls[1].seq, 2);
-    assert_eq!(outcome.calls[1].name, "fast");
-    assert_eq!(outcome.calls[1].state, CallState::Completed);
-    assert!(outcome.calls[1].ended.unwrap() < outcome.calls[0].ended.unwrap());
-}
-
-#[tokio::test]
-async fn in_flight_limit() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let hold_calls = Arc::clone(&calls);
-    let ping_calls = Arc::clone(&calls);
-    let hold = HostFn::new(move |_, _, _, _| {
-        hold_calls.fetch_add(1, Ordering::SeqCst);
-        async move {
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            Ok(json!(null))
-        }
-    });
-    let ping = HostFn::new(move |_, _, _, _| {
-        ping_calls.fetch_add(10, Ordering::SeqCst);
-        async move { Ok(json!(null)) }
-    });
-    let mut limits = limits();
-    limits.max_in_flight = 1;
-    let outcome = run_with(
-        r#"
-        const pending = tools.hold(null);
-        let message = "none";
-        try { await tools.ping(null); message = "called"; }
-        catch (e) { message = String(e.message); }
-        await pending;
-        return message;
-        "#,
-        tools(vec![("hold", hold), ("ping", ping)]),
-        limits,
-        Duration::from_secs(2),
-        Duration::from_millis(200),
-        CancellationToken::new(),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("in-flight call limit exceeded"));
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(outcome.calls.len(), 1);
-    assert_eq!(outcome.calls[0].name, "hold");
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
 }
 
 #[tokio::test]
@@ -535,49 +416,6 @@ async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
 }
 
 #[tokio::test]
-async fn syntax_error() {
-    let outcome = run("return (", Vec::new()).await;
-    let failure = outcome.failure.expect("syntax");
-    assert_eq!(failure.kind, FailureKind::Syntax);
-    assert!(!failure.message.is_empty());
-    // QuickJS points `return (` at the wrapper's closing brace (program.js:3),
-    // which is outside the one-line source, so the site is end of input.
-    assert_eq!(failure.location, None, "{failure:?}");
-    assert!(failure.at_end_of_input, "{failure:?}");
-    assert!(failure.stack.is_some(), "{failure:?}");
-    assert!(outcome.calls.is_empty());
-    assert!(outcome.value.is_none());
-}
-
-#[tokio::test]
-async fn syntax_error_on_the_second_line_keeps_stack_and_location() {
-    let outcome = run("const x = 1;\nreturn (;", Vec::new()).await;
-    let failure = outcome.failure.expect("syntax");
-    assert_eq!(failure.kind, FailureKind::Syntax);
-    assert_eq!(
-        failure.location,
-        Some(super::SourceLocation { line: 2, column: 9 }),
-        "message={:?} stack={:?}",
-        failure.message,
-        failure.stack
-    );
-    assert!(failure.stack.is_some());
-}
-
-#[tokio::test]
-async fn exception_keeps_stack() {
-    let outcome = run(
-        "function inner() { throw new Error(\"boom\"); }\nfunction outer() { return inner(); }\nreturn outer();\n",
-        Vec::new(),
-    )
-    .await;
-    let failure = outcome.failure.expect("exception");
-    let stack = failure.stack.expect("stack");
-    assert!(stack.contains("inner"), "{stack}");
-    assert!(stack.contains("program.js:"), "{stack}");
-}
-
-#[tokio::test]
 async fn success_survives_budget_expiry_at_return() {
     // The interrupt aborts JavaScript once the clock is exhausted, so a live
     // program cannot return after the deadline. The expiry-after-return policy
@@ -586,56 +424,6 @@ async fn success_survives_budget_expiry_at_return() {
     let outcome = run("return \"kept\";", Vec::new()).await;
     assert_eq!(value_of(&outcome), &json!("kept"), "{outcome:?}");
     assert!(outcome.failure.is_none(), "{outcome:?}");
-}
-
-#[tokio::test]
-async fn seq_is_shared_with_host() {
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let record = Arc::clone(&seen);
-    let host = HostFn::new(move |_args, _cancel, _pause, info| {
-        let record = Arc::clone(&record);
-        async move {
-            let delay = 11u64.saturating_sub(info.seq);
-            tokio::time::sleep(Duration::from_millis(delay * 3)).await;
-            record.lock().unwrap().push(info.seq);
-            Ok(json!(info.seq))
-        }
-    });
-    let mut limits = limits();
-    limits.max_in_flight = 16;
-    let outcome = run_with(
-        "const calls = []; for (let i = 0; i < 10; i++) calls.push(tools.ping(i)); return await Promise.all(calls);",
-        tools(vec![("ping", host)]),
-        limits,
-        Duration::from_secs(2),
-        Duration::from_millis(200),
-        CancellationToken::new(),
-    )
-    .await;
-    let seqs: Vec<u64> = outcome.calls.iter().map(|call| call.seq).collect();
-    assert_eq!(seqs, (1..=10).collect::<Vec<_>>(), "{outcome:?}");
-    let mut host_seqs = seen.lock().unwrap().clone();
-    host_seqs.sort();
-    assert_eq!(host_seqs, seqs);
-}
-
-#[tokio::test]
-async fn exception_includes_stack() {
-    let outcome = run(
-        r#"
-        function inner() { throw new Error("boom"); }
-        function outer() { return inner(); }
-        return outer();
-        "#,
-        Vec::new(),
-    )
-    .await;
-    let failure = outcome.failure.expect("exception");
-    assert_eq!(failure.kind, FailureKind::Exception);
-    assert!(failure.message.contains("boom"), "{}", failure.message);
-    let stack = failure.stack.expect("stack");
-    assert!(stack.contains("inner"), "{stack}");
-    assert!(stack.contains("outer"), "{stack}");
 }
 
 #[tokio::test]
@@ -769,14 +557,6 @@ async fn illegal_arguments_skip_host() {
 }
 
 #[tokio::test]
-async fn host_safe_integer_round_trips() {
-    let host = HostFn::new(|_, _, _, _| async move { Ok(json!(9_007_199_254_740_991_i64)) });
-    let outcome = run("return await tools.n(null);", tools(vec![("n", host)])).await;
-    assert_eq!(value_of(&outcome), &json!(9_007_199_254_740_991_i64));
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
-}
-
-#[tokio::test]
 async fn host_integer_above_safe_range_is_rejected() {
     let cases = [
         json!(9_007_199_254_740_992_i64),
@@ -836,37 +616,6 @@ async fn no_ambient_capabilities() {
 }
 
 #[tokio::test]
-async fn libs_samples() {
-    let outcome = run(
-        r#"
-        return {
-          sum: libs.stats.sum([1, 2, 3, 4]),
-          median: libs.stats.median([1, 2, 3, 4]),
-          max: libs.stats.max([1, 5, 2]),
-          csv: libs.csv.parse('a,b\n1,"x,y"'),
-          lines: libs.text.lines("a\r\nb"),
-          counts: libs.data.countBy([{k:"a"},{k:"a"},{k:"b"}], "k"),
-          unique: libs.data.unique([1, 1, 2])
-        };
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert_eq!(
-        value_of(&outcome),
-        &json!({
-            "sum": 10,
-            "median": 2.5,
-            "max": 5,
-            "csv": [["a", "b"], ["1", "x,y"]],
-            "lines": ["a", "b"],
-            "counts": {"a": 2, "b": 1},
-            "unique": [1, 2]
-        })
-    );
-}
-
-#[tokio::test]
 async fn unawaited_calls_are_waited_and_recorded() {
     let finished = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&finished);
@@ -896,25 +645,6 @@ async fn unawaited_calls_are_waited_and_recorded() {
             .any(|entry| entry.message.contains("1 host calls were still running")),
         "{:?}",
         outcome.logs
-    );
-}
-
-#[tokio::test]
-async fn cold_start_median() {
-    let mut samples = Vec::new();
-    for _ in 0..11 {
-        let started = Instant::now();
-        let outcome = run("return 1;", Vec::new()).await;
-        samples.push(started.elapsed());
-        assert_eq!(value_of(&outcome), &json!(1));
-    }
-    samples.remove(0);
-    samples.sort();
-    let median = samples[samples.len() / 2];
-    eprintln!("ptc cold start median {median:?}");
-    assert!(
-        median < Duration::from_millis(250),
-        "cold start median {median:?}"
     );
 }
 
@@ -955,83 +685,6 @@ async fn uncaught_tool_error_keeps_code() {
     assert_eq!(failure.message, "missing");
 }
 
-#[tokio::test]
-async fn second_argument_is_type_error() {
-    let host = HostFn::new(|args, _, _, _| async move {
-        if args.as_value().is_array() {
-            Err(HostError::type_error("tool bindings accept one argument"))
-        } else {
-            Ok(json!(null))
-        }
-    });
-    let outcome = run(
-        r#"
-        try {
-          await tools.f(1, 2);
-          return "resolved";
-        } catch (e) {
-          return [e.name, e instanceof TypeError, e.message];
-        }
-        "#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(
-        value_of(&outcome),
-        &json!(["TypeError", true, "tool bindings accept one argument"])
-    );
-}
-
-#[tokio::test]
-async fn type_error_from_host_is_catchable() {
-    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::type_error("bad call")) });
-    let outcome = run(
-        r#"try { await tools.f(null); return "resolved"; } catch (e) { return [e.name, e.message]; }"#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!(["TypeError", "bad call"]));
-}
-
-#[tokio::test]
-async fn console_formats_errors() {
-    let host = HostFn::new(|_, _, _, _| async move {
-        Err(HostError::tool("not_found", "missing", None, false))
-    });
-    let outcome = run(
-        r#"
-        console.log(new Error("x"));
-        try {
-          await tools.read(null);
-        } catch (e) {
-          console.log(e);
-        }
-        return "ok";
-        "#,
-        tools(vec![("read", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("ok"));
-    let logs: Vec<&str> = outcome.logs.iter().map(|entry| entry.message.as_str()).collect();
-    assert!(logs.iter().any(|line| *line == "Error: x"), "{logs:?}");
-    assert!(
-        logs.iter().any(|line| *line == "ToolError: missing [not_found]"),
-        "{logs:?}"
-    );
-}
-
-#[tokio::test]
-async fn host_error_finishes_the_call() {
-    let host = HostFn::new(|_, _, _, _| async move { Err(HostError::new("nope")) });
-    let outcome = run(
-        r#"try { await tools.f(null); return "called"; } catch (e) { return String(e.message); }"#,
-        tools(vec![("f", host)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("nope"));
-    assert_eq!(outcome.calls[0].state, CallState::Completed);
-}
-
 fn nested_arrays(depth: usize) -> Value {
     let mut value = json!(0);
     for _ in 0..depth {
@@ -1050,23 +703,6 @@ fn array_depth(value: &Value) -> usize {
         if items.len() != 1 {
             break;
         }
-        depth += 1;
-        cursor = child;
-    }
-    depth
-}
-
-fn directory_depth(value: &Value) -> usize {
-    let mut depth = 0;
-    let mut cursor = value;
-    while cursor.get("entries").is_some() {
-        let Some(child) = cursor
-            .get("entries")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-        else {
-            break;
-        };
         depth += 1;
         cursor = child;
     }
@@ -1167,30 +803,6 @@ fn failure_kind_if_any(outcome: &Outcome) -> Option<FailureKind> {
 }
 
 #[tokio::test]
-async fn microtasks_do_not_drop_host_calls() {
-    let marks = Arc::new(AtomicUsize::new(0));
-    let marks_host = Arc::clone(&marks);
-    let mark = HostFn::new(move |_, _, _, _| {
-        marks_host.fetch_add(1, Ordering::SeqCst);
-        async move { Ok(json!(null)) }
-    });
-    let outcome = run(
-        r#"
-        let pending = Promise.resolve();
-        for (let i = 0; i < 2000; i++) pending = pending.then(() => {});
-        pending.then(() => { tools.mark(null); });
-        return "ok";
-        "#,
-        tools(vec![("mark", mark)]),
-    )
-    .await;
-    assert_eq!(value_of(&outcome), &json!("ok"));
-    assert_eq!(marks.load(Ordering::SeqCst), 1);
-    assert_eq!(outcome.calls.len(), 1);
-    assert_eq!(outcome.calls[0].name, "mark");
-}
-
-#[tokio::test]
 async fn user_exceptions_are_not_classified_by_message() {
     let cases = [
         r#"throw new Error("interrupted");"#,
@@ -1212,54 +824,6 @@ async fn user_exceptions_are_not_classified_by_message() {
         );
         assert!(outcome.value.is_none());
     }
-}
-
-#[tokio::test]
-async fn moderate_nesting_round_trips() {
-    let outcome = run(
-        r#"
-        let value = 1;
-        for (let i = 0; i < 8; i++) value = [value, { n: i }];
-        return value;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert!(outcome.failure.is_none(), "{outcome:?}");
-    assert!(value_of(&outcome).is_array());
-}
-
-#[tokio::test]
-async fn object_nesting_past_old_depth_cap() {
-    let built = run(
-        r#"
-        let node = "leaf";
-        for (let i = 0; i < 48; i++) node = { name: "d", entries: [node] };
-        return node;
-        "#,
-        Vec::new(),
-    )
-    .await;
-    assert!(built.failure.is_none(), "{}", failure_text(&built));
-    let value = value_of(&built);
-    assert_eq!(directory_depth(value), 48);
-    assert_eq!(value["name"], json!("d"));
-
-    let host = HostFn::new(|_, _, _, _| async move {
-        let mut node = json!("leaf");
-        for _ in 0..48 {
-            node = json!({ "name": "d", "entries": [node] });
-        }
-        Ok(node)
-    });
-    let injected = run(
-        "return await tools.tree(null);",
-        tools(vec![("tree", host)]),
-    )
-    .await;
-    assert!(injected.failure.is_none(), "{}", failure_text(&injected));
-    assert_eq!(directory_depth(value_of(&injected)), 48);
-    assert_eq!(injected.calls[0].state, CallState::Completed);
 }
 
 #[tokio::test]

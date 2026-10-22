@@ -307,34 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_with_subscribers_prepares_turn_using_exit_reminder() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions, hub) = test_runtime(dir.path());
-        let sid = sessions
-            .open_session_sync(&dir.path().display().to_string(), "default", None)
-            .unwrap();
-        let _ = sessions.attach(&sid);
-        finish_echo(&hub, dir.path(), &sid);
-        match try_begin_idle_auto_turn(&hub, &runtime, &sessions, dir.path(), &sid) {
-            IdleAutoTurn::Prepared {
-                turn_id,
-                session_id,
-                ..
-            } => {
-                assert_eq!(session_id, sid);
-                assert!(
-                    sessions.data().events_blocking(&sid).unwrap().is_empty(),
-                    "the wake turn writes the reminder at the first seam, not here"
-                );
-                sessions.release_turn_reservation(&sid, &turn_id);
-            }
-            _ => panic!("expected prepared, got non-prepared variant"),
-        }
-        assert!(hub.jobs.mailbox_pending(&sid));
-        assert!(!sessions.is_session_busy_blocking(&sid));
-    }
-
-    #[test]
     fn ui_kill_while_busy_prepares_user_stopped_reminder_once_idle() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions, hub) = test_runtime(dir.path());

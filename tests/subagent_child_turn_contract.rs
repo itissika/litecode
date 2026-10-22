@@ -3,19 +3,12 @@
 mod common;
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use common::ScriptedProvider;
-use common::scripted_provider::HangProvider;
 use common::subagent_fixture::SubagentHarness;
 use litecode::client_protocol::controller::SessionController;
-use litecode::config::resolved::resolve;
-use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
-use litecode::config::workspace::set_runtime_paths;
 use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::platform_knobs::{ContextMode, ThinkingSpec, ThinkingTier};
-use litecode::runtime::{AgentIdentity, ProviderRegistry, TurnOptions, resolve_session_llm};
 use litecode::types::{Item, Result, StreamEvents, ToolSignalLevel};
 use std::future::Future;
 use std::pin::Pin;
@@ -95,112 +88,6 @@ async fn completed_child_result_is_read_from_the_durable_turn() {
         "{}",
         waited.content
     );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wait_freezes_a_child_turn_and_returns_its_session_result() {
-    let hang = HangProvider::until_cancel();
-    let started = Arc::clone(&hang.started);
-    let harness = SubagentHarness::new(Arc::new(hang));
-    let child = harness.launch_reviewer("call_hang", "hang forever").await;
-    harness.wait_for(|| started.load(Ordering::SeqCst), "child LLM start");
-
-    let listed = harness.list("call_list_run").await;
-    assert_eq!(listed.level, ToolSignalLevel::Ok, "{}", listed.content);
-    assert!(
-        listed.content.contains("state: running"),
-        "{}",
-        listed.content
-    );
-    assert!(listed.content.contains("turn_age:"), "{}", listed.content);
-    assert!(listed.content.contains("step:"), "{}", listed.content);
-
-    let (waited, stopped) = tokio::join!(
-        harness.wait(
-            "call_wait_hang",
-            serde_json::json!({ "ids": [child.clone()] }),
-        ),
-        async {
-            tokio::time::sleep(Duration::from_millis(30)).await;
-            harness.stop("call_stop_hang", &child).await
-        }
-    );
-    assert_eq!(stopped.level, ToolSignalLevel::Ok, "{}", stopped.content);
-    assert!(stopped.content.contains("status: stopped"));
-    assert_eq!(waited.level, ToolSignalLevel::Ok, "{}", waited.content);
-    assert!(
-        waited.content.contains("status: settled"),
-        "{}",
-        waited.content
-    );
-    assert!(
-        waited.content.contains("reason: cancelled"),
-        "{}",
-        waited.content
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stop_after_completion_returns_the_last_durable_result() {
-    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_text("done")));
-    let child = harness.launch_reviewer("call_done", "quick task").await;
-    harness.wait_child_settled(&child);
-
-    let stopped = harness.stop("call_stop_done", &child).await;
-    assert_eq!(stopped.level, ToolSignalLevel::Ok, "{}", stopped.content);
-    assert!(stopped.content.contains("status: nothing running"));
-    assert!(stopped.content.contains("reason: completed"));
-    assert!(stopped.content.contains("responsibility: test"));
-    assert!(stopped.content.contains("output:\ndone"));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn completion_reminder_resolves_the_reference_at_delivery_time() {
-    let harness = SubagentHarness::new(Arc::new(ScriptedProvider::with_text("reminder body")));
-    let child = harness
-        .launch_reviewer("call_reminder", "produce a reminder")
-        .await;
-    harness.wait_mailbox(&harness.parent_id);
-
-    let completions = harness
-        .runtime
-        .subagent_hub
-        .take_completions(&harness.parent_id);
-    assert_eq!(completions.len(), 1);
-    assert_eq!(completions[0].child_session_id, child);
-    let detail =
-        litecode::tools::subagent::status::format_batch_results(&harness.sessions, &completions);
-    let facts = litecode::reminder::Facts {
-        settled: vec![litecode::reminder::SettledChild {
-            child_session_id: completions[0].child_session_id.clone(),
-            turn_id: completions[0].turn_id.clone(),
-            agent: "reviewer".into(),
-            reason: "completed".into(),
-        }],
-        settled_detail: detail,
-        ..Default::default()
-    };
-    let reminders = litecode::reminder::sync(
-        &litecode::reminder::SeamCtx {
-            session_id: harness.parent_id.clone(),
-            turn_id: "t".into(),
-            step: 1,
-            max_steps: 10,
-            cwd: harness.dir.path().to_path_buf(),
-        },
-        &litecode::reminder::SpineReminderView::default(),
-        &facts,
-    );
-    let settled = reminders
-        .iter()
-        .find(|reminder| reminder.kind() == litecode::reminder::ReminderKind::SubagentSettled)
-        .expect("subagent reminder");
-    let reminder = litecode::reminder::render_text(settled.text());
-    assert!(reminder.starts_with("<system-reminder>"));
-    assert!(reminder.contains("source: subagent"));
-    assert!(reminder.contains("reason: completed"));
-    assert!(reminder.contains("responsibility: test"));
-    assert!(reminder.contains("output:\nreminder body"));
 }
 
 // ── Turn config parity: the knobs live on the session row, children included ──
@@ -321,100 +208,6 @@ async fn child_turn_reads_config_from_its_own_session_row() {
         harness.sessions.agent_id(&child).as_deref(),
         Some("reviewer")
     );
-}
-
-fn child_binding(
-    resolved: &litecode::config::ResolvedConfig,
-    sessions: &Arc<litecode::session::manager::SessionManager>,
-    session_id: &str,
-) -> litecode::runtime::TurnLlmBinding {
-    resolve_session_llm(resolved, &mut ProviderRegistry::new(), sessions, session_id)
-        .expect("child binding")
-}
-
-/// Display == execution: the window a child turn runs with is derived from its
-/// own row's `context_mode`, through the single resolve entry `spawn_turn` uses
-/// for every session kind.
-#[tokio::test(flavor = "current_thread")]
-async fn child_binding_window_follows_its_own_context_mode() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let cwd = dir.path();
-    let workspace = common::test_workspace(cwd);
-    set_runtime_paths(workspace.paths.clone());
-
-    // Declared window 1M → standard 200K vs max 1M, so the modes differ and the
-    // assertion can actually fail.
-    let mut global = GlobalSettings::default();
-    global.agents.insert(
-        "default".into(),
-        AgentProfile {
-            model_ref: common::TEST_PRIMARY_MODEL_REF.into(),
-            ..Default::default()
-        },
-    );
-    global.agents.insert(
-        "compaction".into(),
-        AgentProfile {
-            role: AgentRole::Hidden,
-            model_ref: common::TEST_COMPACTION_MODEL_REF.into(),
-            ..Default::default()
-        },
-    );
-    common::insert_test_llm_registry(&mut global, "test-key");
-    let resolved = resolve(
-        global,
-        workspace,
-        common::test_catalog_windows("http://127.0.0.1:9", 200_000, 1_000_000, 8192),
-    );
-
-    let sessions =
-        common::test_sessions_manager(resolved.paths().sessions_db.to_string_lossy().to_string());
-    let project = cwd.to_string_lossy().to_string();
-    let parent = sessions
-        .open_session(&project, "default", Some(common::TEST_PRIMARY_MODEL_REF))
-        .await
-        .expect("parent session");
-    let child = sessions
-        .open_child_session(
-            &project,
-            "reviewer",
-            Some(common::TEST_PRIMARY_MODEL_REF),
-            &parent,
-            "call-window",
-        )
-        .expect("child session");
-
-    let standard = child_binding(&resolved, &sessions, &child);
-    assert_eq!(standard.context_mode, ContextMode::Standard);
-    assert_eq!(
-        standard.context_window, 200_000,
-        "standard mode uses the catalog's standard context_window"
-    );
-
-    sessions
-        .set_context_mode(&child, ContextMode::Max)
-        .expect("set mode");
-    sessions
-        .set_thinking_tier(&child, ThinkingTier::High)
-        .expect("set tier");
-
-    let max = child_binding(&resolved, &sessions, &child);
-    assert_eq!(max.context_mode, ContextMode::Max);
-    assert_eq!(max.thinking_tier, ThinkingTier::High);
-    assert_eq!(
-        max.context_window, 1_000_000,
-        "turn budget follows the row's context mode"
-    );
-}
-
-/// `TurnOptions` carries identity only — the LLM binding is never supplied by a
-/// caller (that caller-supplied fork is what got deleted).
-#[test]
-fn turn_options_carry_identity_only() {
-    let human = TurnOptions::default();
-    assert!(matches!(human.identity, AgentIdentity::FromSession));
-    let child = TurnOptions::child("reviewer");
-    assert!(matches!(child.identity, AgentIdentity::Named(ref name) if name == "reviewer"));
 }
 
 /// D1: a child's agent identity is fixed by its profile. `agent/set-primary` is

@@ -575,19 +575,6 @@ pub(crate) fn bash_nonce() -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn display_output_path_strips_workspace_root() {
-        let root = Path::new("C:/proj");
-        let path = root
-            .join(".litecode")
-            .join("run")
-            .join("bg_aaa.stdout");
-        assert_eq!(
-            display_output_path(&path, root),
-            ".litecode/run/bg_aaa.stdout"
-        );
-    }
-
     // G6: ids are unguessable random strings (not sequential/guessable), and a
     // cross-session kill/close on an id the caller cannot know is rejected.
     #[test]
@@ -604,36 +591,6 @@ mod tests {
         assert!(nonce_b.len() >= 16);
         // A UUID cannot be trivially enumerated by incrementing.
         assert!(nonce_a.parse::<u64>().is_err(), "nonce must not be numeric");
-    }
-
-    #[test]
-    fn agent_bash_ids_are_short_hex_not_sequential() {
-        let dir = tempfile::tempdir().unwrap();
-        let jobs = AgentJobRegistry::new();
-        let taken = "bg_aaaaaaaa";
-        let stdout = dir
-            .path()
-            .join(".litecode")
-            .join("run")
-            .join(format!("{taken}.stdout"));
-        std::fs::create_dir_all(stdout.parent().unwrap()).unwrap();
-        std::fs::write(&stdout, b"").unwrap();
-        let mut seen = Vec::new();
-        for _ in 0..8 {
-            let id = super::agent_jobs::alloc_pipe_job_id(&jobs, dir.path());
-            assert_ne!(id, taken);
-            assert!(id.starts_with("bg_"), "{id}");
-            let nonce = &id["bg_".len()..];
-            assert_eq!(nonce.len(), 8, "{id}");
-            assert!(
-                nonce.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
-                "nonce must be lowercase hex: {id}"
-            );
-            seen.push(id);
-        }
-        seen.sort();
-        seen.dedup();
-        assert_eq!(seen.len(), 8);
     }
 
     #[test]

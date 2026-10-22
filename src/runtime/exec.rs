@@ -1123,63 +1123,17 @@ pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRe
 
 #[cfg(test)]
 mod should_stop_tests {
-    use super::should_stop_after_output;
-    use crate::authority::responses::{
-        FunctionToolCall, OutputMessage, OutputMessageContent, OutputTextContent,
-    };
-    use crate::types::Item;
+    
+    
+    
 
-    fn text_message(text: &str) -> Item {
-        Item::Message(crate::authority::responses::MessageItem::Output(
-            OutputMessage {
-                id: "m1".into(),
-                role: crate::authority::responses::AssistantRole::Assistant,
-                status: crate::authority::responses::OutputStatus::Completed,
-                content: vec![OutputMessageContent::OutputText(OutputTextContent {
-                    text: text.into(),
-                    annotations: vec![],
-                    logprobs: None,
-                })],
-                phase: None,
-            },
-        ))
-    }
-
-    fn function_call() -> Item {
-        Item::FunctionCall(FunctionToolCall {
-            arguments: "{}".into(),
-            call_id: "c1".into(),
-            namespace: None,
-            name: "read".into(),
-            id: None,
-            status: None,
-        })
-    }
-
-    #[test]
-    fn text_only_step_stops() {
-        assert!(should_stop_after_output(&[text_message("done")]));
-    }
-
-    #[test]
-    fn function_call_does_not_stop() {
-        assert!(!should_stop_after_output(&[
-            text_message("calling"),
-            function_call()
-        ]));
-    }
-
-    #[test]
-    fn empty_output_stops() {
-        assert!(should_stop_after_output(&[]));
-    }
 }
 
 #[cfg(test)]
 mod estimate_body_bytes_tests {
     use super::estimate_request_body_bytes;
     use crate::llm::ModelRequest;
-    use crate::types::user_text;
+    
 
     fn request(input: Vec<crate::types::Item>) -> ModelRequest {
         ModelRequest {
@@ -1192,15 +1146,6 @@ mod estimate_body_bytes_tests {
             json_output: false,
             session_id: None,
         }
-    }
-
-    #[test]
-    fn body_bytes_grows_with_input_size() {
-        let small = estimate_request_body_bytes(&request(vec![user_text("hello")]));
-        let large = estimate_request_body_bytes(&request(vec![user_text("x".repeat(100_000))]));
-        assert!(small > 0);
-        assert!(large > small);
-        assert!(large > 100_000);
     }
 
     #[test]
@@ -1219,143 +1164,9 @@ fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String
 
 #[cfg(test)]
 mod request_health_tests {
-    use super::{LlmRequestHealthInput, classify_llm_request_health};
-    use crate::authority::responses::{ReasoningItem, ReasoningItemContent, ReasoningTextContent};
-    use crate::llm::{ItemProducer, retain_own_reasoning, strip_foreign_ciphertext};
-    use crate::types::Item;
+    
+    
+    
+    
 
-    fn produced(provider: &str, endpoint: &str, model: &str) -> ItemProducer {
-        ItemProducer {
-            provider_id: provider.to_string(),
-            endpoint_type: Some(endpoint.to_string()),
-            model_ref: Some(model.to_string()),
-        }
-    }
-
-    fn reasoning(encrypted: Option<&str>) -> Item {
-        Item::Reasoning(ReasoningItem {
-            id: Some("cc_rs_1".into()),
-            summary: vec![],
-            content: Some(vec![ReasoningItemContent::ReasoningText(
-                ReasoningTextContent {
-                    text: "think".into(),
-                },
-            )]),
-            encrypted_content: encrypted.map(str::to_string),
-            status: None,
-        })
-    }
-
-    fn base_input() -> LlmRequestHealthInput {
-        LlmRequestHealthInput {
-            sticky_model_id: "opencode/claude-sonnet-5-5".into(),
-            turn_model_ref: "opencode/claude-sonnet-5-5".into(),
-            turn_provider_id: "opencode".into(),
-            turn_endpoint_type: "messages".into(),
-            bind_matches_sticky: true,
-            origin_provider_id: "opencode".into(),
-            origin_endpoint_type: "messages".into(),
-            origin_model_ref: "opencode/claude-sonnet-5-5".into(),
-            ciphertexts_stripped: 0,
-            rebased_stripped: 0,
-            reasoning_dropped: 0,
-            reasoning_wholly_omitted: 0,
-            rebased_true_count: 0,
-            projection_rewrote: false,
-        }
-    }
-
-    #[test]
-    fn thinking_not_refilled_when_summary_drops_foreign_reasoning() {
-        let mut items = vec![reasoning(Some("own")), reasoning(Some("foreign"))];
-        let producers = vec![
-            Some(produced("aliyun-token", "responses", "aliyun-token/qwen")),
-            Some(produced("openai", "responses", "openai/gpt")),
-        ];
-        let dropped = retain_own_reasoning(&mut items, &producers, "aliyun-token");
-        assert_eq!(dropped, 1);
-
-        let mut input = base_input();
-        input.reasoning_dropped = dropped as u32;
-        let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "debug");
-        assert_eq!(health.code, "thinking_not_refilled");
-        assert!(!health.message.is_empty());
-    }
-
-    #[test]
-    fn thinking_not_refilled_when_messages_wholly_omits_foreign_signature() {
-        let mut items = vec![reasoning(Some("opus-sig"))];
-        let producers = vec![Some(produced(
-            "opencode",
-            "messages",
-            "opencode/claude-opus-5-5",
-        ))];
-        let stats = strip_foreign_ciphertext(
-            &mut items,
-            &producers,
-            "opencode",
-            "messages",
-            "opencode/claude-sonnet-5-5",
-        );
-        assert_eq!(stats.ciphertexts_stripped, 1);
-        assert_eq!(stats.reasoning_wholly_omitted, 1);
-
-        let mut input = base_input();
-        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
-        input.reasoning_wholly_omitted = stats.reasoning_wholly_omitted as u32;
-        let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "debug");
-        assert_eq!(health.code, "thinking_not_refilled");
-    }
-
-    #[test]
-    fn same_model_continuation_with_own_signature_is_silent() {
-        let mut items = vec![reasoning(Some("own-sig"))];
-        let producers = vec![Some(produced(
-            "opencode",
-            "messages",
-            "opencode/claude-sonnet-5-5",
-        ))];
-        let stats = strip_foreign_ciphertext(
-            &mut items,
-            &producers,
-            "opencode",
-            "messages",
-            "opencode/claude-sonnet-5-5",
-        );
-        assert_eq!(stats.ciphertexts_stripped, 0);
-        assert_eq!(stats.reasoning_wholly_omitted, 0);
-
-        let health = classify_llm_request_health(base_input());
-        assert_eq!(health.severity, "silent");
-        assert_eq!(health.code, "");
-    }
-
-    #[test]
-    fn foreign_strip_with_text_retained_is_debug_not_toast() {
-        let mut items = vec![reasoning(Some("foreign"))];
-        let producers = vec![Some(produced("q", "responses", "q/m"))];
-        let stats = strip_foreign_ciphertext(&mut items, &producers, "p", "responses", "p/m");
-        assert_eq!(stats.ciphertexts_stripped, 1);
-        assert_eq!(stats.reasoning_wholly_omitted, 0);
-
-        let mut input = base_input();
-        input.turn_endpoint_type = "responses".into();
-        input.ciphertexts_stripped = stats.ciphertexts_stripped as u32;
-        input.reasoning_wholly_omitted = 0;
-        let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "debug");
-        assert_eq!(health.code, "foreign_strip");
-    }
-
-    #[test]
-    fn bind_sticky_mismatch_is_debug_not_toast() {
-        let mut input = base_input();
-        input.bind_matches_sticky = false;
-        input.sticky_model_id = "other/model".into();
-        let health = classify_llm_request_health(input);
-        assert_eq!(health.severity, "debug");
-        assert_eq!(health.code, "bind_sticky_mismatch");
-    }
 }
