@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-22T00:20:36.818Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-22T00:49:07.877Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -220,7 +220,8 @@
 | WP-202 | 实现：LSP 拆多工具+行列对齐并进 Code | done | backend_mid | gm |
 | WP-203 | 实现：webfetch/websearch 进 Code（软失败） | done | backend_mid | gm |
 | WP-204 | 分析：工具改造后提示词文本面查漏补缺 | done | backend_mid | gm |
-| WP-205 | 修复：session_search 溢出文件/虚拟 read 测试失败 | review | backend_mid | gm |
+| WP-205 | 修复：session_search 溢出文件/虚拟 read 测试失败 | done | backend_mid | gm |
+| WP-206 | Code 模式测评修复：run 前台窗/并发、LSP 冷启动、read EOF、边界序列化、路径一致 | drafting | backend_mid | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

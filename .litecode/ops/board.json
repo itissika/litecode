@@ -15537,13 +15537,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-205",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-22T00:20:36.729Z",
+      "progress": "closed done by gm: acceptance PASS: 只改测试；session_search 201/0/1；tip f1343b3；未合main",
+      "status_entered_at": null,
       "parent": null,
       "goal": "session_search 3 个既有失败测试（agent_view_spills_the_remainder_into_a_named_file / a_result_over_budget_names_the_file_that_holds_the_rest / search_hit_line_matches_virtual_read）：查清根因（产品缺陷还是测试过时），按根因修；结果里点名的溢出文件必须真能读到，hit 行与 read 一致。不合 main。",
       "approver": "gm",
@@ -15587,6 +15587,47 @@
           "actor": "backend_mid",
           "action": "deliver",
           "note": "201 passed/0 failed，acceptance.md"
+        },
+        {
+          "ts": "2026-10-22T00:21:04.848Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "acceptance PASS: 只改测试；session_search 201/0/1；tip f1343b3；未合main",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-206",
+      "domain": "harness-core",
+      "title": "Code 模式测评修复：run 前台窗/并发、LSP 冷启动、read EOF、边界序列化、路径一致",
+      "result": "8 项落地+测试绿；SDK fixture/快照刷新；push 实验分支；未合 main",
+      "done_when": [
+        "8 项验收全部满足",
+        "相关测试+sdk_snapshot 绿",
+        "artifacts 齐",
+        "push feat/tool-contract-ptc",
+        "未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-206",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "落实 Andy 拍板的 8 项 Code 模式测评修复（基线 feat/tool-contract-ptc@80c7a91）",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T00:49:07.781Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 落实 Andy 拍板的 8 项 Code 模式测评修复（基线 feat/tool-contract-ptc@80c7a91）"
         }
       ]
     }
