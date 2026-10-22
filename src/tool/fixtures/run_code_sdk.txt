@@ -2,11 +2,11 @@ Return a summary (counts, paths, the few lines that matter), not raw bulk data. 
 Logs: on success only the first ~200 tokens of logs are shown, then `… N lines omitted`; on failure the last ~2k tokens. If you want to see progress, log sparingly: only the key lines.
 `code` is plain JavaScript. The TypeScript declarations below are documentation only; do not copy type annotations into `code`.
 The bundled tools declared below are reachable only through the generated `tools` object inside `code`; they are not separately callable. Other LiteCode tools are outside this SDK and may remain directly callable according to the registry. `libs` contains deterministic pure-JavaScript analysis helpers and exposes no filesystem, network, or process API. `fs.ls(path)`, `fs.stat(path)` and `fs.exists(path)` are synchronous, read-only probes confined to the workspace (there is no write, rm, or mv; change files with `tools.write` / `tools.edit`). Standard JavaScript built-ins are available.
-Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`, `conflict`, `stale`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation, a permission denial, a write `create_only` conflict, and a stale `expected_hash` all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError`. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught.
+Every call resolves an object with a boolean `ok`: did the tool get the job done. `ok: false` comes with `reason` (`not_found`, `no_match`, `invalid_args`, `empty`, `permission`, `io`, `conflict`, `stale`) and `message`; a missing file, an edit that matches nothing, a bad grep pattern, failed argument validation, a permission denial, a write `create_only` conflict, and a stale `expected_hash` all resolve `ok: false` instead of rejecting, so one bad item does not end a batch. Zero results are `ok: true` with a `message`. `message` may appear with either value. Only system failures reject `ToolError` (`code` one of `stale_cursor`, `timeout`, `unavailable`, `unsupported`, `internal`). Program misuse (an unknown tool, an unknown parameter / extra argument, an illegal value, nesting that is too deep, an integer above 2^53-1, or the in-flight cap) throws `TypeError` and fails the whole call — unknown fields are never silently dropped. Cancellation, the `run_code` budget, the output cap, and memory or stack limits end the program and cannot be caught. The sandbox has no `setTimeout` / `setInterval`.
 When `edit` / `apply_edits` appear below, `tools.edit` resolves `EditResult{ok,path,message,reason?}`. `tools.apply_edits` resolves `{results: EditResult[]}`. Branch on `ok` or filter `results`.
 When `webfetch` / `websearch` appear below, network/provider outcomes (HTTP/DNS/timeout, Exa business failures) likewise resolve `ok: false`. `websearch` takes `top_k` (default 5, max 10) and resolves `results: [{title,url,snippet}]`. An unwarmed or unconfigured engine rejects `ToolError` `unavailable`.
 `run` resolves `output` (stdout only), `stderr`, and `shell` (the shell that ran it, e.g. `bash (MINGW64)` on Windows); output is decoded to UTF-8. A job `id` stays valid for `wait` / `kill` across later `run_code` calls in the same session while the job is still running.
-Use `Promise.allSettled` for a batch when calls may reject. One uncaught rejection ends the program and cancels the other in-flight calls.
+Use `Promise.allSettled` for a batch when calls may reject. An unhandled Promise rejection does not end the program; a `[warn]` notes it after settle.
 LSP and other tool-side diagnostics are not in the tool's resolved data—log or return them if you need them visible; they are not auto-listed in the run head.
 A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. A read says `Showing lines…` / `Continue with start_line=` only when the file is not finished; continue with a larger `start_line`; do not pass a cursor or `page.next`.
 After a run you see a short head: `run_code ok` or `run_code failed: <cause>`, then `program: ok|failed` and `tool calls: N ok / M failed` (settled tool calls; `ok: false` results count as failed), and how long the run took in ms, or a precise line/error if the program never started. A runtime exception adds `line L, column C` and a short `stack:` of your frames. Unsettled in-flight calls, if any, are noted in that same head and are not counted; a session-store read may appear as a short note there too. Then logs (see above); on failure, one line per completed tool call before the failure so finished work is not lost; then your returned result. Successful nested tool calls are not auto-listed. Tool contract errors stay on the tool—do not expect a second copy outside.
@@ -311,11 +311,13 @@ type KillData = {
   shell: string;
   // Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written.
   stderr: string;
+  // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
+  killed?: boolean;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
-  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -355,11 +357,13 @@ type RunData = {
   shell: string;
   // Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written.
   stderr: string;
+  // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
+  killed?: boolean;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
-  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -382,11 +386,13 @@ type WaitData = {
   shell: string;
   // Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written.
   stderr: string;
+  // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
+  killed?: boolean;
   // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
   message?: string;
-  // False when Git Bash path conversion made the command unsafe (exit_code is then null). Absent on ordinary success.
+  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion soft-fail uses invalid_args.
+  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -635,9 +641,9 @@ declare const tools: {
   // });
   // return { markdown: info.markdown, message: info.message };
   readonly ["hover"]: (args: HoverInput) => Promise<HoverData | ToolFailure>;
-  // Stop a shell command started with `tools.run` in this session (this or an earlier `run_code` program). Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group. Resolves a `Command`: `id`, `exit_code`, `output` — same shape as `run` / `wait`.
+  // Stop a shell command started with `tools.run` in this session (this or an earlier `run_code` program). Pass `id` (the `Command.id` from `run` or `wait`). Kills the process group (Windows: `taskkill /T`). Resolves a `Command`: `id`, `exit_code`, `output`, `stderr`, `shell` — same shape as `run` / `wait`.
   //
-  // `output` always includes a short note that the process was killed (plus any truncated logs or spill path). `exit_code` is an integer or `null` when no code is available. This consumes the job: do not expect a later natural-exit reminder for the same id.
+  // Only after the process is confirmed dead is `ok` left true (or filled true): `output` includes a `[process was killed]` note and `exit_code` is the reaped code or `null` when none is available. If the reap wait expires and the process is still alive, resolves `ok: false` with `reason: "still_alive"`, `exit_code: null`, and a message — never a false success. This consumes the job: do not expect a later natural-exit reminder for the same id.
   //
   // An `id` stays valid across later `run_code` calls in the same session while the job is registered (still running, or finished but not yet collected); a job that already exited inside `run`'s foreground window may be gone. An unknown `id`, or an id from another session, resolves `ok: false` with `reason: "not_found"`. Cancelling before the signal rejects `cancelled`. This does not stop the human terminal. Example:
   // const job = await tools.run({command:"npm test"});
@@ -694,7 +700,7 @@ declare const tools: {
   readonly ["run"]: (args: RunInput) => Promise<RunData | ToolFailure>;
   // Wait on a shell command started with `tools.run` in this session (this or an earlier `run_code` program). Pass `id` (the `Command.id` from `run`) and `sec` (required positive number of seconds to block). Resolves a `Command`: `id`, `exit_code`, `output` (stdout), `stderr`, `shell` — same shape as `run`.
   //
-  // `sec` is required. Values above the built-in maximum of **300** are silently clamped to 300 (no error). After clamping, this call blocks until the process exits or the wait budget elapses. If it exits, `exit_code` is set and `output` holds the accumulated text (plus any truncation / spill notes). If the budget elapses and the process is still running, the call still resolves: `exit_code` stays `null` and `output` is the current snapshot — the job is not killed and is not promoted. Call `wait` again or `tools.kill({id})`.
+  // `sec` is required. Values above the built-in maximum of **300** are silently clamped to 300 (no error). After clamping, this call blocks until the process exits or the wait budget elapses. If it exits, `exit_code` is set and `output` holds the accumulated text (plus any truncation / spill notes). When the exit was a kill (`tools.kill` or the UI stop), the result also has `killed: true` and a `[process was killed]` note in `output`; a natural exit (including `exit_code: 1`) has neither. If the budget elapses and the process is still running, the call still resolves: `exit_code` stays `null` and `output` is the current snapshot — the job is not killed and is not promoted. Call `wait` again or `tools.kill({id})`.
   //
   // An `id` stays valid across later `run_code` calls in the same session while the job is registered (still running, or finished but not yet collected); a job that already exited inside `run`'s foreground window may be gone. An unknown `id`, or an id from another session, resolves `ok: false` with `reason: "not_found"`. Cancelling this wait rejects `cancelled` and does not kill the job. Example:
   // const job = await tools.run({command:"npm test"});
