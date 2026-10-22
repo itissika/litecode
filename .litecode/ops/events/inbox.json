@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-22T03:49:43.373Z",
+  "updated_at": "2026-10-22T05:24:55.367Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -8736,6 +8736,23 @@
           "WP-209"
         ],
         "target": "gm"
+      }
+    },
+    {
+      "id": "E-1792646695363-71300-watcher-restarted",
+      "ts": "2026-10-22T05:24:55.363Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.wp",
+      "wp": null,
+      "acked": [],
+      "summary": "wp_watch heartbeat 23m old (last heartbeat 2026-10-22T05:01:54.122Z); ops.wp triggered ensure/restart",
+      "meta": {
+        "target": "gm",
+        "ok": null,
+        "last_heartbeat_at": "2026-10-22T05:01:54.122Z",
+        "age_sec": 1381,
+        "old_pid": 19735,
+        "via": "ops.wp softEnsure"
       }
     }
   ],

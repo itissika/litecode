@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-22T03:53:53.582Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-22T05:24:55.362Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -225,6 +225,7 @@
 | WP-207 | 测试瘦身：删迁移期 gate/过时测，修 stack overflow 分类，全量 cargo test 绿 | done | backend_mid | gm |
 | WP-208 | 测试大幅瘦身：默认删除，只守关键模块核心链路（目标 ≤~1000） | done | backend_mid | gm |
 | WP-209 | run_code 模型视图整形：表格化/紧凑 JSON + token 预算 + 成功省略 logs | done | backend_mid | gm |
+| WP-210 | run_code 体验闭环 | drafting | backend_mid | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

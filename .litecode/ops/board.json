@@ -15901,6 +15901,36 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-210",
+      "domain": "team-ops",
+      "title": "run_code 体验闭环",
+      "result": "按 Andy 已定决策落地 A–K：失败保留部分结果、运行时异常行列栈、结构化截断、窄日志车道、保留 key 序、run 工具诚实结果（shell 身份/转码/stdout-stderr 分字段）、统一 ok 契约、read 降噪、只读 ls/stat/exists 与 LSP 暴露、websearch top_k/results[]、知识库失效引用清理；详见 brief.md",
+      "done_when": [
+        "approver close done"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-210",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 Andy 已定决策落地 A–K：失败保留部分结果、运行时异常行列栈、结构化截断、窄日志车道、保留 key 序、run 工具诚实结果（shell 身份/转码/stdout-stderr 分字段）、统一 ok 契约、read 降噪、只读 ls/stat/exists 与 LSP 暴露、websearch top_k/results[]、知识库失效引用清理；详见 brief.md",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T05:24:55.215Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 Andy 已定决策落地 A–K：失败保留部分结果、运行时异常行列栈、结构化截断、窄日志车道、保留 key 序、run 工具诚实结果（shell 身份/转码/stdout-stderr 分字段）、统一 ok 契约、read 降噪、只读 ls/stat/exists 与 LSP 暴露、websearch top_k/results[]、知识库失效引用清理；详见 brief.md"
+        }
+      ]
     }
   ],
   "pipelines": [
