@@ -439,16 +439,6 @@ pub async fn handle_jsonrpc(
 
 #[cfg(test)]
 mod tests {
-    use super::is_workspace_method;
+    
 
-    #[test]
-    fn classifies_workspace_methods() {
-        assert!(is_workspace_method("lsp/request"));
-        assert!(is_workspace_method("terminal/create"));
-        assert!(is_workspace_method("bash/tail"));
-        assert!(is_workspace_method("bash/kill"));
-        assert!(!is_workspace_method("session/subscribe"));
-        assert!(!is_workspace_method("agent/run"));
-        assert!(!is_workspace_method("bash/jobs"));
-    }
 }

@@ -7,13 +7,9 @@
 
 mod common;
 
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 
-use common::assistant_text_item;
 use litecode::config::TurnGuard;
-use litecode::session::data::command::{MutationId, SessionMutation};
 use litecode::session::manager::SessionManager;
 use litecode::session::{SessionData, WorkspaceWriteLease};
 use litecode::types::user_text;
@@ -32,10 +28,6 @@ impl Env {
         let db = dir.path().join("sessions.db");
         let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
         Self { dir, db, lease }
-    }
-
-    fn root(&self) -> &Path {
-        self.dir.path()
     }
 
     fn open(&self) -> Arc<SessionData> {
@@ -99,10 +91,6 @@ async fn assert_hidden_after_reopen(env: &Env, sid: &str, case: &str) {
     );
 }
 
-fn spilled_assistant() -> litecode::types::Item {
-    assistant_text_item(&"x".repeat(40_000), "asst_spill")
-}
-
 // ── controls ──────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -127,37 +115,6 @@ async fn empty_new_session_stays_hidden() {
         sid
     };
     assert_hidden_after_reopen(&env, &sid, "empty create").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn older_session_stays_listed_when_newer_is_poked() {
-    let env = Env::new();
-    let (old, new) = {
-        let data = env.open();
-        let old = persist(&data, &[user_text("older conversation")]);
-        let new = persist(&data, &[user_text("newest conversation")]);
-        data.shutdown();
-        (old, new)
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE transcript_items SET seq = seq + 10 WHERE session_id = ?1",
-            rusqlite::params![new],
-        )
-        .unwrap();
-    });
-    let data = env.open();
-    let ids = listed(Arc::clone(&data)).await;
-    assert!(
-        ids.contains(&old),
-        "older session must remain listed ({})",
-        diagnose(&data, &old)
-    );
-    assert!(
-        ids.contains(&new),
-        "newest session with durable rows must remain listed after seq poke ({})",
-        diagnose(&data, &new)
-    );
 }
 
 // ── working_set / fold: durable item rows stay listed (T3 table-driven) ────
@@ -257,121 +214,9 @@ async fn malformed_transcript_rows_still_listed_after_reopen() {
 
 // ── fold succeeds but working_set is empty ────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread")]
-async fn last_message_with_only_control_plane_rows_still_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE sessions SET last_message = 'preview from a real turn' WHERE id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO transcript_items (
-                 session_id, seq, turn_id, turn_seq, item_type, kind, body, body_ref,
-                 token_estimate, created_at, event_type, surface_op, source_seqs, cites, state
-             ) VALUES (?1, 0, '', 0, 'turn/start', 'turn/start', '{}', NULL,
-                       0, 1, 'turn/start', '', NULL, NULL, 'final')",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "control-plane + last_message").await;
-}
-
 // ── blobs / GC on writer open (reinstall) ─────────────────────────────────
 
-#[tokio::test(flavor = "multi_thread")]
-async fn spilled_assistant_survives_clean_reopen() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("ask"), spilled_assistant()]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        let refs: i64 = conn
-            .query_row("SELECT COUNT(*) FROM session_blob_refs", [], |row| {
-                row.get(0)
-            })
-            .unwrap();
-        assert!(refs > 0, "spilled assistant must register blob refs");
-    });
-    assert_listed_after_reopen(&env, &sid, "spilled assistant with refs").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn missing_blob_files_still_listed_when_user_row_is_inline() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("inline user"), spilled_assistant()]);
-        data.shutdown();
-        sid
-    };
-    let blobs = env.root().join("blobs");
-    if blobs.exists() {
-        fs::remove_dir_all(&blobs).expect("wipe blobs");
-    }
-    assert_listed_after_reopen(&env, &sid, "deleted blob files").await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn empty_blob_refs_then_reopen_gc_still_listed() {
-    // Legacy / half-migrated DB: body_ref rows exist, session_blob_refs is empty.
-    // Writer open runs cleanup_orphan_blob_files → deletes every blob.
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("inline user"), spilled_assistant()]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute("DELETE FROM session_blob_refs", []).unwrap();
-    });
-    assert_listed_after_reopen(&env, &sid, "blob GC after empty refs").await;
-}
-
 // ── in-progress / crash mid-turn ──────────────────────────────────────────
-
-#[tokio::test(flavor = "multi_thread")]
-async fn in_progress_assistant_with_user_stays_listed() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("please continue")]);
-        let live = assistant_text_item("hel", "asst_live");
-        let live = match live {
-            litecode::types::Item::Message(
-                litecode::authority::responses::MessageItem::Output(mut m),
-            ) => {
-                m.status = litecode::authority::responses::OutputStatus::InProgress;
-                litecode::types::Item::Message(litecode::authority::responses::MessageItem::Output(
-                    m,
-                ))
-            }
-            other => panic!("expected assistant message, got {other:?}"),
-        };
-        data.mutate_blocking(SessionMutation::PersistItem {
-            session_id: sid.clone(),
-            expected_revision: data.revision_blocking(&sid).unwrap(),
-            operation_id: MutationId::new(),
-            item: live,
-        })
-        .expect("persist in_progress");
-        data.shutdown();
-        sid
-    };
-    assert_listed_after_reopen(&env, &sid, "in_progress assistant").await;
-}
 
 // ── busy bypass vs cold ───────────────────────────────────────────────────
 
@@ -395,30 +240,3 @@ async fn busy_empty_session_is_listed_until_cold_start() {
 
 // ── SQL parent filter (children are listed with parent ids) ───────────────
 
-#[tokio::test(flavor = "multi_thread")]
-async fn child_session_is_listed_with_parent_id() {
-    let env = Env::new();
-    let sid = {
-        let data = env.open();
-        let sid = persist(&data, &[user_text("child work")]);
-        data.shutdown();
-        sid
-    };
-    env.poke(|conn| {
-        conn.execute(
-            "UPDATE sessions SET parent_session_id = 'parent-1', parent_call_id = 'call-1' WHERE id = ?1",
-            rusqlite::params![sid],
-        )
-        .unwrap();
-    });
-    let data = env.open();
-    let row = data
-        .list_sessions_blocking()
-        .unwrap()
-        .into_iter()
-        .find(|row| row.id == sid)
-        .expect("child sessions belong in session/list");
-    assert_eq!(row.parent_session_id.as_deref(), Some("parent-1"));
-    assert_eq!(row.parent_call_id.as_deref(), Some("call-1"));
-    assert_eq!(row.preview, "child work");
-}

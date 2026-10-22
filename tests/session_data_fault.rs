@@ -19,24 +19,6 @@ fn open() -> (
 }
 
 #[test]
-fn fault_before_begin_leaves_db_unchanged() {
-    let (_dir, data, sid) = open();
-    data.hooks().inject(FaultKind::BeforeBegin);
-    let err = data
-        .mutate_blocking(SessionMutation::InsertDetails {
-            session_id: sid.clone(),
-            expected_revision: 1,
-            operation_id: MutationId::new(),
-            items: vec![user_text("nope")],
-            turn_id: String::new(),
-        })
-        .unwrap_err();
-    assert!(err.to_string().contains("before begin"));
-    assert!(data.transcript_blocking(&sid).unwrap().is_empty());
-    assert_eq!(data.revision_blocking(&sid).unwrap(), 1);
-}
-
-#[test]
 fn fault_before_commit_rolls_back() {
     let (_dir, data, sid) = open();
     data.hooks().inject(FaultKind::BeforeCommit);

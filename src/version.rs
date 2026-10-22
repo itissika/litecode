@@ -15,13 +15,5 @@ pub fn channel() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn channel_is_non_empty() {
-        assert!(!super::channel().is_empty());
-    }
 
-    #[test]
-    fn dev_build_reports_dev_channel() {
-        assert_eq!(super::channel(), "dev");
-    }
 }

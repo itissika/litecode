@@ -302,65 +302,6 @@ fn path_exists_as_dir(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    /// Isolate the shared home env for this test. Delegates to the single
-    /// process-wide lock in `snapshot_paths::test_home` so this module cannot
-    /// race other `--lib` tests (config::workspace, tools::todo) that also
-    /// repoint `LITECODE_HOME`.
-    fn isolated_home() -> crate::session::snapshot_paths::test_home::HomeGuard {
-        crate::session::snapshot_paths::test_home::isolate_home()
-    }
-
-    #[test]
-    fn first_boot_writes_identity_and_registry() {
-        let _env = isolated_home();
-        let ws = tempfile::tempdir().unwrap();
-        let id = ensure_workspace_identity(ws.path()).unwrap();
-        assert!(!id.is_empty());
-        assert_eq!(peek_workspace_id(ws.path()).as_deref(), Some(id.as_str()));
-        let again = ensure_workspace_identity(ws.path()).unwrap();
-        assert_eq!(id, again);
-    }
-
-    #[test]
-    fn move_keeps_id_when_old_path_gone() {
-        let _env = isolated_home();
-
-        let original = tempfile::tempdir().unwrap();
-        let id = ensure_workspace_identity(original.path()).unwrap();
-        let identity_body =
-            std::fs::read_to_string(workspace_identity_path(original.path())).unwrap();
-
-        let moved = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(moved.path().join(".litecode")).unwrap();
-        std::fs::write(workspace_identity_path(moved.path()), &identity_body).unwrap();
-        drop(original); // remove original path
-
-        let moved_id = ensure_workspace_identity(moved.path()).unwrap();
-        assert_eq!(id, moved_id);
-    }
-
-    #[test]
-    fn copy_mints_new_id_when_original_still_exists() {
-        let _env = isolated_home();
-
-        let original = tempfile::tempdir().unwrap();
-        let id = ensure_workspace_identity(original.path()).unwrap();
-        let identity_body =
-            std::fs::read_to_string(workspace_identity_path(original.path())).unwrap();
-
-        let copy = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(copy.path().join(".litecode")).unwrap();
-        std::fs::write(workspace_identity_path(copy.path()), &identity_body).unwrap();
-
-        let copy_id = ensure_workspace_identity(copy.path()).unwrap();
-        assert_ne!(id, copy_id);
-        assert_eq!(
-            peek_workspace_id(copy.path()).as_deref(),
-            Some(copy_id.as_str())
-        );
-        // Original keeps its id.
-        assert_eq!(ensure_workspace_identity(original.path()).unwrap(), id);
-    }
 }

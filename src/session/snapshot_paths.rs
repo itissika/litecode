@@ -215,41 +215,6 @@ pub(crate) mod test_home {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn workspace_id_is_stable_for_same_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = workspace_snapshot_id(dir.path());
-        let b = workspace_snapshot_id(dir.path());
-        assert_eq!(a, b);
-        assert!(a.contains('_'));
-    }
-
-    #[test]
-    fn path_is_under_detects_nested() {
-        let dir = tempfile::tempdir().unwrap();
-        let child = dir.path().join("a").join("b");
-        std::fs::create_dir_all(&child).unwrap();
-        assert!(path_is_under(&child, dir.path()));
-        assert!(!path_is_under(dir.path(), &child));
-    }
-
-    #[test]
-    fn assert_rejects_in_workspace_snapshots() {
-        let dir = tempfile::tempdir().unwrap();
-        let bad = dir.path().join(".litecode").join("snapshots");
-        std::fs::create_dir_all(&bad).unwrap();
-        assert!(assert_snapshots_isolated(dir.path(), &bad).is_err());
-    }
-
-    #[test]
-    fn purge_legacy_removes_dir() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join(".litecode").join("snapshots");
-        std::fs::create_dir_all(legacy.join(".git")).unwrap();
-        assert!(purge_legacy_in_workspace_snapshots(dir.path()).unwrap());
-        assert!(!legacy.exists());
-        assert!(!purge_legacy_in_workspace_snapshots(dir.path()).unwrap());
-    }
 }

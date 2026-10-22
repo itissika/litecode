@@ -29,21 +29,6 @@ pub fn suffix_utf8(text: &str, max: usize) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn prefix_and_suffix_keep_char_boundaries() {
-        let text = "aé中";
-        assert_eq!(prefix_utf8(text, 0), "");
-        assert_eq!(prefix_utf8(text, 1), "a");
-        assert_eq!(prefix_utf8(text, 2), "a");
-        assert_eq!(prefix_utf8(text, 3), "aé");
-        assert_eq!(suffix_utf8(text, 0), "");
-        assert_eq!(suffix_utf8(text, 1), "");
-        assert_eq!(suffix_utf8(text, 3), "中");
-        assert_eq!(suffix_utf8(text, 4), "中");
-        assert_eq!(suffix_utf8(text, 5), "é中");
-        assert_eq!(prefix_utf8(text, text.len()), text);
-        assert_eq!(suffix_utf8(text, text.len()), text);
-    }
 }

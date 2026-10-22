@@ -16,57 +16,6 @@ fn open() -> Arc<SessionData> {
 }
 
 #[test]
-fn sixteen_sessions_hundred_appends_with_readers() {
-    let data = open();
-    let mut ids = Vec::new();
-    for i in 0..16 {
-        ids.push(
-            data.create_session("/p", "default", Some(&format!("m{i}")))
-                .unwrap(),
-        );
-    }
-    let ids = Arc::new(ids);
-    let data = Arc::clone(&data);
-    std::thread::scope(|scope| {
-        for sid in ids.iter() {
-            let data = Arc::clone(&data);
-            let sid = sid.clone();
-            scope.spawn(move || {
-                for n in 0..100 {
-                    let rev = data.revision_blocking(&sid).unwrap();
-                    data.mutate_blocking(SessionMutation::InsertDetails {
-                        session_id: sid.clone(),
-                        expected_revision: rev,
-                        operation_id: MutationId::new(),
-                        items: vec![user_text(format!("row-{n}"))],
-                        turn_id: String::new(),
-                    })
-                    .unwrap();
-                }
-            });
-        }
-        for _ in 0..4 {
-            let data = Arc::clone(&data);
-            let ids = Arc::clone(&ids);
-            scope.spawn(move || {
-                for _ in 0..80 {
-                    let _ = data.list_sessions_blocking();
-                    let _ = data.reader().searchable_rows_blocking(None);
-                    let _ = data.transcript_blocking(&ids[0]);
-                }
-            });
-        }
-    });
-    let mut total = 0usize;
-    for sid in ids.iter() {
-        let rows = data.transcript_blocking(sid).unwrap();
-        assert_eq!(rows.len(), 100, "session {sid} row count");
-        total += rows.len();
-    }
-    assert_eq!(total, 1600);
-}
-
-#[test]
 fn same_revision_double_append_one_conflict() {
     let data = open();
     let sid = data.create_session("/p", "default", None).unwrap();

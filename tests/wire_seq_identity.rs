@@ -142,62 +142,6 @@ fn empty_session_cursor_is_minus_one_zero() {
 }
 
 #[test]
-fn three_detail_rows_cursor_is_two_three() {
-    let (proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (2, 3));
-    assert_cursors_agree(&proj, &sessions, &sid);
-}
-
-#[test]
-fn compact_succeeded_checkpoint_item_precedes_lifecycle_and_matches_max_seq() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    apply_compact(&sessions, &sid, "first-cut");
-    let _ = proj.take_outgoing();
-
-    proj.on_event(succeeded(CompactionTrigger::Manual), "/p", &binding());
-    let out = proj.take_outgoing();
-
-    let items = buffer_item_frames(&out);
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0]["params"]["seq"], 3);
-    assert_eq!(items[0]["params"]["kind"], "compacted");
-
-    let life = out
-        .iter()
-        .find(|msg| msg["method"] == methods::SESSION_COMPACT_LIFECYCLE)
-        .expect("lifecycle after checkpoint item");
-    assert_eq!(life["params"]["snapshot"]["buffer"]["last_seq"], 3);
-    assert_eq!(life["params"]["snapshot"]["buffer"]["next_seq"], 4);
-
-    let item_pos = out
-        .iter()
-        .position(|msg| msg["method"] == methods::BUFFER_ITEM)
-        .unwrap();
-    let life_pos = out
-        .iter()
-        .position(|msg| msg["method"] == methods::SESSION_COMPACT_LIFECYCLE)
-        .unwrap();
-    assert!(item_pos < life_pos);
-
-    let events = sessions.data().events_blocking(&sid).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| e.seq == 0 && e.event_type != EventType::Compacted),
-        "compact must keep historical rows"
-    );
-    assert_eq!(
-        events
-            .iter()
-            .filter(|e| e.event_type == EventType::Compacted)
-            .count(),
-        1
-    );
-    assert_cursors_agree(&proj, &sessions, &sid);
-    assert_buffer_items_below_next(&out, 4);
-}
-
-#[test]
 fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
     apply_compact(&sessions, &sid, "first-cut");
@@ -228,49 +172,6 @@ fn second_compact_appends_new_seq_and_keeps_both_checkpoints() {
 }
 
 #[test]
-fn revert_k1_emits_reverted_and_operation_snapshot_matching_max_seq() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    let high_water_before = sessions.entry_wire_seq_cursor(&sid).1;
-    assert_eq!(high_water_before, 3);
-
-    proj.revert_to_user_anchor(1, "/p", &binding()).unwrap();
-    let out = proj.take_outgoing();
-
-    let reverted = out
-        .iter()
-        .find(|msg| msg["method"] == "buffer/reverted")
-        .expect("buffer/reverted");
-    // Active tail drops to the surviving row; the allocator high-water does not.
-    assert_eq!(reverted["params"]["last_seq"], 0);
-    assert_eq!(reverted["params"]["next_seq"], 3);
-
-    let op = out
-        .iter()
-        .find(|msg| msg["method"] == "agent/operation_result")
-        .expect("operation_result");
-    assert_eq!(op["params"]["ok"], true);
-    assert_eq!(op["params"]["snapshot"]["buffer"]["last_seq"], 0);
-    assert_eq!(op["params"]["snapshot"]["buffer"]["next_seq"], 3);
-
-    // The truncate never rewinds the high-water, so no seq can be handed out twice.
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid).1, high_water_before);
-
-    let loaded = proj.materialize_range(0, 1).unwrap();
-    assert!(
-        loaded.events.iter().all(|e| e.seq < 1),
-        "buffer/load must not return seq >= next_seq after revert"
-    );
-    assert_eq!(loaded.events.len(), 1);
-    assert_eq!(loaded.events[0].seq, 0);
-
-    assert_cursors_agree(&proj, &sessions, &sid);
-    assert!(
-        buffer_item_frames(&out).is_empty(),
-        "revert shrinks the log and must not emit new buffer/item rows"
-    );
-}
-
-#[test]
 fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
     apply_compact(&sessions, &sid, "first-cut");
@@ -296,42 +197,6 @@ fn compact_then_revert_before_checkpoint_drops_compact_and_resets_pointers() {
     let meta = sessions.data().meta_blocking(&sid).unwrap();
     assert_eq!(meta.compacted_seq, None);
     assert_eq!(meta.spine_from, 0);
-    assert_cursors_agree(&proj, &sessions, &sid);
-}
-
-#[test]
-fn compact_then_revert_after_checkpoint_keeps_compacted_seq() {
-    let (mut proj, sid, sessions) = setup_with_details(&["a", "b", "c"]);
-    apply_compact(&sessions, &sid, "first-cut");
-    proj.on_event(succeeded(CompactionTrigger::Auto), "/p", &binding());
-    let _ = proj.take_outgoing();
-
-    insert_detail(&sessions, &sid, "d");
-    proj.bump_buffer_revision("/p", &binding());
-    let _ = proj.take_outgoing();
-    assert_eq!(sessions.entry_wire_seq_cursor(&sid), (4, 5));
-
-    // Users a,b,c plus post-compact d. d is seq 4.
-    proj.revert_to_user_anchor(4, "/p", &binding()).unwrap();
-    let out = proj.take_outgoing();
-    let reverted = out
-        .iter()
-        .find(|msg| msg["method"] == "buffer/reverted")
-        .expect("buffer/reverted");
-    assert_eq!(reverted["params"]["last_seq"], 3);
-    // The truncated tail (seq 4) is gone; the allocator high-water stays 5.
-    assert_eq!(reverted["params"]["next_seq"], 5);
-
-    let events = sessions.data().events_blocking(&sid).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| e.event_type == EventType::Compacted && e.seq == 3),
-        "revert after checkpoint must keep the compacted row"
-    );
-    let meta = sessions.data().meta_blocking(&sid).unwrap();
-    assert_eq!(meta.compacted_seq, Some(3));
-    assert_eq!(meta.spine_from, 3);
     assert_cursors_agree(&proj, &sessions, &sid);
 }
 

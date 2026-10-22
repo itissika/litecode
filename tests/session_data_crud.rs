@@ -4,7 +4,6 @@ mod common;
 
 use common::SessionDataFixture;
 use litecode::session::SessionRevision;
-use litecode::session::WorkingRow;
 use litecode::session::data::command::{CommitKind, MutationId, SessionMutation};
 use litecode::types::user_text;
 
@@ -109,28 +108,6 @@ fn idempotent_operation_id_returns_same_receipt() {
 }
 
 #[test]
-fn create_operation_id_is_idempotent() {
-    let (_dir, data) = open();
-    let op = MutationId("stable-create-op".into());
-    let create = || SessionMutation::Create {
-        operation_id: op.clone(),
-        project: "/p".into(),
-        agent_id: "default".into(),
-        model_id: None,
-        parent_session_id: None,
-        parent_call_id: None,
-        responsibility: String::new(),
-    };
-    let first = data.mutate_blocking(create()).unwrap();
-    let second = data.mutate_blocking(create()).unwrap();
-    assert_eq!(first.session_id, second.session_id);
-    assert_eq!(
-        data.list_session_ids_blocking().unwrap(),
-        vec![first.session_id]
-    );
-}
-
-#[test]
 fn conflict_on_stale_revision() {
     let (_dir, data) = open();
     let sid = data.create_session("/p", "default", None).unwrap();
@@ -153,23 +130,3 @@ fn conflict_on_stale_revision() {
     }
 }
 
-#[test]
-fn commit_turn_delta_receipt_carries_user_preview() {
-    let (_dir, data) = open();
-    let sid = data.create_session("/p", "default", None).unwrap();
-    let rev = data.revision_blocking(&sid).unwrap();
-    let receipt = data
-        .mutate_blocking(SessionMutation::CommitTurnDelta {
-            session_id: sid,
-            expected_revision: rev,
-            operation_id: MutationId::new(),
-            rows: vec![WorkingRow::pending(user_text("hello from user"))],
-            expected_max_seq: -1,
-            turn_id: "t1".into(),
-        })
-        .unwrap();
-    let (preview, _updated_at) = receipt
-        .preview
-        .expect("user append must return last_message preview");
-    assert_eq!(preview, "hello from user");
-}

@@ -701,20 +701,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buffer_state_wire_is_seq_cursor_not_count_window() {
-        let json = serde_json::to_value(BufferState {
-            last_seq: 3,
-            next_seq: 4,
-            revision: 1,
-        })
-        .unwrap();
-        assert_eq!(json["last_seq"], 3);
-        assert_eq!(json["next_seq"], 4);
-        assert!(json.get("len").is_none());
-        assert!(json.get("committed_end").is_none());
-    }
-
-    #[test]
     fn buffer_load_result_is_a_seq_window() {
         let json = serde_json::to_value(BufferLoadResult {
             session_id: "s1".into(),

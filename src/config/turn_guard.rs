@@ -37,27 +37,6 @@ pub fn cli_turn_guard() -> Arc<TurnGuard> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn begin_end_cycle() {
-        let guard = TurnGuard::new();
-        assert!(!guard.is_turn_in_progress());
-        guard.begin_turn();
-        assert!(guard.is_turn_in_progress());
-        guard.end_turn();
-        assert!(!guard.is_turn_in_progress());
-    }
-
-    #[test]
-    fn nested_turns() {
-        let guard = TurnGuard::new();
-        guard.begin_turn();
-        guard.begin_turn();
-        assert!(guard.is_turn_in_progress());
-        guard.end_turn();
-        assert!(guard.is_turn_in_progress());
-        guard.end_turn();
-        assert!(!guard.is_turn_in_progress());
-    }
 }

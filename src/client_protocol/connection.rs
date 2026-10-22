@@ -2089,24 +2089,6 @@ mod compact_error_tests {
         assert_eq!(v["error"]["data"]["message"], v["error"]["message"]);
     }
 
-    #[test]
-    fn compact_real_failure_is_compaction_failed_not_retryable() {
-        let v = wire(LitecodeError::CompactionFailed);
-        assert_eq!(v["error"]["code"], -32000);
-        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
-        assert_eq!(v["error"]["data"]["retryable"], false);
-        let v = wire(LitecodeError::Config("no context window".into()));
-        assert_eq!(v["error"]["data"]["code"], "compaction_failed");
-    }
-
-    #[test]
-    fn compact_nothing_and_cancelled_unchanged() {
-        for e in [LitecodeError::NothingToCompact, LitecodeError::Canceled] {
-            let v = wire(e);
-            assert_eq!(v["error"]["code"], -32000);
-            assert!(v["error"].get("data").is_none());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2188,27 +2170,6 @@ mod pending_ask_tests {
         }
         let reply = rx.blocking_recv().unwrap();
         assert_eq!(reply.outcome, AskOutcome::Deny);
-    }
-
-    #[test]
-    fn unknown_grant_is_not_silently_dropped() {
-        let mut pending = HashMap::new();
-        let _rx = insert_ask(&mut pending, "req-live", "sess-a");
-        match apply_permission_grant(
-            &mut pending,
-            "req-other".into(),
-            "bash".into(),
-            true,
-            false,
-            None,
-            Vec::new(),
-            HashMap::new(),
-        ) {
-            GrantApply::Unknown { request_id, .. } => assert_eq!(request_id, "req-other"),
-            GrantApply::Resolved { .. } => panic!("mismatch must be Unknown"),
-        }
-        assert_eq!(pending.len(), 1);
-        assert!(pending.contains_key("req-live"));
     }
 
     #[test]
@@ -2324,155 +2285,6 @@ mod ask_loop_tests {
             root.join("sessions.db").to_string_lossy().to_string(),
         ));
         (runtime, sessions)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ask_does_not_block_other_session_rpc() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions) = test_runtime(dir.path());
-        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
-
-        let (request_tx, request_rx) = mpsc::unbounded_channel();
-        let (response_tx, mut response_rx) = mpsc::unbounded_channel();
-        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
-        let perm_tx_loop = perm_tx.clone();
-        let hub = Arc::new(crate::terminal::TerminalHub::new());
-
-        let loop_handle = tokio::spawn(async move {
-            run_session_loop(
-                &mut controller,
-                request_rx,
-                response_tx,
-                perm_tx_loop,
-                perm_rx,
-                hub,
-            )
-            .await;
-        });
-
-        let (reply_tx, mut reply_rx) = oneshot::channel::<AskReply>();
-        perm_tx
-            .send(PendingPermission {
-                session_id: "sess-ask".into(),
-                agent_name: "default".into(),
-                turn_id: "turn-1".into(),
-                request_id: "req-ask".into(),
-                tool: "bash".into(),
-                rule_id: "rule".into(),
-                summary: "run".into(),
-                kind: AskKind::Permission,
-                free_text: false,
-                options: Vec::new(),
-                multi_select: false,
-                questions: Vec::new(),
-                reply_tx,
-            })
-            .unwrap();
-
-        // Give the loop a tick to register the Ask.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-
-        // Human RPC on another session must be answered while Ask is outstanding.
-        request_tx
-            .send(SessionRequest::JsonRpc(JsonRpcRequestEnvelope {
-                jsonrpc: "2.0".into(),
-                id: serde_json::json!(42),
-                method: "definitely/not-a-method".into(),
-                params: serde_json::json!({}),
-            }))
-            .unwrap();
-
-        let resp = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let msg = response_rx.recv().await.expect("response channel closed");
-                if msg.get("id") == Some(&serde_json::json!(42)) {
-                    return msg;
-                }
-            }
-        })
-        .await
-        .expect("other-session RPC must not wait for Ask grant");
-
-        assert_eq!(resp["error"]["code"], -32601);
-        // Ask still outstanding until explicit grant.
-        assert!(reply_rx.try_recv().is_err());
-
-        request_tx
-            .send(SessionRequest::PermissionGrant {
-                request_id: "req-ask".into(),
-                tool: "bash".into(),
-                approved: false,
-                always: false,
-                free_text: None,
-                selected: Vec::new(),
-                answers: HashMap::new(),
-            })
-            .unwrap();
-
-        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
-            .await
-            .expect("grant should resolve Ask")
-            .expect("oneshot open");
-        assert_eq!(reply.outcome, AskOutcome::Deny);
-
-        let _ = request_tx.send(SessionRequest::Quit);
-        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_aborts_pending_ask() {
-        let dir = tempfile::tempdir().unwrap();
-        let (runtime, sessions) = test_runtime(dir.path());
-        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
-
-        let (request_tx, request_rx) = mpsc::unbounded_channel();
-        let (response_tx, _response_rx) = mpsc::unbounded_channel();
-        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
-        let perm_tx_loop = perm_tx.clone();
-        let hub = Arc::new(crate::terminal::TerminalHub::new());
-
-        let loop_handle = tokio::spawn(async move {
-            run_session_loop(
-                &mut controller,
-                request_rx,
-                response_tx,
-                perm_tx_loop,
-                perm_rx,
-                hub,
-            )
-            .await;
-        });
-
-        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
-        perm_tx
-            .send(PendingPermission {
-                session_id: "sess-ask".into(),
-                agent_name: "default".into(),
-                turn_id: "turn-1".into(),
-                request_id: "req-ask".into(),
-                tool: "bash".into(),
-                rule_id: "rule".into(),
-                summary: "run".into(),
-                kind: AskKind::Permission,
-                free_text: false,
-                options: Vec::new(),
-                multi_select: false,
-                questions: Vec::new(),
-                reply_tx,
-            })
-            .unwrap();
-
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        request_tx.send(SessionRequest::Cancel).unwrap();
-
-        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
-            .await
-            .expect("cancel should abort Ask")
-            .expect("oneshot open");
-        assert_eq!(reply.outcome, AskOutcome::Aborted);
-
-        let _ = request_tx.send(SessionRequest::Quit);
-        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

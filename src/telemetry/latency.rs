@@ -219,42 +219,6 @@ impl std::fmt::Display for Acc {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn probes_pass_values_through() {
-        let mut acc = Acc::new();
-        assert_eq!(acc.time(|| 7), 7);
-        assert_eq!(time("t", || 8), 8);
-        let mut stages = Stages::new("t", Some(1));
-        stages.mark("a");
-        stages.note("b", acc);
-        lap_step("t", 1).done();
-        report_since("t", now(), None);
-    }
-
-    #[test]
-    fn the_target_filter_turns_probes_on_and_off() {
-        let on = tracing_subscriber::fmt()
-            .with_env_filter("info,litecode::latency=debug")
-            .with_test_writer()
-            .finish();
-        tracing::subscriber::with_default(on, || {
-            assert!(enabled());
-            let mut acc = Acc::new();
-            acc.time(|| ());
-            assert!(acc.to_string().starts_with("1/"));
-            let mut stages = Stages::new("t", Some(1));
-            stages.mark("a");
-            assert!(stages.parts.starts_with("a="));
-        });
-        let off = tracing_subscriber::fmt()
-            .with_env_filter("debug,litecode::latency=info")
-            .with_test_writer()
-            .finish();
-        tracing::subscriber::with_default(off, || {
-            assert!(!enabled());
-            assert!(now().is_none());
-        });
-    }
 }

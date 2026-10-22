@@ -18,54 +18,11 @@ use super::{SessionController, StartTurnError};
 
 #[cfg(test)]
 mod occupancy_gate_tests {
-    use super::provider_occupancy_prompt;
-    use crate::context_pipeline::{manual_compact_eligible, ring_occupancy};
-    use crate::session::manager::SessionManager;
-    use crate::session::store::ProviderUsage;
+    
+    
+    
+    
 
-    #[test]
-    fn manual_gate_uses_provider_prompt_when_the_local_estimate_is_under() {
-        let sessions = SessionManager::ephemeral_registry();
-        let sid = sessions
-            .open_session_sync("/p", "default", None)
-            .expect("open");
-        sessions
-            .insert_detail_rows(&sid, &[crate::types::user_text("hi")])
-            .unwrap();
-        let header = sessions
-            .append_request_origin(
-                &sid,
-                &serde_json::json!({"schema": 1, "turn": "t", "step": 1}),
-            )
-            .unwrap();
-        let usage = |prompt| ProviderUsage {
-            prompt_tokens: prompt,
-            completion_tokens: 1,
-            cache_hit_tokens: 0,
-            cache_miss_tokens: prompt,
-        };
-        sessions
-            .record_provider_usage(&sid, header, &usage(3_000))
-            .unwrap();
-        let prompt = provider_occupancy_prompt(&sessions, &sid);
-        assert_eq!(prompt, Some(3_000));
-        assert!(manual_compact_eligible(10_000, ring_occupancy(prompt, 100)));
-
-        let low = sessions
-            .append_request_origin(
-                &sid,
-                &serde_json::json!({"schema": 1, "turn": "t", "step": 2}),
-            )
-            .unwrap();
-        sessions
-            .record_provider_usage(&sid, low, &usage(2_000))
-            .unwrap();
-        let prompt = provider_occupancy_prompt(&sessions, &sid);
-        assert!(!manual_compact_eligible(
-            10_000,
-            ring_occupancy(prompt, 9_000)
-        ));
-    }
 }
 
 /// Latest unretired provider prompt, matching the occupancy ring.

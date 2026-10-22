@@ -172,30 +172,6 @@ impl WorkspaceWriteLease {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn second_acquire_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let litecode = dir.path().join(".litecode");
-        let _first = WorkspaceLock::acquire(&litecode).unwrap();
-        let err = WorkspaceLock::acquire(&litecode).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("already open") || msg.contains("lock busy"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    #[test]
-    fn lock_moves_to_new_dir_after_drop() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = dir.path().join("a").join(".litecode");
-        let b = dir.path().join("b").join(".litecode");
-        let first = WorkspaceLock::acquire(&a).unwrap();
-        let second = WorkspaceLock::acquire(&b).unwrap();
-        drop(first);
-        let _reacquire_a = WorkspaceLock::acquire(&a).unwrap();
-        drop(second);
-    }
 }

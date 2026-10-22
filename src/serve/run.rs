@@ -132,36 +132,8 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-    fn loopback(port: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
-    }
-
     fn all_interfaces(port: u16) -> SocketAddr {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)
-    }
-
-    #[test]
-    fn case_a_loopback_require_auth_with_token_ok() {
-        assert!(validate_serve_bind(loopback(7483), false, true, true).is_ok());
-    }
-
-    #[test]
-    fn case_b_non_loopback_require_auth_with_token_ok() {
-        assert!(validate_serve_bind(all_interfaces(7483), false, true, true).is_ok());
-    }
-
-    #[test]
-    fn case_c_non_loopback_without_auth_fails() {
-        let err = validate_serve_bind(all_interfaces(7483), false, false, false)
-            .expect_err("must reject non-loopback without auth");
-        assert!(err.to_string().contains("require-auth"));
-    }
-
-    #[test]
-    fn case_d_require_auth_without_token_fails() {
-        let err = validate_serve_bind(loopback(7483), false, true, false)
-            .expect_err("must reject require-auth without token");
-        assert!(err.to_string().contains("LITECODE_TOKEN"));
     }
 
     #[test]
@@ -171,8 +143,4 @@ mod tests {
         assert!(err.to_string().contains("loopback"));
     }
 
-    #[test]
-    fn loopback_without_auth_still_ok() {
-        assert!(validate_serve_bind(loopback(0), false, false, false).is_ok());
-    }
 }

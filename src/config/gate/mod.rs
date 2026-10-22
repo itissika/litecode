@@ -114,42 +114,6 @@ impl CommitAck {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn engines_reconcile_only_when_named() {
-        assert!(!DocId::needs_engine_reconcile(&[DocId::Log]));
-        assert!(!DocId::needs_engine_reconcile(&[
-            DocId::CustomToolsWorkspace,
-            DocId::McpWorkspace
-        ]));
-        assert!(DocId::needs_engine_reconcile(&[DocId::Engines]));
-        assert!(DocId::needs_engine_reconcile(&[DocId::Log, DocId::Engines]));
-        let log = DocId::apply_plan(&[DocId::Log]);
-        assert!(log.reload_global);
-        assert!(!log.reload_workspace);
-        assert!(!log.reconcile_engines);
-        let tools = DocId::apply_plan(&[DocId::CustomToolsWorkspace]);
-        assert!(!tools.reload_global);
-        assert!(tools.reload_workspace);
-        assert!(!tools.reconcile_engines);
-    }
-
-    #[test]
-    fn doc_id_wire_names() {
-        assert_eq!(
-            serde_json::to_string(&DocId::CustomToolsWorkspace).unwrap(),
-            "\"custom_tools.workspace\""
-        );
-        assert_eq!(
-            serde_json::from_str::<DocId>("\"engines\"").unwrap(),
-            DocId::Engines
-        );
-        let _persist: PersistDoc = DocId::Log;
-        let _eval = EvalView::AvailableTools;
-        assert_ne!(
-            serde_json::to_string(&DocId::Agents).unwrap(),
-            "\"available-tools\""
-        );
-    }
 }

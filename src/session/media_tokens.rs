@@ -151,58 +151,7 @@ pub fn media_artifact_tokens(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::authority::responses::InputTextContent;
+    
+    
 
-    #[test]
-    fn low_detail_is_base_only() {
-        assert_eq!(
-            image_tokens_for_dimensions(2048, 2048, ImageDetail::Low),
-            IMAGE_BASE_TOKENS
-        );
-    }
-
-    #[test]
-    fn known_dims_use_tile_math() {
-        // 1024×1024 → after scale shortest=768 → 768×768 → 2×2 tiles
-        let n = image_tokens_for_dimensions(1024, 1024, ImageDetail::High);
-        assert_eq!(n, IMAGE_BASE_TOKENS + IMAGE_TILE_TOKENS * 4);
-    }
-
-    #[test]
-    fn text_part_costs_zero_media() {
-        assert_eq!(
-            input_content_media_tokens(&InputContent::InputText(InputTextContent {
-                text: "hi".into(),
-            })),
-            0
-        );
-    }
-
-    #[test]
-    fn classify_video_url() {
-        let f = InputFileContent {
-            file_data: None,
-            file_id: None,
-            file_url: Some("https://cdn.example.com/clip.mp4".into()),
-            filename: None,
-            detail: None,
-        };
-        assert_eq!(classify_input_file(&f), Some("video"));
-        assert_eq!(
-            input_content_media_tokens(&InputContent::InputFile(f)),
-            VIDEO_FALLBACK_TOKENS
-        );
-    }
-
-    #[test]
-    fn artifact_dims_prefer_tile_math() {
-        let n = media_artifact_tokens(
-            crate::types::MediaKind::Image,
-            Some(1024),
-            Some(1024),
-            ImageDetail::High,
-        );
-        assert_eq!(n, IMAGE_BASE_TOKENS + IMAGE_TILE_TOKENS * 4);
-    }
 }

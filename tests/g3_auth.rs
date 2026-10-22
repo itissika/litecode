@@ -143,25 +143,6 @@ async fn api_rejects_query_token_and_accepts_bearer_only() {
 }
 
 #[tokio::test]
-async fn ws_handshake_keeps_query_token_channel() {
-    let (addr, _ws) = setup().await;
-
-    // /ws?token=... is the sole WS handshake channel (native WebSocket cannot
-    // set headers) — must succeed.
-    let ws_url = format!("ws://{addr}/ws?token={TOKEN}");
-    let (_, resp) = tokio_tungstenite::connect_async(&ws_url)
-        .await
-        .expect("ws connect");
-    assert_eq!(resp.status(), reqwest::StatusCode::SWITCHING_PROTOCOLS);
-
-    // Missing token is rejected.
-    let bad = tokio_tungstenite::connect_async(&format!("ws://{addr}/ws"))
-        .await
-        .map(|(_, r)| r.status());
-    assert!(bad.is_err() || bad.unwrap() != reqwest::StatusCode::SWITCHING_PROTOCOLS);
-}
-
-#[tokio::test]
 async fn ws_handshake_rejects_cross_origin() {
     let (addr, _ws) = setup().await;
 

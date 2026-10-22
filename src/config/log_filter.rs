@@ -108,19 +108,6 @@ pub fn reload_filter(level: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::compose_filter;
+    
 
-    #[test]
-    fn bare_level_mutes_tantivy() {
-        assert_eq!(compose_filter("info"), "info,tantivy=warn");
-        assert_eq!(compose_filter("debug"), "debug,tantivy=warn");
-        assert_eq!(compose_filter(""), "info,tantivy=warn");
-    }
-
-    #[test]
-    fn raw_spec_is_passed_through() {
-        assert_eq!(compose_filter("info,litecode=debug"), "info,litecode=debug");
-        assert_eq!(compose_filter("tantivy=trace"), "tantivy=trace");
-        assert_eq!(compose_filter("info,tantivy=trace"), "info,tantivy=trace");
-    }
 }

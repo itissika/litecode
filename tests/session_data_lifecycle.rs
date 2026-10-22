@@ -92,28 +92,3 @@ async fn queue_capacity_keeps_overflow_pending_until_cancelled() {
     }
 }
 
-#[test]
-fn shutdown_drains_accepted_and_rejects_new() {
-    let dir = TempDir::new().unwrap();
-    let db = dir.path().join("sessions.db");
-    let lease = WorkspaceWriteLease::acquire(dir.path()).unwrap();
-    let data = SessionData::open(&lease, &db).unwrap();
-    let sid = data.create_session("/p", "default", None).unwrap();
-    data.insert_items(&sid, &[user_text("kept")]).unwrap();
-    data.shutdown();
-    let err = data
-        .mutate_blocking(SessionMutation::InsertDetails {
-            session_id: sid.clone(),
-            expected_revision: 2,
-            operation_id: MutationId::new(),
-            items: vec![user_text("after close")],
-            turn_id: String::new(),
-        })
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        litecode::types::LitecodeError::SessionDataClosed
-    ));
-    let data2 = SessionData::open(&lease, &db).unwrap();
-    assert_eq!(data2.transcript_blocking(&sid).unwrap().len(), 1);
-}

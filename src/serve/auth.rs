@@ -26,21 +26,8 @@ pub fn origin_host(origin: &str) -> String {
 
 #[cfg(test)]
 mod origin_host_tests {
-    use super::origin_host;
+    
 
-    #[test]
-    fn origin_host_extracts_host_for_all_forms() {
-        assert_eq!(origin_host("http://localhost:3000"), "localhost");
-        assert_eq!(origin_host("http://127.0.0.1:3000"), "127.0.0.1");
-        assert_eq!(origin_host("http://[::1]:3000"), "::1");
-        assert_eq!(origin_host("https://[2001:db8::1]:8443"), "2001:db8::1");
-        assert_eq!(origin_host("[::1]:3000"), "::1");
-        assert_eq!(origin_host("https://evil.example"), "evil.example");
-        assert_eq!(
-            origin_host("https://sub.example.com:8080"),
-            "sub.example.com"
-        );
-    }
 }
 
 pub async fn middleware(

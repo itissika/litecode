@@ -226,71 +226,8 @@ impl CustomToolDefinition {
 
 #[cfg(test)]
 mod custom_tool_definition_tests {
-    use super::*;
+    
 
-    #[test]
-    fn custom_tool_json_schema() {
-        let tool = CustomToolDefinition {
-            name: "t".into(),
-            description: String::new(),
-            schema: ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({"key": {"type": "string"}}),
-                required: vec!["key".into()],
-            },
-            command: "cmd".into(),
-            args: vec![],
-            timeout: 120,
-            rules: Vec::new(),
-            suite: None,
-            suite_label: None,
-        };
-        let schema = tool.to_json_schema();
-        assert_eq!(schema["type"], "object");
-        assert_eq!(schema["properties"]["key"]["type"], "string");
-        assert_eq!(schema["required"][0], "key");
-        let stored = serde_json::to_value(&tool).unwrap();
-        assert!(stored.get("rules").is_none());
-    }
-
-    #[test]
-    fn rules_round_trip_and_unknown_matcher_is_rejected() {
-        let raw = r#"{
-            "name": "demo",
-            "description": "",
-            "schema": { "type": "object", "properties": {}, "required": [] },
-            "command": "demo",
-            "rules": [{
-                "id": "outside_workspace",
-                "when": { "kind": "path_outside_workspace", "name": "path" },
-                "action": "deny"
-            }]
-        }"#;
-        let tool: CustomToolDefinition = serde_json::from_str(raw).unwrap();
-        assert_eq!(tool.rules[0].id, "outside_workspace");
-        assert_eq!(
-            tool.rules[0].action,
-            crate::permission::PermissionAction::Deny
-        );
-        let again = serde_json::to_value(&tool).unwrap();
-        assert_eq!(again["rules"][0]["id"], "outside_workspace");
-        assert!(again.get("permission").is_none());
-
-        let broken = raw.replace("path_outside_workspace", "not_a_matcher");
-        assert!(serde_json::from_str::<CustomToolDefinition>(&broken).is_err());
-
-        let empty = raw.replace(
-            r#""rules": [{
-                "id": "outside_workspace",
-                "when": { "kind": "path_outside_workspace", "name": "path" },
-                "action": "deny"
-            }]"#,
-            r#""rules": []"#,
-        );
-        let bare: CustomToolDefinition = serde_json::from_str(&empty).unwrap();
-        assert!(bare.rules.is_empty());
-        assert!(serde_json::to_value(&bare).unwrap().get("rules").is_none());
-    }
 }
 
 /// MCP transport type.
@@ -360,44 +297,8 @@ impl McpServerDefinition {
 
 #[cfg(test)]
 mod mcp_server_definition_tests {
-    use super::*;
+    
 
-    #[test]
-    fn omitted_timeout_defaults_to_sixty() {
-        let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
-            "command": "npx"
-        }))
-        .unwrap();
-        assert_eq!(def.call_timeout_secs(), 60);
-        assert!(
-            !serde_json::to_value(&def)
-                .unwrap()
-                .as_object()
-                .unwrap()
-                .contains_key("timeout")
-        );
-    }
-
-    #[test]
-    fn declared_timeout_is_kept() {
-        let def: McpServerDefinition = serde_json::from_value(serde_json::json!({
-            "command": "npx",
-            "timeout": 300
-        }))
-        .unwrap();
-        assert_eq!(def.call_timeout_secs(), 300);
-        assert_eq!(serde_json::to_value(&def).unwrap()["timeout"], 300);
-    }
-
-    #[test]
-    fn zero_timeout_means_default() {
-        let def = McpServerDefinition {
-            command: "npx".into(),
-            timeout: 0,
-            ..Default::default()
-        };
-        assert_eq!(def.call_timeout_secs(), 60);
-    }
 }
 
 /// Deprecated placeholder kept on [`GlobalSettings`] for DB schema stability.

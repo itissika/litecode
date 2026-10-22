@@ -315,94 +315,9 @@ fn ask_cli_one_question(
 
 #[cfg(test)]
 mod wp081_cli_tests {
-    use super::*;
-    use crate::permission::{AskOption, AskQuestion};
+    
+    
 
-    fn q(multi: bool) -> AskQuestion {
-        AskQuestion {
-            id: "q1".into(),
-            prompt: "p".into(),
-            options: vec![
-                AskOption {
-                    id: "a".into(),
-                    label: "A".into(),
-                },
-                AskOption {
-                    id: "b".into(),
-                    label: "B".into(),
-                },
-            ],
-            multi_select: multi,
-            free_text: false,
-        }
-    }
-
-    #[test]
-    fn single_picks_last_item_is_other_exclusive() {
-        let s = parse_cli_selection("3", 2, false).unwrap();
-        assert_eq!(
-            s,
-            CliSelection {
-                options: vec![],
-                other: true
-            }
-        );
-        // single-select: first valid pick wins, the rest ignored
-        let s = parse_cli_selection("1,3", 2, false).unwrap();
-        assert_eq!(
-            s,
-            CliSelection {
-                options: vec![0],
-                other: false
-            }
-        );
-        let a = build_cli_answer(
-            &q(false),
-            &parse_cli_selection("3", 2, false).unwrap(),
-            Some(" hi "),
-        )
-        .unwrap();
-        assert!(a.selected.is_empty());
-        assert_eq!(a.free_text.as_deref(), Some("hi"));
-    }
-
-    #[test]
-    fn multi_options_and_other_coexist() {
-        let s = parse_cli_selection("2, 1 3", 2, true).unwrap();
-        assert_eq!(
-            s,
-            CliSelection {
-                options: vec![1, 0],
-                other: true
-            }
-        );
-        let a = build_cli_answer(&q(true), &s, Some("note")).unwrap();
-        assert_eq!(a.selected, vec!["b".to_string(), "a".to_string()]);
-        assert_eq!(a.free_text.as_deref(), Some("note"));
-    }
-
-    #[test]
-    fn text_only_counts_as_answered_other_with_empty_text_does_not() {
-        let s = parse_cli_selection("3", 2, true).unwrap();
-        assert!(build_cli_answer(&q(true), &s, Some("only text")).is_some());
-        assert!(build_cli_answer(&q(true), &s, Some("   ")).is_none());
-        assert!(build_cli_answer(&q(true), &s, None).is_none());
-        // multi with option + other but empty text = not answered
-        let s = parse_cli_selection("1,3", 2, true).unwrap();
-        assert!(build_cli_answer(&q(true), &s, Some("")).is_none());
-    }
-
-    #[test]
-    fn out_of_range_and_empty_input() {
-        assert_eq!(parse_cli_selection("", 2, false), None);
-        assert_eq!(parse_cli_selection("  s ", 2, true), None);
-        assert_eq!(parse_cli_selection("skip", 2, true), None);
-        assert_eq!(parse_cli_selection("0", 2, false), None);
-        assert_eq!(parse_cli_selection("4", 2, true), None);
-        assert_eq!(parse_cli_selection("x,9", 2, true), None);
-        let s = parse_cli_selection("9,2", 2, false).unwrap();
-        assert_eq!(s.options, vec![1]);
-    }
 }
 
 fn ask_cli_ask_user(

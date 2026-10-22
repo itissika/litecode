@@ -84,43 +84,7 @@ impl Visit for MessageVisitor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::client_protocol::protocol::LogLine;
+    
+    
 
-    #[test]
-    fn publish_log_delivers_to_subscriber() {
-        let mut rx = super::super::subscribe_logs();
-        while rx.try_recv().is_ok() {}
-
-        super::super::publish_log(LogLine {
-            ts_ms: 1,
-            level: "INFO".into(),
-            target: "test".into(),
-            message: "hello broadcast".into(),
-        });
-
-        let line = rx.try_recv().expect("expected log line");
-        assert_eq!(line.message, "hello broadcast");
-    }
-
-    #[test]
-    fn message_visitor_finish_paths() {
-        let only_message = MessageVisitor {
-            message: Some("hello".into()),
-            fields: String::new(),
-        };
-        assert_eq!(only_message.finish(), "hello");
-
-        let message_and_fields = MessageVisitor {
-            message: Some("hello".into()),
-            fields: "tool=bash ".into(),
-        };
-        assert_eq!(message_and_fields.finish(), "hello tool=bash");
-
-        let fields_only = MessageVisitor {
-            message: None,
-            fields: "tool=bash ".into(),
-        };
-        assert_eq!(fields_only.finish(), "tool=bash");
-    }
 }

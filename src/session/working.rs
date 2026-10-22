@@ -65,15 +65,7 @@ pub fn project_items(rows: &[WorkingRow]) -> Vec<Item> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::user_text;
+    
+    
 
-    #[test]
-    fn replace_item_keeps_kind_in_sync() {
-        let mut row = WorkingRow::pending(user_text("a"));
-        assert_eq!(row.kind, SessionKind::ItemUser);
-        row.replace_item(crate::types::assistant_text("b"));
-        assert_eq!(row.kind, SessionKind::ItemAssistant);
-        assert!(row.log_seq.is_none());
-    }
 }

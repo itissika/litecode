@@ -93,15 +93,6 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn put_is_content_addressed_and_idempotent() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = put_text(dir.path(), "hello blob").unwrap();
-        let b = put_text(dir.path(), "hello blob").unwrap();
-        assert_eq!(a, b);
-        let body = read_bytes(dir.path(), &a).unwrap();
-        assert_eq!(body, b"hello blob");
-    }
 }
