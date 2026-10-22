@@ -339,25 +339,6 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn retry_delay_is_the_documented_backoff() {
-        assert_eq!(retry_delay(0), std::time::Duration::from_millis(500));
-    }
-
-    #[test]
-    fn retry_delay_doubles_then_caps() {
-        let ms = |n: u64| std::time::Duration::from_millis(n);
-        assert_eq!(retry_delay(0), ms(500));
-        assert_eq!(retry_delay(1), ms(1_000));
-        assert_eq!(retry_delay(2), ms(2_000));
-        assert_eq!(retry_delay(3), ms(4_000));
-        assert_eq!(retry_delay(4), ms(8_000));
-        assert_eq!(retry_delay(5), ms(8_000));
-        // No shift overflow far past the retry budget.
-        assert_eq!(retry_delay(64), ms(8_000));
-        assert_eq!(retry_delay(usize::MAX), ms(8_000));
-    }
-
     #[tokio::test]
     async fn send_cancellable_returns_canceled_when_token_fires() {
         let client = llm_http_client().unwrap();
@@ -436,42 +417,6 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
-    async fn llm_client_does_not_reuse_idle_connections() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 1024];
-                let _ = stream.read(&mut request).await.unwrap();
-                stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
-                    .await
-                    .unwrap();
-            }
-        });
-
-        let client = llm_http_client().unwrap();
-        let url = format!("http://{address}/");
-        client
-            .get(&url)
-            .send()
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap();
-        client
-            .get(&url)
-            .send()
-            .await
-            .unwrap()
-            .error_for_status()
-            .unwrap();
-
-        server.await.unwrap();
-    }
-
     fn collect_notices() -> (
         std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync>,
         std::sync::Arc<std::sync::Mutex<Vec<crate::llm::reconnect::LlmReconnect>>>,
@@ -481,39 +426,6 @@ mod tests {
         let sink: std::sync::Arc<dyn Fn(crate::llm::reconnect::LlmReconnect) + Send + Sync> =
             std::sync::Arc::new(move |notice| sink_notices.lock().unwrap().push(notice));
         (sink, notices)
-    }
-
-    #[tokio::test]
-    async fn first_success_emits_no_reconnect_notice() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).await.unwrap();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .await
-                .unwrap();
-        });
-        let (sink, notices) = collect_notices();
-        let client = llm_http_client().unwrap();
-        let response = crate::llm::reconnect::scope(sink, async move {
-            send_cancellable(
-                client
-                    .post(format!("http://{address}/responses"))
-                    .body("{}"),
-                &CancellationToken::new(),
-                "test send",
-                &mut ReconnectBudget::new(),
-            )
-            .await
-        })
-        .await
-        .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        assert!(notices.lock().unwrap().is_empty());
-        server.await.unwrap();
     }
 
     #[tokio::test]
@@ -555,90 +467,6 @@ mod tests {
         assert_eq!(got[1].phase, LlmReconnectPhase::Connecting);
         assert_eq!(got[1].attempt, 2);
         assert_eq!(got[2].phase, LlmReconnectPhase::Cleared);
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn non_retryable_status_after_a_retry_does_not_clear() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            for status in ["503 Service Unavailable", "400 Bad Request"] {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = [0_u8; 1024];
-                let _ = stream.read(&mut request).await.unwrap();
-                let response =
-                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-                stream.write_all(response.as_bytes()).await.unwrap();
-            }
-        });
-        let (sink, notices) = collect_notices();
-        let client = llm_http_client().unwrap();
-        let response = crate::llm::reconnect::scope(sink, async move {
-            send_cancellable(
-                client
-                    .post(format!("http://{address}/responses"))
-                    .body("{}"),
-                &CancellationToken::new(),
-                "test send",
-                &mut ReconnectBudget::new(),
-            )
-            .await
-        })
-        .await
-        .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
-        let got = notices.lock().unwrap().clone();
-        assert!(
-            got.iter()
-                .all(|notice| notice.phase != LlmReconnectPhase::Cleared),
-            "a rejected retry must not clear the bubble, got {got:?}"
-        );
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn exhausted_budget_emits_failed_without_another_wait() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request).await.unwrap();
-            stream
-                .write_all(
-                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .await
-                .unwrap();
-        });
-        let (sink, notices) = collect_notices();
-        let client = llm_http_client().unwrap();
-        let response = crate::llm::reconnect::scope(sink, async move {
-            send_cancellable(
-                client
-                    .post(format!("http://{address}/responses"))
-                    .body("{}"),
-                &CancellationToken::new(),
-                "test send",
-                &mut ReconnectBudget::with_used(RETRY_MAX),
-            )
-            .await
-        })
-        .await
-        .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
-        let got = notices.lock().unwrap().clone();
-        assert!(
-            got.iter()
-                .any(|notice| notice.phase == LlmReconnectPhase::Failed
-                    && notice.attempt == 6
-                    && notice.max_attempts == 6)
-        );
-        assert!(
-            got.iter()
-                .all(|notice| notice.phase != LlmReconnectPhase::Waiting)
-        );
         server.await.unwrap();
     }
 

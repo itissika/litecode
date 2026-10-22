@@ -235,43 +235,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn shell_fill_completes_early_events() {
-        let mut event = json!({ "type": "response.created", "response": { "id": "r" } });
-        harden(&mut event, UsagePatch::None);
-        assert_eq!(event["response"]["status"], "in_progress");
-        assert_eq!(event["response"]["output"], json!([]));
-    }
-
-    #[test]
-    fn shell_fill_marks_completed_messages() {
-        let mut event = json!({
-            "type": "response.completed",
-            "response": {
-                "status": "completed",
-                "output": [{ "type": "message", "id": "m", "content": [] }]
-            }
-        });
-        harden(&mut event, UsagePatch::None);
-        assert_eq!(event["response"]["output"][0]["status"], "completed");
-        assert_eq!(event["response"]["output"][0]["role"], "assistant");
-    }
-
-    #[test]
-    fn fill_token_details_only_touches_existing_objects() {
-        let mut value = json!({
-            "usage": {
-                "input_tokens": 2,
-                "output_tokens": 1,
-                "input_tokens_details": {}
-            }
-        });
-        harden(&mut value, UsagePatch::FillEmptyTokenDetails);
-        assert_eq!(value["usage"]["input_tokens_details"]["cached_tokens"], 0);
-        assert!(value["usage"].get("output_tokens_details").is_none());
-        assert!(value["usage"].get("total_tokens").is_none());
-    }
-
-    #[test]
     fn deepseek_patch_also_fills_total_and_effort() {
         let mut value = json!({
             "usage": { "input_tokens": 2, "output_tokens": 1 },

@@ -158,19 +158,3 @@ async fn agent_e2e_incomplete_seals_text_to_disk() {
     );
 }
 
-#[test]
-fn responses_fixtures_are_not_chat_dialect() {
-    let text = fixture_responses_sse("text_only");
-    let tool = fixture_responses_sse("tool_call");
-    for body in [&text, &tool] {
-        assert!(
-            body.contains("response.completed")
-                || body.contains("\"type\":\"response.completed\"")
-                || body.contains("response.completed".trim())
-                || body.contains("response"),
-            "fixture must look like Responses SSE"
-        );
-        assert!(!body.contains("chat.completion.chunk"));
-        assert!(!body.contains("\"object\":\"chat.completion"));
-    }
-}

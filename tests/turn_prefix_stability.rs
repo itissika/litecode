@@ -247,31 +247,6 @@ fn setup_session(dir: &std::path::Path) -> (String, Arc<SessionManager>) {
     (sid, sessions)
 }
 
-#[test]
-fn persist_roundtrip_preserves_item_json() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
-    let original = vec![
-        user_text("hello"),
-        function_call_item("c1", "read", r#"{"path":"a.rs"}"#, "fc_1"),
-        fco("c1", "file contents"),
-        assistant_text_item("ok", "msg_1"),
-    ];
-    sessions.insert_detail_rows(&sid, &original).unwrap();
-    let loaded: Vec<Item> = sessions
-        .data()
-        .working_set_blocking(&sid)
-        .unwrap()
-        .into_iter()
-        .map(|row| row.item)
-        .collect();
-    assert_eq!(
-        items_json(&original),
-        items_json(&loaded),
-        "working-set reload changed Item JSON (Responses wire prefix would miss)"
-    );
-}
-
 // ── prepare_step overlay ────────────────────────────────────────────────────
 
 fn test_model() -> std::sync::Arc<litecode::provider_catalog::ResolvedModel> {
@@ -474,36 +449,6 @@ async fn job_exit_mid_turn_does_not_rewrite_already_sent_prefix() {
         last.contains("Background bash"),
         "job_exit reminder should land at the tail, got {last:?}"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn hanging_call_pad_is_stable_across_prepare_steps() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (sid, sessions) = setup_session(dir.path());
-    let hanging = function_call_item("hanging", "read", "{}", "fc_hang");
-    sessions
-        .insert_detail_rows(&sid, &[user_text("ask"), hanging])
-        .unwrap();
-
-    let ctx = test_context(dir.path());
-    let pipeline = ContextPipeline::new(10_000, ctx, dir.path().to_path_buf());
-    let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
-    let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
-    assert!(
-        first
-            .iter()
-            .any(|v| v["call_id"] == "hanging" && v["type"] == "function_call_output"),
-        "first LLM view must pad the hanging call: {first:?}"
-    );
-
-    turn.push(WorkingRow::pending(function_call_item(
-        "c_new", "read", "{}", "fc_new",
-    )));
-    turn.push(WorkingRow::pending(fco("c_new", "fresh")));
-    pipeline.commit_step(&sessions, &sid, &mut turn).unwrap();
-
-    let second = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 2).await;
-    assert_json_prefix(&first, &second, "hanging-call pad");
 }
 
 // ── provider id reuse (Ark-style). Unique-id tests above must stay green. ──

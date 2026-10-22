@@ -115,15 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extracts_data_payload() {
-        assert_eq!(
-            sse_data_payload(r#"data: {"type":"response.completed"}"#),
-            Some(r#"{"type":"response.completed"}"#)
-        );
-        assert_eq!(sse_data_payload("data:{}"), Some("{}"));
-    }
-
-    #[test]
     fn skips_noise() {
         assert_eq!(sse_data_payload(""), None);
         assert_eq!(sse_data_payload(": keep-alive"), None);

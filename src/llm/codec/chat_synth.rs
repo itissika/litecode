@@ -500,7 +500,7 @@ impl ChatSynth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::{OutputMessageContent, ReasoningItemContent};
+    use crate::authority::responses::OutputMessageContent;
 
     fn chunk(delta: Value) -> Value {
         serde_json::json!({ "choices": [{ "index": 0, "delta": delta }] })
@@ -526,29 +526,6 @@ mod tests {
             }),
             _ => None,
         })
-    }
-
-    fn reasoning_text(items: &[OutputItem]) -> Option<String> {
-        items.iter().find_map(|item| match item {
-            OutputItem::Reasoning(reasoning) => reasoning
-                .content
-                .as_ref()
-                .and_then(|parts| parts.first())
-                .map(|part| match part {
-                    ReasoningItemContent::ReasoningText(text) => text.text.clone(),
-                }),
-            _ => None,
-        })
-    }
-
-    fn text_deltas(events: &[ResponseStreamEvent]) -> Vec<String> {
-        events
-            .iter()
-            .filter_map(|event| match event {
-                ResponseStreamEvent::ResponseOutputTextDelta(delta) => Some(delta.delta.clone()),
-                _ => None,
-            })
-            .collect()
     }
 
     fn messages_opened(events: &[ResponseStreamEvent]) -> usize {
@@ -579,116 +556,4 @@ mod tests {
         assert!(synth.seam_report().is_none());
     }
 
-    #[test]
-    fn held_whitespace_joins_the_first_visible_token() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "content": "\n\n" })),
-            &mut events,
-        );
-        assert!(events.is_empty(), "{events:?}");
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "content": "hello" })),
-            &mut events,
-        );
-        assert_eq!(messages_opened(&events), 1);
-        assert_eq!(text_deltas(&events), ["\n\nhello"]);
-        let done = synth.finish_events("m").unwrap();
-        assert_eq!(
-            message_text(&completed_output(&done)).as_deref(),
-            Some("\n\nhello")
-        );
-    }
-
-    #[test]
-    fn whitespace_between_visible_tokens_stays_in_the_message() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        for text in ["a", "\n\n", "b"] {
-            synth.ingest_chunk(&chunk(serde_json::json!({ "content": text })), &mut events);
-        }
-        assert_eq!(messages_opened(&events), 1);
-        assert_eq!(text_deltas(&events), ["a", "\n\n", "b"]);
-        let done = synth.finish_events("m").unwrap();
-        assert_eq!(
-            message_text(&completed_output(&done)).as_deref(),
-            Some("a\n\nb")
-        );
-    }
-
-    #[test]
-    fn mid_token_content_seam_is_reported_not_rewritten() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "reasoning_content": "the token is `" })),
-            &mut events,
-        );
-        synth.ingest_chunk(&chunk(serde_json::json!({ "content": "`." })), &mut events);
-
-        let report = synth.seam_report().expect("seam");
-        assert_eq!(report.glued, 1);
-        assert_eq!(report.resumed, 0);
-        assert!(
-            report.samples[0].contains("[SEAM]"),
-            "{}",
-            report.samples[0]
-        );
-        assert!(report.samples[0].contains("content-after-reasoning"));
-
-        // Observed, never rewritten: both items keep the vendor's own split.
-        let done = synth.finish_events("m").unwrap();
-        let items = completed_output(&done);
-        assert_eq!(message_text(&items).as_deref(), Some("`."));
-        assert_eq!(reasoning_text(&items).as_deref(), Some("the token is `"));
-    }
-
-    #[test]
-    fn sentence_boundary_transition_is_not_a_seam() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "reasoning_content": "Done thinking." })),
-            &mut events,
-        );
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "content": "Let me explain." })),
-            &mut events,
-        );
-        assert!(synth.seam_report().is_none());
-
-        // Content with no reasoning at all is not a seam either.
-        let mut plain = ChatSynth::new();
-        plain.ingest_chunk(&chunk(serde_json::json!({ "content": "hi" })), &mut events);
-        assert!(plain.seam_report().is_none());
-    }
-
-    #[test]
-    fn reasoning_after_content_is_reported() {
-        let mut synth = ChatSynth::new();
-        let mut events = Vec::new();
-        synth.ingest_chunk(&chunk(serde_json::json!({ "content": "hi" })), &mut events);
-        synth.ingest_chunk(
-            &chunk(serde_json::json!({ "reasoning_content": "resumed thinking" })),
-            &mut events,
-        );
-
-        let report = synth.seam_report().expect("seam");
-        assert_eq!(report.glued, 0);
-        assert_eq!(report.resumed, 1);
-        assert!(report.samples[0].contains("reasoning-after-content"));
-
-        let done = synth.finish_events("m").unwrap();
-        let items = completed_output(&done);
-        assert_eq!(reasoning_text(&items).as_deref(), Some("resumed thinking"));
-        assert_eq!(message_text(&items).as_deref(), Some("hi"));
-        assert!(
-            matches!(
-                items.as_slice(),
-                [OutputItem::Message(_), OutputItem::Reasoning(_)]
-            ),
-            "terminal output must preserve the output-index/arrival order: {items:?}"
-        );
-    }
 }

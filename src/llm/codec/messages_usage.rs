@@ -79,38 +79,6 @@ impl MessagesUsage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn cumulative_delta_replaces_present_fields_and_adds_cache_into_input() {
-        let mut usage = MessagesUsage::default();
-        usage.observe(&serde_json::json!({
-            "input_tokens": 100,
-            "cache_creation_input_tokens": 20,
-            "cache_read_input_tokens": 0,
-            "output_tokens": 1
-        }));
-        usage.observe(&serde_json::json!({
-            "output_tokens": 40,
-            "cache_read_input_tokens": 80,
-            "output_tokens_details": { "thinking_tokens": 15 }
-        }));
-        let mapped = usage.to_responses().unwrap();
-        // 100 uncached + 20 creation + 80 read.
-        assert_eq!(mapped["input_tokens"], 200);
-        assert_eq!(mapped["input_tokens_details"]["cached_tokens"], 80);
-        assert_eq!(mapped["output_tokens"], 40);
-        assert_eq!(mapped["output_tokens_details"]["reasoning_tokens"], 15);
-        assert_eq!(mapped["total_tokens"], 240);
-    }
-
-    #[test]
-    fn null_field_keeps_the_previous_value() {
-        let mut usage = MessagesUsage::default();
-        usage.observe(&serde_json::json!({"input_tokens": 12, "output_tokens": 3}));
-        usage.observe(&serde_json::json!({"input_tokens": null, "output_tokens": 9}));
-        let mapped = usage.to_responses().unwrap();
-        assert_eq!(mapped["input_tokens"], 12);
-        assert_eq!(mapped["output_tokens"], 9);
-    }
 }

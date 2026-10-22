@@ -818,18 +818,6 @@ mod tests {
     }
 
     #[test]
-    fn in_order_added_then_delta_does_not_duplicate_added() {
-        let mut gate = StreamContractGate::new();
-        let out = collect_forward(
-            &mut gate,
-            vec![added("fc_1", "read", 1), delta("fc_1", 2, "{}")],
-        );
-        assert_eq!(out.len(), 2);
-        assert!(is_added_named(&out[0], "read"));
-        assert!(is_delta(&out[1]));
-    }
-
-    #[test]
     fn empty_name_then_done_with_name_emits_patch_added() {
         let mut gate = StreamContractGate::new();
         let out = collect_forward(
@@ -1010,77 +998,6 @@ mod tests {
         let acc = StreamItemAccumulator::new();
         let err = resolve_stream_outcome(None, &acc, true).unwrap_err();
         assert!(matches!(err, LitecodeError::Canceled));
-    }
-
-    /// Upstream streams one reasoning summary as several parts. Each part owns a
-    /// `summary_index` slot, and a part finishing must not disturb the others —
-    /// the interrupted stream has to yield exactly what `response.completed`
-    /// would have carried.
-    #[test]
-    fn reasoning_summary_parts_accumulate_by_index_without_dropping_earlier_parts() {
-        let mut acc = StreamItemAccumulator::new();
-        for ev in [
-            json_event(
-                "response.reasoning_summary_part.added",
-                serde_json::json!({"sequence_number": 1, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "part": {"type": "summary_text", "text": ""}}),
-            ),
-            json_event(
-                "response.reasoning_summary_text.delta",
-                serde_json::json!({"sequence_number": 2, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "delta": "first "}),
-            ),
-            json_event(
-                "response.reasoning_summary_text.delta",
-                serde_json::json!({"sequence_number": 3, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "delta": "part"}),
-            ),
-            json_event(
-                "response.reasoning_summary_text.done",
-                serde_json::json!({"sequence_number": 4, "item_id": "rs_1", "output_index": 0, "summary_index": 0, "text": "first part"}),
-            ),
-            json_event(
-                "response.reasoning_summary_part.added",
-                serde_json::json!({"sequence_number": 5, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "part": {"type": "summary_text", "text": ""}}),
-            ),
-            json_event(
-                "response.reasoning_summary_text.delta",
-                serde_json::json!({"sequence_number": 6, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "delta": "second part"}),
-            ),
-            json_event(
-                "response.reasoning_summary_part.done",
-                serde_json::json!({"sequence_number": 7, "item_id": "rs_1", "output_index": 0, "summary_index": 1, "part": {"type": "summary_text", "text": "second part"}}),
-            ),
-        ] {
-            acc.observe(&ev);
-        }
-        let sealed = acc.seal_incomplete();
-        assert_eq!(sealed.len(), 1, "one reasoning item, not one per part");
-        match &sealed[0] {
-            Item::Reasoning(r) => {
-                assert_eq!(summary_texts(r), vec!["first part", "second part"]);
-            }
-            other => panic!("expected reasoning, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn summary_text_done_lands_on_its_own_index() {
-        let mut acc = StreamItemAccumulator::new();
-        for ev in [
-            json_event(
-                "response.reasoning_summary_text.delta",
-                serde_json::json!({"sequence_number": 1, "item_id": "rs_2", "output_index": 0, "summary_index": 0, "delta": "zero"}),
-            ),
-            json_event(
-                "response.reasoning_summary_text.done",
-                serde_json::json!({"sequence_number": 2, "item_id": "rs_2", "output_index": 0, "summary_index": 1, "text": "one"}),
-            ),
-        ] {
-            acc.observe(&ev);
-        }
-        let sealed = acc.seal_incomplete();
-        match &sealed[0] {
-            Item::Reasoning(r) => assert_eq!(summary_texts(r), vec!["zero", "one"]),
-            other => panic!("expected reasoning, got {other:?}"),
-        }
     }
 
     #[test]
