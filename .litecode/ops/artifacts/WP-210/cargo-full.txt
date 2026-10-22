@@ -1,0 +1,122 @@
+# cargo test -j 2 --no-fail-fast @ 3d5ebbe (code tip; ops commits after this touch no code) — 2026-10-22 13:54:28 HKT
+# total: 846 passed, 0 failed, 0 ignored; flaky reruns: none
+     Running unittests src/lib.rs (target/debug/deps/litecode-514c8c9992a54d9d)
+test result: ok. 559 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 27.06s
+     Running unittests src/main.rs (target/debug/deps/litecode-44037ca61c5bfa4f)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/agent_e2e_responses.rs (target/debug/deps/agent_e2e_responses-6152ed2c5103e817)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+     Running tests/agent_loop.rs (target/debug/deps/agent_loop-b5be6b776cdad840)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/architecture_layers.rs (target/debug/deps/architecture_layers-a86a417f828d5d51)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/client_protocol_permission.rs (target/debug/deps/client_protocol_permission-a6349ddb37f244d6)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+     Running tests/client_protocol_project.rs (target/debug/deps/client_protocol_project-e510ce703954ed90)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/client_protocol_telemetry.rs (target/debug/deps/client_protocol_telemetry-1af95be540ef1e2d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/code_index_tick_death_list.rs (target/debug/deps/code_index_tick_death_list-54bccbb95a609814)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/code_search_ipc.rs (target/debug/deps/code_search_ipc-eaef3c8e925433c8)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+     Running tests/code_surface.rs (target/debug/deps/code_surface-9d6a728c3807ad42)
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.03s
+     Running tests/code_tool_runtime.rs (target/debug/deps/code_tool_runtime-49febae67dba3815)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/compact_failure_calibers.rs (target/debug/deps/compact_failure_calibers-46e8f6b108f48904)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/f2_lock_scope.rs (target/debug/deps/f2_lock_scope-8a55555a8efa95d2)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+     Running tests/g3_auth.rs (target/debug/deps/g3_auth-53daf46057035f40)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+     Running tests/global_db_seed.rs (target/debug/deps/global_db_seed-be1a1366266ee2d3)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/issue_032_changed_files_restore.rs (target/debug/deps/issue_032_changed_files_restore-e9e5e9965a1bab93)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+     Running tests/manual_compact_e2e.rs (target/debug/deps/manual_compact_e2e-2afadbd972aaa087)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.61s
+     Running tests/mcp_integration.rs (target/debug/deps/mcp_integration-36e0e5ae2c2687e1)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.03s
+     Running tests/optional_code_search.rs (target/debug/deps/optional_code_search-2951e698fa257b1f)
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+     Running tests/optional_lsp.rs (target/debug/deps/optional_lsp-95ee9e32fc3d7ea0)
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 17.07s
+     Running tests/optional_p0.rs (target/debug/deps/optional_p0-bed6bf95d1ebe835)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/pending_messages.rs (target/debug/deps/pending_messages-5d5c1c5dcd8b0313)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.52s
+     Running tests/permission_pipeline.rs (target/debug/deps/permission_pipeline-55a46b283d3b4795)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+     Running tests/run_code_model_view.rs (target/debug/deps/run_code_model_view-16b8216c7d14092d)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.50s
+     Running tests/serve_bind_auth.rs (target/debug/deps/serve_bind_auth-e0898c62fd160cbe)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/session_data_bootstrap.rs (target/debug/deps/session_data_bootstrap-5a97b1f05430a895)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/session_data_concurrency.rs (target/debug/deps/session_data_concurrency-d017855d60255f0f)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+     Running tests/session_data_consistency.rs (target/debug/deps/session_data_consistency-27c5e33ba0a19fb1)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+     Running tests/session_data_crud.rs (target/debug/deps/session_data_crud-b4e41ce0b6b9775d)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+     Running tests/session_data_fault.rs (target/debug/deps/session_data_fault-973985ad87a27ade)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+     Running tests/session_data_lifecycle.rs (target/debug/deps/session_data_lifecycle-0ec1cb0f94bb46a1)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+     Running tests/session_data_sql_death_list.rs (target/debug/deps/session_data_sql_death_list-3352f718ca888c2d)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/session_delete.rs (target/debug/deps/session_delete-8ff4111404e06f91)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+     Running tests/session_list_empty_filter.rs (target/debug/deps/session_list_empty_filter-b21afbab35690c29)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+     Running tests/session_transcript.rs (target/debug/deps/session_transcript-e25f276f7e005656)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/session_turn_entry.rs (target/debug/deps/session_turn_entry-0c58f0581cf2b19a)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/settings_api.rs (target/debug/deps/settings_api-6d7b2cadb09f9b38)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+     Running tests/stage_a_ctx_consistency.rs (target/debug/deps/stage_a_ctx_consistency-9cbb195e82fa613d)
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running tests/startup_order_death_list.rs (target/debug/deps/startup_order_death_list-b3a3503f2c801815)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/subagent_child_turn_contract.rs (target/debug/deps/subagent_child_turn_contract-410dd9357bb61955)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+     Running tests/subagent_send.rs (target/debug/deps/subagent_send-88eb61772a15de2e)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+     Running tests/subagent_session_isolation.rs (target/debug/deps/subagent_session_isolation-aa4b615585e2f34e)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+     Running tests/subagent_tool_pipeline.rs (target/debug/deps/subagent_tool_pipeline-133eb83067ac6014)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+     Running tests/subscribe_bash_hydration.rs (target/debug/deps/subscribe_bash_hydration-d2bfc410b9203538)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/terminal_bypass_death_list.rs (target/debug/deps/terminal_bypass_death_list-09f89e068b856966)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/terminal_pty_contract.rs (target/debug/deps/terminal_pty_contract-b8d8f5420d1c4607)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/terminal_ws_isolation.rs (target/debug/deps/terminal_ws_isolation-78a2f2d8939b5319)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.80s
+     Running tests/turn_prefix_stability.rs (target/debug/deps/turn_prefix_stability-003a3da85861695d)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+     Running tests/wire_seq_identity.rs (target/debug/deps/wire_seq_identity-a738e3489b954055)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.27s
+     Running tests/working_set_identity.rs (target/debug/deps/working_set_identity-c48bfed4087523a5)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+     Running tests/workspace_api.rs (target/debug/deps/workspace_api-7ed4eb4a14168ec8)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.85s
+     Running tests/workspace_path_consumer.rs (target/debug/deps/workspace_path_consumer-57a5000625944f63)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/workspace_path_death_list.rs (target/debug/deps/workspace_path_death_list-b11e40b67f92050a)
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/workspace_path_lap.rs (target/debug/deps/workspace_path_lap-de7bdf0e20e80ced)
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+     Running tests/workspace_process_contract.rs (target/debug/deps/workspace_process_contract-38c5ea42183c4df3)
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+     Running tests/wp028_probe_s1_xdev_move.rs (target/debug/deps/wp028_probe_s1_xdev_move-129c5880f25f9ed9)
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/wp028_probe_s2_create_race.rs (target/debug/deps/wp028_probe_s2_create_race-99c299e4036c4d03)
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+     Running tests/wp098_follow_up_queue.rs (target/debug/deps/wp098_follow_up_queue-1967d591af379330)
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+   Doc-tests litecode
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

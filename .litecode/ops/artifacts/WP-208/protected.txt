@@ -424,7 +424,7 @@ src/tools/code/render.rs::notice_appears_only_when_over_budget
 src/tools/code/render.rs::other_values_are_compact_json_and_strings_verbatim
 src/tools/code/render.rs::output_limit_mark_survives_an_overlong_last_line
 src/tools/code/render.rs::success_header_counts_failures_from_call_states
-src/tools/code/render.rs::success_logs_collapse_to_one_line
+src/tools/code/render.rs::success_logs_keep_the_head_within_200_tokens
 src/tools/code/render.rs::table_cells_quote_ambiguous_strings
 src/tools/code/render.rs::table_is_truncated_on_whole_rows
 src/tools/code/render.rs::table_nested_in_an_object_renders_as_a_keyed_block
@@ -777,3 +777,12 @@ tests/wp098_follow_up_queue.rs::runtime_queue_not_drained_at_step_seam
 tests/wp098_follow_up_queue.rs::runtime_steer_still_injects_at_step_seam
 tests/wp098_follow_up_queue.rs::runtime_stop_and_send_cancels_then_runs_new_turn_no_notice
 tests/wp098_follow_up_queue.rs::stop_and_send_cancels_then_runs_follow_up_without_waking_parent
+src/tools/code/render.rs::failed_run_keeps_completed_calls_and_separates_program_from_tool_counts
+src/tools/code/render.rs::over_budget_object_degrades_structurally_and_stays_valid_json
+src/ptc/tests.rs::runtime_exception_reports_line_column_and_stack
+src/ptc/tests.rs::object_keys_keep_agent_order_across_the_bridge
+src/ptc/fs.rs::fs_probes_are_read_only_and_workspace_confined
+src/terminal/decode.rs::run_output_is_utf8_or_transcoded_from_the_ansi_code_page
+src/tool/outcome.rs::domain_failures_resolve_ok_false_and_system_failures_reject
+src/tools/run.rs::run_separates_stdout_from_stderr_and_names_the_shell
+src/tools/websearch.rs::websearch_top_k_yields_structured_results
