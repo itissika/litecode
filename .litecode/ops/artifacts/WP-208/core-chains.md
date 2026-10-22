@@ -778,6 +778,14 @@
 - `tests/turn_prefix_stability.rs::persist_item_reused_message_id_must_not_rewrite_final_row` → 归 Runtime·C10
 - `tests/turn_prefix_stability.rs::next_turn_reload_must_keep_sent_row_when_provider_reuses_id` → 归 Runtime·C10
 
+### session/snapshot
+
+**Session·C15** snapshot 文件回滚（issue_032，GM 定为核心）：只恢复 patch 涉及的路径、warm 后增量编辑可回滚、缺 track ref 报 unavailable；spine 失败后下一 seam 恢复已改文件（守护 4）
+- `src/session/snapshot.rs::file_level_restore_only_touches_patch_paths`
+- `src/session/snapshot.rs::warm_then_incremental_edit_restore`
+- `src/session/snapshot.rs::restore_missing_track_ref_is_unavailable`
+- `tests/issue_032_changed_files_restore.rs::t1_spine_failure_restores_changed_files_for_next_seam`
+
 ### workspace
 
 **IDE·L1** Agent/LSP/人工 API 路径解析边界：相对路径带 `..` 时所有模式都拒绝；Safe 和 LSP 拒绝工作区外的绝对路径，All 放行；人工 API 不接受绝对路径。（守护 7）
@@ -944,7 +952,7 @@
 - `tests/agent_e2e_responses.rs`：归 Provider（codec 产品路径 e2e）；Runtime C8 引用 `agent_e2e_incomplete_seals_text_to_disk`。
 - `tests/turn_prefix_stability.rs`：归 Runtime C10（请求前缀稳定）；Provider「Turn prefix stability」链引用，Provider 额外列的 `prepare_after_stream_persist_seal_keeps_prior_prefix`（Runtime 未列）仍归 Provider。
 - `tests/f2_lock_scope.rs`（2 条）：Tools 剔出，归 Session C6（manager 锁 / 不丢更新）。
-- `src/config/path.rs`（4 条：canon_abs_resolves_symlink、strip_uppercases_drive_letter、strip_verbatim_drive_and_unc、is_under_is_case_insensitive_on_windows）：IDE 与 Session 互相移交，暂挂 IDE L7（路径 LAP 形态）；如另设 config 归属请 GM 指定。
+- `src/config/path.rs`（4 条：canon_abs_resolves_symlink、strip_uppercases_drive_letter、strip_verbatim_drive_and_unc、is_under_is_case_insensitive_on_windows）：IDE 与 Session 互相移交，GM 定归 IDE L7。
 - `src/tools/session_search.rs`：归 Tools C18；上下文 C17 引用 `search_hit_line_matches_virtual_read`；`compacted_history_below_kept_from_seq_remains_searchable` 被 Tools 剔为 session 行为，由上下文 C17 守护。`src/engines/session_search/*` 归上下文。
 
 ## 2. 回归测试（带出处，跨域合并）
@@ -1126,11 +1134,14 @@
 - `src/lsp/deps.rs::rustup_link_without_component_is_unavailable` — IDE：安装和探测相关的回归
 - `src/lsp/deps.rs::rust_analyzer_symlink_to_rustup_spawns_as_rust_analyzer` — IDE：安装和探测相关的回归
 - `tests/workspace_process_contract.rs::workspace_open_http_endpoint_is_gone` — IDE：已移除的接口不能复活
+- `src/engines/code_search/index_status.rs::decide_index_work_dirty_always_updates` — 上下文：按组登记展开（WP-057/WP-131 断言）
+- `src/engines/code_search/index_status.rs::decide_index_work_deletions_stay_on_update` — 上下文：按组登记展开（WP-057/WP-131 断言）
+- `src/engines/code_search/index_status.rs::removed_legacy_helpers_stay_gone` — 上下文：按组登记展开（WP-057/WP-131 断言）
+- `tests/workspace_path_death_list.rs::death_list_no_bare_canonicalize_outside_path_module` — IDE：按组登记展开（裸 canonicalize/verbatim）
+- `tests/workspace_path_death_list.rs::death_list_web_no_silent_verbatim_strip` — IDE：按组登记展开（裸 canonicalize/verbatim）
+- `tests/workspace_path_death_list.rs::death_list_src_canonicalize_whitelist_is_only_path_rs` — IDE：按组登记展开（裸 canonicalize/verbatim）
 
-按组登记、未逐条展开的回归（原文）：
-- [上下文] `src/engines/code_search/index_status.rs`（含 "WP-057"/"WP-131 cleanup" 断言的测试） | WP-057：dirty 不触发 rebuild；WP-131：旧字段保持删除。
-- [Provider] 
-- [IDE] workspace_path_death_list ×3：裸 canonicalize 产生 verbatim 路径，导致前缀比较失效；web 侧会静默剥掉 verbatim
+按组登记的回归已展开到上表：上下文 index_status（含 WP-057/WP-131 断言的 3 条）、IDE workspace_path_death_list ×3；Provider 那一组只是产品代码注释提到 WP-188，没有对应测试，不计。
 
 ## 3. 守护缺口（17 条，没有真正守护的行为）
 
@@ -1154,10 +1165,12 @@
 16. [Session] telemetry 日志订阅/上报无行为测试（client_protocol_telemetry 仅 serde）
 17. [Session] WS 握手+鉴权+subscribe 冷启动 hydrate 一体化：无「鉴权后 subscribe → snapshot 含 pending_permissions」端到端
 
-## 4. 待 GM 定
+## 4. GM 决议（2026-10-22）
 
-1. **Session C15 snapshot 文件回滚（issue_032，跨 workspace 域）**：候选守护 `src/session/snapshot.rs::file_level_restore_only_touches_patch_paths`、`::warm_then_incremental_edit_restore`、`::restore_missing_track_ref_is_unavailable`、`tests/issue_032_changed_files_restore.rs::t1_spine_failure_restores_changed_files_for_next_seam`。是否并入核心、归 Session 还是 workspace？（未计入上表守护数）
-2. **serve 绑定鉴权重复**：`tests/serve_bind_auth.rs::bind_auth_matrix` 与 `src/serve/run.rs` 的 case_a..d 断言完全相同，只留一套。Session 推荐保留哪套未定；当前守护表列的是 `bind_auth_matrix` + `loopback_only_rejects_non_loopback_even_with_auth`（后者 matrix 未覆盖，必留）。
+1. Session C15 snapshot 回滚（issue_032 那 4 条）算核心，归 Session，已加进守护（见 session/snapshot）。
+2. serve 绑定鉴权：保留 `tests/serve_bind_auth.rs::bind_auth_matrix` 与 `src/serve/run.rs::loopback_only_rejects_non_loopback_even_with_auth`；删除 `src/serve/run.rs` 中重复的 `case_a_loopback_require_auth_with_token_ok`、`case_b_non_loopback_require_auth_with_token_ok`、`case_c_non_loopback_without_auth_fails`、`case_d_require_auth_without_token_fails`。
+3. `src/config/path.rs` 4 条归 IDE（L7）。
+4. 不在任何域范围内的测试不动；17 条缺口本包不补。
 
 ## 附：核对中引用但 3acfe31 上不存在的测试名（未计入守护）
 
@@ -1170,15 +1183,15 @@
 |---|---:|---:|---:|
 | Tools | 616 | 173 | 443 |
 | Runtime | 278 | 121 | 157 |
-| Session | 585 | 95 | 490 |
+| Session | 585 | 99 | 486 |
 | 上下文 | 568 | 81 | 487 |
 | Provider | 221 | 72 | 149 |
 | IDE | 364 | 119 | 245 |
-| **合计** | **2632** | **661** | **1971** |
+| **合计** | **2632** | **665** | **1967** |
 
-- 链路：107 条；守护测试（去重）：661；回归测试（逐条，去重）：177（另有 3 组按组登记），其中 80 条同时是守护；守护缺口：17。
+- 链路：108 条；守护测试（去重）：665；回归测试（逐条，去重）：183（含按组登记展开的 6 条），其中 84 条同时是守护；守护缺口：17。
 - 范围合计 2632 与 3acfe31 全量（`--list` 2714 / 源码计 2669）的差：各域范围边界不完全覆盖（如 tests/ 中 architecture_guards 以外的少量文件、types/agent 等）及 Session 范围与 Tools 范围的少量交叠，属估算口径差异。
-- 回归测试不在守护表内的约 97 条：删减前需逐条确认是否保留（默认保留）。
+- 回归测试不在守护表内的约 99 条：删减前需逐条确认是否保留（默认保留）。
 
 非核心按类别估算（各域 §4 合并，约数）：
 
