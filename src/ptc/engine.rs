@@ -200,7 +200,9 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
                 }
                 // QuickJS's own stack overflow is a catchable RangeError. Abort
                 // here so the program cannot catch it. The same interrupt that
-                // notices the native stack is past the limit throws.
+                // notices the native stack is past the limit throws. The flag
+                // is latched, so a later poll after a caught native backstop
+                // throw still seals the run.
                 if faults.stack_fault() {
                     faults.record(Faults::STACK);
                     return true;
@@ -270,7 +272,12 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     }
     // Libs are loaded first. The user's stack cap applies to the program, so a
     // tight cap still leaves room to install the runtime's own helpers.
-    runtime.set_max_stack_size(request.limits.stack_bytes).await;
+    // QuickJS's native check is only a backstop: it sits `stack_bytes + headroom`
+    // deep so the uncatchable stack watch (armed at `stack_bytes`) always seals
+    // first. The native check throws a plain, catchable RangeError.
+    runtime
+        .set_max_stack_size(native_stack_bytes(request.limits.stack_bytes))
+        .await;
 
     let source = request.source.clone();
     let js_clock = Arc::clone(&clock);
@@ -331,6 +338,11 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         }
         other => other,
     };
+    // Final seal: the latch is set only by `note_stack` when the real stack
+    // pointer crossed the watch limit (never by a message). A program that
+    // caught the overflow and returned without reaching another interrupt
+    // point is still a stack failure, not a success or plain exception.
+    let end = seal_latched_stack(end, &faults);
     faults.disarm();
     drop(watcher);
     drop(protos);
@@ -1190,6 +1202,24 @@ const STACK_POLL_NEAR: i32 = 1;
 /// pinned QuickJS-NG 0.14 layout (64-bit, no NaN boxing).
 const CONTEXT_SCAN_BYTES: usize = 576;
 
+/// Turn any end into `ResourceLimit/Stack` once the stack watch latched.
+fn seal_latched_stack(end: ProgramEnd, faults: &Faults) -> ProgramEnd {
+    if !faults.stack_fault() {
+        return end;
+    }
+    match end {
+        ProgramEnd::Failure(failure) if failure.resource == Some(ResourceKind::Stack) => {
+            ProgramEnd::Failure(failure)
+        }
+        ProgramEnd::Failure(failure) => ProgramEnd::Failure(Failure::resource(
+            ResourceKind::Stack,
+            "stack overflow",
+            failure.stack,
+        )),
+        _ => ProgramEnd::Failure(Failure::resource(ResourceKind::Stack, "stack overflow", None)),
+    }
+}
+
 fn note_stack(faults: &Faults) {
     let limit = faults.stack_limit.load(Ordering::Relaxed);
     if limit == 0 {
@@ -1201,12 +1231,15 @@ fn note_stack(faults: &Faults) {
     if sp < limit {
         faults.stack.store(true, Ordering::Release);
     }
+    // Once latched, poll on every check so a program that caught a native
+    // backstop RangeError is stopped at its very next interrupt point.
+    let latched = faults.stack.load(Ordering::Relaxed);
     let ctx = faults.ctx.load(Ordering::Relaxed);
     let offset = faults.counter_offset.load(Ordering::Relaxed);
     if ctx.is_null() || offset == 0 {
         return;
     }
-    let next = if sp.saturating_sub(limit) < STACK_NEAR_BYTES {
+    let next = if latched || sp.saturating_sub(limit) < STACK_NEAR_BYTES {
         STACK_POLL_NEAR
     } else {
         STACK_POLL_FAR
@@ -1243,10 +1276,38 @@ fn arm_stack_watch(ctx: &Ctx<'_>, faults: &Faults, stack_bytes: usize) -> Result
     Ok(())
 }
 
+/// Same ceiling as rquickjs: larger values disable the check.
+const MAX_SANE_STACK: usize = 1 << 24;
+/// Minimum distance between the watch limit and QuickJS's native limit. The
+/// watch polls on every call once within [`STACK_NEAR_BYTES`], so a few frames
+/// past the watch limit are enough; this leaves a wide margin for big frames
+/// (native helpers, regexp, JSON) between two polls.
+const STACK_NATIVE_HEADROOM_MIN: usize = 64 * 1024;
+/// Thread stack beyond the native QuickJS limit: Rust/tokio frames below the
+/// arm point, host glue, and C code QuickJS runs without a stack check.
+pub(crate) const JS_THREAD_STACK_SAFETY: usize = 2 * 1024 * 1024;
+
+/// QuickJS native max stack: `stack_bytes + max(64 KiB, stack_bytes / 2)`,
+/// capped at the rquickjs ceiling. `0` (or an over-ceiling cap) keeps the
+/// request unchanged, matching the disarmed watch.
+pub(crate) fn native_stack_bytes(stack_bytes: usize) -> usize {
+    let watch = effective_stack_bytes(stack_bytes);
+    if watch == 0 {
+        return stack_bytes;
+    }
+    let headroom = (watch / 2).max(STACK_NATIVE_HEADROOM_MIN);
+    watch.saturating_add(headroom).min(MAX_SANE_STACK)
+}
+
+/// OS stack for the `ptc-js` thread: native limit + safety. `None` keeps the
+/// platform default when no native limit is enforced.
+pub(crate) fn js_thread_stack_bytes(stack_bytes: usize) -> Option<usize> {
+    let native = effective_stack_bytes(native_stack_bytes(stack_bytes));
+    (native != 0).then(|| native + JS_THREAD_STACK_SAFETY)
+}
+
 fn effective_stack_bytes(limit: usize) -> usize {
-    // Same ceiling as rquickjs: larger values disable the check.
-    const MAX_SANE: usize = 1 << 24;
-    if limit == 0 || limit > MAX_SANE {
+    if limit == 0 || limit > MAX_SANE_STACK {
         0
     } else {
         limit

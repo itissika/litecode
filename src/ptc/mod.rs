@@ -465,7 +465,13 @@ pub async fn execute(request: ExecuteRequest) -> Outcome {
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let spawned = thread::Builder::new().name("ptc-js".into()).spawn(move || {
+    // The thread must be deeper than QuickJS's native limit (itself past the
+    // stack watch), or a deep program would hit the OS guard page first.
+    let mut builder = thread::Builder::new().name("ptc-js".into());
+    if let Some(bytes) = engine::js_thread_stack_bytes(request.limits.stack_bytes) {
+        builder = builder.stack_size(bytes);
+    }
+    let spawned = builder.spawn(move || {
         let outcome = catch_unwind(AssertUnwindSafe(|| engine::drive_blocking(request, handle)));
         let outcome = match outcome {
             Ok(outcome) => outcome,

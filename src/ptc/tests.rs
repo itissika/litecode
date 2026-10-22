@@ -487,6 +487,28 @@ async fn stack_limit() {
 }
 
 #[tokio::test]
+async fn stack_overflow_caught_then_immediate_return_is_still_sealed() {
+    let mut limits = limits();
+    limits.stack_bytes = 64 * 1024;
+    let outcome = run_with(
+        r#"
+        function f(){ return 1 + f(); }
+        try { f(); } catch (e) { return "caught"; }
+        "#,
+        Vec::new(),
+        limits,
+        Duration::from_secs(2),
+        Duration::from_millis(50),
+        CancellationToken::new(),
+    )
+    .await;
+    assert!(outcome.value.is_none(), "program returned {:?}", outcome.value);
+    let failure = outcome.failure.expect("stack overflow is not catchable");
+    assert_eq!(failure.kind, FailureKind::ResourceLimit, "{failure:?}");
+    assert_eq!(failure.resource, Some(ResourceKind::Stack), "{failure:?}");
+}
+
+#[tokio::test]
 async fn stack_overflow_stays_sealed_when_the_program_catches_it() {
     let mut limits = limits();
     limits.stack_bytes = 64 * 1024;
