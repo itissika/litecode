@@ -16122,13 +16122,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "ready",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-213",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T09:54:34.920Z",
+      "progress": "plan approved by gm",
+      "status_entered_at": null,
       "parent": null,
       "goal": "压缩 Code 面 PRELUDE/工具 md：不说代码与运行时已编码的契约，补上多 agent 共享的怎么干活哲学；不污染系统提示词",
       "approver": "gm",
@@ -16154,6 +16154,12 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "plan filled: PRELUDE draft + tool-md slim + Q1-Q10; awaiting gm approve"
+        },
+        {
+          "ts": "2026-10-22T09:55:09.923Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "文案草案 A/B/C 通过；Q1-Q10 按推荐；零触碰 system prompt"
         }
       ]
     }
