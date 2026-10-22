@@ -617,6 +617,50 @@ async fn no_ambient_capabilities() {
 }
 
 #[tokio::test]
+async fn unhandled_promise_rejection_warns_without_failing() {
+    let outcome = run(
+        r#"
+        Promise.reject("boom-unhandled");
+        return "ok";
+        "#,
+        tools(vec![]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!("ok"));
+    assert!(outcome.failure.is_none(), "{:?}", outcome.failure);
+    assert!(
+        outcome.logs.iter().any(|entry| {
+            entry.level == crate::ptc::LogLevel::Warn
+                && entry.message.contains("unhandled promise rejection")
+                && entry.message.contains("boom-unhandled")
+        }),
+        "{:?}",
+        outcome.logs
+    );
+}
+
+#[tokio::test]
+async fn handled_promise_rejection_does_not_warn() {
+    let outcome = run(
+        r#"
+        Promise.reject("caught").catch(() => {});
+        return "ok";
+        "#,
+        tools(vec![]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!("ok"));
+    assert!(
+        outcome
+            .logs
+            .iter()
+            .all(|entry| !entry.message.contains("unhandled promise rejection")),
+        "{:?}",
+        outcome.logs
+    );
+}
+
+#[tokio::test]
 async fn unawaited_calls_are_waited_and_recorded() {
     let finished = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&finished);
@@ -643,7 +687,7 @@ async fn unawaited_calls_are_waited_and_recorded() {
         outcome
             .logs
             .iter()
-            .any(|entry| entry.message.contains("1 host calls were still running")),
+            .any(|entry| entry.message.contains("1 host call was still running")),
         "{:?}",
         outcome.logs
     );
@@ -769,7 +813,7 @@ async fn success_cancels_inflight_calls() {
         outcome
             .logs
             .iter()
-            .any(|entry| { entry.message.contains("1 host calls were still running") }),
+            .any(|entry| { entry.message.contains("1 host call was still running") }),
         "{:?}",
         outcome.logs
     );

@@ -7,7 +7,7 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::pin::pin;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicUsize, Ordering};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread;
@@ -37,6 +37,22 @@ use super::{ExecuteRequest, Failure, FailureKind, HostFn, Json, LogLevel, Outcom
 /// Hitting the ceiling fails the run. A lower silent cap used to drop a host
 /// call that sat behind a few thousand microtasks and still report success.
 const MAX_DRAIN_JOBS: usize = 1_000_000;
+
+#[derive(Default)]
+struct UnhandledRejections {
+    count: usize,
+    first: Option<String>,
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    let mut chars = text.chars();
+    let kept: String = chars.by_ref().take(max).collect();
+    if chars.next().is_some() {
+        format!("{kept}…")
+    } else {
+        kept
+    }
+}
 
 struct Faults {
     interrupt: AtomicU8,
@@ -178,6 +194,31 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
         Ok(runtime) => runtime,
         Err(error) => return Outcome::from_failure(Failure::internal(error.to_string())),
     };
+
+    // Track unhandled Promise rejections for a settle-time [warn]. Handled
+    // rejections decrement so a catch/then clears the tally (WP-212).
+    let rejections = Arc::new(Mutex::new(UnhandledRejections::default()));
+    {
+        let rejections = Arc::clone(&rejections);
+        runtime
+            .set_host_promise_rejection_tracker(Some(Box::new(move |_ctx, _promise, reason, is_handled| {
+                let mut state = rejections.lock().expect("rejection lock");
+                if is_handled {
+                    state.count = state.count.saturating_sub(1);
+                    if state.count == 0 {
+                        state.first = None;
+                    }
+                    return;
+                }
+                state.count += 1;
+                if state.first.is_none() {
+                    let message = boundary::describe(&reason).message;
+                    state.first = Some(truncate_chars(&message, 200));
+                }
+            })))
+            .await;
+    }
+
     {
         let user = user.clone();
         let flags = Arc::clone(&flags);
@@ -331,9 +372,14 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     let pending = calls.seal(grace);
     let end = match end {
         ProgramEnd::Success(value) if pending > 0 => {
-            let note = format!(
-                "{pending} host calls were still running when the program returned and have been cancelled"
-            );
+            let note = if pending == 1 {
+                "1 host call was still running when the program returned and has been cancelled"
+                    .to_string()
+            } else {
+                format!(
+                    "{pending} host calls were still running when the program returned and have been cancelled"
+                )
+            };
             if output.borrow_mut().push(LogLevel::Warn, note) {
                 ProgramEnd::Success(value)
             } else {
@@ -347,6 +393,17 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     // caught the overflow and returned without reaching another interrupt
     // point is still a stack failure, not a success or plain exception.
     let end = seal_latched_stack(end, &faults);
+    {
+        let state = rejections.lock().expect("rejection lock");
+        if state.count > 0 {
+            let first = state.first.as_deref().unwrap_or("rejection");
+            let note = format!(
+                "unhandled promise rejection ({}): {}",
+                state.count, first
+            );
+            let _ = output.borrow_mut().push(LogLevel::Warn, note);
+        }
+    }
     faults.disarm();
     drop(watcher);
     drop(protos);
