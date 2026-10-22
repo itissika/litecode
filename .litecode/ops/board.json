@@ -16111,6 +16111,36 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-213",
+      "domain": "team-ops",
+      "title": "run_code 提示词改造",
+      "result": "feat/tool-contract-ptc 上落地；PRELUDE~15-25行+瘦工具md；附 acceptance + token 对比；不合 main",
+      "done_when": [
+        "PRELUDE压到约15-25行只留不变量+工作哲学；工具md短example+≤5行语义；系统提示词未改；SDK快照同步；cargo绿"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-213",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "压缩 Code 面 PRELUDE/工具 md：不说代码与运行时已编码的契约，补上多 agent 共享的怎么干活哲学；不污染系统提示词",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T09:49:37.314Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 压缩 Code 面 PRELUDE/工具 md：不说代码与运行时已编码的契约，补上多 agent 共享的怎么干活哲学；不污染系统提示词"
+        }
+      ]
     }
   ],
   "pipelines": [
