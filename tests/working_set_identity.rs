@@ -125,7 +125,7 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
         WorkingRow::pending(user_text("c")),
         WorkingRow::pending(user_text("stale")),
     ];
-    let (kind, working, _) = sessions.commit_turn_delta(&sid, stale, 2, "t1").unwrap();
+    let (kind, working, _) = sessions.commit_turn_delta(&sid, stale, 2, "t1", &[]).unwrap();
     assert!(
         matches!(kind, CommitKind::Idempotent),
         "truncated log must discard the delta, got {kind:?}"
@@ -162,7 +162,7 @@ fn commit_applied_window_matches_fold() {
     rows.push(WorkingRow::pending(user_text("b")));
     let max_seq = sessions.entry_wire_seq_cursor(&sid).0;
     let (kind, working, _) = sessions
-        .commit_turn_delta(&sid, rows, max_seq, "t1")
+        .commit_turn_delta(&sid, rows, max_seq, "t1", &[])
         .unwrap();
     assert!(!matches!(kind, CommitKind::Idempotent));
     let got: Vec<(u64, String)> = working
