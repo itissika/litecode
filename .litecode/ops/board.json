@@ -16041,6 +16041,36 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-212",
+      "domain": "team-ops",
+      "title": "run_code 收尾瑕疵",
+      "result": "feat/tool-contract-ptc 上落地；附 acceptance + cargo-full",
+      "done_when": [
+        "kill 仅确认死后 ok:true；rejection settle 有 [warn]；单数语法；文档澄清未知参数；cargo 绿"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-212",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "修 kill 假成功、未处理 rejection 静默、host-call 语法与文档小瑕疵；不合 main",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T08:15:18.073Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 修 kill 假成功、未处理 rejection 静默、host-call 语法与文档小瑕疵；不合 main"
+        }
+      ]
     }
   ],
   "pipelines": [
