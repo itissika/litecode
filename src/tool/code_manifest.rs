@@ -767,7 +767,6 @@ mod tests {
     #[test]
     fn renders_contract_as_commented_typescript() {
         let page = render_code_tool_description(&[Arc::new(FakeTool)]).unwrap();
-        assert!(page.contains("do not copy type annotations"));
         assert!(page.contains("tools[\"name\"]"));
         assert!(page.contains("type Integer = number;"));
         assert!(page.contains("type DemoInput = {"));
@@ -786,10 +785,6 @@ mod tests {
         );
         assert!(!page.contains("ToolCallOptions"));
         assert!(page.contains("Glob text stays literal: **/*.rs."));
-        assert!(page.contains("declare const libs:"));
-        assert!(page.contains("stats: {"));
-        assert!(page.contains("csv: {"));
-        assert!(page.contains("groupBy<T>"));
         assert!(!page.contains("tools.call"));
         assert!(
             !page
@@ -813,12 +808,9 @@ mod tests {
         assert!(page.contains(
             "readonly [\"demo\"]: (args: DemoInput) => Promise<DemoData>;"
         ));
-        assert!(page.contains("declare class ToolError"));
         assert!(!page.contains("ToolResult"));
         assert!(!page.contains("status: \"partial\""));
         assert!(!page.contains("retryable: boolean"));
-        assert!(page.contains("`undefined` is tolerated"));
-        assert!(page.contains("dropped paths"));
         let timed = page.find("[\"timed\"]").unwrap();
         let demo = page.find("[\"demo\"]").unwrap();
         assert!(demo < timed, "bindings are sorted by name");

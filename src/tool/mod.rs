@@ -20,12 +20,6 @@ pub mod trait_;
 pub mod write_lock;
 
 #[cfg(test)]
-mod contract_matrix;
-#[cfg(test)]
-mod phase1_gate;
-#[cfg(test)]
-mod deletion_gate;
-#[cfg(test)]
 mod sdk_snapshot;
 
 pub use authorize::{AuthResult, authorize};

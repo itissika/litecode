@@ -1798,3 +1798,163 @@ mod tests {
         assert!(hub.jobs.mailbox_pending("sess"));
     }
 }
+
+/// Code-caller contract checks (merged from phase1_gate, WP-207).
+#[cfg(test)]
+#[allow(dead_code, unused_imports)]
+mod code_caller_contract_tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
+    use crate::config::schema::GlobalSettings;
+    use crate::context_pipeline::Context;
+    use crate::permission::{PermissionEngine, deny_permission_sink};
+    use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
+    use crate::tool::trait_::{Tool, ToolExecutionContext};
+    use crate::tool::write_lock::WorkspaceWriteLock;
+    use crate::tools::code::{CodeTool, CodeToolHost};
+    use crate::tools::lsp_feedback::arm_lsp_error_hook;
+    use crate::types::{FunctionToolCall, ToolCallResult};
+
+    fn allow_engine(root: &Path) -> PermissionEngine {
+        let resolved = resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new(root));
+        PermissionEngine::resolver(resolved, "default", 0)
+    }
+
+    fn context(root: &Path) -> Context {
+        Context {
+            cwd: root.to_path_buf(),
+            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(root),
+            agents_md: None,
+            claude_md: None,
+        }
+    }
+
+    fn code_origin() -> ToolCallOrigin {
+        ToolCallOrigin {
+            caller: ToolCaller::Code {
+                parent_call_id: "p1".into(),
+            },
+            code_names: Arc::from([]),
+            file_note: None,
+            permission_sink: None,
+            plan_touch: None,
+            deadline: None,
+        }
+    }
+
+    fn tools() -> Vec<Arc<dyn Tool>> {
+        vec![
+            Arc::new(crate::tools::read::ReadTool::default()),
+            Arc::new(crate::tools::glob::GlobTool),
+            Arc::new(crate::tools::grep::GrepTool),
+            Arc::new(crate::tools::edit::EditTool::new()),
+            Arc::new(crate::tools::write::WriteTool::new()),
+        ]
+    }
+
+    async fn call_code(root: &Path, name: &str, args: Value) -> ToolCallResult {
+        let permission = allow_engine(root);
+        let call = FunctionToolCall {
+            arguments: args.to_string(),
+            call_id: format!("p1-{name}"),
+            name: name.into(),
+            namespace: None,
+            id: None,
+            status: None,
+        };
+        let sink = deny_permission_sink();
+        execute_tool_call(
+            &call,
+            &tools(),
+            &permission,
+            &context(root),
+            "p1-session",
+            "default",
+            sink.as_ref(),
+            CancellationToken::new(),
+            &root.join(".litecode"),
+            usize::MAX,
+            None,
+            Arc::new(WorkspaceWriteLock::new()),
+            None,
+            code_origin(),
+        )
+        .await
+    }
+
+    fn host(root: &Path) -> Arc<CodeToolHost> {
+        Arc::new(CodeToolHost::new(
+            allow_engine(root),
+            context(root),
+            "default",
+            deny_permission_sink(),
+            root.join(".litecode"),
+            Arc::new(WorkspaceWriteLock::new()),
+            None,
+        ))
+    }
+
+    async fn run_program(root: &Path, code: &str) -> ToolCallResult {
+        let tool = CodeTool::new(tools(), host(root));
+        tool.execute(
+            json!({ "code": code }),
+            ToolExecutionContext {
+                path_mode: crate::workspace::ToolPathMode::All,
+                workspace_root: root.to_path_buf(),
+                call_id: "p1-run".into(),
+                cancel: CancellationToken::new(),
+                output_limit: usize::MAX,
+                session_id: "p1-session".into(),
+                session: None,
+            },
+        )
+        .await
+    }
+
+    fn has_code(result: &ToolCallResult, code: &str) -> bool {
+        result.diagnostics.iter().any(|diagnostic| diagnostic.code == code)
+    }
+
+    #[tokio::test]
+    async fn write_outside_workspace_reports_path_outside_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("note.txt");
+        let result = call_code(
+            workspace.path(),
+            "write",
+            json!({
+                "path": target.to_string_lossy(),
+                "content": "hello"
+            }),
+        )
+        .await;
+        assert!(
+            has_code(&result, "path_outside_workspace"),
+            "diagnostics={:?} content={}",
+            result.diagnostics,
+            result.content
+        );
+        assert!(target.is_file(), "write should still commit the file");
+    }
+
+    #[tokio::test]
+    async fn unknown_parameter_is_invalid_input() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hi\n").unwrap();
+        let result = call_code(
+            dir.path(),
+            "read",
+            json!({ "path": "a.txt", "nope": true }),
+        )
+        .await;
+        assert_eq!(result.error_code.as_deref(), Some("invalid_input"));
+        assert!(result.content.contains("nope"), "{}", result.content);
+        assert!(result.data.is_none());
+    }
+}
