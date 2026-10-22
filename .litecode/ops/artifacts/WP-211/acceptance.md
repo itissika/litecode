@@ -1,6 +1,6 @@
 # WP-211 acceptance
 
-代码 tip：a82f7e9。分支 `feat/tool-contract-ptc`，未合 main。
+代码 tip：f83fc91。分支 `feat/tool-contract-ptc`，未合 main。
 
 ## 全量
 `cargo test -j 2 --no-fail-fast`：**849 passed / 0 failed / 0 ignored**（lib 561）。flaky 重跑：无。明细见 `cargo-full.txt`。
