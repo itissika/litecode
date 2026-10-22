@@ -15762,13 +15762,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "in_progress",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-208",
-      "progress": "in progress",
-      "status_entered_at": "2026-10-22T01:59:16.985Z",
+      "progress": "awaiting acceptance by gm",
+      "status_entered_at": "2026-10-22T03:27:10.432Z",
       "parent": null,
       "goal": "按 Andy 方向激进删测：仅保留关键模块核心链路与真实回归测，全套降至约 1000 条以内，全量绿",
       "approver": "gm",
@@ -15805,6 +15805,12 @@
           "ts": "2026-10-22T01:59:16.985Z",
           "actor": "backend_mid",
           "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T03:27:10.432Z",
+          "actor": "backend_mid",
+          "action": "deliver",
           "note": null
         }
       ]

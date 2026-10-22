@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-22T01:58:28.617Z",
+  "updated_at": "2026-10-22T03:27:10.436Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -8624,6 +8624,76 @@
       "acked": [],
       "meta": {
         "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-208"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1792638062217-97350-WP208",
+      "ts": "2026-10-22T03:01:02.217Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-208 in_progress open 61m since 2026-10-22T01:59:16.985Z (work-hours >1h); owner=backend_mid reviewer=gm; target=backend_mid",
+      "wp": "WP-208",
+      "acked": [],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-22T01:59:16.985Z",
+        "age_minutes": 61,
+        "owner": "backend_mid",
+        "reviewer": "gm",
+        "level": 0,
+        "parent": null,
+        "path": [
+          "WP-208"
+        ],
+        "target": "backend_mid",
+        "actor": "backend_mid",
+        "escalated": false,
+        "merged": [],
+        "matter_key": "WP-208|in_progress|2026-10-22T01:59:16.985Z|backend_mid"
+      }
+    },
+    {
+      "id": "E-1792638362222-97351-WP208-esc",
+      "ts": "2026-10-22T03:06:02.222Z",
+      "type": "team_ops.wp_timeout",
+      "source": "ops.wp_watch",
+      "summary": "WP-208 in_progress open 66m since 2026-10-22T01:59:16.985Z (work-hours >1h); owner=backend_mid reviewer=gm; target=gm (escalated)",
+      "wp": "WP-208",
+      "acked": [],
+      "meta": {
+        "status": "in_progress",
+        "status_entered_at": "2026-10-22T01:59:16.985Z",
+        "age_minutes": 66,
+        "owner": "backend_mid",
+        "reviewer": "gm",
+        "level": 0,
+        "parent": null,
+        "path": [
+          "WP-208"
+        ],
+        "target": "gm",
+        "actor": "backend_mid",
+        "escalated": true,
+        "merged": [],
+        "matter_key": "WP-208|in_progress|2026-10-22T01:59:16.985Z|backend_mid"
+      }
+    },
+    {
+      "id": "E-1792639630433-42150-WP208-acceptance_requested",
+      "ts": "2026-10-22T03:27:10.433Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-208 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-208",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
         "approver": "gm",
         "owner": "backend_mid",
         "path": [
