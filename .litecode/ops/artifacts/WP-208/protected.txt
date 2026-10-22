@@ -789,3 +789,9 @@ src/tools/websearch.rs::websearch_top_k_yields_structured_results
 src/tools/command_job.rs::msys_pathconv_hint_presents_ok_false_with_null_exit_code
 src/tool/code_manifest.rs::unregistered_lsp_tools_do_not_appear_in_the_description
 tests/run_code_model_view.rs::write_conflict_resolves_ok_false
+src/tools/command_job.rs::still_alive_soft_fail_presents_ok_false_with_null_exit_code
+src/tools/wait.rs::wait_after_tool_kill_sets_killed_and_note
+src/tools/wait.rs::wait_natural_nonzero_exit_has_no_killed_flag
+src/ptc/tests.rs::unhandled_promise_rejection_warns_without_failing
+src/ptc/tests.rs::handled_promise_rejection_does_not_warn
+src/tools/code/render.rs::short_stack_drops_eval_frames_by_name
