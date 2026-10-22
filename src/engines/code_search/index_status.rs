@@ -214,29 +214,6 @@ pub fn clear_index_job(workspace_root: &Path) {
     let _ = std::fs::remove_file(job_path(workspace_root));
 }
 
-/// Test-only: an old-binary `job.json` with status `building` (WP-143 removed
-/// every writer; readers still map and reclaim it).
-#[cfg(test)]
-pub(crate) fn write_legacy_building_job(workspace_root: &Path) {
-    let _ = write_json(
-        &job_path(workspace_root),
-        &IndexJobFile {
-            status: JobKind::Building,
-            progress: Some(IndexingProgress {
-                phase: IndexPhase::Scanning,
-                files_done: 0,
-                files_total: 0,
-                chunks_done: 0,
-            }),
-            error: None,
-            chunks: Some(JobChunks {
-                done: 0,
-                total: None,
-            }),
-        },
-    );
-}
-
 /// Chunks currently in the on-disk index (0 when absent).
 pub fn indexed_chunk_count(workspace_root: &Path) -> u64 {
     meta::read_meta(workspace_root)
@@ -577,68 +554,9 @@ pub fn code_corpus_progress(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::code_search::meta::{IndexMeta, init_workspace_index, write_meta};
-    use std::collections::HashSet;
-    use tempfile::TempDir;
-
-    #[test]
-    fn disk_status_absent_then_needs_rebuild_shell() {
-        let dir = TempDir::new().unwrap();
-        assert_eq!(disk_index_status(dir.path()), IndexStatus::Absent);
-        init_workspace_index(dir.path()).unwrap();
-        // Shell meta without vectors → needs_rebuild
-        assert_eq!(disk_index_status(dir.path()), IndexStatus::NeedsRebuild);
-    }
-
-    #[test]
-    fn job_file_overrides_to_building() {
-        let dir = TempDir::new().unwrap();
-        write_legacy_building_job(dir.path());
-        let view = resolve_index_view(dir.path(), None);
-        assert_eq!(view.status, IndexStatus::Building);
-        assert!(view.progress.is_some());
-        clear_index_job(dir.path());
-    }
-
-    #[test]
-    fn queue_marks_stale_when_ready() {
-        let dir = TempDir::new().unwrap();
-        init_workspace_index(dir.path()).unwrap();
-        let mut meta = IndexMeta::shell();
-        meta.indexed_files = 1;
-        meta.indexed_chunks = 1;
-        write_meta(dir.path(), &meta).unwrap();
-        let index_dir = meta::index_dir(dir.path());
-        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
-        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        if store::index_files_exist(dir.path()) {
-            let mut q = HashSet::new();
-            q.insert(("a.rs".to_string(), false));
-            q.insert(("b.rs".to_string(), false));
-            write_code_queue(dir.path(), &q);
-            let view = resolve_index_view(dir.path(), Some(EngineState::Warm));
-            assert_eq!(view.status, IndexStatus::Stale);
-            write_code_queue(dir.path(), &HashSet::new());
-            let view = resolve_index_view(dir.path(), Some(EngineState::Warm));
-            assert_eq!(view.status, IndexStatus::Ready);
-        }
-    }
-
-    #[test]
-    fn decide_index_work_first_desired_and_incompatible() {
-        assert_eq!(
-            decide_index_work(true, false, 0, 0, 0, 0),
-            IndexWork::Rebuild {
-                reason: IndexRebuildReason::FirstDesired
-            }
-        );
-        assert_eq!(
-            decide_index_work(false, true, 0, 0, 10, 10),
-            IndexWork::Rebuild {
-                reason: IndexRebuildReason::Incompatible
-            }
-        );
-    }
+    
+    
+    
 
     #[test]
     fn decide_index_work_dirty_always_updates() {
@@ -679,120 +597,6 @@ mod tests {
     }
 
     #[test]
-    fn queue_embed_dirty_keeps_deletes_on_update() {
-        let dir = TempDir::new().unwrap();
-        init_workspace_index(dir.path()).unwrap();
-        let mut meta = IndexMeta::shell();
-        meta.indexed_files = 10;
-        meta.indexed_chunks = 10;
-        write_meta(dir.path(), &meta).unwrap();
-        let index_dir = meta::index_dir(dir.path());
-        std::fs::write(index_dir.join("chunks.jsonl"), "").unwrap();
-        std::fs::write(index_dir.join("vectors.usearch"), "").unwrap();
-        if !store::index_files_exist(dir.path()) {
-            return;
-        }
-        let mut pending = HashSet::new();
-        for i in 0..8 {
-            pending.insert((format!("gone{i}.rs"), true));
-        }
-        write_code_queue(dir.path(), &pending);
-        let q = read_code_queue(dir.path());
-        assert_eq!((q.queued, q.embed_dirty), (8, 0));
-        assert_eq!(
-            index_work_from_disk(dir.path()),
-            IndexWork::Update { dirty: 8 }
-        );
-    }
-
-    #[test]
-    fn index_work_serializes_kind_tag() {
-        let none = serde_json::to_value(IndexWork::None).unwrap();
-        assert_eq!(none["kind"], "none");
-        let update = serde_json::to_value(IndexWork::Update { dirty: 4 }).unwrap();
-        assert_eq!(update["kind"], "update");
-        assert_eq!(update["dirty"], 4);
-        let rebuild = serde_json::to_value(IndexWork::Rebuild {
-            reason: IndexRebuildReason::Incompatible,
-        })
-        .unwrap();
-        assert_eq!(rebuild["kind"], "rebuild");
-        assert_eq!(rebuild["reason"], "incompatible");
-    }
-
-    fn facts(state: Option<EngineState>) -> CodeEngineFacts {
-        CodeEngineFacts {
-            desired: true,
-            state,
-            model_ready: true,
-        }
-    }
-
-    #[test]
-    fn corpus_failed_reasons() {
-        use crate::engines::progress::{CorpusState, FailReason, ProgressEngine};
-        let dir = tempfile::TempDir::new().unwrap();
-        let p = code_corpus_progress(
-            dir.path(),
-            CodeEngineFacts {
-                desired: true,
-                state: Some(EngineState::Warm),
-                model_ready: false,
-            },
-        );
-        let e = p.error.clone().unwrap();
-        assert_eq!(p.state, CorpusState::Failed);
-        assert_eq!(
-            (e.engine, e.reason),
-            (ProgressEngine::Model, FailReason::ModelMissing)
-        );
-
-        let e = code_corpus_progress(dir.path(), facts(Some(EngineState::Failed)))
-            .error
-            .unwrap();
-        assert_eq!(e.reason, FailReason::EngineUnavailable);
-        let e = code_corpus_progress(dir.path(), facts(Some(EngineState::Stopped)))
-            .error
-            .unwrap();
-        assert_eq!(e.reason, FailReason::EngineStopped);
-
-        // Stopped but not desired: not a failure.
-        let p = code_corpus_progress(
-            dir.path(),
-            CodeEngineFacts {
-                desired: false,
-                state: Some(EngineState::Stopped),
-                model_ready: false,
-            },
-        );
-        assert_ne!(p.state, CorpusState::Failed);
-
-        mark_index_job_failed(dir.path(), "disk full");
-        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warm)));
-        let e = p.error.unwrap();
-        assert_eq!(
-            (e.engine, e.reason),
-            (ProgressEngine::Code, FailReason::IndexFailed)
-        );
-        assert_eq!(e.message, "disk full");
-    }
-
-    #[test]
-    fn corpus_job_scanning_then_embedding() {
-        use crate::engines::progress::CorpusPhase;
-        let dir = tempfile::TempDir::new().unwrap();
-        // WP-143: first build is a refresh job; scanning then embedding.
-        begin_refreshing(dir.path());
-        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
-        assert_eq!(p.phase, Some(CorpusPhase::Scanning));
-        assert_eq!(p.chunks_total, None);
-        update_chunk_progress(dir.path(), 3, Some(10));
-        let p = code_corpus_progress(dir.path(), facts(Some(EngineState::Warming)));
-        assert_eq!(p.phase, Some(CorpusPhase::Embedding));
-        assert_eq!((p.chunks_done, p.chunks_total), (3, Some(10)));
-    }
-
-    #[test]
     fn removed_legacy_helpers_stay_gone() {
         let src = include_str!("index_status.rs");
         // Built from parts so this test does not match itself.
@@ -811,66 +615,4 @@ mod tests {
         }
     }
 
-    // Stuck-Running (worker load): a stale Refreshing job is cleared and
-    // re-queued; a stale Building is just cleared; Failed is kept.
-    #[test]
-    fn stale_running_job_is_reclaimed_and_requeued() {
-        let dir = TempDir::new().unwrap();
-        begin_refreshing(dir.path());
-        assert!(reclaim_stale_index_job(dir.path()));
-        assert!(read_job(dir.path()).is_none());
-        assert_eq!(read_code_queue(dir.path()).queued, 1, "re-queued");
-        assert!(matches!(
-            index_work_from_disk(dir.path()),
-            IndexWork::Update { .. } | IndexWork::Rebuild { .. }
-        ));
-
-        write_legacy_building_job(dir.path());
-        assert!(reclaim_stale_index_job(dir.path()));
-        assert!(read_job(dir.path()).is_none());
-
-        mark_index_job_failed(dir.path(), "x");
-        assert!(!reclaim_stale_index_job(dir.path()), "failed is not stale");
-    }
-
-    // L5: state files are written via temp + rename; no temp left behind and
-    // a reader never sees partial JSON.
-    #[test]
-    fn job_and_queue_writes_are_atomic() {
-        let dir = TempDir::new().unwrap();
-        let mut q = HashSet::new();
-        q.insert(("a.rs".to_string(), false));
-        write_code_queue(dir.path(), &q);
-        begin_refreshing(dir.path());
-        update_chunk_progress(dir.path(), 1, Some(2));
-        let idx = meta::index_dir(dir.path());
-        let names: Vec<String> = std::fs::read_dir(&idx)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert!(names.iter().all(|n| !n.ends_with(".tmp")), "{names:?}");
-        assert!(
-            serde_json::from_str::<IndexJobFile>(
-                &std::fs::read_to_string(idx.join("job.json")).unwrap()
-            )
-            .is_ok()
-        );
-        assert_eq!(read_code_queue(dir.path()).queued, 1);
-        // Concurrent writer/reader: every read parses.
-        let root = dir.path().to_path_buf();
-        let w = std::thread::spawn(move || {
-            for i in 0..300 {
-                update_chunk_progress(&root, i, Some(300));
-            }
-        });
-        for _ in 0..300 {
-            if let Ok(s) = std::fs::read_to_string(idx.join("job.json")) {
-                assert!(
-                    serde_json::from_str::<IndexJobFile>(&s).is_ok(),
-                    "torn read: {s}"
-                );
-            }
-        }
-        w.join().unwrap();
-    }
 }

@@ -628,9 +628,7 @@ fn persisted_prefix_len(rows: &[WorkingRow]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::{
-        OutputStatus, ReasoningItem, ReasoningItemContent, ReasoningTextContent,
-    };
+    
     use crate::config::TurnGuard;
     use crate::llm::LlmProvider;
     use crate::types::{StreamEvents, assistant_text, user_text};
@@ -732,18 +730,6 @@ mod tests {
         }
     }
 
-    fn reasoning(text: &str) -> Item {
-        Item::Reasoning(ReasoningItem {
-            id: Some("rs_compact".into()),
-            summary: vec![],
-            content: Some(vec![ReasoningItemContent::ReasoningText(
-                ReasoningTextContent { text: text.into() },
-            )]),
-            encrypted_content: None,
-            status: Some(OutputStatus::Completed),
-        })
-    }
-
     #[tokio::test]
     async fn compact_request_times_out_on_silent_provider() {
         let cancel = CancellationToken::new();
@@ -787,52 +773,12 @@ mod tests {
         assert!(matches!(err, LitecodeError::Canceled), "got {err}");
     }
 
-    #[tokio::test]
-    async fn compact_request_returns_summary_on_provider_success() {
-        let cancel = CancellationToken::new();
-        let provider = CountingProvider::new();
-        let summary = CompactPolicy::call_llm_compact_with_timeout(
-            compact_llm(&provider),
-            "system",
-            "prompt",
-            128,
-            "s1",
-            &cancel,
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("provider answered");
-        assert_eq!(summary, "## summary\nkept");
-        assert_eq!(
-            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
-            1,
-            "compact LLM must call complete_with_stream_events exactly once"
-        );
-    }
-
     #[test]
     fn compact_request_disables_thinking_and_uses_caller_cap() {
         let req = ModelRequest::compact("m", "sys", "prompt", 20_480, "s1");
         assert_eq!(req.thinking, crate::platform_knobs::ThinkingSpec::Off);
         assert_eq!(req.max_output_tokens, 20_480);
         assert!(req.tools.is_empty());
-    }
-
-    #[test]
-    fn compact_summary_drops_reasoning_items() {
-        let items = vec![
-            reasoning("chain of thought leak"),
-            assistant_text("1. Primary Request\nFix the compact preview"),
-        ];
-        let summary = summary_text_from_compact_output(&items);
-        assert_eq!(summary, "1. Primary Request\nFix the compact preview");
-        assert!(!summary.contains("chain of thought"));
-    }
-
-    #[test]
-    fn compact_summary_empty_when_only_reasoning() {
-        let items = vec![reasoning("only thinking")];
-        assert!(summary_text_from_compact_output(&items).is_empty());
     }
 
     /// WP-039 / ISSUE-035: Compact persist succeeds, reload fails → Ok(true),

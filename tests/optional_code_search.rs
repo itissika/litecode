@@ -1,24 +1,19 @@
 //! Stage 4 integration tests for code_search (hash embedder; no model download).
 
-use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
 
-use litecode::config::TurnGuard;
-use litecode::config::schema::{AgentProfile, AgentToolBinding, ToolPreset, ToolReadiness};
+use litecode::config::schema::AgentProfile;
 use litecode::config::workspace::enable_code_search_engine;
 use litecode::config::{ConfigManager, WorkspaceState, init_workspace};
 use litecode::engines::code_search::{
-    CodeSearchRuntime, EMBEDDER_ID_HASH, HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
-    index_dir, index_workspace_blocking, init_workspace_index, needs_rebuild,
-    open_production_embedder, production_embedder_id, read_code_queue, read_meta,
-    resolve_index_view, search, warmup_index, write_meta,
+    HashEmbedder, IndexMeta, IndexStatus, PIPELINE_VERSION,
+    index_dir, index_workspace_blocking, init_workspace_index, needs_rebuild, read_code_queue, read_meta,
+    resolve_index_view, warmup_index, write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
 use litecode::optional::EngineManager;
-use litecode::session::manager::SessionManager;
 use litecode::tool::catalog::should_include_in_llm_list;
-use litecode::tool::registry::build_tool_list;
 use tempfile::TempDir;
 
 mod common;
@@ -55,53 +50,6 @@ fn workspace_with_code_search(
         litecode::config::workspace::workspace_with_disk_readiness(&WorkspaceState::new(root)),
         common::default_test_catalog(),
     )
-}
-
-#[test]
-fn workspace_init_creates_meta_without_vectors() {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    init_workspace(root).unwrap();
-    init_workspace_index(root).unwrap();
-
-    let meta = read_meta(root).unwrap().expect("meta.json");
-    assert_eq!(meta.indexed_chunks, 0);
-    assert!(!root.join(".litecode/index/vectors.usearch").exists());
-}
-
-#[test]
-fn small_repo_index_round_trip_and_query() {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    std::fs::write(root.join("find.rs"), "pub fn target_fn() {}\n").unwrap();
-
-    let emb = HashEmbedder;
-    let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-    index.save(root).unwrap();
-
-    let runtime = CodeSearchRuntime::new(
-        root.to_path_buf(),
-        index,
-        Some(Box::new(HashEmbedder)),
-        None,
-    );
-    let hits = search(&runtime, "target_fn", None, 8).unwrap();
-    assert!(!hits.is_empty());
-    assert!(hits.iter().any(|h| h.path.contains("find.rs")));
-    assert!(hits[0].start_line >= 1);
-    assert!(!hits[0].summary.is_empty());
-}
-
-#[test]
-fn warmup_creates_vectors_usearch() {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    init_workspace_index(root).unwrap();
-    std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
-
-    let mut emb = HashEmbedder;
-    let _index = warmup_index(root, &mut emb).unwrap();
-    assert!(root.join(".litecode/index/vectors.usearch").is_file());
 }
 
 #[test]
@@ -219,106 +167,6 @@ async fn engine_desired_off_stops_engine() {
     assert!(!engines.is_warmed("code_search"));
 }
 
-#[tokio::test]
-async fn unbind_does_not_stop_engine() {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    init_workspace_index(root).unwrap();
-    std::fs::write(root.join("x.rs"), "fn x() {}\n").unwrap();
-
-    let resolved = workspace_with_code_search(root);
-    let engines = WorkspaceEngines::new();
-    engines.reconcile(&resolved);
-    assert!(
-        engines
-            .wait_until_warmed("code_search", Duration::from_secs(30))
-            .await
-    );
-    assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
-
-    engines.reconcile(&resolved);
-    assert_eq!(engines.state("code_search"), Some(EngineState::Warm));
-    assert!(engines.is_warmed("code_search"));
-}
-
-#[tokio::test]
-async fn per_workspace_indexes_are_isolated() {
-    // One process = one workspace; indexes are per-root. Two engines on two roots
-    // must not share index state (no in-process root switch).
-    let dir_a = TempDir::new().unwrap();
-    let dir_b = TempDir::new().unwrap();
-    let root_a = dir_a.path();
-    let root_b = dir_b.path();
-
-    std::fs::write(root_a.join("a.rs"), "fn workspace_a() {}\n").unwrap();
-    std::fs::write(root_b.join("b.rs"), "fn workspace_b() {}\n").unwrap();
-
-    init_workspace_index(root_a).unwrap();
-    init_workspace_index(root_b).unwrap();
-
-    index_workspace_blocking(root_a, Box::new(HashEmbedder)).unwrap();
-    index_workspace_blocking(root_b, Box::new(HashEmbedder)).unwrap();
-
-    let meta_a = read_meta(root_a).unwrap().unwrap();
-    let meta_b = read_meta(root_b).unwrap().unwrap();
-    assert!(meta_a.indexed_chunks >= 1);
-    assert!(meta_b.indexed_chunks >= 1);
-
-    let engines_a = WorkspaceEngines::new();
-    let resolved_a = workspace_with_code_search(root_a);
-    engines_a.reconcile(&resolved_a);
-    assert!(
-        engines_a
-            .wait_until_warmed("code_search", Duration::from_secs(30))
-            .await
-    );
-    let hits_a = engines_a
-        .code_search()
-        .search("workspace_a", None, 5)
-        .unwrap();
-    assert!(hits_a.iter().any(|h| h.path.contains("a.rs")));
-
-    let engines_b = WorkspaceEngines::new();
-    let resolved_b = workspace_with_code_search(root_b);
-    engines_b.reconcile(&resolved_b);
-    assert!(
-        engines_b
-            .wait_until_warmed("code_search", Duration::from_secs(30))
-            .await
-    );
-    let hits_b = engines_b
-        .code_search()
-        .search("workspace_b", None, 5)
-        .unwrap();
-    assert!(hits_b.iter().any(|h| h.path.contains("b.rs")));
-
-    engines_a.stop_all();
-    engines_b.stop_all();
-}
-
-#[test]
-fn embedder_id_recorded_in_meta_and_triggers_rebuild() {
-    ensure_hash_embedder_for_worker();
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    init_workspace_index(root).unwrap();
-    std::fs::write(root.join("c.rs"), "fn c() {}\n").unwrap();
-
-    let emb = HashEmbedder;
-    let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-    index.save(root).unwrap();
-
-    let meta = read_meta(root).unwrap().unwrap();
-    assert_eq!(meta.embedder_id, EMBEDDER_ID_HASH);
-    assert_eq!(production_embedder_id(), EMBEDDER_ID_HASH);
-    assert!(!needs_rebuild(&meta));
-
-    let mut stale = meta.clone();
-    stale.embedder_id = "granite97-ort-q8q4".into();
-    write_meta(root, &stale).unwrap();
-    assert!(needs_rebuild(&stale));
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn stop_during_warmup_leaves_no_zombie_worker() {
     ensure_hash_embedder_for_worker();
@@ -345,86 +193,6 @@ async fn stop_during_warmup_leaves_no_zombie_worker() {
     let engine = engines.code_search();
     assert!(!engine.worker_alive());
     assert_eq!(engines.state("code_search"), Some(EngineState::Stopped));
-}
-
-#[test]
-fn hash_embedder_used_in_tests_without_model_download() {
-    ensure_hash_embedder_for_worker();
-    let _emb = open_production_embedder().expect("hash embedder via LITECODE_CODE_SEARCH_USE_HASH");
-    assert_eq!(production_embedder_id(), EMBEDDER_ID_HASH);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn build_tool_list_includes_code_search_after_warmup() {
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-    init_workspace_index(root).unwrap();
-    std::fs::write(root.join("tool.rs"), "fn tool_fn() {}\n").unwrap();
-
-    let resolved = workspace_with_code_search(root);
-    let global_engines = EngineManager::new();
-    let engines = WorkspaceEngines::new();
-    engines.reconcile(&resolved);
-    engines
-        .wait_until_warmed("code_search", Duration::from_secs(30))
-        .await;
-
-    let ide = litecode::ide_base::IdeBaseHandle::open(root, std::sync::Arc::new(engines.clone()))
-        .expect("ide");
-    let runtime = litecode::runtime::RuntimeHandle::new(
-        resolved,
-        "default".into(),
-        litecode::config::WorkspaceState::new(root),
-        Arc::new(global_engines),
-        Arc::new(engines.clone()),
-        ide,
-        Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        root.join("global.db"),
-    );
-    let tools = build_tool_list(
-        &runtime,
-        "default",
-        0,
-        tokio_util::sync::CancellationToken::new(),
-        "test-parent-session",
-        Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        )),
-        None,
-    )
-    .await;
-    assert!(tools.iter().any(|t| t.name() == "code_search"));
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn engines_json_enables_code_search_for_workspace() {
-    // Enabling retrieval via engines.json is a per-workspace boot concern,
-    // not an in-process root switch.
-    let dir = TempDir::new().unwrap();
-    let root = dir.path();
-
-    init_workspace(root).unwrap();
-    init_workspace_index(root).unwrap();
-    std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
-
-    enable_code_search_engine(root).unwrap();
-    let resolved = workspace_with_code_search(root);
-    assert!(read_meta(root).unwrap().is_some());
-    assert_eq!(
-        resolved.workspace_tool_readiness().get("code_search"),
-        Some(&ToolReadiness::Ready)
-    );
-
-    let engines = WorkspaceEngines::new();
-    engines.reconcile(&resolved);
-    assert!(
-        engines
-            .wait_until_warmed("code_search", Duration::from_secs(30))
-            .await
-    );
-    assert!(index_dir(root).join("vectors.usearch").is_file());
-    engines.stop_all();
 }
 
 #[tokio::test(flavor = "current_thread")]

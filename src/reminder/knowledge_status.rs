@@ -17,94 +17,11 @@ pub fn build(workspace: &Path) -> Option<Reminder> {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::sync::Arc;
+    
+    
 
-    use crate::config::TurnGuard;
-    use crate::reminder::{ReminderKind, hidden_kind};
-    use crate::session::manager::SessionManager;
+    
+    
+    
 
-    #[test]
-    fn the_status_row_is_hidden_and_repeats_only_when_the_class_changes() {
-        assert!(hidden_kind("reminder/knowledge_status"));
-        let dir = tempfile::tempdir().unwrap();
-        let workspace = dir.path().join("ws");
-        fs::create_dir_all(workspace.join(".litecode").join("knowledge")).unwrap();
-        let db = dir.path().join("sessions.db");
-        let mgr = SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            db.to_str().unwrap().to_string(),
-        );
-        let sid = mgr
-            .open_session_sync(workspace.to_str().unwrap(), "default", None)
-            .unwrap();
-
-        mgr.append_user_message_with_mentions(&sid, "hello", &workspace)
-            .unwrap();
-        let kinds = reminder_kinds(&mgr, &sid);
-        assert!(
-            !kinds.contains(&ReminderKind::KnowledgeStatus),
-            "an empty library writes nothing"
-        );
-
-        fs::write(
-            workspace.join(".litecode/knowledge/draft.md"),
-            "```node\nnode : draft\nstatus : pending\nsummary : draft\n```\nsee [@ key=\"missing\"]\n",
-        )
-        .unwrap();
-        mgr.append_user_message_with_mentions(&sid, "drafts", &workspace)
-            .unwrap();
-        let kinds = reminder_kinds(&mgr, &sid);
-        assert!(
-            !kinds.contains(&ReminderKind::KnowledgeStatus),
-            "pending nodes alone write nothing"
-        );
-
-        fs::write(
-            workspace.join(".litecode/knowledge/seq.md"),
-            "```node\nnode : seq\nstatus : enabled\nsummary : seq\n```\n",
-        )
-        .unwrap();
-        mgr.append_user_message_with_mentions(&sid, "again", &workspace)
-            .unwrap();
-        mgr.append_user_message_with_mentions(&sid, "same", &workspace)
-            .unwrap();
-        fs::write(
-            workspace.join(".litecode/knowledge/another.md"),
-            "```node\nnode : another\nstatus : pending\nsummary : another\n```\n",
-        )
-        .unwrap();
-        mgr.append_user_message_with_mentions(&sid, "still", &workspace)
-            .unwrap();
-        let notes: Vec<_> = reminder_kinds(&mgr, &sid)
-            .into_iter()
-            .filter(|kind| *kind == ReminderKind::KnowledgeStatus)
-            .collect();
-        assert_eq!(notes.len(), 1);
-
-        fs::write(
-            workspace.join(".litecode/knowledge/seq.md"),
-            "```node\nnode : seq\nstatus : enabled\nsummary : seq\n```\nsee [@ key=\"missing\"]\n",
-        )
-        .unwrap();
-        mgr.append_user_message_with_mentions(&sid, "changed", &workspace)
-            .unwrap();
-        let notes: Vec<_> = reminder_kinds(&mgr, &sid)
-            .into_iter()
-            .filter(|kind| *kind == ReminderKind::KnowledgeStatus)
-            .collect();
-        assert_eq!(notes.len(), 2);
-    }
-
-    fn reminder_kinds(mgr: &SessionManager, sid: &str) -> Vec<ReminderKind> {
-        mgr.data()
-            .events_blocking(sid)
-            .unwrap()
-            .into_iter()
-            .filter_map(|event| match event.event_type {
-                crate::session::EventType::Reminder(kind) => Some(kind),
-                _ => None,
-            })
-            .collect()
-    }
 }

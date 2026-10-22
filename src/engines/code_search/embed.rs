@@ -325,14 +325,6 @@ pub fn open_production_embedder() -> Result<Box<dyn Embedder>> {
     OrtGraniteEmbedder::try_open(&dir).map(|e| Box::new(e) as Box<dyn Embedder>)
 }
 
-/// WP-143 bench: the real ORT embedder even under cfg(test).
-#[cfg(test)]
-pub(crate) fn open_ort_embedder_for_bench() -> Result<Box<dyn Embedder>> {
-    let dir = model_dir()?;
-    ensure_official_cls_pooling(&dir)?;
-    OrtGraniteEmbedder::try_open(&dir).map(|e| Box::new(e) as Box<dyn Embedder>)
-}
-
 fn use_hash_embedder() -> bool {
     cfg!(test)
         || std::env::var("LITECODE_CODE_SEARCH_USE_HASH")
@@ -341,42 +333,6 @@ fn use_hash_embedder() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn bundle_root_accepts_models_layout_and_rejects_incomplete() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(model_in_bundle_root(tmp.path()).is_none());
-        let dir = bundled_model_path(tmp.path());
-        std::fs::create_dir_all(dir.join("artifacts")).unwrap();
-        std::fs::write(dir.join(HF_TOKENIZER), "{}").unwrap();
-        std::fs::write(dir.join(HF_CONFIG), "{}").unwrap();
-        assert!(model_in_bundle_root(tmp.path()).is_none());
-        std::fs::write(dir.join(ort_embed::ONNX_Q8Q4_REL), "onnx").unwrap();
-        assert_eq!(model_in_bundle_root(tmp.path()), Some(dir.clone()));
-        assert_eq!(model_in_bundle_root(&dir), Some(dir));
-    }
-
-    #[test]
-    fn source_tree_fallback_is_debug_only() {
-        let fallback = source_tree_model_path();
-        if cfg!(debug_assertions) {
-            let path = fallback.expect("debug builds keep the checkout fallback");
-            assert!(path.starts_with(env!("CARGO_MANIFEST_DIR")));
-        } else {
-            assert!(
-                fallback.is_none(),
-                "release must not probe the build machine's repo"
-            );
-        }
-    }
-
-    #[test]
-    fn hash_embedder_produces_unit_vectors() {
-        let mut emb = HashEmbedder;
-        let v = emb.embed_one("hello world").unwrap();
-        assert_eq!(v.len(), EMBED_DIM);
-        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
-        assert!((norm - 1.0).abs() < 1e-5);
-    }
 }

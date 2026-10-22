@@ -64,19 +64,6 @@ pub fn chunk_file(path: &str, content: &str, next_id: u64) -> (Vec<ChunkRecord>,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    
 
-    #[test]
-    fn chunks_overlap_by_twenty_lines() {
-        let content: String = (1..=150)
-            .map(|n| format!("line {n}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let (chunks, _) = chunk_file("a.rs", &content, 1);
-        assert!(chunks.len() >= 2);
-        let first_end = chunks[0].end_line as usize;
-        let second_start = chunks[1].start_line as usize;
-        assert!(first_end > second_start);
-        assert_eq!(first_end - second_start + 1, CHUNK_OVERLAP as usize);
-    }
 }

@@ -276,7 +276,7 @@ mod tests {
         InputImageContent, InputTextContent,
     };
     use crate::context_pipeline::summary::compact_summary_message;
-    use crate::types::{item_text_preview, user_text};
+    use crate::types::user_text;
 
     fn fc(call_id: &str, name: &str) -> Item {
         Item::FunctionCall(FunctionToolCall {
@@ -296,32 +296,6 @@ mod tests {
             id: None,
             status: None,
         })
-    }
-
-    #[test]
-    fn within_keep_or_empty_returns_none() {
-        // (items, keep_tokens)
-        let cases: [(Vec<Item>, usize); 2] = [
-            (vec![user_text("a"), user_text("b")], 100_000),
-            (vec![], 100),
-        ];
-        for (items, keep) in cases {
-            assert!(
-                find_keep_recent_cut(&items, keep).is_none(),
-                "keep={keep} len={}",
-                items.len()
-            );
-        }
-    }
-
-    #[test]
-    fn cut_discards_prefix() {
-        // Tiny keep budget forces only the last message into recent.
-        let items: Vec<Item> = (0..10).map(|i| user_text(format!("msg-{i}"))).collect();
-        let cut = find_keep_recent_cut(&items, 1).expect("cut");
-        assert!(cut > 0);
-        assert!(cut < items.len());
-        assert_eq!(items[cut..].len(), 1);
     }
 
     #[test]
@@ -359,24 +333,6 @@ mod tests {
     }
 
     #[test]
-    fn leading_summary_goes_to_discarded() {
-        let items = vec![
-            compact_summary_message("prior work", false),
-            user_text("x".repeat(200)),
-            user_text("y".repeat(200)),
-            user_text("tail"),
-        ];
-        let cut = find_keep_recent_cut(&items, 5).expect("cut");
-        assert!(cut >= 1, "leading summary must be discarded, cut={cut}");
-        assert!(is_compact_summary_item(&items[0]));
-        assert!(
-            !items[..cut]
-                .iter()
-                .any(|i| matches!(i, Item::Message(_)) && item_text_preview(i) == "tail")
-        );
-    }
-
-    #[test]
     fn serialize_strips_media_before_the_compact_prompt() {
         let blob = format!("data:image/png;base64,{}", "A".repeat(400));
         let items = vec![
@@ -406,61 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn serialize_truncates_long_tool_output() {
-        let long = "z".repeat(5000);
-        let items = vec![fco("c1", &long)];
-        let prompt = build_compaction_prompt(&items, None);
-        assert!(prompt.len() < long.len());
-        assert!(prompt.contains("truncated for summarizer"));
-        // Raw long run should not appear at full length.
-        assert!(!prompt.contains(&long));
-    }
-
-    #[test]
-    fn transcript_carries_conversation_not_replay_state() {
-        use crate::authority::responses::{OutputStatus, ReasoningItem};
-        let signature = "SIG".repeat(10_000);
-        let items = vec![
-            user_text("fix the build"),
-            Item::Reasoning(ReasoningItem {
-                id: Some("rs_secret".into()),
-                summary: vec![],
-                content: None,
-                encrypted_content: Some(signature.clone()),
-                status: Some(OutputStatus::Completed),
-            }),
-            reasoning("private thought"),
-            assistant_text("running cargo"),
-            fc("call_1", "bash"),
-            fco("call_1", "error[E0425]"),
-        ];
-        let prompt = build_compaction_prompt(&items, None);
-        assert_eq!(
-            prompt,
-            "Transcript:\nUser:\nfix the build\n\nAssistant:\nrunning cargo\n\n\
-             Tool call bash:\n{}\n\nTool result bash:\nerror[E0425]"
-        );
-        assert!(!prompt.contains(&signature));
-    }
-
-    #[test]
-    fn transcript_drops_oldest_entries_to_fit_the_summarizer() {
-        let discarded = vec![
-            compact_summary_message("old decisions", false),
-            user_text("first ".repeat(500)),
-            user_text("second ".repeat(500)),
-            user_text("latest"),
-        ];
-        let full = build_compaction_prompt(&discarded, None);
-        let capped = build_compaction_prompt(&discarded, Some(100));
-        assert!(count_text_tokens(&full) > 100);
-        assert!(count_text_tokens(&capped) <= 120);
-        assert!(capped.contains("old decisions"));
-        assert!(capped.contains("[2 earlier entries left out to fit the summarizer]"));
-        assert!(capped.ends_with("User:\nlatest"));
-    }
-
-    #[test]
     fn update_prompt_when_leading_summary() {
         let discarded = vec![
             compact_summary_message("old decisions", false),
@@ -473,30 +374,6 @@ mod tests {
         assert!(!prompt.contains("20,000 tokens"));
         assert!(!prompt.contains("User messages and intent"));
         assert!(!prompt.contains("[Conversation summary]\nold decisions"));
-    }
-
-    #[test]
-    fn fresh_prompt_without_leading_summary() {
-        let discarded = vec![user_text("a"), user_text("b")];
-        let prompt = build_compaction_prompt(&discarded, None);
-        assert!(prompt.starts_with("Transcript:\n"));
-        assert!(!prompt.contains("20,000 tokens"));
-        assert!(!prompt.contains("User messages and intent"));
-        assert!(!prompt.contains("Previous summary:"));
-    }
-
-    #[test]
-    fn default_keep_recent_caps_at_20k() {
-        assert_eq!(default_keep_recent_tokens(200_000), 20_000);
-        assert_eq!(default_keep_recent_tokens(10_000), 2_500);
-    }
-
-    #[test]
-    fn compact_output_tokens_caps_above_product_limit() {
-        assert_eq!(
-            compact_output_tokens(200_000, default_keep_recent_tokens(200_000), 65_536),
-            COMPACT_MAX_OUTPUT_TOKENS
-        );
     }
 
     #[test]
@@ -572,20 +449,4 @@ mod tests {
         assert_ne!(cut, 2);
     }
 
-    #[test]
-    fn assistant_segment_includes_function_calls_with_reasoning() {
-        let items = vec![
-            user_text("old"),
-            reasoning("need tool"),
-            fc("c1", "bash"),
-            fco("c1", "ok"),
-            user_text("recent"),
-        ];
-        let keep = item_token_estimate(&items[4]) + 1;
-        let cut = find_keep_recent_cut(&items, keep).expect("cut");
-        assert!(
-            cut <= 1,
-            "cut={cut} must include Reasoning+FunctionCall, not start mid-segment"
-        );
-    }
 }

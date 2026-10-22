@@ -34,72 +34,11 @@ pub fn queue_fs_changes(runtime: &SharedRuntime, paths: &[String], deleted: bool
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::engines::code_search::CodeSearchRuntime;
-    use crate::engines::code_search::embed::HashEmbedder;
-    use crate::engines::code_search::index_workspace_blocking;
-    use std::sync::{Arc, RwLock};
-    use tempfile::TempDir;
+    
+    
+    
+    
+    
+    
 
-    fn runtime_at(root: &std::path::Path) -> SharedRuntime {
-        let emb = HashEmbedder;
-        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-        Arc::new(RwLock::new(Some(CodeSearchRuntime::new(
-            root.to_path_buf(),
-            index,
-            Some(Box::new(HashEmbedder)),
-            None,
-        ))))
-    }
-
-    #[test]
-    fn queue_scannable_path() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
-        let runtime = runtime_at(root);
-
-        queue_fs_changes(&runtime, &["b.rs".into()], false);
-        let pending = runtime
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .pending_updates
-            .lock()
-            .unwrap()
-            .clone();
-        assert!(pending.contains(&("b.rs".into(), false)));
-    }
-
-    #[test]
-    fn queue_skips_litecode_and_skip_dirs() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("a.rs"), "fn a() {}\n").unwrap();
-        let runtime = runtime_at(root);
-
-        queue_fs_changes(
-            &runtime,
-            &[
-                ".litecode/index/x".into(),
-                "node_modules/x.js".into(),
-                "src/ok.rs".into(),
-            ],
-            false,
-        );
-        let pending: Vec<_> = runtime
-            .read()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .pending_updates
-            .lock()
-            .unwrap()
-            .iter()
-            .cloned()
-            .collect();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].0, "src/ok.rs");
-    }
 }

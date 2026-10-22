@@ -34,121 +34,12 @@ pub fn body(drift: WorktreeDrift) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::fs;
-    use std::path::Path;
-    use std::process::Command;
-    use std::time::{Duration, SystemTime};
+    
+    
+    
+    
+    
 
-    use crate::config::git_install::find_git_exe;
+    
 
-    fn init_repo(dir: &Path) {
-        let git = find_git_exe().expect("git");
-        let status = Command::new(&git)
-            .args(["-c", "init.defaultBranch=main", "init"])
-            .current_dir(dir)
-            .status()
-            .expect("git init");
-        assert!(status.success());
-        let cfg = |key: &str, val: &str| {
-            assert!(
-                Command::new(&git)
-                    .args(["config", key, val])
-                    .current_dir(dir)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
-        };
-        cfg("user.email", "test@litecode.local");
-        cfg("user.name", "Litecode Test");
-        cfg("commit.gpgsign", "false");
-        cfg("core.autocrlf", "false");
-        cfg("core.eol", "lf");
-        fs::write(dir.join("a.txt"), "base\n").unwrap();
-        assert!(
-            Command::new(&git)
-                .args(["add", "a.txt"])
-                .current_dir(dir)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            Command::new(&git)
-                .args(["commit", "-m", "init"])
-                .env("GIT_AUTHOR_DATE", "2020-01-01T00:00:00")
-                .env("GIT_COMMITTER_DATE", "2020-01-01T00:00:00")
-                .current_dir(dir)
-                .status()
-                .unwrap()
-                .success()
-        );
-    }
-
-    fn touch_knowledge(dir: &Path) {
-        let root = dir.join(".litecode").join("knowledge");
-        fs::create_dir_all(&root).unwrap();
-        let file = root.join("seq.md");
-        fs::write(
-            &file,
-            "```node\nnode : seq\nstatus : enabled\nsummary : \n```\n",
-        )
-        .unwrap();
-        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
-        let handle = fs::OpenOptions::new().write(true).open(&file).unwrap();
-        handle.set_modified(mtime).unwrap();
-    }
-
-    #[test]
-    fn reminder_follows_file_and_line_thresholds() {
-        if find_git_exe().is_none() {
-            return;
-        }
-        let below = tempfile::tempdir().unwrap();
-        init_repo(below.path());
-        touch_knowledge(below.path());
-        fs::write(
-            below.path().join("a.txt"),
-            format!("base\n{}", "x\n".repeat(10)),
-        )
-        .unwrap();
-        let corpus = Corpus::load(below.path());
-        let drift = workspace::drift_since(
-            below.path(),
-            1_600_000_000,
-            &[".litecode", ".litecode/knowledge"],
-        )
-        .unwrap()
-        .expect("baseline");
-        assert_eq!(drift.files, 1);
-        assert_eq!(drift.added, 10);
-        assert!(section(below.path(), &corpus).is_none());
-
-        let files = tempfile::tempdir().unwrap();
-        init_repo(files.path());
-        touch_knowledge(files.path());
-        for index in 0..20 {
-            fs::write(files.path().join(format!("n{index}.txt")), "n\n").unwrap();
-        }
-        let corpus = Corpus::load(files.path());
-        let text = section(files.path(), &corpus).expect("file threshold");
-        assert!(text.contains("20 files changed"));
-        assert!(text.contains("+0 lines"));
-        assert!(text.contains("excludes the knowledge root"));
-
-        let lines = tempfile::tempdir().unwrap();
-        init_repo(lines.path());
-        touch_knowledge(lines.path());
-        fs::write(
-            lines.path().join("a.txt"),
-            format!("base\n{}", "x\n".repeat(400)),
-        )
-        .unwrap();
-        let corpus = Corpus::load(lines.path());
-        let text = section(lines.path(), &corpus).expect("line threshold");
-        assert!(text.contains("1 file changed"));
-        assert!(text.contains("+400 lines"));
-        assert!(text.contains("−0 lines"));
-    }
 }

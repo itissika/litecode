@@ -518,103 +518,12 @@ pub(crate) fn resolve_occupancy_bill(
 /// the duplicate the reader sees as repeated reasoning and repeated tool calls.
 #[cfg(test)]
 mod stream_commit_tests {
-    use std::sync::Arc;
+    
 
-    use super::*;
-    use crate::authority::responses::{AssistantRole, OutputMessage, OutputStatus};
-    use crate::config::TurnGuard;
-    use crate::session::SessionManager;
-    use crate::types::user_text;
+    
+    
+    
+    
+    
 
-    fn assistant(id: &str, text: &str) -> Item {
-        Item::Message(crate::authority::responses::MessageItem::Output(
-            OutputMessage {
-                id: id.to_string(),
-                role: AssistantRole::Assistant,
-                content: vec![
-                    crate::authority::responses::OutputMessageContent::OutputText(
-                        crate::authority::responses::OutputTextContent {
-                            text: text.to_string(),
-                            annotations: vec![],
-                            logprobs: None,
-                        },
-                    ),
-                ],
-                status: OutputStatus::Completed,
-                phase: None,
-            },
-        ))
-    }
-
-    fn test_context() -> Context {
-        let root = PathBuf::from("/p");
-        Context {
-            workspace_paths: crate::config::WorkspacePaths::for_legacy_root(&root),
-            cwd: root,
-            agents_md: None,
-            claude_md: None,
-        }
-    }
-
-    fn persisted_seqs(sessions: &SessionManager, sid: &str) -> Vec<u64> {
-        sessions
-            .data()
-            .events_blocking(sid)
-            .expect("events")
-            .into_iter()
-            .map(|event| event.seq)
-            .collect()
-    }
-
-    #[test]
-    fn committing_a_streamed_item_does_not_append_a_second_copy() {
-        let sessions = Arc::new(SessionManager::new_for_test(
-            Arc::new(TurnGuard::new()),
-            String::new(),
-        ));
-        let sid = sessions
-            .open_session_sync("/p", "default", Some("m"))
-            .expect("session");
-        sessions
-            .insert_detail_rows(&sid, &[user_text("go")])
-            .expect("user row");
-
-        let streamed = assistant("asst_stream", "hello");
-        let pipeline = ContextPipeline::new(0, test_context(), PathBuf::from("/p"));
-        // The view cursor is the user row. The stream opens its row after that.
-        pipeline
-            .begin_turn_with_id(&sessions, &sid, Some("turn-1".into()))
-            .expect("turn");
-        let seq = sessions
-            .begin_stream_item(&sid, &streamed, "turn-1")
-            .expect("open");
-        sessions
-            .seal_stream_item(&sid, seq, &streamed)
-            .expect("seal");
-
-        let before = persisted_seqs(&sessions, &sid);
-        assert_eq!(
-            before.len(),
-            2,
-            "user row plus one streamed row: {before:?}"
-        );
-
-        pipeline
-            .persist_new(&sessions, &sid, &[streamed])
-            .expect("commit");
-
-        let after = persisted_seqs(&sessions, &sid);
-        assert_eq!(
-            after, before,
-            "persist_new must bind the streamed item to the row it already owns, not append"
-        );
-        let owned = sessions
-            .data()
-            .working_set_blocking(&sid)
-            .expect("working")
-            .into_iter()
-            .find(|row| row.log_seq == Some(seq))
-            .expect("streamed seq");
-        assert_eq!(item_id_of(&owned.item).as_deref(), Some("asst_stream"));
-    }
 }

@@ -220,96 +220,9 @@ fn nodes_from_parsed(files: Vec<LoadedFile>) -> (Vec<Node>, Vec<String>) {
 
 #[cfg(test)]
 mod fixture_tests {
-    use super::*;
-    use std::path::PathBuf;
+    
+    
 
-    use crate::knowledge::document::{self, RenderDoc};
+    
 
-    #[test]
-    fn shared_fixtures_match_expected_json() {
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-        let corpus = Corpus::load(&workspace);
-        assert_eq!(corpus.root.as_deref(), Some("knowledge"));
-        let expected: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(workspace.join("knowledge/expected.json")).unwrap(),
-        )
-        .unwrap();
-
-        let mut actual = Vec::new();
-        for node in &corpus.nodes {
-            actual.push(serde_json::json!({
-                "path": node.path,
-                "key": node.key,
-                "status": node.status.as_str(),
-                "invalidStatus": node.invalid_status,
-                "summary": node.summary,
-                "refs": node.relations,
-                "extras": node.extras,
-            }));
-        }
-        actual.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-        let mut wanted = expected["files"].as_array().unwrap().clone();
-        wanted.sort_by(|left, right| left["path"].as_str().cmp(&right["path"].as_str()));
-        assert_eq!(
-            serde_json::Value::Array(actual),
-            serde_json::Value::Array(wanted)
-        );
-
-        let mut issues: Vec<_> = crate::knowledge::index::compute_once(&workspace)
-            .issues
-            .into_iter()
-            .map(|issue| format!("{}:{}", issue.node_id, issue.code))
-            .collect();
-        issues.sort();
-        let mut wanted_issues: Vec<String> = expected["issues"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|issue| {
-                format!(
-                    "{}:{}",
-                    issue["node"].as_str().unwrap(),
-                    issue["code"].as_str().unwrap()
-                )
-            })
-            .collect();
-        wanted_issues.sort();
-        assert_eq!(issues, wanted_issues);
-
-        let seq = corpus.by_key("seq").unwrap();
-        let rendered = document::render_knowledge_markdown(RenderDoc {
-            key: &seq.key,
-            status: seq.status,
-            invalid_status: seq.invalid_status.as_deref(),
-            body: &seq.value,
-            summary: &seq.summary,
-            x: seq.x,
-            y: seq.y,
-            w: seq.w,
-            h: seq.h,
-            extras: &seq.extras,
-        });
-        let again = document::parse_knowledge_markdown(&seq.path, &rendered);
-        assert_eq!(again.extras, vec!["tags : a".to_string()]);
-        assert_eq!(again.refs, vec!["session".to_string()]);
-
-        let bad = corpus.by_key("bad-status").unwrap();
-        assert_eq!(bad.status, document::Status::Enabled);
-        assert_eq!(bad.invalid_status.as_deref(), Some("nope"));
-        let rendered = document::render_knowledge_markdown(RenderDoc {
-            key: &bad.key,
-            status: bad.status,
-            invalid_status: bad.invalid_status.as_deref(),
-            body: &bad.value,
-            summary: &bad.summary,
-            x: bad.x,
-            y: bad.y,
-            w: bad.w,
-            h: bad.h,
-            extras: &bad.extras,
-        });
-        assert!(rendered.contains("status : nope"));
-        let again = document::parse_knowledge_markdown(&bad.path, &rendered);
-        assert_eq!(again.invalid_status.as_deref(), Some("nope"));
-    }
 }

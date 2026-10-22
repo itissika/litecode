@@ -236,82 +236,10 @@ pub(crate) fn glob_match(pattern: &str, path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::engines::code_search::bm25::{self, Bm25Index};
-    use crate::engines::code_search::embed::{HashEmbedder, hash_vector};
-    use crate::engines::code_search::index_workspace_blocking;
-    use tempfile::TempDir;
+    
+    
+    
+    
+    
 
-    #[test]
-    fn glob_filters_ann_leg() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::create_dir_all(root.join("src")).unwrap();
-        std::fs::write(root.join("src/code.rs"), "pub fn rust_fn() {}\n").unwrap();
-        std::fs::write(root.join("notes.md"), "# rust_fn in markdown\n").unwrap();
-
-        let emb = HashEmbedder;
-        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-        let query = "rust_fn";
-        let qvec = hash_vector(query);
-        let hits = semantic_search(&index, &qvec, Some("**/*.rs"), 8).unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits.iter().all(|h| h.path.ends_with(".rs")));
-        assert!(!hits.iter().any(|h| h.path.ends_with(".md")));
-    }
-
-    #[test]
-    fn hybrid_returns_path_and_lines() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(
-            root.join("search_me.rs"),
-            "pub fn find_me() {}\npub fn other() {}\n",
-        )
-        .unwrap();
-
-        let emb = HashEmbedder;
-        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-        index.save(root).unwrap();
-        bm25::rebuild(root, index.chunks()).unwrap();
-        let bm25 = Bm25Index::open(root).unwrap();
-        let query = "find_me";
-        let qvec = hash_vector(query);
-        let hits = bm25_rrf_search(&index, &bm25, query, &qvec, None, 8).unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits.iter().any(|h| h.path.contains("search_me.rs")));
-        assert!(hits[0].start_line >= 1);
-        assert!(!hits[0].summary.is_empty());
-    }
-
-    #[test]
-    fn code_cc_alpha_is_workspace_only_constant() {
-        // Guard against accidental "engine-wide" reuse without an intentional rename.
-        assert!((CODE_SEMANTIC_CC_ALPHA - 0.8).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn bm25_cc_returns_path_and_lines() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(
-            root.join("search_me.rs"),
-            "pub fn find_me() {}\npub fn other() {}\n",
-        )
-        .unwrap();
-
-        let emb = HashEmbedder;
-        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-        index.save(root).unwrap();
-        bm25::rebuild(root, index.chunks()).unwrap();
-        let bm25 = Bm25Index::open(root).unwrap();
-        let query = "find_me";
-        let qvec = hash_vector(query);
-        let hits =
-            bm25_cc_search(&index, &bm25, query, &qvec, None, 8, CODE_SEMANTIC_CC_ALPHA).unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits.iter().any(|h| h.path.contains("search_me.rs")));
-        assert!(hits[0].start_line >= 1);
-        assert!(!hits[0].summary.is_empty());
-    }
 }

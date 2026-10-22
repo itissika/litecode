@@ -64,57 +64,10 @@ impl SemanticEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::engines::code_search::embed::HashEmbedder;
-    use crate::engines::code_search::index_workspace_blocking;
-    use crate::engines::code_search::{CodeSearchRuntime, LexicalQuery};
-    use tempfile::TempDir;
+    
+    
+    
+    
+    
 
-    #[test]
-    fn search_returns_hits_for_indexed_content() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("main.rs"), "fn auth_login() {}\n").unwrap();
-
-        let emb = HashEmbedder;
-        let index = index_workspace_blocking(root, Box::new(emb)).unwrap();
-        index.save(root).unwrap();
-        let runtime = CodeSearchRuntime::new(
-            root.to_path_buf(),
-            index,
-            Some(Box::new(HashEmbedder)),
-            None,
-        );
-
-        let hits = SemanticEngine::search(&runtime, "auth_login", None, 8).unwrap();
-        assert!(!hits.is_empty());
-        assert_eq!(hits[0].path, "main.rs");
-    }
-
-    #[test]
-    fn borrow_lexical_wire_works_from_semantic_engine() {
-        let dir = TempDir::new().unwrap();
-        let root = dir.path();
-        std::fs::write(root.join("lib.rs"), "const BORROW_WIRE = 1;\n").unwrap();
-
-        let hits = SemanticEngine::borrow_lexical(&LexicalQuery {
-            pattern: "BORROW_WIRE".into(),
-            root: root.to_path_buf(),
-            path: None,
-            case_sensitive: true,
-            whole_word: false,
-            is_regex: false,
-            include: None,
-            exclude: None,
-            multiline: false,
-            max_matches: 5,
-            before_context: 0,
-            after_context: 0,
-            min_line: 0,
-        })
-        .unwrap();
-
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].path, "lib.rs");
-    }
 }

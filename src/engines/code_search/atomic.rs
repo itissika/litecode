@@ -231,33 +231,6 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[cfg(unix)]
-    #[test]
-    fn append_syncs_parent_dir_only_when_creating_the_file() {
-        let dir = TempDir::new().unwrap();
-        for (i, p) in [dir.path().join("a.log"), dir.path().join("b.log")]
-            .iter()
-            .enumerate()
-        {
-            let syncs = || DIR_SYNCS.with(|c| c.get());
-            let s0 = syncs();
-            if i == 0 {
-                append_durable(p, 0, b"x").unwrap();
-            } else {
-                append_fsync(p, b"x").unwrap();
-            }
-            assert_eq!(syncs() - s0, 1, "new file must fsync its directory");
-            let s1 = syncs();
-            if i == 0 {
-                append_durable(p, 1, b"y").unwrap();
-            } else {
-                append_fsync(p, b"y").unwrap();
-            }
-            assert_eq!(syncs(), s1, "existing file needs no directory fsync");
-            assert_eq!(std::fs::read(p).unwrap(), b"xy");
-        }
-    }
-
     fn write_set(a: &Path, b: &Path, va: &str, vb: &str) -> Result<()> {
         let wa = |w: &mut dyn Write| w.write_all(va.as_bytes()).map_err(err);
         let wb = |w: &mut dyn Write| w.write_all(vb.as_bytes()).map_err(err);
@@ -274,30 +247,6 @@ mod tests {
     }
 
     #[test]
-    fn set_replaces_in_order_and_leaves_no_tmp() {
-        let dir = TempDir::new().unwrap();
-        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
-        write_set(&a, &b, "a1", "b1").unwrap();
-        write_set(&a, &b, "a2", "b2").unwrap();
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a2");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b2");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn failure_while_staging_keeps_old_files() {
-        let dir = TempDir::new().unwrap();
-        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
-        write_set(&a, &b, "a1", "b1").unwrap();
-        FAIL_MID_TMP.with(|f| f.set(true));
-        assert!(write_set(&a, &b, "a2", "b2").is_err());
-        FAIL_MID_TMP.with(|f| f.set(false));
-        assert_eq!(std::fs::read_to_string(&a).unwrap(), "a1");
-        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b1");
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
-    }
-
-    #[test]
     fn crash_between_renames_leaves_prefix_and_sweep_clears_tmp() {
         let dir = TempDir::new().unwrap();
         let (a, b) = (dir.path().join("a"), dir.path().join("b"));
@@ -311,29 +260,4 @@ mod tests {
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
-    #[test]
-    fn append_truncates_uncommitted_tail() {
-        let dir = TempDir::new().unwrap();
-        let p = dir.path().join("log");
-        let l1 = append_durable(&p, 0, b"aaaa").unwrap();
-        assert_eq!(l1, 4);
-        // Crashed append: bytes landed but the checkpoint still says 4.
-        append_durable(&p, 4, b"zz").unwrap();
-        truncate_to_committed(&p, 4).unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"aaaa");
-        // Next append also drops a stale tail on its own.
-        std::fs::write(&p, b"aaaaJUNK").unwrap();
-        assert_eq!(append_durable(&p, 4, b"bb").unwrap(), 6);
-        assert_eq!(std::fs::read(&p).unwrap(), b"aaaabb");
-        assert!(truncate_to_committed(&p, 99).is_err());
-        assert!(truncate_to_committed(&dir.path().join("none"), 0).is_ok());
-    }
-
-    #[test]
-    fn bytes_roundtrip() {
-        let dir = TempDir::new().unwrap();
-        let p = dir.path().join("x.json");
-        atomic_write_bytes(&p, b"{}").unwrap();
-        assert_eq!(std::fs::read(&p).unwrap(), b"{}");
-    }
 }

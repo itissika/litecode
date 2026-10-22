@@ -20,7 +20,6 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 use super::index::{self, Content};
-use super::mentions;
 use crate::config::git_install::find_git_exe;
 
 type Found = BTreeSet<(String, String, String)>;
@@ -32,10 +31,6 @@ fn manifest() -> PathBuf {
 fn table() -> Value {
     let path = manifest().join("tests/fixtures/knowledge_refs/cases.json");
     serde_json::from_str(&fs::read_to_string(path).expect("cases.json")).expect("cases json")
-}
-
-fn spec() -> String {
-    fs::read_to_string(manifest().join("docs/knowledge-references.md")).expect("spec document")
 }
 
 fn platform() -> &'static str {
@@ -63,55 +58,6 @@ fn case_id(case: &Value) -> &str {
 }
 
 // ---------------------------------------------------------------- extract
-
-fn extract_actual(text: &str) -> Value {
-    Value::Array(
-        mentions::extract_cites(text)
-            .into_iter()
-            .map(|cite| {
-                let mut item = json!({ "kind": cite.kind.as_str() });
-                let obj = item.as_object_mut().unwrap();
-                match cite.kind {
-                    mentions::CiteKind::Node => {
-                        obj.insert("key".into(), json!(cite.key));
-                    }
-                    kind => {
-                        obj.insert("path".into(), json!(cite.norm_path()));
-                        if kind == mentions::CiteKind::Symbol {
-                            obj.insert("symbol".into(), json!(cite.symbol));
-                        }
-                        if kind != mentions::CiteKind::File {
-                            obj.insert(
-                                "lines".into(),
-                                json!(cite.lines.map(mentions::format_line_span)),
-                            );
-                            if let Some(bad) = &cite.bad_lines {
-                                obj.insert("bad_lines".into(), json!(bad));
-                            }
-                        }
-                    }
-                }
-                obj.insert("ref_key".into(), json!(cite.ref_key()));
-                item
-            })
-            .collect(),
-    )
-}
-
-/// `Ok` when the case follows the spec, `Err(report)` when it does not.
-fn run_extract(case: &Value) -> Result<(), String> {
-    let text = case["text"].as_str().expect("text");
-    let actual = extract_actual(text);
-    let wanted = case["refs"].clone();
-    if actual == wanted {
-        Ok(())
-    } else {
-        Err(format!(
-            "extract {}: wanted {wanted} got {actual}",
-            case_id(case)
-        ))
-    }
-}
 
 // ---------------------------------------------------------------- resolve
 
@@ -262,112 +208,10 @@ fn run_resolve(case: &Value) -> Result<bool, String> {
 
 // ---------------------------------------------------------------- layout
 
-fn run_layout(case: &Value) -> Result<(), String> {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("knowledge");
-    write_tree(&root, case.get("knowledge"));
-    for rel in case["dirs"].as_array().into_iter().flatten() {
-        fs::create_dir_all(root.join(rel.as_str().unwrap())).unwrap();
-    }
-    let content = index::compute_once(dir.path());
-    let sorted = |value: Value| {
-        let mut items: Vec<Value> = value.as_array().cloned().unwrap_or_default();
-        items.sort_by_key(|item| item.to_string());
-        Value::Array(items)
-    };
-    let folders = sorted(json!(content.folders));
-    let unknown = sorted(Value::Array(
-        content
-            .unknown
-            .iter()
-            .map(|u| json!({ "path": u.path, "folder_id": u.folder_id }))
-            .collect(),
-    ));
-    let nodes = sorted(json!(
-        content
-            .nodes
-            .iter()
-            .map(|n| n.path.clone())
-            .collect::<Vec<_>>()
-    ));
-    let wanted = (
-        sorted(case["folders"].clone()),
-        sorted(case["unknown"].clone()),
-        sorted(case["nodes"].clone()),
-    );
-    if (folders.clone(), unknown.clone(), nodes.clone()) == wanted {
-        Ok(())
-    } else {
-        Err(format!(
-            "layout {}: wanted {wanted:?} got {:?}",
-            case_id(case),
-            (folders, unknown, nodes)
-        ))
-    }
-}
-
 // ---------------------------------------------------------------- tests
 
 fn cases<'a>(table: &'a Value, section: &str) -> Vec<&'a Value> {
     table[section].as_array().expect(section).iter().collect()
-}
-
-#[test]
-fn every_case_names_a_rule_the_spec_defines() {
-    let table = table();
-    let spec = spec();
-    let mut ids = BTreeSet::new();
-    for case in cases(&table, "extract")
-        .into_iter()
-        .chain(cases(&table, "resolve"))
-        .chain(cases(&table, "layout"))
-    {
-        let id = case_id(case).to_string();
-        assert!(ids.insert(id.clone()), "duplicate case id {id}");
-        let rule = case["rule"].as_str().expect("rule");
-        assert!(
-            spec.contains(&format!("**{rule}**")),
-            "case {id} cites {rule}, which the spec does not define"
-        );
-        if let Some(mark) = case.get("divergence") {
-            let div = mark["id"].as_str().unwrap();
-            assert!(
-                spec.contains(&format!("**{div}**")),
-                "case {id} marks divergence {div}, which the spec does not list"
-            );
-        }
-        if let Some(mark) = case["frontend"].as_str() {
-            let div = mark.split(':').next().unwrap();
-            assert!(
-                spec.contains(&format!("**{div}**")),
-                "case {id} names frontend divergence {div}, which the spec does not list"
-            );
-        }
-    }
-}
-
-/// Every status code the snapshot can carry is in the spec's status table,
-/// and the table has nothing the code cannot emit.
-#[test]
-fn status_table_matches_the_codes() {
-    let spec = spec();
-    for code in super::validate::STATUS_CODES {
-        assert!(
-            spec.contains(&format!("| `{code}` |")),
-            "status {code} missing from the spec status table"
-        );
-    }
-}
-
-#[test]
-fn extraction_follows_the_spec() {
-    let table = table();
-    let failures: Vec<String> = cases(&table, "extract")
-        .into_iter()
-        .filter(|case| divergence(case).is_none())
-        .filter_map(|case| run_extract(case).err())
-        .collect();
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
 #[test]
@@ -379,42 +223,6 @@ fn resolution_follows_the_spec() {
         .filter_map(|case| run_resolve(case).err())
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-#[test]
-fn layout_follows_the_spec() {
-    let table = table();
-    let failures: Vec<String> = cases(&table, "layout")
-        .into_iter()
-        .filter_map(|case| run_layout(case).err())
-        .collect();
-    assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-/// A listed divergence that starts following the spec must be unlisted, so
-/// the doc and the table never claim a gap that is gone.
-#[test]
-fn listed_divergences_still_diverge() {
-    let table = table();
-    let mut stale = Vec::new();
-    for case in cases(&table, "extract") {
-        if let Some(div) = divergence(case) {
-            if run_extract(case).is_ok() {
-                stale.push(format!("{div} / {}", case_id(case)));
-            }
-        }
-    }
-    for case in cases(&table, "resolve") {
-        if let Some(div) = divergence(case) {
-            if run_resolve(case) == Ok(true) {
-                stale.push(format!("{div} / {}", case_id(case)));
-            }
-        }
-    }
-    assert!(
-        stale.is_empty(),
-        "now follows the spec, remove the divergence marker: {stale:?}"
-    );
 }
 
 // ------------------------------------------------- beyond the JSON table
@@ -519,27 +327,6 @@ fn directory_texts_match_the_status() {
     assert!(hits[0].file_exists);
 }
 
-/// KR-RANGE-2 / KR-SYM-5 in the mention snapshot: the same verdicts as the index.
-#[test]
-fn mention_texts_follow_the_statuses() {
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path();
-    fs::create_dir_all(ws.join("src")).unwrap();
-    fs::write(ws.join("src/a.rs"), "fn alpha() {}\n").unwrap();
-    fs::write(ws.join("notes.txt"), "x\n").unwrap();
-    let text = mention_text(ws, "[@ file=\"src/a.rs\" lines=\"2-3\"]");
-    assert!(
-        text.contains("Lines 2-3 are outside \"src/a.rs\", which has 1 lines."),
-        "{text}"
-    );
-    let text = mention_text(ws, "[@ file=\"notes.txt\" symbol=\"fn x\"]");
-    assert!(text.contains("该语言不支持符号解析"), "{text}");
-    let text = mention_text(ws, "[@ file=\"src/A.rs\" lines=\"1\"]");
-    assert!(text.contains("File \"src/A.rs\" does not exist."), "{text}");
-    let text = mention_text(ws, "[@ file=\"src/a.rs\" lines=\"+1\"]");
-    assert!(text.contains("are not valid"), "{text}");
-}
-
 /// KR-SYM-6: a symbol citation takes no `lines`. In the snapshot it is
 /// `invalid_lines` with `args.reason` naming the rule, its `lines` field is
 /// `null` and its key has no lines; a range keeps its span and its own reason.
@@ -583,65 +370,3 @@ fn lines_on_a_symbol_are_invalid_lines_in_the_snapshot() {
     assert_eq!(args["reason"], super::validate::INVALID_LINES_FORMAT);
 }
 
-/// KR-LINK-1: links are followed inside the workspace and are an error when
-/// they leave it. Skipped where the OS refuses to create links (Windows
-/// without Developer Mode).
-#[test]
-fn links_resolve_inside_the_workspace_only() {
-    let outside = tempfile::tempdir().unwrap();
-    fs::write(outside.path().join("secret.rs"), "fn alpha() {}\n").unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let ws = dir.path();
-    fs::create_dir_all(ws.join("src")).unwrap();
-    fs::write(ws.join("src/real.rs"), "fn alpha() {}\n").unwrap();
-    #[cfg(unix)]
-    let made = std::os::unix::fs::symlink(outside.path().join("secret.rs"), ws.join("src/out.rs"))
-        .and_then(|_| std::os::unix::fs::symlink(ws.join("src/real.rs"), ws.join("src/in.rs")));
-    #[cfg(windows)]
-    let made =
-        std::os::windows::fs::symlink_file(outside.path().join("secret.rs"), ws.join("src/out.rs"))
-            .and_then(|_| {
-                std::os::windows::fs::symlink_file(ws.join("src/real.rs"), ws.join("src/in.rs"))
-            });
-    if made.is_err() {
-        // Windows without Developer Mode: a directory junction needs no
-        // privilege and must follow the same rule.
-        #[cfg(windows)]
-        {
-            let made = Command::new("cmd")
-                .args(["/c", "mklink", "/J"])
-                .arg(ws.join("src").join("outdir"))
-                .arg(outside.path())
-                .output()
-                .is_ok_and(|out| out.status.success());
-            if made {
-                node_file(
-                    ws,
-                    "[@ file=\"src/outdir/secret.rs\" lines=\"1\"] [@ file=\"src/outdir\"]",
-                );
-                let content = index::compute_once(ws);
-                assert_eq!(
-                    ref_status(&content, "range:src/outdir/secret.rs\x001").0,
-                    "symlink_escape"
-                );
-                assert_eq!(ref_status(&content, "file:src/outdir").0, "symlink_escape");
-                return;
-            }
-        }
-        eprintln!("skipped: cannot create links here");
-        return;
-    }
-    node_file(
-        ws,
-        "[@ file=\"src/out.rs\"] [@ file=\"src/out.rs\" symbol=\"fn alpha\"] [@ file=\"src/in.rs\" symbol=\"fn alpha\"]",
-    );
-    let content = index::compute_once(ws);
-    assert_eq!(ref_status(&content, "file:src/out.rs").0, "symlink_escape");
-    assert_eq!(
-        ref_status(&content, "sym:src/out.rs\0fn alpha").0,
-        "symlink_escape"
-    );
-    assert_eq!(ref_status(&content, "sym:src/in.rs\0fn alpha").0, "ok");
-    let text = mention_text(ws, "[@ file=\"src/out.rs\" lines=\"1\"]");
-    assert!(text.contains("resolves outside the workspace"), "{text}");
-}

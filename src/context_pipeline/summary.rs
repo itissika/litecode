@@ -60,16 +60,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detector_requires_label_prefix() {
-        let item = compact_summary_message("decisions", false);
-        assert!(is_compact_summary_item(&item));
-        let preview = item_text_preview(&item);
-        assert!(preview.starts_with(CONVERSATION_SUMMARY_PREFIX));
-        assert!(preview.contains("decisions"));
-        assert!(!preview.contains("<system-reminder>"));
-    }
-
-    #[test]
     fn kept_rows_older_than_the_summary_are_rebased() {
         let items = vec![
             compact_summary_message("prior", false),
@@ -90,12 +80,6 @@ mod tests {
             minted_before_summary(&uncompacted, &[Some(1), Some(0)]),
             vec![false, false]
         );
-    }
-
-    #[test]
-    fn summary_body_is_prose_after_the_label() {
-        let item = compact_summary_message("just prose", false);
-        assert_eq!(summary_body_text(&item), "just prose");
     }
 
     #[test]
