@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-22T05:24:55.367Z",
+  "updated_at": "2026-10-22T05:26:46.121Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -8753,6 +8753,24 @@
         "age_sec": 1381,
         "old_pid": 19735,
         "via": "ops.wp softEnsure"
+      }
+    },
+    {
+      "id": "E-1792646806117-87620-WP210-approval_requested",
+      "ts": "2026-10-22T05:26:46.117Z",
+      "type": "team_ops.approval_requested",
+      "source": "ops.wp",
+      "summary": "WP-210 plan awaiting approval by gm (owner backend_mid)",
+      "wp": "WP-210",
+      "acked": [],
+      "meta": {
+        "stage": "plan",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-210"
+        ],
+        "target": "gm"
       }
     }
   ],
