@@ -15912,13 +15912,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "review",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-210",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-22T05:26:46.116Z",
+      "progress": "awaiting acceptance by gm",
+      "status_entered_at": "2026-10-22T05:54:33.042Z",
       "parent": null,
       "goal": "按 Andy 已定决策落地 A–K：失败保留部分结果、运行时异常行列栈、结构化截断、窄日志车道、保留 key 序、run 工具诚实结果（shell 身份/转码/stdout-stderr 分字段）、统一 ok 契约、read 降噪、只读 ls/stat/exists 与 LSP 暴露、websearch top_k/results[]、知识库失效引用清理；详见 brief.md",
       "approver": "gm",
@@ -15944,6 +15944,24 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "plan: artifacts/WP-210/plan.md, Q1-Q16 附推荐"
+        },
+        {
+          "ts": "2026-10-22T05:27:32.833Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q16 按推荐批；E 改 boundary IndexMap，快照随之变属预期；F 字节夹具单测，Windows 由 Andy 本地实测；protected 断言改动逐条报备"
+        },
+        {
+          "ts": "2026-10-22T05:27:56.336Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-22T05:54:33.042Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": null
         }
       ]
     }

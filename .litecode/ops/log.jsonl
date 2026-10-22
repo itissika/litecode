@@ -1478,3 +1478,6 @@
 {"ts":"2026-10-22T05:24:55.345Z","kind":"wp_lifecycle","source":"gm","summary":"WP-210: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T05:26:46.033Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T05:26:46.202Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T05:27:32.905Z","kind":"wp_lifecycle","source":"gm","summary":"WP-210: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T05:27:56.411Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T05:54:33.142Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-210: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
