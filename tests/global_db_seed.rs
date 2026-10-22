@@ -107,8 +107,8 @@ fn config_global_db_migration_and_seed() {
     let default_tools = &settings.agents.get("default").unwrap().tools;
     assert!(default_tools.contains_key("read"));
     assert!(
-        default_tools.contains_key("run_command"),
-        "default seed must bind run_command"
+        default_tools.contains_key("run"),
+        "default seed must bind run"
     );
     assert!(
         !default_tools.contains_key("bash"),

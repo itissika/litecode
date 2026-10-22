@@ -1323,11 +1323,11 @@ async fn settings_apply_preset_rewrites_policy_and_path_mode() {
         .json()
         .await
         .expect("json");
-    assert_eq!(agent["tools"]["bash"]["last_applied_preset"], "SAFE");
-    assert_eq!(agent["tools"]["bash"]["path_mode"], "workspace_only");
-    assert_eq!(agent["tools"]["bash"]["policy"]["default"], "deny");
+    assert_eq!(agent["tools"]["run"]["last_applied_preset"], "SAFE");
+    assert_eq!(agent["tools"]["run"]["path_mode"], "workspace_only");
+    assert_eq!(agent["tools"]["run"]["policy"]["default"], "deny");
     assert_eq!(
-        agent["tools"]["bash"]["policy"]["rules"][0]["id"],
+        agent["tools"]["run"]["policy"]["rules"][0]["id"],
         "readonly_command"
     );
     assert_eq!(agent["tools"]["write"]["policy"]["default"], "ask");
@@ -1355,11 +1355,11 @@ async fn settings_put_agent_expands_last_applied_preset_per_tool() {
         .expect("json");
     agent.as_object_mut().unwrap().remove("ok");
 
-    // Leave other tools on ALL; flip only bash to SAFE via last_applied_preset.
+    // Leave other tools on ALL; flip only run to SAFE via last_applied_preset.
     // Stale ALL policy in the body should be overwritten on write.
-    agent["tools"]["bash"]["last_applied_preset"] = serde_json::json!("SAFE");
-    agent["tools"]["bash"]["policy"] = serde_json::json!({ "default": "allow", "rules": [] });
-    agent["tools"]["bash"]["path_mode"] = serde_json::json!("unrestricted");
+    agent["tools"]["run"]["last_applied_preset"] = serde_json::json!("SAFE");
+    agent["tools"]["run"]["policy"] = serde_json::json!({ "default": "allow", "rules": [] });
+    agent["tools"]["run"]["path_mode"] = serde_json::json!("unrestricted");
 
     let put = client
         .put(format!("http://{addr}/api/settings/agents/default"))
@@ -1377,11 +1377,11 @@ async fn settings_put_agent_expands_last_applied_preset_per_tool() {
         .json()
         .await
         .expect("json");
-    assert_eq!(loaded["tools"]["bash"]["last_applied_preset"], "SAFE");
-    assert_eq!(loaded["tools"]["bash"]["path_mode"], "workspace_only");
-    assert_eq!(loaded["tools"]["bash"]["policy"]["default"], "deny");
+    assert_eq!(loaded["tools"]["run"]["last_applied_preset"], "SAFE");
+    assert_eq!(loaded["tools"]["run"]["path_mode"], "workspace_only");
+    assert_eq!(loaded["tools"]["run"]["policy"]["default"], "deny");
     assert_eq!(
-        loaded["tools"]["bash"]["policy"]["rules"][0]["id"],
+        loaded["tools"]["run"]["policy"]["rules"][0]["id"],
         "readonly_command"
     );
     // Sibling tool untouched by the single-tool draft change.
@@ -2029,7 +2029,7 @@ async fn settings_mcp_server_rejects_builtin_id() {
     let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
     let addr = spawn_server(state, web_dist).await;
     let res = test_http_client()
-        .put(format!("http://{addr}/api/settings/mcp-servers/bash"))
+        .put(format!("http://{addr}/api/settings/mcp-servers/run"))
         .json(&serde_json::json!({
             "command": "echo",
             "args": [],
