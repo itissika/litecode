@@ -15686,13 +15686,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "review",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-207",
-      "progress": "awaiting acceptance by gm",
-      "status_entered_at": "2026-10-22T01:51:51.056Z",
+      "progress": "closed done by gm: 验收 PASS @3acfe31：全量 2710/0/4 ignored；栈修复 3/3；覆盖未降；删除偏轻，后续删减包另议",
+      "status_entered_at": null,
       "parent": null,
       "goal": "清理测试膨胀：删除过时/冗余/低价值测试，保留核心路径覆盖地图，修 ptc 栈溢出可捕获 bug，lib+集成测试全绿",
       "approver": "gm",
@@ -15736,6 +15736,49 @@
           "actor": "backend_mid",
           "action": "deliver",
           "note": "tip dadd9e1; full lib+tests 0 red on b81a42d"
+        },
+        {
+          "ts": "2026-10-22T01:54:35.825Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "验收 PASS @3acfe31：全量 2710/0/4 ignored；栈修复 3/3；覆盖未降；删除偏轻，后续删减包另议",
+          "to": "done"
+        }
+      ]
+    },
+    {
+      "id": "WP-208",
+      "domain": "harness-core",
+      "title": "测试大幅瘦身：默认删除，只守关键模块核心链路（目标 ≤~1000）",
+      "result": "核心链路覆盖地图前后对照；分类删除清单；cargo test lib+tests 全绿；未合 main",
+      "done_when": [
+        "每核心链路≥1条有效测",
+        "deletions 按类别/文件计数",
+        "全量 cargo test 绿",
+        "无 #[ignore]",
+        "无产品改动",
+        "push feat/tool-contract-ptc",
+        "未合 main"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-208",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "按 Andy 方向激进删测：仅保留关键模块核心链路与真实回归测，全套降至约 1000 条以内，全量绿",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-22T01:56:23.535Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 按 Andy 方向激进删测：仅保留关键模块核心链路与真实回归测，全套降至约 1000 条以内，全量绿"
         }
       ]
     }
