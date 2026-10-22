@@ -83,8 +83,10 @@ async fn large_result_is_budgeted_in_the_request() {
     let text = captured_run_code(r#"return "A".repeat(200000) + "END_SENTINEL";"#).await;
     assert!(text.len() <= 65_536, "{}", text.len());
     assert!(!text.starts_with("[blob:"), "{text}");
-    assert!(text.contains("END_SENTINEL"), "{text}");
-    assert!(text.contains("bytes omitted"), "{text}");
+    // WP-209: token budget (8k) keeps a prefix and names the cut at the start.
+    let result = text.split_once("result:\n").expect("result section").1;
+    assert!(result.lines().next().unwrap_or("").contains("exceeds 8.0k; truncated"), "{text}");
+    assert!(result.contains("tok]"), "{text}");
     assert!(text.starts_with("run_code ok"), "{text}");
 }
 

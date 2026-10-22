@@ -83,18 +83,41 @@ return { ok: true };
     )
     .await;
     assert_eq!(result.level, ToolSignalLevel::Ok, "{}", result.content);
+    // WP-209: logs collapse to one line on success; kept (tail, 2k tok) on failure.
     assert!(
-        result.content.contains("[log] hello 42"),
+        result.content.contains("logs omitted (2 lines)"),
         "{}",
         result.content
     );
-    assert!(
-        result.content.contains("[error] warn"),
-        "{}",
-        result.content
-    );
+    assert!(!result.content.contains("hello 42"), "{}", result.content);
     assert_eq!(run_code_result(&result.content), json!({ "ok": true }));
-    assert!(result.content.contains("hello 42"), "{}", result.content);
+
+    let failing = FunctionToolCall {
+        arguments: json!({ "code": "console.log(\"hello\", 42);\nconsole.error(\"warn\");\nthrow new Error(\"boom\");" }).to_string(),
+        call_id: "code-logs-2".to_string(),
+        namespace: None,
+        name: "run_code".to_string(),
+        id: None,
+        status: None,
+    };
+    let result = run_tool(
+        &failing,
+        &tools,
+        &permission,
+        &ctx,
+        "code-runtime-session",
+        "default",
+        deny_permission_sink().as_ref(),
+        tokio_util::sync::CancellationToken::new(),
+        &data_root,
+        32_768,
+        None,
+        process_write_lock(),
+        None,
+    )
+    .await;
+    assert!(result.content.contains("[log] hello 42"), "{}", result.content);
+    assert!(result.content.contains("[error] warn"), "{}", result.content);
 
     let oversized = format!(
         "return \"x\".repeat({});",

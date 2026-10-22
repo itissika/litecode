@@ -1,8 +1,11 @@
 //! Model-facing text for one `run_code` execution.
 //!
 //! Default agent view is only three blocks: head, optional logs, optional result.
-//! The view stays inside [`RUN_CODE_VIEW_MAX_BYTES`]. Cuts land on UTF-8
-//! boundaries and say what was omitted. This module does not emit a JSON copy
+//! Result: uniform object arrays render as `[N]{a,b}:` tables, everything else
+//! as compact JSON (strings verbatim), capped at [`RESULT_TOKEN_BUDGET`] cl100k
+//! tokens. Logs: one `logs omitted (N lines)` line on success; on failure the
+//! tail within [`FAILURE_LOGS_TOKEN_BUDGET`]. [`RUN_CODE_VIEW_MAX_BYTES`] stays as
+//! a byte fallback. Cuts land on UTF-8 boundaries and say what was omitted. This module does not emit a JSON copy
 //! of the run.
 
 use std::collections::BTreeMap;
@@ -19,7 +22,6 @@ pub const RUN_CODE_VIEW_MAX_BYTES: usize = 65_536;
 
 const RESERVE_BYTES: usize = 512;
 const HEADER_CAP: usize = 1024;
-const LOGS_FLOOR: usize = 12 * 1024;
 const HEAD_MESSAGE_CAP: usize = 240;
 
 /// One nested call as counted for the head. Kept for host/tests; not rendered
@@ -79,37 +81,302 @@ pub(super) struct RunReport {
 pub(super) fn render_model_view(report: &RunReport) -> String {
     let fixed = vec![render_header_block(report)];
     let fixed_len = joined_len(&fixed);
-    let result_body = report.value.as_ref().map(render_result_body);
-    let has_logs = !report.logs.is_empty();
-    let mut logs_cap = logs_budget(fixed_len, result_body.as_deref(), has_logs);
-    let mut text;
-    let mut guard = 0;
-    loop {
-        let logs = render_logs(&report.logs, logs_cap, report.output_limited);
-        // `remaining_after` already reserved the separator before this section.
-        // The extra 2 bytes are the separator between logs and result, which
-        // `logs_budget` also reserved when a result is present.
-        let used_logs = logs.as_ref().map(|logs| logs.len() + 2).unwrap_or(0);
-        let mut result_cap = remaining_after(fixed_len).saturating_sub(used_logs);
-        let mut result = render_result(result_body.as_deref(), result_cap);
-        text = assemble(&fixed, &logs, &result);
-        while text.len() > RUN_CODE_VIEW_MAX_BYTES && result_cap > 0 {
-            let over = text.len() - RUN_CODE_VIEW_MAX_BYTES;
-            result_cap = result_cap.saturating_sub(over.max(64));
-            result = render_result(result_body.as_deref(), result_cap);
-            text = assemble(&fixed, &logs, &result);
+    let succeeded = report.failure_kind.is_none();
+    let logs = if succeeded {
+        logs_omitted_line(report.logs.len())
+    } else {
+        render_failure_logs(&report.logs, FAILURE_LOGS_TOKEN_BUDGET, report.output_limited)
+    };
+    let result_body = report
+        .value
+        .as_ref()
+        .map(|value| budget_result(&render_result_body(value), RESULT_TOKEN_BUDGET));
+    let mut text = assemble(&fixed, &logs, &result_body.as_ref().map(|b| format!("result:\n{b}")));
+    if text.len() <= RUN_CODE_VIEW_MAX_BYTES {
+        return text;
+    }
+    // Byte fallback (64KB): tokens can still be byte-heavy. Logs first get a
+    // bounded share, then the result fills what is left.
+    let mut logs = logs;
+    if let Some(section) = &logs {
+        let cap = remaining_after(fixed_len).min(LOGS_FALLBACK_CAP);
+        if section.len() > cap {
+            logs = nonempty(explained_cut(section, cap));
         }
-        if text.len() <= RUN_CODE_VIEW_MAX_BYTES || !has_logs || logs_cap == 0 || guard == 8 {
-            break;
-        }
-        guard += 1;
+    }
+    let used_logs = logs.as_ref().map(|logs| logs.len() + 2).unwrap_or(0);
+    let mut result_cap = remaining_after(fixed_len).saturating_sub(used_logs);
+    let mut result = render_result(result_body.as_deref(), result_cap);
+    text = assemble(&fixed, &logs, &result);
+    while text.len() > RUN_CODE_VIEW_MAX_BYTES && result_cap > 0 {
         let over = text.len() - RUN_CODE_VIEW_MAX_BYTES;
-        logs_cap = logs_cap.saturating_sub(over.max(64));
+        result_cap = result_cap.saturating_sub(over.max(64));
+        result = render_result(result_body.as_deref(), result_cap);
+        text = assemble(&fixed, &logs, &result);
     }
     if text.len() > RUN_CODE_VIEW_MAX_BYTES {
         text = explained_cut(&text, RUN_CODE_VIEW_MAX_BYTES);
     }
     text
+}
+
+/// Token budget for the returned result body (cl100k), excluding the notice/marker.
+pub const RESULT_TOKEN_BUDGET: usize = 8_000;
+/// Token budget for logs on a failed run. Successful runs omit logs entirely.
+pub const FAILURE_LOGS_TOKEN_BUDGET: usize = 2_000;
+const LOGS_FALLBACK_CAP: usize = 16 * 1024;
+
+fn count_tokens(text: &str) -> usize {
+    crate::session::estimate::count_text_tokens(text)
+}
+
+fn logs_omitted_line(count: usize) -> Option<String> {
+    (count > 0).then(|| format!("logs omitted ({count} lines)"))
+}
+
+fn format_ktok(tokens: usize) -> String {
+    if tokens >= 1000 {
+        format!("{:.1}k", tokens as f64 / 1000.0)
+    } else {
+        tokens.to_string()
+    }
+}
+
+/// Keep `body` within `budget` cl100k tokens. Over budget: a notice line at the
+/// start, a whole-line prefix of the body, and a tail marker with the counts.
+/// A cheap byte check skips counting: every token covers at least one byte.
+fn budget_result(body: &str, budget: usize) -> String {
+    if body.len() <= budget {
+        return body.to_string();
+    }
+    let total = count_tokens(body);
+    if total <= budget {
+        return body.to_string();
+    }
+    let kept = token_prefix(body, budget);
+    let kept_tokens = count_tokens(kept);
+    format!(
+        "result {} tok exceeds {}; truncated — return summary/counts/paths\n{kept}\n… [truncated: {kept_tokens} of {total} tok]",
+        format_ktok(total),
+        format_ktok(budget),
+    )
+}
+
+/// Longest prefix within `budget` tokens. Cuts at a line end when at least one
+/// whole line fits (tables never lose half a row), otherwise at a char boundary.
+fn token_prefix(body: &str, budget: usize) -> &str {
+    let line_ends: Vec<usize> = body
+        .char_indices()
+        .filter(|(_, c)| *c == '\n')
+        .map(|(i, _)| i)
+        .collect();
+    // Largest k such that the first k lines fit.
+    let (mut lo, mut hi) = (0usize, line_ends.len());
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if count_tokens(&body[..line_ends[mid - 1]]) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo > 0 {
+        return &body[..line_ends[lo - 1]];
+    }
+    let first = &body[..line_ends.first().copied().unwrap_or(body.len())];
+    let bounds: Vec<usize> = first.char_indices().map(|(i, _)| i).chain([first.len()]).collect();
+    let (mut lo, mut hi) = (0usize, bounds.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        if count_tokens(&first[..bounds[mid]]) <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    &first[..bounds[lo]]
+}
+
+/// Longest suffix of `text` within `budget` tokens, cut at a char boundary.
+fn token_suffix(text: &str, budget: usize) -> &str {
+    if text.len() <= budget || count_tokens(text) <= budget {
+        return text;
+    }
+    let bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+    // Smallest start index whose suffix fits.
+    let (mut lo, mut hi) = (0usize, bounds.len() - 1);
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if count_tokens(&text[bounds[mid]..]) <= budget {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    &text[bounds[lo]..]
+}
+
+/// Failed run: keep the tail of the logs within `budget` tokens (errors sit at
+/// the end) and say how many earlier lines were dropped.
+fn render_failure_logs(
+    logs: &[(String, String)],
+    budget: usize,
+    output_limited: bool,
+) -> Option<String> {
+    if logs.is_empty() {
+        return None;
+    }
+    let mut lines: Vec<String> = logs
+        .iter()
+        .map(|(level, message)| format!("[{level}] {message}"))
+        .collect();
+    if output_limited {
+        if let Some(last) = lines.last_mut() {
+            last.push_str(OUTPUT_LIMIT_MARK);
+        }
+    }
+    let build = |start: usize, lines: &[String]| {
+        let mut body = String::from("logs:");
+        if start > 0 {
+            body.push_str(&format!("\n… [{start} earlier lines omitted]"));
+        }
+        for line in &lines[start..] {
+            body.push('\n');
+            body.push_str(line);
+        }
+        body
+    };
+    let full = build(0, &lines);
+    if full.len() <= budget || count_tokens(&full) <= budget {
+        return Some(full);
+    }
+    // Smallest start whose rendered tail fits.
+    let (mut lo, mut hi) = (0usize, lines.len());
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if count_tokens(&build(mid, &lines)) <= budget {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    if lo < lines.len() {
+        return Some(build(lo, &lines));
+    }
+    // Even the last line alone is too long: keep its tail (the limit mark stays).
+    let start = lines.len() - 1;
+    let overhead = count_tokens(&format!("logs:\n… [{start} earlier lines omitted]\n…")) + 8;
+    let last = lines.pop().unwrap_or_default();
+    let tail = token_suffix(&last, budget.saturating_sub(overhead)).to_string();
+    lines.push(format!("…{tail}"));
+    Some(build(start, &lines))
+}
+
+fn render_result_body(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        Value::Array(items) if is_table(items) => render_table("", items),
+        Value::Object(map) if map.values().any(|v| matches!(v, Value::Array(a) if is_table(a))) => {
+            let mut rest = serde_json::Map::new();
+            let mut tables = Vec::new();
+            for (key, v) in map {
+                match v {
+                    Value::Array(items) if is_table(items) => {
+                        tables.push(render_table(&table_key(key), items))
+                    }
+                    other => {
+                        rest.insert(key.clone(), other.clone());
+                    }
+                }
+            }
+            let mut parts = Vec::new();
+            if !rest.is_empty() {
+                parts.push(compact_json(&Value::Object(rest)));
+            }
+            parts.extend(tables);
+            parts.join("\n")
+        }
+        other => compact_json(other),
+    }
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
+}
+
+const TABLE_MIN_ROWS: usize = 3;
+
+/// Same key set (order ignored), all values primitive, at least 3 rows.
+fn is_table(items: &[Value]) -> bool {
+    if items.len() < TABLE_MIN_ROWS {
+        return false;
+    }
+    let Some(Value::Object(first)) = items.first() else {
+        return false;
+    };
+    if first.is_empty() {
+        return false;
+    }
+    items.iter().all(|item| match item {
+        Value::Object(map) => {
+            map.len() == first.len()
+                && first.keys().all(|key| map.contains_key(key))
+                && map.values().all(|v| !matches!(v, Value::Array(_) | Value::Object(_)))
+        }
+        _ => false,
+    })
+}
+
+fn table_key(key: &str) -> String {
+    let simple = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '$');
+    if simple { key.to_string() } else { quote(key) }
+}
+
+fn quote(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| format!("\"{text}\""))
+}
+
+/// `key[N]{a,b,c}:` then one `v1,v2,v3` row per element. Columns follow the
+/// first element's map iteration order (sorted keys with default serde_json).
+fn render_table(key: &str, items: &[Value]) -> String {
+    let Some(Value::Object(first)) = items.first() else {
+        return String::new();
+    };
+    let columns: Vec<&String> = first.keys().collect();
+    let header: Vec<String> = columns.iter().map(|c| cell_text(c)).collect();
+    let mut out = format!("{key}[{}]{{{}}}:", items.len(), header.join(","));
+    for item in items {
+        let Value::Object(map) = item else { continue };
+        let row: Vec<String> = columns
+            .iter()
+            .map(|c| cell(map.get(c.as_str()).unwrap_or(&Value::Null)))
+            .collect();
+        out.push('\n');
+        out.push_str(&row.join(","));
+    }
+    out
+}
+
+fn cell(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => cell_text(text),
+        other => other.to_string(),
+    }
+}
+
+/// Bare unless the text would be ambiguous: empty, separators/quotes/control
+/// chars, edge whitespace, or something that reads as a number/bool/null.
+fn cell_text(text: &str) -> String {
+    let ambiguous = text.is_empty()
+        || text.chars().any(|c| c == ',' || c == '"' || c.is_control())
+        || text.trim() != text
+        || matches!(text, "true" | "false" | "null")
+        || text.parse::<f64>().is_ok();
+    if ambiguous { quote(text) } else { text.to_string() }
 }
 
 /// Human / FE aggregate for `ToolCallResult.data`. Never mirrored into model content.
@@ -200,26 +467,6 @@ fn remaining_after(fixed_len: usize) -> usize {
         .saturating_sub(fixed_len)
         .saturating_sub(separator)
         .saturating_sub(RESERVE_BYTES)
-}
-
-fn logs_budget(fixed_len: usize, result_body: Option<&str>, has_logs: bool) -> usize {
-    if !has_logs {
-        return 0;
-    }
-    let room = remaining_after(fixed_len);
-    // Reserve the result section plus the separator in front of it. Otherwise a
-    // log section that fills this budget leaves the result 2 bytes short and a
-    // value that would have fit verbatim gets cut.
-    let result_reserve = result_body
-        .map(|body| result_section_len(body).saturating_add(2))
-        .unwrap_or(0);
-    room.saturating_sub(result_reserve)
-        .max(LOGS_FLOOR)
-        .min(room)
-}
-
-fn result_section_len(body: &str) -> usize {
-    "result:\n".len() + body.len()
 }
 
 fn render_header_block(report: &RunReport) -> String {
@@ -420,83 +667,6 @@ fn failure_label(kind: FailureKind, report: &RunReport) -> String {
 
 const OUTPUT_LIMIT_MARK: &str = " [output limit reached]";
 
-fn render_logs(logs: &[(String, String)], cap: usize, output_limited: bool) -> Option<String> {
-    if logs.is_empty() || cap == 0 {
-        return None;
-    }
-    let lines: Vec<String> = logs
-        .iter()
-        .map(|(level, message)| format!("[{level}] {message}"))
-        .collect();
-    let mut start = lines.len();
-    let mut best: Option<String> = None;
-    while start > 0 {
-        start -= 1;
-        let body = logs_body(&lines, start, output_limited);
-        if body.len() <= cap {
-            best = Some(body);
-            continue;
-        }
-        if best.is_none() {
-            let fitted = if output_limited {
-                fit_limited_last_line(&lines, cap)
-            } else {
-                explained_cut(&body, cap)
-            };
-            return nonempty(fitted);
-        }
-        break;
-    }
-    best
-}
-
-fn logs_body(lines: &[String], start: usize, output_limited: bool) -> String {
-    let omitted = &lines[..start];
-    let mut body = String::from("logs:");
-    if !omitted.is_empty() {
-        let bytes: usize = omitted.iter().map(String::len).sum();
-        body.push('\n');
-        body.push_str(&format!(
-            "… {} earlier log lines ({bytes} bytes) omitted",
-            omitted.len()
-        ));
-    }
-    for (offset, line) in lines[start..].iter().enumerate() {
-        body.push('\n');
-        body.push_str(line);
-        if output_limited && start + offset + 1 == lines.len() {
-            body.push_str(OUTPUT_LIMIT_MARK);
-        }
-    }
-    body
-}
-
-/// The limit mark is appended after the UTF-8 cut, so a prefix trim cannot drop it.
-fn fit_limited_last_line(lines: &[String], cap: usize) -> String {
-    let Some(last) = lines.last() else {
-        return String::new();
-    };
-    let omitted_count = lines.len() - 1;
-    let mut prefix = String::from("logs:");
-    if omitted_count > 0 {
-        let bytes: usize = lines[..omitted_count].iter().map(String::len).sum();
-        prefix.push('\n');
-        prefix.push_str(&format!(
-            "… {omitted_count} earlier log lines ({bytes} bytes) omitted"
-        ));
-    }
-    prefix.push('\n');
-    if prefix.len().saturating_add(OUTPUT_LIMIT_MARK.len()) > cap {
-        return String::new();
-    }
-    let room = cap - prefix.len() - OUTPUT_LIMIT_MARK.len();
-    let cut = prefix_utf8(last, room);
-    let mut body = prefix;
-    body.push_str(cut);
-    body.push_str(OUTPUT_LIMIT_MARK);
-    body
-}
-
 fn render_result(body: Option<&str>, cap: usize) -> Option<String> {
     let body = body?;
     if cap == 0 {
@@ -507,13 +677,6 @@ fn render_result(body: Option<&str>, cap: usize) -> Option<String> {
         return Some(full);
     }
     nonempty(fit_result(body, cap))
-}
-
-fn render_result_body(value: &Value) -> String {
-    match value {
-        Value::String(text) => text.clone(),
-        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
-    }
 }
 
 fn fit_result(body: &str, cap: usize) -> String {
@@ -643,16 +806,17 @@ mod tests {
     }
 
     #[test]
-    fn large_result_keeps_the_tail_and_states_the_omission() {
+    fn large_result_is_token_truncated_and_states_the_omission() {
         let mut report = report();
-        let mut body = "A".repeat(200_000);
-        body.push_str("END_SENTINEL");
+        let body: String = (0..20_000).map(|i| format!("line {i} alpha beta\n")).collect();
         report.value = Some(Value::String(body));
         let text = render_model_view(&report);
         assert!(text.starts_with("run_code ok"));
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        assert!(text.contains("END_SENTINEL"), "{text}");
-        assert!(text.contains("bytes omitted"), "{text}");
+        let result = text.split_once("result:\n").unwrap().1;
+        assert!(result.starts_with("result ") && result.lines().next().unwrap().contains("exceeds 8.0k; truncated"), "{result}");
+        assert!(result.contains("line 0 alpha"), "{result}");
+        assert!(result.trim_end().ends_with("tok]"), "{result}");
         assert!(!text.starts_with("[blob:"));
     }
 
@@ -674,7 +838,7 @@ mod tests {
         report.value = Some(Value::String("R".repeat(80_000)));
         let text = render_model_view(&report);
         assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
-        assert!(text.contains("bytes omitted"), "{text}");
+        assert!(text.contains("omitted") || text.contains("truncated"), "{text}");
         assert!(!text.contains("diagnostics:"), "{text}");
         assert!(!text.contains("calls ("), "{text}");
         // Timeout label only — long failure_text must not flood the head.
@@ -739,6 +903,165 @@ mod tests {
             .expect("marked log line");
         assert!(marked.ends_with("[output limit reached]"), "{marked}");
         assert!(std::str::from_utf8(text.as_bytes()).is_ok());
+    }
+
+    fn result_of(text: &str) -> &str {
+        text.split_once("result:\n").map(|(_, r)| r).unwrap_or("")
+    }
+
+    fn ok_with(value: Value) -> String {
+        let mut report = report();
+        report.value = Some(value);
+        render_model_view(&report)
+    }
+
+    #[test]
+    fn uniform_object_array_renders_as_a_table() {
+        let text = ok_with(serde_json::json!([
+            {"path": "a.rs", "line": 1, "hit": true},
+            {"line": 2, "path": "b.rs", "hit": false},
+            {"path": "c.rs", "hit": null, "line": 3.5},
+        ]));
+        assert_eq!(
+            result_of(&text),
+            // serde_json maps iterate in sorted key order here.
+            "[3]{hit,line,path}:\ntrue,1,a.rs\nfalse,2,b.rs\n,3.5,c.rs"
+        );
+    }
+
+    #[test]
+    fn non_uniform_nested_or_short_arrays_fall_back_to_compact_json() {
+        let cases = [
+            serde_json::json!([{"a": 1}, {"a": 2}]),
+            serde_json::json!([{"a": 1}, {"a": 2}, {"b": 3}]),
+            serde_json::json!([{"a": 1}, {"a": 2}, {"a": 1, "b": 2}]),
+            serde_json::json!([{"a": [1]}, {"a": [2]}, {"a": [3]}]),
+            serde_json::json!([{"a": {"x": 1}}, {"a": 2}, {"a": 3}]),
+            serde_json::json!([1, 2, 3]),
+        ];
+        for value in cases {
+            let text = ok_with(value.clone());
+            assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
+        }
+    }
+
+    #[test]
+    fn table_cells_quote_ambiguous_strings() {
+        let text = ok_with(serde_json::json!([
+            {"v": "a,b"}, {"v": "say \"hi\""}, {"v": "x\ny"},
+            {"v": " pad"}, {"v": ""}, {"v": "42"}, {"v": "true"}, {"v": "null"}, {"v": "中文 ok"},
+        ]));
+        let rows: Vec<&str> = result_of(&text).lines().collect();
+        assert_eq!(rows[0], "[9]{v}:");
+        assert_eq!(
+            &rows[1..],
+            &[r#""a,b""#, r#""say \"hi\"""#, r#""x\ny""#, r#"" pad""#, r#""""#, r#""42""#, r#""true""#, r#""null""#, "中文 ok"]
+        );
+    }
+
+    #[test]
+    fn table_nested_in_an_object_renders_as_a_keyed_block() {
+        let text = ok_with(serde_json::json!({
+            "total": 3,
+            "hits": [{"p": "a", "n": 1}, {"p": "b", "n": 2}, {"p": "c", "n": 3}],
+            "note": "x"
+        }));
+        let result = result_of(&text);
+        assert_eq!(result, "{\"note\":\"x\",\"total\":3}\nhits[3]{n,p}:\n1,a\n2,b\n3,c");
+    }
+
+    #[test]
+    fn other_values_are_compact_json_and_strings_verbatim() {
+        let value = serde_json::json!({"a": {"b": [1, 2]}, "c": "d"});
+        let text = ok_with(value.clone());
+        assert_eq!(result_of(&text), serde_json::to_string(&value).unwrap());
+        assert!(!result_of(&text).contains('\n'));
+        let text = ok_with(Value::String("plain\n  text".into()));
+        assert_eq!(result_of(&text), "plain\n  text");
+    }
+
+    #[test]
+    fn cjk_result_is_cut_by_tokens_not_bytes() {
+        let body = "中文字符测试".repeat(5_000); // ~30k tok, ~90KB
+        let text = ok_with(Value::String(body));
+        let result = result_of(&text);
+        let mut lines = result.lines();
+        let notice = lines.next().unwrap();
+        assert!(notice.starts_with("result ") && notice.contains("exceeds 8.0k; truncated"), "{notice}");
+        let kept = result.lines().nth(1).unwrap();
+        assert!(crate::session::estimate::count_text_tokens(kept) <= RESULT_TOKEN_BUDGET);
+        assert!(crate::session::estimate::count_text_tokens(kept) > RESULT_TOKEN_BUDGET - 50);
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES);
+    }
+
+    #[test]
+    fn byte_fallback_still_caps_the_view() {
+        // Few tokens, many bytes: long runs compress well in cl100k.
+        let text = ok_with(Value::String(" ".repeat(400_000)));
+        assert!(text.len() <= RUN_CODE_VIEW_MAX_BYTES, "{}", text.len());
+        assert!(text.contains("omitted") || text.contains("truncated"));
+    }
+
+    #[test]
+    fn table_is_truncated_on_whole_rows() {
+        let rows: Vec<Value> = (0..5_000)
+            .map(|i| serde_json::json!({"path": format!("src/mod_{i}/file.rs"), "line": i}))
+            .collect();
+        let text = ok_with(Value::Array(rows));
+        let result = result_of(&text);
+        let body: Vec<&str> = result.lines().collect();
+        assert!(body[1].starts_with("[5000]{line,path}:"), "{}", body[1]);
+        let last_row = body[body.len() - 2];
+        let (line, path) = last_row.split_once(',').unwrap();
+        assert_eq!(path, format!("src/mod_{line}/file.rs"));
+    }
+
+    #[test]
+    fn notice_appears_only_when_over_budget() {
+        let text = ok_with(serde_json::json!({"small": true}));
+        assert!(!text.contains("exceeds"), "{text}");
+        assert!(!text.contains("truncated"), "{text}");
+    }
+
+    #[test]
+    fn success_logs_collapse_to_one_line() {
+        let mut report = report();
+        report.logs = (0..7).map(|i| ("log".into(), format!("line {i}"))).collect();
+        report.value = Some(Value::Null);
+        let text = render_model_view(&report);
+        assert!(text.contains("\n\nlogs omitted (7 lines)\n\nresult:"), "{text}");
+        assert!(!text.contains("line 3"), "{text}");
+        assert!(!text.contains("logs:"), "{text}");
+    }
+
+    #[test]
+    fn failure_logs_keep_the_tail_within_2k_tokens() {
+        let mut report = report();
+        report.failure_kind = Some(FailureKind::Exception);
+        report.failure_text = Some("boom".into());
+        report.logs = (0..2_000)
+            .map(|i| ("log".into(), format!("step {i} doing work here")))
+            .collect();
+        let text = render_model_view(&report);
+        let logs = text.split_once("logs:").unwrap().1;
+        assert!(crate::session::estimate::count_text_tokens(&format!("logs:{logs}")) <= FAILURE_LOGS_TOKEN_BUDGET);
+        assert!(logs.contains("step 1999 doing work here"), "{logs}");
+        assert!(!logs.contains("step 0 doing"), "{logs}");
+        assert!(logs.contains("earlier lines omitted]"), "{logs}");
+        let mut small = super::tests::report();
+        small.failure_kind = Some(FailureKind::Exception);
+        small.logs = vec![("log".into(), "only".into())];
+        assert!(render_model_view(&small).contains("logs:\n[log] only"));
+    }
+
+    #[test]
+    fn human_data_stays_structured_for_the_pretty_frontend() {
+        let mut report = report();
+        report.value = Some(serde_json::json!([{"a": 1}, {"a": 2}, {"a": 3}]));
+        report.logs = vec![("log".into(), "x".into())];
+        let data = human_data(&report).unwrap();
+        assert!(data.get("succeeded").is_some() && data.get("by_tool").is_some());
+        assert_eq!(data["ok"], Value::Bool(true));
     }
 
 }
