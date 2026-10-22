@@ -1486,3 +1486,5 @@
 {"ts":"2026-10-22T07:28:42.407Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T07:28:42.555Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T07:29:09.586Z","kind":"wp_lifecycle","source":"gm","summary":"WP-211: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T07:29:24.665Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T07:38:55.930Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-211: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
