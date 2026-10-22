@@ -61,18 +61,99 @@ fn ready<'js>(value: serde_json::Value) -> Walk<'js> {
     Walk::Up(Json::new(value))
 }
 
+/// What to do with `undefined` while crossing into JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UndefinedPolicy {
+    /// Any `undefined` is illegal (thrown details and other strict paths).
+    Reject,
+    /// Tool arguments: drop undefined properties, undefined elements and the
+    /// root become `null`. Nothing is reported.
+    Strip,
+    /// Program result: same mapping, every dropped path is recorded.
+    StripOrNull,
+}
+
+/// Paths where `undefined` was dropped or nulled. Keeps the first
+/// [`DROPPED_CAP`] paths and counts the rest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DroppedUndefined {
+    pub paths: Vec<String>,
+    pub total: usize,
+}
+
+pub const DROPPED_CAP: usize = 10;
+
+impl DroppedUndefined {
+    fn record(&mut self, path: String) {
+        self.total += 1;
+        if self.paths.len() < DROPPED_CAP {
+            self.paths.push(path);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// `dropped undefined at a.b, c[2] +N more`.
+    pub fn head_line(&self) -> Option<String> {
+        if self.total == 0 {
+            return None;
+        }
+        let mut line = format!("dropped undefined at {}", self.paths.join(", "));
+        let more = self.total - self.paths.len();
+        if more > 0 {
+            line.push_str(&format!(" +{more} more"));
+        }
+        Some(line)
+    }
+}
+
+/// `$.a.b` → `a.b`, `$[2]` → `[2]`, root stays `$`.
+fn display_path(path: String) -> String {
+    if let Some(rest) = path.strip_prefix("$.") {
+        rest.to_string()
+    } else if path.len() > 1 && path.starts_with('$') {
+        path[1..].to_string()
+    } else {
+        path
+    }
+}
+
+struct Undef<'a> {
+    policy: UndefinedPolicy,
+    dropped: &'a mut DroppedUndefined,
+}
+
+impl Undef<'_> {
+    fn note(&mut self, frames: &[Frame<'_>]) {
+        if self.policy == UndefinedPolicy::StripOrNull {
+            self.dropped.record(display_path(path_at(frames)));
+        }
+    }
+}
+
 pub(crate) fn from_js(value: &Value<'_>) -> Result<Json, BoundaryError> {
+    from_js_with(value, UndefinedPolicy::Reject, &mut DroppedUndefined::default())
+}
+
+pub(crate) fn from_js_with(
+    value: &Value<'_>,
+    policy: UndefinedPolicy,
+    dropped: &mut DroppedUndefined,
+) -> Result<Json, BoundaryError> {
+    let mut undef = Undef { policy, dropped };
     let mut cycles = Vec::new();
     let mut frames: Vec<Frame<'_>> = Vec::new();
     let mut focus = value.clone();
     loop {
-        match open(&focus, &mut cycles, &mut frames)? {
+        match open(&focus, &mut cycles, &mut frames, &mut undef)? {
             Walk::Down(next) => focus = next,
             Walk::Up(mut json) => loop {
                 if frames.is_empty() {
                     return Ok(json);
                 }
-                match finish(&mut frames, &mut cycles, json)? {
+                match finish(&mut frames, &mut cycles, json, &mut undef)? {
                     Walk::Down(next) => {
                         focus = next;
                         break;
@@ -88,12 +169,18 @@ fn open<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
+    undef: &mut Undef<'_>,
 ) -> Result<Walk<'js>, BoundaryError> {
     if value.is_null() {
         return Ok(ready(serde_json::Value::Null));
     }
     if value.is_undefined() {
-        return Err(undefined_at(frames.as_slice()));
+        // Only the root reaches here; children are handled in `descend`.
+        if undef.policy == UndefinedPolicy::Reject {
+            return Err(undefined_at(frames.as_slice()));
+        }
+        undef.note(frames.as_slice());
+        return Ok(ready(serde_json::Value::Null));
     }
     if value.is_bool() {
         return Ok(ready(serde_json::Value::Bool(
@@ -107,19 +194,19 @@ fn open<'js>(
         return Ok(ready(serde_json::Value::String(rust_string(value)?)));
     }
     if value.is_big_int() {
-        return Err(illegal("bigint"));
+        return Err(illegal_at("bigint", frames.as_slice()));
     }
     if value.is_symbol() {
-        return Err(illegal("symbol"));
+        return Err(illegal_at("symbol", frames.as_slice()));
     }
     if value.is_function() {
-        return Err(illegal("function"));
+        return Err(illegal_at("function", frames.as_slice()));
     }
     if value.is_array() {
-        return open_array(value, cycles, frames);
+        return open_array(value, cycles, frames, undef);
     }
     if value.is_object() {
-        return open_object(value, cycles, frames);
+        return open_object(value, cycles, frames, undef);
     }
     Err(illegal(&format!(
         "unsupported value {}",
@@ -131,6 +218,7 @@ fn open_array<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
+    undef: &mut Undef<'_>,
 ) -> Result<Walk<'js>, BoundaryError> {
     let array = value
         .as_array()
@@ -163,13 +251,14 @@ fn open_array<'js>(
         array,
     });
     cycles.push(ptr);
-    Ok(Walk::Down(next_child(frames)?))
+    descend(frames, cycles, undef)
 }
 
 fn open_object<'js>(
     value: &Value<'js>,
     cycles: &mut Vec<usize>,
     frames: &mut Vec<Frame<'js>>,
+    undef: &mut Undef<'_>,
 ) -> Result<Walk<'js>, BoundaryError> {
     if !is_plain_object(value) {
         let name = constructor_name(value);
@@ -198,19 +287,35 @@ fn open_object<'js>(
         object,
     });
     cycles.push(ptr);
-    Ok(Walk::Down(next_child(frames)?))
+    descend(frames, cycles, undef)
 }
 
-fn next_child<'js>(frames: &[Frame<'js>]) -> Result<Value<'js>, BoundaryError> {
+/// Next child of the top frame, with `undefined` already resolved.
+enum Child<'js> {
+    Value(Value<'js>),
+    /// Array element that was `undefined`: becomes `null`.
+    Null,
+    /// Object property that was `undefined`: dropped.
+    Skip,
+}
+
+fn next_child<'js>(
+    frames: &[Frame<'js>],
+    undef: &mut Undef<'_>,
+) -> Result<Child<'js>, BoundaryError> {
     match frames.last() {
         Some(Frame::Array { array, index, .. }) => {
             let element = array
                 .get::<Value<'_>>(*index)
                 .map_err(|error| script_error(array.as_value(), error))?;
             if element.is_undefined() {
-                return Err(undefined_at(frames));
+                if undef.policy == UndefinedPolicy::Reject {
+                    return Err(undefined_at(frames));
+                }
+                undef.note(frames);
+                return Ok(Child::Null);
             }
-            Ok(element)
+            Ok(Child::Value(element))
         }
         Some(Frame::Object {
             object,
@@ -222,9 +327,13 @@ fn next_child<'js>(frames: &[Frame<'js>]) -> Result<Value<'js>, BoundaryError> {
                 .get::<_, Value<'_>>(&keys[*index])
                 .map_err(|error| script_error(object.as_value(), error))?;
             if child.is_undefined() {
-                return Err(undefined_at(frames));
+                if undef.policy == UndefinedPolicy::Reject {
+                    return Err(undefined_at(frames));
+                }
+                undef.note(frames);
+                return Ok(Child::Skip);
             }
-            Ok(child)
+            Ok(Child::Value(child))
         }
         None => Err(illegal("unsupported value")),
     }
@@ -273,6 +382,55 @@ fn is_identifier(key: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
+/// `bigint at $.a.b` — same path notation as [`undefined_at`].
+fn illegal_at(kind: &str, frames: &[Frame<'_>]) -> BoundaryError {
+    illegal(&format!("{kind} at {}", path_at(frames)))
+}
+
+/// Walk to the next child that needs opening. `undefined` children resolved
+/// to `null` / skipped are consumed here in a loop (no recursion), and a frame
+/// that completes this way is closed and returned upward.
+fn descend<'js>(
+    frames: &mut Vec<Frame<'js>>,
+    cycles: &mut Vec<usize>,
+    undef: &mut Undef<'_>,
+) -> Result<Walk<'js>, BoundaryError> {
+    loop {
+        let complete = match next_child(frames, undef)? {
+            Child::Value(value) => return Ok(Walk::Down(value)),
+            Child::Null => match frames.last_mut() {
+                Some(Frame::Array {
+                    items, index, len, ..
+                }) => {
+                    items.push(Json::new(serde_json::Value::Null));
+                    *index += 1;
+                    *index == *len
+                }
+                _ => return Err(illegal("unsupported value")),
+            },
+            Child::Skip => match frames.last_mut() {
+                Some(Frame::Object { keys, index, .. }) => {
+                    *index += 1;
+                    *index == keys.len()
+                }
+                _ => return Err(illegal("unsupported value")),
+            },
+        };
+        if complete {
+            return Ok(Walk::Up(close(frames, cycles)?));
+        }
+    }
+}
+
+fn close(frames: &mut Vec<Frame<'_>>, cycles: &mut Vec<usize>) -> Result<Json, BoundaryError> {
+    cycles.pop();
+    match frames.pop() {
+        Some(Frame::Array { items, .. }) => Ok(Json::from_array(items)),
+        Some(Frame::Object { map, .. }) => Ok(Json::from_object(map)),
+        None => Err(illegal("unsupported value")),
+    }
+}
+
 fn undefined_at(frames: &[Frame<'_>]) -> BoundaryError {
     illegal(&format!(
         "undefined at {}: JSON has no undefined; use null or omit it",
@@ -284,6 +442,7 @@ fn finish<'js>(
     frames: &mut Vec<Frame<'js>>,
     cycles: &mut Vec<usize>,
     json: Json,
+    undef: &mut Undef<'_>,
 ) -> Result<Walk<'js>, BoundaryError> {
     let complete = match frames.last_mut() {
         Some(Frame::Array {
@@ -304,15 +463,9 @@ fn finish<'js>(
         None => return Err(illegal("unsupported value")),
     };
     if !complete {
-        return Ok(Walk::Down(next_child(frames)?));
+        return descend(frames, cycles, undef);
     }
-    cycles.pop();
-    let json = match frames.pop() {
-        Some(Frame::Array { items, .. }) => Json::from_array(items),
-        Some(Frame::Object { map, .. }) => Json::from_object(map),
-        None => return Err(illegal("unsupported value")),
-    };
-    Ok(Walk::Up(json))
+    Ok(Walk::Up(close(frames, cycles)?))
 }
 
 /// Reject a sparse array before reserving `length` slots.

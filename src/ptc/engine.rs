@@ -338,6 +338,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
     drop(runtime);
 
     let logs = output.borrow().logs().to_vec();
+    let dropped_undefined = output.borrow().dropped_undefined().clone();
     let calls = calls.snapshot();
     let duration_ms = clock.wall_elapsed().as_millis() as u64;
     match end {
@@ -347,6 +348,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             failure: None,
             calls,
             duration_ms,
+            dropped_undefined: dropped_undefined.clone(),
         },
         ProgramEnd::CancelledAfterReturn(value) => Outcome {
             logs,
@@ -354,6 +356,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             failure: Some(Failure::cancelled()),
             calls,
             duration_ms,
+            dropped_undefined: dropped_undefined.clone(),
         },
         ProgramEnd::Failure(failure) => Outcome {
             logs,
@@ -361,6 +364,7 @@ async fn drive(request: ExecuteRequest, handle: Handle) -> Outcome {
             failure: Some(failure),
             calls,
             duration_ms,
+            dropped_undefined: dropped_undefined.clone(),
         },
     }
 }
@@ -766,7 +770,11 @@ async fn invoke<'js>(
 ) -> rquickjs::Result<Value<'js>> {
     let json_args = match args.as_slice() {
         [] => Json::new(serde_json::Value::Null),
-        [one] => match boundary::from_js(one) {
+        [one] => match boundary::from_js_with(
+            one,
+            boundary::UndefinedPolicy::Strip,
+            &mut boundary::DroppedUndefined::default(),
+        ) {
             Ok(json) => json,
             Err(BoundaryError::Illegal(message)) => {
                 return Err(boundary::throw_type(&ctx, &message));
@@ -780,7 +788,11 @@ async fn invoke<'js>(
             // in call order. A single argument is still that value alone.
             let mut items = Vec::with_capacity(many.len());
             for arg in many {
-                items.push(match boundary::from_js(arg) {
+                items.push(match boundary::from_js_with(
+                    arg,
+                    boundary::UndefinedPolicy::Strip,
+                    &mut boundary::DroppedUndefined::default(),
+                ) {
                     Ok(json) => json,
                     Err(BoundaryError::Illegal(message)) => {
                         return Err(boundary::throw_type(&ctx, &message));
@@ -977,7 +989,11 @@ fn accept_value(
     output: &RefCell<OutputLedger>,
     output_limit: usize,
 ) -> ProgramEnd {
-    match boundary::from_js(value) {
+    let mut dropped = boundary::DroppedUndefined::default();
+    let converted =
+        boundary::from_js_with(value, boundary::UndefinedPolicy::StripOrNull, &mut dropped);
+    output.borrow_mut().set_dropped_undefined(dropped);
+    match converted {
         Err(BoundaryError::Illegal(message)) => ProgramEnd::Failure(Failure::illegal(message)),
         Err(BoundaryError::Thrown(thrown)) => {
             ProgramEnd::Failure(Failure::exception(thrown.message, thrown.stack))

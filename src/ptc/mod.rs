@@ -37,6 +37,7 @@ use tokio::runtime::Handle;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use boundary::json_bytes;
+pub use boundary::{DROPPED_CAP, DroppedUndefined};
 pub use budget::{BudgetPause, BudgetPauseGuard};
 pub use json::Json;
 
@@ -429,6 +430,8 @@ pub struct Outcome {
     pub calls: Vec<CallRecord>,
     /// Active program time when the run settled (excludes approval pauses).
     pub duration_ms: u64,
+    /// Result paths where `undefined` was dropped / nulled (WP-206 #7).
+    pub dropped_undefined: boundary::DroppedUndefined,
 }
 
 impl Outcome {
@@ -439,6 +442,7 @@ impl Outcome {
             failure: Some(failure),
             calls: Vec::new(),
             duration_ms: 0,
+            dropped_undefined: Default::default(),
         }
     }
 }

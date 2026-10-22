@@ -8,6 +8,7 @@ pub(crate) struct OutputLedger {
     used: usize,
     logs: Vec<LogEntry>,
     tripped: bool,
+    dropped_undefined: super::boundary::DroppedUndefined,
 }
 
 impl OutputLedger {
@@ -17,11 +18,20 @@ impl OutputLedger {
             used: 0,
             logs: Vec::new(),
             tripped: false,
+            dropped_undefined: Default::default(),
         }
     }
 
     pub(crate) fn tripped(&self) -> bool {
         self.tripped
+    }
+
+    pub(crate) fn set_dropped_undefined(&mut self, dropped: super::boundary::DroppedUndefined) {
+        self.dropped_undefined = dropped;
+    }
+
+    pub(crate) fn dropped_undefined(&self) -> &super::boundary::DroppedUndefined {
+        &self.dropped_undefined
     }
 
     pub(crate) fn logs(&self) -> &[LogEntry] {

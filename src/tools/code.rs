@@ -999,6 +999,7 @@ fn run_report(
     }
     let (diagnostics, diagnostics_omitted) = aggregate_diagnostics(&lines, omitted_diagnostics);
     render::RunReport {
+        dropped_undefined: outcome.dropped_undefined.head_line(),
         logs: outcome
             .logs
             .iter()
@@ -1167,7 +1168,7 @@ impl Tool for CodeTool {
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data. A domain failure rejects ToolError; a protocol failure throws TypeError. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property."
+                    "description": "Async JavaScript function body. `await tools.name(args)` resolves to that tool's data. A domain failure rejects ToolError; a protocol failure throws TypeError. Use `libs` for pure-JavaScript analysis helpers. Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`, and the run head lists the dropped paths; undefined properties in tool arguments are dropped silently."
                 },
                 "timeout_ms": {
                     "type": "integer",
@@ -1246,6 +1247,7 @@ mod outcome_tests {
     fn runtime(state: CallState) -> Outcome {
         Outcome {
             logs: Vec::new(),
+            dropped_undefined: Default::default(),
             value: None,
             failure: Some(Failure::cancelled()),
             duration_ms: 0,
@@ -1324,6 +1326,7 @@ mod outcome_tests {
     fn permission_denial_is_counted_as_a_failed_settled_call() {
         let completed = Outcome {
             logs: Vec::new(),
+            dropped_undefined: Default::default(),
             value: None,
             failure: None,
             duration_ms: 0,
@@ -1436,6 +1439,7 @@ mod outcome_tests {
         }
         let outcome = Outcome {
             logs: Vec::new(),
+            dropped_undefined: Default::default(),
             value: Some(Json::new(json!("done"))),
             failure: None,
             calls,
@@ -1479,6 +1483,7 @@ mod outcome_tests {
         );
         let outcome = Outcome {
             logs: Vec::new(),
+            dropped_undefined: Default::default(),
             value: Some(Json::new(json!("done"))),
             failure: None,
             duration_ms: 42,
@@ -1527,6 +1532,7 @@ mod outcome_tests {
         let ledger = CallLedger::new();
         let outcome = Outcome {
             logs: Vec::new(),
+            dropped_undefined: Default::default(),
             value: None,
             failure: Some(Failure::syntax(
                 "Unexpected token `)`",

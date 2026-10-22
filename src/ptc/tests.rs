@@ -678,12 +678,10 @@ async fn illegal_output_values() {
         ("return NaN;", "non-finite number"),
         ("return Infinity;", "non-finite number"),
         ("return -Infinity;", "non-finite number"),
-        ("return undefined;", "undefined at $"),
-        ("return { a: 1, b: undefined };", "undefined at $.b"),
-        ("return { a: { b: undefined } };", "undefined at $.a.b"),
-        ("return { list: [1, undefined] };", "undefined at $.list[1]"),
-        ("return { 'a-b': undefined };", r#"undefined at $["a-b"]"#),
-        ("return 1n;", "bigint"),
+        ("return 1n;", "bigint at $"),
+        ("return { a: { b: 1n } };", "bigint at $.a.b"),
+        ("return [1, Symbol('s')];", "symbol at $[1]"),
+        ("return { f() {} };", "function at $.f"),
         ("return function () {};", "function"),
         ("return Symbol('s');", "symbol"),
         ("const a = {}; a.self = a; return a;", "circular reference"),
@@ -721,9 +719,8 @@ async fn illegal_arguments_skip_host() {
     let cases = [
         ("await tools.f(NaN);", "non-finite number"),
         ("await tools.f(Infinity);", "non-finite number"),
-        ("await tools.f(undefined);", "undefined at $"),
-        ("await tools.f({ a: undefined });", "undefined at $.a"),
-        ("await tools.f(1n);", "bigint"),
+        ("await tools.f(1n);", "bigint at $"),
+        ("await tools.f({ n: [1n] });", "bigint at $.n[0]"),
         ("await tools.f(function () {});", "function"),
         ("await tools.f(Symbol('s'));", "symbol"),
         (
@@ -1418,14 +1415,14 @@ async fn deep_nest_child() {
             r#"
             let value = 0;
             for (let i = 0; i < 20000; i++) value = [value];
-            return [value, undefined];
+            return [value, 1n];
             "#,
             Vec::new(),
         )
         .await;
         let failure = illegal.failure.as_ref().expect("illegal sibling");
         assert_eq!(failure.kind, FailureKind::IllegalOutput, "{failure:?}");
-        assert!(failure.message.contains("undefined"), "{}", failure.message);
+        assert!(failure.message.contains("bigint at $[1]"), "{}", failure.message);
         assert!(illegal.value.is_none());
     }
 
@@ -1478,4 +1475,67 @@ async fn host_receives_extra_arguments_as_a_json_array() {
         *seen.lock().expect("seen"),
         json!([{"path": "a"}, {"timeout_ms": 5}])
     );
+}
+
+
+// WP-206 #7: undefined tolerance.
+#[tokio::test]
+async fn undefined_in_result_is_stripped_or_nulled_and_reported() {
+    let cases: [(&str, Value, &[&str], usize); 5] = [
+        ("return undefined;", json!(null), &["$"], 1),
+        ("return { a: 1, b: undefined };", json!({"a": 1}), &["b"], 1),
+        ("return { a: { b: undefined } };", json!({"a": {}}), &["a.b"], 1),
+        ("return { list: [1, undefined] };", json!({"list": [1, null]}), &["list[1]"], 1),
+        ("return { 'a-b': undefined };", json!({}), &[r#"["a-b"]"#], 1),
+    ];
+    for (source, want, paths, total) in cases {
+        let outcome = run(source, Vec::new()).await;
+        assert_eq!(value_of(&outcome), &want, "{source}");
+        assert_eq!(outcome.dropped_undefined.paths, paths, "{source}");
+        assert_eq!(outcome.dropped_undefined.total, total, "{source}");
+    }
+    let outcome = run("return [undefined, undefined, 3];", Vec::new()).await;
+    assert_eq!(value_of(&outcome), &json!([null, null, 3]));
+    assert_eq!(
+        outcome.dropped_undefined.head_line().as_deref(),
+        Some("dropped undefined at [0], [1]")
+    );
+    let clean = run("return { a: null };", Vec::new()).await;
+    assert!(clean.dropped_undefined.is_empty());
+    assert!(clean.dropped_undefined.head_line().is_none());
+}
+
+#[tokio::test]
+async fn dropped_undefined_list_is_capped_with_more_count() {
+    let outcome = run(
+        "const o = {}; for (let i = 0; i < 25; i++) o['k' + i] = undefined; o.keep = 1; return o;",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!({"keep": 1}));
+    assert_eq!(outcome.dropped_undefined.total, 25);
+    assert_eq!(outcome.dropped_undefined.paths.len(), crate::ptc::DROPPED_CAP);
+    let line = outcome.dropped_undefined.head_line().unwrap();
+    assert!(line.starts_with("dropped undefined at k0, k1"), "{line}");
+    assert!(line.ends_with(" +15 more"), "{line}");
+}
+
+#[tokio::test]
+async fn undefined_in_arguments_is_dropped_silently() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_host = Arc::clone(&seen);
+    let host = HostFn::new(move |args, _, _, _| {
+        seen_host.lock().unwrap().push(args.as_value().clone());
+        async move { Ok(json!("ok")) }
+    });
+    let outcome = run(
+        "await tools.f({ a: 1, b: undefined, c: [undefined, 2] }); await tools.f(undefined); return 'done';",
+        tools(vec![("f", host)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!("done"));
+    assert!(outcome.dropped_undefined.is_empty(), "args are not reported");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0], json!({"a": 1, "c": [null, 2]}));
+    assert_eq!(seen[1], json!(null));
 }

@@ -245,7 +245,7 @@ JS 契约本身也偏离了 code 形态。五个文件工具已无 direct 调用
 - `retryable?: true`：只出现在 `conflict` 和工具级 `timeout` 上；
 - `tool`、`seq`：只读。
 
-**协议失败（可捕获）：** 多参数、非法 JS 值（`undefined`/`NaN`/`Infinity`/`BigInt`/循环引用）、参数嵌套过深、host 返回大于 2^53-1 的整数、in-flight 超限，一律抛 `TypeError`。
+**协议失败（可捕获）：** 多参数、非法 JS 值（`NaN`/`Infinity`/`BigInt`/循环引用；`undefined` 属性按 WP-206 #7 静默剥除、数组元素置 null）、参数嵌套过深、host 返回大于 2^53-1 的整数、in-flight 超限，一律抛 `TypeError`。
 
 **封口（不可捕获）：** 用户取消、`run_code` 预算、输出上限、内存/栈。程序无法 catch，外层头行给出种类。
 
@@ -358,7 +358,7 @@ declare class ToolError extends Error {
 **I8（不变）权限只收紧。** `run_code` 不提供任何额外权限；程序可达的能力不超过绑定集合。
 - 落实：所有改动都不放宽；未知参数从「照跑」变为「拒绝」。
 
-**I10（修订）结果诚实。** 失败种类正交（语法错误、异常、超时、取消、限额、非法输出、内部错误）；跨边界的值必须可无损表示为 JSON（`NaN`、`Infinity`、`undefined` 值、`BigInt`、循环引用一律判非法输出）。执行期 `output_bytes`（现 1MB）是唯一硬顶。模型视口由 `run_code` 自己的 render 预算（64KB）保证，按段裁剪并写明省略；外层 spill 和 emergency cap 不作用于 `run_code`。未捕获的 `ToolError` 把 code 和 message 保留到外层。
+**I10（修订）结果诚实。** 失败种类正交（语法错误、异常、超时、取消、限额、非法输出、内部错误）；跨边界的值必须可无损表示为 JSON（`NaN`、`Infinity`、`BigInt`、symbol、function、循环引用一律判非法输出，报错带路径如 `bigint at $.a.b`）。`undefined` 例外（WP-206 #7，Andy 拍板）：工具入参中值为 undefined 的属性静默剥除；返回值中 undefined 属性剥除、数组元素置 `null`、根值置 `null`，并在 head 记 `dropped undefined at a.b, c[2]`（封顶 10 条，超出写 `+N more`）；throw 的 details 仍按严格规则。执行期 `output_bytes`（现 1MB）是唯一硬顶。模型视口由 `run_code` 自己的 render 预算（64KB）保证，按段裁剪并写明省略；外层 spill 和 emergency cap 不作用于 `run_code`。未捕获的 `ToolError` 把 code 和 message 保留到外层。
 - 落实：P1、A5；Phase 1–2。
 
 **I11（不变）前缀稳定。** `run_code` 的描述（含 SDK）是该调用方 code 面的纯函数，不含权限、depth、cwd 等易变量，保证请求前缀稳定。

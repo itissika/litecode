@@ -25,7 +25,7 @@ For code navigation (when the LSP engine is ready and these bindings appear belo
 A read of session lines already in the context window resolves empty `lines` with an explanation in `message` only (no `reason` field). Grep/glob empty results and hit-the-limit guidance likewise live only in `message`. Continue a long read with a larger `start_line`; do not pass a cursor or `page.next`.
 After a run you normally see a short head (settled tool-call success and failure counts and how long the run took in ms, or a precise line/error if the program never started; unsettled in-flight calls, if any, are noted in that same head and are not counted in those totals; a session-store read may appear as a short note there too), optional logs you printed yourself, and your returned result (kept within the run window; failures keep partial output when possible). Labels follow the host render (for example `logs:` / `result:`). Successful nested tool calls are not auto-listed. The model sees about 64KB of this run—prefer keeping the returned result. Tool contract errors stay on the tool (`{ok,message}` or `ToolError`)—do not expect a second copy outside. Return a summary, not a raw bulk of data.
 Call each binding as `tools["name"](args)`. When `name` is an identifier, `tools.name(args)` is the same function. Each binding takes one argument object. Tool timeouts are internal. The only budget the program sets is `run_code`'s `timeout_ms`.
-Return a JSON-serializable value: `undefined` is not JSON, so use `null` or omit the property.
+Return a JSON-serializable value. `undefined` is tolerated: undefined properties are dropped, undefined array elements become `null`, a root `undefined` becomes `null`, and the run head lists the dropped paths; undefined properties in tool arguments are dropped silently.
 
 ```ts
 "#;
@@ -817,7 +817,8 @@ mod tests {
         assert!(!page.contains("ToolResult"));
         assert!(!page.contains("status: \"partial\""));
         assert!(!page.contains("retryable: boolean"));
-        assert!(page.contains("`undefined` is not JSON"));
+        assert!(page.contains("`undefined` is tolerated"));
+        assert!(page.contains("dropped paths"));
         let timed = page.find("[\"timed\"]").unwrap();
         let demo = page.find("[\"demo\"]").unwrap();
         assert!(demo < timed, "bindings are sorted by name");

@@ -49,7 +49,7 @@
 - **I7（修订）取消是封口。** 任何终止路径（完成、取消、超时、异常、限额）都先**立即**向所有在途嵌套调用发出取消，在宽限期内等待它们结束并记录各自终态，然后才结束程序；外层一定写出 `function_call_output`，账本中不丢条目；外层超时不覆盖已完成的内层结果。宽限期结束仍未结束的调用记为 `unsettled`，外层文本写明其副作用可能仍会落地；工具级超时后若工具已提交，以工具结果为准。
 - **I8** 权限只收紧：`run_code` 不提供任何额外权限；程序可达的能力不超过绑定集合。
 - **I9** 内核只有一套 Item 真相；不新增 Message/Stream 类型，不新增 Item 种类。
-- **I10（修订）结果诚实。** 失败种类正交（语法错误、异常、超时、取消、限额、非法输出、内部错误）；跨边界的值必须可无损表示为 JSON（`NaN`、`Infinity`、`undefined` 值、`BigInt`、循环引用一律判非法输出）。执行期 `output_bytes`（现 1MB）是唯一硬顶。模型视口由 `run_code` 自己的 render 预算（64KB）保证，按段裁剪并写明省略；外层 spill 和 emergency cap 不作用于 `run_code`。未捕获的 `ToolError` 把 code 和 message 保留到外层。
+- **I10（修订）结果诚实。** 失败种类正交（语法错误、异常、超时、取消、限额、非法输出、内部错误）；跨边界的值必须可无损表示为 JSON（`NaN`、`Infinity`、`BigInt`、symbol、function、循环引用一律判非法输出，报错带路径如 `bigint at $.a.b`）。`undefined` 例外（WP-206 #7，Andy 拍板）：工具入参中值为 undefined 的属性静默剥除；返回值中 undefined 属性剥除、数组元素置 `null`、根值置 `null`，并在 head 记 `dropped undefined at a.b, c[2]`（封顶 10 条，超出写 `+N more`）；throw 的 details 仍按严格规则。执行期 `output_bytes`（现 1MB）是唯一硬顶。模型视口由 `run_code` 自己的 render 预算（64KB）保证，按段裁剪并写明省略；外层 spill 和 emergency cap 不作用于 `run_code`。未捕获的 `ToolError` 把 code 和 message 保留到外层。
 - **I11** `run_code` 的描述（含 SDK）是该调用方 code 面的纯函数，不含权限、depth、cwd 等易变量，保证请求前缀稳定。
 - **I12（新增）JS 契约。** `tools.*` 成功时 resolve 工具 data；领域失败 reject `ToolError{code, message, details?}`；协议失败抛 `TypeError`；取消、预算、输出上限、内存/栈不可捕获。`retryable` 只用于 `conflict` 与工具级 `timeout`。工具的诊断不进入 data；LSP 报错只出现在外层文本。
 

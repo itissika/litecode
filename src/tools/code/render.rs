@@ -72,6 +72,8 @@ pub(super) struct RunReport {
     pub source: String,
     pub tool_error: Option<UncaughtToolError>,
     pub uncaught_type_error: bool,
+    /// `dropped undefined at …` head line (WP-206 #7).
+    pub dropped_undefined: Option<String>,
 }
 
 pub(super) fn render_model_view(report: &RunReport) -> String {
@@ -222,6 +224,9 @@ fn result_section_len(body: &str) -> usize {
 
 fn render_header_block(report: &RunReport) -> String {
     let mut parts = vec![header_line(report)];
+    if let Some(line) = &report.dropped_undefined {
+        parts.push(line.clone());
+    }
     if !did_not_start(report) {
         let unsettled = unsettled_total(report);
         if unsettled > 0 {
@@ -623,7 +628,18 @@ mod tests {
             source: String::new(),
             tool_error: None,
             uncaught_type_error: false,
+            dropped_undefined: None,
         }
+    }
+
+    #[test]
+    fn dropped_undefined_line_sits_in_the_head() {
+        let mut report = report();
+        report.value = Some(Value::Null);
+        report.dropped_undefined = Some("dropped undefined at a.b, c[2]".into());
+        let text = render_model_view(&report);
+        let head = text.split("result:").next().unwrap_or("");
+        assert!(head.contains("dropped undefined at a.b, c[2]"), "{text}");
     }
 
     #[test]
