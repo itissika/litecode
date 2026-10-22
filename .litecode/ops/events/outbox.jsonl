@@ -365,3 +365,4 @@
 {"event_id":"E-1792628341666-17660-WP205-approval_requested","ts":"2026-10-22T00:19:01.666Z","type":"team_ops.approval_requested","wp":"WP-205","target":"gm"}
 {"event_id":"E-1792628436730-36610-WP205-acceptance_requested","ts":"2026-10-22T00:20:36.730Z","type":"team_ops.acceptance_requested","wp":"WP-205","target":"gm"}
 {"event_id":"E-1792630282476-76320-WP206-approval_requested","ts":"2026-10-22T00:51:22.476Z","type":"team_ops.approval_requested","wp":"WP-206","target":"gm"}
+{"event_id":"E-1792631622293-47160-WP206-acceptance_requested","ts":"2026-10-22T01:13:42.293Z","type":"team_ops.acceptance_requested","wp":"WP-206","target":"gm"}

@@ -1451,3 +1451,4 @@
 {"ts":"2026-10-22T00:51:22.556Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-206: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T00:52:01.416Z","kind":"wp_lifecycle","source":"gm","summary":"WP-206: awaiting_approval -> ready (plan approved by gm) (ops.wp approve)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T00:52:15.169Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-206: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T01:13:42.407Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-206: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
