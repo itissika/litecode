@@ -79,6 +79,17 @@ pub struct ToolCallResult {
     pub error_details: Option<serde_json::Value>,
 }
 
+/// One tool result's structured UI data, persisted beside its transcript row.
+///
+/// This is **not** part of the Responses `Item` and must never enter the model
+/// view. Today only `run_code` produces it; the frontend renders a compact
+/// aggregate from `data`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResultData {
+    pub call_id: String,
+    pub data: serde_json::Value,
+}
+
 impl ToolCallResult {
     pub fn ok(content: impl Into<String>) -> Self {
         Self {

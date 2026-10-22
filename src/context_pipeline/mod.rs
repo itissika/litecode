@@ -18,7 +18,7 @@ use crate::llm::item_id_of;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
 use crate::session::working::{WorkingRow, project_items};
-use crate::types::{Item, LitecodeError, Result};
+use crate::types::{Item, LitecodeError, Result, ToolResultData};
 
 pub use budget::{
     BudgetPolicy, OccupancyBill, ProviderPromptBaseline, manual_compact_eligible,
@@ -371,7 +371,7 @@ impl ContextPipeline {
         session_id: &str,
         rows: &mut Vec<WorkingRow>,
     ) -> Result<CommitStepOutcome> {
-        self.commit_step_with_turn(sessions, session_id, rows, "")
+        self.commit_step_with_turn(sessions, session_id, rows, "", &[])
     }
 
     /// Commit `items` produced by this step.
@@ -384,6 +384,7 @@ impl ContextPipeline {
         sessions: &SessionManager,
         session_id: &str,
         items: &[Item],
+        result_data: &[ToolResultData],
     ) -> Result<CommitStepOutcome> {
         let cursor = self
             .state
@@ -393,7 +394,7 @@ impl ContextPipeline {
         self.sync_turn_working(sessions, session_id);
         let mut rows = self.working_set();
         attach_step_items(&mut rows, items, cursor);
-        self.commit_step(sessions, session_id, &mut rows)
+        self.commit_step_with_turn(sessions, session_id, &mut rows, "", result_data)
     }
 
     pub fn commit_step_with_turn(
@@ -402,6 +403,7 @@ impl ContextPipeline {
         session_id: &str,
         rows: &mut Vec<WorkingRow>,
         turn_id: &str,
+        result_data: &[ToolResultData],
     ) -> Result<CommitStepOutcome> {
         let expected_max_seq = self
             .state
@@ -417,7 +419,7 @@ impl ContextPipeline {
             }
         };
         let (kind, working, preview) = sessions
-            .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid)
+            .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid, result_data)
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         *rows = working;
         let (committed, discarded, sealed_seqs, clear_prepared) = match kind {

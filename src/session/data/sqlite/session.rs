@@ -29,7 +29,7 @@ use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
 use crate::session::working::WorkingRow;
 use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
-use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
+use crate::types::{Item, LitecodeError, Result, ToolResultData, Transcript, item_text_preview};
 
 /// Last-known **provider** usage for a session (ring + cache observability).
 ///
@@ -575,6 +575,54 @@ fn row_is_settled(tx: &Connection, session_id: &str, seq: Seq) -> Result<bool> {
     Ok(state.as_deref() == Some(LogState::Final.as_str()))
 }
 
+/// UI-only `result.data` cap. `run_code`'s aggregate is small; this only guards
+/// a pathological payload. Over-cap data is dropped, never persisted.
+const MAX_RESULT_DATA_BYTES: usize = 16 * 1024;
+
+fn set_result_data_if_missing(
+    tx: &Connection,
+    session_id: &str,
+    seq: Seq,
+    data: &serde_json::Value,
+) -> Result<()> {
+    let raw = serde_json::to_string(data)?;
+    if raw.len() > MAX_RESULT_DATA_BYTES {
+        tracing::warn!(
+            session_id,
+            seq,
+            bytes = raw.len(),
+            limit = MAX_RESULT_DATA_BYTES,
+            "result_data dropped: over the persistence cap"
+        );
+        return Ok(());
+    }
+    // Metadata, not body: a settled row may still receive this once. The
+    // `IS NULL` guard keeps retries idempotent and never overwrites.
+    tx.execute(
+        "UPDATE transcript_items
+         SET result_data = ?1
+         WHERE session_id = ?2 AND seq = ?3 AND result_data IS NULL",
+        rusqlite::params![raw, session_id, seq as i64],
+    )?;
+    Ok(())
+}
+
+fn set_item_result_data(
+    tx: &Connection,
+    session_id: &str,
+    seq: Seq,
+    item: &Item,
+    data_by_call_id: &HashMap<&str, &serde_json::Value>,
+) -> Result<()> {
+    let Item::FunctionCallOutput(out) = item else {
+        return Ok(());
+    };
+    let Some(data) = data_by_call_id.get(out.call_id.as_str()) else {
+        return Ok(());
+    };
+    set_result_data_if_missing(tx, session_id, seq, data)
+}
+
 /// Guards shared by every rewrite of a streaming row.
 ///
 /// Rewriting a row is the one write that changes content at an existing `seq`, so
@@ -935,6 +983,7 @@ fn event_from_disk_row(
     body: Option<String>,
     body_ref: Option<String>,
     state: Option<String>,
+    result_data: Option<String>,
     data_root: &Path,
 ) -> Result<SessionEvent> {
     let seq = Seq::try_from(seq)
@@ -945,6 +994,18 @@ fn event_from_disk_row(
     let source_seqs = match source_seqs.as_deref() {
         None | Some("") => None,
         Some(raw) => Some(serde_json::from_str(raw)?),
+    };
+    // A malformed side column must not brick history: drop just the UI data.
+    let result_data = match result_data {
+        None => None,
+        Some(raw) if raw.is_empty() => None,
+        Some(raw) => match serde_json::from_str(&raw) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                tracing::warn!(seq, error = %e, "ignoring malformed transcript result_data");
+                None
+            }
+        },
     };
     // Retired model reminders stay in the log for seq continuity. They are not
     // a live kind, so they do not enter the spine and are not sent to the model.
@@ -958,6 +1019,7 @@ fn event_from_disk_row(
             time: created_at,
             event_type: EventType::Unknown("reminder/model".into()),
             data,
+            result_data: result_data.clone(),
             surface_op: None,
             source_seqs,
             ignorable: true,
@@ -983,6 +1045,7 @@ fn event_from_disk_row(
             time: created_at,
             event_type,
             data,
+            result_data: result_data.clone(),
             surface_op,
             source_seqs,
             ignorable: false,
@@ -1003,6 +1066,7 @@ fn event_from_disk_row(
             time: created_at,
             event_type,
             data,
+            result_data: result_data.clone(),
             surface_op: None,
             source_seqs,
             ignorable: false,
@@ -1020,6 +1084,7 @@ fn event_from_disk_row(
             time: created_at,
             event_type,
             data,
+            result_data: result_data.clone(),
             surface_op: None,
             source_seqs,
             ignorable,
@@ -1050,6 +1115,7 @@ fn event_from_disk_row(
         time: created_at,
         event_type,
         data: serde_json::to_value(&item)?,
+        result_data,
         surface_op,
         source_seqs,
         ignorable: false,
@@ -1420,7 +1486,7 @@ pub(crate) fn load_events_range_on(
         return Ok(Vec::new());
     }
     let mut stmt = conn.prepare(
-        "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state
+        "SELECT seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state, result_data
          FROM transcript_items WHERE session_id = ?1 AND seq >= ?2 AND seq < ?3 ORDER BY seq ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![session_id, from, to], |row| {
@@ -1434,12 +1500,23 @@ pub(crate) fn load_events_range_on(
             row.get::<_, Option<String>>(6)?,
             row.get::<_, Option<String>>(7)?,
             row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
         ))
     })?;
     let mut events = Vec::new();
     for row in rows {
-        let (seq, created_at, event_type, surface_op, source_seqs, kind, body, body_ref, state) =
-            row?;
+        let (
+            seq,
+            created_at,
+            event_type,
+            surface_op,
+            source_seqs,
+            kind,
+            body,
+            body_ref,
+            state,
+            result_data,
+        ) = row?;
         events.push(event_from_disk_row(
             session_id,
             seq,
@@ -1451,6 +1528,7 @@ pub(crate) fn load_events_range_on(
             body,
             body_ref,
             state,
+            result_data,
             data_root,
         )?);
     }
@@ -2563,8 +2641,13 @@ impl Session {
         _delta: &[Item],
         expected_max_seq: i64,
         turn_id: &str,
+        result_data: &[ToolResultData],
     ) -> Result<CommitDeltaOutcome> {
         let _gate = self.lock_write();
+        let ui_data_by_call_id: HashMap<&str, &serde_json::Value> = result_data
+            .iter()
+            .map(|entry| (entry.call_id.as_str(), &entry.data))
+            .collect();
         let valid_call_ids: HashSet<String> = rows
             .iter()
             .filter_map(|row| match &row.item {
@@ -2617,9 +2700,17 @@ impl Session {
                     // seal: a streamed row must not survive its own commit as
                     // `in_progress`.
                     if row_is_settled(&tx, &self.id, seq)? {
+                        set_item_result_data(
+                            &tx,
+                            &self.id,
+                            seq,
+                            msg,
+                            &ui_data_by_call_id,
+                        )?;
                         continue;
                     }
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                    set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
                     projection.seal_item(seq, msg);
                     sealed_seqs.push(seq);
                     sealed_items.push(msg.clone());
@@ -2637,6 +2728,7 @@ impl Session {
                     row.log_seq = None;
                 } else {
                     seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
+                    set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
                     projection.seal_item(seq, msg);
                     sealed_seqs.push(seq);
                     sealed_items.push(msg.clone());
@@ -2650,6 +2742,7 @@ impl Session {
             draft.time = message_timestamp(msg);
             let (seq, _) =
                 self.admit_draft_in_tx(&tx, draft, &tid, next_turn_seq, &kind, 0, &mut projection)?;
+            set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
             row.log_seq = Some(seq);
             next_turn_seq += 1;
             mutated = true;
@@ -3496,6 +3589,7 @@ mod tests {
                 rows: vec![crate::session::WorkingRow::persisted(seq, finished)],
                 expected_max_seq: seq as i64,
                 turn_id: "crash-recovery".into(),
+                result_data: Vec::new(),
             })
             .unwrap();
         // No in-place seal happened: the continuation was appended, and the
@@ -3689,6 +3783,78 @@ mod tests {
             }
             other => panic!("reload must keep assistant summary, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tool_result_data_round_trips_beside_the_item_without_entering_it() {
+        use crate::authority::responses::{
+            FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
+        };
+
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        let call = Item::FunctionCall(FunctionToolCall {
+            call_id: "call_1".into(),
+            name: crate::tools::code::CODE_TOOL_NAME.into(),
+            arguments: "{}".into(),
+            id: Some("call_1".into()),
+            status: None,
+            namespace: None,
+        });
+        let output = Item::FunctionCallOutput(FunctionCallOutputItemParam {
+            call_id: "call_1".into(),
+            output: FunctionCallOutput::Text("run_code ok".into()),
+            id: None,
+            status: None,
+        });
+        let data = serde_json::json!({
+            "succeeded": 2,
+            "failed": 1,
+            "duration_ms": 12,
+            "by_tool": {
+                "grep": { "ok": 2, "fail": 0 },
+                "read": { "ok": 0, "fail": 1 }
+            },
+            "ok": true
+        });
+        let mut rows = vec![
+            WorkingRow::pending(call),
+            WorkingRow::pending(output),
+        ];
+
+        let outcome = session
+            .commit_turn_delta_with_orphan_cleanup(
+                &mut rows,
+                &[],
+                -1,
+                "t1",
+                &[ToolResultData {
+                    call_id: "call_1".into(),
+                    data: data.clone(),
+                }],
+            )
+            .unwrap();
+        assert!(matches!(outcome, CommitDeltaOutcome::Applied { .. }));
+
+        let events = session.load_events().unwrap();
+        let call_event = events
+            .iter()
+            .find(|event| event.event_type == EventType::ItemToolCall)
+            .expect("function call row");
+        let result_event = events
+            .iter()
+            .find(|event| event.event_type == EventType::ItemToolResult)
+            .expect("tool result row");
+
+        assert!(call_event.result_data.is_none());
+        assert_eq!(result_event.result_data.as_ref(), Some(&data));
+        // The Responses Item is unchanged: UI data never enters the body.
+        assert!(!serde_json::to_string(&result_event.data).unwrap().contains("by_tool"));
+        assert_eq!(
+            crate::session::derive_transcript_items(&events)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
 }

@@ -9,6 +9,7 @@ import {
 import type { FunctionCallItem, FunctionCallOutputItem } from "../api/types";
 import { formatElapsed, matchJob } from "../lib/bashLive";
 import { bashKill } from "../lib/litecodeBash";
+import { formatRunCodeData } from "../lib/runCodeSummary";
 import { useBashStore } from "../stores/bashStore";
 import { useTurnStore } from "../stores/turnStore";
 import { FoldCard, FOLDCARD_HEADER_TONE } from "./FoldCard";
@@ -22,6 +23,8 @@ import { toolTitle } from "./toolviews/toolTitle";
 interface ToolCallCardProps {
   call: FunctionCallItem;
   output?: FunctionCallOutputItem;
+  /** UI-only structured tool result data (`run_code` aggregate). */
+  data?: unknown;
   streaming?: boolean;
   projectRoot?: string | null;
   onOpenFile: (path: string) => void;
@@ -40,6 +43,7 @@ function actionPayloadPath(payload: unknown): string | null {
 export function ToolCallCard({
   call,
   output,
+  data,
   streaming = false,
   projectRoot = null,
   onOpenFile,
@@ -56,6 +60,8 @@ export function ToolCallCard({
   const inputSummary = toolTitle(toolName, input, rawOutput, {
     activePlanPath,
   }).summary;
+  const runCodeSummary =
+    toolName === "run_code" ? formatRunCodeData(data) : null;
 
   // edit header: file + line-level +N/−M, summed from edits[] (or historical
   // top-level old_string/new_string). Request preview only — not apply status.
@@ -168,11 +174,11 @@ export function ToolCallCard({
               </span>
             </>
           ) : (
-            inputSummary && (
+            (runCodeSummary || inputSummary) && (
               <span
                 className={`${FOLDCARD_HEADER_TONE} min-w-0 flex-1 truncate text-(--_dk-text-muted)`}
               >
-                {inputSummary}
+                {runCodeSummary ?? inputSummary}
               </span>
             )
           )}

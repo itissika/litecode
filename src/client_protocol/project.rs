@@ -28,6 +28,9 @@ pub fn buffer_log_row(
         "cites": event.source_seqs.clone().unwrap_or_default(),
         "state": event.state.as_str(),
     });
+    if let Some(data) = &event.result_data {
+        params["result_data"] = data.clone();
+    }
     if let Some(op) = &event.surface_op {
         params["surface_op"] = serde_json::to_value(op).unwrap_or(Value::Null);
     }

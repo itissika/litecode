@@ -771,6 +771,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             mut rows,
             expected_max_seq,
             turn_id,
+            result_data,
         } => {
             let (kind, preview, working) = {
                 let session = ensure_live(state, &session_id)?;
@@ -779,6 +780,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     &[],
                     expected_max_seq,
                     &turn_id,
+                    &result_data,
                 )?;
                 let working = session.load_working_set()?;
                 match outcome {

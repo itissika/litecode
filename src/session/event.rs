@@ -146,6 +146,10 @@ pub struct SessionEvent {
     #[serde(rename = "type")]
     pub event_type: EventType,
     pub data: Value,
+    /// UI-only structured tool result data. Never an `Item` field and never
+    /// read by the model view; only `run_code` fills it today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_data: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_op: Option<SurfaceOp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +324,7 @@ pub fn finalize_draft(seq: Seq, draft: EventDraft) -> Result<SessionEvent> {
         time: draft.time,
         event_type: draft.event_type,
         data: frozen,
+        result_data: None,
         surface_op: draft.surface_op,
         source_seqs: draft.source_seqs,
         ignorable: draft.ignorable,

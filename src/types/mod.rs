@@ -11,7 +11,7 @@ mod golden_item_fixtures;
 
 pub use error::{LitecodeError, Result};
 pub use media::{MediaArtifact, MediaKind, MediaSource, ToolOutputPart};
-pub use result::{ToolCallResult, ToolError, ToolErrorKind, ToolSignalLevel};
+pub use result::{ToolCallResult, ToolError, ToolErrorKind, ToolResultData, ToolSignalLevel};
 pub use transcript::{
     FunctionCallOutputItemParam, FunctionToolCall, InputItem, Item, OutputItem, OutputMessage,
     ReasoningItem, Response, StreamEvents, Transcript, UserInput, assistant_text,

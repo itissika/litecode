@@ -106,19 +106,19 @@ function occupancyMix(
       key: "system",
       label: "System",
       tokens: systemTokens,
-      color: "var(--_dk-cat-cyan)",
+      color: "var(--_dk-cat-red)",
     },
     {
       key: "tools",
       label: "Tool definitions",
       tokens: toolTokens,
-      color: "var(--_dk-cat-orange)",
+      color: "var(--_dk-amber-500)",
     },
     {
       key: "messages",
       label: "Messages",
       tokens: messageTokens,
-      color: "var(--_dk-cat-pink)",
+      color: "var(--_dk-cat-blue)",
     },
   ].filter((row) => row.tokens > 0);
 
@@ -224,8 +224,10 @@ export function ContextUsageRing({
       ? 0
       : Math.max(0, Math.min(1, (0.9 - hitRate) / (0.9 - 0.6)));
 
-  // Occupancy bar uses a neutral light/dark accent pair — deliberately distinct
-  // from the cache-hit green→red hue so the two metrics are never confused.
+  // Occupancy bar reads red / yellow / blue. Red and blue are the categorical
+  // pair set; yellow is the theme-tuned amber, because --_dk-cat-yellow turns
+  // mustard and looks dirty on light surfaces. Kept deliberately distinct from
+  // the cache-hit green→red hue so the two metrics are never confused.
   const occupancyBarWidth = hasOccupancy && total > 0 ? `${pct * 100}%` : "0%";
   const mix = hasOccupancy ? occupancyMix(used, breakdown) : null;
   const segments = mix?.tiers ?? [];

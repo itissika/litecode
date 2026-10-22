@@ -180,6 +180,9 @@ pub enum SessionMutation {
         rows: Vec<WorkingRow>,
         expected_max_seq: i64,
         turn_id: String,
+        /// UI-only structured `run_code` result data, keyed by `call_id`.
+        /// Persisted beside the matching `item/tool_result` row; never an Item.
+        result_data: Vec<crate::types::ToolResultData>,
     },
     Compact {
         session_id: String,

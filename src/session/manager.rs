@@ -3254,6 +3254,7 @@ impl SessionManager {
         rows: Vec<crate::session::working::WorkingRow>,
         expected_max_seq: i64,
         turn_id: &str,
+        result_data: &[crate::types::ToolResultData],
     ) -> anyhow::Result<(
         crate::session::data::command::CommitKind,
         Vec<crate::session::working::WorkingRow>,
@@ -3267,6 +3268,7 @@ impl SessionManager {
             rows,
             expected_max_seq,
             turn_id: turn_id.to_string(),
+            result_data: result_data.to_vec(),
         })?;
         let working = receipt
             .working_set

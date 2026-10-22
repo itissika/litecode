@@ -193,6 +193,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             cites           TEXT,
             state           TEXT NOT NULL DEFAULT 'final',
             provider_usage  TEXT,
+            result_data     TEXT,
             PRIMARY KEY (session_id, seq)
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_items_session_seq
@@ -383,6 +384,15 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        // UI-only structured tool result data (`run_code` aggregate). Additive
+        // and nullable: old rows read as absent and the frontend falls back to
+        // text. Not a required column and no schema-version bump.
+        if !cols.iter().any(|c| c == "result_data") {
+            conn.execute(
+                "ALTER TABLE transcript_items ADD COLUMN result_data TEXT",
+                [],
+            )?;
+        }
     }
     Ok(())
 }
@@ -496,6 +506,29 @@ mod tests {
     use super::*;
     use rusqlite::Connection;
     
+
+    #[test]
+    fn existing_session_db_adds_result_data_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute_batch("ALTER TABLE transcript_items DROP COLUMN result_data;")
+            .unwrap();
+        assert!(
+            !table_columns(&conn, "transcript_items")
+                .unwrap()
+                .iter()
+                .any(|c| c == "result_data")
+        );
+
+        ensure_session_schema(&conn).unwrap();
+
+        assert!(
+            table_columns(&conn, "transcript_items")
+                .unwrap()
+                .iter()
+                .any(|c| c == "result_data")
+        );
+    }
 
     #[test]
     fn existing_session_db_backfills_next_seq_to_max_plus_one() {

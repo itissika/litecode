@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::runtime::context::RuntimeContext;
-use crate::types::{FunctionToolCall, ToolCallResult, Transcript};
+use crate::types::{FunctionToolCall, ToolCallResult, ToolResultData, Transcript};
 
 use super::executor::{
-    PlanTouch, ToolCallOrigin, ToolCaller, execute_tool_call, outputs_from_tool_results,
+    PlanTouch, ToolCallOrigin, ToolCaller, execute_tool_call, outputs_and_data_from_tool_results,
     partition_tool_calls,
 };
 use crate::runtime::diagnostics::{AuditEvent, emit_tool_audit};
@@ -72,7 +72,7 @@ impl ToolPipeline {
         invocations: &[FunctionToolCall],
         transcript: &mut Transcript,
     ) -> crate::types::Result<()> {
-        self.execute_batch_cancellable(invocations, transcript, || false)
+        self.execute_batch_cancellable(invocations, transcript, || false, &mut Vec::new())
             .await
     }
 
@@ -81,11 +81,12 @@ impl ToolPipeline {
         invocations: &[FunctionToolCall],
         transcript: &mut Transcript,
         is_cancelled: impl Fn() -> bool,
+        result_data: &mut Vec<ToolResultData>,
     ) -> crate::types::Result<()> {
         let cancel = self.runtime.cancel.clone();
         let mut results_by_id: HashMap<String, ToolCallResult> = HashMap::new();
         if is_cancelled() || cancel.is_cancelled() {
-            self.append_cancelled_outputs(invocations, results_by_id, transcript);
+            self.append_cancelled_outputs(invocations, results_by_id, transcript, result_data);
             return Err(crate::types::LitecodeError::Canceled);
         }
 
@@ -98,7 +99,7 @@ impl ToolPipeline {
         );
         for batch in batches {
             if is_cancelled() || cancel.is_cancelled() {
-                self.append_cancelled_outputs(invocations, results_by_id, transcript);
+                self.append_cancelled_outputs(invocations, results_by_id, transcript, result_data);
                 return Err(crate::types::LitecodeError::Canceled);
             }
             if batch.is_concurrency_safe {
@@ -153,7 +154,12 @@ impl ToolPipeline {
                             self.join_tool_handle(remaining, &id, &mut results_by_id, invocations)
                                 .await;
                         }
-                        self.append_cancelled_outputs(invocations, results_by_id, transcript);
+                        self.append_cancelled_outputs(
+                            invocations,
+                            results_by_id,
+                            transcript,
+                            result_data,
+                        );
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                     match handle.await {
@@ -173,6 +179,7 @@ impl ToolPipeline {
                                     invocations,
                                     results_by_id,
                                     transcript,
+                                    result_data,
                                 );
                                 return Err(crate::types::LitecodeError::Canceled);
                             }
@@ -208,7 +215,12 @@ impl ToolPipeline {
             } else {
                 for tu in &batch.blocks {
                     if is_cancelled() || cancel.is_cancelled() {
-                        self.append_cancelled_outputs(invocations, results_by_id, transcript);
+                        self.append_cancelled_outputs(
+                            invocations,
+                            results_by_id,
+                            transcript,
+                            result_data,
+                        );
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                     let tool_use_id = tu.call_id.clone();
@@ -231,7 +243,12 @@ impl ToolPipeline {
                     .await;
                     results_by_id.insert(tool_use_id.clone(), result);
                     if is_cancelled() || cancel.is_cancelled() {
-                        self.append_cancelled_outputs(invocations, results_by_id, transcript);
+                        self.append_cancelled_outputs(
+                            invocations,
+                            results_by_id,
+                            transcript,
+                            result_data,
+                        );
                         return Err(crate::types::LitecodeError::Canceled);
                     }
                 }
@@ -239,11 +256,10 @@ impl ToolPipeline {
         }
 
         // Output-only: FunctionCall Items already live in transcript from model output.
-        transcript.extend(outputs_from_tool_results(
-            invocations,
-            results_by_id,
-            &self.runtime.data_root,
-        ));
+        let (items, data) =
+            outputs_and_data_from_tool_results(invocations, results_by_id, &self.runtime.data_root);
+        transcript.extend(items);
+        result_data.extend(data);
 
         Ok(())
     }
@@ -295,11 +311,11 @@ impl ToolPipeline {
         invocations: &[FunctionToolCall],
         results_by_id: HashMap<String, ToolCallResult>,
         transcript: &mut Transcript,
+        result_data: &mut Vec<ToolResultData>,
     ) {
-        transcript.extend(outputs_from_tool_results(
-            invocations,
-            results_by_id,
-            &self.runtime.data_root,
-        ));
+        let (items, data) =
+            outputs_and_data_from_tool_results(invocations, results_by_id, &self.runtime.data_root);
+        transcript.extend(items);
+        result_data.extend(data);
     }
 }

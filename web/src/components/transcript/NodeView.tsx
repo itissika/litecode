@@ -127,6 +127,7 @@ export function NodeView({
         <ToolCallCard
           call={node.call}
           output={node.output}
+          data={node.data}
           streaming={node.live}
           projectRoot={projectRoot ?? null}
           onOpenFile={(path) => onOpenFile?.(path)}

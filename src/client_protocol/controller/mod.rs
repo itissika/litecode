@@ -788,6 +788,7 @@ impl Projection {
                 seq: event.seq,
                 event_type: event.event_type,
                 body: event.data,
+                result_data: event.result_data,
                 cites: event.source_seqs.unwrap_or_default(),
                 state: event.state,
                 surface_op: event.surface_op,

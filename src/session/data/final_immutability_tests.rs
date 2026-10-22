@@ -272,6 +272,7 @@ fn a_finalised_row_is_never_rewritten() {
         rows,
         expected_max_seq: -1,
         turn_id: "t1".into(),
+        result_data: Vec::new(),
     }));
     check(&f, &mut ledger, "commit turn delta");
     assert!(f.in_progress_seqs().is_empty(), "the row was finalised");

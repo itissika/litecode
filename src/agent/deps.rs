@@ -1,4 +1,4 @@
-use crate::types::{FunctionToolCall, Item, Result, Transcript};
+use crate::types::{FunctionToolCall, Item, Result, ToolResultData, Transcript};
 
 // On a current_thread runtime, futures need not be Send; keep async fn in traits.
 #[allow(async_fn_in_trait)]
@@ -15,6 +15,7 @@ pub trait AgentDeps {
         &self,
         tool_uses: &[FunctionToolCall],
         transcript: &mut Transcript,
+        result_data: &mut Vec<ToolResultData>,
     ) -> Result<()>;
 
     async fn should_stop(&self, output: &[Item]) -> Result<bool>;
@@ -51,7 +52,7 @@ pub trait AgentDeps {
 
     /// Persist this step's new items. `Ok(true)` means the log was truncated
     /// under this turn and the delta was not written.
-    fn persist_new(&self, items: &[Item]) -> Result<bool>;
+    fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool>;
 
     /// Called at the start of each agent-loop step; drives step/phase telemetry.
     fn begin_step(&mut self, step: u64);

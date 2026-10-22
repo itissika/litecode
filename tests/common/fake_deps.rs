@@ -7,7 +7,7 @@ use litecode::authority::responses::{
     AssistantRole, FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, MessageItem,
     OutputMessage, OutputMessageContent, OutputStatus, OutputTextContent,
 };
-use litecode::types::{Item, LitecodeError, Result, Transcript};
+use litecode::types::{Item, LitecodeError, Result, ToolResultData, Transcript};
 
 /// Build an assistant output-text `Item` (authority OutputMessage).
 pub fn assistant_text_item(text: &str, id: &str) -> Item {
@@ -146,6 +146,7 @@ impl AgentDeps for FakeAgentDeps {
         &self,
         tool_uses: &[FunctionToolCall],
         transcript: &mut Transcript,
+        _result_data: &mut Vec<ToolResultData>,
     ) -> Result<()> {
         self.execute_calls
             .set(self.execute_calls.get().saturating_add(1));
@@ -200,7 +201,7 @@ impl AgentDeps for FakeAgentDeps {
         self.max_steps
     }
 
-    fn persist_new(&self, items: &[Item]) -> Result<bool> {
+    fn persist_new(&self, items: &[Item], _result_data: &[ToolResultData]) -> Result<bool> {
         if self.persist_fail {
             return Err(LitecodeError::ToolExecution("persist failed".into()));
         }

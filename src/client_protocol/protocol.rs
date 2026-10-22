@@ -304,6 +304,10 @@ pub struct WireBufferEvent {
     /// Kind-specific durable body. Consumers must switch on `type`; this is
     /// the authoritative session product payload.
     pub body: serde_json::Value,
+    /// UI-only structured tool result data (currently `run_code`). Sits beside
+    /// `body`, never inside the Responses `Item`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_data: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cites: Vec<crate::session::event::Seq>,
     pub state: crate::session::model::LogState,

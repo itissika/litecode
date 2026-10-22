@@ -3,7 +3,7 @@ use super::outcome::TurnOutcome;
 use crate::authority::responses::{
     FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, OutputStatus,
 };
-use crate::types::{Item, LitecodeError, item_text_preview};
+use crate::types::{Item, LitecodeError, ToolResultData, item_text_preview};
 
 /// Agent loop on authority Items — no second-truth assembly.
 ///
@@ -75,7 +75,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 );
                 let mut step_items = partial;
                 step_items.extend(pads);
-                if let Some(outcome) = persist_or_stop(deps, &step_items, &final_text) {
+                if let Some(outcome) = persist_or_stop(deps, &step_items, &[], &final_text) {
                     return outcome;
                 }
                 return TurnOutcome::Error(LitecodeError::Llm(message));
@@ -119,7 +119,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
             final_text = text;
         }
 
-        if let Some(outcome) = persist_or_stop(deps, &output, &final_text) {
+        if let Some(outcome) = persist_or_stop(deps, &output, &[], &final_text) {
             return outcome;
         }
 
@@ -132,7 +132,7 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
                 &tool_uses,
                 "the user cancelled the turn before a result arrived",
             );
-            if let Some(outcome) = persist_or_stop(deps, &pads, &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &pads, &[], &final_text) {
                 return outcome;
             }
             return TurnOutcome::Cancelled { final_text };
@@ -140,17 +140,23 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
 
         if !tool_uses.is_empty() {
             let mut outputs = Vec::new();
-            match deps.execute_tools(&tool_uses, &mut outputs).await {
+            let mut result_data = Vec::new();
+            match deps
+                .execute_tools(&tool_uses, &mut outputs, &mut result_data)
+                .await
+            {
                 Ok(()) => {}
                 Err(LitecodeError::Canceled) => {
-                    if let Some(outcome) = persist_or_stop(deps, &outputs, &final_text) {
+                    if let Some(outcome) =
+                        persist_or_stop(deps, &outputs, &result_data, &final_text)
+                    {
                         return outcome;
                     }
                     return TurnOutcome::Cancelled { final_text };
                 }
                 Err(e) => return TurnOutcome::Error(e),
             }
-            if let Some(outcome) = persist_or_stop(deps, &outputs, &final_text) {
+            if let Some(outcome) = persist_or_stop(deps, &outputs, &result_data, &final_text) {
                 return outcome;
             }
             deps.emit_todo_progress();
@@ -181,11 +187,16 @@ pub async fn run(deps: &mut impl AgentDeps) -> TurnOutcome {
 
     TurnOutcome::Completed { final_text }
 }
-fn persist_or_stop(deps: &impl AgentDeps, items: &[Item], final_text: &str) -> Option<TurnOutcome> {
+fn persist_or_stop(
+    deps: &impl AgentDeps,
+    items: &[Item],
+    result_data: &[ToolResultData],
+    final_text: &str,
+) -> Option<TurnOutcome> {
     if items.is_empty() {
         return None;
     }
-    match deps.persist_new(items) {
+    match deps.persist_new(items, result_data) {
         Err(e) => Some(TurnOutcome::Error(e)),
         // `true` means persist skipped a write because the log shrank (回退).
         // User 取消 is `is_cancelled()` plus 封口, not projection length.
@@ -235,7 +246,7 @@ fn interrupted_outputs(
 #[cfg(test)]
 mod pending_continue_tests {
     use super::{AgentDeps, TurnOutcome};
-    use crate::types::{FunctionToolCall, Item, Result, Transcript, assistant_text};
+    use crate::types::{FunctionToolCall, Item, Result, ToolResultData, Transcript, assistant_text};
     use std::cell::Cell;
 
     /// Minimal deps: every step returns a final text answer (no tool calls), so
@@ -256,6 +267,7 @@ mod pending_continue_tests {
             &self,
             _tool_uses: &[FunctionToolCall],
             _transcript: &mut Transcript,
+            _result_data: &mut Vec<ToolResultData>,
         ) -> Result<()> {
             unreachable!("no tool calls in this fixture")
         }
@@ -279,7 +291,7 @@ mod pending_continue_tests {
             10
         }
 
-        fn persist_new(&self, _items: &[Item]) -> Result<bool> {
+        fn persist_new(&self, _items: &[Item], _result_data: &[ToolResultData]) -> Result<bool> {
             Ok(false)
         }
 

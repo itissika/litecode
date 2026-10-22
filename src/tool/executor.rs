@@ -26,8 +26,12 @@ use crate::tool::trait_::{Tool, ToolExecutionContext, ToolSurface};
 use crate::tool::write_lock::{ResourceKey, WorkspaceWriteLock};
 use crate::types::{
     FunctionToolCall, Item, MediaArtifact, MediaKind, Result, ToolCallResult, ToolErrorKind,
-    ToolOutputPart, ToolSignalLevel,
+    ToolOutputPart, ToolResultData, ToolSignalLevel,
 };
+
+/// UI-only `result.data` payload cap. `run_code`'s aggregate is ~1 KB; this
+/// bounds a pathological program that calls many distinct tools.
+const MAX_UI_RESULT_DATA_BYTES: usize = 16 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct Batch {
@@ -995,17 +999,18 @@ fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
 ///
 /// `data_root` is required to resolve `BlobRef` media into data URLs. Encode failures
 /// for a single call become tool-error text outputs (fail closed — no stub dialects).
-pub fn outputs_from_tool_results(
+pub fn outputs_and_data_from_tool_results(
     tool_uses: &[FunctionToolCall],
     results_by_id: HashMap<String, ToolCallResult>,
     data_root: &Path,
-) -> Vec<Item> {
+) -> (Vec<Item>, Vec<ToolResultData>) {
     let mut items = Vec::new();
+    let mut result_data = Vec::new();
     for fc in tool_uses {
         let cid = call_id(fc);
         let result = results_by_id.get(&cid);
         let item = match result {
-            Some(r) => function_call_output_item(cid, r, Some(data_root)),
+            Some(r) => function_call_output_item(cid.clone(), r, Some(data_root)),
             // Reached on cancelled turns (user stopped the loop) and as a
             // fail-closed fallback: the model must never see a dangling tool call.
             None => Item::FunctionCallOutput(FunctionCallOutputItemParam {
@@ -1021,9 +1026,47 @@ pub fn outputs_from_tool_results(
                 status: None,
             }),
         };
+        // Only `run_code` opts into persisted UI data for now. Its aggregate is
+        // tiny (`by_tool` has one entry per tool name, not per call) and the
+        // frontend consumes it; other tools keep `data` internal.
+        if let Some(r) = result
+            && fc.name == crate::tools::code::CODE_TOOL_NAME
+            && let Some(data) = r.data.as_ref()
+        {
+            match serde_json::to_vec(data) {
+                Ok(raw) if raw.len() <= MAX_UI_RESULT_DATA_BYTES => {
+                    result_data.push(ToolResultData {
+                        call_id: cid,
+                        data: data.clone(),
+                    });
+                }
+                Ok(raw) => tracing::warn!(
+                    tool = %fc.name,
+                    call_id = %cid,
+                    bytes = raw.len(),
+                    limit = MAX_UI_RESULT_DATA_BYTES,
+                    "tool result data dropped: over the UI persistence cap"
+                ),
+                Err(e) => tracing::warn!(
+                    tool = %fc.name,
+                    call_id = %cid,
+                    error = %e,
+                    "tool result data dropped: not serializable"
+                ),
+            }
+        }
         items.push(item);
     }
-    items
+    (items, result_data)
+}
+
+/// Build FunctionCallOutput Items only (FunctionCall already in transcript from model).
+pub fn outputs_from_tool_results(
+    tool_uses: &[FunctionToolCall],
+    results_by_id: HashMap<String, ToolCallResult>,
+    data_root: &Path,
+) -> Vec<Item> {
+    outputs_and_data_from_tool_results(tool_uses, results_by_id, data_root).0
 }
 
 /// Alias kept for call sites that still say "items from results" — output-only.

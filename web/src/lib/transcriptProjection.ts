@@ -111,6 +111,8 @@ export type RenderNode =
       kind: "tool";
       call: FunctionCallItem;
       output?: FunctionCallOutputItem;
+      /** UI-only structured result data, joined by `call_id`; not an Item field. */
+      data?: unknown;
       key: string;
       streaming: boolean;
       live: boolean;
@@ -128,6 +130,19 @@ function outputsByCallId(
   return map;
 }
 
+/** UI-only `result_data` joined by `call_id`; absent on older/settled rows. */
+function resultDataByCallId(rows: HumanRow[]): Map<string, unknown> {
+  const map = new Map<string, unknown>();
+  for (const row of rows) {
+    if (row.kind !== "item/tool_result" || row.result_data === undefined) continue;
+    const item = itemFromRow(row);
+    if (item && isFunctionCallOutput(item)) {
+      map.set(item.call_id, row.result_data);
+    }
+  }
+  return map;
+}
+
 /**
  * Whether the log still holds this row in flight. The row's own `state` answers
  * it; a payload's `status` is provider content and may be absent entirely.
@@ -139,6 +154,7 @@ function rowInProgress(row: HumanRow): boolean {
 /** Flatten HumanView rows into nodes; only `item/*` bodies are Items. */
 export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
   const outputs = outputsByCallId(rows);
+  const resultData = resultDataByCallId(rows);
   const outputInProgressByCallId = new Map<string, boolean>();
   for (const row of rows) {
     if (row.kind !== "item/tool_result") continue;
@@ -196,6 +212,7 @@ export function rowsToNodes(rows: HumanRow[]): RenderNode[] {
         kind: "tool",
         call: item,
         output,
+        data: resultData.get(item.call_id),
         key,
         streaming,
         live,

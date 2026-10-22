@@ -220,6 +220,9 @@ type LogRowState = "in_progress" | "final" | "aborted";
 /** Every committed row carries the log envelope; `seq` is its identity. */
 interface LogRowEnvelope {
   seq: number;
+  /** UI-only structured tool result data (currently `run_code`). Sits beside
+   *  `body`, never inside the Responses `Item`. Absent on older rows. */
+  result_data?: unknown;
   /** Lifecycle from the log: `in_progress` until the row settles.
    *
    *  Required, and never derived from the payload: a payload's own `status` is

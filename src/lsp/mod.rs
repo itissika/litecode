@@ -25,7 +25,7 @@ pub use uri::file_to_uri;
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     
 

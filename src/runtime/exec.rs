@@ -4,7 +4,7 @@ use crate::llm::ModelRequest;
 use crate::llm::ToolDef;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
 use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
-use crate::types::{FunctionToolCall, Item, Result, Transcript};
+use crate::types::{FunctionToolCall, Item, Result, ToolResultData, Transcript};
 
 use crate::agent::AgentDeps;
 use crate::telemetry::latency;
@@ -70,6 +70,7 @@ impl AgentDeps for AgentRuntime {
         &self,
         tool_uses: &[FunctionToolCall],
         transcript: &mut Transcript,
+        result_data: &mut Vec<ToolResultData>,
     ) -> Result<()> {
         let step = self.current_step_value();
         self.emit_phase(TurnPhase::ExecutingTools, step);
@@ -83,7 +84,12 @@ impl AgentDeps for AgentRuntime {
             .tool_pipeline
             .as_ref()
             .expect("tool_pipeline not initialized")
-            .execute_batch_cancellable(tool_uses, transcript, move || cancel.is_cancelled())
+            .execute_batch_cancellable(
+                tool_uses,
+                transcript,
+                move || cancel.is_cancelled(),
+                result_data,
+            )
             .await;
         self.sessions.absorb_touched_files(&self.session_id);
         result
@@ -180,11 +186,14 @@ impl AgentDeps for AgentRuntime {
         self.agent_config.max_steps
     }
 
-    fn persist_new(&self, items: &[Item]) -> Result<bool> {
+    fn persist_new(&self, items: &[Item], result_data: &[ToolResultData]) -> Result<bool> {
         let _lap = latency::lap_step("commit_step.persist_new", self.current_step_value());
-        let outcome = self
-            .context_pipeline
-            .persist_new(&self.sessions, &self.session_id, items)?;
+        let outcome = self.context_pipeline.persist_new(
+            &self.sessions,
+            &self.session_id,
+            items,
+            result_data,
+        )?;
         if outcome.discarded {
             // 回退 shortened the log; do not append this turn's tail.
             return Ok(true);
