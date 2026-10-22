@@ -1121,24 +1121,7 @@ pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRe
     }
 }
 
-#[cfg(test)]
-mod should_stop_tests {
-    
-    
-    
 
-
-
-}
-
-#[cfg(test)]
-mod estimate_body_bytes_tests {
-    
-    
-    
-
-
-}
 
 /// WP-090 K5: reason text for a non-waking parent notice in subagent_settled.
 fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String {

@@ -135,9 +135,3 @@ pub struct NotifyFsChangesParams {
     pub paths: Vec<String>,
     pub deleted: bool,
 }
-
-#[cfg(test)]
-mod tests {
-    
-
-}

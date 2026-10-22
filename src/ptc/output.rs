@@ -72,9 +72,3 @@ impl OutputLedger {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    
-
-}

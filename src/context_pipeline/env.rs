@@ -38,11 +38,3 @@ fn non_empty(value: &str) -> Option<String> {
         Some(value.to_string())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-    
-
-}

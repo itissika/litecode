@@ -753,12 +753,3 @@ pub(crate) fn restore_usearch(ann: &Index, path: &Path) -> Result<()> {
     ann.load_from_buffer(&buf)
         .map_err(|e| LitecodeError::Config(format!("load usearch: {e}")))
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}

@@ -229,10 +229,3 @@ fn values_eq(left: &Value, right: &Value) -> bool {
     }
     true
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-
-}

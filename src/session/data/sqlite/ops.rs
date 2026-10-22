@@ -195,11 +195,3 @@ pub fn delete_blob_rows(conn: &Connection, ids: &[String]) -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-
-
-}

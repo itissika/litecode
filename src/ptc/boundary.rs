@@ -828,11 +828,3 @@ pub(crate) fn uncatchable(ctx: &Ctx<'_>, message: &str) -> Error {
         Err(error) => error,
     }
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-    
-
-}

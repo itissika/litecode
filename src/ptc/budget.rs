@@ -133,11 +133,3 @@ impl Drop for BudgetPauseGuard {
         self.clock.resume();
     }
 }
-
-#[cfg(test)]
-mod tests {
-    
-    
-    
-
-}

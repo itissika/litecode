@@ -212,11 +212,3 @@ pub fn uncovered_chars(chunks: &[Chunk], source_chars: usize) -> usize {
     }
     source_chars.saturating_sub(cursor)
 }
-
-#[cfg(test)]
-mod tests {
-    
-
-
-
-}

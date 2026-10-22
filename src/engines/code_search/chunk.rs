@@ -61,9 +61,3 @@ pub fn chunk_file(path: &str, content: &str, next_id: u64) -> (Vec<ChunkRecord>,
 
     (chunks, id)
 }
-
-#[cfg(test)]
-mod tests {
-    
-
-}
