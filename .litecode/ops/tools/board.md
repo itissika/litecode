@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-22T03:27:10.549Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-22T03:38:10.913Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -223,8 +223,8 @@
 | WP-205 | 修复：session_search 溢出文件/虚拟 read 测试失败 | done | backend_mid | gm |
 | WP-206 | Code 模式测评修复：run 前台窗/并发、LSP 冷启动、read EOF、边界序列化、路径一致 | done | backend_mid | gm |
 | WP-207 | 测试瘦身：删迁移期 gate/过时测，修 stack overflow 分类，全量 cargo test 绿 | done | backend_mid | gm |
-| WP-208 | 测试大幅瘦身：默认删除，只守关键模块核心链路（目标 ≤~1000） | review | backend_mid | gm |
-| WP-209 | run_code 模型视图整形：表格化/紧凑 JSON + token 预算 + 成功省略 logs | drafting | backend_mid | gm |
+| WP-208 | 测试大幅瘦身：默认删除，只守关键模块核心链路（目标 ≤~1000） | done | backend_mid | gm |
+| WP-209 | run_code 模型视图整形：表格化/紧凑 JSON + token 预算 + 成功省略 logs | awaiting_approval | backend_mid | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

@@ -1467,3 +1467,7 @@
 {"ts":"2026-10-22T01:59:17.056Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-208: ready -> in_progress (ops.wp start)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T02:05:46.086Z","kind":"wp_lifecycle","source":"gm","summary":"WP-209: created (parent=- owner=backend_mid approver=gm) (ops.wp new)","evidence":[".litecode/ops/board.json"]}
 {"ts":"2026-10-22T03:27:10.533Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-208: in_progress -> review (submitted for acceptance; approver gm) (ops.wp deliver)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T03:37:02.998Z","kind":"wp_lifecycle","source":"gm","summary":"WP-208: review -> done (closed by gm) (ops.wp close)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T03:38:10.593Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-209: content filled (direct) (ops.wp fill)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T03:38:10.768Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-209: set artifact_path (ops.wp set)","evidence":[".litecode/ops/board.json"]}
+{"ts":"2026-10-22T03:38:10.901Z","kind":"wp_lifecycle","source":"backend_mid","summary":"WP-209: drafting -> awaiting_approval (plan; approver gm) (ops.wp submit)","evidence":[".litecode/ops/board.json"]}
