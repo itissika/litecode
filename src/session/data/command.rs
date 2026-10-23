@@ -65,7 +65,6 @@ pub struct CommitReceipt {
     pub session_id: String,
     pub operation_id: String,
     pub revision: u64,
-    pub change_id: i64,
     pub outcome: CommitKind,
     /// Live session-list preview when this mutation updated `last_message`.
     /// Not part of operation identity; omitted from durable receipt JSON when unset.
@@ -478,20 +477,17 @@ pub enum SessionRead {
     SearchableRowsFor {
         keys: Vec<(String, i64)>,
     },
-    ChangeLogSince {
+    DirtySessionsSince {
         last_change_id: i64,
     },
     LatestChangeId,
 }
 
+/// One session whose searchable keys changed after a watermark.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SessionChange {
+pub struct DirtySession {
     pub change_id: i64,
     pub session_id: String,
-    pub revision: u64,
-    pub kind: String,
-    pub from_seq: Option<i64>,
-    pub to_seq: Option<i64>,
 }
 
 /// One page of persisted user-message anchors (`item/user` seqs only).
@@ -536,7 +532,7 @@ pub enum ReadValue {
     RequestOrigins(Vec<(i64, serde_json::Value)>),
     ProviderUsageRollup(ProviderUsageRollup),
     SpineReminders(crate::reminder::SpineReminderView),
-    Changes(Vec<SessionChange>),
+    DirtySessions(Vec<DirtySession>),
     /// WP-186 durable pending user-gate asks.
     PendingPermissions(Vec<crate::session::pending::PendingPermissionRecord>),
     Empty,

@@ -6,7 +6,7 @@ use common::SessionDataFixture;
 use litecode::types::user_text;
 
 #[test]
-fn change_log_tracks_each_successful_mutation() {
+fn dirty_sessions_coalesce_successful_mutations() {
     let fixture = SessionDataFixture::new();
     let data = &fixture.data;
     let sid = data.create_session("/p", "default", None).unwrap();
@@ -14,8 +14,10 @@ fn change_log_tracks_each_successful_mutation() {
     data.insert_items(&sid, &[user_text("two")]).unwrap();
     let latest = data.reader().latest_change_id_blocking().unwrap();
     assert!(latest >= 3, "create + 2 inserts, got {latest}");
-    let changes = data.reader().change_log_since_blocking(0).unwrap();
-    assert!(changes.iter().any(|c| c.session_id == sid));
+    let dirty = data.reader().dirty_sessions_since_blocking(0).unwrap();
+    assert_eq!(dirty.len(), 1, "one row per session, not one per mutation");
+    assert_eq!(dirty[0].session_id, sid);
+    assert_eq!(dirty[0].change_id, latest);
 }
 
 #[test]

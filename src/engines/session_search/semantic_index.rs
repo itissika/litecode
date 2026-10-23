@@ -979,8 +979,11 @@ impl SessionSemanticIndex {
         workspace_root: &Path,
         embedder: &mut dyn Embedder,
     ) -> Result<bool> {
-        let live = reader.searchable_keys_blocking(None)?;
+        // Read the watermark before the key scan. A write that lands between
+        // these two reads is then included in `live` but not in `latest`, so
+        // the next reconcile revisits it instead of being acknowledged unseen.
         let latest = reader.latest_change_id_blocking().unwrap_or(0);
+        let live = reader.searchable_keys_blocking(None)?;
         let keys_hash = hash_keys(&live);
         if !self.building && self.last_change_id == latest && self.keys_hash == keys_hash {
             clear_session_job(workspace_root);
@@ -1396,14 +1399,14 @@ fn clear_session_job(workspace_root: &Path) {
 /// Exact pending-queue record, modelled on the code corpus's `CodeQueue`
 /// (`code-index/queue.json`): same shape, same write/remove-at-zero rule, in
 /// this corpus's own index dir. Units are sessions (the session corpus's
-/// "files"): distinct sessions with change-log entries past the index
-/// watermark. Never a chunk count: chunks exist only after cutting.
+/// "files"): coalesced dirty sessions past the index watermark. Never a chunk
+/// count: chunks exist only after cutting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionQueue {
     /// Sessions with changes past the watermark (including deletions).
     pub queued: usize,
     /// Sessions that may need embedding. Unit: sessions, never chunks or rows.
-    /// The change log does not tell a pure deletion/truncation apart from an
+    /// The dirty marker does not tell a pure deletion/truncation apart from an
     /// append without reading the rows, so today this counts every queued
     /// session (== `queued`), an upper bound of sessions, not an estimate of
     /// work size. Mirrors `CodeQueue::embed_dirty` (paths needing embedding).
@@ -1769,8 +1772,8 @@ fn check_meta_or_drop(workspace_root: &Path) -> Result<()> {
 }
 
 /// Compare `sessions.db` watermark to the on-disk session index and write the
-/// exact queue record (`queue.json`): distinct sessions changed since the
-/// watermark, read from the change log. Never a row- or id-delta estimate.
+/// exact queue record (`queue.json`): coalesced dirty sessions since the
+/// watermark. Never a row- or id-delta estimate.
 pub fn queue_session_dirty(workspace_root: &Path, reader: &SessionDataReader) {
     // A rebuild need is read from `meta.json` itself (`session_should_rebuild`).
     if session_should_rebuild(workspace_root) {
@@ -1795,11 +1798,11 @@ pub fn queue_session_dirty(workspace_root: &Path, reader: &SessionDataReader) {
         write_session_queue_counts(workspace_root, 0, 0);
         return;
     }
-    let changes = match reader.change_log_since_blocking(indexed) {
+    let changes = match reader.dirty_sessions_since_blocking(indexed) {
         Ok(changes) => changes,
         Err(error) => {
             // L1: leave the previous record; the next pass retries.
-            tracing::warn!(error = %error, "session_search: change log read failed; queue not updated");
+            tracing::warn!(error = %error, "session_search: dirty session read failed; queue not updated");
             return;
         }
     };

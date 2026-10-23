@@ -8,7 +8,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::conn::BUSY_TIMEOUT;
 
-pub const USER_VERSION: i32 = 7;
+pub const USER_VERSION: i32 = 8;
 
 const SESSIONS_REQUIRED_COLS: &[&str] = &[
     "schema_version",
@@ -222,6 +222,13 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             created_at   INTEGER NOT NULL,
             PRIMARY KEY (session_id, operation_id)
         );
+        -- Creation has no session id before commit, so idempotency replay looks
+        -- up by operation_id alone. Without this index that lookup scans the
+        -- whole receipt table before every new root or child session.
+        CREATE INDEX IF NOT EXISTS idx_session_operations_operation_id
+            ON session_operations(operation_id, created_at DESC);
+        -- Legacy append-only change log. New writes use `session_dirty`; this
+        -- table remains so v8 can seed dirty state from pre-upgrade databases.
         CREATE TABLE IF NOT EXISTS session_change_log (
             change_id   INTEGER PRIMARY KEY AUTOINCREMENT,
             session_id  TEXT NOT NULL,
@@ -233,6 +240,18 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_session_change_log_id
             ON session_change_log(change_id);
+        -- One coalesced dirty row per session. Search indexing needs only the
+        -- set of sessions changed since its checkpoint, not every mutation.
+        CREATE TABLE IF NOT EXISTS session_change_clock (
+            singleton      INTEGER PRIMARY KEY CHECK (singleton = 1),
+            last_change_id INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS session_dirty (
+            session_id TEXT PRIMARY KEY,
+            change_id  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_dirty_change
+            ON session_dirty(change_id);
         CREATE TABLE IF NOT EXISTS session_blobs (
             blob_id    TEXT PRIMARY KEY,
             sha256     TEXT NOT NULL,
@@ -260,7 +279,50 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     if user_version(conn)? < 7 && table_exists(conn, "transcript_items")? {
         migrate_reminders_v7(conn)?;
     }
+    if user_version(conn)? < 8 {
+        migrate_dirty_sessions_v8(conn)?;
+    }
     conn.execute_batch(&format!("PRAGMA user_version={USER_VERSION};"))?;
+    Ok(())
+}
+
+/// v8 replaces the append-only change log with one coalesced dirty row per
+/// session. Seed the clock at the old high-water mark so an index checkpoint
+/// from the previous format can advance exactly once.
+fn migrate_dirty_sessions_v8(conn: &Connection) -> Result<()> {
+    let initialized: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM session_change_clock WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    if initialized > 0 {
+        return Ok(());
+    }
+    let legacy_max: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(change_id), 0) FROM session_change_log",
+        [],
+        |row| row.get(0),
+    )?;
+    let seed = legacy_max.max(1);
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO session_change_clock (singleton, last_change_id) VALUES (1, ?1)",
+        rusqlite::params![seed],
+    )?;
+    // Any pre-v8 index checkpoint below `seed` must see every session that
+    // existed or changed in the old log. The next reconcile compares actual
+    // searchable keys, so over-marking is safe and under-marking is not.
+    tx.execute(
+        "INSERT OR IGNORE INTO session_dirty (session_id, change_id)
+         SELECT id, ?1 FROM sessions",
+        rusqlite::params![seed],
+    )?;
+    tx.execute(
+        "INSERT OR IGNORE INTO session_dirty (session_id, change_id)
+         SELECT DISTINCT session_id, ?1 FROM session_change_log",
+        rusqlite::params![seed],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -505,7 +567,6 @@ fn migrate_meter_table(conn: &Connection) -> Result<()> {
 mod tests {
     use super::*;
     use rusqlite::Connection;
-    
 
     #[test]
     fn existing_session_db_adds_result_data_column() {
@@ -570,4 +631,57 @@ mod tests {
         assert_eq!(next, 5, "backfill must be MAX(seq)+1 = 5");
     }
 
+    #[test]
+    fn v8_coalesces_legacy_change_log_into_one_dirty_row_per_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE session_dirty;
+             DROP TABLE session_change_clock;
+             PRAGMA user_version = 7;",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, schema_version, project, agent_id, created_at, updated_at)
+             VALUES ('s1', ?1, '/p', 'default', 1, 1)",
+            [SESSION_LOG_SCHEMA_VERSION],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO session_change_log (session_id, revision, kind, created_at)
+             VALUES ('s1', 2, 'Created', 1),
+                    ('s1', 3, 'MetaUpdated', 2);",
+        )
+        .unwrap();
+
+        ensure_session_schema(&conn).unwrap();
+
+        let clock: i64 = conn
+            .query_row(
+                "SELECT last_change_id FROM session_change_clock WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(clock, 2, "clock must keep the legacy high-water mark");
+        let dirty: Vec<(String, i64)> = {
+            let mut stmt = conn
+                .prepare("SELECT session_id, change_id FROM session_dirty")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<std::result::Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(dirty, vec![("s1".to_string(), 2)]);
+        let index: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_session_operations_operation_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index, 1);
+    }
 }

@@ -16,7 +16,7 @@ use crate::types::{LitecodeError, Result};
 
 pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
 pub use command::{
-    CommitKind, CommitReceipt, MutationId, ReadValue, SessionChange, SessionListPreview,
+    CommitKind, CommitReceipt, DirtySession, MutationId, ReadValue, SessionListPreview,
     SessionListRow, SessionMutation, SessionRead, SessionRevision,
 };
 pub use reader::SessionReadPool;
@@ -619,13 +619,15 @@ impl SessionDataReader {
         }
     }
 
-    pub fn change_log_since_blocking(
+    pub fn dirty_sessions_since_blocking(
         &self,
         last_change_id: i64,
-    ) -> Result<Vec<crate::session::data::command::SessionChange>> {
-        match self.read_blocking(SessionRead::ChangeLogSince { last_change_id })? {
-            ReadValue::Changes(v) => Ok(v),
-            _ => Err(LitecodeError::SessionStorage("unexpected changes".into())),
+    ) -> Result<Vec<crate::session::data::command::DirtySession>> {
+        match self.read_blocking(SessionRead::DirtySessionsSince { last_change_id })? {
+            ReadValue::DirtySessions(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected dirty sessions".into(),
+            )),
         }
     }
 
