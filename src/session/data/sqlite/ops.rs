@@ -6,6 +6,27 @@ use crate::types::Result;
 
 use super::super::command::{CommitKind, CommitReceipt};
 
+/// Which durable bookkeeping a commit needs. A receipt is only useful when a
+/// logical operation can be retried. A dirty marker is only useful when the
+/// commit changes searchable state. Internal stream checkpoints need neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalWrite {
+    Full,
+    ReceiptOnly,
+    DirtyOnly,
+    None,
+}
+
+impl JournalWrite {
+    fn writes_receipt(self) -> bool {
+        matches!(self, Self::Full | Self::ReceiptOnly)
+    }
+
+    fn marks_dirty(self) -> bool {
+        matches!(self, Self::Full | Self::DirtyOnly)
+    }
+}
+
 pub fn load_operation(
     conn: &Connection,
     session_id: &str,
@@ -47,23 +68,29 @@ pub fn load_operation_by_id(
     }
 }
 
-pub fn persist_receipt(conn: &Connection, receipt: &CommitReceipt) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO session_operations (session_id, operation_id, receipt_json, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![
-            receipt.session_id,
-            receipt.operation_id,
-            serde_json::to_string(receipt)?,
-            chrono::Utc::now().timestamp_millis()
-        ],
-    )?;
+pub(crate) fn record_commit(
+    conn: &Connection,
+    receipt: &CommitReceipt,
+    journal: JournalWrite,
+) -> Result<()> {
+    if journal.writes_receipt() {
+        conn.execute(
+            "INSERT OR REPLACE INTO session_operations (session_id, operation_id, receipt_json, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                receipt.session_id,
+                receipt.operation_id,
+                serde_json::to_string(receipt)?,
+                chrono::Utc::now().timestamp_millis()
+            ],
+        )?;
+    }
     if !receipt.session_id.is_empty() {
         if matches!(receipt.outcome, CommitKind::Deleted) {
             // A delete removes the `sessions` row in this same transaction, so
             // there is no revision column left to bump. The CAS guarantee is
-            // that the row is really gone; a surviving row means the delete
-            // did not take effect and the receipt must not commit.
+            // that the row is really gone; a surviving row means the delete did
+            // not take effect and the receipt must not commit.
             let still_there: Option<i64> = conn
                 .query_row(
                     "SELECT 1 FROM sessions WHERE id = ?1",
@@ -89,26 +116,42 @@ pub fn persist_receipt(conn: &Connection, receipt: &CommitReceipt) -> Result<()>
                 )));
             }
         }
-        conn.execute(
-            "INSERT INTO session_change_log (session_id, revision, kind, from_seq, to_seq, created_at)
-             VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
-            rusqlite::params![
-                receipt.session_id,
-                receipt.revision as i64,
-                format!("{:?}", receipt.outcome),
-                chrono::Utc::now().timestamp_millis()
-            ],
-        )?;
+        if journal.marks_dirty() {
+            mark_session_dirty(conn, &receipt.session_id)?;
+        }
     }
     Ok(())
 }
 
-pub fn latest_change_id(conn: &Connection) -> Result<i64> {
-    let id: Option<i64> =
-        conn.query_row("SELECT MAX(change_id) FROM session_change_log", [], |row| {
-            row.get(0)
-        })?;
-    Ok(id.unwrap_or(0))
+/// Advance the global dirty clock and coalesce this session into one row.
+///
+/// The search index runs on a coarse tick and only needs the set of sessions
+/// whose searchable keys changed since its checkpoint. The clock orders those
+/// changes; the row count stays bounded by the number of sessions.
+pub(crate) fn mark_session_dirty(conn: &Connection, session_id: &str) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE session_change_clock
+         SET last_change_id = last_change_id + 1
+         WHERE singleton = 1",
+        [],
+    )?;
+    if changed != 1 {
+        return Err(crate::types::LitecodeError::SessionStorage(
+            "session_change_clock singleton row is missing".into(),
+        ));
+    }
+    let change_id: i64 = conn.query_row(
+        "SELECT last_change_id FROM session_change_clock WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO session_dirty (session_id, change_id)
+         VALUES (?1, ?2)
+         ON CONFLICT(session_id) DO UPDATE SET change_id = excluded.change_id",
+        rusqlite::params![session_id, change_id],
+    )?;
+    Ok(())
 }
 
 pub fn register_blob_ref(
@@ -206,7 +249,6 @@ mod tests {
             session_id: session_id.to_string(),
             operation_id: "op-1".into(),
             revision,
-            change_id: 0,
             outcome: CommitKind::MetaUpdated,
             preview: None,
             assistant_preview: None,
@@ -215,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_receipt_deleted_rejects_surviving_session_row() {
+    fn full_journal_rejects_deleted_receipt_for_surviving_session_row() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         ensure_session_schema(&conn).unwrap();
         conn.execute(
@@ -227,7 +269,32 @@ mod tests {
         .unwrap();
         let mut r = receipt("s1", 2);
         r.outcome = CommitKind::Deleted;
-        let err = persist_receipt(&conn, &r).unwrap_err().to_string();
+        let err = record_commit(&conn, &r, JournalWrite::Full)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("still exists"), "got {err}");
+    }
+
+    #[test]
+    fn legacy_receipt_json_with_removed_change_id_still_loads() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        ensure_session_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO session_operations
+                (session_id, operation_id, receipt_json, created_at)
+             VALUES (?1, ?2, ?3, 1)",
+            rusqlite::params![
+                "s1",
+                "op-legacy",
+                r#"{"session_id":"s1","operation_id":"op-legacy","revision":7,"change_id":9,"outcome":"MetaUpdated"}"#
+            ],
+        )
+        .unwrap();
+
+        let receipt = load_operation(&conn, "s1", "op-legacy")
+            .unwrap()
+            .expect("legacy receipt");
+        assert_eq!(receipt.revision, 7);
+        assert_eq!(receipt.outcome, CommitKind::MetaUpdated);
     }
 }

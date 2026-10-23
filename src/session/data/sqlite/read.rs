@@ -10,7 +10,7 @@ use crate::session::transcript_file::SearchableRow;
 use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
 
-use super::super::command::{ReadValue, SessionChange, SessionListRow, SessionRead};
+use super::super::command::{DirtySession, ReadValue, SessionListRow, SessionRead};
 use super::session;
 
 pub fn execute(
@@ -126,9 +126,9 @@ pub fn execute(
         SessionRead::SearchableRowsFor { keys } => {
             Ok(ReadValue::Searchable(searchable_rows_for(conn, &keys)?))
         }
-        SessionRead::ChangeLogSince { last_change_id } => {
-            Ok(ReadValue::Changes(change_log_since(conn, last_change_id)?))
-        }
+        SessionRead::DirtySessionsSince { last_change_id } => Ok(ReadValue::DirtySessions(
+            dirty_sessions_since(conn, last_change_id)?,
+        )),
         SessionRead::SpineReminderView { session_id } => {
             let events = load_events(conn, &session_id, data_root)?;
             Ok(ReadValue::SpineReminders(
@@ -603,21 +603,17 @@ fn searchable_rows(conn: &Connection, session_id: Option<&str>) -> Result<Vec<Se
     Ok(rows)
 }
 
-fn change_log_since(conn: &Connection, last_change_id: i64) -> Result<Vec<SessionChange>> {
+fn dirty_sessions_since(conn: &Connection, last_change_id: i64) -> Result<Vec<DirtySession>> {
     let mut stmt = conn.prepare(
-        "SELECT change_id, session_id, revision, kind, from_seq, to_seq
-         FROM session_change_log
+        "SELECT change_id, session_id
+         FROM session_dirty
          WHERE change_id > ?1
          ORDER BY change_id ASC",
     )?;
     let rows = stmt.query_map(rusqlite::params![last_change_id], |row| {
-        Ok(SessionChange {
+        Ok(DirtySession {
             change_id: row.get(0)?,
             session_id: row.get(1)?,
-            revision: row.get::<_, i64>(2)? as u64,
-            kind: row.get(3)?,
-            from_seq: row.get(4)?,
-            to_seq: row.get(5)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -625,11 +621,12 @@ fn change_log_since(conn: &Connection, last_change_id: i64) -> Result<Vec<Sessio
 }
 
 fn latest_change_id(conn: &Connection) -> Result<i64> {
-    let id: Option<i64> =
-        conn.query_row("SELECT MAX(change_id) FROM session_change_log", [], |row| {
-            row.get(0)
-        })?;
-    Ok(id.unwrap_or(0))
+    conn.query_row(
+        "SELECT last_change_id FROM session_change_clock WHERE singleton = 1",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 trait OptionalExt<T> {

@@ -77,6 +77,21 @@ impl Fixture {
             .expect("revision") as u64
     }
 
+    fn count_rows(&self, table: &str) -> i64 {
+        self.db()
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .expect("count")
+    }
+
+    fn latest_change_id(&self) -> i64 {
+        self.data
+            .reader()
+            .latest_change_id_blocking()
+            .expect("latest change id")
+    }
+
     /// `seq -> body` for rows that are no longer in flight.
     fn settled(&self) -> BTreeMap<i64, String> {
         let conn = self.db();
@@ -209,6 +224,67 @@ impl Fixture {
         }
         m
     }
+}
+
+#[test]
+fn stream_micro_writes_do_not_accumulate_operation_or_dirty_rows() {
+    let f = open();
+    let receipts_before = f.count_rows("session_operations");
+    let dirty_before = f.latest_change_id();
+    let revision_before = f.rev();
+
+    f.mutate(f.with_rev(f.streaming("asst_journal", "Hel")));
+    let seq = f.in_progress_seqs()[0];
+    for text in ["Hell", "Hello", "Hello world"] {
+        f.mutate(f.with_rev(f.streaming_more(seq, "asst_journal", text)));
+    }
+
+    assert_eq!(
+        f.count_rows("session_operations"),
+        receipts_before,
+        "in-flight stream checkpoints are not retryable operations"
+    );
+    assert_eq!(
+        f.latest_change_id(),
+        dirty_before,
+        "in-flight rows are not searchable, so they do not wake the index"
+    );
+    assert_eq!(f.rev(), revision_before + 4);
+
+    f.seal_all();
+    assert_eq!(
+        f.count_rows("session_operations"),
+        receipts_before,
+        "sealing is an internal physical write, not a client operation"
+    );
+    assert!(
+        f.latest_change_id() > dirty_before,
+        "sealing makes the row searchable and must wake the index"
+    );
+    assert_eq!(f.count_rows("session_dirty"), 1, "dirty state is coalesced");
+    assert_eq!(
+        f.count_rows("session_change_log"),
+        0,
+        "the legacy per-mutation log must stay retired"
+    );
+}
+
+#[test]
+fn metadata_only_mutations_keep_receipts_but_do_not_wake_search() {
+    let f = open();
+    let receipts_before = f.count_rows("session_operations");
+    let dirty_before = f.latest_change_id();
+
+    f.mutate(SessionMutation::SetAgent {
+        session_id: f.sid.clone(),
+        expected_revision: f.rev(),
+        operation_id: MutationId::new(),
+        agent_id: "reviewer".into(),
+    });
+
+    assert_eq!(f.count_rows("session_operations"), receipts_before + 1);
+    assert_eq!(f.latest_change_id(), dirty_before);
+    assert_eq!(f.count_rows("session_change_log"), 0);
 }
 
 /// The invariant the projection's whole change-detection strategy rests on.

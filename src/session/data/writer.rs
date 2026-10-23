@@ -322,9 +322,9 @@ fn writer_loop(
 /// something seals them; leaving them alone would make them invisible forever.
 /// Sealing makes them visible, incomplete, and honest about it.
 ///
-/// Nothing has to be told to the index: sealing makes the rows searchable, and
-/// the next reconciliation finds them by comparing key sets. That is the whole
-/// reason the reconcile does not need change notifications.
+/// The repair bypasses normal mutations, so it marks each affected session dirty
+/// before sealing. That makes the index run and compare actual searchable keys;
+/// the marker itself is only a wake-up hint.
 fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
     let ids: Vec<String> = {
         let conn = state.db.conn();
@@ -337,6 +337,11 @@ fn seal_orphaned_in_progress(state: &WriterState) -> Result<usize> {
     };
     let mut sealed = 0usize;
     for id in ids {
+        // The repair below changes which rows are searchable, but it bypasses
+        // the normal mutation journal. Mark first: an over-marked session only
+        // causes one extra reconcile, while a failed mark after a successful
+        // seal would leave the row invisible to the index forever.
+        ops::mark_session_dirty(state.db.conn(), &id)?;
         let session = Session::resume_shared(Rc::clone(&state.db), state.data_root.clone(), &id)?;
         let seqs = session.seal_in_progress_items()?;
         if !seqs.is_empty() {
@@ -389,6 +394,9 @@ fn seal_tail_unanswered_calls(state: &WriterState) -> Result<usize> {
     };
     let mut sealed = 0usize;
     for id in ids {
+        // This path appends final, searchable rows outside a SessionMutation.
+        // Mark first for the same reason as `seal_orphaned_in_progress`.
+        ops::mark_session_dirty(state.db.conn(), &id)?;
         let session = Session::resume_shared(Rc::clone(&state.db), state.data_root.clone(), &id)?;
         let seqs = session.seal_tail_unanswered_calls()?;
         if !seqs.is_empty() {
@@ -531,11 +539,10 @@ fn execute(state: &mut WriterState, mutation: SessionMutation) -> Result<CommitR
     }
 }
 
-/// Record a receipt **in the caller's transaction**.
+/// Record the selected durable bookkeeping **in the caller's transaction**.
 ///
-/// The receipt is written inside the same `BEGIN IMMEDIATE` as the mutation it
-/// describes, so a failure rolls the whole mutation back rather than committing
-/// content with no record of it.
+/// Whatever this writes commits or rolls back with the mutation it describes;
+/// content never lands without the receipt or dirty marker its consumers need.
 fn bump_receipt(
     state: &WriterState,
     session_id: &str,
@@ -543,19 +550,88 @@ fn bump_receipt(
     previous: u64,
     outcome: CommitKind,
 ) -> Result<CommitReceipt> {
+    bump_receipt_with_journal(
+        state,
+        session_id,
+        operation_id,
+        previous,
+        outcome,
+        ops::JournalWrite::Full,
+    )
+}
+
+fn bump_receipt_receipt_only(
+    state: &WriterState,
+    session_id: &str,
+    operation_id: &str,
+    previous: u64,
+    outcome: CommitKind,
+) -> Result<CommitReceipt> {
+    bump_receipt_with_journal(
+        state,
+        session_id,
+        operation_id,
+        previous,
+        outcome,
+        ops::JournalWrite::ReceiptOnly,
+    )
+}
+
+fn bump_receipt_dirty_only(
+    state: &WriterState,
+    session_id: &str,
+    operation_id: &str,
+    previous: u64,
+    outcome: CommitKind,
+) -> Result<CommitReceipt> {
+    bump_receipt_with_journal(
+        state,
+        session_id,
+        operation_id,
+        previous,
+        outcome,
+        ops::JournalWrite::DirtyOnly,
+    )
+}
+
+/// Physical stream checkpoints are not retryable logical commands and do not
+/// change searchable state until they settle. They still advance the CAS
+/// revision, but leave no durable operation or dirty marker behind.
+fn bump_receipt_revision_only(
+    state: &WriterState,
+    session_id: &str,
+    operation_id: &str,
+    previous: u64,
+    outcome: CommitKind,
+) -> Result<CommitReceipt> {
+    bump_receipt_with_journal(
+        state,
+        session_id,
+        operation_id,
+        previous,
+        outcome,
+        ops::JournalWrite::None,
+    )
+}
+
+fn bump_receipt_with_journal(
+    state: &WriterState,
+    session_id: &str,
+    operation_id: &str,
+    previous: u64,
+    outcome: CommitKind,
+    journal: ops::JournalWrite,
+) -> Result<CommitReceipt> {
     let receipt = CommitReceipt {
         session_id: session_id.to_string(),
         operation_id: operation_id.to_string(),
         revision: previous + 1,
-        change_id: 0,
         outcome,
         preview: None,
         assistant_preview: None,
         working_set: None,
     };
-    ops::persist_receipt(state.db.conn(), &receipt)?;
-    let mut receipt = receipt;
-    receipt.change_id = ops::latest_change_id(state.db.conn())?;
+    ops::record_commit(state.db.conn(), &receipt, journal)?;
     Ok(receipt)
 }
 
@@ -665,7 +741,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.begin_stream_item(&item, &turn_id)?
             };
-            bump_receipt(
+            bump_receipt_revision_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -684,7 +760,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.update_stream_item(seq, &item)?;
             }
-            bump_receipt(
+            bump_receipt_revision_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -703,7 +779,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.seal_stream_item(seq, &item)?;
             }
-            bump_receipt(
+            bump_receipt_dirty_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -756,7 +832,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.seal_in_progress_items()?
             };
-            bump_receipt(
+            bump_receipt_dirty_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -849,7 +925,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.save_task_state(&task_state)?;
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -867,7 +943,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.save_context_meter(&meter)?;
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -882,7 +958,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             usage_json,
         } => {
             // Side column only. The header body stays final, and this write
-            // must not append session_change_log or bump sessions.revision.
+            // must not bump the CAS revision or mark the session search-dirty.
             {
                 let session = ensure_live(state, &session_id)?;
                 session.record_provider_usage(seq, &usage_json)?;
@@ -892,7 +968,6 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 session_id,
                 operation_id: String::new(),
                 revision,
-                change_id: 0,
                 outcome: CommitKind::Idempotent,
                 preview: None,
                 assistant_preview: None,
@@ -913,7 +988,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     crate::session::data::sqlite::pending::upsert_pending(conn, rec)?;
                 }
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -931,7 +1006,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.set_agent_id(&agent_id)?;
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -961,16 +1036,17 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     None => None,
                 }
             };
-            let outcome = match appended_seq {
-                Some(seq) => CommitKind::Appended { seq },
-                None => CommitKind::MetaUpdated,
+            let (outcome, journal) = match appended_seq {
+                Some(seq) => (CommitKind::Appended { seq }, ops::JournalWrite::Full),
+                None => (CommitKind::MetaUpdated, ops::JournalWrite::ReceiptOnly),
             };
-            bump_receipt(
+            bump_receipt_with_journal(
                 state,
                 &session_id,
                 &operation_id.0,
                 expected_revision,
                 outcome,
+                journal,
             )
         }
         SessionMutation::SetThinkingTier {
@@ -983,7 +1059,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.set_thinking_tier(tier)?;
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
@@ -1001,7 +1077,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 let session = ensure_live(state, &session_id)?;
                 session.set_context_mode(mode)?;
             }
-            bump_receipt(
+            bump_receipt_receipt_only(
                 state,
                 &session_id,
                 &operation_id.0,
