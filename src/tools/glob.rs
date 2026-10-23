@@ -52,7 +52,6 @@ impl Tool for GlobTool {
         Some(serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "Matching paths. Guidance lives only in message.",
             "properties": {
                 "paths": {
                     "type": "array",

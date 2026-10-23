@@ -13,13 +13,12 @@ use serde_json::{Map, Value};
 use crate::context_pipeline::Context;
 use crate::tool::trait_::Tool;
 
-const PRELUDE: &str = r#"Open `run_code` when one program can finish explore → edit → verify (search/read, then write/edit, then run/check). Do not open a long program just to peek one file—use a direct tool or a tiny program.
-Inside the program: explore first, then edit, then verify. `await` when a later call needs an earlier result; otherwise prefer `Promise.all` / `Promise.allSettled` for independent work.
-`return` a short summary (counts, paths, the few lines that matter)—not raw dumps. Only the returned value reaches you; oversized results are truncated (a note at the start says so).
-`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`.
-Call bundled tools only through `tools.name(args)` or `tools["name"](args)` (one argument object each). They are not separately callable. Other LiteCode tools may remain directly callable outside this SDK.
-Every call resolves an object with boolean `ok` (did the tool get the job done). Soft failures resolve `ok: false` with `reason`/`message` so one bad item does not end a batch. System failures reject `ToolError`. Unknown tool/parameter or illegal args throw `TypeError` and fail the whole call—unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
-`libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes—change files with `tools.write` / `tools.edit`. The sandbox has no `setTimeout` / `setInterval`.
+const PRELUDE: &str = r#"Open `run_code` when one program can finish the work: explore with reads/searches, make the minimal edits, then verify with the real check. A short program is fine; do not wrap a single peek or edit in a long ritual.
+Explore first; write only after the target is known. `await` when a later call needs an earlier value. Use `Promise.all` only when every call must succeed; use `Promise.allSettled` when one failure must not stop the batch.
+`return` a short result: what changed, what ran, and the few facts that matter, not raw dumps. The run header and logs are diagnostics; `result` is your output. Oversized result text is truncated with a note at the start.
+`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)` or `tools["name"](args)`, one argument object each. Other LiteCode tools may remain directly callable outside this SDK.
+Every resolved call has boolean `ok`: `false` is a domain failure with `reason`/`message`, so one bad item need not end a batch. Unknown tools and extra JavaScript arguments throw `TypeError`; invalid tool arguments resolve `ok: false` `invalid_args`, and unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
+`libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes; mutate files only through declared tools. The sandbox has no `setTimeout` / `setInterval`.
 Unhandled Promise rejections do not end the program; a `[warn]` notes them after settle.
 
 ```ts

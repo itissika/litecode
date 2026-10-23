@@ -104,7 +104,6 @@ impl Tool for GrepTool {
         Some(serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "Bounded content matches. Guidance lives only in message.",
             "properties": {
                 "hits": {
                     "type": "array",

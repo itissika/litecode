@@ -2,7 +2,7 @@
 //!
 //! Catalog card id remains `"lsp"` (engine Ready + agent bind). Instantiation
 //! injects these seven Code tools — Direct never exposes a tool named `"lsp"`.
-//! Positioning is `file_path` + 1-based `line` + 1-based UTF-16 `character`
+//! Positioning is `path` + 1-based `line` + 1-based UTF-16 `character`
 //! (no `text` substring resolve). `workspace_symbol` takes `{ query }` only.
 
 use std::path::{Path, PathBuf};
@@ -259,18 +259,18 @@ impl Tool for LspOpTool {
             LspOp::Diagnostics | LspOp::DocumentSymbol => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "file_path": {
+                    "path": {
                         "type": "string",
                         "description": "Source file under the workspace (workspace-relative preferred)."
                     }
                 },
-                "required": ["file_path"],
+                "required": ["path"],
                 "additionalProperties": false
             }),
             _ => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "file_path": {
+                    "path": {
                         "type": "string",
                         "description": "Source file under the workspace (workspace-relative preferred)."
                     },
@@ -285,7 +285,7 @@ impl Tool for LspOpTool {
                         "description": "1-based UTF-16 column on that line (editor column, not Unicode scalar index)."
                     }
                 },
-                "required": ["file_path", "line", "character"],
+                "required": ["path", "line", "character"],
                 "additionalProperties": false
             }),
         }
@@ -388,6 +388,20 @@ impl Tool for LspOpTool {
         20_000
     }
 
+    fn prepare_input(&self, input: &mut Value) {
+        // `file_path` is a retired spelling. Keep it working for callers that
+        // still send it, but expose only `path` in the schema and SDK.
+        if input.get("path").is_none()
+            && let Some(file_path) = input.get("file_path").cloned()
+            && let Some(object) = input.as_object_mut()
+        {
+            object.insert("path".into(), file_path);
+        }
+        if let Some(object) = input.as_object_mut() {
+            object.remove("file_path");
+        }
+    }
+
     fn validate_input(&self, input: &Value) -> std::result::Result<(), String> {
         match self.op {
             LspOp::WorkspaceSymbol => {
@@ -395,11 +409,11 @@ impl Tool for LspOpTool {
                 Ok(())
             }
             LspOp::Diagnostics | LspOp::DocumentSymbol => {
-                crate::tool::require_nonempty_string(input, "file_path")?;
+                require_lsp_path(input)?;
                 Ok(())
             }
             _ => {
-                crate::tool::require_nonempty_string(input, "file_path")?;
+                require_lsp_path(input)?;
                 let line = require_u64_ge(input, "line", 1)?;
                 let character = require_u64_ge(input, "character", 1)?;
                 let _ = (line, character);
@@ -471,7 +485,7 @@ impl LspOpTool {
             };
         }
 
-        let file_path_str = input["file_path"].as_str().expect("validated").to_string();
+        let file_path_str = lsp_path(&input).expect("validated").to_string();
         let file_path = match resolve_in_workspace(&workspace_root, &file_path_str) {
             Ok(p) => p,
             Err(msg) => return coded("invalid_input", msg),
@@ -559,10 +573,25 @@ fn scope_guidance(root: &Path, got: &str) -> String {
     )
 }
 
+fn lsp_path(input: &Value) -> Option<&str> {
+    input
+        .get("path")
+        .or_else(|| input.get("file_path"))
+        .and_then(Value::as_str)
+}
+
+fn require_lsp_path(input: &Value) -> Result<&str, String> {
+    match lsp_path(input) {
+        Some(path) if !path.is_empty() => Ok(path),
+        Some(_) => Err(crate::tool::must_be_nonempty_string("path")),
+        None => Err(crate::tool::missing_parameter("path")),
+    }
+}
+
 fn resolve_in_workspace(workspace_root: &Path, path_str: &str) -> Result<PathBuf, String> {
     let trimmed = path_str.trim();
     if trimmed.is_empty() {
-        return Err(crate::tool::must_be_nonempty_string("file_path"));
+        return Err(crate::tool::must_be_nonempty_string("path"));
     }
     let root = crate::config::path::canon_abs_lossy(workspace_root);
     let resolved = crate::workspace::resolve_lsp_workspace(&root, trimmed)
@@ -777,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn position_schema_requires_file_path_line_character() {
+    fn position_schema_requires_path_line_character() {
         let engines = WorkspaceEngines::new();
         let tool = all_code_tools(engines, PathBuf::from("."))
             .into_iter()
@@ -785,8 +814,26 @@ mod tests {
             .unwrap();
         let schema = tool.schema();
         assert!(schema["properties"].get("character").is_some());
+        assert!(schema["properties"].get("path").is_some());
+        assert!(schema["properties"].get("file_path").is_none());
         assert!(schema["properties"].get("text").is_none());
         assert!(schema["properties"].get("action").is_none());
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "path": "src/main.rs",
+                "line": 1,
+                "character": 1
+            }))
+            .is_ok()
+        );
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "path": "src/main.rs",
+                "line": 1,
+                "text": "main"
+            }))
+            .is_err()
+        );
         assert!(
             tool.validate_input(&serde_json::json!({
                 "file_path": "src/main.rs",
@@ -795,14 +842,14 @@ mod tests {
             }))
             .is_ok()
         );
-        assert!(
-            tool.validate_input(&serde_json::json!({
-                "file_path": "src/main.rs",
-                "line": 1,
-                "text": "main"
-            }))
-            .is_err()
-        );
+        let mut legacy = serde_json::json!({
+            "file_path": "src/main.rs",
+            "line": 1,
+            "character": 1
+        });
+        tool.prepare_input(&mut legacy);
+        assert_eq!(legacy["path"], "src/main.rs");
+        assert!(legacy.get("file_path").is_none());
     }
 
     #[test]

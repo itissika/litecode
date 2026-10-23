@@ -33,7 +33,7 @@ impl SubagentDeleteTool {
     }
 
     async fn call_delete(&self, input: Value) -> ToolCallResult {
-        let child_id = match crate::tool::require_nonempty_string(&input, "session_id") {
+        let child_id = match delete_child_id(&input) {
             Ok(id) => id.to_string(),
             Err(error) => return ToolCallResult::error(error),
         };
@@ -85,6 +85,18 @@ impl SubagentDeleteTool {
     }
 }
 
+fn delete_child_id(input: &Value) -> Result<&str, String> {
+    match input
+        .get("id")
+        .or_else(|| input.get("session_id"))
+        .and_then(Value::as_str)
+    {
+        Some(id) if !id.is_empty() => Ok(id),
+        Some(_) => Err("parameter 'id' must be a non-empty string".into()),
+        None => Err("parameter 'id' is required".into()),
+    }
+}
+
 impl Tool for SubagentDeleteTool {
     fn name(&self) -> &str {
         "subagent_delete"
@@ -93,14 +105,27 @@ impl Tool for SubagentDeleteTool {
     fn schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
-                "session_id": {
+                "id": {
                     "type": "string",
                     "description": "child_session_id of a direct child of this session"
                 }
             },
-            "required": ["session_id"]
+            "required": ["id"]
         })
+    }
+
+    fn prepare_input(&self, input: &mut Value) {
+        if input.get("id").is_none()
+            && let Some(session_id) = input.get("session_id").cloned()
+            && let Some(object) = input.as_object_mut()
+        {
+            object.insert("id".into(), session_id);
+        }
+        if let Some(object) = input.as_object_mut() {
+            object.remove("session_id");
+        }
     }
 
     fn execute(
@@ -135,6 +160,13 @@ impl Tool for SubagentDeleteTool {
 
 #[cfg(test)]
 mod tests {
-    
+    use super::*;
 
+    #[test]
+    fn delete_id_accepts_canonical_and_legacy_alias() {
+        let canonical = serde_json::json!({ "id": "child-1" });
+        let legacy = serde_json::json!({ "session_id": "child-1" });
+        assert_eq!(delete_child_id(&canonical), Ok("child-1"));
+        assert_eq!(delete_child_id(&legacy), Ok("child-1"));
+    }
 }

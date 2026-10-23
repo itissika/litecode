@@ -59,7 +59,7 @@ fn migrate_to_current(conn: &Connection, version: i32) -> Result<()> {
 fn ensure_current_columns(conn: &Connection) -> Result<()> {
     ensure_agent_tools_allowed_tools_column(conn)?;
     ensure_mcp_timeout_column(conn)?;
-    ensure_custom_tools_rules_column(conn)?;
+    ensure_custom_tools_columns(conn)?;
     ensure_provider_credentials_table(conn)?;
     ensure_disabled_models_table(conn)?;
     Ok(())
@@ -92,7 +92,7 @@ fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
         .exists([])?)
 }
 
-fn ensure_custom_tools_rules_column(conn: &Connection) -> Result<()> {
+fn ensure_custom_tools_columns(conn: &Connection) -> Result<()> {
     let table_exists: bool = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'custom_tools'",
         [],
@@ -103,6 +103,12 @@ fn ensure_custom_tools_rules_column(conn: &Connection) -> Result<()> {
     }
     if !column_exists(conn, "custom_tools", "rules_json")? {
         conn.execute("ALTER TABLE custom_tools ADD COLUMN rules_json TEXT", [])?;
+    }
+    if !column_exists(conn, "custom_tools", "surface")? {
+        conn.execute(
+            "ALTER TABLE custom_tools ADD COLUMN surface TEXT NOT NULL DEFAULT 'direct'",
+            [],
+        )?;
     }
     if column_exists(conn, "custom_tools", "permission_json")? {
         conn.execute("ALTER TABLE custom_tools DROP COLUMN permission_json", [])?;

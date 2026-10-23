@@ -178,7 +178,6 @@ impl Tool for ApplyEditsTool {
         Some(serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "Serial batch outcomes. results is the same length as the input edits array.",
             "properties": {
                 "results": {
                     "type": "array",
@@ -228,8 +227,10 @@ impl Tool for ApplyEditsTool {
         if keys.is_empty() {
             crate::tool::resource_gate::ToolEffects::default()
         } else {
-            // Lock the first file; resource_keys lists all for conflict detection.
-            crate::tool::resource_gate::ToolEffects::write(keys[0].clone())
+            crate::tool::resource_gate::ToolEffects {
+                reads: Vec::new(),
+                writes: keys,
+            }
         }
     }
 
@@ -328,6 +329,37 @@ mod tests {
         assert_eq!(results[1]["ok"], false);
         assert_eq!(results[2]["ok"], true);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ALPHA\nBETA\n");
+    }
+
+    #[test]
+    fn effects_lock_every_unique_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b\n").unwrap();
+        let input = serde_json::json!({
+            "edits": [
+                {"path": "a.txt", "old_string": "a", "new_string": "A"},
+                {"path": "b.txt", "old_string": "b", "new_string": "B"},
+                {"path": "a.txt", "old_string": "A", "new_string": "AA"}
+            ]
+        });
+        let effects = tool().effects(
+            &input,
+            crate::workspace::ToolPathMode::Safe,
+            dir.path(),
+        );
+        let paths: Vec<&str> = effects
+            .writes
+            .iter()
+            .map(|key| match key {
+                ResourceKey::File(path) => path.as_str(),
+                ResourceKey::Workspace => panic!("expected file key: {effects:?}"),
+            })
+            .collect();
+        assert_eq!(paths.len(), 2, "{effects:?}");
+        assert!(paths[0].ends_with("a.txt"), "{paths:?}");
+        assert!(paths[1].ends_with("b.txt"), "{paths:?}");
+        assert!(effects.reads.is_empty());
     }
 
     #[test]

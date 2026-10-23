@@ -238,6 +238,7 @@ pub fn build_global_with_custom_tool(
         args,
         timeout: 120,
         rules: Vec::new(),
+        surface: Default::default(),
         suite: None,
         suite_label: None,
     };

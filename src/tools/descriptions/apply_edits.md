@@ -1,4 +1,4 @@
-Apply several independent `{path, old_string, new_string}` replacements in one call. Runs serially in array order; later items on the same path see earlier successful writes. Failed items are skipped; the call still resolves `{ results }` (same length as `edits`)—filter `results` yourself. Exact-match / unique-hit / CRLF / BOM rules match `edit`. Empty `new_string` deletes that item's `old_string`.
+Apply several `{ path, old_string, new_string }` replacements in one call. Runs serially in array order; later items on the same path see earlier successful writes. Failed items are skipped; the call still resolves `{ results }` (same length as `edits`) — inspect each result. Exact-match / unique-hit / CRLF / BOM rules match `edit`. Empty `new_string` deletes the matched text.
 Example:
 const batch = await tools.apply_edits({
   edits: [

@@ -195,6 +195,8 @@ export interface ToolPermissionRule {
 export interface CustomToolDefinition {
   name: string;
   description?: string;
+  /** direct (default) or code-only through run_code. */
+  surface?: CallSurface;
   schema: ToolSchema;
   command: string;
   args?: string[];

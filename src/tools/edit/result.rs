@@ -47,7 +47,6 @@ pub fn edit_result_schema() -> Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "One replacement outcome. Failures resolve with ok=false; guidance lives only in message.",
         "properties": {
             "ok": { "type": "boolean" },
             "path": { "type": "string" },
@@ -55,21 +54,6 @@ pub fn edit_result_schema() -> Value {
             "reason": { "type": "string", "enum": ["not_found", "no_match", "invalid_args", "empty", "permission", "io"] }
         },
         "required": ["ok", "path", "message"]
-    })
-}
-
-pub fn apply_edits_data_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "additionalProperties": false,
-        "description": "Serial batch outcomes. results is the same length as the input edits array.",
-        "properties": {
-            "results": {
-                "type": "array",
-                "items": edit_result_schema()
-            }
-        },
-        "required": ["results"]
     })
 }
 

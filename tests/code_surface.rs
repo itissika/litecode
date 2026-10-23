@@ -2,9 +2,9 @@
 
 /// Per-tool surface, one projection, one call pipeline.
 mod projection {
-    
-    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
@@ -14,11 +14,9 @@ mod projection {
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::write_lock::process_write_lock;
     use litecode::tool::{Tool, ToolSurface, project_tools};
-    
-    
-    
+
     use litecode::tools::read::ReadTool;
-    
+
     use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
     use serde_json::{Value, json};
 
@@ -125,7 +123,8 @@ mod projection {
             &self,
             _input: Value,
             _execution: litecode::tool::trait_::ToolExecutionContext,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+        {
             self.hits.fetch_add(1, Ordering::SeqCst);
             let result = if self.with_data {
                 ToolCallResult::ok("ran").with_data(json!({"n": 1}))
@@ -225,9 +224,9 @@ mod projection {
         );
         assert_eq!(projected.whitelist, vec!["read"]);
         assert!(
-            !names(&projected.direct)
-                .iter()
-                .any(|name| { ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name) })
+            !names(&projected.direct).iter().any(|name| {
+                ["stripped", "broken", "foo-bar", "foo_bar", "read"].contains(name)
+            })
         );
         assert!(!projected.sdk.contains("stripped"));
         assert!(!projected.sdk.contains("broken"));
@@ -407,10 +406,12 @@ mod projection {
                 when: ArgMatcher::Any,
                 action: PermissionAction::Deny,
             }],
+            surface: Default::default(),
             suite: None,
             suite_label: None,
         });
-        let resolved = ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
         let permission = PermissionEngine::resolver(resolved, "default", 0);
         let denied = permission.evaluate_tool("run_code", &json!({"code": "return 1"}), dir.path());
         assert_eq!(denied.action, PermissionAction::Deny);
@@ -426,8 +427,12 @@ mod projection {
             process_write_lock(),
             None,
         ));
-        let transport =
-            litecode::tools::code::CodeTool::from_surface(Vec::new(), "sdk".into(), Vec::new(), host);
+        let transport = litecode::tools::code::CodeTool::from_surface(
+            Vec::new(),
+            "sdk".into(),
+            Vec::new(),
+            host,
+        );
         assert!(transport.is_code_transport());
         let allowed = authorize(
             &call("run_code", json!({"code": "return 1"})),
@@ -455,10 +460,77 @@ mod projection {
         .await;
         match denied_call {
             AuthResult::Denied(message) => assert!(message.contains("permission"), "{message}"),
-            other => panic!("same name without the transport identity must be denied, got {other:?}"),
+            other => {
+                panic!("same name without the transport identity must be denied, got {other:?}")
+            }
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn custom_tool_on_code_surface_uses_the_shared_pipeline_and_opaque_text() {
+        use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+        use litecode::tools::custom::CustomTool;
+        use litecode::tools::custom_hub::CustomToolHub;
+
+        let marker = "custom-code-marker";
+        #[cfg(windows)]
+        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
+        #[cfg(unix)]
+        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
+        let def = CustomToolDefinition {
+            name: "custom_code".into(),
+            description: "custom code probe".into(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: json!({}),
+                required: Vec::new(),
+            },
+            command: command.into(),
+            args,
+            timeout: 10,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        let tool: Arc<dyn Tool> = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
+        let dir = tempfile::tempdir().unwrap();
+        let permission = engine(dir.path(), "custom_code", ToolPolicy::allow_all());
+        let sink = RecordingPermissionSink::from_reply(true, false);
+        let result = execute_tool_call(
+            &call("custom_code", json!({})),
+            &[tool],
+            &permission,
+            &ctx(dir.path()),
+            "s",
+            "default",
+            &sink,
+            tokio_util::sync::CancellationToken::new(),
+            dir.path(),
+            4096,
+            None,
+            process_write_lock(),
+            None,
+            ToolCallOrigin {
+                caller: ToolCaller::Code {
+                    parent_call_id: "outer".into(),
+                },
+                code_names: Arc::from([]),
+                file_note: None,
+                permission_sink: None,
+                plan_touch: None,
+                deadline: None,
+            },
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let text = result
+            .data
+            .as_ref()
+            .and_then(|data| data["text"].as_str())
+            .expect("opaque text data");
+        assert!(text.contains(marker), "{text}");
+    }
 }
 
 /// `run_code` is the only way to call the code surface; cancel/timeout/approval budget.
@@ -516,7 +588,16 @@ mod run_code_only {
             allowed_tools: None,
         };
         let mut tools = std::collections::HashMap::new();
-        for name in ["read", "glob", "grep", "block", "fast", "hold", "late"] {
+        for name in [
+            "read",
+            "glob",
+            "grep",
+            "block",
+            "fast",
+            "hold",
+            "late",
+            "custom_code",
+        ] {
             tools.insert(name.to_string(), binding.clone());
         }
         global.agents.insert(
@@ -689,7 +770,8 @@ mod run_code_only {
             &self,
             _: Value,
             execution: ToolExecutionContext,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+        {
             let started = Arc::clone(&self.started);
             let sealed = Arc::clone(&self.sealed);
             let hold = self.hold;
@@ -736,7 +818,8 @@ mod run_code_only {
             &self,
             _: Value,
             _: ToolExecutionContext,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>> {
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ToolCallResult> + Send + '_>>
+        {
             Box::pin(async move {
                 tokio::time::sleep(Duration::from_secs(4)).await;
                 ToolCallResult::ok("late").with_data(json!({ "ok": true }))
@@ -838,7 +921,11 @@ mod run_code_only {
             result.content
         );
         assert!(!result.content.contains("calls ("), "{}", result.content);
-        assert!(!result.content.contains("diagnostics:"), "{}", result.content);
+        assert!(
+            !result.content.contains("diagnostics:"),
+            "{}",
+            result.content
+        );
         assert!(
             !result.content.contains(SECRET),
             "ledger must not include the result body: {}",
@@ -999,20 +1086,72 @@ mod run_code_only {
             "timed-out nested call was not joined"
         );
         // The completed fast call stays counted as a success; only hold is cut off.
-        assert!(result.content.contains("tool calls: 1 ok"), "{}", result.content);
+        assert!(
+            result.content.contains("tool calls: 1 ok"),
+            "{}",
+            result.content
+        );
         assert_eq!(
             result.error.as_ref().map(|error| error.kind),
             Some(ToolErrorKind::Timeout)
         );
     }
+    #[tokio::test(flavor = "current_thread")]
+    async fn custom_tool_code_surface_round_trips_through_run_code_sdk() {
+        use litecode::config::schema::{
+            CallSurface, CustomToolDefinition, ToolSchema,
+        };
+        use litecode::tools::custom::CustomTool;
+        use litecode::tools::custom_hub::CustomToolHub;
 
+        let marker = "custom-sdk-marker";
+        #[cfg(windows)]
+        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
+        #[cfg(unix)]
+        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
+        let def = CustomToolDefinition {
+            name: "custom_code".into(),
+            description: "custom code sdk probe".into(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: json!({}),
+                required: Vec::new(),
+            },
+            command: command.into(),
+            args,
+            timeout: 10,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        let custom = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
+        let root = tempfile::tempdir().unwrap();
+        let sink = litecode::permission::deny_permission_sink();
+        let hosted = hosted(root.path(), vec![custom], PermissionAction::Allow, sink.clone());
+        assert!(hosted.code_names.iter().any(|name| name == "custom_code"));
+
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": "const r = await tools.custom_code({}); return r;" }),
+            sink.as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let value = run_code_result(&result.content);
+        assert_eq!(value["ok"], true);
+        let text = value["text"].as_str().expect("text field");
+        assert!(text.contains(marker), "{text}");
+    }
 }
 
 /// `edit` and `write` on the code surface: approval, sealing, concurrent writes.
 mod edit_write {
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use litecode::config::schema::{AgentProfile, AgentToolBinding};
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
@@ -1021,11 +1160,11 @@ mod edit_write {
         AskOutcome, AskPrompt, AskReply, BindingPathMode, PermissionAction, PermissionEngine,
         PermissionSink, RecordingPermissionSink, ToolPolicy,
     };
-    
+
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
-    
-    use litecode::tool::write_lock::process_write_lock;
+
     use litecode::tool::Tool;
+    use litecode::tool::write_lock::process_write_lock;
     use litecode::tools::code::{CodeTool, CodeToolHost};
     use litecode::tools::edit::EditTool;
     use litecode::tools::read::ReadTool;
@@ -1452,7 +1591,8 @@ mod edit_write {
     }
 
     fn hosted_unrestricted(root: &Path, sink: Arc<dyn PermissionSink>) -> Hosted {
-        let permission = engine_with_mode(root, PermissionAction::Ask, BindingPathMode::Unrestricted);
+        let permission =
+            engine_with_mode(root, PermissionAction::Ask, BindingPathMode::Unrestricted);
         let ctx = ctx(root);
         let data_root = root.join(".litecode");
         std::fs::create_dir_all(&data_root).unwrap();
@@ -1829,7 +1969,8 @@ mod approval_locks {
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
     use litecode::permission::{
-        AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink, ToolPolicy,
+        AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
+        ToolPolicy,
     };
     use litecode::tool::Tool;
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
@@ -2147,8 +2288,7 @@ mod approval_locks {
             .expect("cancelled run did not return")
             .unwrap();
         assert!(
-            result.content.contains("cancelled")
-                || result.content.contains("tool calls: 0 ok"),
+            result.content.contains("cancelled") || result.content.contains("tool calls: 0 ok"),
             "{}",
             result.content
         );
@@ -2219,7 +2359,6 @@ mod approval_locks {
             "the call wrote after it had already been reported unsettled"
         );
     }
-
 }
 
 /// Calls stay runnable while another approval is pending.
@@ -2233,7 +2372,8 @@ mod approval_concurrency {
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
     use litecode::permission::{
-        AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink, ToolPolicy,
+        AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
+        ToolPolicy,
     };
     use litecode::tool::Tool;
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
@@ -2490,4 +2630,6 @@ mod approval_concurrency {
             "OTHER_NEEDLE\n"
         );
     }
+
+
 }

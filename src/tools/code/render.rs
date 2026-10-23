@@ -47,7 +47,6 @@ pub(super) struct UncaughtToolError {
     pub code: String,
     pub message: String,
     pub summary: String,
-    pub details: Option<Value>,
 }
 
 /// Facts the renderer needs. Built from the in-memory execution report.
@@ -843,10 +842,22 @@ fn header_line(report: &RunReport) -> String {
     let (success, failed) = success_failure_counts(report);
     let duration = format!("{}ms", report.duration_ms);
     let mut line = if let Some(error) = &report.tool_error {
-        format!(
+        let detail = error
+            .message
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(|line| prefix_utf8(line, HEAD_MESSAGE_CAP));
+        let mut line = format!(
             "run_code failed: uncaught ToolError {} from call #{} {} {} · program: failed · tool calls: {success} ok / {failed} failed · {duration}",
             error.code, error.seq, error.tool, error.summary
-        )
+        );
+        if let Some(detail) = detail {
+            line.push_str(" · ");
+            line.push_str(detail);
+        }
+        line
     } else if let Some(kind) = report.failure_kind {
         let label = if report.uncaught_type_error {
             "uncaught TypeError".to_string()

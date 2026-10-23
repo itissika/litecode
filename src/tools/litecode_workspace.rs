@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::guides::{self, GuideTopic};
-use crate::config::schema::{CustomToolDefinition, McpServerDefinition, ToolOrigin};
+use crate::config::schema::{CallSurface, CustomToolDefinition, McpServerDefinition, ToolOrigin};
 use crate::config::settings_writer::{validate_custom_definition, validate_mcp_definition};
 use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
@@ -24,9 +24,11 @@ use crate::runtime::RuntimeHandle;
 use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
 use crate::tool::Tool;
-use crate::tool::availability::agent_tool_enabled;
+use crate::tool::availability::{agent_tool_enabled, is_available};
+use crate::tool::project::project_tools;
+use crate::tool::registry::builtin_code_surface_tools;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::tools::custom::validate_custom_tool_run;
+use crate::tools::custom::{CustomTool, validate_custom_tool_run};
 use crate::types::ToolCallResult;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, active_workspace_excludes, read_workspace_excludes,
@@ -101,9 +103,11 @@ const COMMANDS: &[CommandSpec] = &[
         usage: "validate_custom  (also pass definition + sample_input fields)",
         summary: "run a custom tool once without registering it",
         help: "Set `action` to `validate_custom`, plus `definition` (custom tool body) and `
-               sample_input` (stdin JSON object). Does not write files, enable the tool,
-               or evaluate `rules` (PASS is process/envelope only). Strips
-               `run_in_background` from sample stdin like production.",
+               sample_input` (stdin JSON object). It validates the definition and, for
+               `surface: code`, the run_code admission contract before running the process.
+               Does not write files, enable the tool, or evaluate `rules` (PASS covers
+               process/envelope and code admission only). Strips `run_in_background`
+               from sample stdin like production.",
     },
 ];
 
@@ -134,6 +138,60 @@ topics:\n\
 - `excludes`\n\
 - `mcp`\n\
 - `custom_tools`";
+
+fn call_surface_label(surface: CallSurface) -> &'static str {
+    match surface {
+        CallSurface::Direct => "surface=direct",
+        CallSurface::Code => "surface=code",
+    }
+}
+
+fn code_binding_id(tool_name: &str) -> &str {
+    if crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&tool_name) {
+        return crate::tools::lsp::LSP_CARD_ID;
+    }
+    match tool_name {
+        "wait" | "kill" => "run",
+        "apply_edits" => "edit",
+        _ => tool_name,
+    }
+}
+
+fn code_composition_error(
+    resolved: &crate::config::resolved::ResolvedConfig,
+    agent_id: &str,
+    hub: Arc<crate::tools::custom_hub::CustomToolHub>,
+    def: &CustomToolDefinition,
+) -> Option<String> {
+    if def.surface != CallSurface::Code {
+        return None;
+    }
+    let mut candidates: Vec<Arc<dyn Tool>> = builtin_code_surface_tools()
+        .into_iter()
+        .filter(|tool| {
+            let binding = code_binding_id(tool.name());
+            agent_tool_enabled(resolved, agent_id, binding)
+                && (binding != crate::tools::lsp::LSP_CARD_ID || is_available(resolved, binding))
+        })
+        .collect();
+    for existing in resolved.custom_tools() {
+        if existing.surface == CallSurface::Code
+            && existing.name != def.name
+            && agent_tool_enabled(resolved, agent_id, &existing.name)
+        {
+            candidates.push(Arc::new(CustomTool::new(
+                existing,
+                Arc::clone(&hub),
+            )) as Arc<dyn Tool>);
+        }
+    }
+    candidates.push(Arc::new(CustomTool::new(def.clone(), hub)) as Arc<dyn Tool>);
+    project_tools(candidates)
+        .rejected
+        .into_iter()
+        .find(|rejected| rejected.name == def.name)
+        .map(|rejected| rejected.reason)
+}
 
 fn parse_validate_custom(input: &Value) -> Result<(CustomToolDefinition, Value), String> {
     let def_val = input.get("definition").ok_or_else(|| {
@@ -289,6 +347,18 @@ impl LitecodeWorkspaceTool {
         }
     }
 
+    /// Check SDK type-name collisions against the Code tools this agent can
+    /// currently enable. Single-tool admission cannot see this: it is a
+    /// composition failure discovered only when the bundle is projected.
+    fn code_composition_error(&self, def: &CustomToolDefinition) -> Option<String> {
+        code_composition_error(
+            &self.runtime.resolved,
+            &self.agent_id,
+            Arc::clone(&self.runtime.custom_tool_hub),
+            def,
+        )
+    }
+
     fn run(&self, input: &Value, execution: &ToolExecutionContext) -> ToolCallResult {
         let raw = input.get("action").and_then(Value::as_str).unwrap_or("");
         if raw.trim() == "validate_custom" {
@@ -296,12 +366,29 @@ impl LitecodeWorkspaceTool {
                 Err(message) => ToolCallResult::error(message),
                 Ok((mut def, sample_input)) => {
                     let id = def.name.clone();
+                    let surface = def.surface;
                     if let Err(error) = validate_custom_definition(&id, &mut def) {
                         return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- definition rejected: {error}"
+                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- definition: FAIL\n- detail: {error}\n- next: fix the definition; do not register or enable it until validate_custom passes\n",
+                            call_surface_label(surface)
                         ));
                     }
-                    validate_custom_tool_run(&def, &sample_input, self.runtime.workspace_root())
+                    if let Some(reason) = self.code_composition_error(&def) {
+                        return ToolCallResult::error(format!(
+                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- composition: FAIL\n- detail: {reason}\n- next: rename the tool or one of its schema type fields, or disable the colliding Code tool; do not enable both together\n",
+                            call_surface_label(surface)
+                        ));
+                    }
+                    let mut result =
+                        validate_custom_tool_run(&def, &sample_input, self.runtime.workspace_root());
+                    if def.surface == CallSurface::Code && result.error.is_none() {
+                        result.content = result.content.replacen(
+                            "- code admission: PASS\n",
+                            "- code admission: PASS\n- composition: PASS (current enabled and available Code tools)\n",
+                            1,
+                        );
+                    }
+                    result
                 }
             };
         }
@@ -448,8 +535,9 @@ impl LitecodeWorkspaceTool {
                 any_off = true;
             }
             out.push_str(&format!(
-                "- `{}` · `{}` · {} · {} · {}\n",
+                "- `{}` · {} · `{}` · {} · {} · {}\n",
                 tool.name,
+                call_surface_label(tool.surface),
                 command_line_parts(&tool.command, &tool.args),
                 timeout_label(tool.timeout),
                 gate_label(on),
@@ -734,10 +822,16 @@ impl LitecodeWorkspaceTool {
             match validate_custom_definition(id, &mut checked) {
                 Ok(()) => {
                     out.push_str(&format!(
-                        "- `{id}`: ok — `{}` · {}\n",
+                        "- `{id}`: ok — {} · `{}` · {}\n",
+                        call_surface_label(original.surface),
                         command_line_parts(&original.command, &original.args),
                         timeout_label(original.timeout)
                     ));
+                    if original.surface == CallSurface::Code {
+                        out.push_str(
+                            "  code result: `{ ok: true, text: <stdout/content> }`; `run_in_background` is unavailable.\n",
+                        );
+                    }
                     if original.timeout == 0 {
                         out.push_str("  `timeout: 0` fails immediately.\n");
                     }
@@ -782,7 +876,7 @@ impl Tool for LitecodeWorkspaceTool {
                 },
                 "definition": {
                     "type": "object",
-                    "description": "Custom tool body for `validate_custom` (name, command, schema, args, timeout, rules)."
+                    "description": "Custom tool body for `validate_custom` (name, command, schema, args, timeout, rules, surface). Set surface to direct (default) or code. Code validates run_code admission and returns {ok,text}; direct supports run_in_background."
                 },
                 "sample_input": {
                     "type": "object",
@@ -1105,17 +1199,83 @@ fn one_line_preview(raw: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+    use super::*;
+    use crate::config::schema::{
+        AgentProfile, AgentToolBinding, GlobalSettings, ToolSchema,
+    };
+    use crate::config::{ConfigManager, WorkspaceState};
+    use crate::permission::ToolPolicy;
+    use crate::tools::custom_hub::CustomToolHub;
 
+    fn def(name: &str) -> CustomToolDefinition {
+        CustomToolDefinition {
+            name: name.into(),
+            description: "composition probe".into(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        }
+    }
+
+    fn binding() -> AgentToolBinding {
+        AgentToolBinding {
+            enabled: true,
+            policy: ToolPolicy::allow_all(),
+            path_mode: crate::permission::BindingPathMode::default(),
+            last_applied_preset: None,
+            allowed_tools: None,
+        }
+    }
+
+    #[test]
+    fn composition_check_reports_sdk_type_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalSettings::default();
+        let mut profile = AgentProfile::default();
+        profile.tools.insert("foo_bar".into(), binding());
+        profile.tools.insert("foo__bar".into(), binding());
+        global.agents.insert("default".into(), profile);
+        global.custom_tools.push(def("foo__bar"));
+        let resolved = ConfigManager::resolve_without_catalog(
+            global,
+            WorkspaceState::new(dir.path()),
+        );
+        let reason = code_composition_error(
+            &resolved,
+            "default",
+            Arc::new(CustomToolHub::new()),
+            &def("foo_bar"),
+        )
+        .expect("same PascalCase type must collide");
+        assert!(reason.contains("collides"), "{reason}");
+    }
+
+    #[test]
+    fn composition_check_ignores_direct_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut def = def("direct_probe");
+        def.surface = CallSurface::Direct;
+        let resolved = ConfigManager::resolve_without_catalog(
+            GlobalSettings::default(),
+            WorkspaceState::new(dir.path()),
+        );
+        assert!(
+            code_composition_error(
+                &resolved,
+                "default",
+                Arc::new(CustomToolHub::new()),
+                &def,
+            )
+            .is_none()
+        );
+    }
 }

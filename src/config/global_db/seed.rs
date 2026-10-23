@@ -724,7 +724,14 @@ mod tests {
         assert_eq!(write, 0);
 
         // WP-197: explore 默认无旧 shell；有 run SAFE。
-        for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
+        for tool in [
+            "bash",
+            "wait_shell",
+            "kill_shell",
+            "run_command",
+            "command_output",
+            "command_kill",
+        ] {
             let n: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'explore' AND tool_id = ?1",
@@ -821,7 +828,14 @@ mod tests {
 
         // WP-197: general/default/orchestrator 默认无旧 shell；有 run。
         for agent in ["general", "default", "orchestrator"] {
-            for tool in ["bash", "wait_shell", "kill_shell", "run_command", "command_output", "command_kill"] {
+            for tool in [
+                "bash",
+                "wait_shell",
+                "kill_shell",
+                "run_command",
+                "command_output",
+                "command_kill",
+            ] {
                 let n: i64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",

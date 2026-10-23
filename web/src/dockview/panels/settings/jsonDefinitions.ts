@@ -54,10 +54,18 @@ export function parseCustomToolJson(
       typeof raw.timeout === "number" && raw.timeout > 0 ? raw.timeout : 120;
     const rules = parseRules(raw.rules);
     if (rules === "invalid") return { skip: "invalid" };
+    const surface =
+      raw.surface === undefined
+        ? "direct"
+        : raw.surface === "direct" || raw.surface === "code"
+          ? raw.surface
+          : null;
+    if (surface === null) return { skip: "invalid" };
     const def: CustomToolDefinition = {
       name,
       description:
         typeof raw.description === "string" ? raw.description.trim() : "",
+      surface,
       command,
       args,
       timeout,

@@ -537,7 +537,7 @@ pub mod store {
 
     fn load_custom_tools(conn: &Connection) -> Result<Vec<CustomToolDefinition>> {
         let mut stmt = conn.prepare(
-            "SELECT id, schema_json, command, args_json, timeout, description, rules_json FROM custom_tools",
+            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface FROM custom_tools",
         )?;
         let rows = stmt.query_map([], |row| {
             let schema_json: String = row.get(1)?;
@@ -573,6 +573,10 @@ pub mod store {
                 timeout: row.get::<_, u64>(4)?,
                 description: row.get(5)?,
                 rules,
+                surface: match row.get::<_, String>(7)?.as_str() {
+                    "code" => crate::config::schema::CallSurface::Code,
+                    _ => crate::config::schema::CallSurface::Direct,
+                },
                 suite: None,
                 suite_label: None,
             })
@@ -603,16 +607,21 @@ pub mod store {
         } else {
             Some(serde_json::to_string(&custom.rules)?)
         };
+        let surface = match custom.surface {
+            crate::config::schema::CallSurface::Code => "code",
+            crate::config::schema::CallSurface::Direct => "direct",
+        };
         conn.execute(
-            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(id) DO UPDATE SET
                schema_json = excluded.schema_json,
                command = excluded.command,
                args_json = excluded.args_json,
                timeout = excluded.timeout,
                description = excluded.description,
-               rules_json = excluded.rules_json",
+               rules_json = excluded.rules_json,
+               surface = excluded.surface",
             params![
                 custom.name,
                 schema_json,
@@ -620,7 +629,8 @@ pub mod store {
                 args_json,
                 custom.timeout,
                 custom.description,
-                rules_json
+                rules_json,
+                surface
             ],
         )?;
         Ok(())
@@ -816,7 +826,40 @@ pub mod store {
 
 #[cfg(test)]
 mod open_tests {
-    
-    
+    use super::*;
+    use crate::config::schema::{CallSurface, ToolSchema};
 
+    #[test]
+    fn custom_tool_surface_roundtrips_through_global_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("litecode.db");
+        let conn = open(&path).unwrap();
+        seed::seed(&conn).unwrap();
+
+        let def = CustomToolDefinition {
+            name: "code_probe".into(),
+            description: "code probe".into(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        store::upsert_custom_tool(&conn, &def).unwrap();
+
+        let loaded = store::load(&conn).unwrap();
+        let custom = loaded
+            .custom_tools
+            .iter()
+            .find(|tool| tool.name == "code_probe")
+            .expect("custom tool loaded");
+        assert_eq!(custom.surface, CallSurface::Code);
+    }
 }

@@ -15,8 +15,8 @@ use crate::types::ToolCallResult;
 /// Sole success shape for `run` / `wait` / `kill`.
 #[derive(Debug, Serialize)]
 pub(crate) struct CommandData {
-    /// Set explicitly on the MSYS pathconv soft-fail path (WP-211). Absent on
-    /// success so `with_ok_flag` fills `ok: true`.
+    /// Set only on a soft failure. Absent on ordinary success so
+    /// `with_ok_flag` fills `ok: true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,7 +46,6 @@ pub(crate) fn command_data_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": false,
-        "description": "Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.",
         "properties": {
             "id": {
                 "type": "string",
@@ -70,15 +69,15 @@ pub(crate) fn command_data_schema() -> serde_json::Value {
             },
             "message": {
                 "type": "string",
-                "description": "Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say."
+                "description": "Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean."
             },
             "ok": {
                 "type": "boolean",
-                "description": "False on soft failures (path conversion, unreaped kill). Absent on ordinary success."
+                "description": "False on soft failures (unreaped kill). Absent on ordinary success."
             },
             "reason": {
                 "type": "string",
-                "description": "Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive."
+                "description": "Present with ok:false; unreaped kill uses still_alive."
             },
             "killed": {
                 "type": "boolean",
@@ -251,15 +250,13 @@ pub(crate) fn present_command(
     output: JobOutput,
     message: Option<String>,
 ) -> ToolCallResult {
-    // WP-211: bare message means MSYS path-conversion soft-fail.
-    let soft_reason = message.as_ref().map(|_| "invalid_args");
-    present_command_full(id, exit_code, output, message, soft_reason, None)
+    present_command_full(id, exit_code, output, message, None, None)
 }
 
 /// Soft-fail / killed presentation shared by run / wait / kill.
 ///
-/// When `soft_reason` is set, `ok` is false and `exit_code` is forced null so a
-/// numeric 0 cannot leak. `killed` is only set by wait when the exit was a kill.
+/// `soft_reason` sets `ok: false`; it never rewrites the observed exit code.
+/// `killed` is only set by wait when the exit was a kill.
 pub(crate) fn present_command_full(
     id: impl Into<String>,
     exit_code: Option<i32>,
@@ -270,7 +267,6 @@ pub(crate) fn present_command_full(
 ) -> ToolCallResult {
     let id = id.into();
     let soft = soft_reason.is_some();
-    let exit_code = if soft { None } else { exit_code };
     let shown = exit_code
         .map(|code| code.to_string())
         .unwrap_or_else(|| "null".into());
@@ -413,7 +409,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn msys_pathconv_hint_presents_ok_false_with_null_exit_code() {
+    fn msys_pathconv_hint_keeps_exit_code_with_warning() {
         let hint = crate::terminal::decode::msys_path_hint("cmd /c dir")
             .expect("fixture command must trigger the hint");
         let result = present_command(
@@ -427,25 +423,20 @@ mod tests {
         );
         assert!(result.error.is_none(), "{result:?}");
         let data = result.data.as_ref().expect("data");
-        assert_eq!(data["ok"], false, "{data}");
-        assert_eq!(data["reason"], "invalid_args", "{data}");
-        assert!(data["exit_code"].is_null(), "{data}");
+        assert!(data.get("ok").is_none(), "{data}");
+        assert!(data.get("reason").is_none(), "{data}");
+        assert_eq!(data["exit_code"], 0, "{data}");
         assert_eq!(data["message"], hint, "{data}");
         assert_eq!(data["output"], "out");
         assert_eq!(data["stderr"], "err");
         assert!(!data["shell"].as_str().unwrap().is_empty());
-        let serialized = serde_json::to_string(data).unwrap();
-        assert!(
-            !serialized.contains("\"exit_code\":0"),
-            "must not report numeric exit_code 0: {serialized}"
-        );
     }
 
     #[test]
     fn still_alive_soft_fail_presents_ok_false_with_null_exit_code() {
         let result = present_command_full(
             "bg_stuck",
-            Some(0),
+            None,
             JobOutput {
                 stdout: "out".into(),
                 stderr: "err".into(),

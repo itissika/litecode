@@ -518,6 +518,13 @@ fn write_with_warm_lsp_appends_only_when_errors_arrive() {
         result.diagnostics
     );
     assert!(lsp.contains("mock error"), "{lsp}");
+    let message = result
+        .data
+        .as_ref()
+        .and_then(|data| data.get("message"))
+        .and_then(|message| message.as_str())
+        .unwrap_or("");
+    assert!(message.contains("mock error"), "{message}");
 
     engines.stop_all();
     clear_mock_ls_env();

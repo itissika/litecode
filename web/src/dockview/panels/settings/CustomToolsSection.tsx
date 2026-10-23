@@ -22,6 +22,7 @@ import {
 
 const EMPTY_CUSTOM_JSON = `{
   "name": "echo_py",
+  "surface": "direct",
   "description": "Shown to the model when selecting tools",
   "command": "python",
   "args": ["examples/tools/echo_py.py"],
@@ -38,6 +39,7 @@ const EMPTY_CUSTOM_JSON = `{
 function prettyTool(def: CustomToolDefinition): string {
   const body: Record<string, unknown> = {
     name: def.name,
+    surface: def.surface ?? "direct",
     description: def.description ?? "",
     command: def.command,
     args: def.args ?? [],
@@ -147,6 +149,12 @@ export function CustomToolsSection() {
     <div className="settings-card space-y-3 p-4">
       <div>
         <FieldLabel required>Definition (JSON)</FieldLabel>
+        <p className="mb-2 text-xs text-(--_dk-text-muted)">
+          Use <code>surface: "direct"</code> for a standalone tool (background and
+          media allowed), or <code>surface: "code"</code> for a tool called inside{" "}
+          <code>run_code</code>. Code tools return <code>{"{ ok, text }"}</code> and
+          cannot use <code>run_in_background</code>.
+        </p>
         <TextArea
           rows={18}
           value={jsonText}
@@ -170,7 +178,7 @@ export function CustomToolsSection() {
       global={globalTools}
       workspace={workspaceTools}
       itemId={(tool) => tool.name}
-      itemSummary={(tool) => tool.command}
+      itemSummary={(tool) => `${tool.surface ?? "direct"} · ${tool.command}`}
       actionsDisabled={saveBlocked || isPersistBusy(persistStatus)}
       isNew={isNew}
       createScope={createScope}

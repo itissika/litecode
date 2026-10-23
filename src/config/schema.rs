@@ -202,6 +202,10 @@ pub struct CustomToolDefinition {
     /// Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::permission::PolicyRule>,
+    /// Declared call surface. `direct` is the model-facing function call;
+    /// `code` is reachable only through `run_code`. Defaults to Direct.
+    #[serde(default)]
+    pub surface: CallSurface,
     /// Optional Agents one-card suite id (shared across custom tools in the suite).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite: Option<String>,
@@ -226,8 +230,29 @@ impl CustomToolDefinition {
 
 #[cfg(test)]
 mod custom_tool_definition_tests {
-    
+    use super::*;
 
+    fn body(surface: Option<&str>) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "name": "probe",
+            "command": "echo",
+            "schema": { "type": "object", "properties": {}, "required": [] }
+        });
+        if let Some(surface) = surface {
+            body["surface"] = serde_json::Value::String(surface.into());
+        }
+        body
+    }
+
+    #[test]
+    fn custom_tool_surface_is_direct_by_default_and_accepts_code() {
+        let direct: CustomToolDefinition = serde_json::from_value(body(None)).unwrap();
+        assert_eq!(direct.surface, CallSurface::Direct);
+
+        let code: CustomToolDefinition =
+            serde_json::from_value(body(Some("code"))).unwrap();
+        assert_eq!(code.surface, CallSurface::Code);
+    }
 }
 
 /// MCP transport type.
@@ -296,10 +321,7 @@ impl McpServerDefinition {
 }
 
 #[cfg(test)]
-mod mcp_server_definition_tests {
-    
-
-}
+mod mcp_server_definition_tests {}
 
 /// Deprecated placeholder kept on [`GlobalSettings`] for DB schema stability.
 /// Serve inbound auth is **only** `LITECODE_TOKEN`; this field is never loaded or

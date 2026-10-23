@@ -163,6 +163,8 @@ async fn uncaught_tool_error_names_the_call() {
         text.contains("uncaught ToolError unsupported from call #1 read path=pic.png"),
         "{text}"
     );
+    assert!(text.contains("unsupported file:"), "{text}");
+    assert!(text.contains("(image/png"), "{text}");
     assert!(!text.contains("calls ("), "{text}");
     assert!(!text.contains("diagnostics:"), "{text}");
 }

@@ -1,4 +1,4 @@
-Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait → `ok: false` `still_alive`. Unknown id → `not_found`. Consumes the job.
+Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait -> `ok: false` `still_alive`. Unknown id -> `not_found`. The job record remains observable through `wait`.
 Example:
 const job = await tools.run({ command: "npm test" });
 if (job.exit_code === null) {

@@ -15,6 +15,34 @@ describe("parseCustomToolJson", () => {
     });
   });
 
+  it("parses and defaults the declared call surface", () => {
+    const direct = parseCustomToolJson(`{
+      "name": "echo_py",
+      "command": "python",
+      "schema": { "type": "object", "properties": {}, "required": [] }
+    }`);
+    expect(direct).toMatchObject({ ok: { surface: "direct" } });
+
+    const code = parseCustomToolJson(`{
+      "name": "echo_py",
+      "surface": "code",
+      "command": "python",
+      "schema": { "type": "object", "properties": {}, "required": [] }
+    }`);
+    expect(code).toMatchObject({ ok: { surface: "code" } });
+  });
+
+  it("rejects an unknown call surface", () => {
+    expect(
+      parseCustomToolJson(`{
+        "name": "echo_py",
+        "surface": "daemon",
+        "command": "python",
+        "schema": { "type": "object", "properties": {}, "required": [] }
+      }`),
+    ).toEqual({ skip: "invalid" });
+  });
+
   it("keeps rules", () => {
     const result = parseCustomToolJson(`{
       "name": "echo_py",

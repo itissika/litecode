@@ -1117,7 +1117,6 @@ fn run_report(
                 code: info.code.clone(),
                 message: failure.message.clone(),
                 summary,
-                details: info.details.clone(),
             })
         }),
         uncaught_type_error: outcome

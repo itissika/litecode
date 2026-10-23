@@ -288,7 +288,10 @@ fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<St
     if def.command.trim().is_empty() {
         return Some("custom tool command must not be empty".into());
     }
-    crate::permission::policy::custom_rule_ids_error(&def.rules)
+    if let Some(reason) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
+        return Some(reason);
+    }
+    crate::tools::custom::validate_custom_code_contract(def).err()
 }
 
 pub fn workspace_engine_desired(workspace_root: &Path, id: &str) -> bool {
@@ -556,10 +559,7 @@ pub fn load_workspace_state_with(
 }
 
 #[cfg(test)]
-mod engine_state_tests {
-    
-
-}
+mod engine_state_tests {}
 
 /// Workspace root derived from resolved `.litecode/` paths.
 pub fn workspace_root_from_paths(paths: &WorkspacePaths) -> PathBuf {
@@ -646,5 +646,4 @@ mod tests {
             "deferred load must not init/warm the snapshot repo"
         );
     }
-
 }

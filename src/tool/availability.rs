@@ -16,6 +16,7 @@ use crate::optional::EngineManager;
 use crate::permission::permission_surface;
 use crate::tool::project::{RejectedTool, project_tools};
 use crate::tool::trait_::{Tool, ToolSurface};
+use crate::tools::lsp;
 
 /// Settings switches never list the code transport. Same name as
 /// `crate::tools::code::CODE_TOOL_NAME`.
@@ -185,19 +186,44 @@ fn omit_code_transport(tools: &mut Vec<AvailableTool>) {
     tools.retain(|tool| tool.id != CODE_TRANSPORT_ID);
 }
 
+/// Concrete tool names behind a catalog card whose bind id is not itself a
+/// tool name. The LSP card is one binding for seven code-surface tools.
+fn card_member_tool_names(card_id: &str) -> &'static [&'static str] {
+    if card_id == lsp::LSP_CARD_ID {
+        lsp::LSP_CODE_TOOL_NAMES
+    } else {
+        &[]
+    }
+}
+
 /// Copy each candidate's own [`Tool::surface`] onto the matching catalog card.
+/// A card either names one tool directly or fans out to a fixed member set.
 /// A candidate that is not already in the catalog does not add a card.
 fn stamp_declared_surfaces(tools: &mut [AvailableTool], candidates: &[Arc<dyn Tool>]) {
     for tool in tools {
-        let Some(declared) = candidates
+        let member_names = card_member_tool_names(&tool.id);
+        let declared: Vec<&Arc<dyn Tool>> = candidates
             .iter()
-            .find(|candidate| candidate.name() == tool.id && !candidate.is_code_transport())
-        else {
+            .filter(|candidate| {
+                !candidate.is_code_transport()
+                    && (candidate.name() == tool.id || member_names.contains(&candidate.name()))
+            })
+            .collect();
+        if declared.is_empty() {
             continue;
-        };
-        tool.surface = match declared.surface() {
-            ToolSurface::Code => CallSurface::Code,
-            ToolSurface::Direct => CallSurface::Direct,
+        }
+        // A fan-out card is only labelled once its whole member set is visible;
+        // the regular single-tool card keeps its one candidate.
+        if !member_names.is_empty() && declared.len() != member_names.len() {
+            continue;
+        }
+        tool.surface = if declared
+            .iter()
+            .all(|candidate| candidate.surface() == ToolSurface::Code)
+        {
+            CallSurface::Code
+        } else {
+            CallSurface::Direct
         };
     }
 }
@@ -261,10 +287,40 @@ pub fn is_mcp_tool_id(tool_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    
-    
-    
-    
+    use super::*;
+    use std::path::PathBuf;
 
+    fn card(id: &str) -> AvailableTool {
+        AvailableTool {
+            id: id.to_string(),
+            kind: AvailableKind::Core,
+            origin: ToolOrigin::Builtin,
+            overridden: false,
+            permission_surface: PermissionSurface::Fixed,
+            surface: CallSurface::Direct,
+            series_id: None,
+            series_label: None,
+        }
+    }
 
+    #[test]
+    fn lsp_card_is_stamped_from_its_seven_code_tools() {
+        let candidates = lsp::all_code_tools(WorkspaceEngines::new(), PathBuf::from("."));
+        let mut tools = vec![card(lsp::LSP_CARD_ID)];
+
+        stamp_declared_surfaces(&mut tools, &candidates);
+
+        assert_eq!(tools[0].surface, CallSurface::Code);
+    }
+
+    #[test]
+    fn ordinary_code_tool_card_is_stamped_directly() {
+        let candidates: Vec<Arc<dyn Tool>> =
+            vec![Arc::new(crate::tools::read::ReadTool::default())];
+        let mut tools = vec![card("read")];
+
+        stamp_declared_surfaces(&mut tools, &candidates);
+
+        assert_eq!(tools[0].surface, CallSurface::Code);
+    }
 }

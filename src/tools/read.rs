@@ -63,7 +63,6 @@ impl Tool for ReadTool {
         Some(serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "description": "One page of a text file. Continue with a larger start_line. Guidance lives only in message.",
             "properties": {
                 "path": { "type": "string" },
                 "start_line": { "type": "integer", "minimum": 1 },

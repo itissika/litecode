@@ -1,10 +1,9 @@
-Open `run_code` when one program can finish explore → edit → verify (search/read, then write/edit, then run/check). Do not open a long program just to peek one file—use a direct tool or a tiny program.
-Inside the program: explore first, then edit, then verify. `await` when a later call needs an earlier result; otherwise prefer `Promise.all` / `Promise.allSettled` for independent work.
-`return` a short summary (counts, paths, the few lines that matter)—not raw dumps. Only the returned value reaches you; oversized results are truncated (a note at the start says so).
-`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`.
-Call bundled tools only through `tools.name(args)` or `tools["name"](args)` (one argument object each). They are not separately callable. Other LiteCode tools may remain directly callable outside this SDK.
-Every call resolves an object with boolean `ok` (did the tool get the job done). Soft failures resolve `ok: false` with `reason`/`message` so one bad item does not end a batch. System failures reject `ToolError`. Unknown tool/parameter or illegal args throw `TypeError` and fail the whole call—unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
-`libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes—change files with `tools.write` / `tools.edit`. The sandbox has no `setTimeout` / `setInterval`.
+Open `run_code` when one program can finish the work: explore with reads/searches, make the minimal edits, then verify with the real check. A short program is fine; do not wrap a single peek or edit in a long ritual.
+Explore first; write only after the target is known. `await` when a later call needs an earlier value. Use `Promise.all` only when every call must succeed; use `Promise.allSettled` when one failure must not stop the batch.
+`return` a short result: what changed, what ran, and the few facts that matter, not raw dumps. The run header and logs are diagnostics; `result` is your output. Oversized result text is truncated with a note at the start.
+`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)` or `tools["name"](args)`, one argument object each. Other LiteCode tools may remain directly callable outside this SDK.
+Every resolved call has boolean `ok`: `false` is a domain failure with `reason`/`message`, so one bad item need not end a batch. Unknown tools and extra JavaScript arguments throw `TypeError`; invalid tool arguments resolve `ok: false` `invalid_args`, and unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
+`libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes; mutate files only through declared tools. The sandbox has no `setTimeout` / `setInterval`.
 Unhandled Promise rejections do not end the program; a `[warn]` notes them after settle.
 
 ```ts
@@ -103,7 +102,6 @@ type ApplyEditsInput = {
   }>;
 };
 
-// Serial batch outcomes. results is the same length as the input edits array.
 type ApplyEditsData = {
   ok: true;
   results: Array<{
@@ -116,7 +114,7 @@ type ApplyEditsData = {
 
 type DiagnosticsInput = {
   // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
+  path: string;
 };
 
 type DiagnosticsData = {
@@ -133,7 +131,7 @@ type DiagnosticsData = {
 
 type DocumentSymbolInput = {
   // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
+  path: string;
 };
 
 type DocumentSymbolData = {
@@ -159,7 +157,6 @@ type EditInput = {
   path: string;
 };
 
-// One replacement outcome. Failures resolve with ok=false; guidance lives only in message.
 type EditData = {
   message: string;
   ok: boolean;
@@ -170,10 +167,10 @@ type EditData = {
 type FindReferencesInput = {
   // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
   character: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
   // 1-based line number.
   line: Integer;
+  // Source file under the workspace (workspace-relative preferred).
+  path: string;
 };
 
 type FindReferencesData = {
@@ -197,7 +194,6 @@ type GlobInput = {
   path?: string;
 };
 
-// Matching paths. Guidance lives only in message.
 type GlobData = {
   ok: true;
   message: string;
@@ -208,10 +204,10 @@ type GlobData = {
 type GoToDefinitionInput = {
   // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
   character: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
   // 1-based line number.
   line: Integer;
+  // Source file under the workspace (workspace-relative preferred).
+  path: string;
 };
 
 type GoToDefinitionData = {
@@ -229,10 +225,10 @@ type GoToDefinitionData = {
 type GoToImplementationInput = {
   // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
   character: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
   // 1-based line number.
   line: Integer;
+  // Source file under the workspace (workspace-relative preferred).
+  path: string;
 };
 
 type GoToImplementationData = {
@@ -262,7 +258,6 @@ type GrepInput = {
   path?: string;
 };
 
-// Bounded content matches. Guidance lives only in message.
 type GrepData = {
   ok: true;
   hits: Array<{
@@ -276,10 +271,10 @@ type GrepData = {
 type HoverInput = {
   // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
   character: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  file_path: string;
   // 1-based line number.
   line: Integer;
+  // Source file under the workspace (workspace-relative preferred).
+  path: string;
 };
 
 type HoverData = {
@@ -293,7 +288,6 @@ type KillInput = {
   id: string;
 };
 
-// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type KillData = {
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
@@ -307,11 +301,11 @@ type KillData = {
   stderr: string;
   // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
   killed?: boolean;
-  // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
+  // Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean.
   message?: string;
-  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
+  // False on soft failures (unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
+  // Present with ok:false; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -324,7 +318,6 @@ type ReadInput = {
   start_line?: Integer;
 };
 
-// One page of a text file. Continue with a larger start_line. Guidance lives only in message.
 type ReadData = {
   ok: true;
   // Line contents for this page, in file order.
@@ -339,7 +332,6 @@ type RunInput = {
   command: string;
 };
 
-// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type RunData = {
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
@@ -353,11 +345,11 @@ type RunData = {
   stderr: string;
   // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
   killed?: boolean;
-  // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
+  // Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean.
   message?: string;
-  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
+  // False on soft failures (unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
+  // Present with ok:false; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -368,7 +360,6 @@ type WaitInput = {
   sec: Integer;
 };
 
-// Shell command handle and observation. exit_code is null while the process is still running (or when no code is available). output is stdout only; stderr is separate.
 type WaitData = {
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
@@ -382,11 +373,11 @@ type WaitData = {
   stderr: string;
   // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
   killed?: boolean;
-  // Guidance about the command itself, e.g. a Git Bash path-conversion warning. Absent when there is nothing to say.
+  // Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean.
   message?: string;
-  // False on soft failures (path conversion, unreaped kill). Absent on ordinary success.
+  // False on soft failures (unreaped kill). Absent on ordinary success.
   ok?: boolean;
-  // Present with ok:false; path-conversion uses invalid_args; unreaped kill uses still_alive.
+  // Present with ok:false; unreaped kill uses still_alive.
   reason?: string;
 };
 
@@ -471,10 +462,12 @@ type WriteData = {
     path: string;
     abs?: string;
   };
+  // Post-write warnings such as LSP errors or path-risk notes. Absent when clean.
+  message?: string;
 };
 
 declare const tools: {
-  // Apply several independent `{path, old_string, new_string}` replacements in one call. Runs serially in array order; later items on the same path see earlier successful writes. Failed items are skipped; the call still resolves `{ results }` (same length as `edits`)—filter `results` yourself. Exact-match / unique-hit / CRLF / BOM rules match `edit`. Empty `new_string` deletes that item's `old_string`.
+  // Apply several `{ path, old_string, new_string }` replacements in one call. Runs serially in array order; later items on the same path see earlier successful writes. Failed items are skipped; the call still resolves `{ results }` (same length as `edits`) — inspect each result. Exact-match / unique-hit / CRLF / BOM rules match `edit`. Empty `new_string` deletes the matched text.
   // Example:
   // const batch = await tools.apply_edits({
   //   edits: [
@@ -485,18 +478,18 @@ declare const tools: {
   // if (batch.results.some((r) => !r.ok)) return { ok: false, results: batch.results };
   // return { ok: true, results: batch.results };
   readonly ["apply_edits"]: (args: ApplyEditsInput) => Promise<ApplyEditsData | ToolFailure>;
-  // List diagnostics for one source file. Pass `{ file_path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
+  // List diagnostics for one source file. Pass `{ path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
   // Example:
-  // const diags = await tools.diagnostics({ file_path: "src/a.rs" });
+  // const diags = await tools.diagnostics({ path: "src/a.rs" });
   // return { n: diags.items.length, first: diags.items[0] ?? null, message: diags.message };
   readonly ["diagnostics"]: (args: DiagnosticsInput) => Promise<DiagnosticsData | ToolFailure>;
-  // List symbols in one source file. Pass `{ file_path }`. Resolves `{ symbols, message }`—each `{ name, kind, line, character }` (string kind, 1-based; optional `end_*`; no `path`). Cap 200. Engine-not-ready rejects `ToolError`.
+  // List symbols in one source file. Pass `{ path }`. Resolves `{ symbols, message }`—each `{ name, kind, line, character }` (string kind, 1-based; optional `end_*`; no `path`). Cap 200. Engine-not-ready rejects `ToolError`.
   // Example:
-  // const outline = await tools.document_symbol({ file_path: "src/lib.rs" });
+  // const outline = await tools.document_symbol({ path: "src/lib.rs" });
   // const target = outline.symbols.find((s) => s.name === "start");
   // return { target, n: outline.symbols.length };
   readonly ["document_symbol"]: (args: DocumentSymbolInput) => Promise<DocumentSymbolData | ToolFailure>;
-  // Replace one exact string in one file. Must hit exactly one place; empty `new_string` deletes `old_string`. CRLF/LF compare equal; leading UTF-8 BOM is preserved. Soft failures (miss, multi-match, missing path, permission) resolve `ok: false` with `reason`/`message`—branch on `ok`. For several independent replacements use `tools.apply_edits`.
+  // Replace one exact string in one file. Must hit exactly one place; empty `new_string` deletes `old_string`. CRLF/LF compare equal; leading UTF-8 BOM is preserved. Soft failures (miss, multi-match, missing path, permission) resolve `ok: false` with `reason`/`message`—branch on `ok`. For several replacements in one call use `tools.apply_edits`.
   // Example:
   // const edited = await tools.edit({
   //   path: "src/a.rs",
@@ -506,39 +499,37 @@ declare const tools: {
   // if (!edited.ok) return { ok: false, message: edited.message };
   // return { ok: true, path: edited.path };
   readonly ["edit"]: (args: EditInput) => Promise<EditData | ToolFailure>;
-  // List references at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character`. Resolves `{ locations, message }` (same location shape as `go_to_definition`). Cap 100. Engine-not-ready rejects `ToolError`.
+  // List references at a file position. Pass `path` plus 1-based `line` and UTF-16 `character`. Resolves `{ locations, message }` (same location shape as `go_to_definition`). Cap 100. Engine-not-ready rejects `ToolError`.
   // Example:
-  // const refs = await tools.find_references({ file_path: "src/lib.rs", line: 40, character: 12 });
+  // const refs = await tools.find_references({ path: "src/lib.rs", line: 40, character: 12 });
   // return { n: refs.locations.length, first: refs.locations[0] ?? null };
   readonly ["find_references"]: (args: FindReferencesInput) => Promise<FindReferencesData | ToolFailure>;
-  // Find files by path glob. Pass `pattern`, optional `path` (search root), and `limit` (default 1000, max 5000). Resolves `{ paths, message }`—workspace-relative paths only. A pattern with no `/` matches the file name at any depth; with `/` it matches the path relative to `path`. Empty / hit-the-limit still resolve.
+  // Find files by path glob. Pass `pattern`, optional `path` (search root), and `limit` (default 1000, max 5000). Resolves `{ paths, message }`—workspace-relative inside the workspace; absolute when the search root is outside. A pattern without `/` matches file names at any depth; with `/` it matches relative to `path`. Empty and hit-the-limit results still resolve.
   // Example:
   // const listed = await tools.glob({ pattern: "**/*.rs", path: "src" });
-  // if (listed.paths.length === 0) return { ok: false, message: listed.message };
-  // return { first: listed.paths[0], n: listed.paths.length };
+  // return { first: listed.paths[0] || null, n: listed.paths.length, message: listed.message };
   readonly ["glob"]: (args: GlobInput) => Promise<GlobData | ToolFailure>;
-  // Jump to definition at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character` (end-of-line caret allowed). Resolves `{ locations, message }`—each `{ path, line, character }` (optional `end_*`). Empty still resolves. Cap 100. Engine-not-ready rejects `ToolError`.
+  // Jump to definition at a file position. Pass `path` plus 1-based `line` and UTF-16 `character` (end-of-line caret allowed). Resolves `{ locations, message }`—each `{ path, line, character }` (optional `end_*`). Empty still resolves. Cap 100. Engine-not-ready rejects `ToolError`.
   // Example:
-  // const def = await tools.go_to_definition({ file_path: "src/lib.rs", line: 10, character: 5 });
+  // const def = await tools.go_to_definition({ path: "src/lib.rs", line: 10, character: 5 });
   // return { locations: def.locations, message: def.message };
   readonly ["go_to_definition"]: (args: GoToDefinitionInput) => Promise<GoToDefinitionData | ToolFailure>;
-  // Jump to implementations at a file position (traits/interfaces → concrete impls when supported). Pass `file_path` plus 1-based `line` and UTF-16 `character`. Same `{ locations, message }` shape as `go_to_definition`. Prefer `go_to_definition` for the type itself.
+  // Jump to implementations at a file position (traits/interfaces → concrete impls when supported). Pass `path` plus 1-based `line` and UTF-16 `character`. Same `{ locations, message }` shape as `go_to_definition`. Prefer `go_to_definition` for the type itself.
   // Example:
-  // const impls = await tools.go_to_implementation({ file_path: "src/trait_foo.rs", line: 3, character: 10 });
+  // const impls = await tools.go_to_implementation({ path: "src/trait_foo.rs", line: 3, character: 10 });
   // return { locations: impls.locations, message: impls.message };
   readonly ["go_to_implementation"]: (args: GoToImplementationInput) => Promise<GoToImplementationData | ToolFailure>;
-  // Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, and `limit` (default 20, max 100). Resolves `{ hits, message }` where each hit is `{ path, line, text }`. Prefer `literal: true` when the string is not regex. Empty / hit-the-limit still resolve; invalid regex → `ok: false` `invalid_args`.
+  // Search file contents. Pass `pattern`, optional `path`, `glob`, `literal`, `ignore_case`, and `limit` (default 20, max 100). Resolves `{ hits, message }`; each hit is `{ path, line, text }`. Empty and hit-the-limit results still resolve; invalid regex resolves `ok: false` `invalid_args`.
   // Example:
   // const found = await tools.grep({ pattern: "fn start", path: "src", literal: true });
-  // if (found.hits.length === 0) return { ok: false, message: found.message };
-  // return { hit: found.hits[0] };
+  // return { first: found.hits[0] || null, n: found.hits.length, message: found.message };
   readonly ["grep"]: (args: GrepInput) => Promise<GrepData | ToolFailure>;
-  // Fetch hover docs / type info at a file position. Pass `file_path` plus 1-based `line` and UTF-16 `character`. Resolves `{ markdown, message }` (flattened text in `markdown`, not raw LSP JSON). Unavailable hover still resolves with explanatory `message`.
+  // Fetch hover docs / type info at a file position. Pass `path` plus 1-based `line` and UTF-16 `character`. Resolves `{ markdown, message }` (flattened text in `markdown`, not raw LSP JSON). Unavailable hover still resolves with explanatory `message`.
   // Example:
-  // const info = await tools.hover({ file_path: "src/main.rs", line: 10, character: 5 });
+  // const info = await tools.hover({ path: "src/main.rs", line: 10, character: 5 });
   // return { markdown: info.markdown, message: info.message };
   readonly ["hover"]: (args: HoverInput) => Promise<HoverData | ToolFailure>;
-  // Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait → `ok: false` `still_alive`. Unknown id → `not_found`. Consumes the job.
+  // Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait -> `ok: false` `still_alive`. Unknown id -> `not_found`. The job record remains observable through `wait`.
   // Example:
   // const job = await tools.run({ command: "npm test" });
   // if (job.exit_code === null) {
@@ -547,13 +538,12 @@ declare const tools: {
   // }
   // return { exit_code: job.exit_code };
   readonly ["kill"]: (args: KillInput) => Promise<KillData | ToolFailure>;
-  // Read one workspace file. Pass `path`, optional `start_line` (1-based, default 1), and `limit` (default 2000, max 5000). Resolves `{ path, start_line, lines, message }`—`lines` is a string array; continue with a larger `start_line`, not a cursor. Past-EOF and hit-the-limit still resolve with `lines` + `message`. Missing path → `ok: false` `not_found`; non-text rejects `ToolError` `unsupported`.
+  // Read one workspace file. Pass `path`, optional `start_line` (1-based, default 1), and `limit` (default 2000, max 5000). Resolves `{ path, start_line, lines, message }`—`lines` is a string array; continue with a later `start_line`. Empty files, past-EOF pages, and hit-the-limit pages still resolve; `message` says which case. Missing path resolves `ok: false` `not_found`; non-text rejects `ToolError` `unsupported`.
   // Example:
   // const page = await tools.read({ path: "src/a.rs", start_line: 1 });
-  // if (page.lines.length === 0) return { ok: false, message: page.message };
   // return { lines: page.lines.length, message: page.message };
   readonly ["read"]: (args: ReadInput) => Promise<ReadData | ToolFailure>;
-  // Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout), `stderr`, `shell`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. cwd is always workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, POSIX-looking args like `/c` can be rewritten by MSYS—use `//c` or `MSYS_NO_PATHCONV=1`.
+  // Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout plus truncation/status notes), `stderr` (stderr plus notes), `shell`, and optional `message`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. cwd is workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, MSYS may rewrite POSIX-looking args like `/c`; use `//c` or `MSYS_NO_PATHCONV=1`. A path-conversion hint is reported in `message` and does not change `exit_code`.
   // Example:
   // const test = await tools.run({ command: "cargo test -q --lib a" });
   // const done = test.exit_code === null ? await tools.wait({ id: test.id, sec: 60 }) : test;
@@ -584,10 +574,10 @@ declare const tools: {
   // if (hits.symbols.length === 0) return { ok: false, message: hits.message };
   // return { hit: hits.symbols[0] };
   readonly ["workspace_symbol"]: (args: WorkspaceSymbolInput) => Promise<WorkspaceSymbolData | ToolFailure>;
-  // Create or overwrite one file. Resolves `file` (`path`, `hash`, `bytes`, …) and `created`. Optional `expected_hash` (sha256 of current bytes)—mismatch → `ok: false` `stale`; missing file with `expected_hash` → `not_found` (does not create). `create_only` on an existing file → `conflict`. Prefer `tools.edit` / `tools.apply_edits` for surgical changes.
+  // Create or overwrite one file. Resolves `{ file, created, message? }`; `file` is `{ path, hash, bytes, abs? }`, and `message` carries post-write LSP or path-risk warnings. Optional `expected_hash` (sha256 of current bytes)—mismatch -> `ok: false` `stale`; missing file with `expected_hash` -> `not_found` (does not create). `create_only` on an existing file -> `conflict`. Prefer `tools.edit` / `tools.apply_edits` for surgical changes.
   // Example:
   // const w = await tools.write({ path: "src/b.rs", content: "pub fn ok() -> bool { true }\n" });
-  // return { created: w.created, path: w.file.path };
+  // return { created: w.created, path: w.file.path, message: w.message || "" };
   readonly ["write"]: (args: WriteInput) => Promise<WriteData | ToolFailure>;
 };
 ```

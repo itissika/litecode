@@ -1,3 +1,3 @@
 Facade for this workspace: excludes, MCP servers, custom tools, and sessions. `refresh` (and `refresh all`) validates excludes, MCP, and custom tools. An MCP server or custom tool that is off for you stays quiet unless you actually need it. It does not write files, enable tools, or start engines. Omit `action` to open the panel.
 
-`validate_custom` trials a custom tool without registering: pass definition + sample_input alongside action.
+`validate_custom` trials a custom tool without registering: pass definition + sample_input alongside action. It reports definition, code-surface admission, and process/envelope failures separately. Use surface `direct` for standalone/background/media tools and `code` for tools called inside run_code; code tools return `{ok,text}` and cannot use run_in_background.

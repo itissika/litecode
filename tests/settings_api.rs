@@ -108,7 +108,6 @@ async fn spawn_server(state: ServeState, web_dist: std::path::PathBuf) -> std::n
     panic!("server did not become ready");
 }
 
-
 #[test]
 fn config_set_auth_token_rejected() {
     let dir = TempDir::new().expect("dir");
@@ -489,3 +488,61 @@ async fn settings_provider_key_write_is_effective_next_turn() {
     );
 }
 
+#[tokio::test]
+async fn available_tools_stamps_a_code_surface_custom_tool() {
+    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let writer = SettingsWriter::with_path(&db_path, Arc::new(TurnGuard::new()));
+    writer
+        .write_custom_tool(
+            "code_probe",
+            CustomToolDefinition {
+                name: "code_probe".into(),
+                description: "code probe".into(),
+                schema: ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo".into(),
+                args: Vec::new(),
+                timeout: 120,
+                rules: Vec::new(),
+                surface: CallSurface::Code,
+                suite: None,
+                suite_label: None,
+            },
+        )
+        .expect("write custom code tool");
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path.clone());
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let payload: Value = client
+        .get(format!("http://{addr}/api/settings/available-tools"))
+        .send()
+        .await
+        .expect("available tools")
+        .json()
+        .await
+        .expect("available tools json");
+
+    let card = payload["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .find(|tool| tool["id"] == "code_probe")
+        .expect("custom tool card");
+    assert_eq!(card["surface"], "code", "{payload}");
+    assert!(
+        payload["code_rejections"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "a valid code custom tool must not be rejected: {payload}"
+    );
+}

@@ -19,6 +19,7 @@ use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchem
 use crate::serve::state::ServeState;
 use crate::tool::availability::available_tools_payload;
 use crate::tool::registry::builtin_code_surface_tools;
+use crate::tools::custom::CustomTool;
 use crate::types::LitecodeError;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
@@ -371,7 +372,14 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
 
 async fn get_available_tools(State(state): State<ServeState>) -> Response {
     let runtime = state.runtime.read().expect("runtime lock");
-    let payload = available_tools_payload(&runtime.resolved, builtin_code_surface_tools());
+    let mut candidates: Vec<std::sync::Arc<dyn crate::tool::Tool>> = builtin_code_surface_tools();
+    candidates.extend(runtime.resolved.custom_tools().into_iter().map(|def| {
+        std::sync::Arc::new(CustomTool::new(
+            def,
+            std::sync::Arc::clone(&runtime.custom_tool_hub),
+        )) as std::sync::Arc<dyn crate::tool::Tool>
+    }));
+    let payload = available_tools_payload(&runtime.resolved, candidates);
     ok_json(payload)
 }
 

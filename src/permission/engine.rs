@@ -177,6 +177,7 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules,
+            surface: Default::default(),
             suite: None,
             suite_label: None,
         }

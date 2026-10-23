@@ -47,13 +47,19 @@ impl WriteTool {
             crate::tool::outcome::ToolOutcome::ok(data).into_call_result(""),
         )
         .await;
-        crate::tools::file_path::with_path_risk_warning(
+        let mut result = crate::tools::file_path::with_path_risk_warning(
             result,
             &execution.workspace_root,
             raw_path,
             resolved,
             "writing",
-        )
+        );
+        if let Some(message) = diagnostic_message(&result.diagnostics)
+            && let Some(data) = result.data.as_mut().and_then(Value::as_object_mut)
+        {
+            data.insert("message".into(), Value::String(message));
+        }
+        result
     }
 
     fn test_execution_context(&self) -> ToolExecutionContext {
@@ -71,6 +77,27 @@ impl WriteTool {
             session: None,
         }
     }
+}
+
+fn diagnostic_message(diagnostics: &[crate::tool::outcome::Diagnostic]) -> Option<String> {
+    let mut parts = Vec::new();
+    for diagnostic in diagnostics {
+        let mut text = diagnostic.message.clone();
+        if diagnostic.code == "lsp_error"
+            && let Some(block) = diagnostic
+                .details
+                .as_ref()
+                .and_then(|details| details.get("text"))
+                .and_then(Value::as_str)
+        {
+            text.push('\n');
+            text.push_str(block);
+        }
+        if !text.trim().is_empty() {
+            parts.push(text);
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
 impl Default for WriteTool {
@@ -131,7 +158,11 @@ impl Tool for WriteTool {
                     },
                     "required": ["path", "hash", "bytes"]
                 },
-                "created": { "type": "boolean", "description": "True when the file did not exist before." }
+                "created": { "type": "boolean", "description": "True when the file did not exist before." },
+                "message": {
+                    "type": "string",
+                    "description": "Post-write warnings such as LSP errors or path-risk notes. Absent when clean."
+                }
             },
             "required": ["file", "created"]
         }))

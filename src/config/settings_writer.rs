@@ -1267,6 +1267,22 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
     if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
         return Err(LitecodeError::Config(error));
     }
+    if def
+        .schema
+        .properties
+        .as_object()
+        .is_some_and(|properties| properties.contains_key("run_in_background"))
+    {
+        return Err(LitecodeError::Config(
+            "schema property `run_in_background` is reserved by Litecode; remove it from the custom tool schema".into(),
+        ));
+    }
+    if let Err(error) = crate::tools::custom::validate_custom_code_contract(def) {
+        return Err(LitecodeError::Config(format!(
+            "custom tool '{}' is not code-mode ready: {error}",
+            def.name
+        )));
+    }
     Ok(())
 }
 
@@ -1287,7 +1303,7 @@ pub(crate) fn validate_tool_id(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use tempfile::TempDir;
 
     const TEST_CATALOG: &str = r#"version = 1
@@ -1361,6 +1377,22 @@ max_output = 1024
         }]
     }
 
+    #[test]
+    fn code_surface_custom_tool_rejects_unrenderable_schema_with_field_reason() {
+        let mut def = custom_def("code_probe", Vec::new());
+        def.surface = crate::config::schema::CallSurface::Code;
+        validate_custom_definition("code_probe", &mut def).expect("simple schema is admissible");
+
+        def.schema.properties = serde_json::json!({
+            "item": { "$ref": "#/Item" }
+        });
+        let error = validate_custom_definition("code_probe", &mut def)
+            .expect_err("unresolved ref must fail code admission");
+        let message = error.to_string();
+        assert!(message.contains("surface 'code'"), "{message}");
+        assert!(message.contains("direct"), "{message}");
+    }
+
     fn custom_def(name: &str, rules: Vec<crate::permission::PolicyRule>) -> CustomToolDefinition {
         use crate::config::schema::ToolSchema;
         CustomToolDefinition {
@@ -1375,6 +1407,7 @@ max_output = 1024
             args: Vec::new(),
             timeout: 120,
             rules,
+            surface: Default::default(),
             suite: None,
             suite_label: None,
         }
@@ -1388,6 +1421,22 @@ max_output = 1024
             last_applied_preset: preset,
             allowed_tools: None,
         }
+    }
+
+    #[test]
+    fn workspace_custom_tool_surface_roundtrips_through_json() {
+        let ws = TempDir::new().unwrap();
+        let root = ws.path().to_path_buf();
+        let mut def = custom_def("code_probe", Vec::new());
+        def.surface = crate::config::schema::CallSurface::Code;
+        validate_custom_definition("code_probe", &mut def).expect("valid code contract");
+        workspace::upsert_workspace_custom_tool(&root, def).unwrap();
+
+        let loaded = workspace::read_workspace_custom_tools(&root).unwrap();
+        assert_eq!(
+            loaded.tools["code_probe"].surface,
+            crate::config::schema::CallSurface::Code
+        );
     }
 
     #[test]

@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS custom_tools (
     args_json       TEXT NOT NULL DEFAULT '[]',
     timeout         INTEGER NOT NULL DEFAULT 120,
     description     TEXT NOT NULL DEFAULT '',
-    rules_json      TEXT
+    rules_json      TEXT,
+    surface         TEXT NOT NULL DEFAULT 'direct'
 );
 
 CREATE TABLE IF NOT EXISTS mcp_servers (

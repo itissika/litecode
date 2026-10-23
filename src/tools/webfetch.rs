@@ -9,8 +9,20 @@ use crate::tool::Tool;
 use crate::tool::outcome::ToolOutcome;
 use crate::tools::file_path::coded_error;
 use crate::types::ToolCallResult;
+use crate::types::utf8::prefix_utf8;
 
 const MAX_OUTPUT_BYTES: usize = 50_000;
+
+fn truncate_body(formatted: String) -> String {
+    if formatted.len() <= MAX_OUTPUT_BYTES {
+        return formatted;
+    }
+    let prefix = prefix_utf8(&formatted, MAX_OUTPUT_BYTES);
+    format!(
+        "{prefix}... [truncated {} bytes]",
+        formatted.len() - prefix.len()
+    )
+}
 
 pub struct WebFetchTool {
     client: Arc<RwLock<Option<reqwest::blocking::Client>>>,
@@ -469,15 +481,7 @@ impl Tool for WebFetchTool {
                     "text" => strip_html_tags(&body),
                     _ => html_to_markdown(&body),
                 };
-                let truncated = if formatted.len() > MAX_OUTPUT_BYTES {
-                    format!(
-                        "{}... [truncated {} bytes]",
-                        &formatted[..MAX_OUTPUT_BYTES],
-                        formatted.len() - MAX_OUTPUT_BYTES
-                    )
-                } else {
-                    formatted
-                };
+                let truncated = truncate_body(formatted);
                 present_webfetch(WebFetchData {
                     ok: true,
                     url: Some(url),
@@ -609,6 +613,14 @@ mod tests {
         assert!(parse_validate("http://[::ffff:10.0.0.1]/").is_err());
         assert!(parse_validate("http://[::ffff:192.168.0.1]/").is_err());
         assert!(parse_validate("http://[::ffff:100.64.0.1]/").is_err());
+    }
+
+    #[test]
+    fn body_truncation_respects_utf8_boundaries() {
+        let body = format!("{}中中", "a".repeat(MAX_OUTPUT_BYTES - 1));
+        let truncated = truncate_body(body);
+        assert!(truncated.contains("... [truncated 6 bytes]"), "{truncated}");
+        assert!(truncated.starts_with(&"a".repeat(MAX_OUTPUT_BYTES - 1)));
     }
 
     #[test]

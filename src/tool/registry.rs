@@ -601,6 +601,7 @@ mod tests {
                 args: Vec::new(),
                 timeout: 30,
                 rules: Vec::new(),
+                surface: Default::default(),
                 suite: None,
                 suite_label: None,
             }
@@ -770,8 +771,6 @@ mod tests {
         assert!(narrow_sdk.contains("[\"apply_edits\"]"));
     }
 
-
-
     #[test]
     #[test]
     fn webfetch_websearch_project_to_code_not_direct() {
@@ -845,5 +844,4 @@ mod tests {
         assert!(bindings.iter().any(|n| n == "webfetch"));
         assert!(bindings.iter().any(|n| n == "websearch"));
     }
-
 }
