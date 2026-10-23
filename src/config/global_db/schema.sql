@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS custom_tools (
     timeout         INTEGER NOT NULL DEFAULT 120,
     description     TEXT NOT NULL DEFAULT '',
     rules_json      TEXT,
-    surface         TEXT NOT NULL DEFAULT 'direct'
+    surface         TEXT NOT NULL DEFAULT 'direct',
+    data_schema_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS mcp_servers (

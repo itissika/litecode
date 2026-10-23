@@ -167,6 +167,7 @@ mod tests {
     fn tool(rules: Vec<PolicyRule>) -> CustomToolDefinition {
         CustomToolDefinition {
             name: "demo".into(),
+            data_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),

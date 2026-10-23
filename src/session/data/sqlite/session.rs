@@ -1007,9 +1007,16 @@ fn event_from_disk_row(
             }
         },
     };
-    // Retired model reminders stay in the log for seq continuity. They are not
-    // a live kind, so they do not enter the spine and are not sent to the model.
-    if event_type_name == "reminder/model" || kind == "reminder/model" {
+    // Retired reminders stay in the log for seq continuity. They are not a
+    // live kind, so they do not enter the spine and are not sent to the model.
+    let retired = if event_type_name == "reminder/model" || kind == "reminder/model" {
+        Some("reminder/model")
+    } else if event_type_name == "reminder/step_budget" || kind == "reminder/step_budget" {
+        Some("reminder/step_budget")
+    } else {
+        None
+    };
+    if let Some(retired) = retired {
         let data = match body.as_deref() {
             Some(raw) if !raw.is_empty() => serde_json::from_str(raw)?,
             _ => serde_json::Value::Null,
@@ -1017,7 +1024,7 @@ fn event_from_disk_row(
         return Ok(SessionEvent {
             seq,
             time: created_at,
-            event_type: EventType::Unknown("reminder/model".into()),
+            event_type: EventType::Unknown(retired.into()),
             data,
             result_data: result_data.clone(),
             surface_op: None,

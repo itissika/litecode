@@ -232,6 +232,7 @@ pub fn build_global_with_custom_tool(
     let mut settings = default_test_global();
     let def = CustomToolDefinition {
         name: name.into(),
+        data_schema: None,
         description: String::new(),
         schema,
         command: command.into(),

@@ -17,6 +17,8 @@
 
 `surface: "code"` 的输入 schema 必须能被 Code SDK 渲染：顶层必须是 `object`，`properties` 是对象，不要使用未解析的 `$ref` 或递归 schema。`validate_custom` 和设置保存会先做准入检查；失败时不要登记或让用户启用。
 
+`data_schema` 可选，只对 `surface: "code"` 生效。写了它，stdout 必须是 JSON 对象，平台把这一层对象直接作为程序里的 `data`；不写则仍是 `{ text }`。平台不校验对象字段是否和 schema 一致，只保证类型声明和实际形状一致（非对象直接失败）。写了 `data_schema` 就不要再套 `media`/`level` envelope——stdout 本身就是数据。
+
 `rules` 可省略，也可以写成 `[]`。这时这个工具只有开/关，调用前允许。写了至少一条，就可以在 ALL 和 SAFE 之间切换。ALL 允许这次调用。SAFE 按顺序看规则，先匹配到的那条生效；都没匹配到，就允许。
 
 一条规则有 `id`、`action`、`when`。`action` 是 `allow`、`ask`、`deny`。`when.kind` 只能是 `any`、`arg_equals`、`arg_glob`、`path_outside_workspace`、`bash_readonly_command`、`all_of`、`any_of`。其它情况都要拒绝时，最后加一条 `"when": { "kind": "any" }`，`"action": "deny"`。
@@ -32,13 +34,25 @@
   - 以及 **`url` 或 `file_path` 二选一**（非空 string）
 - `hint` **不是**本协议的一部分（LSP 专用）；写了会被忽略。
 
-**Code 面的结果。** `surface: "code"` 时，程序拿到的是统一投影：
+**Code 面的结果。** 分两种：
+
+- 没写 `data_schema`：程序拿到 `{ ok: true, text: "<content 或纯文本 stdout>" }`。stdout 仍是文本，不会被自动解析；需要字段就 `JSON.parse(result.text)`。
+- 写了 `data_schema`：stdout 必须是 JSON 对象，程序拿到 `{ ok: true, ...stdout }`，SDK 按 `data_schema` 生成类型。不是 JSON 对象 → 这次调用以 `invalid_output` 失败。
+
+`media` 不会进入 Code 程序可见结果；如果这个工具主要产出 media，选 `direct`。`run_in_background` 在 Code 面会返回明确的 invalid-input 错误，也不会被 SDK 暴露。
+
+**Code 面的失败。** 非 0 退出时，stdout 可以带一个结构化错误：
 
 ```json
-{ "ok": true, "text": "<content 或纯文本 stdout>" }
+{ "error": { "code": "not_found", "message": "order 42 does not exist", "details": { "order_id": 42 }, "retryable": false } }
 ```
 
-stdout 仍是文本，不会被平台自动解析成对象。需要字段就写 `JSON.parse(result.text)`；需要失败分支就看 `result.ok` 和捕获 `ToolError`。`media` 不会进入 Code 程序可见结果；如果这个工具主要产出 media，选 `direct`。`run_in_background` 在 Code 面会返回明确的 invalid-input 错误，也不会被 SDK 暴露。
+- `code` 用 core 的领域码：`not_found`、`invalid_input`、`permission_denied`、`conflict`、`timeout`、`io`、`no_match`、`empty`、`stale`。
+- 这些码在程序里是**软失败**：解析成 `{ ok: false, reason, message }`，不会中断 `Promise.all` 里的其它调用。
+- 其它 `code`（或没写 envelope）在程序里抛 `ToolError`，带 `code` / `details` / `retryable`。
+- `retryable` 只在 `code` 是 `conflict` 或 `timeout` 时生效。
+- `message` 省略时用 stderr；`details` 原样进入 `ToolError.details`。
+- direct 面不解析这个 envelope，仍然是原来的 `exited with code N: stderr` 文案。
 
 示例：
 
@@ -97,6 +111,14 @@ Code 面示例：
       "path": { "type": "string", "description": "Workspace-relative path" }
     },
     "required": ["path"]
+  },
+  "data_schema": {
+    "type": "object",
+    "properties": {
+      "files": { "type": "integer" },
+      "lines": { "type": "integer" }
+    },
+    "required": ["files", "lines"]
   }
 }
 ```
@@ -115,6 +137,7 @@ Code 面示例：
 
 - `validate_custom — FAIL / definition`：配置本身不合法（name、command、rules 或 code schema）。读 `detail`，按其中字段和原因修正，不要重试同样定义。
 - `validate_custom — FAIL / code admission`：`detail` 含 `surface 'code' input schema cannot be admitted`。常见原因是 `$ref`、非 object、不可渲染的 schema。改 schema 或改回 `direct`。
+- `validate_custom — FAIL / code output`：声明了 `data_schema`，但样例运行的 stdout 不是 JSON 对象。改脚本输出，或去掉 `data_schema`。
 - `validate_custom — FAIL / composition`：单工具准入通过，但和当前 agent 已启用且可用的 Code 工具产生 SDK 类型名冲突。按 `detail` 改工具名/schema 类型字段，或先禁用冲突工具；不要忽略后直接启用。
 - `validate_custom — FAIL / detail`：进程执行失败。看 stderr、退出码、超时或 envelope 字段错误。
 - `validate_custom — PASS`：定义、进程/stdout、单工具准入，以及它与当前 agent 已启用 Code 工具的组合检查都通过。仍不代表 rules 通过；之后新启用另一个 Code 工具时仍可能产生新冲突。规则只在真实调用时按 agent 的 ALL/SAFE 生效。

@@ -1397,6 +1397,7 @@ max_output = 1024
         use crate::config::schema::ToolSchema;
         CustomToolDefinition {
             name: name.into(),
+            data_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),

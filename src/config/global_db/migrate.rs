@@ -110,6 +110,12 @@ fn ensure_custom_tools_columns(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    if !column_exists(conn, "custom_tools", "data_schema_json")? {
+        conn.execute(
+            "ALTER TABLE custom_tools ADD COLUMN data_schema_json TEXT",
+            [],
+        )?;
+    }
     if column_exists(conn, "custom_tools", "permission_json")? {
         conn.execute("ALTER TABLE custom_tools DROP COLUMN permission_json", [])?;
     }

@@ -21,7 +21,6 @@ pub enum ReminderKind {
     BashExit,
     SubagentSettled,
     CustomToolSettled,
-    StepBudget,
     /// One-shot attachment after a user message. Not restored after compaction.
     Mentions,
     /// Knowledge-base class, attached after a human message. Hidden.
@@ -39,7 +38,6 @@ impl ReminderKind {
             Self::BashExit => "bash_exit",
             Self::SubagentSettled => "subagent_settled",
             Self::CustomToolSettled => "custom_tool_settled",
-            Self::StepBudget => "step_budget",
             Self::Mentions => "mentions",
             Self::KnowledgeStatus => "knowledge_status",
         }
@@ -55,7 +53,6 @@ impl ReminderKind {
             Self::BashExit => "reminder/bash_exit",
             Self::SubagentSettled => "reminder/subagent_settled",
             Self::CustomToolSettled => "reminder/custom_tool_settled",
-            Self::StepBudget => "reminder/step_budget",
             Self::Mentions => "reminder/mentions",
             Self::KnowledgeStatus => "reminder/knowledge_status",
         }
@@ -71,7 +68,6 @@ impl ReminderKind {
             "reminder/bash_exit" => Self::BashExit,
             "reminder/subagent_settled" => Self::SubagentSettled,
             "reminder/custom_tool_settled" => Self::CustomToolSettled,
-            "reminder/step_budget" => Self::StepBudget,
             "reminder/mentions" => Self::Mentions,
             "reminder/knowledge_status" => Self::KnowledgeStatus,
             _ => return None,
@@ -90,7 +86,6 @@ impl ReminderKind {
             | Self::Background
             | Self::PlanChanged
             | Self::FilesChanged
-            | Self::StepBudget
             | Self::Mentions
             | Self::KnowledgeStatus => Visibility::Hidden,
         }
@@ -212,14 +207,6 @@ pub struct CustomToolSettledBody {
     pub text: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StepBudgetBody {
-    pub step: u64,
-    pub max_steps: u64,
-    pub turn_id: String,
-    pub text: String,
-}
-
 /// One citation expanded into the frozen mentions attachment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MentionRef {
@@ -255,7 +242,6 @@ pub enum Reminder {
     BashExit(BashExitBody),
     SubagentSettled(SubagentSettledBody),
     CustomToolSettled(CustomToolSettledBody),
-    StepBudget(StepBudgetBody),
     Mentions(MentionsBody),
     KnowledgeStatus(KnowledgeStatusBody),
 }
@@ -271,7 +257,6 @@ impl Reminder {
             Self::BashExit(_) => ReminderKind::BashExit,
             Self::SubagentSettled(_) => ReminderKind::SubagentSettled,
             Self::CustomToolSettled(_) => ReminderKind::CustomToolSettled,
-            Self::StepBudget(_) => ReminderKind::StepBudget,
             Self::Mentions(_) => ReminderKind::Mentions,
             Self::KnowledgeStatus(_) => ReminderKind::KnowledgeStatus,
         }
@@ -287,7 +272,6 @@ impl Reminder {
             Self::BashExit(body) => &body.text,
             Self::SubagentSettled(body) => &body.text,
             Self::CustomToolSettled(body) => &body.text,
-            Self::StepBudget(body) => &body.text,
             Self::Mentions(body) => &body.text,
             Self::KnowledgeStatus(body) => &body.text,
         }

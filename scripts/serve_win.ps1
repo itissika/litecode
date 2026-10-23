@@ -34,7 +34,7 @@ param(
   [string]$Bind = $(if ($env:LITECODE_BIND) { $env:LITECODE_BIND } else { "127.0.0.1:7483" }),
   [string]$Agent = $(if ($env:LITECODE_AGENT) { $env:LITECODE_AGENT } else { "default" }),
   [string]$Workspace = $(if ($env:LITECODE_WORKSPACE) { $env:LITECODE_WORKSPACE } else { "" }),
-  [int]$WebPort = $(if ($env:LITECODE_WEB_PORT) { [int]$env:LITECODE_WEB_PORT } else { 5179 }),
+  [int]$WebPort = $(if ($env:LITECODE_WEB_PORT) { [int]$env:LITECODE_WEB_PORT } else { 5180 }),
   [switch]$ApiOnly,
   [switch]$WebOnly,
   [switch]$Release,

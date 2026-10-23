@@ -19,7 +19,7 @@ pub use kinds::{
     BackgroundBody, BashExitBody, BashExitEntry, ChildCountsBody, CustomToolSettledBody,
     CustomToolSettledEntry, EnvBody, FilesChangedBody, KnowledgeStatusBody, MentionRef,
     MentionsBody, PlanChangedBody, PlanPointer, Reminder, ReminderKind, RunningBash, SettledChild,
-    StepBudgetBody, SubagentSettledBody, TasksBody, TodoSnap, Visibility,
+    SubagentSettledBody, TasksBody, TodoSnap, Visibility,
 };
 
 use crate::types::{Item, user_text};
@@ -38,8 +38,11 @@ pub fn render_text(text: &str) -> String {
 
 /// `true` when HumanView must not render this log kind.
 ///
-/// Live kinds come from [`ReminderKind::hidden`]. `reminder/model` is retired:
-/// old rows stay in the log and are hidden, and they no longer enter the spine.
+/// Live kinds come from [`ReminderKind::hidden`]. `reminder/model` and
+/// `reminder/step_budget` are retired: old rows stay in the log and are hidden,
+/// and they no longer enter the spine.
 pub fn hidden_kind(kind: &str) -> bool {
-    kind == "reminder/model" || ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
+    kind == "reminder/model"
+        || kind == "reminder/step_budget"
+        || ReminderKind::parse_wire(kind).is_some_and(ReminderKind::hidden)
 }

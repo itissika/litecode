@@ -392,6 +392,7 @@ mod projection {
         global.agents.insert("default".into(), profile);
         global.custom_tools.push(CustomToolDefinition {
             name: "run_code".into(),
+            data_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -479,6 +480,7 @@ mod projection {
         let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
+            data_schema: None,
             description: "custom code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1111,6 +1113,7 @@ mod run_code_only {
         let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
+            data_schema: None,
             description: "custom code sdk probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),

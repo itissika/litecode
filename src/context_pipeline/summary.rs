@@ -4,13 +4,8 @@ use crate::types::{Item, assistant_text, item_text_preview};
 pub const CONVERSATION_SUMMARY_PREFIX: &str = "[Conversation summary]";
 pub const AGGRESSIVE_SUMMARY_PREFIX: &str = "[Aggressive summary]";
 
-pub fn format_compact_summary(text: &str, aggressive: bool) -> String {
-    let label = if aggressive {
-        AGGRESSIVE_SUMMARY_PREFIX
-    } else {
-        CONVERSATION_SUMMARY_PREFIX
-    };
-    format!("{label}\n{text}")
+pub fn format_compact_summary(text: &str, _aggressive: bool) -> String {
+    text.to_string()
 }
 
 pub fn compact_summary_message(text: &str, aggressive: bool) -> Item {
@@ -62,7 +57,7 @@ mod tests {
     #[test]
     fn kept_rows_older_than_the_summary_are_rebased() {
         let items = vec![
-            compact_summary_message("prior", false),
+            assistant_text(format!("{CONVERSATION_SUMMARY_PREFIX}\nprior")),
             assistant_text("kept"),
             crate::types::user_text("pad"),
             assistant_text("new"),
@@ -93,5 +88,6 @@ mod tests {
             other => panic!("expected assistant Output message, got {other:?}"),
         }
         assert!(!matches!(item, Item::Message(MessageItem::Input(_))));
+        assert_eq!(item_text_preview(&item), "prose");
     }
 }

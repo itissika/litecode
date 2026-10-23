@@ -275,7 +275,6 @@ mod tests {
         FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, InputContent,
         InputImageContent, InputTextContent,
     };
-    use crate::context_pipeline::summary::compact_summary_message;
     use crate::types::user_text;
 
     fn fc(call_id: &str, name: &str) -> Item {
@@ -364,7 +363,7 @@ mod tests {
     #[test]
     fn update_prompt_when_leading_summary() {
         let discarded = vec![
-            compact_summary_message("old decisions", false),
+            assistant_text("[Conversation summary]\nold decisions"),
             user_text("new turn"),
         ];
         let prompt = build_compaction_prompt(&discarded, None);

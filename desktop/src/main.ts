@@ -10,6 +10,7 @@ import {
   dialog,
   ipcMain,
   type MessageBoxOptions,
+  Notification,
   screen,
   shell,
 } from "electron";
@@ -76,6 +77,7 @@ import {
   COMPONENT_PROGRESS_CHANNEL,
   REMOTE_DISCONNECTED_CHANNEL,
   REMOTE_PROGRESS_CHANNEL,
+  TURN_NOTIFICATION_CLICK_CHANNEL,
 } from "./bridge-contract";
 import {
   ComponentManager,
@@ -108,6 +110,11 @@ import { createBrowserHost } from "./browser-view";
 type SessionMode = "local" | "remote";
 
 let mainWindow: BrowserWindow | null = null;
+/** Must match `build.appId`: the NSIS Start Menu shortcut carries this AUMID. */
+const DESKTOP_APP_ID = "app.litecode.desktop";
+/** Recent toasts stay referenced so a click from Action Center still lands. */
+const liveTurnToasts: Notification[] = [];
+const MAX_LIVE_TOASTS = 5;
 let browserHost: BrowserHost | null = null;
 /**
  * OS handles for popout windows, keyed by the dock id in `/popout.html?dock=`.
@@ -1767,6 +1774,33 @@ function registerIpc(): void {
     registry?.setWorkspace(currentWorkspace);
   });
 
+  // Turn-end toast. The renderer already gated visibility and subagent events;
+  // this only shows the toast and brings the workbench forward on click.
+  onTrusted("litecode:notify-turn-end", "workbench", (_e, payload: unknown) => {
+    // Re-check focus at show time: the user may have returned between send and show.
+    if (!Notification.isSupported() || mainWindow?.isFocused()) return;
+    const body = asRecord(payload);
+    const sessionId = typeof body.sessionId === "string" ? body.sessionId : "";
+    const title = typeof body.title === "string" ? body.title.trim() : "";
+    const text = typeof body.body === "string" ? body.body.trim() : "";
+    if (!title && !text) return;
+    const toast = new Notification({ title: title || "Litecode", body: text, silent: true });
+    liveTurnToasts.push(toast);
+    if (liveTurnToasts.length > MAX_LIVE_TOASTS) liveTurnToasts.shift();
+    toast.on("click", () => {
+      const win = mainWindow;
+      if (!win || win.isDestroyed()) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.moveTop();
+      win.focus();
+      if (sessionId) {
+        win.webContents.send(TURN_NOTIFICATION_CLICK_CHANNEL, { sessionId });
+      }
+    });
+    toast.show();
+  });
+
   /** Real process restart: kill sidecar, spawn with --workspace, reload window. */
   handleTrusted("litecode:open-workspace", "hub", async (_e, workspacePath: string) => {
     if (sessionMode === "remote") {
@@ -1878,6 +1912,8 @@ function registerIpc(): void {
 }
 
 app.whenReady().then(async () => {
+  // Windows toast attribution: the installer's Start Menu shortcut carries this id.
+  app.setAppUserModelId(DESKTOP_APP_ID);
   registerIpc();
   recents = new RecentWorkspaces(path.join(app.getPath("userData"), "recent-workspaces.json"));
   remoteTargets = new RemoteTargets(path.join(app.getPath("userData"), "remote-targets.json"));

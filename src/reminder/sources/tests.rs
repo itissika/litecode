@@ -7,12 +7,8 @@ use crate::reminder::kinds::{
     PlanPointer, Reminder, ReminderKind, TodoSnap,
 };
 
-fn ctx(step: u64, max_steps: u64, turn: &str) -> SeamCtx {
+fn ctx() -> SeamCtx {
     SeamCtx {
-        session_id: "s".into(),
-        turn_id: turn.into(),
-        step,
-        max_steps,
         cwd: PathBuf::from("/w"),
     }
 }
@@ -62,7 +58,7 @@ fn tasks_restore_only_after_compaction_and_once() {
 
 #[test]
 fn env_emits_once_until_snapshot_changes() {
-    let c = ctx(1, 0, "t");
+    let c = ctx();
     let first = env(&c, &SpineReminderView::default()).expect("first seam emits env");
     let mut v = SpineReminderView::default();
     v.latest_by_kind.insert(ReminderKind::Env, first);

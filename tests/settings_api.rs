@@ -503,6 +503,7 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
             "code_probe",
             CustomToolDefinition {
                 name: "code_probe".into(),
+                data_schema: None,
                 description: "code probe".into(),
                 schema: ToolSchema {
                     schema_type: "object".into(),

@@ -275,14 +275,7 @@ impl AgentRuntime {
 
         let mut stages = latency::Stages::new("seam.sources", Some(step));
         let cwd = self.base_ctx.cwd.clone();
-        let turn_id = self.context_pipeline.current_turn_id().unwrap_or_default();
-        let ctx = SeamCtx {
-            session_id: self.session_id.clone(),
-            turn_id,
-            step,
-            max_steps: u64::from(self.agent_config.max_steps),
-            cwd: cwd.clone(),
-        };
+        let ctx = SeamCtx { cwd: cwd.clone() };
 
         let jobs = &self.runtime_handle.ide.terminal.jobs;
         let bash_notices = jobs.take_mailbox(&self.session_id);

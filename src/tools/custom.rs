@@ -104,14 +104,74 @@ fn custom_tool_schema(config: &CustomToolDefinition) -> Value {
     schema
 }
 
-fn code_result(mut result: ToolCallResult) -> ToolCallResult {
+fn code_result(mut result: ToolCallResult, typed: bool, name: &str) -> ToolCallResult {
     let success = result.error.is_none()
         && matches!(result.level, ToolSignalLevel::Ok | ToolSignalLevel::Warning);
-    if success {
-        let text = result.content.clone();
-        result.data = Some(serde_json::json!({ "text": text }));
+    if !success {
+        return result;
     }
+    if typed {
+        return match serde_json::from_str::<Value>(&result.content) {
+            Ok(Value::Object(map)) => {
+                result.data = Some(Value::Object(map));
+                result
+            }
+            Ok(_) => ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidOutput,
+                format!(
+                    "custom tool '{name}' declares data_schema, so stdout must be a JSON object"
+                ),
+                false,
+            ),
+            Err(error) => ToolCallResult::error_with_kind(
+                ToolErrorKind::InvalidOutput,
+                format!(
+                    "custom tool '{name}' declares data_schema, so stdout must be JSON: {error}"
+                ),
+                false,
+            ),
+        };
+    }
+    let text = result.content.clone();
+    result.data = Some(serde_json::json!({ "text": text }));
     result
+}
+
+/// Code-surface failure contract: a non-zero exit may carry a structured
+/// error object on stdout. Anything else keeps the message-only shape.
+fn structured_failure(
+    config: &CustomToolDefinition,
+    stdout: &str,
+    stderr: &str,
+) -> Option<ToolCallResult> {
+    if config.surface != CallSurface::Code {
+        return None;
+    }
+    let Value::Object(envelope) = serde_json::from_str::<Value>(stdout).ok()? else {
+        return None;
+    };
+    let Value::Object(error) = envelope.get("error")? else {
+        return None;
+    };
+    let code = error.get("code").and_then(Value::as_str)?.trim();
+    if code.is_empty() {
+        return None;
+    }
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|message| !message.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| stderr.trim().to_string());
+    let retryable = error
+        .get("retryable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut result = ToolCallResult::error_with_kind(ToolErrorKind::Internal, message, retryable);
+    result.error_code = Some(code.to_string());
+    result.error_details = error.get("details").cloned();
+    Some(result)
 }
 
 struct CustomCodeProbe<'a> {
@@ -132,7 +192,12 @@ impl Tool for CustomCodeProbe<'_> {
     }
 
     fn data_schema(&self) -> Option<Value> {
-        Some(custom_code_data_schema())
+        (self.config.surface == CallSurface::Code).then(|| {
+            self.config
+                .data_schema
+                .clone()
+                .unwrap_or_else(custom_code_data_schema)
+        })
     }
 
     fn description(&self, _ctx: &Context) -> String {
@@ -174,7 +239,12 @@ impl Tool for CustomTool {
     }
 
     fn data_schema(&self) -> Option<Value> {
-        (self.config.surface == CallSurface::Code).then(custom_code_data_schema)
+        (self.config.surface == CallSurface::Code).then(|| {
+            self.config
+                .data_schema
+                .clone()
+                .unwrap_or_else(custom_code_data_schema)
+        })
     }
 
     fn execute(
@@ -216,7 +286,7 @@ impl Tool for CustomTool {
                 Err(e) => ToolCallResult::error(format!("custom tool task join failed: {e}")),
             };
             if code_surface {
-                code_result(result)
+                code_result(result, config.data_schema.is_some(), &config.name)
             } else {
                 result
             }
@@ -291,14 +361,32 @@ pub fn validate_custom_tool_run(
             def.rules.len()
         )
     };
+    let typed = def.surface == CallSurface::Code && def.data_schema.is_some();
     let surface_note = match def.surface {
         CallSurface::Direct => {
             "- surface: `direct`\n- program result: n/a (direct tools are called outside run_code)\n- background: available\n".to_string()
         }
         CallSurface::Code => {
-            "- surface: `code`\n- code admission: PASS\n- program result: `{ ok: true, text: <stdout/content> }`; parse text yourself if it is JSON\n- background: unavailable on the code surface\n".to_string()
+            let shape = if typed {
+                "- program result: `{ ok: true, <data_schema fields> }` from the stdout JSON object\n"
+            } else {
+                "- program result: `{ ok: true, text: <stdout/content> }`; parse text yourself if it is JSON\n"
+            };
+            format!(
+                "- surface: `code`\n- code admission: PASS\n{shape}- background: unavailable on the code surface\n"
+            )
         }
     };
+    if typed
+        && result.level != ToolSignalLevel::Error
+        && result.error.is_none()
+        && !matches!(serde_json::from_str::<Value>(&result.content), Ok(Value::Object(_)))
+    {
+        return ToolCallResult::error(format!(
+            "# validate_custom — FAIL\n\n- tool: `{}`\n- command: `{}`\n- surface: `code`\n- detail: data_schema is declared, so stdout must be a JSON object; got:\n\n{}",
+            def.name, def.command, result.content
+        ));
+    }
     match result.level {
         ToolSignalLevel::Error => ToolCallResult::error(format!(
             "# validate_custom — FAIL\n\n- tool: `{}`\n- command: `{}`\n{surface_note}{rules_note}- detail:\n\n{}",
@@ -306,7 +394,19 @@ pub fn validate_custom_tool_run(
         )),
         _ => {
             let preview = if def.surface == CallSurface::Code {
-                let value = serde_json::json!({ "ok": true, "text": result.content });
+                let value = if typed {
+                    match serde_json::from_str::<Value>(&result.content) {
+                        Ok(Value::Object(mut map)) => {
+                            if !map.contains_key("ok") {
+                                map.insert("ok".into(), Value::Bool(true));
+                            }
+                            Value::Object(map)
+                        }
+                        _ => serde_json::json!({ "ok": false, "reason": "invalid_output" }),
+                    }
+                } else {
+                    serde_json::json!({ "ok": true, "text": result.content })
+                };
                 let mut preview = serde_json::to_string(&value)
                     .unwrap_or_else(|_| "{\"ok\":true,\"text\":\"<unrenderable>\"}".into());
                 if preview.chars().count() > 1200 {
@@ -482,23 +582,31 @@ fn run_sync_with_lifecycle(
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             match output.status.code() {
+                Some(0) if config.surface == CallSurface::Code && config.data_schema.is_some() => {
+                    ToolCallResult::ok(stdout.into_owned())
+                }
                 Some(0) => result_from_stdout(stdout.into_owned()),
-                Some(code) if code == CUSTOM_BLOCKED_EXIT_CODE => ToolCallResult::error(format!(
-                    "custom tool '{}' blocked execution: {}",
-                    config.name,
-                    stderr.trim()
-                )),
-                Some(code) => ToolCallResult::error(format!(
-                    "custom tool '{}' exited with code {}: {}",
-                    config.name,
-                    code,
-                    stderr.trim()
-                )),
-                None => ToolCallResult::error(format!(
-                    "custom tool '{}' terminated by signal: {}",
-                    config.name,
-                    stderr.trim()
-                )),
+                Some(code) => match structured_failure(&config, &stdout, &stderr) {
+                    Some(result) => result,
+                    None if code == CUSTOM_BLOCKED_EXIT_CODE => ToolCallResult::error(format!(
+                        "custom tool '{}' blocked execution: {}",
+                        config.name,
+                        stderr.trim()
+                    )),
+                    None => ToolCallResult::error(format!(
+                        "custom tool '{}' exited with code {}: {}",
+                        config.name,
+                        code,
+                        stderr.trim()
+                    )),
+                },
+                None => structured_failure(&config, &stdout, &stderr).unwrap_or_else(|| {
+                    ToolCallResult::error(format!(
+                        "custom tool '{}' terminated by signal: {}",
+                        config.name,
+                        stderr.trim()
+                    ))
+                }),
             }
         }
         WaitEnd::WaitFailed(e) => {
@@ -828,6 +936,7 @@ mod tests {
         use crate::tool::trait_::ToolExecutionContext;
         let def = CustomToolDefinition {
             name: "no_stdin".into(),
+            data_schema: None,
             description: "ignores stdin".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -868,6 +977,7 @@ mod tests {
     fn sh_def(name: &str, script: &str, timeout: u64) -> CustomToolDefinition {
         CustomToolDefinition {
             name: name.into(),
+            data_schema: None,
             description: name.into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -1018,6 +1128,7 @@ mod tests {
 
         let def = CustomToolDefinition {
             name: "code_echo".into(),
+            data_schema: None,
             description: "echo marker".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -1042,6 +1153,152 @@ mod tests {
         assert!(text.contains(marker), "{text}");
     }
 
+    #[tokio::test]
+    async fn code_surface_data_schema_turns_stdout_into_data() {
+        let json = r#"{"files":3,"lines":120,"level":"high"}"#;
+        let script = std::env::temp_dir().join(format!(
+            "lc-typed-{}.{}",
+            ulid::Ulid::new(),
+            if cfg!(windows) { "cmd" } else { "sh" }
+        ));
+        #[cfg(windows)]
+        std::fs::write(&script, format!("@echo {json}\r\n")).unwrap();
+        #[cfg(unix)]
+        std::fs::write(&script, format!("printf '%s' '{json}'\n")).unwrap();
+        #[cfg(windows)]
+        let (command, args) = ("cmd", vec!["/C".into(), script.display().to_string()]);
+        #[cfg(unix)]
+        let (command, args) = ("sh", vec![script.display().to_string()]);
+        let data_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "files": { "type": "integer" },
+                "lines": { "type": "integer" }
+            },
+            "required": ["files", "lines"]
+        });
+        let def = CustomToolDefinition {
+            name: "typed_echo".into(),
+            data_schema: Some(data_schema),
+            description: "typed echo".into(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+            command: command.into(),
+            args,
+            timeout: 10,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        let tool = CustomTool::new(def.clone(), Arc::new(CustomToolHub::new()));
+        let result = tool
+            .execute(serde_json::json!({}), test_exec(CancellationToken::new()))
+            .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let data = result.data.expect("typed data");
+        assert_eq!(data["files"], 3);
+        assert_eq!(data["level"], "high");
+        assert!(data.get("text").is_none(), "{data}");
+
+        let projected = crate::tool::project_tools(vec![Arc::new(CustomTool::new(
+            def,
+            Arc::new(CustomToolHub::new()),
+        )) as Arc<dyn Tool>]);
+        assert!(projected.sdk.contains("files"), "{}", projected.sdk);
+        assert!(projected.sdk.contains("TypedEchoData"), "{}", projected.sdk);
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[tokio::test]
+    async fn code_surface_data_schema_rejects_non_object_stdout() {
+        #[cfg(windows)]
+        let (command, args) = ("cmd", vec!["/C".into(), "echo not-json".into()]);
+        #[cfg(unix)]
+        let (command, args) = ("sh", vec!["-c".into(), "echo not-json".into()]);
+        let def = CustomToolDefinition {
+            name: "typed_bad".into(),
+            data_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": { "a": { "type": "string" } }
+            })),
+            description: "bad output".into(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+            command: command.into(),
+            args,
+            timeout: 10,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        let result = CustomTool::new(def, Arc::new(CustomToolHub::new()))
+            .execute(serde_json::json!({}), test_exec(CancellationToken::new()))
+            .await;
+        let error = result.error.expect("non-object must fail");
+        assert_eq!(error.kind, ToolErrorKind::InvalidOutput);
+        assert!(error.message.contains("data_schema"), "{}", error.message);
+    }
+
+    #[test]
+    fn code_failure_envelope_sets_code_details_and_soft_reason() {
+        let mut def = sh_def("structured", "true", 5);
+        def.surface = CallSurface::Code;
+        let envelope = r#"{"error":{"code":"not_found","message":"missing","details":{"id":42},"retryable":true}}"#;
+        let result = structured_failure(&def, envelope, "stderr").expect("envelope");
+        assert_eq!(result.error_code.as_deref(), Some("not_found"));
+        let error = result.error.as_ref().expect("error");
+        assert_eq!(error.message, "missing");
+        assert!(error.retryable);
+        assert_eq!(result.error_details.as_ref().unwrap()["id"], 42);
+
+        let program = crate::tool::outcome::program_result(&result).expect("soft failure");
+        assert_eq!(program["ok"], false);
+        assert_eq!(program["reason"], "not_found");
+
+        def.surface = CallSurface::Direct;
+        assert!(structured_failure(&def, envelope, "stderr").is_none());
+        assert!(structured_failure(&def, "not json", "stderr").is_none());
+    }
+
+    #[test]
+    fn validate_custom_fails_when_data_schema_output_is_not_json() {
+        #[cfg(windows)]
+        let (command, args) = ("cmd", vec!["/C".into(), "echo not-json".into()]);
+        #[cfg(unix)]
+        let (command, args) = ("sh", vec!["-c".into(), "echo not-json".into()]);
+        let def = CustomToolDefinition {
+            name: "validate_typed".into(),
+            data_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": { "a": { "type": "string" } }
+            })),
+            description: "validation probe".into(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: vec![],
+            },
+            command: command.into(),
+            args,
+            timeout: 10,
+            rules: Vec::new(),
+            surface: CallSurface::Code,
+            suite: None,
+            suite_label: None,
+        };
+        let result = validate_custom_tool_run(&def, &serde_json::json!({}), &std::env::temp_dir());
+        let error = result.error.expect("typed output must fail validation");
+        assert!(error.message.contains("data_schema"), "{}", error.message);
+    }
+
     #[test]
     fn validate_custom_reports_code_admission_and_program_preview() {
         let marker = "validate-code-marker";
@@ -1051,6 +1308,7 @@ mod tests {
         let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
         let def = CustomToolDefinition {
             name: "validate_code".into(),
+            data_schema: None,
             description: "validation probe".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),

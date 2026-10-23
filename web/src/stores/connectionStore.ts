@@ -39,6 +39,7 @@ import {
   whenCentreSettled,
 } from "../lib/centreSettle";
 import { whenIdle } from "../lib/idle";
+import { maybeNotifyTurnEnd } from "../lib/turnNotification";
 
 interface StoreLike {
   getState: () => any;
@@ -427,7 +428,18 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           }
 
           case "agent/turn_finished": {
-            turn?.onTurnFinished(params as unknown as TurnFinished);
+            const finished = params as unknown as TurnFinished;
+            turn?.onTurnFinished(finished);
+            // Subagent turns stay quiet: forwarded children carry
+            // `parent_session_id`, and an explicitly opened child panel is
+            // identifiable from the session list.
+            const rows = session?.sessions as
+              | Array<{ id: string; preview?: string; parent_session_id?: string | null }>
+              | undefined;
+            const row = rows?.find((entry) => entry.id === finished.session_id);
+            if (!finished.parent_session_id && !row?.parent_session_id) {
+              maybeNotifyTurnEnd(finished, row?.preview ?? "");
+            }
             return;
           }
 

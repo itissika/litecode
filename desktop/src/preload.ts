@@ -16,6 +16,9 @@ import type {
   RemoteHistoryItem,
   RemoteProgressEvent,
   StartRemoteSessionInput,
+  TURN_NOTIFICATION_CLICK_CHANNEL as TurnNotificationClickChannel,
+  TurnNotificationClickEvent,
+  TurnNotificationPayload,
 } from "./bridge-contract";
 
 /*
@@ -27,6 +30,8 @@ const REMOTE_PROGRESS_CHANNEL: typeof RemoteProgressChannel = "litecode:remote-p
 const REMOTE_DISCONNECTED_CHANNEL: typeof RemoteDisconnectedChannel = "litecode:remote-disconnected";
 const COMPONENT_PROGRESS_CHANNEL: typeof ComponentProgressChannel = "litecode:component-progress";
 const BROWSER_STATE_CHANNEL: typeof BrowserStateChannel = "litecode:browser-state";
+const TURN_NOTIFICATION_CLICK_CHANNEL: typeof TurnNotificationClickChannel =
+  "litecode:turn-notification-click";
 
 const bridge = {
   getAuthToken: (): string | undefined => {
@@ -146,6 +151,18 @@ const bridge = {
     };
     ipcRenderer.on(COMPONENT_PROGRESS_CHANNEL, listener);
     return () => ipcRenderer.removeListener(COMPONENT_PROGRESS_CHANNEL, listener);
+  },
+  notifyTurnEnd: (payload: TurnNotificationPayload): void => {
+    ipcRenderer.send("litecode:notify-turn-end", payload);
+  },
+  onTurnNotificationClick: (
+    handler: (event: TurnNotificationClickEvent) => void,
+  ): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: TurnNotificationClickEvent) => {
+      handler(payload);
+    };
+    ipcRenderer.on(TURN_NOTIFICATION_CLICK_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(TURN_NOTIFICATION_CLICK_CHANNEL, listener);
   },
   notifyWorkspace: async (workspacePath: string | null): Promise<void> => {
     await ipcRenderer.invoke("litecode:notify-workspace", workspacePath);

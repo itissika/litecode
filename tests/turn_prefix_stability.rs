@@ -604,10 +604,6 @@ async fn state_reminders_only_append_across_steps() {
     let first = prepare_snapshot(&pipeline, &sessions, &sid, &mut turn, 1).await;
 
     let seam = litecode::reminder::SeamCtx {
-        session_id: sid.clone(),
-        turn_id: "t1".into(),
-        step: 1,
-        max_steps: 10,
         cwd: dir.path().to_path_buf(),
     };
     let view = sessions.spine_reminder_view(&sid).unwrap();
@@ -694,10 +690,6 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         ..Default::default()
     };
     let seam = litecode::reminder::SeamCtx {
-        session_id: sid.clone(),
-        turn_id: "t1".into(),
-        step: 2,
-        max_steps: 10,
         cwd: dir.path().to_path_buf(),
     };
     let restored = litecode::reminder::sync(&seam, &view, &facts)

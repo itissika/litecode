@@ -591,6 +591,7 @@ mod tests {
         fn custom_def(name: &str) -> CustomToolDefinition {
             CustomToolDefinition {
                 name: name.into(),
+                data_schema: None,
                 description: String::new(),
                 schema: ToolSchema {
                     schema_type: "object".into(),

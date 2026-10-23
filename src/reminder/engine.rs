@@ -12,10 +12,6 @@ use super::sources;
 /// Facts the seam already sensed. Sources do not reach back into the runtime.
 #[derive(Debug, Clone)]
 pub struct SeamCtx {
-    pub session_id: String,
-    pub turn_id: String,
-    pub step: u64,
-    pub max_steps: u64,
     pub cwd: PathBuf,
 }
 
@@ -130,9 +126,6 @@ pub fn sync(ctx: &SeamCtx, view: &SpineReminderView, facts: &Facts) -> Vec<Remin
     if let Some(reminder) = sources::custom_tool_settled(&facts.custom_tool_settled) {
         out.push(reminder);
     }
-    if let Some(reminder) = sources::step_budget(ctx, view) {
-        out.push(reminder);
-    }
     out
 }
 
@@ -143,12 +136,8 @@ mod tests {
     
     
 
-    fn ctx(step: u64) -> SeamCtx {
+    fn ctx() -> SeamCtx {
         SeamCtx {
-            session_id: "s".into(),
-            turn_id: "t".into(),
-            step,
-            max_steps: 10,
             cwd: PathBuf::from("/work"),
         }
     }
@@ -175,14 +164,14 @@ mod tests {
             compacted_head: Some(4),
             ..SpineReminderView::default()
         };
-        let first = sync(&ctx(1), &view, &facts);
+        let first = sync(&ctx(), &view, &facts);
         assert!(
             first
                 .iter()
                 .any(|reminder| reminder.kind() == ReminderKind::Tasks)
         );
         view.kinds_after_compacted.insert(ReminderKind::Tasks);
-        let second = sync(&ctx(2), &view, &facts);
+        let second = sync(&ctx(), &view, &facts);
         assert!(
             !second
                 .iter()

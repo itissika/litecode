@@ -1,10 +1,21 @@
-/* File-preview shell. Chat `.agent-markdown` rules stay untouched. */
+/* File-preview shell. Chat keeps the 72ch prose measure on `.agent-markdown`.
+   This surface only insets the page; prose sizes to the editor. */
 
 .markdown-file-preview {
   height: 100%;
   overflow: auto;
   background: var(--_dk-editor);
   padding: 8px 40px 48px;
+}
+
+.markdown-file-preview .agent-markdown > p,
+.markdown-file-preview .agent-markdown > ul,
+.markdown-file-preview .agent-markdown > ol,
+.markdown-file-preview .agent-markdown > blockquote,
+.markdown-file-preview .agent-markdown > h1,
+.markdown-file-preview .agent-markdown > h2,
+.markdown-file-preview .agent-markdown > h3 {
+  max-width: none;
 }
 
 .markdown-file-preview img {

@@ -269,8 +269,8 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
         "after pipeline compact, working_set_blocking must equal fold (not summary+kept rebuild)"
     );
     assert!(
-        reader[0].1.starts_with("[Conversation summary]")
-            && reader[0].1.contains("fold-reload summary"),
+        reader[0].1.contains("fold-reload summary")
+            && !reader[0].1.starts_with("[Conversation summary]"),
         "checkpoint summary must lead the working set, got {reader:?}"
     );
 }
@@ -710,8 +710,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .find(|p| p.contains("compact summary"))
         .expect("checkpoint text");
     assert!(
-        summary.starts_with("[Conversation summary]"),
-        "detector prefix must remain first, got {summary:?}"
+        !summary.starts_with("[Conversation summary]"),
+        "summary is stored as the model text, got {summary:?}"
     );
     assert!(
         !summary.contains("<system-reminder>"),
@@ -733,10 +733,6 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         ..Default::default()
     };
     let ctx = litecode::reminder::SeamCtx {
-        session_id: sid.clone(),
-        turn_id: "t".into(),
-        step: 2,
-        max_steps: 10,
         cwd: dir.path().to_path_buf(),
     };
     let reminders = litecode::reminder::sync(&ctx, &view, &facts);

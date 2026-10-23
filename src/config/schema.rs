@@ -212,6 +212,13 @@ pub struct CustomToolDefinition {
     /// Human label for the suite card; defaults to `suite` when omitted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite_label: Option<String>,
+    /// Code-surface result schema. Ignored on the direct surface.
+    ///
+    /// When set, the tool's stdout must be a JSON object; it becomes the
+    /// program-visible `data`. Without it the code surface keeps the opaque
+    /// `{ text }` shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_schema: Option<Value>,
 }
 
 fn default_timeout() -> u64 {

@@ -198,6 +198,8 @@ export interface CustomToolDefinition {
   /** direct (default) or code-only through run_code. */
   surface?: CallSurface;
   schema: ToolSchema;
+  /** Code-surface result schema; when set, stdout must be a JSON object. */
+  data_schema?: Record<string, unknown>;
   command: string;
   args?: string[];
   timeout?: number;

@@ -4,7 +4,7 @@
 //! current state, plus the buttons that open the next popup. Every command
 //! reads. This tool never writes a config file and never enables a tool.
 //! A valid excludes file is already in effect. MCP and custom tools take
-//! effect when the workspace has no running session.
+//! effect at the start of the next turn.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -49,8 +49,8 @@ const MAX_SUBTREE_NODES: usize = 64;
 const MAX_LIMIT: usize = 200;
 
 const FILE_BROKEN: &str = "The file is broken; fix it.";
-const APPLIES_WHEN_IDLE: &str = "When this workspace has no running session, this file takes \
-     effect on its own. Tell the human.";
+/// A definitions file that passed validation applies at the next turn start.
+const APPLIES_NEXT_TURN: &str = "Takes effect at the start of the next turn. Tell the human.";
 const ASK_HUMAN: &str = "If you actually need it, ask a human to enable it in Settings → \
      Agents. Otherwise stay silent.";
 struct CommandSpec {
@@ -95,7 +95,7 @@ const COMMANDS: &[CommandSpec] = &[
         summary: "whether those files will be accepted",
         help: "`refresh` checks `.litecode/excludes.json`, `mcp.json`, and \
                `custom_tools.json`. A valid excludes file is already in effect. MCP and \
-               custom tools take effect when this workspace has no running session. \
+               custom tools take effect at the start of the next turn. \
                A file that fails validation names the error; fix it and run `refresh` again.",
     },
     CommandSpec {
@@ -507,7 +507,7 @@ impl LitecodeWorkspaceTool {
                 let drift = def_drift(resolved.workspace_mcp_servers(), &file.servers);
                 if !drift.is_empty() {
                     out.push_str(&format!("- drift: {drift}\n"));
-                    out.push_str(&format!("- next: {APPLIES_WHEN_IDLE}\n"));
+                    out.push_str(&format!("- next: {APPLIES_NEXT_TURN}\n"));
                 }
             }
             Err(_error) => {
@@ -551,7 +551,7 @@ impl LitecodeWorkspaceTool {
                 let drift = def_drift(&loaded, &file.tools);
                 if !drift.is_empty() {
                     out.push_str(&format!("- drift: {drift}\n"));
-                    out.push_str(&format!("- next: {APPLIES_WHEN_IDLE}\n"));
+                    out.push_str(&format!("- next: {APPLIES_NEXT_TURN}\n"));
                 }
             }
             Err(_error) => {
@@ -995,13 +995,13 @@ fn run_state_label(snapshot: Option<&McpServerSnapshot>) -> String {
     }
 }
 
-/// Passed files take effect when the workspace is idle. Rejections stay a
+/// Passed files take effect at the start of the next turn. Rejections stay a
 /// separate next. Switches that are off are named on their own line.
 fn finish_refresh(topic: &str, rejected: usize, off: &[String]) -> String {
     if rejected > 0 {
         return format!("- next: fix the rejected entries and run `refresh {topic}` again\n");
     }
-    let mut out = format!("- next: {APPLIES_WHEN_IDLE}\n");
+    let mut out = format!("- next: {APPLIES_NEXT_TURN}\n");
     if !off.is_empty() {
         let names: Vec<String> = off
             .iter()
@@ -1210,6 +1210,7 @@ mod tests {
     fn def(name: &str) -> CustomToolDefinition {
         CustomToolDefinition {
             name: name.into(),
+            data_schema: None,
             description: "composition probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),

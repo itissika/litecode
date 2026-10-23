@@ -836,7 +836,7 @@ mod tests {
             .collect();
         assert!(
             mem_previews.first().is_some_and(|t| {
-                t.starts_with("[Conversation summary]") && t.contains("## summary")
+                t.contains("## summary") && !t.starts_with("[Conversation summary]")
             }),
             "emergency cache must lead with summary, got {mem_previews:?}"
         );
@@ -862,7 +862,7 @@ mod tests {
             .expect("DB working set");
         let db0 = item_text_preview(&db_rows[0].item);
         assert!(
-            db0.starts_with("[Conversation summary]") && db0.contains("## summary"),
+            db0.contains("## summary") && !db0.starts_with("[Conversation summary]"),
             "DB must show compacted summary, got {db0}"
         );
         assert!(

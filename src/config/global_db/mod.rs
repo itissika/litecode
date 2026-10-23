@@ -537,7 +537,7 @@ pub mod store {
 
     fn load_custom_tools(conn: &Connection) -> Result<Vec<CustomToolDefinition>> {
         let mut stmt = conn.prepare(
-            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface FROM custom_tools",
+            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface, data_schema_json FROM custom_tools",
         )?;
         let rows = stmt.query_map([], |row| {
             let schema_json: String = row.get(1)?;
@@ -579,6 +579,16 @@ pub mod store {
                 },
                 suite: None,
                 suite_label: None,
+                data_schema: match row.get::<_, Option<String>>(8)? {
+                    Some(json) => Some(serde_json::from_str(&json).map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            8,
+                            rusqlite::types::Type::Text,
+                            Box::new(e),
+                        )
+                    })?),
+                    None => None,
+                },
             })
         })?;
         let mut tools = Vec::new();
@@ -607,13 +617,18 @@ pub mod store {
         } else {
             Some(serde_json::to_string(&custom.rules)?)
         };
+        let data_schema_json = custom
+            .data_schema
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let surface = match custom.surface {
             crate::config::schema::CallSurface::Code => "code",
             crate::config::schema::CallSurface::Direct => "direct",
         };
         conn.execute(
-            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface, data_schema_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                schema_json = excluded.schema_json,
                command = excluded.command,
@@ -621,7 +636,8 @@ pub mod store {
                timeout = excluded.timeout,
                description = excluded.description,
                rules_json = excluded.rules_json,
-               surface = excluded.surface",
+               surface = excluded.surface,
+               data_schema_json = excluded.data_schema_json",
             params![
                 custom.name,
                 schema_json,
@@ -630,7 +646,8 @@ pub mod store {
                 custom.timeout,
                 custom.description,
                 rules_json,
-                surface
+                surface,
+                data_schema_json
             ],
         )?;
         Ok(())
@@ -838,6 +855,7 @@ mod open_tests {
 
         let def = CustomToolDefinition {
             name: "code_probe".into(),
+            data_schema: None,
             description: "code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),

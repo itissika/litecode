@@ -17,6 +17,8 @@
 export const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
 export const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 export const BROWSER_STATE_CHANNEL = "litecode:browser-state";
+/** Turn-finished toast clicked. main -> renderer, one-way: `{ sessionId }`. */
+export const TURN_NOTIFICATION_CLICK_CHANNEL = "litecode:turn-notification-click";
 
 /**
  * Remote session lost. main -> renderer, one-way.
@@ -119,6 +121,15 @@ export type BrowserState = {
   loading: boolean;
 };
 
+export type TurnNotificationPayload = {
+  sessionId: string;
+  turnId: string;
+  title: string;
+  body: string;
+};
+
+export type TurnNotificationClickEvent = { sessionId: string };
+
 type SessionMode = "local" | "remote";
 type UiTheme = "default" | "light";
 
@@ -171,6 +182,10 @@ export type LitecodeDesktopBridge = {
   ensureComponent(id: string): Promise<EnsureComponentResult>;
   onComponentProgress(handler: (event: ComponentProgressEvent) => void): Unsubscribe;
   notifyWorkspace(workspacePath: string | null): Promise<void>;
+  /** Desktop toast for a finished turn. The renderer does the visibility gate. */
+  notifyTurnEnd(payload: TurnNotificationPayload): void;
+  /** See TURN_NOTIFICATION_CLICK_CHANNEL. */
+  onTurnNotificationClick(handler: (event: TurnNotificationClickEvent) => void): Unsubscribe;
   openWorkspace(workspacePath: string): Promise<{ ok: boolean; focused?: boolean; project: string }>;
   returnToHub(): Promise<void>;
   getUiTheme(): UiTheme;
