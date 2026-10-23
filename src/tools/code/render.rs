@@ -16,7 +16,6 @@ use serde_json::Value;
 
 use crate::ptc::{FailureKind, ResourceKind, SourceLocation};
 use crate::session::transcript_file::RUN_CODE_SESSION_NOTE;
-use crate::tool::outcome::Diagnostic;
 use crate::types::utf8::{prefix_utf8, suffix_utf8};
 
 /// Hard cap for the model-facing `run_code` view, including omission notes.
@@ -34,7 +33,6 @@ pub(super) struct LedgerSnap {
     pub summary: String,
     pub state: String,
     pub error_code: Option<String>,
-    pub error_message: Option<String>,
     pub session_read: bool,
     /// One-line result digest (WP-210 A); `None` while unsettled.
     pub brief: Option<String>,
@@ -61,10 +59,6 @@ pub(super) struct RunReport {
     pub output_limited: bool,
     pub calls: Vec<LedgerSnap>,
     pub calls_omitted: usize,
-    /// Retained for tests/human channels; never rendered into the default view.
-    pub diagnostics: Vec<Diagnostic>,
-    pub diagnostics_omitted: usize,
-    pub tool_counts: BTreeMap<String, usize>,
     /// Settled ok/fail per tool (human/FE aggregate; not rendered into content).
     pub by_tool: BTreeMap<String, (usize, usize)>,
     pub error_counts: BTreeMap<String, usize>,
@@ -1105,7 +1099,6 @@ mod tests {
             summary: summary.to_string(),
             state: state.to_string(),
             error_code: code.map(str::to_string),
-            error_message: None,
             session_read: false,
             brief: None,
         }
@@ -1123,9 +1116,6 @@ mod tests {
             output_limited: false,
             calls: Vec::new(),
             calls_omitted: 0,
-            diagnostics: Vec::new(),
-            diagnostics_omitted: 0,
-            tool_counts: BTreeMap::new(),
             by_tool: BTreeMap::new(),
             error_counts: BTreeMap::new(),
             call_total: None,
@@ -1178,9 +1168,6 @@ mod tests {
         report.duration_ms = 120_000;
         report.calls = (0..64)
             .map(|seq| snap(seq, "read", &"p".repeat(400), "ok", None))
-            .collect();
-        report.diagnostics = (0..20)
-            .map(|index| Diagnostic::warning(format!("code{index}"), "m".repeat(800)))
             .collect();
         report.logs = (0..40)
             .map(|index| ("info".into(), format!("{index}{}", "L".repeat(800))))

@@ -5,7 +5,7 @@
 //! the host binding records the nested-call ledger and pauses the program budget
 //! while an approval card is waiting.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 mod render;
 pub use render::RUN_CODE_VIEW_MAX_BYTES;
@@ -24,7 +24,7 @@ use crate::ptc::{
 };
 use crate::tool::Tool;
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
-use crate::tool::outcome::{self, Diagnostic};
+use crate::tool::outcome;
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::write_lock::WorkspaceWriteLock;
 use crate::types::utf8::prefix_utf8;
@@ -42,16 +42,6 @@ pub const MAX_CODE_OUTPUT_BYTES: usize = 1_048_576;
 /// bounded priority pool keeps errors, rejections, unsettled calls, and partial edits.
 const LEDGER_KEEP: usize = 256;
 const PRIORITY_CAP: usize = 64;
-const ERROR_MESSAGE_CAP: usize = 300;
-/// Nested diagnostics kept for the model view. Only the four outer codes qualify.
-const DIAGNOSTIC_CAP: usize = 16;
-const DIAGNOSTIC_CODES: &[&str] = &[
-    "lsp_error",
-    "edit_block_failed",
-    "path_outside_workspace",
-    "sensitive_path",
-];
-const LSP_TEXT_CAP: usize = 1024;
 /// How long the runtime waits for in-flight nested calls after it cancels them.
 const NESTED_CANCEL_GRACE: Duration = Duration::from_secs(3);
 const SUMMARY_VALUE_CHARS: usize = 80;
@@ -176,10 +166,7 @@ struct LedgerLine {
     /// Display state: `ok`, `ok(a/b)`, `error:{code}`, `cancelled`, `unsettled`.
     outcome: Option<String>,
     error_code: Option<String>,
-    error_message: Option<String>,
-    diagnostics: Vec<Diagnostic>,
     session_read: bool,
-    priority: bool,
     /// One-line result digest for the failure view (WP-210 A).
     brief: Option<String>,
 }
@@ -193,8 +180,6 @@ struct PendingCall {
 struct LedgerSnapshot {
     lines: Vec<LedgerLine>,
     omitted: usize,
-    omitted_diagnostics: usize,
-    tool_counts: BTreeMap<String, usize>,
     /// Settled per-tool ok/fail (unsettled & host-cancelled excluded).
     by_tool: BTreeMap<String, (usize, usize)>,
     error_counts: BTreeMap<String, usize>,
@@ -205,9 +190,7 @@ struct CallLedger {
     lines: Mutex<Vec<LedgerLine>>,
     pending: Mutex<HashMap<u64, PendingCall>>,
     omitted: AtomicUsize,
-    omitted_diagnostics: AtomicUsize,
     priority_used: AtomicUsize,
-    per_tool: Mutex<BTreeMap<String, usize>>,
     /// Settled ok/fail per tool name. Host `cancelled` and unsettled are excluded.
     by_tool: Mutex<BTreeMap<String, (usize, usize)>>,
     per_error: Mutex<BTreeMap<String, usize>>,
@@ -220,9 +203,7 @@ impl CallLedger {
             lines: Mutex::new(Vec::new()),
             pending: Mutex::new(HashMap::new()),
             omitted: AtomicUsize::new(0),
-            omitted_diagnostics: AtomicUsize::new(0),
             priority_used: AtomicUsize::new(0),
-            per_tool: Mutex::new(BTreeMap::new()),
             by_tool: Mutex::new(BTreeMap::new()),
             per_error: Mutex::new(BTreeMap::new()),
             session_read_hidden: AtomicBool::new(false),
@@ -249,13 +230,6 @@ impl CallLedger {
     }
 
     fn begin(&self, seq: u64, tool: &str, summary: &str) {
-        {
-            let mut counts = self
-                .per_tool
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            *counts.entry(tool.to_string()).or_default() += 1;
-        }
         let session_read = call_reads_session(tool, summary);
         let mut lines = self
             .lines
@@ -268,10 +242,7 @@ impl CallLedger {
                 args_summary: summary.to_string(),
                 outcome: None,
                 error_code: None,
-                error_message: None,
-                diagnostics: Vec::new(),
                 session_read,
-                priority: false,
                 brief: None,
             });
             return;
@@ -295,7 +266,6 @@ impl CallLedger {
         let outcome = call_outcome_label(result);
         let error_code = call_error_code(result)
             .or_else(|| outcome.strip_prefix("error:").map(str::to_string));
-        let error_message = call_error_message(result);
         if let Some(code) = &error_code {
             let mut counts = self
                 .per_error
@@ -303,7 +273,6 @@ impl CallLedger {
                 .unwrap_or_else(|poison| poison.into_inner());
             *counts.entry(code.clone()).or_default() += 1;
         }
-        let diagnostics = bounded_diagnostics(&result.diagnostics);
         let brief = call_brief(result);
         let mut lines = self
             .lines
@@ -314,8 +283,6 @@ impl CallLedger {
                 self.note_settled(&line.tool, &outcome);
                 line.outcome = Some(outcome);
                 line.error_code = error_code;
-                line.error_message = error_message;
-                line.diagnostics = diagnostics;
                 line.brief = Some(brief);
             }
             return;
@@ -327,8 +294,6 @@ impl CallLedger {
             .unwrap_or_else(|poison| poison.into_inner())
             .remove(&seq);
         let Some(pending) = pending else {
-            self.omitted_diagnostics
-                .fetch_add(diagnostics.len(), Ordering::Relaxed);
             return;
         };
         if is_priority_state(&outcome) && self.priority_used.load(Ordering::Relaxed) < PRIORITY_CAP
@@ -345,10 +310,7 @@ impl CallLedger {
                     args_summary: pending.summary,
                     outcome: Some(outcome),
                     error_code,
-                    error_message,
-                    diagnostics,
                     session_read: pending.session_read,
-                    priority: true,
                     brief: Some(brief),
                 });
             return;
@@ -358,8 +320,6 @@ impl CallLedger {
         if pending.session_read {
             self.session_read_hidden.store(true, Ordering::Relaxed);
         }
-        self.omitted_diagnostics
-            .fetch_add(diagnostics.len(), Ordering::Relaxed);
     }
 
     fn snapshot(&self) -> LedgerSnapshot {
@@ -387,10 +347,7 @@ impl CallLedger {
                     args_summary: pending.summary,
                     outcome: Some("unsettled".to_string()),
                     error_code: None,
-                    error_message: None,
-                    diagnostics: Vec::new(),
                     session_read: pending.session_read,
-                    priority: true,
                     brief: None,
                 });
             } else if pending.session_read {
@@ -401,12 +358,6 @@ impl CallLedger {
         LedgerSnapshot {
             lines,
             omitted,
-            omitted_diagnostics: self.omitted_diagnostics.load(Ordering::Relaxed),
-            tool_counts: self
-                .per_tool
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .clone(),
             by_tool: self
                 .by_tool
                 .lock()
@@ -540,42 +491,6 @@ fn call_error_code(result: &ToolCallResult) -> Option<String> {
         .error
         .as_ref()
         .map(|error| outcome::error_kind_code(error.kind).to_string())
-}
-
-fn call_error_message(result: &ToolCallResult) -> Option<String> {
-    let message = result.error.as_ref().map(|error| error.message.as_str())?;
-    let message = prefix_utf8(message, ERROR_MESSAGE_CAP);
-    if message.is_empty() {
-        None
-    } else {
-        Some(message.to_string())
-    }
-}
-
-fn bounded_diagnostics(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
-    diagnostics
-        .iter()
-        .filter(|diagnostic| DIAGNOSTIC_CODES.contains(&diagnostic.code.as_str()))
-        .cloned()
-        .map(truncate_lsp_text)
-        .collect()
-}
-
-fn truncate_lsp_text(mut diagnostic: Diagnostic) -> Diagnostic {
-    if diagnostic.code != "lsp_error" {
-        return diagnostic;
-    }
-    let Some(details) = diagnostic.details.as_mut() else {
-        return diagnostic;
-    };
-    let Some(text) = details.get("text").and_then(Value::as_str) else {
-        return diagnostic;
-    };
-    let cut = prefix_utf8(text, LSP_TEXT_CAP);
-    if cut.len() != text.len() {
-        details["text"] = Value::String(cut.to_string());
-    }
-    diagnostic
 }
 
 /// A bounded code bundle projected as one model-facing tool.
@@ -1032,7 +947,6 @@ fn run_report(
     let snapshot = ledger.snapshot();
     let lines = &snapshot.lines;
     let calls_omitted = snapshot.omitted;
-    let omitted_diagnostics = snapshot.omitted_diagnostics;
     let mut calls = Vec::with_capacity(lines.len());
     for line in lines {
         let record = outcome.calls.iter().find(|call| call.seq == line.seq);
@@ -1042,12 +956,10 @@ fn run_report(
             summary: line.args_summary.clone(),
             state: merge_call_outcome(line.outcome.as_deref(), record.map(|call| call.state)),
             error_code: line.error_code.clone(),
-            error_message: line.error_message.clone(),
             session_read: line.session_read,
             brief: line.brief.clone(),
         });
     }
-    let (diagnostics, diagnostics_omitted) = aggregate_diagnostics(&lines, omitted_diagnostics);
     render::RunReport {
         dropped_undefined: outcome.dropped_undefined.head_line(),
         logs: outcome
@@ -1069,9 +981,6 @@ fn run_report(
         output_limited: failure_kind == Some(FailureKind::OutputLimit),
         calls,
         calls_omitted,
-        diagnostics,
-        diagnostics_omitted,
-        tool_counts: snapshot.tool_counts.clone(),
         by_tool: snapshot.by_tool.clone(),
         error_counts: snapshot.error_counts.clone(),
         call_total: Some(outcome.calls.len()),
@@ -1124,35 +1033,6 @@ fn run_report(
             .as_ref()
             .is_some_and(|failure| failure.uncaught_type_error),
     }
-}
-
-fn aggregate_diagnostics(lines: &[LedgerLine], already_omitted: usize) -> (Vec<Diagnostic>, usize) {
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let mut omitted = already_omitted;
-    for line in lines {
-        for diagnostic in &line.diagnostics {
-            if !DIAGNOSTIC_CODES.contains(&diagnostic.code.as_str()) {
-                continue;
-            }
-            let path = diagnostic
-                .details
-                .as_ref()
-                .and_then(|details| details.get("path"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let key = format!("{}|{path}|{}", diagnostic.code, diagnostic.message);
-            if !seen.insert(key) {
-                continue;
-            }
-            if out.len() >= DIAGNOSTIC_CAP {
-                omitted += 1;
-            } else {
-                out.push(diagnostic.clone());
-            }
-        }
-    }
-    (out, omitted)
 }
 
 /// A call that is still running when the grace period ends is `unsettled`.
