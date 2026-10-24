@@ -127,6 +127,7 @@ fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
         operation_id: None,
         fail_kind: None,
         error: None,
+        telemetry: Default::default(),
     }
 }
 
@@ -268,7 +269,7 @@ fn runtime_only_stream_events_do_not_emit_snapshot_or_grow_seq() {
 }
 
 #[test]
-fn step_committed_emits_only_new_seq_and_snapshot_matches_max() {
+fn step_committed_emits_new_seq_and_authoritative_snapshot() {
     let (mut proj, sid, sessions) = setup_with_details(&["a", "b"]);
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (1, 2));
 
@@ -278,11 +279,20 @@ fn step_committed_emits_only_new_seq_and_snapshot_matches_max() {
     let items = buffer_item_frames(&out);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["params"]["seq"], 2);
-    assert!(
-        out.iter()
-            .all(|msg| msg["method"] != methods::SESSION_SNAPSHOT),
-        "StepCommitted must not emit session/snapshot"
+
+    // A step commit re-measures the persisted bill+suffix. The browser gets one
+    // authoritative snapshot instead of reconstructing the ContextMeter locally.
+    let snapshots: Vec<_> = out
+        .iter()
+        .filter(|msg| msg["method"] == methods::SESSION_SNAPSHOT)
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "StepCommitted must publish one snapshot"
     );
+    assert_eq!(snapshots[0]["params"]["buffer"]["next_seq"], 3);
+    assert!(snapshots[0]["params"].get("context_meter").is_some());
     assert_cursors_agree(&proj, &sessions, &sid);
     assert_buffer_items_below_next(&out, 3);
 }

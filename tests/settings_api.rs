@@ -321,11 +321,11 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     let _ = ctrl.take_outgoing_for(&sid);
 
     let revision_before_switch = sessions.data().revision_blocking(&sid).expect("revision");
-    ctrl.set_session_model(&sid, common::TEST_COMPACTION_MODEL_REF)
+    ctrl.set_session_model(&sid, common::TEST_ALT_MODEL_REF)
         .expect("set model");
     assert_eq!(
         sessions.session_model_id(&sid).as_deref(),
-        Some(common::TEST_COMPACTION_MODEL_REF),
+        Some(common::TEST_ALT_MODEL_REF),
         "set_model persists the composite catalog reference after the lazy reload"
     );
     let _ = ctrl.take_outgoing_for(&sid);
@@ -347,7 +347,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
 
     // Re-selecting the current model is a no-op: no duplicate control-plane
     // row and no revision bump.
-    ctrl.set_session_model(&sid, common::TEST_COMPACTION_MODEL_REF)
+    ctrl.set_session_model(&sid, common::TEST_ALT_MODEL_REF)
         .expect("same-model selection is accepted");
     let _ = ctrl.take_outgoing_for(&sid);
     assert_eq!(
@@ -380,7 +380,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
     assert_eq!(refusal["params"]["error"]["code"], "invalid_request");
     assert_eq!(
         sessions.session_model_id(&sid).as_deref(),
-        Some(common::TEST_COMPACTION_MODEL_REF),
+        Some(common::TEST_ALT_MODEL_REF),
         "a refused model must not overwrite the persisted reference"
     );
 }

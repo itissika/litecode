@@ -12,7 +12,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::context_pipeline::budget::{OccupancyBill, ProviderPromptBaseline, occupancy_bill_from};
-use crate::context_pipeline::media_budget::drop_stale_media;
 use crate::llm::{CompactionRequestContext, ModelRequest, ToolDef};
 use crate::provider_catalog::ResolvedModel;
 use crate::session::estimate::{
@@ -20,18 +19,17 @@ use crate::session::estimate::{
     compute_token_estimate, count_text_tokens,
 };
 use crate::session::manager::SessionManager;
-use crate::session::working::{WorkingRow, project_items};
+use crate::session::working::WorkingRow;
 use crate::types::{Item, LitecodeError, Result};
 
 /// Conservative fixed protocol envelope not represented by item/tool payloads.
 /// Provider usage, when present, already contains this cost and is never topped up.
 pub const REQUEST_PROMPT_OVERHEAD_TOKENS: usize = 64;
 
-/// Upper bound for the explicit pressure headroom.
-pub const MAX_SAFETY_HEADROOM_TOKENS: usize = 16_384;
-
 /// Inclusive product floor for user-triggered compaction.
-pub const MANUAL_COMPACT_RATIO_PERCENT: usize = 30;
+pub use super::limits::MANUAL_COMPACT_RATIO_PERCENT;
+/// Upper bound for the explicit pressure headroom.
+pub use super::limits::MAX_PROMPT_RESERVE_TOKENS as MAX_SAFETY_HEADROOM_TOKENS;
 
 /// Single safety-headroom policy: `min(16_384, context_window / 8)`.
 pub fn safety_headroom(context_window: usize) -> usize {
@@ -352,15 +350,6 @@ pub fn measure_request_context(
         &projection.coverage_seqs,
         bill,
     )
-}
-
-/// Project persisted working rows the same way budget checks do: model Items
-/// with stale media removed, retaining their durable seq for suffix accounting.
-pub fn working_set_items(rows: &[WorkingRow]) -> (Vec<Item>, Vec<Option<u64>>) {
-    let item_seqs = rows.iter().map(|row| row.log_seq).collect();
-    let mut items = project_items(rows);
-    drop_stale_media(&mut items);
-    (items, item_seqs)
 }
 
 /// Persisted provider bill, with the request-header seq it covers.

@@ -43,9 +43,10 @@ product rule, and maintaining it is not worth the surface.
    `TurnOptions::child(<agent>)`. Both go through `spawn_turn`. Every turn
    resolves model / thinking tier / context mode from the session row it runs
    in — no caller-supplied binding, and `agent.model_ref` is only a seed at
-   session creation. The sole session-blind entry is compaction (hidden
-   `compaction` profile binding). Because a child's identity is fixed by its
-   profile, `agent/set-primary` on a child is refused (`invalid-request`).
+   session creation. Compaction uses the current session/turn main binding;
+   there is no session-blind hidden compaction profile. Because a child's
+   identity is fixed by its profile, `agent/set-primary` on a child is refused
+   (`invalid-request`).
    Busy send is the session (`is_turn_running_blocking` /
    `AgentAlreadyRunning`), not a hub latch.
 5. **Roster parity.** Responsibility is durable Session metadata. The agent

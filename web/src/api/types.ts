@@ -39,12 +39,6 @@ export interface LlmReconnectNotice {
   delay_ms?: number;
 }
 
-type CompactionKind =
-  | "first_pass"
-  | "second_pass"
-  | "aggressive_truncate"
-  | "blocked";
-
 /** Payload for the user-gate TurnPhase object form (WP-186). */
 export type TurnPhaseWaitingPayload = {
   tool: string;
@@ -737,12 +731,22 @@ export interface OperationResult {
   snapshot: SessionSnapshot;
 }
 
+export interface CompactionTelemetry {
+  tokens_before?: number;
+  tokens_pruned?: number;
+  tokens_after?: number;
+  summary_attempts?: number;
+  review_score?: number;
+  overflow_retry?: number;
+}
+
 export interface CompactLifecycle {
   session_id: string;
   trigger: "manual" | "auto" | "overflow";
   stage: "started" | "succeeded" | "failed";
   operation_id?: string | null;
   error?: StructuredError | null;
+  telemetry?: CompactionTelemetry;
   snapshot: SessionSnapshot;
 }
 
@@ -836,7 +840,6 @@ export type WireEvent =
       stop_reason: string;
       context_meter?: ContextMeter;
     }
-  | { type: "compaction"; kind: CompactionKind; detail: string | null }
   | {
       type: "permission_resolved";
       tool: string;
@@ -886,7 +889,6 @@ export interface TurnMeta {
   contextMeter?: ContextMeter;
   compactEligible?: boolean;
   stopReason: string | null;
-  lastCompaction: { kind: CompactionKind; detail: string | null } | null;
   lastPermissionResolved: {
     tool: string;
     approved: boolean;

@@ -629,7 +629,7 @@ modalities = ["text"]
         &sessions,
         &sid,
         &request,
-        litecode::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+        litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
         &baseline,
         &mut compact_rows,
         &CancellationToken::new(),

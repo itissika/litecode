@@ -254,6 +254,51 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
 
+  it("onCompactLifecycle retains measured telemetry on started and failed", () => {
+    const sessionId = "s-life-telemetry";
+    useTurnStore.setState({
+      byId: new Map([[sessionId, { ...EMPTY_SLICE, runState: "running" }]]),
+    });
+    const snap = snapshot(sessionId);
+    const startedTelemetry = {
+      tokens_before: 100,
+      tokens_pruned: 10,
+      tokens_after: 70,
+      summary_attempts: 2,
+      review_score: 4,
+      overflow_retry: 0,
+    };
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "started",
+      snapshot: snap,
+      telemetry: startedTelemetry,
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.lastCompactionTelemetry,
+    ).toEqual(startedTelemetry);
+
+    const failedTelemetry = {
+      tokens_before: 100,
+      tokens_pruned: 10,
+      tokens_after: 80,
+      summary_attempts: 2,
+      review_score: 2,
+      overflow_retry: 1,
+    };
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "overflow",
+      stage: "failed",
+      snapshot: snap,
+      telemetry: failedTelemetry,
+    });
+    expect(
+      useTurnStore.getState().byId.get(sessionId)?.lastCompactionTelemetry,
+    ).toEqual(failedTelemetry);
+  });
+
   it("onCompactLifecycle treats overflow like automatic compaction", () => {
     const sessionId = "s-overflow-life";
     useTurnStore.setState({

@@ -844,13 +844,15 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
         .expect("controller must admit prune-only manual compaction");
 
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let mut succeeded = false;
-    while std::time::Instant::now() < deadline && !succeeded {
+    let mut started_telemetry = None;
+    let mut succeeded_telemetry = None;
+    while std::time::Instant::now() < deadline && succeeded_telemetry.is_none() {
         if let Ok(envelope) = rx.try_recv()
             && let InternalEvent::CompactionLifecycle {
                 trigger: CompactionTrigger::Manual,
                 stage,
                 operation_id: event_operation,
+                telemetry,
                 ..
             } = envelope.event
         {
@@ -858,14 +860,37 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
                 continue;
             }
             match stage {
-                CompactionStage::Succeeded => succeeded = true,
+                CompactionStage::Succeeded => succeeded_telemetry = Some(telemetry),
                 CompactionStage::Failed => panic!("manual prune-only compaction failed"),
-                CompactionStage::Started => {}
+                CompactionStage::Started => started_telemetry = Some(telemetry),
             }
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(succeeded, "manual compaction lifecycle must succeed");
+    let started = started_telemetry.expect("manual prune-only Started lifecycle");
+    let succeeded = succeeded_telemetry.expect("manual prune-only Succeeded lifecycle");
+    for (stage, telemetry) in [("Started", started), ("Succeeded", succeeded)] {
+        assert!(
+            telemetry.tokens_before.is_some()
+                && telemetry.tokens_pruned.is_some()
+                && telemetry.tokens_after.is_some(),
+            "prune-only {stage} must carry measured token fields: {telemetry:?}"
+        );
+        assert_eq!(
+            telemetry.summary_attempts,
+            Some(0),
+            "prune-only {stage} must report zero summary attempts"
+        );
+        assert_eq!(
+            telemetry.review_score, None,
+            "prune-only {stage} must report no review score"
+        );
+        assert_eq!(
+            telemetry.overflow_retry,
+            Some(0),
+            "prune-only {stage} must report zero overflow retries"
+        );
+    }
 
     let events = sessions.data().events_blocking(&sid).expect("events");
     let replacements = events

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use litecode::client_protocol::observer::NoopObserver;
 use litecode::config::global_db::tools::{core_configurable_tools, core_none_tools};
 use litecode::config::resolved::{WorkspaceState, resolve};
-use litecode::config::schema::{AgentProfile, AgentRole, GlobalSettings};
+use litecode::config::schema::{AgentProfile, GlobalSettings};
 use litecode::config::workspace::set_runtime_paths;
 use litecode::config::{AgentConfig, ResolvedConfig, TurnGuard};
 use litecode::engines::WorkspaceEngines;
@@ -21,8 +21,7 @@ use litecode::session::manager::SessionManager;
 use super::bindings::{binding_all_for, binding_none_tool};
 use super::permission::test_auto_approve_sink;
 use super::seed::{
-    TEST_CATALOG_ENDPOINT, TEST_COMPACTION_MODEL_REF, TEST_PRIMARY_MODEL_REF,
-    insert_test_llm_registry, test_catalog,
+    TEST_CATALOG_ENDPOINT, TEST_PRIMARY_MODEL_REF, insert_test_llm_registry, test_catalog,
 };
 use super::workspace_fixture::test_workspace;
 
@@ -97,16 +96,6 @@ pub fn test_resolved_with_budget(
             ..Default::default()
         },
     );
-    global.agents.insert(
-        "compaction".into(),
-        AgentProfile {
-            role: AgentRole::Hidden,
-            model_ref: TEST_COMPACTION_MODEL_REF.into(),
-            system_prompt: "builtin:compaction".into(),
-            ..Default::default()
-        },
-    );
-
     resolve(
         global,
         WorkspaceState::new("/tmp/test"),

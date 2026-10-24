@@ -4,6 +4,7 @@ pub mod context_meter;
 pub mod env;
 pub mod estimate;
 pub mod keep_recent;
+pub mod limits;
 pub mod media_budget;
 pub mod summary;
 pub mod system;
@@ -31,10 +32,10 @@ pub use compact::{
 pub use context_meter::{
     ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
     measure_persisted_context, measure_persisted_context_with_breakdown, measure_request_context,
-    persisted_occupancy_bill, request_token_breakdown, request_token_breakdown_for_rows,
-    safety_headroom, tool_schema_tokens, working_set_items,
+    request_token_breakdown, request_token_breakdown_for_rows, safety_headroom, tool_schema_tokens,
 };
 pub use env::{Context, build_context};
+pub use limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP, MAX_PROMPT_RESERVE_TOKENS};
 pub use system::build_system_prompt;
 pub use view::{HotView, PreparedView};
 

@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::event::{
     EventType, Seq, SessionEvent, item_from_event, skip_empty_assistant_item,
-    skip_unmatched_tool_output, spine_agent_item,
+    skip_unmatched_tool_output, spine_working_payload,
 };
 use super::model::CompactedBody;
 use super::working::WorkingPayload;
@@ -243,7 +243,7 @@ pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
         let event = events.iter().find(|e| e.seq == seq).ok_or_else(|| {
             LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing"))
         })?;
-        let item = spine_agent_item(event)?;
+        let item = spine_working_payload(event)?.model_item();
         loaded.push((event, item));
     }
     let valid_call_ids: std::collections::HashSet<String> = loaded

@@ -13,7 +13,6 @@ import {
   isCodeSurface,
   presetToolIds,
   settingsToolSwitches,
-  isHiddenSettingsAgent,
   isProtectedAgent,
   isSubagentBindableTool,
   applyToolEnabled,
@@ -574,20 +573,9 @@ const BUILTIN_TEMPERATURE = 0.7;
 // does not wipe other-workspace MCP/custom rows. The grid only shows catalog ids.
 function agentPersistPayload(
   draft: AgentProfile,
-  selectedAgentId: string,
   presetIds: ReadonlySet<string>,
   available: readonly AvailableTool[] = [],
 ): AgentProfile {
-  const isHidden = isHiddenSettingsAgent(selectedAgentId, draft.role);
-  if (isHidden) {
-    return {
-      ...draft,
-      role: "hidden",
-      tools: {},
-      allowed_subagents: [],
-      temperature: BUILTIN_TEMPERATURE,
-    };
-  }
   if (draft.role === "subagent") {
     return withSyncedToolSeries(
       {
@@ -701,7 +689,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(d, selectedAgentId, presetIds, switchTools),
+        ok: agentPersistPayload(d, presetIds, switchTools),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -742,9 +730,6 @@ export function AgentsSection() {
     });
     return () => cancelAnimationFrame(raf);
   }, [focusAnchor, creating, profile, draft, selectedAgentId, consumeFocusAnchor]);
-
-  const isHiddenAgent =
-    profile != null && isHiddenSettingsAgent(selectedAgentId, profile.role);
 
   const updateBinding = (toolId: string, patch: Partial<AgentToolBinding>) => {
     if (!draft) return;
@@ -800,12 +785,7 @@ export function AgentsSection() {
 
   const onCreate = () => {
     if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(
-      draft,
-      newAgentId.trim(),
-      presetIds,
-      switchTools,
-    );
+    const payload = agentPersistPayload(draft, presetIds, switchTools);
     void createAgent(newAgentId.trim(), payload)
       .then(() => {
         setCreating(false);
@@ -945,25 +925,23 @@ export function AgentsSection() {
                     </p>
                   ) : null}
                 </div>
-                {!isHiddenAgent ? (
-                  <div>
-                    <FieldLabel>Type</FieldLabel>
-                    <div className="flex gap-2">
-                      {(["primary", "subagent"] as const).map((role) => (
-                        <button
-                          key={role}
-                          type="button"
-                          disabled={saveBlocked}
-                          onClick={() => setDraft({ ...draft, role })}
-                          className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
-                        >
-                          <AgentTypeIcon role={role} />
-                          {role === "primary" ? "Primary" : "Subagent"}
-                        </button>
-                      ))}
-                    </div>
+                <div>
+                  <FieldLabel>Type</FieldLabel>
+                  <div className="flex gap-2">
+                    {(["primary", "subagent"] as const).map((role) => (
+                      <button
+                        key={role}
+                        type="button"
+                        disabled={saveBlocked}
+                        onClick={() => setDraft({ ...draft, role })}
+                        className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
+                      >
+                        <AgentTypeIcon role={role} />
+                        {role === "primary" ? "Primary" : "Subagent"}
+                      </button>
+                    ))}
                   </div>
-                ) : null}
+                </div>
               </div>
               {!isProtectedAgent(selectedAgentId) ? (
                 <div className="flex justify-end">
@@ -980,7 +958,7 @@ export function AgentsSection() {
             </div>
           )}
 
-          {creating || !isHiddenAgent ? (
+          {creating || draft.role !== "hidden" ? (
             <AgentProfileFields
               draft={draft}
               saveBlocked={saveBlocked}
@@ -990,7 +968,7 @@ export function AgentsSection() {
           ) : null}
         </div>
 
-        {!isHiddenAgent && draft.role === "primary" ? (
+        {draft.role === "primary" ? (
           <>
             <AllowedSubagentsSelect
               draft={draft}
@@ -1007,7 +985,7 @@ export function AgentsSection() {
               onBindingChange={updateBinding}
             />
           </>
-        ) : !isHiddenAgent && draft.role === "subagent" ? (
+        ) : draft.role === "subagent" ? (
           <AgentToolsGrid
             draft={draft}
             bindableTools={bindableToolsSubagent}
@@ -1016,10 +994,6 @@ export function AgentsSection() {
             onBindingChange={updateBinding}
             note="Subagents can't ask for approval — a binding that would prompt the user (SAFE on write/edit, web, or custom tools) is denied at runtime instead. SAFE on read/grep/glob/bash keeps them workspace-safe; use the MCP Tools picker to expose only chosen tools of a server."
           />
-        ) : isHiddenAgent ? (
-          <p className="text-xs text-(--_dk-text-disabled)">
-            Only the model is configurable.
-          </p>
         ) : null}
       </div>
     </SettingsPageShell>

@@ -381,12 +381,6 @@ fn kind_for_event(event_type: &EventType, item: &Item) -> SessionKind {
     }
 }
 
-/// Compatibility AgentView projection for consumers that only need Items.
-/// Checkpoints become the unique user checkpoint projection.
-pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
-    Ok(spine_working_payload(event)?.model_item())
-}
-
 pub fn skip_empty_assistant_item(item: &Item) -> bool {
     matches!(item, Item::Message(MessageItem::Output(_))) && item_text_preview(item).is_empty()
 }

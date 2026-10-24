@@ -3,7 +3,6 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   SettingsApiError,
   SUBAGENT_SERIES_TOOL_IDS,
-  isAgentVisible,
   isCodeSurface,
   isConfigurableTool,
   putLog,
@@ -49,18 +48,6 @@ describe("settings helpers", () => {
       const tool = { id, permission_surface: "fixed" as const };
       expect(isConfigurableTool(tool)).toBe(false);
     }
-  });
-
-  it("filters visible agent roles", () => {
-    expect(isAgentVisible("primary")).toBe(true);
-    expect(isAgentVisible("subagent")).toBe(true);
-    expect(isAgentVisible("hidden")).toBe(true);
-  });
-
-  it("identifies compaction as configurable hidden agent", async () => {
-    const { isHiddenSettingsAgent } = await import("./settings");
-    expect(isHiddenSettingsAgent("compaction", "hidden")).toBe(true);
-    expect(isHiddenSettingsAgent("other", "hidden")).toBe(false);
   });
 
   it("labels a catalog model from its label, falling back to the wire id", async () => {
@@ -228,7 +215,7 @@ describe("settings helpers", () => {
   it("identifies protected agents", async () => {
     const { isProtectedAgent } = await import("./settings");
     expect(isProtectedAgent("default")).toBe(true);
-    expect(isProtectedAgent("compaction")).toBe(true);
+    expect(isProtectedAgent("compaction")).toBe(false);
     expect(isProtectedAgent("reviewer")).toBe(false);
   });
 });

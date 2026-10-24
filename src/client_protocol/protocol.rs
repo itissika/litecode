@@ -3,8 +3,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 pub use crate::runtime::observer::{
-    CompactionFailKind, CompactionKind, CompactionStage, CompactionTrigger, TurnEndReason,
-    TurnTokenStats,
+    CompactionFailKind, CompactionStage, CompactionTrigger, TurnEndReason, TurnTokenStats,
 };
 use crate::session::task_state::TodoItem;
 
@@ -648,10 +647,6 @@ pub enum WireEvent {
         /// Provider-covered server meter for the completed request.
         #[serde(default)]
         context_meter: crate::context_pipeline::ContextMeter,
-    },
-    Compaction {
-        kind: CompactionKind,
-        detail: Option<String>,
     },
     PermissionResolved {
         tool: String,

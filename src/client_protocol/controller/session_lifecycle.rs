@@ -357,7 +357,7 @@ impl SessionController {
                     &sessions,
                     &sid,
                     &compaction_request,
-                    crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+                    crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
                     &cancel,
                     Some(&op_id),
                     &data_root,

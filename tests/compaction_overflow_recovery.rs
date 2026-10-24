@@ -135,22 +135,52 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
             .iter()
             .any(|event| matches!(event.event_type, EventType::Compacted))
     );
-    let mut saw_overflow_succeeded = false;
+    let mut started_telemetry = None;
+    let mut succeeded_telemetry = None;
     while let Ok(envelope) = events.try_recv() {
-        if matches!(
-            envelope.event,
-            InternalEvent::CompactionLifecycle {
-                trigger: CompactionTrigger::Overflow,
-                stage: CompactionStage::Succeeded,
-                ..
+        if let InternalEvent::CompactionLifecycle {
+            trigger: CompactionTrigger::Overflow,
+            stage,
+            telemetry,
+            ..
+        } = envelope.event
+        {
+            match stage {
+                CompactionStage::Started => started_telemetry = Some(telemetry),
+                CompactionStage::Succeeded => succeeded_telemetry = Some(telemetry),
+                CompactionStage::Failed => panic!("forced recovery must not fail compaction"),
             }
-        ) {
-            saw_overflow_succeeded = true;
         }
     }
+    let started =
+        started_telemetry.expect("forced recovery must emit an Overflow/Started lifecycle");
     assert!(
-        saw_overflow_succeeded,
-        "forced recovery must emit an Overflow/Succeeded lifecycle"
+        started.tokens_before.is_some()
+            && started.tokens_pruned.is_some()
+            && started.tokens_after.is_some(),
+        "Overflow/Started must carry measured token fields: {started:?}"
+    );
+    assert_eq!(
+        started.overflow_retry,
+        Some(1),
+        "Overflow/Started must identify the overflow recovery trigger"
+    );
+    let succeeded =
+        succeeded_telemetry.expect("forced recovery must emit an Overflow/Succeeded lifecycle");
+    assert!(
+        succeeded.tokens_before.is_some()
+            && succeeded.tokens_pruned.is_some()
+            && succeeded.tokens_after.is_some(),
+        "Overflow/Succeeded must carry measured token fields: {succeeded:?}"
+    );
+    assert!(
+        succeeded.summary_attempts.is_some() && succeeded.review_score.is_some(),
+        "Overflow/Succeeded must carry summary attempt and review fields: {succeeded:?}"
+    );
+    assert_eq!(
+        succeeded.overflow_retry,
+        Some(1),
+        "Overflow/Succeeded must report the recovery retry"
     );
 }
 

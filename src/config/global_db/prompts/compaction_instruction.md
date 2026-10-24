@@ -1,4 +1,4 @@
-You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.
+You are now acting as the compaction call mode of the current main request for this AI coding assistant. The system, tools, and conversation prefix are the same as the main turn. Condense the conversation ABOVE into a structured checkpoint that lets the same model resume the work with no loss of essential context.
 
 Output EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write "(none)" for an empty section — never drop a section.
 

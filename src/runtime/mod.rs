@@ -1004,8 +1004,8 @@ impl AgentRuntime {
     /// Snapshot the exact main request shape for a compaction call mode.
     ///
     /// This intentionally reads the live turn binding, assembled instructions,
-    /// and active tool schemas. It never falls back to the hidden compaction
-    /// agent/profile.
+    /// and active tool schemas. It never falls back to a separate compaction
+    /// profile.
     pub fn compaction_request_context(&self) -> Result<crate::llm::CompactionRequestContext> {
         let runtime_ctx = self.runtime_ctx.as_ref().ok_or_else(|| {
             LitecodeError::Config(

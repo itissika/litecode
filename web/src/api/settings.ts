@@ -660,7 +660,7 @@ export interface AgentListItem {
   allowed_subagents: string[];
 }
 
-export const PROTECTED_AGENT_IDS = new Set(["default", "compaction"]);
+export const PROTECTED_AGENT_IDS = new Set(["default"]);
 
 export function isSubagentBindableTool(entry: AvailableTool): boolean {
   if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {
@@ -809,16 +809,6 @@ export async function listAgents(): Promise<AgentListItem[]> {
   return data.agents;
 }
 
-/** All agents from DB (includes hidden profiles like compaction). */
-export function isAgentVisible(role: AgentRole): boolean {
-  return role === "primary" || role === "subagent" || role === "hidden";
-}
-
-/** Hidden agents configurable in settings (model only). */
-export function isHiddenSettingsAgent(id: string, role: AgentRole): boolean {
-  return role === "hidden" && id === "compaction";
-}
-
 const AGENT_IDS_STORAGE_KEY = "litecode:settingsAgentIds";
 
 export function storeAgentIds(ids: string[]): void {
@@ -828,22 +818,15 @@ export function storeAgentIds(ids: string[]): void {
   );
 }
 
-/** Load agent ids from settings API (primary, subagent, and hidden compaction). */
+/** Load configurable agent ids from the settings API. */
 export async function loadSettingsAgentIds(): Promise<string[]> {
   const agents = await listAgents();
   const ids = agents
-    .filter(
-      (a) =>
-        a.role === "primary" ||
-        a.role === "subagent" ||
-        isHiddenSettingsAgent(a.id, a.role),
-    )
+    .filter((a) => a.role === "primary" || a.role === "subagent")
     .map((a) => a.id);
   const unique = [...new Set(ids)].sort((a, b) => {
     if (a === "default") return -1;
     if (b === "default") return 1;
-    if (a === "compaction") return -1;
-    if (b === "compaction") return 1;
     return a.localeCompare(b);
   });
   storeAgentIds(unique.length > 0 ? unique : ["default"]);

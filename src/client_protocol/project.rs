@@ -402,20 +402,13 @@ fn project_with(
                 context_meter: context_meter.clone(),
             },
         ),
-        InternalEvent::Compaction { kind, detail } => turn_event_ids(
-            session_id,
-            turn_id,
-            WireEvent::Compaction {
-                kind: *kind,
-                detail: detail.clone(),
-            },
-        ),
         InternalEvent::CompactionLifecycle {
             trigger,
             stage,
             operation_id,
             fail_kind,
             error,
+            telemetry,
         } => {
             let snapshot = snapshot?;
             let mut started_snapshot = snapshot.clone();
@@ -438,6 +431,7 @@ fn project_with(
                     "stage": stage,
                     "operation_id": operation_id,
                     "error": error,
+                    "telemetry": telemetry,
                     "snapshot": started_snapshot,
                 }),
             ))

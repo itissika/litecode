@@ -1,6 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::session::estimate::autocompact_threshold;
 use crate::session::store::{ProviderUsageRollup, SessionContextMeter, occupancy_usage};
 
 /// Provider-reported prompt usage tied to the request header seq that opened it.
@@ -105,7 +104,7 @@ pub fn occupancy_bill_from(
 }
 
 /// Fallback when context_window is unset (rough tokens for keep-recent only).
-pub const FALLBACK_BUDGET_LIMIT: usize = 128_000;
+pub const FALLBACK_BUDGET_LIMIT: usize = super::limits::FALLBACK_CONTEXT_WINDOW;
 
 /// Retention policy for context preparation.
 ///
@@ -153,12 +152,6 @@ impl BudgetPolicy {
         } else {
             FALLBACK_BUDGET_LIMIT
         }
-    }
-
-    /// The 0.8 soft-window component retained for keep-recent sizing and fixture
-    /// calibration. Pressure decisions must use [`ContextMeter::compact_at`].
-    pub fn autocompact_threshold(&self) -> usize {
-        autocompact_threshold(self.budget_limit())
     }
 }
 

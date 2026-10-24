@@ -377,10 +377,6 @@ export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {
         compactEligible: event.context_meter?.compact_eligible,
         stopReason: event.stop_reason,
       };
-    case "compaction":
-      return {
-        lastCompaction: { kind: event.kind, detail: event.detail },
-      };
     case "permission_resolved":
       return {
         lastPermissionResolved: {

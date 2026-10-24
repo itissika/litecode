@@ -13,7 +13,7 @@ use super::tools::{
     core_configurable_tools, core_none_tools, default_bound_optional_builtins, network_core_tools,
 };
 
-pub const SEED_REVISION: &str = "16";
+pub const SEED_REVISION: &str = "17";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
@@ -23,6 +23,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
     );
     // Retired shell names are gone. Drop leftover rows for every agent.
     strip_direct_shell_bindings(conn)?;
+    remove_legacy_hidden_compaction(conn)?;
     seed_agents(conn)?;
     seed_default_agent_bindings(conn)?;
     seed_orchestrator_agent_bindings(conn)?;
@@ -39,6 +40,18 @@ pub fn seed(conn: &Connection) -> Result<()> {
         [SEED_REVISION],
     )?;
 
+    Ok(())
+}
+
+/// Remove the retired hidden compaction agent from older databases. Compaction
+/// is now a call mode of the current main request, so the profile and its
+/// bindings have no meaning.
+fn remove_legacy_hidden_compaction(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM agent_tools WHERE agent_id = 'compaction'", [])?;
+    conn.execute(
+        "DELETE FROM agents WHERE id = 'compaction' AND role = 'hidden'",
+        [],
+    )?;
     Ok(())
 }
 
@@ -64,17 +77,6 @@ fn seed_agents(conn: &Connection) -> Result<()> {
         50,
         ORCHESTRATOR_DESCRIPTION,
         &["explore".into(), "general".into()],
-    )?;
-    store::upsert_agent(
-        conn,
-        "compaction",
-        AgentRole::Hidden,
-        "",
-        "builtin:compaction",
-        0.7,
-        50,
-        "",
-        &[],
     )?;
     store::upsert_agent(
         conn,
@@ -163,7 +165,7 @@ fn ensure_code_search_default_v1(conn: &Connection) -> Result<()> {
         tx.execute(
             "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json)
              SELECT a.id, ?1, 1, ?2, ?3, ?4, NULL FROM agents a
-             WHERE a.role = 'primary' AND a.id <> 'compaction'
+             WHERE a.role = 'primary'
                AND NOT EXISTS (SELECT 1 FROM agent_tools t WHERE t.agent_id = a.id AND t.tool_id = ?1)
              ON CONFLICT(agent_id, tool_id) DO NOTHING",
             params![tool, policy_json, path_mode, preset],
@@ -329,7 +331,7 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
 /// builds stay in the DB until the next save of that agent. Structural validation
 /// rejects the whole settings document, so a legacy row would block serve boot.
 /// Repair such rows in place instead of failing:
-/// - `hidden` agents (and the reserved `compaction` id) keep no bindings;
+/// - `hidden` agents keep no bindings;
 /// - `subagent` agents keep no `plan` / `todo` / `subagent_*` bindings
 ///   (`knowledge` and `litecode_workspace` stay);
 /// - non-primary agents keep no `allowed_subagents`.
@@ -348,7 +350,7 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
 
     let mut notes: Vec<String> = Vec::new();
     for (agent_id, role, allowed_json) in rows {
-        let hidden = role == "hidden" || agent_id == "compaction";
+        let hidden = role == "hidden";
         let subagent = role == "subagent";
 
         let mut removed = 0usize;
@@ -416,6 +418,7 @@ pub fn needs_seed(conn: &Connection) -> Result<bool> {
 /// Runs last so the repaired document always satisfies the role rules
 /// (see [`reconcile_role_rules`]).
 pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
+    remove_legacy_hidden_compaction(conn)?;
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
     let _ = conn.execute(
         "DELETE FROM agent_tools WHERE tool_id = 'workspace_stats'",
@@ -857,6 +860,46 @@ mod tests {
     }
 
     #[test]
+    fn ensure_removes_retired_hidden_compaction_profile() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+        let retired_id = "compaction";
+        store::upsert_agent(
+            &conn,
+            retired_id,
+            AgentRole::Hidden,
+            "",
+            "custom legacy body",
+            0.7,
+            50,
+            "",
+            &[],
+        )
+        .unwrap();
+        bind_none(&conn, retired_id, "read").unwrap();
+
+        ensure_core_bindings(&conn).unwrap();
+
+        let agent_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE id = ?1",
+                [retired_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let binding_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1",
+                [retired_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(agent_count, 0);
+        assert_eq!(binding_count, 0);
+    }
+
+    #[test]
     fn ensure_prunes_rows_that_violate_role_rules() {
         let conn = Connection::open_in_memory().unwrap();
         migrate::migrate(&conn).unwrap();
@@ -864,10 +907,22 @@ mod tests {
 
         // Rows written by older builds: subagent with plan/todo/subagent-series
         // bindings, hidden agent with bindings, subagent carrying an allowlist.
+        store::upsert_agent(
+            &conn,
+            "legacy_hidden",
+            AgentRole::Hidden,
+            "",
+            "custom hidden body",
+            0.7,
+            50,
+            "",
+            &[],
+        )
+        .unwrap();
+        bind_none(&conn, "legacy_hidden", "read").unwrap();
         bind_none(&conn, "explore", "plan").unwrap();
         bind_none(&conn, "explore", "todo").unwrap();
         bind_none(&conn, "explore", "subagent_wait").unwrap();
-        bind_none(&conn, "compaction", "read").unwrap();
         conn.execute(
             "UPDATE agents SET allowed_subagents_json = '[\"explore\"]' WHERE id = 'explore'",
             [],
@@ -880,7 +935,7 @@ mod tests {
             ("explore", "plan"),
             ("explore", "todo"),
             ("explore", "subagent_wait"),
-            ("compaction", "read"),
+            ("legacy_hidden", "read"),
         ] {
             let n: i64 = conn
                 .query_row(
@@ -1018,7 +1073,7 @@ mod tests {
         for agent in ["default", "orchestrator", "my_primary"] {
             assert_eq!(cs_enabled(&conn, agent), Some(1), "{agent}");
         }
-        for agent in ["explore", "general", "compaction", "my_sub"] {
+        for agent in ["explore", "general", "my_sub"] {
             assert_eq!(cs_enabled(&conn, agent), None, "{agent}");
         }
         assert!(cs_marker(&conn).is_some());

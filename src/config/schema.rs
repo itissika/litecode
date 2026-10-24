@@ -79,7 +79,7 @@ impl Default for AgentProfile {
 }
 
 /// Agent ids that cannot be deleted via settings API.
-pub const PROTECTED_AGENT_IDS: &[&str] = &["default", "compaction"];
+pub const PROTECTED_AGENT_IDS: &[&str] = &["default"];
 
 /// Built-in subagent orchestration tools (primary-only bindings).
 pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[

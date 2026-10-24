@@ -23,15 +23,6 @@ pub struct TurnError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompactionKind {
-    FirstPass,
-    SecondPass,
-    AggressiveTruncate,
-    Blocked,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CompactionTrigger {
     Manual,
     Auto,
@@ -55,6 +46,27 @@ pub enum CompactionFailKind {
     Transport,
     Failed,
     Canceled,
+}
+
+/// Metrics attached to every compaction lifecycle transition. Token and
+/// overflow fields are populated as soon as the surface is measured; summary
+/// attempts and review score are populated once a summary attempt has finished.
+/// A failed transition never discards metrics that were already measured.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionTelemetry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_before: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_pruned: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens_after: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_attempts: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_score: Option<u8>,
+    /// Number of provider-overflow recovery retries represented by this run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow_retry: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,10 +250,6 @@ pub enum InternalEvent {
         #[serde(default)]
         context_meter: crate::context_pipeline::ContextMeter,
     },
-    Compaction {
-        kind: CompactionKind,
-        detail: Option<String>,
-    },
     /// Unified compact lifecycle (manual + auto). History grows by a checkpoint
     /// item, projected like any other `buffer/item`.
     CompactionLifecycle {
@@ -250,6 +258,8 @@ pub enum InternalEvent {
         operation_id: Option<String>,
         fail_kind: Option<CompactionFailKind>,
         error: Option<String>,
+        #[serde(default)]
+        telemetry: CompactionTelemetry,
     },
     PermissionAsk {
         session_id: String,

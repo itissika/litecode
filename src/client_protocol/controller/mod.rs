@@ -19,7 +19,6 @@ use crate::permission::PermissionSink;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
-use crate::session::estimate::ItemTokenBreakdown;
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::types::LitecodeError;
@@ -1671,7 +1670,9 @@ mod merged_channel_tests {
 mod compact_item_wire_tests {
     use super::*;
 
-    use crate::runtime::observer::{CompactionFailKind, CompactionStage, CompactionTrigger};
+    use crate::runtime::observer::{
+        CompactionFailKind, CompactionStage, CompactionTelemetry, CompactionTrigger,
+    };
     use crate::types::user_text;
     use std::sync::Arc;
 
@@ -1763,6 +1764,7 @@ mod compact_item_wire_tests {
                 operation_id: Some("op-quality".into()),
                 fail_kind: Some(CompactionFailKind::Quality),
                 error: Some("summary quality rejected".into()),
+                telemetry: Default::default(),
             },
             "/p",
             &binding(),
@@ -1781,6 +1783,48 @@ mod compact_item_wire_tests {
             result["params"]["error"]["message"],
             "summary quality rejected"
         );
+    }
+
+    #[test]
+    fn compaction_lifecycle_wire_preserves_measured_telemetry() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+        let telemetry = CompactionTelemetry {
+            tokens_before: Some(100),
+            tokens_pruned: Some(10),
+            tokens_after: Some(70),
+            summary_attempts: Some(2),
+            review_score: Some(4),
+            overflow_retry: Some(0),
+        };
+
+        for stage in [CompactionStage::Started, CompactionStage::Failed] {
+            proj.on_event(
+                InternalEvent::CompactionLifecycle {
+                    trigger: CompactionTrigger::Auto,
+                    stage,
+                    operation_id: Some("op-telemetry-wire".into()),
+                    fail_kind: (stage == CompactionStage::Failed)
+                        .then_some(CompactionFailKind::Quality),
+                    error: (stage == CompactionStage::Failed)
+                        .then(|| "summary quality rejected".into()),
+                    telemetry: telemetry.clone(),
+                },
+                "/p",
+                &binding(),
+            );
+            let out = proj.take_outgoing();
+            let frame = out
+                .iter()
+                .find(|msg| msg["method"] == "session/compact_lifecycle")
+                .expect("compaction lifecycle wire frame");
+            let wire = &frame["params"]["telemetry"];
+            assert_eq!(wire["tokens_before"], 100);
+            assert_eq!(wire["tokens_pruned"], 10);
+            assert_eq!(wire["tokens_after"], 70);
+            assert_eq!(wire["summary_attempts"], 2);
+            assert_eq!(wire["review_score"], 4);
+            assert_eq!(wire["overflow_retry"], 0);
+        }
     }
 
     #[test]

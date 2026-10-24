@@ -19,8 +19,11 @@ pub const TEST_PROVIDER_ID: &str = "test";
 /// Composite model reference of the fixture catalog's primary model.
 pub const TEST_PRIMARY_MODEL_REF: &str = "test/test-primary-model";
 
-/// Composite model reference of the fixture catalog's compaction model.
-pub const TEST_COMPACTION_MODEL_REF: &str = "test/test-compaction-model";
+/// Composite model reference of the fixture catalog's alternate model.
+// Used through the integration-test common re-export; not every test target
+// references it, so the dead-code lint must not fire per binary.
+#[allow(dead_code)]
+pub const TEST_ALT_MODEL_REF: &str = "test/test-alt-model";
 
 /// Endpoint in-memory fixture catalogs use when no request is expected.
 pub const TEST_CATALOG_ENDPOINT: &str = "http://127.0.0.1:9";
@@ -55,7 +58,7 @@ context_window_max = {context_window}
 max_output = {max_output}
 
 [[models]]
-id = "test-compaction-model"
+id = "test-alt-model"
 provider_id = "{TEST_PROVIDER_ID}"
 context_window = 200000
 context_window_max = 200000
@@ -90,7 +93,7 @@ context_window_max = {context_window_max}
 max_output = {max_output}
 
 [[models]]
-id = "test-compaction-model"
+id = "test-alt-model"
 provider_id = "{TEST_PROVIDER_ID}"
 context_window = 200000
 context_window_max = 200000
@@ -168,9 +171,6 @@ pub fn insert_test_llm_registry(settings: &mut GlobalSettings, api_key: &str) {
         .insert(TEST_PROVIDER_ID.into(), api_key.into());
     if let Some(agent) = settings.agents.get_mut("default") {
         agent.model_ref = format!("{TEST_PROVIDER_ID}/test-primary-model");
-    }
-    if let Some(agent) = settings.agents.get_mut("compaction") {
-        agent.model_ref = format!("{TEST_PROVIDER_ID}/test-compaction-model");
     }
 }
 

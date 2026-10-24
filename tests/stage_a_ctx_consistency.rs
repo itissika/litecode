@@ -16,7 +16,7 @@ use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextEnvelope, ContextMeter, ContextPipeline,
     ProviderPromptBaseline, safety_headroom,
 };
-use litecode::session::event::spine_agent_item;
+use litecode::session::event::spine_working_payload;
 use litecode::session::manager::SessionManager;
 use litecode::session::surface::project_working_pairs;
 use litecode::session::task_state::TaskReminders;
@@ -260,7 +260,7 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
                     "surface seq {seq} missing"
                 ))
             })
-            .and_then(spine_agent_item)
+            .and_then(|event| spine_working_payload(event).map(|payload| payload.model_item()))
     })
     .unwrap()
     .into_iter()

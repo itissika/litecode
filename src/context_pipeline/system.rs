@@ -61,7 +61,6 @@ fn splice_instruction_file(body: &str, filename: &str, content: &str) -> String 
 mod tests {
     use super::*;
     use crate::config::WorkspacePaths;
-    use crate::config::global_db::COMPACTION_PROMPT;
 
     fn make_ctx(claude_md: Option<&str>, agents_md: Option<&str>) -> Context {
         Context {
@@ -96,18 +95,17 @@ mod tests {
     }
 
     #[test]
-    fn hidden_never_splices_md() {
+    fn hidden_agent_never_splices_harness_or_instruction_files() {
         let ctx = make_ctx(Some("# contract"), Some("agents"));
         let prompt = build_system_prompt(
-            "compaction",
-            &cfg("hidden", "builtin:compaction"),
+            "legacy_hidden",
+            &cfg("hidden", "custom hidden body"),
             Some(&ctx),
         );
-        assert_eq!(prompt, COMPACTION_PROMPT.trim());
+        assert_eq!(prompt, "custom hidden body");
         assert!(!prompt.contains("# System"));
         assert!(!prompt.contains("# Citations"));
         assert!(!prompt.contains("CLAUDE.md"));
         assert!(!prompt.contains("# contract"));
     }
-
 }

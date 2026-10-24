@@ -89,7 +89,7 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
             &sessions,
             &sid,
             &request,
-            litecode::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+            litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
             &baseline,
             &mut rows,
             &cancel,
@@ -196,7 +196,7 @@ async fn assert_rejected_quality_summary(
         &sessions,
         &sid,
         &request,
-        litecode::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+        litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
         &ProviderPromptBaseline::default(),
         &mut rows,
         &CancellationToken::new(),
@@ -216,20 +216,44 @@ async fn assert_rejected_quality_summary(
         "{label}: expected {expected_failure} in rejection, got {error}"
     );
     let mut lifecycle_fail_kind = None;
+    let mut failed_telemetry = None;
     while let Ok(envelope) = lifecycle.try_recv() {
         if let InternalEvent::CompactionLifecycle {
             stage: CompactionStage::Failed,
             fail_kind,
+            telemetry,
             ..
         } = envelope.event
         {
             lifecycle_fail_kind = fail_kind;
+            failed_telemetry = Some(telemetry);
         }
     }
     assert_eq!(
         lifecycle_fail_kind,
         Some(CompactionFailKind::Quality),
         "{label}: lifecycle Failed event must retain the structured quality subtype"
+    );
+    let telemetry = failed_telemetry.expect("quality failure telemetry");
+    assert!(
+        telemetry.tokens_before.is_some()
+            && telemetry.tokens_pruned.is_some()
+            && telemetry.tokens_after.is_some(),
+        "{label}: quality failure must retain measured token fields: {telemetry:?}"
+    );
+    assert_eq!(
+        telemetry.summary_attempts,
+        Some(2),
+        "{label}: quality failure must report both total attempts"
+    );
+    assert!(
+        telemetry.review_score.is_some(),
+        "{label}: quality failure must retain the final review score: {telemetry:?}"
+    );
+    assert_eq!(
+        telemetry.overflow_retry,
+        Some(0),
+        "{label}: non-overflow failure must report zero overflow retries"
     );
     assert_eq!(
         row_snapshot(&rows),
@@ -686,7 +710,7 @@ async fn assert_real_codec_case_rejected(case: CodecCase) {
         &sessions,
         &sid,
         &request,
-        litecode::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+        litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
         &ProviderPromptBaseline::default(),
         &mut rows,
         &CancellationToken::new(),
@@ -767,7 +791,7 @@ async fn successful_real_codec_preserves_artifact_finish_usage_and_model() {
         &sessions,
         &sid,
         &request,
-        litecode::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+        litecode::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
         &ProviderPromptBaseline::default(),
         &mut rows,
         &CancellationToken::new(),

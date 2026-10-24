@@ -143,7 +143,17 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | 脊骨**最前**一条由 `summary` 装配的 assistant `Item`（不回写） | `{ summary, from, to }` |
+| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | **不是** durable assistant Item；只有 projector 把 role-free body 投影成 user checkpoint | `CompactedBody { summary, from, to }`（无 role） |
+
+`compacted` 的持久 body 永远保留原始 `summary` 文本和 `from/to`，不写 `role`。AgentView/projector 在读取边界把它展开成唯一形状：
+
+```
+{CHECKPOINT_PREAMBLE}
+
+<compacted-summary>{summary}</compacted-summary>
+```
+
+该消息的角色是 `user`，只在投影结果中出现，绝不回写 SessionEvent。旧库 summary 文本若以 `[Conversation summary]` 或 `[Aggressive summary]` 开头，只在 projector 边界剥掉标签；cut、rebase、role、previous-summary 等决策一律使用结构化 checkpoint 身份，绝不解析文本前缀。
 
 #### `reminder/*` — 一条提醒独占一个 seq
 
@@ -240,7 +250,7 @@ bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn �
 |---|---|
 | 职责 | 这一步发给 provider 的 `Item[]` |
 | 身份 | 无 |
-| 形状 | 按脊骨取 `body`（`compacted` 抽成 assistant Item） |
+| 形状 | 按脊骨取 `body`；`compacted` 是 role-free `CompactionCheckpoint`，仅由 `working.rs` projector 生成 user `Item` |
 | 规则 | 可跳过、裁剪、补未完成 call。不回写 SessionEvent |
 
 ---

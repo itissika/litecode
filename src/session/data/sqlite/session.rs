@@ -3441,7 +3441,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use crate::session::event::spine_agent_item;
+    use crate::session::event::spine_working_payload;
     use crate::session::surface::project_working_pairs;
 
     use super::*;
@@ -3888,7 +3888,9 @@ mod tests {
                     .ok_or_else(|| {
                         LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing"))
                     })
-                    .and_then(spine_agent_item)
+                    .and_then(|event| {
+                        spine_working_payload(event).map(|payload| payload.model_item())
+                    })
             })
             .unwrap()
             .into_iter()

@@ -11,6 +11,8 @@ import type {
   AskKind,
   AskOption,
   AskQuestion,
+  CompactLifecycle,
+  CompactionTelemetry,
   ContextEnvelope,
   ContextMeter,
   ContextMode,
@@ -25,7 +27,6 @@ import type {
   LlmReconnectNotice,
   PermissionRequest,
   SessionSnapshot,
-  CompactLifecycle,
 } from "../api/types";
 import { EMPTY_TOKEN_BREAKDOWN } from "../api/types";
 import { debugTrace } from "../lib/debugTrace";
@@ -102,6 +103,8 @@ export interface TurnSlice {
   /** Server manual-compaction decision. Never recomputed in the UI. */
   compactEligible: boolean;
   compacting: boolean;
+  /** Latest measured compaction lifecycle telemetry, projected from the wire. */
+  lastCompactionTelemetry: CompactionTelemetry | null;
   /** Provider last-request prompt_tokens (truth). 0 = absent. */
   lastTurnPromptTokens: number;
   lastTurnCompletionTokens: number;
@@ -169,6 +172,7 @@ export const EMPTY_SLICE: TurnSlice = {
   contextEnvelope: null,
   compactEligible: false,
   compacting: false,
+  lastCompactionTelemetry: null,
   lastTurnPromptTokens: 0,
   lastTurnCompletionTokens: 0,
   lastTurnCacheHitTokens: 0,
@@ -816,9 +820,6 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // Informational turn events → bell. Failures / warnings → corner toast.
       const notify = useNotificationStore.getState();
       switch (te.event.type) {
-        case "compaction":
-          notify.add(sessionId, "Context compacted");
-          break;
         case "error":
           if (current.llmReconnect?.phase !== "failed") {
             useToastStore.getState().showToast(te.event.message, "error", 8000);
@@ -922,6 +923,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
 
     onCompactLifecycle: (life) => {
       const sessionId = life.session_id;
+      if (life.telemetry) {
+        patch(sessionId, { lastCompactionTelemetry: life.telemetry });
+      }
       if (life.stage === "started") {
         patch(sessionId, {
           compacting: true,
@@ -1027,14 +1031,17 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         runState: "idle",
         permissionQueue: [],
         contextWindow: snap.context_window ?? 0,
-        contextTokensEstimate: snap.context_tokens_estimate ?? 0,
+        contextTokensEstimate:
+          snap.context_meter?.used_tokens ??
+          snap.context_tokens_estimate ??
+          0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         contextMeter: snap.context_meter ?? null,
         contextEnvelope: snap.context_envelope ?? null,
         compactEligible:
-          snap.compact_eligible ??
           snap.context_meter?.compact_eligible ??
+          snap.compact_eligible ??
           false,
         compacting: snap.compacting ?? false,
         activePlanPath: snap.active_plan_path ?? null,
@@ -1129,14 +1136,17 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       // display fallback for older servers that omitted `context_meter`.
       patch(sessionId, {
         contextWindow: snap.context_window ?? 0,
-        contextTokensEstimate: snap.context_tokens_estimate ?? 0,
+        contextTokensEstimate:
+          snap.context_meter?.used_tokens ??
+          snap.context_tokens_estimate ??
+          0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
         contextMeter: snap.context_meter ?? null,
         contextEnvelope: snap.context_envelope ?? null,
         compactEligible:
-          snap.compact_eligible ??
           snap.context_meter?.compact_eligible ??
+          snap.compact_eligible ??
           false,
         compacting: snap.compacting ?? false,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,

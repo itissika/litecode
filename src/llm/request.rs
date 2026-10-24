@@ -34,7 +34,7 @@ pub use crate::config::global_db::COMPACTION_INSTRUCTION;
 /// This is deliberately an owned value: manual compaction runs on a detached
 /// task, while auto compaction builds it from the already-initialized turn.
 /// Provider, model, instructions, and tools are copied from the main request;
-/// they are never re-resolved from a hidden compaction agent.
+/// they are never re-resolved from a separate agent profile.
 #[derive(Clone)]
 pub struct CompactionRequestContext {
     pub provider: Arc<dyn crate::llm::LlmProvider>,

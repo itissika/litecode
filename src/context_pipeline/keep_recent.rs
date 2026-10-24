@@ -1,4 +1,4 @@
-//! Keep-recent cut selection and summarizer input shaping for compaction.
+//! Keep-recent cut and output-cap policy for compaction.
 //!
 //! Split: output reserve (next completion) comes off the window first; the
 //! remainder is history_budget. Keep-recent takes verbatim items up to
@@ -8,20 +8,16 @@
 use crate::authority::responses::{Item, MessageItem};
 use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
-/// Verbatim recent-window cap (Pi / Zed-style ~20k).
-pub const KEEP_RECENT_CAP: usize = 20_000;
-/// Hard ceiling for compaction LLM `max_output_tokens` (independent of model config).
-pub const COMPACT_MAX_OUTPUT_TOKENS: u32 = 20_480;
+pub use super::limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP};
+
 const OUTPUT_RESERVE_MIN: usize = 2_048;
-const OUTPUT_RESERVE_MAX: usize = 16_384;
 const MIN_SUMMARY_TOKENS: usize = 512;
-const FALLBACK_WINDOW: usize = 128_000;
 
 fn window_or_fallback(context_window: usize) -> usize {
     if context_window > 0 {
         context_window
     } else {
-        FALLBACK_WINDOW
+        super::limits::FALLBACK_CONTEXT_WINDOW
     }
 }
 
@@ -29,7 +25,7 @@ fn window_or_fallback(context_window: usize) -> usize {
 pub fn output_reserve_tokens(context_window: usize) -> usize {
     let w = window_or_fallback(context_window);
     (w / 10)
-        .clamp(OUTPUT_RESERVE_MIN, OUTPUT_RESERVE_MAX)
+        .clamp(OUTPUT_RESERVE_MIN, super::limits::MAX_PROMPT_RESERVE_TOKENS)
         .min(w / 2)
 }
 
@@ -53,8 +49,8 @@ pub fn default_keep_recent_tokens(context_window: usize) -> usize {
         .max(1)
 }
 
-/// Compact-model output cap: model `max_tokens`, capped at [`COMPACT_MAX_OUTPUT_TOKENS`],
-/// then clipped to leftover history budget.
+/// Main-model summary output cap: configured `max_tokens`, capped at
+/// [`COMPACT_MAX_OUTPUT_TOKENS`], then clipped to the leftover history budget.
 pub fn compact_output_tokens(context_window: usize, keep_recent: usize, configured: u32) -> u32 {
     let configured = configured.min(COMPACT_MAX_OUTPUT_TOKENS) as usize;
     let hist = history_budget_tokens(context_window);

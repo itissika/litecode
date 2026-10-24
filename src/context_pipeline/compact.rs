@@ -12,7 +12,7 @@ use crate::context_pipeline::keep_recent::find_keep_recent_cut;
 use crate::context_pipeline::project_model_view;
 use crate::llm::CompactionRequestContext;
 use crate::runtime::observer::{
-    CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
+    CompactionFailKind, CompactionStage, CompactionTelemetry, CompactionTrigger, InternalEvent,
 };
 use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
@@ -22,7 +22,7 @@ use crate::session::working::{CompactedView, CompactionCheckpoint, WorkingRow, p
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview, user_text};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
-use super::context_meter::{ContextEnvelope, ContextMeter, working_set_items};
+use super::context_meter::{ContextEnvelope, ContextMeter};
 
 /// Wall-clock cap for the compact LLM call.
 ///
@@ -112,21 +112,6 @@ impl SummaryArtifact {
             usage,
             model,
         }
-    }
-
-    /// PR-1 finish gate. Empty text and any non-complete/tool-call terminal
-    /// state fail before a checkpoint can be constructed.
-    fn require_complete(&self) -> Result<()> {
-        if self.finish != SummaryFinish::Completed || self.text.trim().is_empty() {
-            tracing::warn!(
-                model = %self.model,
-                finish = ?self.finish,
-                text_len = self.text.len(),
-                "compaction summary rejected by PR-1 finish gate"
-            );
-            return Err(LitecodeError::CompactionFailed);
-        }
-        Ok(())
     }
 }
 
@@ -374,7 +359,7 @@ pub fn summary_min_saved_tokens(
 /// Mechanical quality threshold: `ceil(applicable * quality_percent / 100)`.
 pub fn summary_quality_threshold(config: &SummaryAcceptanceConfig, applicable: u8) -> u8 {
     let numerator = u32::from(applicable) * u32::from(config.quality_percent);
-    ((numerator + 99) / 100) as u8
+    numerator.div_ceil(100) as u8
 }
 
 /// PR-5 acceptance boundary. Hard failures are fatal; quality checks are
@@ -722,9 +707,8 @@ fn normalized_placeholder_head(line: &str) -> String {
     let key = placeholder_key(line)
         .replace("to-do", "todo")
         .replace("to do", "todo")
-        .replace('—', "-")
-        .replace('–', "-");
-    key.split(|c: char| matches!(c, ':' | '-' | '|' | ';' | ','))
+        .replace(['—', '–'], "-");
+    key.split([':', '-', '|', ';', ','])
         .next()
         .unwrap_or_default()
         .trim()
@@ -784,27 +768,9 @@ impl SourceAnchorCategories {
 }
 
 fn anchor_tokens(text: &str) -> impl Iterator<Item = &str> {
+    const TRIM_CHARS: &str = r#""'`()[]{};,:|<>"#;
     text.split_whitespace().filter_map(|raw| {
-        let token = raw.trim_matches(|c: char| {
-            c.is_whitespace()
-                || matches!(
-                    c,
-                    '"' | '\''
-                        | '`'
-                        | '('
-                        | ')'
-                        | '['
-                        | ']'
-                        | '{'
-                        | '}'
-                        | ','
-                        | ';'
-                        | ':'
-                        | '|'
-                        | '<'
-                        | '>'
-                )
-        });
+        let token = raw.trim_matches(|c: char| c.is_whitespace() || TRIM_CHARS.contains(c));
         (token.len() >= 3).then_some(token)
     })
 }
@@ -1127,6 +1093,15 @@ fn content_tokens(text: &str) -> Vec<String> {
         }
     }
     tokens
+}
+
+/// A failed first summary pass. The caller still owns the measured token and
+/// lifecycle fields; this carrier preserves the per-attempt review facts that
+/// would otherwise be lost when converting the result to `LitecodeError`.
+struct SummaryPassFailure {
+    error: LitecodeError,
+    attempts: u8,
+    review_score: Option<u8>,
 }
 
 /// One successful compaction at the boundary between summarize and commit.
@@ -1486,6 +1461,7 @@ impl CompactPolicy {
     /// Product eligibility is enforced by the caller's `ContextMeter`. This
     /// deliberately skips the automatic pressure trigger and post-compact loop
     /// reminders.
+    #[allow(clippy::too_many_arguments)]
     pub async fn compact_now(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
@@ -1534,16 +1510,27 @@ impl CompactPolicy {
                     "mechanical prune committed but pressure remains and no summary cut exists"
                 );
             }
-            emit_compact_lifecycle(
+            let before_tokens =
+                context_meter_for_rows_local(request, &before_prune, data_root).used_tokens;
+            let after_meter = context_meter_for_rows_local(request, &rows, data_root);
+            let telemetry = compaction_telemetry(
+                CompactionTrigger::Manual,
+                before_tokens,
+                before_tokens.saturating_sub(after_meter.used_tokens),
+                after_meter.used_tokens,
+                Some(0),
+                None,
+            );
+            let err = LitecodeError::NothingToCompact;
+            emit_compact_failed_with_telemetry(
                 sessions,
                 session_id,
                 CompactionTrigger::Manual,
-                CompactionStage::Failed,
                 operation_id,
-                Some(CompactionFailKind::NothingToCompact),
-                Some(LitecodeError::NothingToCompact.to_string()),
+                &err,
+                telemetry,
             );
-            return Err(LitecodeError::NothingToCompact);
+            return Err(err);
         };
         tracing::info!(
             finish = ?artifact.finish,
@@ -1554,6 +1541,7 @@ impl CompactPolicy {
         Ok(true)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn compact_if_needed(
         &self,
         budget: &BudgetPolicy,
@@ -1666,6 +1654,7 @@ impl CompactPolicy {
     /// skipped (the prune itself is already durable). The provider
     /// finish/usage/model stays on the artifact across the compaction boundary
     /// instead of being collapsed to a boolean or plain summary text.
+    #[allow(clippy::too_many_arguments)]
     pub async fn compact_transcript(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
@@ -1712,7 +1701,21 @@ impl CompactPolicy {
                     .map_or(0, |plan| plan.replacements.len()),
                 "mechanical prune alone relieved context pressure; skipping summary"
             );
-            emit_compact_lifecycle(
+            let telemetry = prune_run.as_ref().map_or_else(
+                || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0), None),
+                |run| {
+                    compaction_telemetry(
+                        trigger,
+                        run.tokens_before,
+                        run.tokens_before
+                            .saturating_sub(run.meter_after.used_tokens),
+                        run.meter_after.used_tokens,
+                        Some(0),
+                        None,
+                    )
+                },
+            );
+            emit_compact_lifecycle_with_telemetry(
                 sessions,
                 session_id,
                 trigger,
@@ -1720,8 +1723,9 @@ impl CompactPolicy {
                 operation_id,
                 None,
                 None,
+                telemetry.clone(),
             );
-            emit_compact_lifecycle(
+            emit_compact_lifecycle_with_telemetry(
                 sessions,
                 session_id,
                 trigger,
@@ -1729,6 +1733,7 @@ impl CompactPolicy {
                 operation_id,
                 None,
                 None,
+                telemetry,
             );
             return Ok(None);
         }
@@ -1736,6 +1741,39 @@ impl CompactPolicy {
         let snapshot = rows.clone();
         // Capture revision with the snapshot so the optimistic lock covers
         // snapshot→persist (ISSUE-035). Fail closed — never unwrap_or(0).
+        let tokens_before = prune_run
+            .as_ref()
+            .map(|run| run.tokens_before)
+            .unwrap_or_else(|| {
+                context_meter_for_rows(
+                    sessions,
+                    session_id,
+                    request,
+                    prompt_baseline,
+                    &snapshot,
+                    data_root,
+                )
+                .used_tokens
+            });
+        let tokens_pruned = prune_run
+            .as_ref()
+            .map(|run| {
+                run.tokens_before
+                    .saturating_sub(run.meter_after.used_tokens)
+            })
+            .unwrap_or(0);
+        let tokens_after_prune = prune_run
+            .as_ref()
+            .map(|run| run.meter_after.used_tokens)
+            .unwrap_or(tokens_before);
+        let base_telemetry = compaction_telemetry(
+            trigger,
+            tokens_before,
+            tokens_pruned,
+            tokens_after_prune,
+            None,
+            None,
+        );
         let expected_revision = sessions.data().revision_blocking(session_id)?;
         let prefix_len = persisted_prefix_len(rows);
         let tail = rows.split_off(prefix_len);
@@ -1756,7 +1794,7 @@ impl CompactPolicy {
         // discarded range must include it, so cut is at least one.
         let prior_checkpoint_seq = rows
             .first()
-            .and_then(|row| row.checkpoint().and_then(|_| row.log_seq));
+            .and_then(|row| row.checkpoint().and(row.log_seq));
         let cut = if prior_checkpoint_seq.is_some() {
             raw_cut.max(1)
         } else {
@@ -1771,14 +1809,13 @@ impl CompactPolicy {
                 let err = LitecodeError::ToolExecution(format!(
                     "compact cut {cut} has no log seq (persisted prefix len={prefix_len})"
                 ));
-                emit_compact_lifecycle(
+                emit_compact_failed_with_telemetry(
                     sessions,
                     session_id,
                     trigger,
-                    CompactionStage::Failed,
                     operation_id,
-                    Some(CompactionFailKind::Failed),
-                    Some(err.to_string()),
+                    &err,
+                    base_telemetry,
                 );
                 return Err(err);
             }
@@ -1795,22 +1832,7 @@ impl CompactPolicy {
             prior_checkpoint_seq,
             summary_cap: summary_max_tokens,
         };
-        let tokens_before = prune_run
-            .as_ref()
-            .map(|run| run.tokens_before)
-            .unwrap_or_else(|| {
-                context_meter_for_rows(
-                    sessions,
-                    session_id,
-                    request,
-                    prompt_baseline,
-                    &snapshot,
-                    data_root,
-                )
-                .used_tokens
-            });
-
-        emit_compact_lifecycle(
+        emit_compact_lifecycle_with_telemetry(
             sessions,
             session_id,
             trigger,
@@ -1818,6 +1840,7 @@ impl CompactPolicy {
             operation_id,
             None,
             None,
+            base_telemetry.clone(),
         );
 
         let (artifact, review, summary_attempts) = match Self::first_pass_compaction(
@@ -1831,10 +1854,25 @@ impl CompactPolicy {
         .await
         {
             Ok(accepted) => accepted,
-            Err(e) => {
+            Err(failure) => {
                 *rows = snapshot;
-                emit_compact_failed(sessions, session_id, trigger, operation_id, &e);
-                return Err(e);
+                let telemetry = compaction_telemetry(
+                    trigger,
+                    tokens_before,
+                    tokens_pruned,
+                    tokens_after_prune,
+                    Some(failure.attempts),
+                    failure.review_score,
+                );
+                emit_compact_failed_with_telemetry(
+                    sessions,
+                    session_id,
+                    trigger,
+                    operation_id,
+                    &failure.error,
+                    telemetry,
+                );
+                return Err(failure.error);
             }
         };
         debug_assert!(review.accepted);
@@ -1842,7 +1880,22 @@ impl CompactPolicy {
         if cancel.is_cancelled() {
             *rows = snapshot;
             let err = LitecodeError::Canceled;
-            emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
+            let telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                tokens_pruned,
+                tokens_after_prune,
+                Some(summary_attempts),
+                Some(review.score),
+            );
+            emit_compact_failed_with_telemetry(
+                sessions,
+                session_id,
+                trigger,
+                operation_id,
+                &err,
+                telemetry,
+            );
             return Err(err);
         }
 
@@ -1888,7 +1941,22 @@ impl CompactPolicy {
                 "token budget still exceeded after autocompact"
             );
             let err = LitecodeError::TokenBudgetExceeded;
-            emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
+            let telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                tokens_pruned,
+                final_count,
+                Some(summary_attempts),
+                Some(review.score),
+            );
+            emit_compact_failed_with_telemetry(
+                sessions,
+                session_id,
+                trigger,
+                operation_id,
+                &err,
+                telemetry,
+            );
             return Err(err);
         }
 
@@ -1908,16 +1976,23 @@ impl CompactPolicy {
             Ok(receipt) => receipt,
             Err(e) => {
                 *rows = snapshot;
-                emit_compact_lifecycle(
+                let telemetry = compaction_telemetry(
+                    trigger,
+                    tokens_before,
+                    tokens_pruned,
+                    final_count,
+                    Some(summary_attempts),
+                    Some(review.score),
+                );
+                emit_compact_failed_with_telemetry(
                     sessions,
                     session_id,
                     trigger,
-                    CompactionStage::Failed,
                     operation_id,
-                    Some(CompactionFailKind::Failed),
-                    Some(e.to_string()),
+                    &e,
+                    telemetry,
                 );
-                return Err(e.into());
+                return Err(e);
             }
         };
         let checkpoint_seq = match receipt.outcome {
@@ -1927,7 +2002,22 @@ impl CompactPolicy {
                 let err = LitecodeError::ToolExecution(format!(
                     "compact mutation returned unexpected outcome {other:?}"
                 ));
-                emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
+                let telemetry = compaction_telemetry(
+                    trigger,
+                    tokens_before,
+                    tokens_pruned,
+                    final_count,
+                    Some(summary_attempts),
+                    Some(review.score),
+                );
+                emit_compact_failed_with_telemetry(
+                    sessions,
+                    session_id,
+                    trigger,
+                    operation_id,
+                    &err,
+                    telemetry,
+                );
                 return Err(err);
             }
         };
@@ -1976,6 +2066,14 @@ impl CompactPolicy {
                 sessions.data().working_set_blocking(session_id)
             }
         };
+        let telemetry = compaction_telemetry(
+            trigger,
+            outcome.tokens_before,
+            tokens_pruned,
+            outcome.tokens_after,
+            Some(outcome.summary_attempts),
+            Some(outcome.review.score),
+        );
         let mut model = match reload_result {
             Ok(loaded) => loaded,
             Err(e) => {
@@ -1991,7 +2089,7 @@ impl CompactPolicy {
                 emergency.extend(snapshot[cut..].iter().cloned());
                 *rows = emergency;
                 prompt_baseline.clear();
-                emit_compact_lifecycle(
+                emit_compact_lifecycle_with_telemetry(
                     sessions,
                     session_id,
                     trigger,
@@ -1999,6 +2097,7 @@ impl CompactPolicy {
                     operation_id,
                     None,
                     None,
+                    telemetry,
                 );
                 return Ok(Some(outcome.summary));
             }
@@ -2019,7 +2118,7 @@ impl CompactPolicy {
         );
         let summary = outcome.summary;
         prompt_baseline.clear();
-        emit_compact_lifecycle(
+        emit_compact_lifecycle_with_telemetry(
             sessions,
             session_id,
             trigger,
@@ -2027,6 +2126,7 @@ impl CompactPolicy {
             operation_id,
             None,
             None,
+            telemetry,
         );
         Ok(Some(summary))
     }
@@ -2037,15 +2137,28 @@ impl CompactPolicy {
         rows: &[WorkingRow],
         sessions: &SessionManager,
         cancel: &CancellationToken,
-    ) -> Result<(SummaryArtifact, SummaryReview, u8)> {
+    ) -> std::result::Result<(SummaryArtifact, SummaryReview, u8), SummaryPassFailure> {
         if cancel.is_cancelled() {
-            return Err(LitecodeError::Canceled);
+            return Err(SummaryPassFailure {
+                error: LitecodeError::Canceled,
+                attempts: 0,
+                review_score: None,
+            });
         }
 
         // The request input is the discarded prefix in original Item order,
         // projected exactly as the main view would project it. `kept` stays in
         // the working set and never enters this request.
-        let prefix = build_compaction_input(request, sessions, rows, cut)?;
+        let prefix = match build_compaction_input(request, sessions, rows, cut) {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                return Err(SummaryPassFailure {
+                    error,
+                    attempts: 0,
+                    review_score: None,
+                });
+            }
+        };
         let prior_summary = rows
             .first()
             .and_then(|row| row.checkpoint())
@@ -2055,22 +2168,39 @@ impl CompactPolicy {
         let mut retry_constraint: Option<String> = None;
 
         for attempt in 1..=MAX_SUMMARY_ATTEMPTS {
-            let artifact = match Self::call_llm_compact_once(
+            let artifact = match Self::call_llm_compact_once_with_timeout(
                 request,
                 prefix.clone(),
                 max_tokens,
                 cancel,
+                COMPACT_REQUEST_TIMEOUT,
                 retry_constraint.as_deref(),
             )
             .await
             {
                 Ok(artifact) => artifact,
-                Err(LitecodeError::Canceled) => return Err(LitecodeError::Canceled),
-                Err(error) => return Err(as_transport_compaction_error(error)),
+                Err(LitecodeError::Canceled) => {
+                    return Err(SummaryPassFailure {
+                        error: LitecodeError::Canceled,
+                        attempts: attempt,
+                        review_score: last_review.as_ref().map(|review| review.score),
+                    });
+                }
+                Err(error) => {
+                    return Err(SummaryPassFailure {
+                        error: as_transport_compaction_error(error),
+                        attempts: attempt,
+                        review_score: last_review.as_ref().map(|review| review.score),
+                    });
+                }
             };
 
             if cancel.is_cancelled() {
-                return Err(LitecodeError::Canceled);
+                return Err(SummaryPassFailure {
+                    error: LitecodeError::Canceled,
+                    attempts: attempt,
+                    review_score: last_review.as_ref().map(|review| review.score),
+                });
             }
 
             let review = SummaryAcceptance::review(
@@ -2124,70 +2254,17 @@ impl CompactPolicy {
         } else {
             crate::types::CompactionFailureKind::Quality
         };
-        Err(LitecodeError::CompactionFailure {
-            kind,
-            detail: format!(
-                "summary rejected after {MAX_SUMMARY_ATTEMPTS} attempts: {:?}",
-                review.failures
-            ),
+        Err(SummaryPassFailure {
+            error: LitecodeError::CompactionFailure {
+                kind,
+                detail: format!(
+                    "summary rejected after {MAX_SUMMARY_ATTEMPTS} attempts: {:?}",
+                    review.failures
+                ),
+            },
+            attempts: MAX_SUMMARY_ATTEMPTS,
+            review_score: Some(review.score),
         })
-    }
-
-    pub(crate) async fn call_llm_compact(
-        request: &CompactionRequestContext,
-        input: Vec<Item>,
-        max_tokens: u32,
-        cancel: &CancellationToken,
-    ) -> Result<SummaryArtifact> {
-        Self::call_llm_compact_with_timeout(
-            request,
-            input,
-            max_tokens,
-            cancel,
-            COMPACT_REQUEST_TIMEOUT,
-        )
-        .await
-    }
-
-    /// Cancellable, wall-clock-capped compact call via the unified stream path.
-    ///
-    /// Cancellation is observed while awaiting the provider (and passed into it),
-    /// and a silent peer fails the request instead of pending forever.
-    async fn call_llm_compact_with_timeout(
-        request: &CompactionRequestContext,
-        input: Vec<Item>,
-        max_tokens: u32,
-        cancel: &CancellationToken,
-        timeout: Duration,
-    ) -> Result<SummaryArtifact> {
-        let artifact = Self::call_llm_compact_once_with_timeout(
-            request, input, max_tokens, cancel, timeout, None,
-        )
-        .await?;
-        // Keep this legacy direct entry fail-closed for callers/tests that use
-        // it without the PR-5 review loop.
-        artifact.require_complete()?;
-        Ok(artifact)
-    }
-
-    /// One provider attempt without the finish shortcut, so the acceptance
-    /// loop can inspect rejected artifacts and retry once with a correction.
-    async fn call_llm_compact_once(
-        request: &CompactionRequestContext,
-        input: Vec<Item>,
-        max_tokens: u32,
-        cancel: &CancellationToken,
-        retry_constraint: Option<&str>,
-    ) -> Result<SummaryArtifact> {
-        Self::call_llm_compact_once_with_timeout(
-            request,
-            input,
-            max_tokens,
-            cancel,
-            COMPACT_REQUEST_TIMEOUT,
-            retry_constraint,
-        )
-        .await
     }
 
     async fn call_llm_compact_once_with_timeout(
@@ -2233,10 +2310,10 @@ impl CompactPolicy {
                         finish_from_response_status(&response.status),
                     ));
                 }
-                if let Some(usage) = provider_usage_from_response(response) {
-                    if let Ok(mut slot) = usage_cb.lock() {
-                        *slot = Some(usage);
-                    }
+                if let Some(usage) = provider_usage_from_response(response)
+                    && let Ok(mut slot) = usage_cb.lock()
+                {
+                    *slot = Some(usage);
                 }
             }));
 
@@ -2402,6 +2479,24 @@ pub fn inject_reload_err_after_compact_once() {
     INJECT_RELOAD_ERR_AFTER_COMPACT.with(|flag| flag.set(true));
 }
 
+fn compaction_telemetry(
+    trigger: CompactionTrigger,
+    tokens_before: usize,
+    tokens_pruned: usize,
+    tokens_after: usize,
+    summary_attempts: Option<u8>,
+    review_score: Option<u8>,
+) -> CompactionTelemetry {
+    CompactionTelemetry {
+        tokens_before: Some(tokens_before),
+        tokens_pruned: Some(tokens_pruned),
+        tokens_after: Some(tokens_after),
+        summary_attempts,
+        review_score,
+        overflow_retry: Some(u8::from(trigger == CompactionTrigger::Overflow)),
+    }
+}
+
 fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
     match err {
         LitecodeError::NothingToCompact => CompactionFailKind::NothingToCompact,
@@ -2415,7 +2510,8 @@ fn compact_fail_kind(err: &LitecodeError) -> CompactionFailKind {
     }
 }
 
-fn emit_compact_lifecycle(
+#[allow(clippy::too_many_arguments)]
+fn emit_compact_lifecycle_with_telemetry(
     sessions: &SessionManager,
     session_id: &str,
     trigger: CompactionTrigger,
@@ -2423,6 +2519,7 @@ fn emit_compact_lifecycle(
     operation_id: Option<&str>,
     fail_kind: Option<CompactionFailKind>,
     error: Option<String>,
+    telemetry: CompactionTelemetry,
 ) {
     sessions.publish_internal(
         session_id,
@@ -2432,16 +2529,18 @@ fn emit_compact_lifecycle(
             operation_id: operation_id.map(str::to_string),
             fail_kind,
             error,
+            telemetry,
         },
     );
 }
 
-fn emit_compact_failed(
+fn emit_compact_failed_with_telemetry(
     sessions: &SessionManager,
     session_id: &str,
     trigger: CompactionTrigger,
     operation_id: Option<&str>,
     err: &LitecodeError,
+    telemetry: CompactionTelemetry,
 ) {
     let fail_kind = compact_fail_kind(err);
     tracing::warn!(
@@ -2450,9 +2549,10 @@ fn emit_compact_failed(
         fail_kind = ?fail_kind,
         operation_id = operation_id.unwrap_or(""),
         error = %err,
+        telemetry = ?telemetry,
         "compaction failed"
     );
-    emit_compact_lifecycle(
+    emit_compact_lifecycle_with_telemetry(
         sessions,
         session_id,
         trigger,
@@ -2460,15 +2560,12 @@ fn emit_compact_failed(
         operation_id,
         Some(fail_kind),
         Some(err.to_string()),
+        telemetry,
     );
 }
 
 /// Items as the model view will carry them, so the budget never counts media
 /// that `drop_stale_media` removes from the request.
-fn budget_items(rows: &[WorkingRow]) -> Vec<Item> {
-    working_set_items(rows).0
-}
-
 /// The one auto/manual/UI measurement path for current working rows. Auto
 /// supplies its in-memory baseline; manual/UI use the persisted equivalent.
 fn context_meter_for_rows(
@@ -2502,6 +2599,13 @@ fn persisted_prefix_len(rows: &[WorkingRow]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test mirror of the retired budget helper: project plus stale-media drop.
+    fn budget_items_for_test(rows: &[WorkingRow]) -> Vec<Item> {
+        let mut items = project_items(rows);
+        crate::context_pipeline::media_budget::drop_stale_media(&mut items);
+        items
+    }
 
     use crate::config::TurnGuard;
     use crate::context_pipeline::{Context, ContextPipeline};
@@ -2868,12 +2972,13 @@ max_output = 8192
     async fn compact_request_times_out_on_silent_provider() {
         let cancel = CancellationToken::new();
         let request = compact_context(Arc::new(PendingProvider));
-        let err = CompactPolicy::call_llm_compact_with_timeout(
+        let err = CompactPolicy::call_llm_compact_once_with_timeout(
             &request,
             vec![user_text("prefix")],
             128,
             &cancel,
             Duration::from_millis(50),
+            None,
         )
         .await
         .expect_err("a silent provider must fail, not pend forever");
@@ -2893,12 +2998,13 @@ max_output = 8192
             trigger.cancel();
         });
         let request = compact_context(Arc::new(PendingProvider));
-        let err = CompactPolicy::call_llm_compact_with_timeout(
+        let err = CompactPolicy::call_llm_compact_once_with_timeout(
             &request,
             vec![user_text("prefix")],
             128,
             &cancel,
             Duration::from_secs(30),
+            None,
         )
         .await
         .expect_err("cancel must abort the pending request");
@@ -3362,8 +3468,10 @@ max_output = 8192
                 .any(|failure| matches!(failure, SummaryFailure::TooLong { .. }))
         );
 
-        let mut config = SummaryAcceptanceConfig::default();
-        config.max_summary_ratio_percent = 60;
+        let config = SummaryAcceptanceConfig {
+            max_summary_ratio_percent: 60,
+            ..SummaryAcceptanceConfig::default()
+        };
         let source_tokens = crate::session::estimate::compute_token_estimate(&source).max(1);
         let target = summary_min_saved_tokens(&config, 128_000, source_tokens);
         let words = (source_tokens * 55 / 100).max(1);
@@ -3472,10 +3580,19 @@ max_output = 8192
         message.status = OutputStatus::Incomplete;
         let artifact = SummaryArtifact::from_output(&[truncated], "m".into(), None, None);
         assert_eq!(artifact.finish, SummaryFinish::Missing);
-        assert!(matches!(
-            artifact.require_complete(),
-            Err(LitecodeError::CompactionFailed)
-        ));
+        let review = SummaryAcceptance::review(
+            &artifact,
+            &acceptance_source(""),
+            128_000,
+            None,
+            &SummaryAcceptanceConfig::default(),
+        );
+        assert!(
+            review
+                .failures
+                .iter()
+                .any(|failure| matches!(failure, SummaryFailure::Finish(SummaryFinish::Missing)))
+        );
 
         let terminal = SummaryArtifact::from_output(
             &[assistant_text("looks complete")],
@@ -3484,10 +3601,19 @@ max_output = 8192
             Some(SummaryFinish::Incomplete),
         );
         assert_eq!(terminal.finish, SummaryFinish::Incomplete);
-        assert!(matches!(
-            terminal.require_complete(),
-            Err(LitecodeError::CompactionFailed)
-        ));
+        let review = SummaryAcceptance::review(
+            &terminal,
+            &acceptance_source(""),
+            128_000,
+            None,
+            &SummaryAcceptanceConfig::default(),
+        );
+        assert!(
+            review.failures.iter().any(|failure| matches!(
+                failure,
+                SummaryFailure::Finish(SummaryFinish::Incomplete)
+            ))
+        );
     }
 
     #[test]
@@ -3507,10 +3633,19 @@ max_output = 8192
         ];
         let artifact = SummaryArtifact::from_output(&items, "m".into(), None, None);
         assert_eq!(artifact.finish, SummaryFinish::ToolCall);
-        assert!(matches!(
-            artifact.require_complete(),
-            Err(LitecodeError::CompactionFailed)
-        ));
+        let review = SummaryAcceptance::review(
+            &artifact,
+            &acceptance_source(""),
+            128_000,
+            None,
+            &SummaryAcceptanceConfig::default(),
+        );
+        assert!(
+            review
+                .failures
+                .iter()
+                .any(|failure| matches!(failure, SummaryFailure::ToolCall))
+        );
     }
 
     #[test]
@@ -3655,12 +3790,21 @@ max_output = 8192
                 trigger: CompactionTrigger::Manual,
                 stage,
                 operation_id,
+                telemetry,
                 ..
             } = env.event
             {
                 assert_eq!(operation_id.as_deref(), Some("wp039-reload-err"));
                 match stage {
-                    CompactionStage::Succeeded => saw_succeeded = true,
+                    CompactionStage::Succeeded => {
+                        saw_succeeded = true;
+                        assert!(telemetry.tokens_before.is_some());
+                        assert!(telemetry.tokens_pruned.is_some());
+                        assert!(telemetry.tokens_after.is_some());
+                        assert!(telemetry.summary_attempts.is_some());
+                        assert!(telemetry.review_score.is_some());
+                        assert_eq!(telemetry.overflow_retry, Some(0));
+                    }
                     CompactionStage::Failed => saw_failed = true,
                     _ => {}
                 }
@@ -3718,9 +3862,11 @@ max_output = 8192
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(10_000);
         let baseline = ProviderPromptBaseline::default();
-        let local = crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows));
+        let local = crate::context_pipeline::estimate::compute_token_estimate(
+            &budget_items_for_test(&rows),
+        );
         assert!(
-            local > budget.autocompact_threshold(),
+            local > crate::session::estimate::autocompact_threshold(budget.budget_limit()),
             "local estimate {local} must clear the soft window line"
         );
         let provider = Arc::new(CountingProvider::new());
@@ -3771,7 +3917,7 @@ max_output = 8192
             &sessions,
             &sid,
             &request,
-            crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
             &ProviderPromptBaseline::default(),
             &mut rows,
             &CancellationToken::new(),
@@ -3818,7 +3964,7 @@ max_output = 8192
             &sessions,
             &sid,
             &request,
-            crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+            crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
             &ProviderPromptBaseline::default(),
             &mut rows,
             &CancellationToken::new(),
@@ -3981,7 +4127,7 @@ max_output = 8192
                 &sessions,
                 &sid,
                 &request,
-                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+                crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
                 &CancellationToken::new(),
             )
             .await
@@ -4022,7 +4168,7 @@ max_output = 8192
                 &sessions2,
                 &sid2,
                 &request2,
-                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+                crate::context_pipeline::COMPACT_MAX_OUTPUT_TOKENS,
                 &CancellationToken::new(),
             )
             .await
@@ -4143,7 +4289,9 @@ max_output = 8192
         );
         let envelope = ContextEnvelope::from_compaction_request(&request);
         let local = envelope.fixed_prompt_tokens().saturating_add(
-            crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows)),
+            crate::context_pipeline::estimate::compute_token_estimate(&budget_items_for_test(
+                &rows,
+            )),
         );
         assert_eq!(
             meter.used_tokens, local,
@@ -4310,7 +4458,7 @@ max_output = 8192
                 + TOOL_RESULT_PRUNE_MARKER.chars().count()
                 + TOOL_RESULT_PRUNE_TAIL_CHARS
         );
-        assert!(!text.contains('�'));
+        assert!(!text.contains('\u{fffd}'));
         assert_eq!(text.matches(TOOL_RESULT_PRUNE_MARKER).count(), 1);
     }
 
@@ -4346,7 +4494,7 @@ max_output = 8192
             "replaying the pruned surface must not create another replacement"
         );
         assert_eq!(
-            item_text_chars(&applied[2].item().unwrap()),
+            item_text_chars(applied[2].item().unwrap()),
             replacement.chars_after,
             "second pass must not grow the replacement"
         );
@@ -4401,7 +4549,7 @@ max_output = 8192
             .join("\n");
         assert_eq!(text, "look\n[image already viewed; removed from context]");
         assert_eq!(
-            prune_media_count(&rows[6].item().unwrap()),
+            prune_media_count(rows[6].item().unwrap()),
             1,
             "fresh tool media stays in the row until it becomes historical"
         );

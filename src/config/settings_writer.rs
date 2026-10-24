@@ -36,31 +36,15 @@ fn setup_guidance(settings: &GlobalSettings, catalog: &ProviderCatalog) -> Optio
     if !catalog.providers().iter().any(|p| keyed(&p.id)) {
         steps.push("add a Provider API key in Settings → Providers".to_string());
     }
-    let mut missing = Vec::new();
-    for id in ["default", "compaction"] {
-        let ready = settings.agents.get(id).is_some_and(|profile| {
-            !profile.model_ref.trim().is_empty()
-                && catalog
-                    .model(&profile.model_ref)
-                    .is_some_and(|model| keyed(&model.provider_id))
-        });
-        if !ready {
-            missing.push(id);
-        }
-    }
-    if !missing.is_empty() {
-        let labels: Vec<String> = missing
-            .into_iter()
-            .map(|id| match id {
-                "default" => "default (primary)".to_string(),
-                "compaction" => "compaction (hidden — required for context compaction)".to_string(),
-                other => other.to_string(),
-            })
-            .collect();
-        steps.push(format!(
-            "assign a model to agents ({}) in Settings → Agents and Save",
-            labels.join(", ")
-        ));
+    let default_ready = settings.agents.get("default").is_some_and(|profile| {
+        !profile.model_ref.trim().is_empty()
+            && catalog
+                .model(&profile.model_ref)
+                .is_some_and(|model| keyed(&model.provider_id))
+    });
+    if !default_ready {
+        steps
+            .push("assign a model to the default (primary) agent in Settings and Save".to_string());
     }
     if steps.is_empty() {
         None
@@ -642,7 +626,7 @@ impl SettingsWriter {
             &workspace.workspace_custom_tools,
         );
         expand_binding_presets(&mut profile.tools, &safe);
-        normalize_agent_profile(id, &mut profile);
+        normalize_agent_profile(&mut profile);
         let id = id.to_string();
         self.commit_partial(&[DocId::Agents], |settings| {
             // WP-149: a newly created primary agent binds code_search by default

@@ -37,11 +37,9 @@ pub const EXPLORE_PROMPT: &str = concat!(
     "\n",
     include_str!("prompts/explore/voice.md"),
 );
-pub const COMPACTION_PROMPT: &str = include_str!("prompts/compaction.md");
-/// Compaction is no longer a hidden-agent prompt. These two DSH-faithful
-/// constants are the trailing summarization instruction and the user-facing
-/// checkpoint preamble. The instruction has exactly one LiteCode addition:
-/// a recent-user-message verbatim anchor line.
+/// DSH-faithful compaction constants: the trailing summarization instruction
+/// and the user-facing checkpoint preamble. Compaction is a call mode of the
+/// main request, never a hidden agent prompt.
 pub const COMPACTION_INSTRUCTION: &str = include_str!("prompts/compaction_instruction.md");
 pub const CHECKPOINT_PREAMBLE: &str = include_str!("prompts/checkpoint_preamble.md");
 
@@ -64,14 +62,13 @@ pub fn is_builtin_prompt_marker(stored: &str) -> bool {
 }
 
 /// Built-in editable pack for a seeded agent id. Lookup is by id, not by marker suffix.
-/// Hidden compaction is the whole body; other ids are identity + work + voice.
+/// Every built-in agent is identity + work + voice.
 pub fn builtin_prompt_for(agent_id: &str) -> Option<&'static str> {
     match agent_id {
         "default" => Some(DEFAULT_PROMPT),
         "orchestrator" => Some(ORCHESTRATOR_PROMPT),
         "general" => Some(GENERAL_PROMPT),
         "explore" => Some(EXPLORE_PROMPT),
-        "compaction" => Some(COMPACTION_PROMPT),
         _ => None,
     }
 }

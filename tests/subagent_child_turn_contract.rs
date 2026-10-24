@@ -171,7 +171,7 @@ async fn child_turn_reads_config_from_its_own_session_row() {
     // Exactly the RPCs the subagent panel issues on a child session row.
     harness
         .sessions
-        .set_session_model_id(&child, Some(common::TEST_COMPACTION_MODEL_REF.into()))
+        .set_session_model_id(&child, Some(common::TEST_ALT_MODEL_REF.into()))
         .expect("set model");
     harness
         .sessions
@@ -195,7 +195,7 @@ async fn child_turn_reads_config_from_its_own_session_row() {
     let turn_call = all_calls.last().expect("second turn called the provider");
     assert_eq!(
         turn_call.0,
-        api_model_id(&harness.resolved, common::TEST_COMPACTION_MODEL_REF),
+        api_model_id(&harness.resolved, common::TEST_ALT_MODEL_REF),
         "child model comes from its own row"
     );
     assert_eq!(

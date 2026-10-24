@@ -9,8 +9,8 @@ use common::SessionDataFixture;
 use common::recording_provider::RecordingProvider;
 use litecode::authority::responses::MessageItem;
 use litecode::context_pipeline::{
-    BudgetPolicy, CompactPolicy, Context, ContextPipeline, ProviderPromptBaseline,
-    keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+    BudgetPolicy, COMPACT_MAX_OUTPUT_TOKENS, CompactPolicy, Context, ContextPipeline,
+    ProviderPromptBaseline,
 };
 use litecode::llm::COMPACTION_INSTRUCTION;
 use litecode::session::working::{CompactionCheckpoint, WorkingPayload, project_items};
@@ -266,10 +266,7 @@ fn dsh_instruction_has_eight_sections_in_order_and_one_anchor_line() {
             .unwrap_or_else(|| panic!("missing section {section}"));
         cursor += index + section.len();
     }
-    assert!(
-        COMPACTION_INSTRUCTION
-            .starts_with("You are now acting as a compaction engine for this AI coding assistant.")
-    );
+    assert!(COMPACTION_INSTRUCTION.starts_with("You are now acting as the compaction call mode"));
     assert_eq!(
         COMPACTION_INSTRUCTION
             .matches("include the most recent user message verbatim")

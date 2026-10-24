@@ -62,7 +62,10 @@ fn config_global_db_migration_and_seed() {
     );
 
     assert!(settings.agents.contains_key("default"));
-    assert!(settings.agents.contains_key("compaction"));
+    assert!(
+        !settings.agents.contains_key("compaction"),
+        "compaction is a call mode, not a hidden seeded agent"
+    );
     assert!(settings.agents.contains_key("explore"));
     assert!(settings.agents.contains_key("general"));
     assert!(settings.agents.contains_key("orchestrator"));
@@ -95,15 +98,6 @@ fn config_global_db_migration_and_seed() {
         vec!["explore".to_string(), "general".to_string()]
     );
     assert!(settings.agents.get("default").unwrap().model_ref.is_empty());
-    assert!(
-        settings
-            .agents
-            .get("compaction")
-            .unwrap()
-            .model_ref
-            .is_empty()
-    );
-
     let default_tools = &settings.agents.get("default").unwrap().tools;
     assert!(default_tools.contains_key("read"));
     assert!(
