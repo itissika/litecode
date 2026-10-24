@@ -5,12 +5,10 @@
 //! `min(20k, window/4)` inside that budget; compact `max_output_tokens` gets
 //! the leftover. One LLM pass — no second-pass / aggressive rewrite.
 
-use crate::authority::responses::{FunctionCallOutput, InputContent, Item, MessageItem};
-use crate::context_pipeline::summary::{is_compact_summary_item, summary_body_text};
-use crate::session::estimate::{autocompact_threshold, count_text_tokens, item_token_estimate};
+use crate::authority::responses::{Item, MessageItem};
+use crate::context_pipeline::summary::is_compact_summary_item;
+use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
-/// Max characters of each tool-result text part fed to the summarizer LLM.
-pub const SUMMARIZE_TOOL_RESULT_CHARS: usize = 2000;
 /// Verbatim recent-window cap (Pi / Zed-style ~20k).
 pub const KEEP_RECENT_CAP: usize = 20_000;
 /// Hard ceiling for compaction LLM `max_output_tokens` (independent of model config).
@@ -161,119 +159,11 @@ fn ensure_after_leading_summary(items: &[Item], cut: usize) -> usize {
     }
 }
 
-fn truncate_chars(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let truncated: String = s.chars().take(max).collect();
-    format!("{truncated}\n…[truncated for summarizer]")
-}
-
-fn input_text(parts: &[InputContent]) -> String {
-    parts
-        .iter()
-        .filter_map(|part| match part {
-            InputContent::InputText(text) => Some(text.text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Render discarded items as a plain transcript, one entry per item.
-///
-/// The summarizer gets what was said and done: user and assistant text, tool
-/// calls and their results, long ones truncated. Reasoning, replay signatures,
-/// ids and media bytes are model-replay state, not conversation, and never
-/// enter the compact request.
-pub fn render_for_summary(items: &[Item]) -> Vec<String> {
-    let mut items = items.to_vec();
-    super::media_budget::strip_media_for_summary(&mut items);
-    let tool_names: std::collections::HashMap<&str, &str> = items
-        .iter()
-        .filter_map(|item| match item {
-            Item::FunctionCall(call) => Some((call.call_id.as_str(), call.name.as_str())),
-            _ => None,
-        })
-        .collect();
-    items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Message(MessageItem::Input(message)) => {
-                let text = input_text(&message.content);
-                (!text.is_empty()).then(|| format!("User:\n{text}"))
-            }
-            Item::Message(MessageItem::Output(_)) => {
-                let text = crate::types::item_text_preview(item);
-                (!text.is_empty()).then(|| format!("Assistant:\n{text}"))
-            }
-            Item::FunctionCall(call) => Some(format!(
-                "Tool call {}:\n{}",
-                call.name,
-                truncate_chars(&call.arguments, SUMMARIZE_TOOL_RESULT_CHARS)
-            )),
-            Item::FunctionCallOutput(output) => {
-                let name = tool_names
-                    .get(output.call_id.as_str())
-                    .copied()
-                    .unwrap_or("unknown");
-                let text = match &output.output {
-                    FunctionCallOutput::Text(text) => text.clone(),
-                    FunctionCallOutput::Content(parts) => input_text(parts),
-                };
-                Some(format!(
-                    "Tool result {name}:\n{}",
-                    truncate_chars(&text, SUMMARIZE_TOOL_RESULT_CHARS)
-                ))
-            }
-            _ => None,
-        })
-        .collect()
-}
-
-/// Build the LLM compaction user message: data only (history / prior summary).
-/// Structure, budget, and merge rules live in the compaction system prompt.
-///
-/// `max_tokens` caps the message for the summarizer's window. Past it, the
-/// oldest transcript entries are left out; a previous summary always stays.
-pub fn build_compaction_prompt(discarded: &[Item], max_tokens: Option<usize>) -> String {
-    let (head, rest) = match discarded.split_first() {
-        Some((first, rest)) if is_compact_summary_item(first) => (
-            format!(
-                "Previous summary:\n{}\n\nNew transcript:\n",
-                summary_body_text(first)
-            ),
-            rest,
-        ),
-        _ => ("Transcript:\n".to_string(), discarded),
-    };
-    let mut entries = render_for_summary(rest);
-    if let Some(max_tokens) = max_tokens {
-        let mut used = count_text_tokens(&head);
-        let mut keep_from = entries.len();
-        while keep_from > 0 {
-            let cost = count_text_tokens(&entries[keep_from - 1]) + 1;
-            if used + cost > max_tokens {
-                break;
-            }
-            used += cost;
-            keep_from -= 1;
-        }
-        if keep_from > 0 {
-            let omitted = format!("[{keep_from} earlier entries left out to fit the summarizer]");
-            entries.drain(..keep_from);
-            entries.insert(0, omitted);
-        }
-    }
-    format!("{head}{}", entries.join("\n\n"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall, InputContent,
-        InputImageContent, InputTextContent,
+        FunctionCallOutput, FunctionCallOutputItemParam, FunctionToolCall,
     };
     use crate::types::user_text;
 
@@ -329,50 +219,6 @@ mod tests {
         // Specifically: if we kept from output only, cut would be 2 — forbidden.
         assert_ne!(cut, 2);
         let _ = (call_tokens, out_tokens);
-    }
-
-    #[test]
-    fn serialize_strips_media_before_the_compact_prompt() {
-        let blob = format!("data:image/png;base64,{}", "A".repeat(400));
-        let items = vec![
-            crate::types::user_message("see", &["litecode-media:deadbeef.png".into()]),
-            Item::FunctionCallOutput(FunctionCallOutputItemParam {
-                call_id: "c1".into(),
-                output: FunctionCallOutput::Content(vec![
-                    InputContent::InputText(InputTextContent {
-                        text: "caption".into(),
-                    }),
-                    InputContent::InputImage(InputImageContent {
-                        detail: Default::default(),
-                        file_id: None,
-                        image_url: Some(blob.clone()),
-                    }),
-                ]),
-                id: None,
-                status: None,
-            }),
-        ];
-        let prompt = build_compaction_prompt(&items, None);
-        assert!(!prompt.contains(&blob));
-        assert!(!prompt.contains("data:image"));
-        assert!(!prompt.contains("litecode-media:"));
-        assert!(prompt.contains("caption"));
-        assert!(prompt.contains("already viewed"));
-    }
-
-    #[test]
-    fn update_prompt_when_leading_summary() {
-        let discarded = vec![
-            assistant_text("[Conversation summary]\nold decisions"),
-            user_text("new turn"),
-        ];
-        let prompt = build_compaction_prompt(&discarded, None);
-        assert!(prompt.contains("Previous summary:"));
-        assert!(prompt.contains("old decisions"));
-        assert!(prompt.contains("New transcript:\nUser:\nnew turn"));
-        assert!(!prompt.contains("20,000 tokens"));
-        assert!(!prompt.contains("User messages and intent"));
-        assert!(!prompt.contains("[Conversation summary]\nold decisions"));
     }
 
     #[test]
@@ -447,5 +293,4 @@ mod tests {
         );
         assert_ne!(cut, 2);
     }
-
 }

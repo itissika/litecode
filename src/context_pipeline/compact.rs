@@ -5,10 +5,11 @@ use tokio_util::sync::CancellationToken;
 #[cfg(test)]
 use std::cell::Cell;
 
-use crate::authority::responses::MessageItem;
-use crate::context_pipeline::keep_recent::{build_compaction_prompt, find_keep_recent_cut};
+use crate::authority::responses::{MessageItem, OutputStatus};
+use crate::context_pipeline::keep_recent::find_keep_recent_cut;
 use crate::context_pipeline::media_budget::drop_stale_media;
-use crate::llm::{CompactLlmCall, ModelRequest};
+use crate::context_pipeline::project_model_view;
+use crate::llm::CompactionRequestContext;
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
@@ -26,6 +27,117 @@ use super::summary::compact_summary_message;
 /// ~1-3k output tokens, while a silent peer never answers at all.
 const COMPACT_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Provider usage projection retained alongside a summary.
+pub type SummaryUsage = crate::session::store::ProviderUsage;
+
+/// Terminal status of the provider call that produced a summary.
+///
+/// PR-1 preserves this status so an incomplete/truncated summary can never be
+/// committed as a checkpoint. Retry/quality policy stays in PR-5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryFinish {
+    Completed,
+    Incomplete,
+    InProgress,
+    Failed,
+    Cancelled,
+    Queued,
+    ToolCall,
+    Missing,
+}
+
+/// One summarizer output, before the acceptance gates decide whether it may
+/// replace the discarded transcript range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryArtifact {
+    pub text: String,
+    pub finish: SummaryFinish,
+    pub usage: Option<SummaryUsage>,
+    pub model: String,
+}
+
+impl SummaryArtifact {
+    fn from_output(
+        items: &[Item],
+        model: String,
+        usage: Option<SummaryUsage>,
+        terminal_finish: Option<SummaryFinish>,
+    ) -> Self {
+        let has_tool_call = items
+            .iter()
+            .any(|item| matches!(item, Item::FunctionCall(_)));
+        let mut item_finish = None;
+        for item in items {
+            if let Item::Message(MessageItem::Output(message)) = item {
+                let status = match message.status {
+                    OutputStatus::Completed => SummaryFinish::Completed,
+                    OutputStatus::Incomplete => SummaryFinish::Incomplete,
+                    OutputStatus::InProgress => SummaryFinish::InProgress,
+                };
+                item_finish = Some(match item_finish {
+                    Some(current) => worse_summary_finish(current, status),
+                    None => status,
+                });
+            }
+        }
+
+        let finish = if has_tool_call {
+            SummaryFinish::ToolCall
+        } else {
+            match (terminal_finish, item_finish) {
+                (Some(terminal), Some(item)) => worse_summary_finish(terminal, item),
+                (Some(terminal), None) => terminal,
+                (None, Some(item)) => item,
+                (None, None) => SummaryFinish::Missing,
+            }
+        };
+        let text = items
+            .iter()
+            .filter(|item| matches!(item, Item::Message(MessageItem::Output(_))))
+            .map(item_text_preview)
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("");
+        Self {
+            text,
+            finish,
+            usage,
+            model,
+        }
+    }
+
+    /// PR-1 finish gate. Empty text and any non-complete/tool-call terminal
+    /// state fail before a checkpoint can be constructed.
+    fn require_complete(&self) -> Result<()> {
+        if self.finish != SummaryFinish::Completed || self.text.trim().is_empty() {
+            tracing::warn!(
+                model = %self.model,
+                finish = ?self.finish,
+                text_len = self.text.len(),
+                "compaction summary rejected by PR-1 finish gate"
+            );
+            return Err(LitecodeError::CompactionFailed);
+        }
+        Ok(())
+    }
+}
+
+fn worse_summary_finish(a: SummaryFinish, b: SummaryFinish) -> SummaryFinish {
+    fn severity(finish: SummaryFinish) -> u8 {
+        match finish {
+            SummaryFinish::Missing => 0,
+            SummaryFinish::Completed => 1,
+            SummaryFinish::Queued => 2,
+            SummaryFinish::InProgress => 3,
+            SummaryFinish::Incomplete => 4,
+            SummaryFinish::Cancelled => 5,
+            SummaryFinish::Failed => 6,
+            SummaryFinish::ToolCall => 7,
+        }
+    }
+    if severity(b) >= severity(a) { b } else { a }
+}
+
 /// Compaction policy and execution.
 pub struct CompactPolicy;
 
@@ -42,8 +154,7 @@ impl CompactPolicy {
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        llm: CompactLlmCall<'_>,
-        system_prompt: &str,
+        request: &CompactionRequestContext,
         max_tokens: u32,
         cancel: &CancellationToken,
         operation_id: Option<&str>,
@@ -64,12 +175,11 @@ impl CompactPolicy {
         }
         let prompt_baseline = ProviderPromptBaseline::default();
         let _ = sessions.settle_stale_plan(session_id);
-        let did = Self::compact_transcript(
+        let outcome = Self::compact_transcript(
             budget,
             sessions,
             session_id,
-            llm,
-            system_prompt,
+            request,
             max_tokens,
             &prompt_baseline,
             &mut rows,
@@ -78,7 +188,7 @@ impl CompactPolicy {
             operation_id,
         )
         .await?;
-        if !did {
+        let Some(artifact) = outcome else {
             emit_compact_lifecycle(
                 sessions,
                 session_id,
@@ -89,7 +199,13 @@ impl CompactPolicy {
                 Some(LitecodeError::NothingToCompact.to_string()),
             );
             return Err(LitecodeError::NothingToCompact);
-        }
+        };
+        tracing::info!(
+            finish = ?artifact.finish,
+            model = %artifact.model,
+            usage = ?artifact.usage,
+            "manual compaction committed"
+        );
         Ok(true)
     }
 
@@ -98,8 +214,7 @@ impl CompactPolicy {
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        llm: CompactLlmCall<'_>,
-        system_prompt: &str,
+        request: &CompactionRequestContext,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
         rows: &mut Vec<WorkingRow>,
@@ -135,12 +250,11 @@ impl CompactPolicy {
             }
 
             tracing::info!("token budget > 80%, triggering compaction");
-            let did_compact = Self::compact_transcript(
+            let outcome = Self::compact_transcript(
                 budget,
                 sessions,
                 session_id,
-                llm,
-                system_prompt,
+                request,
                 max_tokens,
                 prompt_baseline,
                 rows,
@@ -149,6 +263,15 @@ impl CompactPolicy {
                 None,
             )
             .await?;
+            let did_compact = outcome.is_some();
+            if let Some(artifact) = outcome {
+                tracing::info!(
+                    finish = ?artifact.finish,
+                    model = %artifact.model,
+                    usage = ?artifact.usage,
+                    "automatic compaction committed"
+                );
+            }
 
             if cancel.is_cancelled() {
                 return Ok(false);
@@ -167,23 +290,24 @@ impl CompactPolicy {
         Ok(false)
     }
 
-    /// Returns `Ok(true)` when history was rewritten; `Ok(false)` when keep-recent
-    /// found nothing to discard (no checkpoint written).
+    /// Returns `Ok(Some(artifact))` when history was rewritten; `Ok(None)` when
+    /// keep-recent found nothing to discard (no checkpoint written). The
+    /// provider finish/usage/model stays on the artifact across the compaction
+    /// boundary instead of being collapsed to a boolean or plain summary text.
     pub async fn compact_transcript(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
         session_id: &str,
-        llm: CompactLlmCall<'_>,
-        system_prompt: &str,
+        request: &CompactionRequestContext,
         max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
         rows: &mut Vec<WorkingRow>,
         cancel: &CancellationToken,
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
-    ) -> Result<bool> {
+    ) -> Result<Option<SummaryArtifact>> {
         if cancel.is_cancelled() {
-            return Ok(false);
+            return Ok(None);
         }
 
         let snapshot = rows.clone();
@@ -201,7 +325,7 @@ impl CompactPolicy {
                 "keep-recent: entire persisted prefix within keep window, skipping compact"
             );
             *rows = snapshot;
-            return Ok(false);
+            return Ok(None);
         };
 
         let kept_from_seq = match rows.get(cut).and_then(|row| row.log_seq) {
@@ -235,15 +359,17 @@ impl CompactPolicy {
         );
 
         let limit = budget.budget_limit();
-        let summary_max_tokens = budget.compact_output_tokens(max_tokens);
+        let summary_max_tokens = budget
+            .compact_output_tokens(max_tokens)
+            .min(request.max_output_tokens);
 
-        let summary = match Self::first_pass_compaction(
-            llm,
-            system_prompt,
+        let artifact = match Self::first_pass_compaction(
+            request,
             summary_max_tokens,
             cut,
+            &snapshot,
             &mut transcript,
-            session_id,
+            sessions,
             cancel,
         )
         .await
@@ -286,7 +412,7 @@ impl CompactPolicy {
         let summary_item = transcript
             .first()
             .cloned()
-            .unwrap_or_else(|| compact_summary_message(&summary, false));
+            .unwrap_or_else(|| compact_summary_message(&artifact.text, false));
 
         if let Err(e) =
             sessions.mutate_blocking(crate::session::data::command::SessionMutation::Compact {
@@ -355,7 +481,7 @@ impl CompactPolicy {
                     None,
                     None,
                 );
-                return Ok(true);
+                return Ok(Some(artifact));
             }
         };
         model.extend(tail);
@@ -371,69 +497,58 @@ impl CompactPolicy {
             None,
             None,
         );
-        Ok(true)
+        Ok(Some(artifact))
     }
 
     async fn first_pass_compaction(
-        llm: CompactLlmCall<'_>,
-        system_prompt: &str,
+        request: &CompactionRequestContext,
         max_tokens: u32,
         cut: usize,
+        rows: &[WorkingRow],
         transcript: &mut Transcript,
-        session_id: &str,
+        sessions: &SessionManager,
         cancel: &CancellationToken,
-    ) -> Result<String> {
+    ) -> Result<SummaryArtifact> {
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
         }
 
-        // LLM input is discarded-only: `transcript` here is already the persist
-        // prefix (in-flight tail split off by the caller). Keep-recent stays in
-        // `kept` and is never serialized into the compact prompt.
-        let discarded = &transcript[..cut];
+        // The request input is the discarded prefix in original Item order,
+        // projected exactly as the main view would project it. `kept` stays in
+        // the working set and never enters this request.
         let kept = transcript[cut..].to_vec();
-        let prompt = build_compaction_prompt(
-            discarded,
-            summarizer_input_budget(llm.context_window, system_prompt, max_tokens),
-        );
-        let summary =
-            Self::call_llm_compact(llm, system_prompt, &prompt, max_tokens, session_id, cancel)
-                .await?;
+        let prefix = build_compaction_input(request, sessions, rows, cut)?;
+        let artifact = Self::call_llm_compact(request, prefix, max_tokens, cancel).await?;
 
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
-        }
-
-        if summary.is_empty() {
-            return Err(LitecodeError::CompactionFailed);
         }
 
         transcript.clear();
-        transcript.push(compact_summary_message(&summary, false));
+        transcript.push(compact_summary_message(&artifact.text, false));
         transcript.extend(kept);
 
         tracing::info!(
-            summary_len = summary.len(),
+            summary_len = artifact.text.len(),
+            finish = ?artifact.finish,
+            model = %artifact.model,
+            usage = ?artifact.usage,
             kept = transcript.len().saturating_sub(1),
             "keep-recent compaction succeeded"
         );
-        Ok(summary)
+        Ok(artifact)
     }
 
     pub(crate) async fn call_llm_compact(
-        llm: CompactLlmCall<'_>,
-        system: &str,
-        prompt: &str,
+        request: &CompactionRequestContext,
+        input: Vec<Item>,
         max_tokens: u32,
-        session_id: &str,
         cancel: &CancellationToken,
-    ) -> Result<String> {
+    ) -> Result<SummaryArtifact> {
         Self::call_llm_compact_with_timeout(
-            llm,
-            system,
-            prompt,
+            request,
+            input,
             max_tokens,
-            session_id,
             cancel,
             COMPACT_REQUEST_TIMEOUT,
         )
@@ -445,26 +560,60 @@ impl CompactPolicy {
     /// Cancellation is observed while awaiting the provider (and passed into it),
     /// and a silent peer fails the request instead of pending forever.
     async fn call_llm_compact_with_timeout(
-        llm: CompactLlmCall<'_>,
-        system: &str,
-        prompt: &str,
+        request: &CompactionRequestContext,
+        input: Vec<Item>,
         max_tokens: u32,
-        session_id: &str,
         cancel: &CancellationToken,
         timeout: Duration,
-    ) -> Result<String> {
+    ) -> Result<SummaryArtifact> {
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
         }
 
-        let request = ModelRequest::compact(llm.model, system, prompt, max_tokens, session_id);
+        let session_id = request.session_id.as_str();
+        let model = request.model.as_str();
+        let provider_request = request.build_model_request(input, max_tokens);
+        let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryUsage>));
+        let terminal_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryFinish>));
+        let usage_cb = std::sync::Arc::clone(&usage_slot);
+        let terminal_cb = std::sync::Arc::clone(&terminal_slot);
+        let on_event: Option<Box<dyn FnMut(crate::types::StreamEvents) + Send + '_>> =
+            Some(Box::new(move |event| {
+                let response = match &event {
+                    crate::types::StreamEvents::ResponseCompleted(completed) => {
+                        Some((SummaryFinish::Completed, &completed.response))
+                    }
+                    crate::types::StreamEvents::ResponseIncomplete(incomplete) => {
+                        Some((SummaryFinish::Incomplete, &incomplete.response))
+                    }
+                    crate::types::StreamEvents::ResponseFailed(failed) => {
+                        Some((SummaryFinish::Failed, &failed.response))
+                    }
+                    _ => None,
+                };
+                let Some((event_finish, response)) = response else {
+                    return;
+                };
+                if let Ok(mut slot) = terminal_cb.lock() {
+                    *slot = Some(worse_summary_finish(
+                        event_finish,
+                        finish_from_response_status(&response.status),
+                    ));
+                }
+                if let Some(usage) = provider_usage_from_response(response) {
+                    if let Ok(mut slot) = usage_cb.lock() {
+                        *slot = Some(usage);
+                    }
+                }
+            }));
+
         let started = Instant::now();
         let items = tokio::select! {
             biased;
             _ = cancel.cancelled() => {
                 tracing::info!(
                     session_id,
-                    model = llm.model,
+                    model,
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "compaction request canceled while waiting for the provider"
                 );
@@ -472,12 +621,17 @@ impl CompactPolicy {
             }
             result = tokio::time::timeout(
                 timeout,
-                crate::llm::reconnect::scope_compaction(llm.provider.complete_with_stream_events(
-                    &request,
-                    llm.api_key,
-                    None,
-                    cancel,
-                )),
+                crate::llm::reconnect::scope_compaction(
+                    request
+                        .provider
+                        .as_ref()
+                        .complete_with_stream_events(
+                            &provider_request,
+                            &request.api_key,
+                            on_event,
+                            cancel,
+                        ),
+                ),
             ) => {
                 match result {
                     Ok(Ok(items)) => items,
@@ -485,7 +639,7 @@ impl CompactPolicy {
                     Err(_) => {
                         tracing::error!(
                             session_id,
-                            model = llm.model,
+                            model,
                             timeout_secs = timeout.as_secs(),
                             "compaction request timed out with no provider response"
                         );
@@ -497,33 +651,96 @@ impl CompactPolicy {
                 }
             }
         };
-        Ok(summary_text_from_compact_output(&items))
+        let usage = usage_slot.lock().ok().and_then(|mut slot| slot.take());
+        let terminal_finish = terminal_slot.lock().ok().and_then(|mut slot| slot.take());
+        let artifact =
+            SummaryArtifact::from_output(&items, request.model.clone(), usage, terminal_finish);
+        artifact.require_complete()?;
+        Ok(artifact)
     }
 }
 
-/// Room for the compact user message in the summarizer's window. The local
-/// count is cl100k and a provider's tokenizer can count higher, so only 80% of
-/// what is left after the system prompt and the output reserve is used.
-fn summarizer_input_budget(context_window: usize, system: &str, max_output: u32) -> Option<usize> {
-    if context_window == 0 {
-        return None;
+/// Build the compaction input from the same projected view as the main
+/// request. The selected items are the prefix whose source row index is in the
+/// discarded range; synthetic pads inherit the unanswered call's index.
+fn build_compaction_input(
+    request: &CompactionRequestContext,
+    sessions: &SessionManager,
+    rows: &[WorkingRow],
+    cut: usize,
+) -> Result<Vec<Item>> {
+    let turn_view = project_items(rows);
+    let source_seqs: Vec<Option<crate::session::event::Seq>> =
+        rows.iter().map(|row| row.log_seq).collect();
+    let projection = project_model_view(
+        &turn_view,
+        &source_seqs,
+        request.target.as_ref(),
+        &sessions.data_root_path(),
+    );
+
+    let mut input = Vec::new();
+    let mut input_seqs = Vec::new();
+    let mut input_rebased = Vec::new();
+    for (index, item) in projection.items.into_iter().enumerate() {
+        if projection.source_indices[index].is_some_and(|source| source < cut) {
+            input.push(item);
+            input_seqs.push(projection.item_seqs[index]);
+            input_rebased.push(projection.rebased[index]);
+        }
     }
-    let reserved = crate::session::estimate::count_text_tokens(system) + max_output as usize;
-    Some(context_window.saturating_sub(reserved) * 4 / 5)
+
+    let producers = crate::runtime::llm_resolve::producers_from_origins(
+        sessions
+            .request_origins(&request.session_id)
+            .unwrap_or_default(),
+        &input_seqs,
+    );
+    let report = crate::llm::port::port(
+        &mut input,
+        &producers,
+        &input_rebased,
+        request.target.as_ref(),
+        request.thinking,
+        !request.tools.is_empty(),
+    );
+    if let Some(block) = report.blocked {
+        return Err(LitecodeError::Config(format!(
+            "model '{}' cannot serve compaction: {}",
+            request.target.reference,
+            block.message()
+        )));
+    }
+    Ok(input)
 }
 
-/// Keep only assistant output text. Reasoning items must not enter the checkpoint.
-fn summary_text_from_compact_output(items: &[Item]) -> String {
-    items
-        .iter()
-        .filter(|item| matches!(item, Item::Message(MessageItem::Output(_))))
-        .map(item_text_preview)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("")
+fn finish_from_response_status(status: &crate::authority::responses::Status) -> SummaryFinish {
+    use crate::authority::responses::Status;
+    match status {
+        Status::Completed => SummaryFinish::Completed,
+        Status::Incomplete => SummaryFinish::Incomplete,
+        Status::InProgress => SummaryFinish::InProgress,
+        Status::Failed => SummaryFinish::Failed,
+        Status::Cancelled => SummaryFinish::Cancelled,
+        Status::Queued => SummaryFinish::Queued,
+    }
 }
 
-/// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
+fn provider_usage_from_response(
+    response: &crate::authority::responses::Response,
+) -> Option<SummaryUsage> {
+    let usage = response.usage.as_ref()?;
+    Some(SummaryUsage {
+        prompt_tokens: usage.input_tokens as u64,
+        completion_tokens: usage.output_tokens as u64,
+        cache_hit_tokens: usage.input_tokens_details.cached_tokens as u64,
+        cache_miss_tokens: usage
+            .input_tokens
+            .saturating_sub(usage.input_tokens_details.cached_tokens)
+            as u64,
+    })
+}
+// Test-only: next post-persist `working_set_blocking` in compact returns Err once.
 #[cfg(test)]
 thread_local! {
     static INJECT_RELOAD_ERR_AFTER_COMPACT: Cell<bool> = const { Cell::new(false) };
@@ -628,11 +845,14 @@ fn persisted_prefix_len(rows: &[WorkingRow]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     use crate::config::TurnGuard;
-    use crate::llm::LlmProvider;
+    use crate::llm::{LlmProvider, ModelRequest, RequestPurpose, ToolDef};
+    use crate::platform_knobs::ThinkingSpec;
+    use crate::provider_catalog::ProviderCatalog;
     use crate::types::{StreamEvents, assistant_text, user_text};
     use std::future::Future;
+    use std::path::Path;
     use std::pin::Pin;
     use std::sync::Arc;
 
@@ -721,24 +941,52 @@ mod tests {
         }
     }
 
-    fn compact_llm(provider: &dyn LlmProvider) -> CompactLlmCall<'_> {
-        CompactLlmCall {
+    fn compact_context(provider: Arc<dyn LlmProvider>) -> CompactionRequestContext {
+        let catalog = ProviderCatalog::parse(
+            r#"version = 1
+
+[[providers]]
+id = "p"
+name = "Provider"
+endpoint = "https://compact.invalid/v1"
+endpoint_type = "responses"
+
+[[models]]
+id = "compact-model"
+provider_id = "p"
+context_window = 128000
+context_window_max = 128000
+max_output = 8192
+"#,
+            Path::new("<compact-unit-test>"),
+        )
+        .expect("compact test catalog");
+        let target = catalog
+            .model("p/compact-model")
+            .expect("compact test model")
+            .clone();
+        CompactionRequestContext {
             provider,
-            api_key: "sk-test",
-            model: "compact-model",
-            context_window: 0,
+            api_key: "sk-test".into(),
+            model: target.id.clone(),
+            context_window: target.context_window,
+            target,
+            thinking: ThinkingSpec::Tier(Default::default()),
+            max_output_tokens: 8192,
+            instructions: "system".into(),
+            tools: vec![],
+            session_id: "s1".into(),
         }
     }
 
     #[tokio::test]
     async fn compact_request_times_out_on_silent_provider() {
         let cancel = CancellationToken::new();
+        let request = compact_context(Arc::new(PendingProvider));
         let err = CompactPolicy::call_llm_compact_with_timeout(
-            compact_llm(&PendingProvider),
-            "system",
-            "prompt",
+            &request,
+            vec![user_text("prefix")],
             128,
-            "s1",
             &cancel,
             Duration::from_millis(50),
         )
@@ -759,12 +1007,11 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
             trigger.cancel();
         });
+        let request = compact_context(Arc::new(PendingProvider));
         let err = CompactPolicy::call_llm_compact_with_timeout(
-            compact_llm(&PendingProvider),
-            "system",
-            "prompt",
+            &request,
+            vec![user_text("prefix")],
             128,
-            "s1",
             &cancel,
             Duration::from_secs(30),
         )
@@ -774,11 +1021,87 @@ mod tests {
     }
 
     #[test]
-    fn compact_request_disables_thinking_and_uses_caller_cap() {
-        let req = ModelRequest::compact("m", "sys", "prompt", 20_480, "s1");
-        assert_eq!(req.thinking, crate::platform_knobs::ThinkingSpec::Off);
+    fn summary_artifact_preserves_incomplete_provider_finish() {
+        let mut truncated = assistant_text("partial summary");
+        let Item::Message(MessageItem::Output(message)) = &mut truncated else {
+            panic!("assistant_text must be an output message");
+        };
+        message.status = OutputStatus::Incomplete;
+        let artifact = SummaryArtifact::from_output(&[truncated], "m".into(), None, None);
+        assert_eq!(artifact.finish, SummaryFinish::Incomplete);
+        assert!(matches!(
+            artifact.require_complete(),
+            Err(LitecodeError::CompactionFailed)
+        ));
+
+        let terminal = SummaryArtifact::from_output(
+            &[assistant_text("looks complete")],
+            "m".into(),
+            None,
+            Some(SummaryFinish::Incomplete),
+        );
+        assert_eq!(terminal.finish, SummaryFinish::Incomplete);
+        assert!(matches!(
+            terminal.require_complete(),
+            Err(LitecodeError::CompactionFailed)
+        ));
+    }
+
+    #[test]
+    fn compaction_summary_rejects_any_tool_call() {
+        use crate::authority::responses::FunctionToolCall;
+
+        let items = vec![
+            assistant_text("looks like a summary"),
+            Item::FunctionCall(FunctionToolCall {
+                call_id: "call-1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                id: Some("fc-1".into()),
+                status: None,
+                namespace: None,
+            }),
+        ];
+        let artifact = SummaryArtifact::from_output(&items, "m".into(), None, None);
+        assert_eq!(artifact.finish, SummaryFinish::ToolCall);
+        assert!(matches!(
+            artifact.require_complete(),
+            Err(LitecodeError::CompactionFailed)
+        ));
+    }
+
+    #[test]
+    fn compaction_is_the_main_request_with_an_output_side_cap_and_instruction() {
+        let tools = vec![ToolDef {
+            name: "read".into(),
+            description: "Read a file".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+        let mut request = compact_context(Arc::new(TextProvider));
+        request.tools = tools.clone();
+        request.instructions = "main system / instructions".into();
+        let prefix = vec![
+            user_text("kept in original order"),
+            assistant_text("answer"),
+        ];
+
+        let req = request.build_model_request(prefix.clone(), 20_480);
+        assert_eq!(req.model, request.model);
+        assert_eq!(req.instructions, request.instructions);
+        assert_eq!(req.tools.len(), tools.len());
+        assert_eq!(req.tools[0].name, tools[0].name);
+        assert_eq!(req.tools[0].description, tools[0].description);
+        assert_eq!(req.tools[0].input_schema, tools[0].input_schema);
+        assert_eq!(&req.input[..prefix.len()], prefix.as_slice());
+        assert_eq!(req.input.len(), prefix.len() + 1);
+        assert_eq!(
+            item_text_preview(req.input.last().expect("instruction")),
+            crate::llm::COMPACTION_INSTRUCTION
+        );
         assert_eq!(req.max_output_tokens, 20_480);
-        assert!(req.tools.is_empty());
+        assert_eq!(req.thinking, request.thinking);
+        assert_eq!(req.purpose, RequestPurpose::Compaction);
+        assert_eq!(req.session_id.as_deref(), Some("s1"));
     }
 
     /// WP-039 / ISSUE-035: Compact persist succeeds, reload fails → Ok(true),
@@ -813,12 +1136,12 @@ mod tests {
 
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
         let baseline = ProviderPromptBaseline::default();
-        let compacted = CompactPolicy::compact_transcript(
+        let request = compact_context(Arc::new(TextProvider));
+        let outcome = CompactPolicy::compact_transcript(
             &budget,
             &sessions,
             &sid,
-            compact_llm(&TextProvider),
-            "system",
+            &request,
             1024,
             &baseline,
             &mut rows,
@@ -828,7 +1151,7 @@ mod tests {
         )
         .await
         .expect("persist ok + reload err must return Ok");
-        assert!(compacted, "compaction committed");
+        assert!(outcome.is_some(), "compaction committed");
 
         let mem_previews: Vec<String> = rows
             .iter()
@@ -945,14 +1268,14 @@ mod tests {
             rows_occupancy_count(&budget, &sessions, &sid, &baseline, &rows),
             1_000
         );
-        let provider = CountingProvider::new();
+        let provider = Arc::new(CountingProvider::new());
+        let request = compact_context(provider.clone());
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
                 &sessions,
                 &sid,
-                compact_llm(&provider),
-                "system",
+                &request,
                 1024,
                 &baseline,
                 &mut rows,
@@ -974,14 +1297,14 @@ mod tests {
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(10_000);
         let baseline = ProviderPromptBaseline::default();
-        let provider = CountingProvider::new();
+        let provider = Arc::new(CountingProvider::new());
+        let request = compact_context(provider.clone());
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
                 &sessions,
                 &sid,
-                compact_llm(&provider),
-                "system",
+                &request,
                 1024,
                 &baseline,
                 &mut rows,
@@ -1003,15 +1326,15 @@ mod tests {
             "a compact must retire the old provider prompt"
         );
         assert!(count < budget.autocompact_threshold(), "count {count}");
-        let provider = CountingProvider::new();
+        let provider = Arc::new(CountingProvider::new());
+        let request = compact_context(provider.clone());
         let mut rows = rows;
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
                 &sessions,
                 &sid,
-                compact_llm(&provider),
-                "system",
+                &request,
                 1024,
                 &stale,
                 &mut rows,

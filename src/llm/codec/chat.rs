@@ -556,6 +556,7 @@ headers = { "x-opencode-session" = "{{session_id}}" }
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_1".into()),
+            purpose: crate::llm::RequestPurpose::Main,
         }
     }
 
@@ -851,5 +852,4 @@ headers = { "x-opencode-session" = "{{session_id}}" }
         assert_eq!(items.len(), 1, "{items:?}");
         assert!(matches!(&items[0], Item::Reasoning(_)), "{items:?}");
     }
-
 }

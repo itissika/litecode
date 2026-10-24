@@ -24,7 +24,7 @@ pub use budget::{
     BudgetPolicy, OccupancyBill, ProviderPromptBaseline, manual_compact_eligible,
     occupancy_bill_from, ring_occupancy,
 };
-pub use compact::CompactPolicy;
+pub use compact::{CompactPolicy, SummaryArtifact, SummaryFinish, SummaryUsage};
 pub use env::{Context, build_context};
 pub use system::build_system_prompt;
 pub use view::{HotView, PreparedView};
@@ -84,6 +84,74 @@ fn align_padded_item_seqs(
     aligned
 }
 
+/// Projected request items plus the positional provenance needed by the
+/// compaction call mode. `source_indices` points into the unpadded turn view;
+/// a synthetic unanswered-call pad inherits the call's source index.
+pub(crate) struct ModelProjection {
+    pub items: Vec<Item>,
+    pub item_seqs: Vec<Option<crate::session::event::Seq>>,
+    pub source_indices: Vec<Option<usize>>,
+    pub rebased: Vec<bool>,
+    pub projected_parts: u32,
+}
+
+/// Map padded view items back to their source item index. The pad is appended
+/// beside its unanswered call, so it inherits that call's index.
+fn align_padded_item_sources(source_items: &[Item], view_items: &[Item]) -> Vec<Option<usize>> {
+    let mut source_index = 0usize;
+    let aligned: Vec<_> = view_items
+        .iter()
+        .map(|item| {
+            if source_items.get(source_index) == Some(item) {
+                let index = source_index;
+                source_index += 1;
+                Some(index)
+            } else {
+                // Pad produced by `Session::pad_unanswered_calls` immediately
+                // after the call at `source_index - 1`.
+                source_index.checked_sub(1)
+            }
+        })
+        .collect();
+    debug_assert_eq!(source_index, source_items.len());
+    aligned
+}
+
+/// One model projection shared by the main view builder and compaction.
+///
+/// Order is deliberate: pad, capability projection, stale-media projection,
+/// then media-ref expansion. Compaction takes a source-index slice of this
+/// result, so its prefix is byte-for-byte the same prefix the main request
+/// would carry (before the port applies the requested thinking mode).
+pub(crate) fn project_model_view(
+    turn_view: &[Item],
+    source_seqs: &[Option<crate::session::event::Seq>],
+    model: &crate::provider_catalog::ResolvedModel,
+    data_root: &std::path::Path,
+) -> ModelProjection {
+    debug_assert_eq!(turn_view.len(), source_seqs.len());
+    let mut llm_items = turn_view.to_vec();
+    Session::pad_unanswered_calls(&mut llm_items);
+    let item_seqs = align_padded_item_seqs(turn_view, source_seqs, &llm_items);
+    let source_indices = align_padded_item_sources(turn_view, &llm_items);
+    let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
+    // Runs before refs expand, so a dropped part never becomes a data URL.
+    let mut rebased = media_budget::drop_stale_media(&mut llm_items);
+    for (flag, compacted) in rebased
+        .iter_mut()
+        .zip(summary::minted_before_summary(&llm_items, &item_seqs))
+    {
+        *flag |= compacted;
+    }
+    crate::session::media::resolve_user_media(&mut llm_items, data_root);
+    ModelProjection {
+        items: llm_items,
+        item_seqs,
+        source_indices,
+        rebased,
+        projected_parts,
+    }
+}
 /// Bind this step's items onto stream rows opened after `cursor`. A provider
 /// id is only unique inside one call, so older rows are not candidates.
 fn attach_step_items(rows: &mut Vec<WorkingRow>, items: &[Item], cursor: i64) {
@@ -259,8 +327,7 @@ impl ContextPipeline {
         &self,
         sessions: &SessionManager,
         session_id: &str,
-        llm: crate::llm::CompactLlmCall<'_>,
-        compact_system: &str,
+        compaction_request: &crate::llm::CompactionRequestContext,
         compact_max_tokens: u32,
         prompt_baseline: &ProviderPromptBaseline,
         step: u64,
@@ -280,8 +347,7 @@ impl ContextPipeline {
                 &self.budget,
                 sessions,
                 session_id,
-                llm,
-                compact_system,
+                compaction_request,
                 compact_max_tokens,
                 prompt_baseline,
                 &mut rows,
@@ -329,32 +395,19 @@ impl ContextPipeline {
             )
         };
 
-        let mut llm_items = turn_view.clone();
-        Session::pad_unanswered_calls(&mut llm_items);
-        let item_seqs = align_padded_item_seqs(&turn_view, &source_seqs, &llm_items);
-        let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
-        // Runs before refs expand, so a dropped part never becomes a data URL.
-        let mut rebased = media_budget::drop_stale_media(&mut llm_items);
-        for (flag, compacted) in rebased
-            .iter_mut()
-            .zip(summary::minted_before_summary(&llm_items, &item_seqs))
-        {
-            *flag |= compacted;
-        }
-        crate::session::media::resolve_user_media(&mut llm_items, &self.data_root);
-
+        let projection = project_model_view(&turn_view, &source_seqs, model, &self.data_root);
         let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
-        let token_count = self
-            .budget
-            .occupancy_token_count(&llm_items, &item_seqs, bill);
+        let token_count =
+            self.budget
+                .occupancy_token_count(&projection.items, &projection.item_seqs, bill);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.hot.replace(turn_view);
         state.prepared = Some(PreparedView {
-            items: llm_items,
-            item_seqs,
-            rebased,
+            items: projection.items,
+            item_seqs: projection.item_seqs,
+            rebased: projection.rebased,
             token_count,
-            projected_parts,
+            projected_parts: projection.projected_parts,
             instructions: None,
         });
         Ok(())
@@ -419,7 +472,13 @@ impl ContextPipeline {
             }
         };
         let (kind, working, preview) = sessions
-            .commit_turn_delta(session_id, rows.clone(), expected_max_seq, &tid, result_data)
+            .commit_turn_delta(
+                session_id,
+                rows.clone(),
+                expected_max_seq,
+                &tid,
+                result_data,
+            )
             .map_err(|e| LitecodeError::ToolExecution(e.to_string()))?;
         *rows = working;
         let (committed, discarded, sealed_seqs, clear_prepared) = match kind {
@@ -477,6 +536,31 @@ mod turn_window_tests {
     use crate::types::user_text;
 
     #[test]
+    fn synthetic_pad_inherits_the_unanswered_calls_source_index() {
+        use crate::authority::responses::FunctionToolCall;
+
+        let source = vec![
+            user_text("go"),
+            Item::FunctionCall(FunctionToolCall {
+                call_id: "call-1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                id: Some("fc-1".into()),
+                status: None,
+                namespace: None,
+            }),
+        ];
+        let mut view = source.clone();
+        Session::pad_unanswered_calls(&mut view);
+        assert_eq!(view.len(), 3, "the unanswered call needs one synthetic pad");
+        assert_eq!(
+            align_padded_item_sources(&source, &view),
+            vec![Some(0), Some(1), Some(1)],
+            "the pad must share the call's source index so it follows it across compaction"
+        );
+    }
+
+    #[test]
     fn padding_alignment_uses_order_not_provider_ids() {
         let source = vec![user_text("same"), user_text("same")];
         let padded = vec![
@@ -519,13 +603,4 @@ pub(crate) fn resolve_occupancy_bill(
 /// Treating them as new is what appends a second copy of every streamed item —
 /// the duplicate the reader sees as repeated reasoning and repeated tool calls.
 #[cfg(test)]
-mod stream_commit_tests {
-    
-
-    
-    
-    
-    
-    
-
-}
+mod stream_commit_tests {}

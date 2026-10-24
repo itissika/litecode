@@ -94,13 +94,7 @@ async fn compact_failure_restores_transcript_snapshot() {
         &budget,
         &sessions,
         &sid,
-        litecode::llm::CompactLlmCall {
-            provider: &provider,
-            api_key: "key",
-            model: "m",
-            context_window: 0,
-        },
-        "system",
+        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
         1024,
         &CancellationToken::new(),
         Some("op-restore"),
@@ -165,13 +159,7 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
         .compact_step(
             &sessions,
             &sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &prompt_baseline,
             1,
@@ -238,13 +226,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
         &budget,
         &sessions,
         &sid,
-        litecode::llm::CompactLlmCall {
-            provider: &provider,
-            api_key: "key",
-            model: "m",
-            context_window: 0,
-        },
-        "system",
+        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
         1024,
         &CancellationToken::new(),
         Some(&op_id),
@@ -339,4 +321,3 @@ async fn reconnect_then_auto_compact_failure_stops_turn() {
         "step-2 model output must never land: {landed:?}"
     );
 }
-

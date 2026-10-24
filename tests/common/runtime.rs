@@ -151,6 +151,34 @@ pub fn test_turn_binding(
     }
 }
 
+/// Freeze a main-model compaction context for low-level pipeline tests.
+///
+/// Production gets this from `AgentRuntime::compaction_request_context`; this
+/// helper keeps pipeline tests focused on persistence/cut behavior while still
+/// exercising the product request type.
+pub fn test_compaction_request(
+    provider: Arc<dyn LlmProvider>,
+    instructions: &str,
+    tools: Vec<litecode::llm::ToolDef>,
+    session_id: &str,
+) -> litecode::llm::CompactionRequestContext {
+    let target = super::seed::default_test_catalog()
+        .model(TEST_PRIMARY_MODEL_REF)
+        .expect("fixture catalog primary model")
+        .clone();
+    litecode::llm::CompactionRequestContext {
+        provider,
+        api_key: "test-key".into(),
+        model: target.id.clone(),
+        context_window: target.context_window,
+        max_output_tokens: target.max_output,
+        target,
+        thinking: litecode::platform_knobs::ThinkingSpec::Tier(Default::default()),
+        instructions: instructions.to_string(),
+        tools,
+        session_id: session_id.to_string(),
+    }
+}
 /// Build `AgentRuntime` against a live `LlmProvider` (Responses product path).
 ///
 /// `cwd` must already contain an initialized `.litecode/` (see [`test_workspace`]).

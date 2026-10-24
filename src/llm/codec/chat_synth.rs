@@ -118,6 +118,7 @@ pub(super) struct ChatSynth {
     tools: BTreeMap<u32, ToolAcc>,
     usage: Option<Value>,
     seams: SeamReport,
+    finish_reason: Option<String>,
 }
 
 impl ChatSynth {
@@ -136,6 +137,7 @@ impl ChatSynth {
             tools: BTreeMap::new(),
             usage: None,
             seams: SeamReport::default(),
+            finish_reason: None,
         }
     }
 
@@ -231,6 +233,9 @@ impl ChatSynth {
         else {
             return;
         };
+        if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
+            self.finish_reason = Some(reason.to_string());
+        }
         let Some(delta) = choice.get("delta").or_else(|| choice.get("message")) else {
             return;
         };
@@ -424,16 +429,25 @@ impl ChatSynth {
                 },
             ));
         }
-        let output = self.output_values();
+        let (status, incomplete) = Self::chat_terminal_status(self.finish_reason.as_deref());
+        let output_status = if status == "completed" {
+            OutputStatus::Completed
+        } else {
+            OutputStatus::Incomplete
+        };
+        let output = self.output_values(output_status);
         let seq = self.bump();
         let mut response = serde_json::json!({
             "id": synth_id("cc_resp"),
             "object": "response",
             "created_at": 0,
             "model": model,
-            "status": "completed",
+            "status": status,
             "output": output,
         });
+        if let Some(reason) = incomplete {
+            response["incomplete_details"] = serde_json::json!({ "reason": reason });
+        }
         if let Some(usage) = self.usage.take() {
             response["usage"] = usage;
         }
@@ -448,7 +462,29 @@ impl ChatSynth {
         Ok(events)
     }
 
-    fn output_values(&self) -> Vec<Value> {
+    fn chat_terminal_status(finish_reason: Option<&str>) -> (&'static str, Option<String>) {
+        let Some(finish_reason) = finish_reason else {
+            // `[DONE]` is a transport sentinel, not provider finish evidence.
+            // A stream that never named its finish reason is not accepted as a
+            // completed request (and therefore cannot commit a summary).
+            tracing::warn!("chat stream ended without finish_reason");
+            return ("incomplete", Some("missing_finish_reason".into()));
+        };
+        match finish_reason {
+            "stop" | "tool_calls" | "function_call" => ("completed", None),
+            "length" => ("incomplete", Some("max_output_tokens".into())),
+            "content_filter" => ("incomplete", Some("content_filter".into())),
+            other => {
+                tracing::info!(
+                    finish_reason = other,
+                    "chat finish_reason mapped to incomplete"
+                );
+                ("incomplete", Some(other.to_string()))
+            }
+        }
+    }
+
+    fn output_values(&self, status: OutputStatus) -> Vec<Value> {
         let mut out: Vec<(u32, Value)> = Vec::new();
         if let Some(id) = &self.rs_id {
             out.push((
@@ -458,7 +494,7 @@ impl ChatSynth {
                     "id": id,
                     "summary": [],
                     "content": [{"type": "reasoning_text", "text": self.rs_text}],
-                    "status": "completed"
+                    "status": status
                 }),
             ));
         }
@@ -469,7 +505,7 @@ impl ChatSynth {
                     "type": "message",
                     "id": id,
                     "role": "assistant",
-                    "status": "completed",
+                    "status": status,
                     "content": [{"type": "output_text", "text": self.msg_text, "annotations": []}]
                 }),
             ));
@@ -488,7 +524,7 @@ impl ChatSynth {
                     "call_id": call_id,
                     "name": tool.name,
                     "arguments": tool.arguments,
-                    "status": "completed"
+                    "status": status
                 }),
             ));
         }
@@ -500,7 +536,7 @@ impl ChatSynth {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::authority::responses::OutputMessageContent;
+    use crate::authority::responses::{OutputMessageContent, Status};
 
     fn chunk(delta: Value) -> Value {
         serde_json::json!({ "choices": [{ "index": 0, "delta": delta }] })
@@ -542,6 +578,72 @@ mod tests {
     }
 
     #[test]
+    fn missing_finish_reason_marks_summary_output_incomplete() {
+        let mut synth = ChatSynth::new();
+        let mut events = Vec::new();
+        synth.ingest_chunk(
+            &chunk(serde_json::json!({ "content": "malformed summary" })),
+            &mut events,
+        );
+        let done = synth.finish_events("m").unwrap();
+        let completed = done
+            .iter()
+            .find_map(|event| match event {
+                ResponseStreamEvent::ResponseCompleted(completed) => Some(completed),
+                _ => None,
+            })
+            .expect("response.completed");
+        assert_eq!(completed.response.status, Status::Incomplete);
+        let output = completed_output(&done);
+        let message = output
+            .iter()
+            .find_map(|item| match item {
+                OutputItem::Message(message) => Some(message),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(message.status, OutputStatus::Incomplete);
+    }
+
+    #[test]
+    fn finish_length_marks_summary_output_incomplete() {
+        let mut synth = ChatSynth::new();
+        let mut events = Vec::new();
+        synth.ingest_chunk(
+            &chunk(serde_json::json!({ "content": "truncated summary" })),
+            &mut events,
+        );
+        synth.ingest_chunk(
+            &serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "length",
+                    "delta": {}
+                }]
+            }),
+            &mut events,
+        );
+        let done = synth.finish_events("m").unwrap();
+        let completed = done
+            .iter()
+            .find_map(|event| match event {
+                ResponseStreamEvent::ResponseCompleted(completed) => Some(completed),
+                _ => None,
+            })
+            .expect("response.completed");
+        assert_eq!(completed.response.status, Status::Incomplete);
+        let output = completed_output(&done);
+        let message = output
+            .iter()
+            .find_map(|item| match item {
+                OutputItem::Message(message) => Some(message),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(message.status, OutputStatus::Incomplete);
+    }
+
+    #[test]
     fn whitespace_only_content_never_births_a_message() {
         let mut synth = ChatSynth::new();
         let mut events = Vec::new();
@@ -555,5 +657,4 @@ mod tests {
         assert_eq!(message_text(&completed_output(&done)), None);
         assert!(synth.seam_report().is_none());
     }
-
 }

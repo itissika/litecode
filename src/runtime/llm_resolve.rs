@@ -30,12 +30,28 @@ pub struct TurnLlmBinding {
 }
 
 impl TurnLlmBinding {
-    pub fn compact_call(&self) -> crate::llm::CompactLlmCall<'_> {
-        crate::llm::CompactLlmCall {
-            provider: self.provider.as_ref(),
-            api_key: &self.api_key,
-            model: &self.api_model_id,
+    /// Freeze the main request shape for a compaction call mode.
+    ///
+    /// The caller supplies the instructions and active tools from the same
+    /// turn; provider/model/target all come from this binding. No hidden
+    /// compaction binding is resolved here or anywhere downstream.
+    pub fn compaction_context(
+        &self,
+        instructions: String,
+        tools: Vec<crate::llm::ToolDef>,
+        session_id: String,
+    ) -> crate::llm::CompactionRequestContext {
+        crate::llm::CompactionRequestContext {
+            provider: Arc::clone(&self.provider),
+            api_key: self.api_key.clone(),
+            model: self.api_model_id.clone(),
             context_window: self.context_window,
+            target: Arc::clone(&self.model),
+            thinking: crate::platform_knobs::ThinkingSpec::Tier(self.thinking_tier),
+            max_output_tokens: self.max_tokens,
+            instructions,
+            tools,
+            session_id,
         }
     }
 }
@@ -126,39 +142,6 @@ pub fn resolve_session_llm(
         &model_ref,
         sessions.thinking_tier(session_id).unwrap_or_default(),
         sessions.context_mode(session_id).unwrap_or_default(),
-    )
-}
-
-/// Resolve the hidden compaction agent's binding — deliberately session-blind.
-///
-/// This is the ONLY session-independent resolve entry. Compaction must not
-/// inherit the compacted session's model / tier / mode, so it reads the hidden
-/// `compaction` profile's `model_ref` and runs at the platform defaults.
-pub fn binding_for_agent(
-    resolved: &ResolvedConfig,
-    registry: &mut ProviderRegistry,
-    agent_name: &str,
-) -> Result<TurnLlmBinding> {
-    let model_ref = resolved
-        .agents()
-        .get(agent_name)
-        .map(|profile| profile.model_ref.clone())
-        .unwrap_or_default();
-
-    if model_ref.trim().is_empty() {
-        return Err(LitecodeError::Config(format!(
-            "agent '{agent_name}' has no model; assign one in Settings → Agents \
-             (default is the primary agent; compaction is a hidden agent required for context \
-             compaction). {MISSING_MODEL_HINT}"
-        )));
-    }
-
-    binding_from_ref(
-        resolved,
-        registry,
-        &model_ref,
-        ThinkingTier::default(),
-        ContextMode::default(),
     )
 }
 
@@ -463,13 +446,4 @@ fn truncate_loc(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-    
-    
-
-}
+mod tests {}

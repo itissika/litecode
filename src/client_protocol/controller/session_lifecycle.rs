@@ -17,13 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::{SessionController, StartTurnError};
 
 #[cfg(test)]
-mod occupancy_gate_tests {
-    
-    
-    
-    
-
-}
+mod occupancy_gate_tests {}
 
 /// Latest unretired provider prompt, matching the occupancy ring.
 fn provider_occupancy_prompt(
@@ -278,15 +272,47 @@ impl SessionController {
             .map_err(LitecodeError::Anyhow)?;
         self.sessions.ensure_entry(session_id).await?;
         self.runtime.apply_non_engine()?;
+        // Match the main turn's pre-request tool view: disk is the source of
+        // truth for workspace MCP / custom-tool readiness.
+        self.runtime.sync_workspace_tool_readiness();
 
-        let session_binding = self.session_binding(session_id);
-        if session_binding.context_window == 0 {
+        // Manual compaction is a call mode of this session's main model. Build
+        // the same runtime shape a turn would use so provider/model,
+        // instructions, and active tool schemas are frozen together.
+        let default_primary = self.runtime.desired_primary_agent();
+        let agent_id = self.sessions.resolve_primary_agent(
+            session_id,
+            default_primary,
+            &self.runtime.resolved,
+        )?;
+        // Turn parity: a sticky model that was never set or can no longer run
+        // is repaired before manual compaction freezes the request shape.
+        crate::runtime::ensure_session_model(
+            &self.runtime.resolved,
+            &self.sessions,
+            session_id,
+            &agent_id,
+        );
+        let depth = self
+            .sessions
+            .data()
+            .meta_blocking(session_id)?
+            .subagent_depth;
+        let mut compaction_runtime = self.runtime.build_runtime(
+            session_id.to_string(),
+            Arc::clone(&self.sessions),
+            &agent_id,
+            depth,
+            crate::permission::deny_permission_sink(),
+            Arc::new(crate::runtime::observer::NoopObserver),
+        )?;
+        compaction_runtime.ensure_tooling_initialized().await;
+        let compaction_request = compaction_runtime.compaction_request_context()?;
+        if compaction_request.context_window == 0 {
             return Err(LitecodeError::Config(
                 "no context window configured for this session".into(),
             ));
         }
-        let compaction_binding = self.runtime.resolve_compaction_binding()?;
-        let compaction_system = self.runtime.compaction_system_prompt();
 
         let lease = self.sessions.try_begin_operation(
             session_id,
@@ -296,13 +322,13 @@ impl SessionController {
 
         let mut transcript = self.sessions.data().transcript_blocking(session_id)?;
         Session::snip_stale_results(&mut transcript);
-        let budget = BudgetPolicy::new(session_binding.context_window);
+        let budget = BudgetPolicy::new(compaction_request.context_window);
         let local_count = budget.token_count(&transcript, 0);
         let occupancy = ring_occupancy(
             provider_occupancy_prompt(&self.sessions, session_id),
             local_count,
         );
-        if !manual_compact_eligible(session_binding.context_window, occupancy) {
+        if !manual_compact_eligible(compaction_request.context_window, occupancy) {
             return Err(LitecodeError::NothingToCompact);
         }
         if !CompactPolicy::can_compact(&budget, &transcript) {
@@ -310,7 +336,7 @@ impl SessionController {
         }
 
         if let Some(proj) = self.projection_mut(session_id) {
-            proj.context_window = session_binding.context_window;
+            proj.context_window = compaction_request.context_window;
             proj.context_tokens_estimate = local_count;
             proj.context_token_breakdown = compute_token_breakdown(&transcript);
         }
@@ -335,8 +361,7 @@ impl SessionController {
                     &budget,
                     &sessions,
                     &sid,
-                    compaction_binding.compact_call(),
-                    &compaction_system,
+                    &compaction_request,
                     crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                     &cancel,
                     Some(&op_id),

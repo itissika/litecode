@@ -271,13 +271,7 @@ async fn prepare_snapshot(
         .compact_step(
             sessions,
             sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &baseline,
             step,
@@ -654,13 +648,7 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
         .compact_step(
             &sessions,
             &sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &baseline,
             1,

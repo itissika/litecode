@@ -566,7 +566,7 @@ mod tests {
     use crate::authority::responses::{
         Item, MessageItem, OutputMessage, OutputStatus, ResponseTextDeltaEvent,
     };
-    
+
     use crate::provider_catalog::ProviderCatalog;
     use crate::types::{assistant_text, user_text};
     use std::path::Path;
@@ -623,6 +623,7 @@ endpoint_type = "responses"
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
+            purpose: crate::llm::RequestPurpose::Main,
         }
     }
 
@@ -1156,5 +1157,4 @@ endpoint_type = "responses"
         assert!(message.contains("text/event-stream"), "{message}");
         assert!(message.contains("upstream exploded"), "{message}");
     }
-
 }

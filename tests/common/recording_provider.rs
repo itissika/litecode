@@ -13,9 +13,15 @@ use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
 pub struct CapturedLlmRequest {
+    pub model: String,
     pub instructions: String,
     pub tools: Vec<serde_json::Value>,
     pub input: Vec<serde_json::Value>,
+    pub max_output_tokens: u32,
+    pub thinking: litecode::platform_knobs::ThinkingSpec,
+    pub purpose: litecode::llm::RequestPurpose,
+    /// Full product request, including typed Items and ToolDefs.
+    pub request: ModelRequest,
 }
 
 fn item_json(item: &Item) -> serde_json::Value {
@@ -28,6 +34,7 @@ fn items_json(items: &[Item]) -> Vec<serde_json::Value> {
 
 pub fn capture_request(request: &ModelRequest) -> CapturedLlmRequest {
     CapturedLlmRequest {
+        model: request.model.clone(),
         instructions: request.instructions.clone(),
         tools: request
             .tools
@@ -41,6 +48,10 @@ pub fn capture_request(request: &ModelRequest) -> CapturedLlmRequest {
             })
             .collect(),
         input: items_json(&request.input),
+        max_output_tokens: request.max_output_tokens,
+        thinking: request.thinking,
+        purpose: request.purpose,
+        request: request.clone(),
     }
 }
 
@@ -96,6 +107,11 @@ fn emit_in_progress_added(
             let mut msg = msg.clone();
             msg.status = OutputStatus::InProgress;
             OutputItem::Message(msg)
+        }
+        Item::Reasoning(reasoning) => {
+            let mut reasoning = reasoning.clone();
+            reasoning.status = Some(OutputStatus::InProgress);
+            OutputItem::Reasoning(reasoning)
         }
         _ => return,
     };

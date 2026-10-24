@@ -104,8 +104,7 @@ impl AgentDeps for AgentRuntime {
             return Ok(false);
         }
 
-        let compaction_binding = self.runtime_handle.resolve_compaction_binding()?;
-        let compaction_system = self.runtime_handle.compaction_system_prompt();
+        let compaction_request = self.compaction_request_context()?;
 
         // Fail-open: a stale-plan settlement error must not abort the turn.
         if let Err(error) = self.sessions.settle_stale_plan(&self.session_id) {
@@ -121,8 +120,7 @@ impl AgentDeps for AgentRuntime {
             .compact_step(
                 &self.sessions,
                 &self.session_id,
-                compaction_binding.compact_call(),
-                &compaction_system,
+                &compaction_request,
                 crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                 &self.prompt_usage_baseline,
                 step,
@@ -724,6 +722,7 @@ impl AgentRuntime {
             // codec gates on, not a per-turn instruction.
             json_output: false,
             session_id: Some(self.session_id.clone()),
+            purpose: crate::llm::RequestPurpose::Main,
         };
         self.emit_llm_request_built(&request, token_count, &health);
         Ok((request, origin_seq))
@@ -1124,18 +1123,12 @@ pub(crate) fn classify_llm_request_health(input: LlmRequestHealthInput) -> LlmRe
 }
 
 #[cfg(test)]
-mod should_stop_tests {
-    
-    
-    
-
-}
+mod should_stop_tests {}
 
 #[cfg(test)]
 mod estimate_body_bytes_tests {
     use super::estimate_request_body_bytes;
     use crate::llm::ModelRequest;
-    
 
     fn request(input: Vec<crate::types::Item>) -> ModelRequest {
         ModelRequest {
@@ -1147,6 +1140,7 @@ mod estimate_body_bytes_tests {
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: None,
+            purpose: crate::llm::RequestPurpose::Main,
         }
     }
 
@@ -1165,10 +1159,4 @@ fn parent_notice_reason(notice: &crate::tools::subagent::ParentNotice) -> String
 }
 
 #[cfg(test)]
-mod request_health_tests {
-    
-    
-    
-    
-
-}
+mod request_health_tests {}

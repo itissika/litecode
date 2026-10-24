@@ -9,9 +9,8 @@
 //! the tail of the previous request, so the cached prefix stays intact. The
 //! persisted transcript is never mutated.
 //!
-//! Compaction serializes history as one text prompt. [`strip_media_for_summary`]
-//! removes every media part before that JSON is built, so stored data URLs are
-//! not sent to the summarizer.
+//! Compaction reuses the same model projection; it never serializes a separate
+//! text prompt or strips media outside this one projection.
 
 use crate::authority::responses::{
     FunctionCallOutput, FunctionCallOutputItemParam, InputContent, InputRole, InputTextContent,
@@ -62,13 +61,6 @@ pub fn drop_stale_media(items: &mut [Item]) -> Vec<bool> {
         }
     }
     rebased
-}
-
-/// Remove every image/file part before a transcript is serialized for compact.
-pub fn strip_media_for_summary(items: &mut [Item]) {
-    for item in items.iter_mut() {
-        strip_item_media(item);
-    }
 }
 
 fn is_model_produced(item: &Item) -> bool {
@@ -330,19 +322,5 @@ mod tests {
             }
             other => panic!("expected user message, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn summary_strip_removes_every_media_part() {
-        let blob = format!("data:image/png;base64,{}", "A".repeat(80));
-        let mut items = vec![
-            tool_image("c1", &blob),
-            crate::types::user_message("", &["litecode-media:abc.png".into()]),
-        ];
-        strip_media_for_summary(&mut items);
-        assert_eq!(media_count(&items), 0);
-        let rendered = format!("{items:?}");
-        assert!(!rendered.contains("data:image"));
-        assert!(!rendered.contains("litecode-media:"));
     }
 }

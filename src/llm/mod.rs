@@ -14,7 +14,9 @@ mod request;
 use std::sync::Arc;
 
 pub use provider::LlmProvider;
-pub use request::{ModelRequest, ToolDef};
+pub use request::{
+    COMPACTION_INSTRUCTION, CompactionRequestContext, ModelRequest, RequestPurpose, ToolDef,
+};
 
 /// Replay rules: ids stay off the wire except a summary-replay host's own
 /// reasoning id, ciphertext only to the provider, protocol, and model that
@@ -38,20 +40,6 @@ pub(crate) use codec::stream_contract::{StreamItemAccumulator, item_id_of, mark_
 
 use crate::provider_catalog::ResolvedModel;
 use crate::types::Result;
-
-/// Compact request context: codec + credentials + wire model id.
-///
-/// No vendor thinking strings. Callers map a [crate::runtime::TurnLlmBinding]
-/// via `compact_call()`; [ModelRequest::compact] always sets thinking Off.
-#[derive(Clone, Copy)]
-pub struct CompactLlmCall<'a> {
-    pub provider: &'a dyn LlmProvider,
-    pub api_key: &'a str,
-    pub model: &'a str,
-    /// The summarizer's own context window. The compact prompt is sized to it,
-    /// not to the session being compacted. `0` means unknown: no cap.
-    pub context_window: usize,
-}
 
 /// Construct the codec that serves a resolved catalog model.
 pub fn provider_from_model(model: Arc<ResolvedModel>) -> Result<Box<dyn LlmProvider>> {

@@ -20,9 +20,7 @@ use litecode::session::manager::SessionManager;
 use litecode::session::surface::project_working_pairs;
 use litecode::session::task_state::TaskReminders;
 use litecode::session::{WorkingRow, fold_surface};
-use litecode::types::{
-    Item, LitecodeError, item_text_preview, user_text,
-};
+use litecode::types::{Item, LitecodeError, item_text_preview, user_text};
 
 use common::fake_deps::{assistant_text_item, function_call_item};
 use common::scripted_provider::ScriptedProvider;
@@ -95,13 +93,7 @@ async fn prepare(
         .compact_step(
             sessions,
             sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &prompt_baseline,
             step,
@@ -169,13 +161,7 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
         &budget,
         &sessions,
         &sid,
-        litecode::llm::CompactLlmCall {
-            provider: &provider,
-            api_key: "key",
-            model: "m",
-            context_window: 0,
-        },
-        "system",
+        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
         1024,
         &CancellationToken::new(),
         None,
@@ -219,13 +205,7 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
         &budget,
         &sessions,
         &sid,
-        litecode::llm::CompactLlmCall {
-            provider: &provider,
-            api_key: "key",
-            model: "m",
-            context_window: 0,
-        },
-        "system",
+        &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
         1024,
         &CancellationToken::new(),
         None,
@@ -499,13 +479,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
         .compact_step(
             &sessions,
             &sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &prompt_baseline,
             1,
@@ -592,13 +566,7 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
         .compact_step(
             &sessions,
             &sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &prompt_baseline,
             1,
@@ -686,13 +654,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .compact_step(
             &sessions,
             &sid,
-            litecode::llm::CompactLlmCall {
-                provider: &provider,
-                api_key: "key",
-                model: "m",
-                context_window: 0,
-            },
-            "system",
+            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
             1024,
             &prompt_baseline,
             2,
@@ -1195,6 +1157,4 @@ fn commit_after_revert_discards_uncommitted_delta() {
     );
 }
 
-
 // ── PROBE B: unmatched tool output stays on the log; Surface omits it ────────
-

@@ -124,36 +124,6 @@ impl RuntimeHandle {
         self.settings_revision.load(Ordering::Acquire)
     }
 
-    /// Resolve the hidden compaction agent for a standalone compact operation.
-    ///
-    /// Session-blind on purpose: compaction never inherits the compacted
-    /// session's model / tier / context mode.
-    pub fn resolve_compaction_binding(&self) -> Result<TurnLlmBinding> {
-        let mut binding = llm_resolve::binding_for_agent(
-            &self.resolved,
-            &mut self.provider_registry.lock().unwrap(),
-            "compaction",
-        )?;
-        if let Some(provider) = &self.test_llm_override {
-            binding.provider = Arc::clone(provider);
-        }
-        Ok(binding)
-    }
-
-    pub fn compaction_system_prompt(&self) -> String {
-        self.resolved
-            .agents()
-            .get("compaction")
-            .map(crate::config::bridge::agent_config_from_profile)
-            .map(|agent| crate::context_pipeline::build_system_prompt("compaction", &agent, None))
-            .unwrap_or_else(|| {
-                crate::config::global_db::builtin_prompt_for("compaction")
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
-            })
-    }
-
     /// Reload named settings slices when the writer generation advanced.
     /// Engine reconcile runs only when `docs` contains `engines`.
     pub fn apply(&mut self, docs: &[crate::config::DocId]) -> Result<()> {
@@ -328,10 +298,9 @@ impl Clone for RuntimeHandle {
 ///
 /// Identity is the ONLY thing that differs between a primary session and a
 /// subagent child at spawn time. Runtime config (model / thinking tier / context
-/// mode → effective window) never forks: every turn resolves it from the row of
-/// the session it runs in (`resolve_session_llm`). Compaction is the single
-/// deliberate exception and keeps its own session-blind entry point
-/// (`resolve_compaction_binding`).
+/// mode -> effective window) never forks: every turn and its compaction call
+/// mode resolve from the row of the session they run in
+/// (`resolve_session_llm`).
 #[derive(Clone, Debug, Default)]
 pub enum AgentIdentity {
     /// Human / idle turns: the session's sticky `agent_id`, which must be a
@@ -937,6 +906,120 @@ impl AgentRuntime {
         }
     }
 
+    /// Initialize the same active tool set the main request uses.
+    ///
+    /// Public so a standalone compaction call can freeze the session's main
+    /// request shape without copying the lazy tool-build path.
+    pub async fn ensure_tooling_initialized(&mut self) {
+        if self.tool_pipeline.is_some() {
+            return;
+        }
+        let Some(params) = self.build_tool_params.take() else {
+            return;
+        };
+        let permission = PermissionEngine::resolver(
+            params.runtime.resolved.clone(),
+            &params.agent_name,
+            params.depth,
+        );
+        let permission_sink = Arc::new(CancellingPermissionSink::new(
+            Arc::clone(&params.permission_sink),
+            params.cancel.clone(),
+        ));
+        let permission_sink = phase::PhasePermissionSink::wrap(
+            permission_sink,
+            Arc::clone(&self.observer),
+            Arc::clone(&self.current_step),
+        );
+        let data_root = self.sessions.data_root_path();
+        let spill_threshold = output::DEFAULT_SPILL_THRESHOLD;
+        let write_lock = crate::tool::write_lock::process_write_lock();
+        let session_reader = self.sessions.reader();
+        let note_sessions = Arc::clone(&self.sessions);
+        let note_sid = self.session_id.clone();
+        let file_note: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync> = Arc::new(move |paths| {
+            note_sessions.note_touched_files(&note_sid, paths);
+        });
+        let plan_sessions = Arc::clone(&self.sessions);
+        let plan_sid = self.session_id.clone();
+        let plan_touch: crate::tool::executor::PlanTouch = Arc::new(move |call| {
+            plan_sessions.note_plan_tool_touch(&plan_sid, call);
+        });
+        let code_host = Some(Arc::new(
+            CodeToolHost::new(
+                permission.clone(),
+                self.base_ctx.clone(),
+                params.agent_name.to_string(),
+                Arc::clone(&permission_sink),
+                data_root.clone(),
+                Arc::clone(&write_lock),
+                Some(session_reader.clone()),
+            )
+            .with_file_note(Arc::clone(&file_note))
+            .with_plan_touch(Arc::clone(&plan_touch)),
+        ));
+
+        let tools_lap = crate::telemetry::latency::lap("build_tool_list");
+        let tools = build_tool_list(
+            &params.runtime,
+            &params.agent_name,
+            params.depth,
+            params.cancel.clone(),
+            &params.parent_session_id,
+            Arc::clone(&params.sessions),
+            code_host,
+        )
+        .await;
+        tools_lap.done();
+
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        tracing::debug!(
+            target: "litecode.debug.startup",
+            tools_count = tool_names.len(),
+            tools = ?tool_names,
+            agent = %params.agent_name,
+            "agent initialized (lazy)"
+        );
+
+        let runtime_ctx = Arc::new(RuntimeContext::new(
+            tools,
+            permission,
+            self.base_ctx.clone(),
+            params.agent_name.to_string(),
+            permission_sink,
+            params.cancel.clone(),
+            data_root,
+            spill_threshold,
+            write_lock,
+            Some(session_reader),
+        ));
+        let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
+        tool_pipeline.bind_session(self.session_id.clone());
+        tool_pipeline.set_file_note(file_note);
+        tool_pipeline.set_plan_touch(plan_touch);
+        self.runtime_ctx = Some(runtime_ctx);
+        self.tool_pipeline = Some(tool_pipeline);
+    }
+
+    /// Snapshot the exact main request shape for a compaction call mode.
+    ///
+    /// This intentionally reads the live turn binding, assembled instructions,
+    /// and active tool schemas. It never falls back to the hidden compaction
+    /// agent/profile.
+    pub fn compaction_request_context(&self) -> Result<crate::llm::CompactionRequestContext> {
+        let runtime_ctx = self.runtime_ctx.as_ref().ok_or_else(|| {
+            LitecodeError::Config(
+                "compaction requires the main turn's active tool set; tooling is not initialized"
+                    .into(),
+            )
+        })?;
+        Ok(self.turn_llm.compaction_context(
+            self.instructions.clone(),
+            runtime_ctx.tool_defs(),
+            self.session_id.clone(),
+        ))
+    }
+
     pub async fn run(&mut self, user_prompt: &str) -> Result<String> {
         let step_max = self.agent_config.max_steps;
         self.run_with_turn(
@@ -966,93 +1049,7 @@ impl AgentRuntime {
         );
         diagnostics::note_wire_pointer(&data_root_for_diag, &self.session_id);
         self.latency_turn_start = crate::telemetry::latency::now();
-        // Lazy-init: build tool list (async MCP schema fetch) on first turn.
-        if self.tool_pipeline.is_none() {
-            let params = self.build_tool_params.take().unwrap();
-            let permission = PermissionEngine::resolver(
-                params.runtime.resolved.clone(),
-                &params.agent_name,
-                params.depth,
-            );
-            let permission_sink = Arc::new(CancellingPermissionSink::new(
-                Arc::clone(&params.permission_sink),
-                params.cancel.clone(),
-            ));
-            let permission_sink = phase::PhasePermissionSink::wrap(
-                permission_sink,
-                Arc::clone(&self.observer),
-                Arc::clone(&self.current_step),
-            );
-            let data_root = self.sessions.data_root_path();
-            let spill_threshold = output::DEFAULT_SPILL_THRESHOLD;
-            let write_lock = crate::tool::write_lock::process_write_lock();
-            let session_reader = self.sessions.reader();
-            let note_sessions = Arc::clone(&self.sessions);
-            let note_sid = self.session_id.clone();
-            let file_note: Arc<dyn Fn(&[std::path::PathBuf]) + Send + Sync> =
-                Arc::new(move |paths| {
-                    note_sessions.note_touched_files(&note_sid, paths);
-                });
-            let plan_sessions = Arc::clone(&self.sessions);
-            let plan_sid = self.session_id.clone();
-            let plan_touch: crate::tool::executor::PlanTouch = Arc::new(move |call| {
-                plan_sessions.note_plan_tool_touch(&plan_sid, call);
-            });
-            let code_host = Some(Arc::new(
-                CodeToolHost::new(
-                    permission.clone(),
-                    self.base_ctx.clone(),
-                    params.agent_name.to_string(),
-                    Arc::clone(&permission_sink),
-                    data_root.clone(),
-                    Arc::clone(&write_lock),
-                    Some(session_reader.clone()),
-                )
-                .with_file_note(Arc::clone(&file_note))
-                .with_plan_touch(Arc::clone(&plan_touch)),
-            ));
-
-            let tools_lap = crate::telemetry::latency::lap("build_tool_list");
-            let tools = build_tool_list(
-                &params.runtime,
-                &params.agent_name,
-                params.depth,
-                params.cancel.clone(),
-                &params.parent_session_id,
-                Arc::clone(&params.sessions),
-                code_host,
-            )
-            .await;
-            tools_lap.done();
-
-            let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-            tracing::debug!(
-                target: "litecode.debug.startup",
-                tools_count = tool_names.len(),
-                tools = ?tool_names,
-                agent = %params.agent_name,
-                "agent initialized (lazy)"
-            );
-
-            let runtime_ctx = Arc::new(RuntimeContext::new(
-                tools,
-                permission,
-                self.base_ctx.clone(),
-                params.agent_name.to_string(),
-                permission_sink,
-                params.cancel.clone(),
-                data_root,
-                spill_threshold,
-                write_lock,
-                Some(session_reader),
-            ));
-            let mut tool_pipeline = ToolPipeline::new(Arc::clone(&runtime_ctx));
-            tool_pipeline.bind_session(self.session_id.clone());
-            tool_pipeline.set_file_note(file_note);
-            tool_pipeline.set_plan_touch(plan_touch);
-            self.runtime_ctx = Some(runtime_ctx);
-            self.tool_pipeline = Some(tool_pipeline);
-        }
+        self.ensure_tooling_initialized().await;
 
         tracing::info!(
             session_id = %self.session_id,
@@ -1327,20 +1324,7 @@ fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
 }
 
 #[cfg(test)]
-mod pending_snapshot_tests {
-    
-    
-    
-    
-
-    
-
-}
+mod pending_snapshot_tests {}
 
 #[cfg(test)]
-mod turn_error_kind_tests {
-    
-    
-    
-
-}
+mod turn_error_kind_tests {}

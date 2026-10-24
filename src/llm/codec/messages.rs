@@ -1058,8 +1058,8 @@ fn content_string(content: &Value) -> String {
 mod tests {
     use super::*;
     use crate::authority::responses::{
-        AssistantRole, FunctionToolCall,
-        OutputMessage, OutputStatus, OutputTextContent, ReasoningTextContent, ResponseStreamEvent,
+        AssistantRole, FunctionToolCall, OutputMessage, OutputStatus, OutputTextContent,
+        ReasoningTextContent, ResponseStreamEvent,
     };
     use crate::llm::request::{ModelRequest, ToolDef};
     use crate::provider_catalog::ProviderCatalog;
@@ -1112,6 +1112,7 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             thinking: ModelRequest::sample_thinking(),
             json_output: false,
             session_id: Some("ses_1".into()),
+            purpose: crate::llm::RequestPurpose::Main,
         }
     }
 
@@ -1577,5 +1578,4 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
             other => panic!("expected message, got {other:?}"),
         }
     }
-
 }

@@ -497,7 +497,12 @@ impl MessagesSynth {
         }
 
         let (status, incomplete) = terminal_status(self.stop_reason.as_deref());
-        let output = self.output_values();
+        let output_status = if status == "completed" {
+            OutputStatus::Completed
+        } else {
+            OutputStatus::Incomplete
+        };
+        let output = self.output_values(output_status);
         let seq = self.bump();
         let id = self.message_id.clone().unwrap_or_else(synth_id);
         let model = self.model.clone();
@@ -527,7 +532,7 @@ impl MessagesSynth {
         Ok(events)
     }
 
-    fn output_values(&self) -> Vec<Value> {
+    fn output_values(&self, status: OutputStatus) -> Vec<Value> {
         self.blocks
             .values()
             .map(|block| match &block.kind {
@@ -537,7 +542,7 @@ impl MessagesSynth {
                         "id": block.item_id,
                         "summary": [],
                         "content": [{"type": "reasoning_text", "text": text}],
-                        "status": "completed"
+                        "status": status
                     });
                     if !signature.is_empty() {
                         item["encrypted_content"] = Value::String(signature.clone());
@@ -548,14 +553,14 @@ impl MessagesSynth {
                     "type": "reasoning",
                     "id": block.item_id,
                     "summary": [],
-                    "status": "completed",
+                    "status": status,
                     "encrypted_content": format!("{REDACTED_PREFIX}{data}"),
                 }),
                 OpenKind::Text { text } => serde_json::json!({
                     "type": "message",
                     "id": block.item_id,
                     "role": "assistant",
-                    "status": "completed",
+                    "status": status,
                     "content": [{"type": "output_text", "text": text, "annotations": []}]
                 }),
                 OpenKind::Tool {
@@ -569,7 +574,7 @@ impl MessagesSynth {
                     "call_id": call_id,
                     "name": name,
                     "arguments": if arguments.is_empty() { "{}".to_string() } else { arguments.clone() },
-                    "status": "completed"
+                    "status": status
                 }),
             })
             .collect()
@@ -597,7 +602,14 @@ enum DeltaOut {
 }
 
 fn terminal_status(stop_reason: Option<&str>) -> (&'static str, Option<String>) {
-    match stop_reason.unwrap_or("end_turn") {
+    let Some(stop_reason) = stop_reason else {
+        // `message_stop` is not stop evidence by itself. A provider that never
+        // sent `message_delta.delta.stop_reason` cannot produce a completed
+        // summary checkpoint.
+        tracing::warn!("messages stream ended without stop_reason");
+        return ("incomplete", Some("missing_stop_reason".into()));
+    };
+    match stop_reason {
         "end_turn" | "tool_use" | "stop_sequence" => ("completed", None),
         "max_tokens" | "model_context_window_exceeded" => {
             ("incomplete", Some("max_output_tokens".into()))
@@ -748,6 +760,30 @@ mod tests {
     }
 
     #[test]
+    fn missing_stop_reason_marks_message_output_incomplete() {
+        let (_, response) = run(&[
+            start_message(),
+            serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+            serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"malformed summary"}}),
+            serde_json::json!({"type":"content_block_stop","index":0}),
+            serde_json::json!({"type":"message_stop"}),
+        ]);
+        assert_eq!(
+            response.status,
+            crate::authority::responses::Status::Incomplete
+        );
+        let message = response
+            .output
+            .iter()
+            .find_map(|item| match item {
+                OutputItem::Message(message) => Some(message),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(message.status, OutputStatus::Incomplete);
+    }
+
+    #[test]
     fn thinking_text_and_tool_round_trip_with_the_signature() {
         let (events, response) = run(&[
             start_message(),
@@ -832,5 +868,4 @@ mod tests {
             vec![("toolu_a", "{}", "read"), ("toolu_b", "{}", "grep")]
         );
     }
-
 }
