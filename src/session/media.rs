@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use sha2::{Digest, Sha256};
 
-use crate::authority::responses::{InputContent, InputTextContent, MessageItem};
+use crate::authority::responses::{
+    FunctionCallOutput, InputContent, InputTextContent, MessageItem,
+};
 use crate::types::{Item, LitecodeError, MediaArtifact, MediaSource, Result};
 
 /// Prefix of an `input_image.image_url` that names a file under `media/`.
@@ -23,6 +25,30 @@ pub const MEDIA_REF_PREFIX: &str = "litecode-media:";
 pub const MAX_USER_IMAGES: usize = 16;
 
 pub const MAX_MEDIA_BLOB_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Whether an Item carries any image/file content. Used by the mechanical
+/// pruner and by replay projection to rebuild media-rebase provenance from the
+/// persisted replacement source seq.
+pub fn item_has_media(item: &Item) -> bool {
+    match item {
+        Item::Message(MessageItem::Input(message)) => message.content.iter().any(|part| {
+            matches!(
+                part,
+                InputContent::InputImage(_) | InputContent::InputFile(_)
+            )
+        }),
+        Item::FunctionCallOutput(output) => match &output.output {
+            FunctionCallOutput::Text(_) => false,
+            FunctionCallOutput::Content(parts) => parts.iter().any(|part| {
+                matches!(
+                    part,
+                    InputContent::InputImage(_) | InputContent::InputFile(_)
+                )
+            }),
+        },
+        _ => false,
+    }
+}
 
 pub fn media_dir(data_root: &Path) -> PathBuf {
     data_root.join("media")
@@ -276,9 +302,4 @@ pub fn resolve_media_artifact_url(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-
-}
+mod tests {}

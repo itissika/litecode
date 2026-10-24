@@ -128,6 +128,10 @@ pub struct WorkingRow {
     pub log_seq: Option<Seq>,
     /// Explicit payload identity; never inferred from serialized Item JSON.
     pub payload: WorkingPayload,
+    /// This surface node is a persisted mechanical-prune replacement whose
+    /// shadowed source carried media. Rebuilt from `source_seqs` on every cold
+    /// load; the projection uses it to preserve media-rebase signatures.
+    pub replacement_media: bool,
 }
 
 impl WorkingRow {
@@ -135,6 +139,7 @@ impl WorkingRow {
         Self {
             log_seq: None,
             payload: WorkingPayload::item(item),
+            replacement_media: false,
         }
     }
 
@@ -142,6 +147,7 @@ impl WorkingRow {
         Self {
             log_seq: None,
             payload: WorkingPayload::item_with_kind(kind, item),
+            replacement_media: false,
         }
     }
 
@@ -149,6 +155,7 @@ impl WorkingRow {
         Self {
             log_seq: Some(seq),
             payload: WorkingPayload::item(item),
+            replacement_media: false,
         }
     }
 
@@ -156,6 +163,18 @@ impl WorkingRow {
         Self {
             log_seq: Some(seq),
             payload: WorkingPayload::item_with_kind(kind, item),
+            replacement_media: false,
+        }
+    }
+
+    /// A persisted replacement row loaded from the append-only log. The
+    /// `replacement_media` flag is derived from its `source_seqs` at load time,
+    /// never stored as a new Item/role attribute.
+    pub fn persisted_replacement(seq: Seq, item: Item, replacement_media: bool) -> Self {
+        Self {
+            log_seq: Some(seq),
+            payload: WorkingPayload::item(item),
+            replacement_media,
         }
     }
 
@@ -163,6 +182,7 @@ impl WorkingRow {
         Self {
             log_seq: None,
             payload: WorkingPayload::Checkpoint(checkpoint),
+            replacement_media: false,
         }
     }
 
@@ -170,6 +190,7 @@ impl WorkingRow {
         Self {
             log_seq: Some(seq),
             payload: WorkingPayload::Checkpoint(checkpoint),
+            replacement_media: false,
         }
     }
 
@@ -219,6 +240,10 @@ pub struct CompactedView {
     pub items: Vec<Item>,
     pub item_seqs: Vec<Option<Seq>>,
     pub inherited_before_checkpoint: Vec<bool>,
+    /// Parallel to `items`: this row is a persisted media replacement, so the
+    /// model projection must keep the media-rebase boundary even though the
+    /// current row no longer contains media.
+    pub replacement_media: Vec<bool>,
 }
 
 impl CompactedView {
@@ -234,9 +259,11 @@ impl CompactedView {
         );
         let mut items = Vec::with_capacity(rows.len());
         let mut item_seqs = Vec::with_capacity(rows.len());
+        let mut replacement_media = Vec::with_capacity(rows.len());
         for row in rows {
             items.push(row.payload.model_item());
             item_seqs.push(row.log_seq);
+            replacement_media.push(row.replacement_media);
         }
         let inherited_before_checkpoint = crate::context_pipeline::summary::minted_before_summary(
             &item_seqs,
@@ -247,6 +274,7 @@ impl CompactedView {
             items,
             item_seqs,
             inherited_before_checkpoint,
+            replacement_media,
         })
     }
 

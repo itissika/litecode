@@ -160,6 +160,9 @@ pub struct SessionMeta {
     pub context_mode: String,
     pub updated_at: i64,
     pub compacted_seq: Option<Seq>,
+    /// Latest mechanical-prune surface replacement seq. Provider bills whose
+    /// request header is at or before this watermark are retired.
+    pub surface_rewrite_seq: Seq,
     pub spine_from: Seq,
     pub todos: Vec<Value>,
     pub plan_slug: Option<String>,

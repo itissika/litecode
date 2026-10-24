@@ -28,7 +28,7 @@ pub mod workspace_lock;
 pub use crate::types::StopOrigin;
 pub use data::{
     CommitReceipt, FaultKind, MutationId, ReadValue, SessionData, SessionDataReader,
-    SessionMutation, SessionRead, SessionRevision, WRITER_QUEUE_CAPACITY,
+    SessionMutation, SessionRead, SessionRevision, SurfaceReplacement, WRITER_QUEUE_CAPACITY,
 };
 pub use estimate::{
     ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compute_token_breakdown,

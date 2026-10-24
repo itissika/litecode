@@ -572,6 +572,7 @@ impl SessionManager {
                 context_mode: "standard".into(),
                 updated_at: 0,
                 compacted_seq: None,
+                surface_rewrite_seq: 0,
                 spine_from: 0,
                 todos: Vec::new(),
                 plan_slug: None,
@@ -3580,16 +3581,10 @@ mod request_origin_tests {
             "a failed switch must not advance the revision"
         );
     }
-
 }
 
 #[cfg(test)]
-mod turn_step_tests {
-    
-    
-    
-
-}
+mod turn_step_tests {}
 
 fn apply_event_to_progress(progress: &mut TurnProgress, ev: &InternalEvent) -> bool {
     match ev {
@@ -3634,8 +3629,7 @@ fn apply_event_to_progress(progress: &mut TurnProgress, ev: &InternalEvent) -> b
 mod child_session_tests {
     use super::*;
     use crate::config::TurnGuard;
-    
-    
+
     use std::sync::Arc;
 
     fn wp090_mgr(dir: &tempfile::TempDir) -> (Arc<TurnGuard>, Arc<SessionManager>) {
@@ -4214,19 +4208,10 @@ mod child_session_tests {
             .expect("idle descendant must permit parent delete");
         drop(lease);
     }
-
 }
 
 #[cfg(test)]
-mod plan_settle_tests {
-    
-    
-    
-    
-    
-    
-
-}
+mod plan_settle_tests {}
 
 #[cfg(test)]
 mod pending_message_tests {

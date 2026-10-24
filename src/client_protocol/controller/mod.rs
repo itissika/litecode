@@ -308,22 +308,24 @@ impl Projection {
         let rollup = sessions
             .provider_usage_rollup(&session_id)
             .unwrap_or_default();
-        let compacted_seq = sessions
-            .data()
-            .meta_blocking(&session_id)
-            .ok()
-            .and_then(|meta| meta.compacted_seq);
-        // A bill newer than the last compact is the occupancy prompt. A compact
-        // after that bill retires it. No bill yet keeps the meter row.
-        let last_turn_token_stats =
-            crate::session::store::occupancy_usage(&rollup, compacted_seq, &meter).map(|usage| {
-                crate::client_protocol::protocol::TurnTokenStats {
-                    prompt_tokens: usage.prompt_tokens,
-                    completion_tokens: usage.completion_tokens,
-                    cache_hit_tokens: usage.cache_hit_tokens,
-                    cache_miss_tokens: usage.cache_miss_tokens,
-                }
-            });
+        let meta = sessions.data().meta_blocking(&session_id).ok();
+        let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
+        let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
+        // A bill newer than the last compact/surface rewrite is the occupancy
+        // prompt. A later checkpoint or mechanical prune retires it. No bill yet
+        // keeps the meter row.
+        let last_turn_token_stats = crate::session::store::occupancy_usage(
+            &rollup,
+            compacted_seq,
+            surface_rewrite_seq,
+            &meter,
+        )
+        .map(|usage| crate::client_protocol::protocol::TurnTokenStats {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            cache_hit_tokens: usage.cache_hit_tokens,
+            cache_miss_tokens: usage.cache_miss_tokens,
+        });
         let provider_billed_requests = rollup.request_count;
         let provider_billed_tokens = if provider_billed_requests == 0 {
             None

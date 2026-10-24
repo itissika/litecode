@@ -82,13 +82,36 @@ pub struct CommitReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitKind {
     Created,
-    Appended { seq: Seq },
-    Sealed { seqs: Vec<Seq> },
-    Truncated { from_seq: i64 },
-    Compacted { seq: Seq },
+    Appended {
+        seq: Seq,
+    },
+    Sealed {
+        seqs: Vec<Seq>,
+    },
+    Truncated {
+        from_seq: i64,
+    },
+    Compacted {
+        seq: Seq,
+    },
+    /// Replay-safe surface replacements appended by mechanical pruning.
+    Replaced {
+        seqs: Vec<Seq>,
+    },
     MetaUpdated,
     Deleted,
     Idempotent,
+}
+
+/// One append-only, replay-safe surface replacement. `start`/`end` identify
+/// the shadowed surface node(s); the new event cites `source_seqs` so the
+/// original log row remains intact.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceReplacement {
+    pub start: Seq,
+    pub end: Seq,
+    pub item: Item,
+    pub source_seqs: Vec<Seq>,
 }
 
 #[derive(Debug)]
@@ -193,6 +216,14 @@ pub enum SessionMutation {
         kept_from: Option<Seq>,
         expected_prefix: Option<usize>,
     },
+    /// One atomic batch of mechanical-prune surface replacements. Every
+    /// replacement is a new log event; the original rows are never deleted.
+    ReplaceSurface {
+        session_id: String,
+        expected_revision: u64,
+        operation_id: MutationId,
+        replacements: Vec<SurfaceReplacement>,
+    },
     SaveTaskState {
         session_id: String,
         expected_revision: u64,
@@ -267,6 +298,7 @@ impl SessionMutation {
             | Self::SealInProgress { operation_id, .. }
             | Self::CommitTurnDelta { operation_id, .. }
             | Self::Compact { operation_id, .. }
+            | Self::ReplaceSurface { operation_id, .. }
             | Self::SaveTaskState { operation_id, .. }
             | Self::SaveContextMeter { operation_id, .. }
             | Self::RecordProviderUsage { operation_id, .. }
@@ -293,6 +325,7 @@ impl SessionMutation {
             | Self::SealInProgress { session_id, .. }
             | Self::CommitTurnDelta { session_id, .. }
             | Self::Compact { session_id, .. }
+            | Self::ReplaceSurface { session_id, .. }
             | Self::SaveTaskState { session_id, .. }
             | Self::SaveContextMeter { session_id, .. }
             | Self::RecordProviderUsage { session_id, .. }
@@ -339,6 +372,9 @@ impl SessionMutation {
                 expected_revision, ..
             }
             | Self::Compact {
+                expected_revision, ..
+            }
+            | Self::ReplaceSurface {
                 expected_revision, ..
             }
             | Self::SaveTaskState {

@@ -17,7 +17,7 @@ use crate::types::{LitecodeError, Result};
 pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
 pub use command::{
     CommitKind, CommitReceipt, DirtySession, MutationId, ReadValue, SessionListPreview,
-    SessionListRow, SessionMutation, SessionRead, SessionRevision,
+    SessionListRow, SessionMutation, SessionRead, SessionRevision, SurfaceReplacement,
 };
 pub use reader::SessionReadPool;
 pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY};

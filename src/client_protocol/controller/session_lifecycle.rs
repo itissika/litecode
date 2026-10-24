@@ -325,7 +325,15 @@ impl SessionController {
             return Err(LitecodeError::NothingToCompact);
         }
         if !CompactPolicy::can_compact(&budget, &transcript) {
-            return Err(LitecodeError::NothingToCompact);
+            // A manual trigger may still be able to relieve pressure with
+            // deterministic pruning even when the whole prefix fits inside the
+            // keep-recent window and there is no summary cut. Admit that path;
+            // `compact_now` still runs prune before deciding whether to invoke
+            // the summarizer.
+            let rows = self.sessions.data().working_set_blocking(session_id)?;
+            if !CompactPolicy::can_prune(&rows, compaction_request.context_window) {
+                return Err(LitecodeError::NothingToCompact);
+            }
         }
 
         let sessions = Arc::clone(&self.sessions);

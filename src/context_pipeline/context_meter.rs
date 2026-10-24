@@ -368,11 +368,9 @@ pub fn persisted_occupancy_bill(
     sessions: &SessionManager,
     session_id: &str,
 ) -> Result<Option<OccupancyBill>> {
-    let compacted_seq = sessions
-        .data()
-        .meta_blocking(session_id)
-        .ok()
-        .and_then(|meta| meta.compacted_seq);
+    let meta = sessions.data().meta_blocking(session_id).ok();
+    let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
+    let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
     let rollup = sessions.provider_usage_rollup(session_id)?;
     let meter = sessions
         .data()
@@ -381,6 +379,7 @@ pub fn persisted_occupancy_bill(
     Ok(occupancy_bill_from(
         &ProviderPromptBaseline::default(),
         compacted_seq,
+        surface_rewrite_seq,
         &rollup,
         &meter,
     ))

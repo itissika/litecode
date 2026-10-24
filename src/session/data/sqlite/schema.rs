@@ -158,6 +158,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             checkpoint_seq    INTEGER NOT NULL DEFAULT 0,
             kept_from_seq     INTEGER NOT NULL DEFAULT 0,
             compacted_seq     INTEGER,
+            surface_rewrite_seq INTEGER NOT NULL DEFAULT 0,
             spine_from        INTEGER NOT NULL DEFAULT 0,
             subagent_depth    INTEGER NOT NULL DEFAULT 0,
             todos_json        TEXT NOT NULL DEFAULT '[]',
@@ -415,6 +416,15 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
         }
         if !cols.iter().any(|c| c == "plan_revision") {
             conn.execute("ALTER TABLE sessions ADD COLUMN plan_revision TEXT", [])?;
+        }
+        // Latest replay-safe surface replacement seq. A provider bill whose
+        // request header is at or before this watermark no longer describes the
+        // current prefix and must fall back to the local request envelope.
+        if !cols.iter().any(|c| c == "surface_rewrite_seq") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN surface_rewrite_seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
         }
         if !cols.iter().any(|c| c == "next_seq") {
             conn.execute(

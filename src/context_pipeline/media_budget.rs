@@ -91,6 +91,43 @@ fn end_of_turn_opened_at(items: &[Item], opener: usize) -> usize {
     items.len()
 }
 
+/// Reconstruct the media-rebase boundary for durable media replacements.
+///
+/// The original media is gone from the surface, so [`drop_stale_media`] can no
+/// longer see it. A replacement row still knows its position and source through
+/// `WorkingRow::replacement_media`; this marks the same dependent model outputs
+/// that dropping that media would have marked.
+pub fn rebased_after_media_replacements(items: &[Item], media_replacement: &[bool]) -> Vec<bool> {
+    let mut rebased = vec![false; items.len()];
+    for (index, is_replacement) in media_replacement.iter().enumerate() {
+        if !is_replacement {
+            continue;
+        }
+        match &items[index] {
+            Item::FunctionCallOutput(_) => {
+                let mut next = index + 1;
+                while next < items.len() && !is_model_produced(&items[next]) {
+                    next += 1;
+                }
+                while next < items.len() && is_model_produced(&items[next]) {
+                    rebased[next] = true;
+                    next += 1;
+                }
+            }
+            Item::Message(MessageItem::Input(message)) if message.role == InputRole::User => {
+                let turn_end = end_of_turn_opened_at(items, index);
+                for later in index + 1..turn_end {
+                    if is_model_produced(&items[later]) {
+                        rebased[later] = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    rebased
+}
+
 /// First index after the last final assistant answer: an output message with
 /// no tool call before the next user message.
 fn current_turn_start(items: &[Item]) -> usize {
@@ -322,5 +359,37 @@ mod tests {
             }
             other => panic!("expected user message, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn durable_media_replacement_rebuilds_messages_signed_reasoning_rebase() {
+        use crate::authority::responses::ReasoningItem;
+
+        let items = vec![
+            user_text("[image already viewed; removed from context]"),
+            Item::Reasoning(ReasoningItem {
+                id: Some("rs_media".into()),
+                summary: vec![],
+                content: None,
+                encrypted_content: Some("signature-bound-to-old-media".into()),
+                status: None,
+            }),
+            assistant_text("done"),
+            user_text("next turn"),
+        ];
+        let rebased = rebased_after_media_replacements(&items, &[true, false, false, false]);
+        assert_eq!(rebased, vec![false, true, true, false]);
+
+        let mut request_items = items.clone();
+        let stripped =
+            crate::llm::strip_rebased_signatures(&mut request_items, &rebased, "messages");
+        assert_eq!(stripped, 1, "Messages must strip the rebased signature");
+        let Item::Reasoning(reasoning) = &request_items[1] else {
+            panic!("expected reasoning");
+        };
+        assert!(
+            reasoning.encrypted_content.is_none(),
+            "signed reasoning after a durable media replacement must be rebased"
+        );
     }
 }

@@ -915,6 +915,24 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 CommitKind::Compacted { seq: seq as u64 },
             )
         }
+        SessionMutation::ReplaceSurface {
+            session_id,
+            expected_revision,
+            operation_id,
+            replacements,
+        } => {
+            let seqs = {
+                let session = ensure_live(state, &session_id)?;
+                session.replace_surface_items(&replacements)?
+            };
+            bump_receipt(
+                state,
+                &session_id,
+                &operation_id.0,
+                expected_revision,
+                CommitKind::Replaced { seqs },
+            )
+        }
         SessionMutation::SaveTaskState {
             session_id,
             expected_revision,

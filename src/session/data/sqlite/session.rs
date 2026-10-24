@@ -20,6 +20,7 @@ use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
     skip_empty_assistant_item, spine_working_payload, working_payload_with_item,
 };
+use crate::session::media::item_has_media;
 use crate::session::model::{CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION};
 use crate::session::snapshot;
 use crate::session::surface::{
@@ -126,16 +127,21 @@ impl ProviderUsageRollup {
 pub fn occupancy_usage(
     rollup: &ProviderUsageRollup,
     compacted_seq: Option<u64>,
+    surface_rewrite_seq: u64,
     meter: &SessionContextMeter,
 ) -> Option<ProviderUsage> {
     if let (Some(seq), Some(usage)) = (rollup.latest_seq, rollup.latest.clone()) {
-        let retired = compacted_seq.is_some_and(|compacted| compacted > seq);
-        if retired {
+        let compacted_retired = compacted_seq.is_some_and(|compacted| compacted > seq);
+        let rewritten_retired = surface_rewrite_seq > 0 && seq <= surface_rewrite_seq;
+        if compacted_retired || rewritten_retired {
             return None;
         }
         return Some(usage);
     }
-    if meter.is_empty() {
+    // No seq-bearing bill exists, so a stored meter row cannot prove it is
+    // newer than the last surface rewrite. Be conservative and let the caller
+    // measure the rewritten request locally instead of resurrecting old counts.
+    if surface_rewrite_seq > 0 || meter.is_empty() {
         None
     } else {
         Some(ProviderUsage::from_meter_last(meter))
@@ -297,6 +303,9 @@ struct LogProjection {
     payloads_by_seq: HashMap<Seq, WorkingPayload>,
     reminders_by_seq: HashMap<Seq, crate::reminder::Reminder>,
     compacted_seqs: HashSet<Seq>,
+    /// Surface replacement seqs that shadowed a row carrying media. Rebuilt
+    /// from `source_seqs` on load and used to preserve media-rebase semantics.
+    replacement_media: HashSet<Seq>,
     /// Seqs whose row is still in flight. Tracked from the log's own lifecycle
     /// state, never from the payload's `status` field.
     in_progress: HashSet<Seq>,
@@ -311,6 +320,7 @@ impl Default for LogProjection {
             payloads_by_seq: HashMap::new(),
             reminders_by_seq: HashMap::new(),
             compacted_seqs: HashSet::new(),
+            replacement_media: HashSet::new(),
             in_progress: HashSet::new(),
         }
     }
@@ -323,16 +333,28 @@ impl LogProjection {
     }
 
     fn apply_event(&mut self, event: &SessionEvent, item: Option<&Item>) -> Result<()> {
+        let mut media_rewritten = false;
         if let Some(plan) = plan_surface(&self.surface, event)? {
             if let crate::session::surface::SurfacePlan::Replace { start_idx, len, .. } = &plan {
                 let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
+                media_rewritten = matches!(event.surface_op, Some(SurfaceOp::Replace { .. }))
+                    && shadowed.iter().any(|seq| {
+                        self.payloads_by_seq
+                            .get(seq)
+                            .and_then(WorkingPayload::as_item)
+                            .is_some_and(item_has_media)
+                    });
                 for seq in shadowed {
                     self.payloads_by_seq.remove(&seq);
                     self.reminders_by_seq.remove(&seq);
                     self.compacted_seqs.remove(&seq);
+                    self.replacement_media.remove(&seq);
                 }
             }
             apply_plan(&mut self.surface, plan);
+        }
+        if media_rewritten {
+            self.replacement_media.insert(event.seq);
         }
         self.next_seq = self.next_seq.max(event.seq.saturating_add(1));
         self.active_max_seq = self.active_max_seq.max(event.seq as i64);
@@ -1224,6 +1246,7 @@ pub(crate) fn load_meta_on(
         context_mode,
         updated_at,
         compacted_seq,
+        surface_rewrite_seq,
         spine_from,
         todos_json,
         plan_slug,
@@ -1243,6 +1266,7 @@ pub(crate) fn load_meta_on(
         i64,
         Option<i64>,
         i64,
+        i64,
         String,
         Option<String>,
         Option<String>,
@@ -1251,7 +1275,8 @@ pub(crate) fn load_meta_on(
         .query_row(
             "SELECT project, created_at, parent_session_id, parent_call_id, responsibility, subagent_depth,
                     agent_id, model_id, thinking_tier, context_mode, updated_at,
-                    compacted_seq, spine_from, todos_json, active_plan_slug, plan_revision, last_message
+                    compacted_seq, surface_rewrite_seq, spine_from, todos_json, active_plan_slug,
+                    plan_revision, last_message
              FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
             |row| {
@@ -1273,6 +1298,7 @@ pub(crate) fn load_meta_on(
                     row.get(14)?,
                     row.get(15)?,
                     row.get(16)?,
+                    row.get(17)?,
                 ))
             },
         )
@@ -1284,6 +1310,11 @@ pub(crate) fn load_meta_on(
             })
         })
         .transpose()?;
+    let surface_rewrite_seq = Seq::try_from(surface_rewrite_seq).map_err(|_| {
+        LitecodeError::InvalidSessionEvent(format!(
+            "negative surface_rewrite_seq {surface_rewrite_seq}"
+        ))
+    })?;
     let spine_from = Seq::try_from(spine_from).map_err(|_| {
         LitecodeError::InvalidSessionEvent(format!("negative spine_from {spine_from}"))
     })?;
@@ -1301,6 +1332,7 @@ pub(crate) fn load_meta_on(
         context_mode,
         updated_at,
         compacted_seq,
+        surface_rewrite_seq,
         spine_from,
         todos: serde_json::from_str(&todos_json).unwrap_or_default(),
         plan_slug,
@@ -2066,6 +2098,7 @@ impl Session {
             .map(|(seq, payload)| WorkingRow {
                 log_seq: Some(seq),
                 payload,
+                replacement_media: projection.replacement_media.contains(&seq),
             })
             .collect())
     }
@@ -2083,6 +2116,24 @@ impl Session {
         let events = self.load_events()?;
         let surface = fold_surface(&events)?;
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
+        let events_by_seq: HashMap<Seq, &SessionEvent> =
+            events.iter().map(|event| (event.seq, event)).collect();
+        let replacement_media: HashSet<Seq> = events
+            .iter()
+            .filter(|event| node_set.contains(&event.seq))
+            .filter(|event| matches!(event.surface_op, Some(SurfaceOp::Replace { .. })))
+            .filter(|event| {
+                event.source_seqs.as_ref().is_some_and(|sources| {
+                    sources.iter().any(|seq| {
+                        events_by_seq
+                            .get(seq)
+                            .and_then(|source| item_from_event(source).ok())
+                            .is_some_and(|item| item_has_media(&item))
+                    })
+                })
+            })
+            .map(|event| event.seq)
+            .collect();
         let mut payloads_by_seq = HashMap::new();
         let mut reminders_by_seq = HashMap::new();
         let mut compacted_seqs = HashSet::new();
@@ -2121,6 +2172,7 @@ impl Session {
             payloads_by_seq,
             reminders_by_seq,
             compacted_seqs,
+            replacement_media,
             in_progress,
         };
         self.persisted_max_seq.set(projection.active_max_seq());
@@ -3196,6 +3248,102 @@ impl Session {
     /// older holes stay closed. See [`load_wire_seq_cursor_on`].
     pub fn wire_seq_cursor(&self) -> Result<(i64, u64)> {
         load_wire_seq_cursor_on(self.conn(), &self.id)
+    }
+
+    /// Append one replay-safe replacement event per mechanical-prune item.
+    ///
+    /// This is a single writer transaction: either the whole prune batch lands,
+    /// or none of it does. Shadowed rows stay in the append-only log; the new
+    /// event cites their seqs through `source_seqs` and the surface fold swaps
+    /// exactly that node. The replacement event keeps the original item shape
+    /// except for the pruned text/media payload.
+    pub fn replace_surface_items(
+        &self,
+        replacements: &[crate::session::data::command::SurfaceReplacement],
+    ) -> Result<Vec<Seq>> {
+        if replacements.is_empty() {
+            return Ok(Vec::new());
+        }
+        let _gate = self.lock_write();
+        let mut projection = self.projection.borrow().clone();
+        let tx = self.conn();
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut seqs = Vec::with_capacity(replacements.len());
+        for replacement in replacements {
+            if replacement.start != replacement.end {
+                return Err(LitecodeError::InvalidSessionEvent(
+                    "mechanical prune replacement must shadow one surface node".into(),
+                ));
+            }
+            if replacement.source_seqs.is_empty() {
+                return Err(LitecodeError::InvalidSessionEvent(
+                    "mechanical prune replacement requires source seqs".into(),
+                ));
+            }
+            let event_type = surface_event_type_of(&replacement.item);
+            if !event_type.is_surface_eligible() {
+                return Err(LitecodeError::InvalidSessionEvent(
+                    "mechanical prune replacement is not a surface item".into(),
+                ));
+            }
+            // Keep the replacement in its original step/turn grouping and carry
+            // the UI-only result data forward. The model does not read
+            // `result_data`, but history/search consumers must not lose the
+            // error/tool metadata because the text shrank.
+            let (turn_id, turn_seq, result_data): (String, i64, Option<String>) = tx
+                .query_row(
+                    "SELECT turn_id, turn_seq, result_data FROM transcript_items
+                     WHERE session_id = ?1 AND seq = ?2",
+                    rusqlite::params![self.id, replacement.start as i64],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?
+                .ok_or_else(|| {
+                    LitecodeError::InvalidSessionEvent(format!(
+                        "mechanical prune source seq {} is not in the log",
+                        replacement.start
+                    ))
+                })?;
+            let draft = EventDraft {
+                time: now,
+                event_type: event_type.clone(),
+                data: serde_json::to_value(&replacement.item)?,
+                surface_op: Some(SurfaceOp::Replace {
+                    start: replacement.start,
+                    end: replacement.end,
+                }),
+                source_seqs: Some(replacement.source_seqs.clone()),
+                ignorable: false,
+                state: LogState::Final,
+            };
+            let (seq, _) = self.admit_draft_in_tx(
+                &tx,
+                draft,
+                &turn_id,
+                turn_seq,
+                event_type.as_str(),
+                0,
+                &mut projection,
+            )?;
+            if let Some(result_data) = result_data {
+                tx.execute(
+                    "UPDATE transcript_items SET result_data = ?1
+                     WHERE session_id = ?2 AND seq = ?3",
+                    rusqlite::params![result_data, self.id, seq as i64],
+                )?;
+            }
+            seqs.push(seq);
+        }
+        let latest_rewrite_seq = seqs.last().copied().unwrap_or(0);
+        tx.execute(
+            "UPDATE sessions
+             SET updated_at = ?1,
+                 surface_rewrite_seq = max(surface_rewrite_seq, ?2)
+             WHERE id = ?3",
+            rusqlite::params![now, latest_rewrite_seq as i64, self.id],
+        )?;
+        self.commit_projection(projection);
+        Ok(seqs)
     }
 
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).

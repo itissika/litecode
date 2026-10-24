@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::session::estimate::autocompact_threshold;
 use crate::session::store::{ProviderUsageRollup, SessionContextMeter, occupancy_usage};
@@ -12,6 +12,10 @@ use crate::session::store::{ProviderUsageRollup, SessionContextMeter, occupancy_
 pub struct ProviderPromptBaseline {
     prompt_tokens: AtomicU64,
     covered_seq: AtomicU64,
+    /// Set when the transcript surface was rewritten (mechanical prune) and
+    /// neither the live bill nor the persisted rollup describes the new request
+    /// any more. A real provider bill clears it via [`Self::record`].
+    invalidated: AtomicBool,
 }
 
 impl ProviderPromptBaseline {
@@ -19,11 +23,25 @@ impl ProviderPromptBaseline {
     pub fn record(&self, prompt_tokens: u64, covered_seq: u64) {
         self.covered_seq.store(covered_seq, Ordering::Relaxed);
         self.prompt_tokens.store(prompt_tokens, Ordering::Release);
+        self.invalidated.store(false, Ordering::Release);
     }
 
     pub fn clear(&self) {
         self.prompt_tokens.store(0, Ordering::Release);
         self.covered_seq.store(0, Ordering::Relaxed);
+        self.invalidated.store(false, Ordering::Release);
+    }
+
+    /// Drop every stored bill and force the local request envelope until the
+    /// next real provider response records a fresh bill.
+    pub fn invalidate(&self) {
+        self.invalidated.store(true, Ordering::Release);
+        self.prompt_tokens.store(0, Ordering::Release);
+        self.covered_seq.store(0, Ordering::Relaxed);
+    }
+
+    pub fn is_invalidated(&self) -> bool {
+        self.invalidated.load(Ordering::Acquire)
     }
 
     pub fn prompt_tokens(&self) -> u64 {
@@ -54,10 +72,20 @@ pub struct OccupancyBill {
 pub fn occupancy_bill_from(
     baseline: &ProviderPromptBaseline,
     compacted_seq: Option<u64>,
+    surface_rewrite_seq: u64,
     rollup: &ProviderUsageRollup,
     meter: &SessionContextMeter,
 ) -> Option<OccupancyBill> {
-    let retired = |seq: u64| compacted_seq.is_some_and(|compacted| compacted > seq);
+    // A mechanical prune changed the prefix after the last bill. The persisted
+    // rollup would double-count the removed bytes, so fall back to the exact
+    // local envelope until the next provider bill arrives.
+    if baseline.is_invalidated() {
+        return None;
+    }
+    let retired = |seq: u64| {
+        compacted_seq.is_some_and(|compacted| compacted > seq)
+            || (surface_rewrite_seq > 0 && seq <= surface_rewrite_seq)
+    };
     if let Some((prompt, seq)) = baseline.covered()
         && !retired(seq)
     {
@@ -66,7 +94,7 @@ pub fn occupancy_bill_from(
             covered_seq: Some(seq),
         });
     }
-    let usage = occupancy_usage(rollup, compacted_seq, meter)?;
+    let usage = occupancy_usage(rollup, compacted_seq, surface_rewrite_seq, meter)?;
     if usage.prompt_tokens == 0 {
         return None;
     }
@@ -167,6 +195,89 @@ mod tests {
     }
 
     #[test]
+    fn surface_rewrite_invalidates_old_bill_until_the_next_provider_record() {
+        use crate::session::store::ProviderUsage;
+
+        let baseline = ProviderPromptBaseline::default();
+        baseline.record(9_000, 4);
+        let rollup = ProviderUsageRollup::from_rows([(
+            4,
+            ProviderUsage {
+                prompt_tokens: 9_000,
+                completion_tokens: 1,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 9_000,
+            },
+        )]);
+        let meter = SessionContextMeter {
+            prompt_tokens: 9_000,
+            ..SessionContextMeter::default()
+        };
+        assert!(occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_some());
+
+        baseline.invalidate();
+        assert!(baseline.is_invalidated());
+        assert!(
+            occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_none(),
+            "a pruned prefix must not be priced with the old bill or rollup"
+        );
+
+        baseline.record(3_000, 12);
+        assert!(!baseline.is_invalidated());
+        let fresh = occupancy_bill_from(&baseline, None, 0, &rollup, &meter).unwrap();
+        assert_eq!(fresh.prompt_tokens, 3_000);
+        assert_eq!(fresh.covered_seq, Some(12));
+    }
+
+    #[test]
+    fn surface_rewrite_seq_retires_live_and_persisted_bills() {
+        use crate::session::store::ProviderUsage;
+
+        let baseline = ProviderPromptBaseline::default();
+        baseline.record(9_000, 4);
+        let rollup = ProviderUsageRollup::from_rows([(
+            4,
+            ProviderUsage {
+                prompt_tokens: 9_000,
+                completion_tokens: 1,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 9_000,
+            },
+        )]);
+        let meter = SessionContextMeter {
+            prompt_tokens: 9_000,
+            ..SessionContextMeter::default()
+        };
+        // No rewrite: the bill is valid.
+        assert!(occupancy_bill_from(&baseline, None, 0, &rollup, &meter).is_some());
+        // Bill header seq 4 <= rewrite seq 10: both the live baseline and the
+        // persisted rollup are retired, forcing a local-envelope measurement.
+        assert!(
+            occupancy_bill_from(&baseline, None, 10, &rollup, &meter).is_none(),
+            "latest_seq <= surface_rewrite_seq must invalidate the bill"
+        );
+        // A bill recorded after the rewrite is valid again.
+        baseline.record(3_000, 12);
+        let fresh = occupancy_bill_from(&baseline, None, 10, &rollup, &meter).unwrap();
+        assert_eq!(fresh.prompt_tokens, 3_000);
+        assert_eq!(fresh.covered_seq, Some(12));
+
+        // Without a seq-bearing rollup, a meter-only fallback cannot prove it
+        // postdates the rewrite, so it must not resurrect old prompt counts.
+        let empty_rollup = ProviderUsageRollup::default();
+        assert!(
+            occupancy_bill_from(
+                &ProviderPromptBaseline::default(),
+                None,
+                10,
+                &empty_rollup,
+                &meter,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
     fn compact_retires_the_in_memory_bill_and_the_stored_one() {
         use crate::session::store::ProviderUsage;
 
@@ -186,19 +297,19 @@ mod tests {
             ..SessionContextMeter::default()
         };
         assert_eq!(
-            occupancy_bill_from(&baseline, None, &rollup, &meter)
+            occupancy_bill_from(&baseline, None, 0, &rollup, &meter)
                 .unwrap()
                 .prompt_tokens,
             9_000
         );
-        assert!(occupancy_bill_from(&baseline, Some(8), &rollup, &meter).is_none());
+        assert!(occupancy_bill_from(&baseline, Some(8), 0, &rollup, &meter).is_none());
         let empty = ProviderPromptBaseline::default();
         assert_eq!(
-            occupancy_bill_from(&empty, None, &rollup, &meter)
+            occupancy_bill_from(&empty, None, 0, &rollup, &meter)
                 .unwrap()
                 .covered_seq,
             Some(4)
         );
-        assert!(occupancy_bill_from(&empty, Some(8), &rollup, &meter).is_none());
+        assert!(occupancy_bill_from(&empty, Some(8), 0, &rollup, &meter).is_none());
     }
 }

@@ -23,8 +23,10 @@ use crate::types::{Item, LitecodeError, Result, ToolResultData};
 
 pub use budget::{BudgetPolicy, OccupancyBill, ProviderPromptBaseline, occupancy_bill_from};
 pub use compact::{
-    CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPrunePlan, PruneReplacement,
-    SummaryArtifact, SummaryFailure, SummaryFinish, SummaryReview, SummaryUsage,
+    CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPruneConfig, MechanicalPrunePlan,
+    PRUNE_MIN_SAVED_TOKENS_FLOOR, PruneReplacement, SummaryArtifact, SummaryFailure, SummaryFinish,
+    SummaryReview, SummaryUsage, TOOL_RESULT_PRUNE_HEAD_CHARS, TOOL_RESULT_PRUNE_MARKER,
+    TOOL_RESULT_PRUNE_TAIL_CHARS, TOOL_RESULT_PRUNE_THRESHOLD_CHARS, prune_min_saved_tokens,
 };
 pub use context_meter::{
     ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
@@ -159,6 +161,7 @@ pub(crate) fn project_model_view(
     turn_view: &[Item],
     source_seqs: &[Option<crate::session::event::Seq>],
     inherited_before_checkpoint: Option<&[bool]>,
+    replacement_media: Option<&[bool]>,
     model: &crate::provider_catalog::ResolvedModel,
     data_root: &std::path::Path,
 ) -> ModelProjection {
@@ -177,6 +180,24 @@ pub(crate) fn project_model_view(
     let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
     // Runs before refs expand, so a dropped part never becomes a data URL.
     let mut rebased = media_budget::drop_stale_media(&mut llm_items);
+    if let Some(replacement_media) = replacement_media {
+        debug_assert_eq!(replacement_media.len(), turn_view.len());
+        let mut replacement_flags = vec![false; llm_items.len()];
+        for (index, source_index) in source_indices.iter().enumerate() {
+            if source_index
+                .and_then(|source| replacement_media.get(source))
+                .copied()
+                .unwrap_or(false)
+            {
+                replacement_flags[index] = true;
+            }
+        }
+        let replacement_rebased =
+            media_budget::rebased_after_media_replacements(&llm_items, &replacement_flags);
+        for (current, replacement) in rebased.iter_mut().zip(replacement_rebased) {
+            *current |= replacement;
+        }
+    }
     if let Some(inherited) = inherited_before_checkpoint {
         for (index, source_index) in source_indices.iter().enumerate() {
             if source_index
@@ -206,18 +227,21 @@ fn working_turn_view(
     Vec<Item>,
     Vec<Option<crate::session::event::Seq>>,
     Option<Vec<bool>>,
+    Vec<bool>,
 ) {
     if let Some(view) = CompactedView::from_working_rows(rows) {
         (
             view.items,
             view.item_seqs,
             Some(view.inherited_before_checkpoint),
+            view.replacement_media,
         )
     } else {
         (
             project_items(rows),
             rows.iter().map(|row| row.log_seq).collect(),
             None,
+            rows.iter().map(|row| row.replacement_media).collect(),
         )
     }
 }
@@ -232,11 +256,13 @@ pub(crate) fn project_working_rows(
     model: &crate::provider_catalog::ResolvedModel,
     data_root: &std::path::Path,
 ) -> (Vec<Item>, ModelProjection) {
-    let (turn_view, source_seqs, inherited_before_checkpoint) = working_turn_view(rows);
+    let (turn_view, source_seqs, inherited_before_checkpoint, replacement_media) =
+        working_turn_view(rows);
     let projection = project_model_view(
         &turn_view,
         &source_seqs,
         inherited_before_checkpoint.as_deref(),
+        Some(&replacement_media),
         model,
         data_root,
     );
@@ -428,9 +454,10 @@ impl ContextPipeline {
 
     /// Compact when the budget says so. Does not build the model view.
     ///
-    /// Returns whether a compaction ran. Callers that compact sync the request
+    /// Returns whether the compaction stage changed the durable surface (a
+    /// checkpoint or a mechanical prune). Callers that compact sync the request
     /// seam again before [`Self::build_view`], so restored reminders land after
-    /// the summary row.
+    /// the rewritten prefix.
     pub async fn compact_step(
         &self,
         sessions: &SessionManager,
@@ -761,11 +788,9 @@ pub(crate) fn resolve_occupancy_bill(
     session_id: &str,
     baseline: &ProviderPromptBaseline,
 ) -> Option<OccupancyBill> {
-    let compacted_seq = sessions
-        .data()
-        .meta_blocking(session_id)
-        .ok()
-        .and_then(|meta| meta.compacted_seq);
+    let meta = sessions.data().meta_blocking(session_id).ok();
+    let compacted_seq = meta.as_ref().and_then(|meta| meta.compacted_seq);
+    let surface_rewrite_seq = meta.as_ref().map_or(0, |meta| meta.surface_rewrite_seq);
     let rollup = sessions
         .provider_usage_rollup(session_id)
         .unwrap_or_default();
@@ -773,7 +798,13 @@ pub(crate) fn resolve_occupancy_bill(
         .data()
         .meter_blocking(session_id)
         .unwrap_or_default();
-    occupancy_bill_from(baseline, compacted_seq, &rollup, &meter)
+    occupancy_bill_from(
+        baseline,
+        compacted_seq,
+        surface_rewrite_seq,
+        &rollup,
+        &meter,
+    )
 }
 
 /// A streamed item already owns a row; the commit that follows must find it.
