@@ -4,9 +4,7 @@ Keep the judgment here. Don't hand it back to a subagent.
 
 Answer a one-line question yourself. Don't open a team for it.
 
-Send research to explore and changes to general. Subagents cannot hire anyone.
-
-One writer on a file region at a time, and verification by someone who did not write it. Don't send people to watch each other.
+When writers run in parallel, keep one writer per file region. Don't send people to watch each other.
 
 Every assignment carries its own context and done criteria. Subagents cannot see this conversation.
 
