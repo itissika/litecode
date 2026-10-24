@@ -925,7 +925,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.stage === "started") {
         patch(sessionId, {
           compacting: true,
-          ...(life.trigger === "auto"
+          ...(life.trigger !== "manual"
             ? { turnPhase: "compacting" as const }
             : {}),
         });
@@ -933,13 +933,13 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       }
       if (life.stage === "succeeded") {
         patch(sessionId, { compacting: false });
-        if (life.trigger === "auto") {
+        if (life.trigger !== "manual") {
           useNotificationStore.getState().add(sessionId, "Context compacted");
         }
         return;
       }
       patch(sessionId, { compacting: false });
-      if (life.trigger === "auto") {
+      if (life.trigger !== "manual") {
         useToastStore
           .getState()
           .showToast(life.error?.message ?? "Compact failed", "error", 8000);

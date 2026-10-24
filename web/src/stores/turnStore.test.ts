@@ -254,6 +254,32 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
 
+  it("onCompactLifecycle treats overflow like automatic compaction", () => {
+    const sessionId = "s-overflow-life";
+    useTurnStore.setState({
+      byId: new Map([[sessionId, { ...EMPTY_SLICE, runState: "running" }]]),
+    });
+    const snap = snapshot(sessionId);
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "overflow",
+      stage: "started",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
+    expect(useTurnStore.getState().byId.get(sessionId)?.turnPhase).toBe(
+      "compacting",
+    );
+
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "overflow",
+      stage: "succeeded",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
+  });
+
   it("shouldApplyTurnEnd skips duplicate idle and a newer live turn", () => {
     expect(shouldApplyTurnEnd(null, "idle", "t1")).toBe(false);
     expect(shouldApplyTurnEnd(null, "running", "t1")).toBe(false);

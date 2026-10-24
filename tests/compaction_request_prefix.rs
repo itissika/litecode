@@ -160,10 +160,12 @@ async fn compaction_request_reuses_main_model_instructions_tools_and_projected_p
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let provider = Arc::new(RecordingProvider::new(vec![
-        vec![common::assistant_text_item("first answer", "msg_first")],
-        vec![common::assistant_text_item("PR-1 summary", "msg_summary")],
-    ]));
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![
+            vec![common::assistant_text_item("first answer", "msg_first")],
+            vec![common::assistant_text_item("PR-1 summary", "msg_summary")],
+        ],
+    ));
     let captured = Arc::clone(&provider);
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 
@@ -255,20 +257,22 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let provider = Arc::new(RecordingProvider::new(vec![
-        vec![common::assistant_text_item(
-            "first answer",
-            "msg_auto_first",
-        )],
-        vec![common::assistant_text_item(
-            "auto summary",
-            "msg_auto_summary",
-        )],
-        vec![common::assistant_text_item(
-            "second answer",
-            "msg_auto_second",
-        )],
-    ]));
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![
+            vec![common::assistant_text_item(
+                "first answer",
+                "msg_auto_first",
+            )],
+            vec![common::assistant_text_item(
+                "auto summary",
+                "msg_auto_summary",
+            )],
+            vec![common::assistant_text_item(
+                "second answer",
+                "msg_auto_second",
+            )],
+        ],
+    ));
     let captured = Arc::clone(&provider);
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 
@@ -378,20 +382,22 @@ async fn compaction_prefix_keeps_signed_reasoning_identical_to_main_request() {
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let provider = Arc::new(RecordingProvider::new(vec![
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![
-            signed_reasoning("signed plan", "sig-main"),
-            common::assistant_text_item("first answer", "msg_reasoning_first"),
+            vec![
+                signed_reasoning("signed plan", "sig-main"),
+                common::assistant_text_item("first answer", "msg_reasoning_first"),
+            ],
+            vec![common::assistant_text_item(
+                "second answer",
+                "msg_reasoning_second",
+            )],
+            vec![common::assistant_text_item(
+                "reasoning summary",
+                "msg_reasoning_summary",
+            )],
         ],
-        vec![common::assistant_text_item(
-            "second answer",
-            "msg_reasoning_second",
-        )],
-        vec![common::assistant_text_item(
-            "reasoning summary",
-            "msg_reasoning_summary",
-        )],
-    ]));
+    ));
     let captured = Arc::clone(&provider);
     // Anthropic Messages is the port profile whose signed thinking replay is
     // conditional on thinking intent, so it catches a compaction prefix built
@@ -527,7 +533,9 @@ async fn auto_compaction_uses_exact_cut_plus_one_with_pad_and_media_prefix() {
         }),
         user_text("after the unanswered call"),
     ];
-    seed.extend((0..8).map(|i| user_text(format!("tail-{i}"))));
+    seed.extend((0..8).map(|i| user_text(format!("tail-{i}-{}", "word ".repeat(200)))));
+    seed.push(user_text("latest-source-anchor"));
+    seed.push(user_text("kept-tail"));
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
@@ -593,9 +601,13 @@ modalities = ["text"]
     );
 
     let target_wire_model = target.id.clone();
-    let provider = Arc::new(RecordingProvider::new(vec![vec![
-        common::assistant_text_item("pipeline summary", "msg_pipeline_summary"),
-    ]]));
+    let summary = common::dsh_summary("latest-source-anchor");
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![vec![common::assistant_text_item(
+            &summary,
+            "msg_pipeline_summary",
+        )]],
+    ));
     let captured_provider = Arc::clone(&provider);
     let provider: Arc<dyn LlmProvider> = provider;
     let request = CompactionRequestContext {
@@ -700,9 +712,12 @@ async fn manual_compaction_works_without_the_hidden_compaction_agent() {
     let sessions = Arc::new(fixture.manager());
     seed_manual_compactable(&sessions, &sid);
 
-    let provider = Arc::new(RecordingProvider::new(vec![vec![
-        common::assistant_text_item("no hidden profile summary", "msg_no_hidden"),
-    ]]));
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![vec![common::assistant_text_item(
+            "no hidden profile summary",
+            "msg_no_hidden",
+        )]],
+    ));
     let captured = Arc::clone(&provider);
     let catalog = common::test_catalog_toml(common::TEST_CATALOG_ENDPOINT, 128_000, 8192);
     let mut ctrl = controller_with_catalog_options(
@@ -749,9 +764,12 @@ async fn manual_compaction_repairs_a_stale_session_model_like_launch_turn() {
     let sessions = Arc::new(fixture.manager());
     seed_manual_compactable(&sessions, &sid);
 
-    let provider = Arc::new(RecordingProvider::new(vec![vec![
-        common::assistant_text_item("repaired model summary", "msg_repaired_model"),
-    ]]));
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![vec![common::assistant_text_item(
+            "repaired model summary",
+            "msg_repaired_model",
+        )]],
+    ));
     let captured = Arc::clone(&provider);
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 

@@ -62,6 +62,7 @@ pub struct RecordingProvider {
     responses: Arc<Mutex<Vec<Vec<Item>>>>,
     index: Arc<AtomicUsize>,
     captured: Arc<Mutex<Vec<CapturedLlmRequest>>>,
+    accepting_compaction_summary: bool,
 }
 
 impl RecordingProvider {
@@ -70,7 +71,16 @@ impl RecordingProvider {
             responses: Arc::new(Mutex::new(responses)),
             index: Arc::new(AtomicUsize::new(0)),
             captured: Arc::new(Mutex::new(Vec::new())),
+            accepting_compaction_summary: false,
         }
+    }
+
+    /// Legacy request-shape fixtures only. Do not use for PR-5 acceptance or
+    /// finish assertions; queue explicit summary items instead.
+    pub fn new_legacy_accepting_compaction_summary(responses: Vec<Vec<Item>>) -> Self {
+        let mut provider = Self::new(responses);
+        provider.accepting_compaction_summary = true;
+        provider
     }
 
     pub fn captured(&self) -> Vec<CapturedLlmRequest> {
@@ -145,11 +155,18 @@ impl LlmProvider for RecordingProvider {
             .expect("captured")
             .push(capture_request(request));
         let items = self.next_items();
+        let accepting = self.accepting_compaction_summary;
         Box::pin(async move {
             let items = items?;
+            let items = if accepting {
+                super::legacy_accepting_compaction_items(request, items)
+            } else {
+                items
+            };
             for (i, item) in items.iter().enumerate() {
                 emit_in_progress_added(&mut on_event, item, i as u32);
             }
+            super::emit_completed_terminal(&mut on_event);
             Ok(items)
         })
     }

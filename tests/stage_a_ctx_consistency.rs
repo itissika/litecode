@@ -83,7 +83,7 @@ async fn prepare(
     step: u64,
     last_prompt_tokens: u64,
 ) -> litecode::types::Result<()> {
-    let provider = ScriptedProvider::with_text("compact summary");
+    let provider = common::DshSummaryProvider::new();
     let cancel = CancellationToken::new();
     let model = test_model();
     pipeline.stage_working(turn.clone());
@@ -147,12 +147,21 @@ fn setup_workspace_and_session(
     (db_path, sid, sessions)
 }
 
+fn long_stage_seed() -> Vec<Item> {
+    let mut seed: Vec<Item> = (0..28)
+        .map(|i| user_text(format!("seed-{i}-{}", "word ".repeat(120))))
+        .collect();
+    seed.push(user_text("latest-source-anchor"));
+    seed.push(user_text("seed-29"));
+    seed
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let seed: Vec<Item> = (0..12)
-        .map(|i| user_text(format!("manual-seed-{i}")))
+    let seed: Vec<Item> = (0..11)
+        .map(|i| user_text(format!("manual-seed-{i}-{}", "word ".repeat(120))))
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
@@ -168,7 +177,7 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     );
     assert!(!meter.should_compact());
 
-    let provider = ScriptedProvider::with_text("manual compact summary");
+    let provider = common::DshSummaryProvider::new();
     let compacted = CompactPolicy::compact_now(
         &budget,
         &sessions,
@@ -207,13 +216,13 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
 async fn pipeline_compact_reloads_working_set_from_fold() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let seed: Vec<Item> = (0..12)
-        .map(|i| user_text(format!("fold-seed-{i}")))
+    let seed: Vec<Item> = (0..11)
+        .map(|i| user_text(format!("fold-seed-{i}-{}", "word ".repeat(120))))
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
-    let provider = ScriptedProvider::with_text("fold-reload summary");
+    let provider = common::DshSummaryProvider::new();
     let compacted = CompactPolicy::compact_now(
         &budget,
         &sessions,
@@ -263,7 +272,7 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
         "after pipeline compact, working_set_blocking must equal fold (not summary+kept rebuild)"
     );
     assert!(
-        reader[0].1.contains("fold-reload summary")
+        reader[0].1.contains("## Primary Request and Intent")
             && !reader[0].1.starts_with("[Conversation summary]"),
         "checkpoint summary must lead the working set, got {reader:?}"
     );
@@ -278,7 +287,7 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
 
     // Seed enough history to push over the compact threshold when the cursor sees
     // a large provider token count.
-    let seed: Vec<Item> = (0..30).map(|i| user_text(format!("seed-{i}"))).collect();
+    let seed = long_stage_seed();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
     let ctx = test_context(dir.path());
     let data_root = dir.path().to_path_buf();
@@ -295,7 +304,9 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
     // Keep-recent: last seed survives verbatim; early seeds are summarized away.
     let mid_previews: Vec<String> = row_previews(&turn);
     assert!(
-        mid_previews.iter().any(|p| p.contains("compact summary")),
+        mid_previews
+            .iter()
+            .any(|p| p.contains("## Primary Request and Intent")),
         "summary must be in working set after compact, got {mid_previews:?}"
     );
     assert!(
@@ -342,7 +353,7 @@ async fn compact_then_new_step_persists_and_resumes_full_content() {
     assert!(
         loaded.iter().any(|i| {
             matches!(i, Item::Message(_))
-                && litecode::types::item_text_preview(i).contains("compact summary")
+                && litecode::types::item_text_preview(i).contains("## Primary Request and Intent")
         }),
         "compact checkpoint summary must be persisted, got {previews:?}"
     );
@@ -420,7 +431,7 @@ async fn keep_recent_skip_still_enforces_hard_limit_when_over_budget() {
 async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let seed: Vec<Item> = (0..30).map(|i| user_text(format!("seed-{i}"))).collect();
+    let seed = long_stage_seed();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
     let ctx = test_context(dir.path());
     let pipeline = ContextPipeline::new(10_000, ctx.clone(), dir.path().to_path_buf())
@@ -438,7 +449,9 @@ async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
         "uncommitted tail must survive compact, got {previews:?}"
     );
     assert!(
-        previews.iter().any(|p| p.contains("compact summary")),
+        previews
+            .iter()
+            .any(|p| p.contains("## Primary Request and Intent")),
         "summary must be in working set, got {previews:?}"
     );
     let conn = rusqlite::Connection::open(&db_path).unwrap();
@@ -464,7 +477,9 @@ async fn compact_eats_only_persisted_prefix_and_keeps_uncommitted_tail() {
 async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let mut seed: Vec<Item> = (0..40).map(|i| user_text(format!("seed-{i}"))).collect();
+    let mut seed: Vec<Item> = (0..40)
+        .map(|i| user_text(format!("seed-{i}-{}", "word ".repeat(120))))
+        .collect();
     seed.push(function_call_item(
         "c-kept",
         "read",
@@ -484,7 +499,8 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let pipeline =
         ContextPipeline::new(10_000, ctx, dir.path().to_path_buf()).with_keep_recent_tokens(80);
     let turn = pipeline.begin_turn(&sessions, &sid).unwrap();
-    let provider = ScriptedProvider::with_text("compact summary");
+    let provider =
+        ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&["compact summary"]);
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
@@ -563,7 +579,7 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
 async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (_db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let seed: Vec<Item> = (0..30).map(|i| user_text(format!("seed-{i}"))).collect();
+    let seed = long_stage_seed();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
     let ctx = test_context(dir.path());
@@ -573,7 +589,8 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     turn.push(WorkingRow::pending(user_text("pending-tail-x")));
     pipeline.stage_working(turn.clone());
 
-    let provider = ScriptedProvider::with_text("compact summary");
+    let provider =
+        ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&["compact summary"]);
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
@@ -644,7 +661,7 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
 async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (db_path, sid, sessions) = setup_workspace_and_session(dir.path(), "default");
-    let seed: Vec<Item> = (0..30).map(|i| user_text(format!("seed-{i}"))).collect();
+    let seed = long_stage_seed();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
     sessions
         .with_entry_task_state_mut(&sid, |state| {
@@ -663,7 +680,8 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
         .with_keep_recent_tokens(1);
 
     let mut turn = pipeline.begin_turn(&sessions, &sid).unwrap();
-    let provider = ScriptedProvider::with_text("compact summary");
+    let provider =
+        ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&["compact summary"]);
     let cancel = CancellationToken::new();
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
@@ -689,7 +707,7 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
 
     let summary = row_previews(&turn)
         .into_iter()
-        .find(|p| p.contains("compact summary"))
+        .find(|p| p.contains("## Primary Request and Intent"))
         .expect("checkpoint text");
     assert!(
         !summary.starts_with("[Conversation summary]"),

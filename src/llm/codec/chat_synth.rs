@@ -644,6 +644,52 @@ mod tests {
     }
 
     #[test]
+    fn finish_max_tokens_marks_summary_output_incomplete() {
+        let mut synth = ChatSynth::new();
+        let mut events = Vec::new();
+        synth.ingest_chunk(
+            &chunk(serde_json::json!({ "content": "truncated summary" })),
+            &mut events,
+        );
+        synth.ingest_chunk(
+            &serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": "max_tokens",
+                    "delta": {}
+                }]
+            }),
+            &mut events,
+        );
+        let done = synth.finish_events("m").unwrap();
+        let completed = done
+            .iter()
+            .find_map(|event| match event {
+                ResponseStreamEvent::ResponseCompleted(completed) => Some(completed),
+                _ => None,
+            })
+            .expect("response.completed");
+        assert_eq!(completed.response.status, Status::Incomplete);
+        assert_eq!(
+            completed
+                .response
+                .incomplete_details
+                .as_ref()
+                .map(|details| details.reason.as_str()),
+            Some("max_tokens")
+        );
+        let output = completed_output(&done);
+        let message = output
+            .iter()
+            .find_map(|item| match item {
+                OutputItem::Message(message) => Some(message),
+                _ => None,
+            })
+            .expect("assistant message");
+        assert_eq!(message.status, OutputStatus::Incomplete);
+    }
+
+    #[test]
     fn whitespace_only_content_never_births_a_message() {
         let mut synth = ChatSynth::new();
         let mut events = Vec::new();

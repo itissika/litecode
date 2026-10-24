@@ -5,6 +5,9 @@ type ErrorCode =
   | "llm_parse"
   | "max_steps"
   | "compaction_failed"
+  | "compaction_summary_finish"
+  | "compaction_quality"
+  | "compaction_transport"
   | "permission_denied"
   | "tool_panic"
   | "tool_validation"
@@ -736,7 +739,7 @@ export interface OperationResult {
 
 export interface CompactLifecycle {
   session_id: string;
-  trigger: "manual" | "auto";
+  trigger: "manual" | "auto" | "overflow";
   stage: "started" | "succeeded" | "failed";
   operation_id?: string | null;
   error?: StructuredError | null;

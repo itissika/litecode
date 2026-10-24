@@ -632,7 +632,13 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (sid, sessions) = setup_session(dir.path());
     sessions
-        .insert_detail_rows(&sid, &[user_text("hist"), user_text("more")])
+        .insert_detail_rows(
+            &sid,
+            &[
+                user_text(format!("hist {}", "word ".repeat(1_200))),
+                user_text("more"),
+            ],
+        )
         .unwrap();
     let ctx = test_context(dir.path());
     let pipeline =
@@ -640,7 +646,9 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let mut turn = pipeline
         .begin_turn_with_id(&sessions, &sid, Some("t1".into()))
         .unwrap();
-    let provider = common::ScriptedProvider::with_text("compact summary");
+    let provider = common::ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&[
+        "compact summary",
+    ]);
     let cancel = CancellationToken::new();
     let baseline = ProviderPromptBaseline::default();
     baseline.record(8_500, u64::MAX);

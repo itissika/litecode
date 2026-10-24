@@ -150,10 +150,21 @@ pub fn fail_reason_to_error_code(reason: FailReason) -> ErrorCode {
     }
 }
 
-fn compact_fail_code(kind: Option<CompactionFailKind>) -> ErrorCode {
+pub(crate) fn compaction_failure_code(kind: crate::types::CompactionFailureKind) -> ErrorCode {
+    match kind {
+        crate::types::CompactionFailureKind::SummaryFinish => ErrorCode::CompactionSummaryFinish,
+        crate::types::CompactionFailureKind::Quality => ErrorCode::CompactionQuality,
+        crate::types::CompactionFailureKind::Transport => ErrorCode::CompactionTransport,
+    }
+}
+
+pub(crate) fn compact_fail_code(kind: Option<CompactionFailKind>) -> ErrorCode {
     match kind {
         Some(CompactionFailKind::NothingToCompact) => ErrorCode::NothingToCompact,
         Some(CompactionFailKind::Canceled) => ErrorCode::Cancelled,
+        Some(CompactionFailKind::SummaryFinish) => ErrorCode::CompactionSummaryFinish,
+        Some(CompactionFailKind::Quality) => ErrorCode::CompactionQuality,
+        Some(CompactionFailKind::Transport) => ErrorCode::CompactionTransport,
         Some(CompactionFailKind::Failed) | None => ErrorCode::CompactionFailed,
     }
 }
@@ -594,9 +605,18 @@ fn turn_error(
             // WP-069 / ISSUE-036: typed category from Runtime TurnCompleted.error_kind
             // (not final_text string equality). CompactionFailed → dedicated,
             // non-retryable code; message still from final_text.
-            if error_kind == Some(TurnErrorKind::CompactionFailed) {
+            let compaction_code = match error_kind {
+                Some(TurnErrorKind::CompactionFailed) => Some(ErrorCode::CompactionFailed),
+                Some(TurnErrorKind::CompactionSummaryFinish) => {
+                    Some(ErrorCode::CompactionSummaryFinish)
+                }
+                Some(TurnErrorKind::CompactionQuality) => Some(ErrorCode::CompactionQuality),
+                Some(TurnErrorKind::CompactionTransport) => Some(ErrorCode::CompactionTransport),
+                _ => None,
+            };
+            if let Some(code) = compaction_code {
                 return Some(StructuredError {
-                    code: ErrorCode::CompactionFailed,
+                    code,
                     message: final_text
                         .clone()
                         .unwrap_or_else(|| "compaction failed".into()),
@@ -1330,6 +1350,54 @@ pub fn buffer_snapshot(
 #[cfg(test)]
 mod wp025_turn_error_tests {
     use super::*;
+
+    #[test]
+    fn structured_compaction_subtypes_map_to_distinct_wire_codes() {
+        let cases = [
+            (
+                crate::types::CompactionFailureKind::SummaryFinish,
+                CompactionFailKind::SummaryFinish,
+                ErrorCode::CompactionSummaryFinish,
+            ),
+            (
+                crate::types::CompactionFailureKind::Quality,
+                CompactionFailKind::Quality,
+                ErrorCode::CompactionQuality,
+            ),
+            (
+                crate::types::CompactionFailureKind::Transport,
+                CompactionFailKind::Transport,
+                ErrorCode::CompactionTransport,
+            ),
+        ];
+        for (structured, lifecycle, wire) in cases {
+            assert_eq!(compaction_failure_code(structured), wire);
+            assert_eq!(compact_fail_code(Some(lifecycle)), wire);
+        }
+        assert_eq!(
+            compact_fail_code(Some(CompactionFailKind::NothingToCompact)),
+            ErrorCode::NothingToCompact
+        );
+        assert_eq!(
+            compact_fail_code(Some(CompactionFailKind::Canceled)),
+            ErrorCode::Cancelled
+        );
+        assert_eq!(
+            compact_fail_code(Some(CompactionFailKind::Failed)),
+            ErrorCode::CompactionFailed
+        );
+        assert_eq!(compact_fail_code(None), ErrorCode::CompactionFailed);
+
+        let error = turn_error(
+            &TurnEndReason::Error,
+            &Some("quality rejected".into()),
+            Some(TurnErrorKind::CompactionQuality),
+            None,
+        )
+        .expect("typed compaction turn error");
+        assert!(matches!(error.code, ErrorCode::CompactionQuality));
+        assert!(!error.retryable);
+    }
 
     #[test]
     fn auto_compact_failure_maps_to_compaction_failed_not_retryable() {

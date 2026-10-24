@@ -555,15 +555,7 @@ impl Projection {
                 error,
                 ..
             } => {
-                let code = match fail_kind {
-                    Some(crate::runtime::observer::CompactionFailKind::NothingToCompact) => {
-                        ErrorCode::NothingToCompact
-                    }
-                    Some(crate::runtime::observer::CompactionFailKind::Canceled) => {
-                        ErrorCode::Cancelled
-                    }
-                    _ => ErrorCode::CompactionFailed,
-                };
+                let code = crate::client_protocol::project::compact_fail_code(*fail_kind);
                 self.push_operation_error(
                     OperationKind::CompactSession,
                     code,
@@ -1679,6 +1671,7 @@ mod merged_channel_tests {
 mod compact_item_wire_tests {
     use super::*;
 
+    use crate::runtime::observer::{CompactionFailKind, CompactionStage, CompactionTrigger};
     use crate::types::user_text;
     use std::sync::Arc;
 
@@ -1758,6 +1751,36 @@ mod compact_item_wire_tests {
             .rev()
             .find(|msg| msg["method"] == "session/snapshot")
             .expect("server meter snapshot")
+    }
+
+    #[test]
+    fn quality_compaction_failure_carries_subtype_on_operation_result_wire() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+        proj.on_event(
+            InternalEvent::CompactionLifecycle {
+                trigger: CompactionTrigger::Manual,
+                stage: CompactionStage::Failed,
+                operation_id: Some("op-quality".into()),
+                fail_kind: Some(CompactionFailKind::Quality),
+                error: Some("summary quality rejected".into()),
+            },
+            "/p",
+            &binding(),
+        );
+        let out = proj.take_outgoing();
+        let result = out
+            .iter()
+            .find(|msg| {
+                msg["method"] == "agent/operation_result"
+                    && msg["params"]["op"] == "compact_session"
+            })
+            .expect("manual compact failure must publish an operation result");
+        assert_eq!(result["params"]["ok"], false);
+        assert_eq!(result["params"]["error"]["code"], "compaction_quality");
+        assert_eq!(
+            result["params"]["error"]["message"],
+            "summary quality rejected"
+        );
     }
 
     #[test]

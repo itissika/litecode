@@ -511,6 +511,57 @@ impl ContextPipeline {
         Ok(compacted)
     }
 
+    /// Provider-confirmed context-overflow recovery: force one compaction
+    /// attempt, bypassing the normal pressure threshold. The caller retries the
+    /// original main request only when the durable surface actually advanced.
+    pub async fn force_compact_overflow(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+        compaction_request: &crate::llm::CompactionRequestContext,
+        compact_max_tokens: u32,
+        cancel: &CancellationToken,
+    ) -> Result<bool> {
+        self.sync_turn_working(sessions, session_id);
+        let mut rows = self.working_set();
+        let before_revision = sessions.data().revision_blocking(session_id)?;
+        let baseline = ProviderPromptBaseline::default();
+        let result = CompactPolicy::compact_transcript(
+            &self.budget,
+            sessions,
+            session_id,
+            compaction_request,
+            compact_max_tokens,
+            &baseline,
+            &mut rows,
+            cancel,
+            crate::runtime::observer::CompactionTrigger::Overflow,
+            None,
+            &self.data_root,
+        )
+        .await;
+        if matches!(result, Err(LitecodeError::Canceled)) {
+            return Err(LitecodeError::Canceled);
+        }
+        let after_revision = sessions.data().revision_blocking(session_id)?;
+        let advanced = after_revision > before_revision;
+        if advanced {
+            let loaded = sessions.data().working_set_blocking(session_id)?;
+            let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.working = loaded;
+            state.log_max_seq = max_seq;
+            state.prepared = None;
+        }
+        match result {
+            Ok(_) => Ok(advanced),
+            // A committed mechanical prune is sufficient retry proof even
+            // when the optional summary phase failed afterwards.
+            Err(_) if advanced => Ok(true),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Build the ephemeral model view from the current working set.
     ///
     /// Reloads the log first so reminders appended after compaction are in the

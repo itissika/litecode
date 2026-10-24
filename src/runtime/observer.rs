@@ -35,6 +35,7 @@ pub enum CompactionKind {
 pub enum CompactionTrigger {
     Manual,
     Auto,
+    Overflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +50,9 @@ pub enum CompactionStage {
 #[serde(rename_all = "snake_case")]
 pub enum CompactionFailKind {
     NothingToCompact,
+    SummaryFinish,
+    Quality,
+    Transport,
     Failed,
     Canceled,
 }
@@ -102,6 +106,9 @@ impl TurnEndReason {
 #[serde(rename_all = "snake_case")]
 pub enum TurnErrorKind {
     CompactionFailed,
+    CompactionSummaryFinish,
+    CompactionQuality,
+    CompactionTransport,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -383,7 +390,9 @@ impl RuntimeObserver for NoopObserver {
 
 #[cfg(test)]
 mod tests {
-    use super::{TurnEndReason, TurnErrorKind};
+    use super::{
+        CompactionFailKind, CompactionStage, CompactionTrigger, TurnEndReason, TurnErrorKind,
+    };
 
     #[test]
     fn turn_end_reason_log_schema_is_snake_case_for_every_variant() {
@@ -405,5 +414,43 @@ mod tests {
     fn turn_error_kind_serializes_snake_case() {
         let v = serde_json::to_value(TurnErrorKind::CompactionFailed).unwrap();
         assert_eq!(v, "compaction_failed");
+    }
+
+    #[test]
+    fn compaction_fail_kind_and_turn_error_subtypes_are_stable_wire_names() {
+        let fail_kinds = [
+            (CompactionFailKind::SummaryFinish, "summary_finish"),
+            (CompactionFailKind::Quality, "quality"),
+            (CompactionFailKind::Transport, "transport"),
+            (CompactionFailKind::NothingToCompact, "nothing_to_compact"),
+            (CompactionFailKind::Failed, "failed"),
+            (CompactionFailKind::Canceled, "canceled"),
+        ];
+        for (kind, expected) in fail_kinds {
+            assert_eq!(serde_json::to_value(kind).unwrap(), expected);
+        }
+        let turn_error_kinds = [
+            (
+                TurnErrorKind::CompactionSummaryFinish,
+                "compaction_summary_finish",
+            ),
+            (TurnErrorKind::CompactionQuality, "compaction_quality"),
+            (TurnErrorKind::CompactionTransport, "compaction_transport"),
+        ];
+        for (kind, expected) in turn_error_kinds {
+            assert_eq!(serde_json::to_value(kind).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn overflow_compaction_trigger_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_value(CompactionTrigger::Overflow).unwrap(),
+            "overflow"
+        );
+        assert_eq!(
+            serde_json::to_value(CompactionStage::Succeeded).unwrap(),
+            "succeeded"
+        );
     }
 }

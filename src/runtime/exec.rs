@@ -24,49 +24,68 @@ impl AgentDeps for AgentRuntime {
         }
 
         let step = self.current_step_value();
-        self.emit_phase(TurnPhase::CallingLlm, step);
-        let build_lap = latency::lap_step("call_model.build", step);
+        let first = self.call_model_once(step).await;
+        let Err(original_error) = first else {
+            return first;
+        };
+        if !crate::types::is_context_overflow_error(&original_error) {
+            return Err(original_error);
+        }
+        if self.is_cancelled() {
+            return Err(original_error);
+        }
 
-        // `compact_if_needed` already ran `prepare_step` and stored the ephemeral PreparedView.
-        let view = self.context_pipeline.take_prepared_view().ok_or_else(|| {
-            crate::types::LitecodeError::Llm(
-                "no prepared PreparedView — prepare_step must run before call_model".into(),
-            )
-        })?;
-
-        let instructions = view
-            .instructions
-            .clone()
-            .unwrap_or_else(|| self.instructions.clone());
-        // Fail closed before request build when Items require unsupported modalities.
-        crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
-        let token_count = view.token_count;
-        let context_meter = view.context_meter;
-        let (request, origin_seq) = self.build_model_request(
-            &instructions,
-            view.items,
-            view.item_seqs,
-            &view.rebased,
-            token_count,
-            view.projected_parts,
-            context_meter,
-        )?;
-        build_lap.done();
-        // Turn entry -> first request leaves this process (once per turn).
-        latency::report_since(
-            "turn_to_first_request",
-            self.latency_turn_start.take(),
-            None,
+        // Provider-confirmed overflow bypasses the pressure threshold. Retry
+        // only when the forced compaction advanced the durable surface; the
+        // one-retry budget prevents a loop on an indivisible prompt.
+        tracing::warn!(
+            error = %original_error,
+            "provider confirmed context overflow; attempting one forced compaction recovery"
         );
-        // Whole provider round trip incl. streaming; not part of our overhead.
-        let _llm_lap = latency::lap_step("call_model.llm", step);
-
-        // Default path: Responses SSE via complete_with_stream_events → authority
-        // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
-        // The Chat Completions codec emits projected ResponseStreamEvents with
-        // turn-stable ids; preferred path remains Responses SSE (R2).
-        self.call_model_complete(&request, token_count, origin_seq)
+        let compaction_request = self.compaction_request_context()?;
+        let advanced = match self
+            .context_pipeline
+            .force_compact_overflow(
+                &self.sessions,
+                &self.session_id,
+                &compaction_request,
+                crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
+                &self.cancel,
+            )
             .await
+        {
+            Ok(advanced) => advanced,
+            Err(crate::types::LitecodeError::Canceled) => {
+                return Err(crate::types::LitecodeError::Canceled);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "forced overflow compaction failed without a surface advance"
+                );
+                false
+            }
+        };
+        if !advanced {
+            tracing::warn!(
+                max_overflow_retries =
+                    crate::context_pipeline::compact::MAX_CONTEXT_OVERFLOW_RETRIES,
+                "overflow recovery made no durable surface progress; returning the original provider error"
+            );
+            return Err(original_error);
+        }
+
+        self.prompt_usage_baseline.clear();
+        self.prepare_view(step)?;
+        match self.call_model_once(step).await {
+            Err(error) if crate::types::is_context_overflow_error(&error) => {
+                tracing::warn!(
+                    "overflow retry also failed; the single recovery budget is exhausted"
+                );
+                Err(original_error)
+            }
+            other => other,
+        }
     }
 
     async fn execute_tools(
@@ -266,6 +285,56 @@ impl AgentDeps for AgentRuntime {
 }
 
 impl AgentRuntime {
+    async fn call_model_once(&mut self, step: u64) -> Result<Vec<Item>> {
+        if self.is_cancelled() {
+            return Err(crate::types::LitecodeError::Canceled);
+        }
+
+        self.emit_phase(TurnPhase::CallingLlm, step);
+        let build_lap = latency::lap_step("call_model.build", step);
+
+        // `compact_if_needed` already ran `prepare_step` and stored the ephemeral PreparedView.
+        let view = self.context_pipeline.take_prepared_view().ok_or_else(|| {
+            crate::types::LitecodeError::Llm(
+                "no prepared PreparedView 鈥?prepare_step must run before call_model".into(),
+            )
+        })?;
+
+        let instructions = view
+            .instructions
+            .clone()
+            .unwrap_or_else(|| self.instructions.clone());
+        // Fail closed before request build when Items require unsupported modalities.
+        crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
+        let token_count = view.token_count;
+        let context_meter = view.context_meter;
+        let (request, origin_seq) = self.build_model_request(
+            &instructions,
+            view.items,
+            view.item_seqs,
+            &view.rebased,
+            token_count,
+            view.projected_parts,
+            context_meter,
+        )?;
+        build_lap.done();
+        // Turn entry -> first request leaves this process (once per turn).
+        latency::report_since(
+            "turn_to_first_request",
+            self.latency_turn_start.take(),
+            None,
+        );
+        // Whole provider round trip incl. streaming; not part of our overhead.
+        let _llm_lap = latency::lap_step("call_model.llm", step);
+
+        // Default path: Responses SSE via complete_with_stream_events 鈫?authority
+        // ResponseStreamEvent; observer forwards InternalEvent::StreamEvent.
+        // The Chat Completions codec emits projected ResponseStreamEvents with
+        // turn-stable ids; preferred path remains Responses SSE (R2).
+        self.call_model_complete(&request, token_count, origin_seq)
+            .await
+    }
+
     /// Sense the seam and append one row per reminder. Subagent delivery is
     /// fail-closed: a write error puts the completions back and stops the turn.
     /// Other reminder writes are fail-open so a decoration cannot abort the turn.

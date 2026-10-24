@@ -1,5 +1,12 @@
 use thiserror::Error;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionFailureKind {
+    SummaryFinish,
+    Quality,
+    Transport,
+}
+
 #[derive(Debug, Error)]
 pub enum LitecodeError {
     #[error("git error: {0}")]
@@ -52,6 +59,12 @@ pub enum LitecodeError {
     #[error("compaction failed: empty summary")]
     CompactionFailed,
 
+    #[error("compaction failed ({kind:?}): {detail}")]
+    CompactionFailure {
+        kind: CompactionFailureKind,
+        detail: String,
+    },
+
     #[error("nothing to compact")]
     NothingToCompact,
 
@@ -97,8 +110,55 @@ pub enum LitecodeError {
 
 pub type Result<T> = std::result::Result<T, LitecodeError>;
 
-#[cfg(test)]
-mod tests {
-    
+impl LitecodeError {
+    /// Structured compaction boundary: summary finish/quality vs transport.
+    pub fn compaction_failure_kind(&self) -> Option<CompactionFailureKind> {
+        match self {
+            Self::CompactionFailure { kind, .. } => Some(*kind),
+            _ => None,
+        }
+    }
 
+    pub fn is_compaction_failure(&self) -> bool {
+        self.compaction_failure_kind().is_some() || matches!(self, Self::CompactionFailed)
+    }
 }
+
+/// Confirmed provider context-window overflow, not a generic 400/transport
+/// failure. Keep this classification deliberately narrow: only retry when the
+/// provider explicitly says the prompt exceeded the context window.
+pub fn is_context_overflow_error(error: &LitecodeError) -> bool {
+    let text = match error {
+        LitecodeError::Llm(message) => message,
+        LitecodeError::LlmStreamInterrupted { message, .. } => message,
+        LitecodeError::CompactionFailure { detail, .. } => detail,
+        other => {
+            let rendered = other.to_string();
+            return contains_context_overflow_marker(&rendered);
+        }
+    };
+    contains_context_overflow_marker(text)
+}
+
+fn contains_context_overflow_marker(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "context_length_exceeded",
+        "context_window_exceeded",
+        "context length exceeded",
+        "context window exceeded",
+        "maximum context length",
+        "max context length",
+        "maximum context window",
+        "prompt is too long",
+        "prompt too long",
+        "input is too long",
+        "exceeds the model's context",
+        "exceeds the context window",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+#[cfg(test)]
+mod tests {}

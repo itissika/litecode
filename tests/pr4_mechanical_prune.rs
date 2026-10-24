@@ -355,9 +355,12 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
         "fixture must stay below the savings floor: {plan:?}"
     );
 
-    let provider = Arc::new(RecordingProvider::new(vec![vec![
-        common::assistant_text_item("## summary\nlow-yield fixture", "msg_low_yield"),
-    ]]));
+    let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
+        vec![vec![common::assistant_text_item(
+            "## summary\nlow-yield fixture",
+            "msg_low_yield",
+        )]],
+    ));
     let captured = Arc::clone(&provider);
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
     request.context_window = 7_000;

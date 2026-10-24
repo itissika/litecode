@@ -52,7 +52,7 @@ use crate::tool::ToolPipeline;
 use crate::tool::output;
 use crate::tool::registry::build_tool_list;
 use crate::tools::code::CodeToolHost;
-use crate::types::{LitecodeError, Result, UserInput, user_message};
+use crate::types::{CompactionFailureKind, LitecodeError, Result, UserInput, user_message};
 
 /// Shared runtime configuration for CLI and serve (Phase 4 R4.4).
 pub struct RuntimeHandle {
@@ -1319,6 +1319,11 @@ impl AgentRuntime {
 fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
     match err {
         LitecodeError::CompactionFailed => Some(TurnErrorKind::CompactionFailed),
+        LitecodeError::CompactionFailure { kind, .. } => Some(match kind {
+            CompactionFailureKind::SummaryFinish => TurnErrorKind::CompactionSummaryFinish,
+            CompactionFailureKind::Quality => TurnErrorKind::CompactionQuality,
+            CompactionFailureKind::Transport => TurnErrorKind::CompactionTransport,
+        }),
         _ => None,
     }
 }
@@ -1327,4 +1332,25 @@ fn turn_error_kind(err: &LitecodeError) -> Option<TurnErrorKind> {
 mod pending_snapshot_tests {}
 
 #[cfg(test)]
-mod turn_error_kind_tests {}
+mod turn_error_kind_tests {
+    use super::turn_error_kind;
+    use crate::runtime::observer::TurnErrorKind;
+    use crate::types::{CompactionFailureKind, LitecodeError};
+
+    #[test]
+    fn structured_compaction_failure_preserves_turn_error_subtype() {
+        let error = LitecodeError::CompactionFailure {
+            kind: CompactionFailureKind::Quality,
+            detail: "summary rejected".into(),
+        };
+        assert!(matches!(
+            turn_error_kind(&error),
+            Some(TurnErrorKind::CompactionQuality)
+        ));
+    }
+
+    #[test]
+    fn transport_failure_is_not_mistaken_for_compaction() {
+        assert!(turn_error_kind(&LitecodeError::Llm("network down".into())).is_none());
+    }
+}

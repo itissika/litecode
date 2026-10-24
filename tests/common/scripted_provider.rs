@@ -20,6 +20,7 @@ use litecode::authority::responses::{
 pub struct ScriptedProvider {
     responses: Arc<Mutex<Vec<Vec<Item>>>>,
     index: Arc<AtomicUsize>,
+    accepting_compaction_summary: bool,
 }
 
 impl ScriptedProvider {
@@ -27,7 +28,16 @@ impl ScriptedProvider {
         Self {
             responses: Arc::new(Mutex::new(responses)),
             index: Arc::new(AtomicUsize::new(0)),
+            accepting_compaction_summary: false,
         }
+    }
+
+    /// Legacy request-shape fixtures only. Do not use for PR-5 acceptance or
+    /// finish assertions; queue explicit summary text/finish fixtures instead.
+    pub fn with_texts_legacy_accepting_compaction_summary(texts: &[&str]) -> Self {
+        let mut provider = Self::with_texts(texts);
+        provider.accepting_compaction_summary = true;
+        provider
     }
 
     pub fn with_text(text: &str) -> Self {
@@ -67,6 +77,51 @@ fn assistant_text(text: &str, idx: usize) -> Item {
         phase: None,
         status: OutputStatus::Completed,
     }))
+}
+
+/// A provider that returns an accepted DSH-shaped summary for the exact
+/// compaction prefix it receives. Useful for tests that need a successful
+/// checkpoint without restating the recent-user anchor in every fixture.
+#[derive(Clone)]
+pub struct DshSummaryProvider {
+    pub calls: Arc<AtomicUsize>,
+}
+
+impl DshSummaryProvider {
+    pub fn new() -> Self {
+        Self {
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl Default for DshSummaryProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LlmProvider for DshSummaryProvider {
+    fn endpoint(&self) -> &str {
+        "scripted://dsh-summary"
+    }
+
+    fn box_clone(&self) -> Box<dyn LlmProvider> {
+        Box::new(self.clone())
+    }
+
+    fn complete_with_stream_events<'a>(
+        &'a self,
+        request: &'a ModelRequest,
+        _api_key: &'a str,
+        mut on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+        _cancel: &'a tokio_util::sync::CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        super::emit_completed_terminal(&mut on_event);
+        let text = super::valid_summary_for_request(request);
+        Box::pin(async move { Ok(vec![assistant_text(&text, 0)]) })
+    }
 }
 
 /// Never completes until the future is dropped (or `cancel` fires when `ignore_cancel` is false).
@@ -146,12 +201,19 @@ impl LlmProvider for ScriptedProvider {
 
     fn complete_with_stream_events<'a>(
         &'a self,
-        _request: &'a ModelRequest,
+        request: &'a ModelRequest,
         _api_key: &'a str,
-        _on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
+        mut on_event: Option<Box<dyn FnMut(StreamEvents) + Send + 'a>>,
         _cancel: &'a tokio_util::sync::CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
-        let items = self.next_items();
+        super::emit_completed_terminal(&mut on_event);
+        let items = self.next_items().map(|items| {
+            if self.accepting_compaction_summary {
+                super::legacy_accepting_compaction_items(request, items)
+            } else {
+                items
+            }
+        });
         Box::pin(async move { items })
     }
 }

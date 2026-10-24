@@ -7,7 +7,10 @@
 
 mod common;
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use common::SessionDataFixture;
@@ -16,11 +19,13 @@ use litecode::client_protocol::controller::SessionController;
 use litecode::config::global_db;
 use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState};
 use litecode::engines::WorkspaceEngines;
+use litecode::llm::{LlmProvider, ModelRequest};
 use litecode::optional::EngineManager;
 use litecode::runtime::RuntimeHandle;
 use litecode::session::EventType;
 use litecode::session::manager::SessionManager;
-use litecode::types::{LitecodeError, user_text};
+use litecode::types::{LitecodeError, StreamEvents, assistant_text, user_text};
+use tokio_util::sync::CancellationToken;
 
 fn controller(
     sessions: Arc<SessionManager>,
@@ -74,7 +79,7 @@ async fn manual_compact_failure_e2e_releases_lease_and_retry_starts() {
     let before = sessions.data().working_set_blocking(&sid).unwrap().len();
 
     // Both attempts return an empty summary → CompactionFailed.
-    let provider = Arc::new(ScriptedProvider::with_texts(&["", ""]));
+    let provider = Arc::new(ScriptedProvider::with_texts(&["", "", "", ""]));
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 
     // Cold UI snapshot and manual gate must agree before any provider bill:
@@ -153,11 +158,15 @@ async fn manual_compact_retry_after_failure_completes() {
     sessions.insert_detail_rows(&sid, &seed).unwrap();
     let before = sessions.data().working_set_blocking(&sid).unwrap().len();
 
-    // Attempt 1: empty summary → CompactionFailed. Attempt 2: real summary → Ok.
-    let provider = Arc::new(ScriptedProvider::with_texts(&[
-        "",
-        "Summary of earlier work: manual-retry-ok seed messages 0..N.",
-    ]));
+    // The first manual operation exhausts its two empty attempts and fails;
+    // the user's second operation gets one accepted summary.
+    let provider = Arc::new(
+        ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&[
+            "",
+            "",
+            "accepted summary",
+        ]),
+    );
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 
     let op1 = ctrl

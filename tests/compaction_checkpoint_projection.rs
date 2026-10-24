@@ -21,6 +21,25 @@ fn summary(text: &str, id: &str) -> Vec<Item> {
     vec![common::assistant_text_item(text, id)]
 }
 
+fn merge_prior_summary(anchor: &str, extra: &str) -> String {
+    format!(
+        "## Primary Request and Intent\n- Preserve the exact request: {anchor}\n- {extra}\n\n\n## Key Technical Concepts\n- checkpoint merge-prior\n\n## Files and Code\n- src/context_pipeline/compact.rs: checkpoint projection\n\n## Errors and Fixes\n- invalid summaries are rejected\n\n## Pending Jobs\n- none\n\n## Current Work\n- Merge the prior checkpoint with the current prefix\n\n## Next Step\n- Continue with the kept recent history\n\n## Critical Context\n- Prior facts remain available through the checkpoint"
+    )
+}
+
+fn fresh_second_summary(anchor: &str) -> String {
+    format!(
+        "## Primary Request and Intent\n- Preserve the exact request: {anchor}\n- Retain first-fact survives merge-prior\n- Rebase checkpoint sequence and append-only rows\n\n\
+## Key Technical Concepts\n- Checkpoint payloads replace the prior summary by durable sequence\n- Reminder and queued user rows append without rewriting the prefix\n- Prepared views reuse one checkpoint block\n\n\
+## Files and Code\n- src/context_pipeline/compact.rs: second merge-prior acceptance\n- src/session/working.rs: checkpoint projection and rebased signatures\n- tests/compaction_checkpoint_projection.rs: append-only seam regression\n\n\
+## Errors and Fixes\n- Errors: a copied prior summary is rejected as quality overlap\n- Missing appends would leave a stale checkpoint prefix\n- Reusing two summary blocks breaks the prompt boundary\n\n\
+## Pending Jobs\n- Verify the post-checkpoint reminder remains append-only\n- Run the focused projection test after the fixture update\n\n\
+## Current Work\n- Rewrite the second checkpoint from the appended source rows\n- Confirm the first checkpoint sequence remains stable\n\n\
+## Next Step\n- Run cargo test --test compaction_checkpoint_projection\n- Continue the main turn from the new checkpoint\n\n\
+## Critical Context\n- The prior fact survives only inside the discarded checkpoint prefix\n- The second summary must add fresh facts instead of copying the old one\n- Only one compacted-summary block is allowed in the prompt"
+    )
+}
+
 fn assert_checkpoint_user(item: &Item) {
     match item {
         Item::Message(MessageItem::Input(message)) => {
@@ -52,11 +71,14 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
         .collect();
     sessions.insert_detail_rows(&sid, &seed).unwrap();
 
-    let first_summary = "## Primary Request and Intent\n- first-fact survives merge-prior";
-    let second_summary = "## Primary Request and Intent\n- second-fact replaces the checkpoint";
+    let first_anchor_text = item_text_preview(&seed[14]);
+    let first_anchor: String = first_anchor_text.trim().chars().take(240).collect();
+    let first_summary = merge_prior_summary(&first_anchor, "first-fact survives merge-prior");
+    let second_anchor = "second-source-anchor";
+    let second_summary = fresh_second_summary(second_anchor);
     let provider = Arc::new(RecordingProvider::new(vec![
-        summary(first_summary, "summary_first"),
-        summary(second_summary, "summary_second"),
+        summary(&first_summary, "summary_first"),
+        summary(&second_summary, "summary_second"),
     ]));
     let captured = Arc::clone(&provider);
     let provider: Arc<dyn litecode::llm::LlmProvider> = provider;
@@ -133,10 +155,13 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
     });
     let reminder_seq = sessions.append_reminder(&sid, &reminder).unwrap();
     assert!(reminder_seq > first_checkpoint_seq);
-    sessions
-        .insert_detail_rows(&sid, &[user_text("queued-after-checkpoint")])
-        .unwrap();
-
+    let second_anchor = "second-source-anchor";
+    let mut appended_seed: Vec<Item> = (0..8)
+        .map(|i| user_text(format!("append-{i}-{}", "word ".repeat(200))))
+        .collect();
+    appended_seed.push(user_text(second_anchor));
+    appended_seed.push(user_text("second-kept-tail"));
+    sessions.insert_detail_rows(&sid, &appended_seed).unwrap();
     let appended_rows = sessions.data().working_set_blocking(&sid).unwrap();
     let appended = project_items(&appended_rows);
     assert!(

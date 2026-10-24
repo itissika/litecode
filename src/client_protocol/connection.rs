@@ -120,6 +120,10 @@ pub(crate) fn compact_error_response(
     let structured = match error {
         E::AgentAlreadyRunning => Some((ErrorCode::AgentAlreadyRunning, true)),
         E::NothingToCompact | E::Canceled => None,
+        E::CompactionFailure { kind, .. } => Some((
+            crate::client_protocol::project::compaction_failure_code(*kind),
+            false,
+        )),
         _ => Some((ErrorCode::CompactionFailed, false)),
     };
     let message = error.to_string();
@@ -2078,6 +2082,40 @@ mod compact_error_tests {
 
     fn wire(e: LitecodeError) -> serde_json::Value {
         serde_json::to_value(compact_error_response(serde_json::json!(7), &e)).unwrap()
+    }
+
+    #[test]
+    fn structured_compaction_subtypes_keep_distinct_sync_wire_codes() {
+        let cases = [
+            (
+                crate::types::CompactionFailureKind::SummaryFinish,
+                "compaction_summary_finish",
+            ),
+            (
+                crate::types::CompactionFailureKind::Quality,
+                "compaction_quality",
+            ),
+            (
+                crate::types::CompactionFailureKind::Transport,
+                "compaction_transport",
+            ),
+        ];
+        for (kind, expected) in cases {
+            let v = wire(LitecodeError::CompactionFailure {
+                kind,
+                detail: "provider detail stays in logs".into(),
+            });
+            assert_eq!(v["error"]["data"]["code"], expected);
+            assert_eq!(v["error"]["data"]["retryable"], false);
+        }
+        for legacy in [LitecodeError::NothingToCompact, LitecodeError::Canceled] {
+            let v = wire(legacy);
+            assert_eq!(v["error"]["code"], -32000);
+            assert!(
+                v["error"].get("data").is_none(),
+                "legacy NothingToCompact/Canceled keep the plain body"
+            );
+        }
     }
 
     /// WP-024 G4 (wire half): session/compact while a turn runs.

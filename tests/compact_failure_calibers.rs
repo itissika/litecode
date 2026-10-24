@@ -91,7 +91,7 @@ async fn compact_failure_restores_transcript_snapshot() {
         "fixture must be compactable so we hit the LLM/fail path, not NothingToCompact"
     );
 
-    let provider = ScriptedProvider::with_text("");
+    let provider = ScriptedProvider::with_texts(&["", ""]);
     let err = CompactPolicy::compact_now(
         &budget,
         &sessions,
@@ -105,8 +105,8 @@ async fn compact_failure_restores_transcript_snapshot() {
     .await
     .expect_err("empty summary must fail compact");
     assert!(
-        matches!(err, LitecodeError::CompactionFailed),
-        "expected CompactionFailed, got {err:?}"
+        err.is_compaction_failure(),
+        "expected CompactionFailure, got {err:?}"
     );
 
     let after = sessions.data().working_set_blocking(&sid).unwrap();
@@ -153,7 +153,7 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     let before = row_previews(&turn);
     pipeline.stage_working(turn.clone());
 
-    let provider = ScriptedProvider::with_text("");
+    let provider = ScriptedProvider::with_texts(&["", ""]);
     let prompt_baseline = ProviderPromptBaseline::default();
     // Force auto pressure on the same 10_000-token request window.
     prompt_baseline.record(8_500, u64::MAX);
@@ -173,8 +173,8 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
         .await
         .expect_err("auto compact empty summary must Err");
     assert!(
-        matches!(err, LitecodeError::CompactionFailed),
-        "expected CompactionFailed, got {err:?}"
+        err.is_compaction_failure(),
+        "expected CompactionFailure, got {err:?}"
     );
 
     // compact_step returns Err before restaging — staged set must still be the snapshot.
@@ -226,7 +226,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
     );
 
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
-    let provider = ScriptedProvider::with_text("");
+    let provider = ScriptedProvider::with_texts(&["", ""]);
     let err = CompactPolicy::compact_now(
         &budget,
         &sessions,
@@ -239,7 +239,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
     )
     .await
     .expect_err("manual compact empty summary must fail");
-    assert!(matches!(err, LitecodeError::CompactionFailed));
+    assert!(err.is_compaction_failure());
 
     // Drain lifecycle: Started then Failed (same events start_manual_compact's spawn emits).
     let mut saw_failed = false;
@@ -252,7 +252,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
             ..
         } = env.event
         {
-            assert_eq!(fail_kind, Some(CompactionFailKind::Failed));
+            assert_eq!(fail_kind, Some(CompactionFailKind::SummaryFinish));
             assert_eq!(operation_id.as_deref(), Some(op_id.as_str()));
             saw_failed = true;
         }

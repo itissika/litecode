@@ -52,7 +52,9 @@ fn provider_request(
     context_window: usize,
     max_output_tokens: u32,
 ) -> litecode::llm::CompactionRequestContext {
-    let provider = Arc::new(ScriptedProvider::with_text("compact summary"));
+    let provider = Arc::new(
+        ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&["compact summary"]),
+    );
     let mut request = common::test_compaction_request(provider, "system instructions", vec![], sid);
     request.context_window = context_window;
     request.max_output_tokens = max_output_tokens;
