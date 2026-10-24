@@ -34,7 +34,9 @@ fn assistant_with_status(text: &str, id: &str, status: OutputStatus) -> Item {
 }
 
 fn row_snapshot(rows: &[litecode::session::working::WorkingRow]) -> Vec<String> {
-    rows.iter().map(|row| format!("{:?}", row.item)).collect()
+    rows.iter()
+        .map(|row| format!("{:?}", row.payload))
+        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -133,7 +135,7 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
         .working_set_blocking(&sid)
         .unwrap()
         .iter()
-        .map(|row| item_text_preview(&row.item))
+        .map(|row| item_text_preview(&row.payload.model_item()))
         .collect();
     assert!(
         persisted_previews

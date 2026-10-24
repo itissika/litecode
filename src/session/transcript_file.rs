@@ -38,8 +38,7 @@ pub const VIRTUAL_SESSION_SUFFIX: &str = ".md";
 /// a whole spilled row. Changing it renumbers the `L<n>` of every session, so it
 /// is a product constant — never a per-call option.
 pub const RENDER_WIDTH: usize = 160;
-pub const READ_ONLY_MSG: &str =
-    "this path is a read-only session transcript projection";
+pub const READ_ONLY_MSG: &str = "this path is a read-only session transcript projection";
 pub const IN_CONTEXT_WINDOW_MSG: &str =
     "requested lines are already in the current session context window";
 
@@ -276,7 +275,9 @@ fn row_item(row: &SearchableRow, data_root: &Path) -> Result<Option<Item>> {
         return Ok(Some(item));
     }
     if let Ok(body) = serde_json::from_str::<crate::session::model::CompactedBody>(&json) {
-        return Ok(Some(body.agent_item()));
+        return Ok(Some(
+            crate::session::working::CompactionCheckpoint::from(body).model_item(),
+        ));
     }
     Err(LitecodeError::SessionStorage(format!(
         "unparseable transcript row {}:{}",
@@ -586,11 +587,4 @@ fn normalize_newlines(text: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-
-}
+mod tests {}

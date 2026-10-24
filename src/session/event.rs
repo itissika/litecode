@@ -6,8 +6,9 @@ use serde_json::Value;
 use crate::reminder::{Reminder, ReminderKind, render_item};
 use crate::types::{Item, LitecodeError, Result, item_text_preview};
 
-use super::model::{CompactedBody, LogState};
+use super::model::{CompactedBody, LogState, SessionKind};
 use super::surface::{Surface, SurfaceOp, apply_plan, plan_surface};
+use super::working::{CompactionCheckpoint, WorkingPayload};
 use crate::authority::responses::MessageItem;
 
 /// Monotonic log position. Never rewritten, never reused.
@@ -177,8 +178,9 @@ impl EventDraft {
     ///
     /// Appending is a statement about content, not about the provider: the
     /// caller hands over an item it considers whole (a user turn, a tool result,
-    /// a compacted summary, a synthesised assistant message). The row therefore
-    /// settles on arrival. Streaming uses [`Self::stream_item`] instead.
+    /// or a synthesised assistant message). The row therefore settles on
+    /// arrival. A compacted checkpoint has its own role-free body and is built
+    /// with [`EventDraft`] directly. Streaming uses [`Self::stream_item`].
     pub fn surface_item(event_type: EventType, item: &Item, surface_op: SurfaceOp) -> Result<Self> {
         Self::item_with_state(event_type, item, surface_op, LogState::Final)
     }
@@ -336,19 +338,53 @@ pub fn item_from_event(event: &SessionEvent) -> Result<Item> {
     serde_json::from_value(event.data.clone()).map_err(Into::into)
 }
 
-/// AgentView assembly for a spine row. Compacted bodies are not `Item`.
-pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
-    match &event.event_type {
-        EventType::Compacted => {
-            let body: CompactedBody = serde_json::from_value(event.data.clone())?;
-            Ok(body.agent_item())
-        }
+/// Durable working-set payload for a spine row. Compacted rows preserve their
+/// role-free checkpoint identity; every other row is an explicit Item kind.
+pub fn spine_working_payload(event: &SessionEvent) -> Result<WorkingPayload> {
+    if matches!(event.event_type, EventType::Compacted) {
+        let body: CompactedBody = serde_json::from_value(event.data.clone())?;
+        return Ok(WorkingPayload::Checkpoint(CompactionCheckpoint::from(body)));
+    }
+    let item = match &event.event_type {
         EventType::Reminder(_) => {
             let reminder: Reminder = serde_json::from_value(event.data.clone())?;
-            Ok(render_item(&reminder))
+            render_item(&reminder)
         }
-        _ => item_from_event(event),
+        _ => item_from_event(event)?,
+    };
+    Ok(working_payload_with_item(event, item))
+}
+
+/// Preserve the row's explicit durable kind when an item body was supplied by a
+/// live stream/cache rather than parsed back from the event.
+pub fn working_payload_with_item(event: &SessionEvent, item: Item) -> WorkingPayload {
+    if matches!(event.event_type, EventType::Compacted) {
+        // A compacted event has no Item body. This branch exists only to keep
+        // the function total; callers with a real compacted event parse its body
+        // through `spine_working_payload`.
+        if let Ok(body) = serde_json::from_value::<CompactedBody>(event.data.clone()) {
+            return WorkingPayload::Checkpoint(CompactionCheckpoint::from(body));
+        }
     }
+    WorkingPayload::item_with_kind(kind_for_event(&event.event_type, &item), item)
+}
+
+fn kind_for_event(event_type: &EventType, item: &Item) -> SessionKind {
+    match event_type {
+        EventType::ItemUser => SessionKind::ItemUser,
+        EventType::ItemAssistant | EventType::PlanExecute => SessionKind::ItemAssistant,
+        EventType::ItemToolCall => SessionKind::ItemToolCall,
+        EventType::ItemToolResult => SessionKind::ItemToolResult,
+        // Reminder bodies have no dedicated SessionKind in the working payload;
+        // infer only ordinary item kinds (the helper never returns Compacted).
+        _ => WorkingPayload::item(item.clone()).kind(),
+    }
+}
+
+/// Compatibility AgentView projection for consumers that only need Items.
+/// Checkpoints become the unique user checkpoint projection.
+pub fn spine_agent_item(event: &SessionEvent) -> Result<Item> {
+    Ok(spine_working_payload(event)?.model_item())
 }
 
 pub fn skip_empty_assistant_item(item: &Item) -> bool {

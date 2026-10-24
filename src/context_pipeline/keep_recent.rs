@@ -6,7 +6,6 @@
 //! the leftover. One LLM pass — no second-pass / aggressive rewrite.
 
 use crate::authority::responses::{Item, MessageItem};
-use crate::context_pipeline::summary::is_compact_summary_item;
 use crate::session::estimate::{autocompact_threshold, item_token_estimate};
 
 /// Verbatim recent-window cap (Pi / Zed-style ~20k).
@@ -83,7 +82,6 @@ pub fn find_keep_recent_cut(items: &[Item], keep_tokens: usize) -> Option<usize>
 
     cut = adjust_cut_for_tool_pairs(items, cut);
     cut = adjust_cut_for_assistant_segment(items, cut);
-    cut = ensure_after_leading_summary(items, cut);
 
     if cut == 0 { None } else { Some(cut) }
 }
@@ -148,15 +146,6 @@ fn assistant_segment_start(items: &[Item], mut i: usize) -> usize {
         i -= 1;
     }
     i
-}
-
-/// Leading compaction summary must go into the discarded region when we compact.
-fn ensure_after_leading_summary(items: &[Item], cut: usize) -> usize {
-    if cut > 0 && is_compact_summary_item(&items[0]) {
-        cut.max(1)
-    } else {
-        cut
-    }
 }
 
 #[cfg(test)]

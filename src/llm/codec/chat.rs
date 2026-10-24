@@ -561,6 +561,23 @@ headers = { "x-opencode-session" = "{{session_id}}" }
     }
 
     #[test]
+    fn checkpoint_serializes_as_a_user_message() {
+        let checkpoint = crate::session::working::CompactionCheckpoint {
+            summary: "## Primary Request and Intent\n- ship checkpoint identity".into(),
+            from: 1,
+            to: 2,
+        };
+        let mut request = sample_request();
+        request.input = vec![checkpoint.model_item()];
+        let body = codec("").encode_body(&request, true).unwrap();
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages[1]["role"], "user", "{body}");
+        let text = messages[1]["content"].as_str().expect("user content");
+        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert!(text.contains("ship checkpoint identity"));
+    }
+
+    #[test]
     fn tools_and_reasoning_replay_into_one_assistant_turn() {
         use crate::authority::responses::{
             AssistantRole, FunctionToolCall, OutputStatus, ReasoningItem, ReasoningItemContent,

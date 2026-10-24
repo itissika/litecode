@@ -38,6 +38,12 @@ pub const EXPLORE_PROMPT: &str = concat!(
     include_str!("prompts/explore/voice.md"),
 );
 pub const COMPACTION_PROMPT: &str = include_str!("prompts/compaction.md");
+/// Compaction is no longer a hidden-agent prompt. These two DSH-faithful
+/// constants are the trailing summarization instruction and the user-facing
+/// checkpoint preamble. The instruction has exactly one LiteCode addition:
+/// a recent-user-message verbatim anchor line.
+pub const COMPACTION_INSTRUCTION: &str = include_str!("prompts/compaction_instruction.md");
+pub const CHECKPOINT_PREAMBLE: &str = include_str!("prompts/checkpoint_preamble.md");
 
 /// Shared citation rules for every non-hidden agent. Spliced by `build_system_prompt`.
 pub const CITATION_PROMPT: &str = include_str!("prompts/citations.md");

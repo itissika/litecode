@@ -3,9 +3,9 @@
 
 use rusqlite::Connection;
 
-use crate::session::event::{SessionEvent, spine_agent_item};
+use crate::session::event::{SessionEvent, spine_working_payload};
 use crate::session::model::SessionMeta;
-use crate::session::surface::{fold_surface, project_working_pairs};
+use crate::session::surface::{fold_surface, project_working_payloads};
 use crate::session::transcript_file::SearchableRow;
 use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
@@ -234,10 +234,9 @@ fn load_transcript(
     session_id: &str,
     data_root: &std::path::Path,
 ) -> Result<crate::types::Transcript> {
-    Ok(load_working_set(conn, session_id, data_root)?
-        .into_iter()
-        .map(|row| row.item)
-        .collect())
+    Ok(crate::session::working::project_items(&load_working_set(
+        conn, session_id, data_root,
+    )?))
 }
 
 fn load_working_set(
@@ -247,16 +246,19 @@ fn load_working_set(
 ) -> Result<Vec<WorkingRow>> {
     let events = load_events(conn, session_id, data_root)?;
     let surface = fold_surface(&events)?;
-    let pairs = project_working_pairs(&surface, |seq| {
+    let pairs = project_working_payloads(&surface, |seq| {
         events
             .iter()
             .find(|e| e.seq == seq)
             .ok_or_else(|| LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing")))
-            .and_then(spine_agent_item)
+            .and_then(spine_working_payload)
     })?;
     Ok(pairs
         .into_iter()
-        .map(|(seq, item)| WorkingRow::persisted(seq, item))
+        .map(|(seq, payload)| WorkingRow {
+            log_seq: Some(seq),
+            payload,
+        })
         .collect())
 }
 

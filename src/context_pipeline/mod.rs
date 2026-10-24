@@ -17,14 +17,17 @@ use tokio_util::sync::CancellationToken;
 use crate::llm::item_id_of;
 use crate::session::manager::SessionManager;
 use crate::session::store::Session;
-use crate::session::working::{WorkingRow, project_items};
+use crate::session::working::{CompactedView, WorkingRow, project_items};
 use crate::types::{Item, LitecodeError, Result, ToolResultData};
 
 pub use budget::{
     BudgetPolicy, OccupancyBill, ProviderPromptBaseline, manual_compact_eligible,
     occupancy_bill_from, ring_occupancy,
 };
-pub use compact::{CompactPolicy, SummaryArtifact, SummaryFinish, SummaryUsage};
+pub use compact::{
+    CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPrunePlan, PruneReplacement,
+    SummaryArtifact, SummaryFailure, SummaryFinish, SummaryReview, SummaryUsage,
+};
 pub use env::{Context, build_context};
 pub use system::build_system_prompt;
 pub use view::{HotView, PreparedView};
@@ -126,10 +129,14 @@ fn align_padded_item_sources(source_items: &[Item], view_items: &[Item]) -> Vec<
 pub(crate) fn project_model_view(
     turn_view: &[Item],
     source_seqs: &[Option<crate::session::event::Seq>],
+    inherited_before_checkpoint: Option<&[bool]>,
     model: &crate::provider_catalog::ResolvedModel,
     data_root: &std::path::Path,
 ) -> ModelProjection {
     debug_assert_eq!(turn_view.len(), source_seqs.len());
+    if let Some(inherited) = inherited_before_checkpoint {
+        debug_assert_eq!(turn_view.len(), inherited.len());
+    }
     let mut llm_items = turn_view.to_vec();
     Session::pad_unanswered_calls(&mut llm_items);
     let item_seqs = align_padded_item_seqs(turn_view, source_seqs, &llm_items);
@@ -137,11 +144,16 @@ pub(crate) fn project_model_view(
     let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
     // Runs before refs expand, so a dropped part never becomes a data URL.
     let mut rebased = media_budget::drop_stale_media(&mut llm_items);
-    for (flag, compacted) in rebased
-        .iter_mut()
-        .zip(summary::minted_before_summary(&llm_items, &item_seqs))
-    {
-        *flag |= compacted;
+    if let Some(inherited) = inherited_before_checkpoint {
+        for (index, source_index) in source_indices.iter().enumerate() {
+            if source_index
+                .and_then(|source| inherited.get(source))
+                .copied()
+                .unwrap_or(false)
+            {
+                rebased[index] = true;
+            }
+        }
     }
     crate::session::media::resolve_user_media(&mut llm_items, data_root);
     ModelProjection {
@@ -164,7 +176,7 @@ fn attach_step_items(rows: &mut Vec<WorkingRow>, items: &[Item], cursor: i64) {
                 };
                 (seq as i64) > cursor
                     && !used.contains(&seq)
-                    && item_id_of(&row.item).as_deref() == Some(id.as_str())
+                    && row.item().and_then(item_id_of).as_deref() == Some(id.as_str())
             })
         });
         if let Some(index) = bound {
@@ -383,19 +395,34 @@ impl ContextPipeline {
         model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<()> {
         self.sync_turn_working(sessions, session_id);
-        let (turn_view, source_seqs) = {
+        let (turn_view, source_seqs, inherited_before_checkpoint) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                project_items(&state.working),
-                state
-                    .working
-                    .iter()
-                    .map(|row| row.log_seq)
-                    .collect::<Vec<_>>(),
-            )
+            if let Some(view) = CompactedView::from_working_rows(&state.working) {
+                (
+                    view.items,
+                    view.item_seqs,
+                    Some(view.inherited_before_checkpoint),
+                )
+            } else {
+                (
+                    project_items(&state.working),
+                    state
+                        .working
+                        .iter()
+                        .map(|row| row.log_seq)
+                        .collect::<Vec<_>>(),
+                    None,
+                )
+            }
         };
 
-        let projection = project_model_view(&turn_view, &source_seqs, model, &self.data_root);
+        let projection = project_model_view(
+            &turn_view,
+            &source_seqs,
+            inherited_before_checkpoint.as_deref(),
+            model,
+            &self.data_root,
+        );
         let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
         let token_count =
             self.budget

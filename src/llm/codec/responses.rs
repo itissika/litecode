@@ -644,6 +644,23 @@ endpoint_type = "responses"
         assert!(body.get("store").is_none());
     }
 
+    #[test]
+    fn checkpoint_serializes_as_a_user_message() {
+        let checkpoint = crate::session::working::CompactionCheckpoint {
+            summary: "## Primary Request and Intent\n- ship checkpoint identity".into(),
+            from: 1,
+            to: 2,
+        };
+        let mut request = sample_request();
+        request.input = vec![checkpoint.model_item()];
+        let body = request_body(&ResponsesCodec::new(openai("")).unwrap(), &request);
+        let input = body["input"].as_array().expect("input array");
+        assert_eq!(input[0]["role"], "user", "{body}");
+        let text = input[0].to_string();
+        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert!(text.contains("ship checkpoint identity"));
+    }
+
     /// A ciphertext-only target keeps only reasoning this endpoint can read
     /// (its own ciphertext); the codec then clears input `content`, which the
     /// dialect rejects. The session copy is unchanged.

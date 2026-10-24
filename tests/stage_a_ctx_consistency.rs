@@ -125,7 +125,9 @@ fn commit_via_gate(
 }
 
 fn row_previews(rows: &[WorkingRow]) -> Vec<String> {
-    rows.iter().map(|r| item_text_preview(&r.item)).collect()
+    rows.iter()
+        .map(|r| item_text_preview(&r.payload.model_item()))
+        .collect()
 }
 
 fn setup_workspace_and_session(
@@ -222,7 +224,7 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
         .map(|row| {
             (
                 row.log_seq.expect("reader working row must have seq"),
-                item_text_preview(&row.item),
+                item_text_preview(&row.payload.model_item()),
             )
         })
         .collect();
@@ -744,7 +746,7 @@ async fn unanswered_calls_pad_llm_view_only_not_disk() {
     assert!(
         !turn
             .iter()
-            .any(|r| matches!(&r.item, Item::FunctionCallOutput(_))),
+            .any(|r| matches!(r.item(), Some(Item::FunctionCallOutput(_)))),
         "working set must keep the hanging FunctionCall, not a fake output"
     );
     let prepared = pipeline.prepared_view().expect("prepared");
@@ -783,7 +785,7 @@ fn revert_contract_three_states() {
         .unwrap();
     sessions
         .data()
-        .compact_from(&sid, &user_text("summary"), None, 10)
+        .compact_from(&sid, "summary", None, 10)
         .unwrap();
     // Post-compact users.
     sessions
@@ -799,7 +801,10 @@ fn revert_contract_three_states() {
         .iter()
         .map(litecode::types::item_text_preview)
         .collect();
-    assert_eq!(previews, vec!["summary".to_string(), "u2".to_string()]);
+    assert_eq!(previews.len(), 2, "{previews:?}");
+    assert!(previews[0].contains("summary"));
+    assert_eq!(previews[0].matches("<compacted-summary>").count(), 1);
+    assert_eq!(previews[1], "u2");
     assert_eq!(sessions.entry_user_detail_count(&sid).unwrap(), 3);
 
     // 2) Swallowed: anchor beyond current visible count →InvalidRevertAnchor.

@@ -18,16 +18,16 @@ use crate::session::data::command::{SessionListPreview, UserAnchorWindow};
 use crate::session::estimate::compute_token_estimate;
 use crate::session::event::{
     EventDraft, EventType, Seq, SessionEvent, finalize_draft, item_from_event,
-    skip_empty_assistant_item, spine_agent_item,
+    skip_empty_assistant_item, spine_working_payload, working_payload_with_item,
 };
 use crate::session::model::{CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION};
 use crate::session::snapshot;
 use crate::session::surface::{
-    Surface, SurfaceOp, apply_plan, fold_surface, plan_surface, project_working_pairs,
+    Surface, SurfaceOp, apply_plan, fold_surface, plan_surface, project_working_payloads,
 };
 use crate::session::task_state::TodoItem;
 use crate::session::task_state::{PlanRef, TaskReminders};
-use crate::session::working::WorkingRow;
+use crate::session::working::{CompactionCheckpoint, WorkingPayload, WorkingRow, project_items};
 use crate::tool::output::{BLOB_PREFIX, DEFAULT_SPILL_THRESHOLD, blob_dir};
 use crate::types::{Item, LitecodeError, Result, ToolResultData, Transcript, item_text_preview};
 
@@ -294,7 +294,7 @@ struct LogProjection {
     surface: Surface,
     next_seq: Seq,
     active_max_seq: i64,
-    items_by_seq: HashMap<Seq, Item>,
+    payloads_by_seq: HashMap<Seq, WorkingPayload>,
     reminders_by_seq: HashMap<Seq, crate::reminder::Reminder>,
     compacted_seqs: HashSet<Seq>,
     /// Seqs whose row is still in flight. Tracked from the log's own lifecycle
@@ -308,7 +308,7 @@ impl Default for LogProjection {
             surface: Surface::default(),
             next_seq: 0,
             active_max_seq: -1,
-            items_by_seq: HashMap::new(),
+            payloads_by_seq: HashMap::new(),
             reminders_by_seq: HashMap::new(),
             compacted_seqs: HashSet::new(),
             in_progress: HashSet::new(),
@@ -327,7 +327,7 @@ impl LogProjection {
             if let crate::session::surface::SurfacePlan::Replace { start_idx, len, .. } = &plan {
                 let shadowed: Vec<Seq> = self.surface.nodes[*start_idx..*start_idx + *len].to_vec();
                 for seq in shadowed {
-                    self.items_by_seq.remove(&seq);
+                    self.payloads_by_seq.remove(&seq);
                     self.reminders_by_seq.remove(&seq);
                     self.compacted_seqs.remove(&seq);
                 }
@@ -341,17 +341,19 @@ impl LogProjection {
         } else {
             self.in_progress.remove(&event.seq);
         }
-        if let Some(item) = item {
-            if self.surface.nodes.contains(&event.seq) {
-                self.items_by_seq.insert(event.seq, item.clone());
-            }
-        } else if event.event_type.enters_spine()
-            && self.surface.nodes.contains(&event.seq)
-            && let Ok(assembled) = spine_agent_item(event)
-        {
-            self.items_by_seq.insert(event.seq, assembled);
-        }
         if self.surface.nodes.contains(&event.seq) {
+            let payload = item
+                .map(|item| working_payload_with_item(event, item.clone()))
+                .or_else(|| {
+                    event
+                        .event_type
+                        .enters_spine()
+                        .then(|| spine_working_payload(event).ok())
+                        .flatten()
+                });
+            if let Some(payload) = payload {
+                self.payloads_by_seq.insert(event.seq, payload);
+            }
             match &event.event_type {
                 EventType::Reminder(_) => {
                     if let Ok(reminder) = serde_json::from_value(event.data.clone()) {
@@ -369,7 +371,13 @@ impl LogProjection {
 
     fn seal_item(&mut self, seq: Seq, item: &Item) {
         if self.surface.nodes.contains(&seq) {
-            self.items_by_seq.insert(seq, item.clone());
+            let kind = self
+                .payloads_by_seq
+                .get(&seq)
+                .map(WorkingPayload::kind)
+                .unwrap_or_else(|| WorkingPayload::item(item.clone()).kind());
+            self.payloads_by_seq
+                .insert(seq, WorkingPayload::item_with_kind(kind, item.clone()));
         }
         self.in_progress.remove(&seq);
     }
@@ -377,7 +385,13 @@ impl LogProjection {
     /// Replace the cached payload of a row that is still in flight.
     fn touch_item(&mut self, seq: Seq, item: &Item) {
         if self.surface.nodes.contains(&seq) {
-            self.items_by_seq.insert(seq, item.clone());
+            let kind = self
+                .payloads_by_seq
+                .get(&seq)
+                .map(WorkingPayload::kind)
+                .unwrap_or_else(|| WorkingPayload::item(item.clone()).kind());
+            self.payloads_by_seq
+                .insert(seq, WorkingPayload::item_with_kind(kind, item.clone()));
         }
         self.in_progress.insert(seq);
     }
@@ -687,10 +701,13 @@ fn assert_stream_row_identity(
     };
     // A body that is not an Item (a compaction checkpoint) is already refused by
     // the kind check; there is no identity to compare.
-    let Ok(existing) = spine_agent_item(&event) else {
+    let Ok(payload) = spine_working_payload(&event) else {
         return Ok(());
     };
-    let held = item_type_of(&existing);
+    let Some(existing) = payload.as_item() else {
+        return Ok(());
+    };
+    let held = item_type_of(existing);
     let written = item_type_of(item);
     if held != written {
         return Err(LitecodeError::InvalidSessionEvent(format!(
@@ -928,7 +945,7 @@ fn row_to_item(row: &TranscriptRow, data_root: &Path) -> Result<Item> {
                 LitecodeError::ToolExecution(format!("compacted row seq {} has no body", row.seq))
             })?;
             let body: crate::session::model::CompactedBody = serde_json::from_str(raw)?;
-            Ok(body.agent_item())
+            Ok(CompactionCheckpoint::from(body).model_item())
         }
         "compact_checkpoint" | "detail" | "item/user" | "item/assistant" | "item/tool_call"
         | "item/tool_result" | "plan/execute" => {
@@ -2027,24 +2044,29 @@ impl Session {
 
 impl Session {
     pub fn load_transcript(&self) -> Result<Transcript> {
-        Ok(self
-            .load_working_set()?
-            .into_iter()
-            .map(|row| row.item)
-            .collect())
+        Ok(project_items(&self.load_working_set()?))
     }
 
-    /// Model-visible working set: surface order, same skip rules as `derive_messages`.
+    /// Model-visible working set: surface order, explicit payload identity.
     pub fn load_working_set(&self) -> Result<Vec<WorkingRow>> {
         let projection = self.projection.borrow();
-        let pairs = project_working_pairs(&projection.surface, |seq| {
-            projection.items_by_seq.get(&seq).cloned().ok_or_else(|| {
-                LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing from cache"))
-            })
+        let pairs = project_working_payloads(&projection.surface, |seq| {
+            projection
+                .payloads_by_seq
+                .get(&seq)
+                .cloned()
+                .ok_or_else(|| {
+                    LitecodeError::InvalidSessionEvent(format!(
+                        "surface seq {seq} missing from cache"
+                    ))
+                })
         })?;
         Ok(pairs
             .into_iter()
-            .map(|(seq, item)| WorkingRow::persisted(seq, item))
+            .map(|(seq, payload)| WorkingRow {
+                log_seq: Some(seq),
+                payload,
+            })
             .collect())
     }
 
@@ -2061,7 +2083,7 @@ impl Session {
         let events = self.load_events()?;
         let surface = fold_surface(&events)?;
         let node_set: HashSet<Seq> = surface.nodes.iter().copied().collect();
-        let mut items_by_seq = HashMap::new();
+        let mut payloads_by_seq = HashMap::new();
         let mut reminders_by_seq = HashMap::new();
         let mut compacted_seqs = HashSet::new();
         let mut in_progress = HashSet::new();
@@ -2081,12 +2103,9 @@ impl Session {
                     }
                     _ => {}
                 }
-            }
-            let item = spine_agent_item(event).ok();
-            if let Some(item) = item
-                && node_set.contains(&event.seq)
-            {
-                items_by_seq.insert(event.seq, item);
+                if let Ok(payload) = spine_working_payload(event) {
+                    payloads_by_seq.insert(event.seq, payload);
+                }
             }
         }
         let active_max_seq = events.last().map(|e| e.seq as i64).unwrap_or(-1);
@@ -2099,7 +2118,7 @@ impl Session {
             surface,
             next_seq,
             active_max_seq,
-            items_by_seq,
+            payloads_by_seq,
             reminders_by_seq,
             compacted_seqs,
             in_progress,
@@ -2657,22 +2676,19 @@ impl Session {
             .collect();
         let valid_call_ids: HashSet<String> = rows
             .iter()
-            .filter_map(|row| match &row.item {
-                Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+            .filter_map(|row| match row.item() {
+                Some(Item::FunctionCall(fc)) => Some(fc.call_id.clone()),
                 _ => None,
             })
             .collect();
-        let is_orphan = |item: &Item| {
+        let is_orphan = |row: &WorkingRow| {
             matches!(
-                item,
-                Item::FunctionCallOutput(out) if !valid_call_ids.contains(&out.call_id)
+                row.item(),
+                Some(Item::FunctionCallOutput(out)) if !valid_call_ids.contains(&out.call_id)
             )
         };
-        let mut kept: Vec<WorkingRow> = rows
-            .iter()
-            .filter(|row| !is_orphan(&row.item))
-            .cloned()
-            .collect();
+        let mut kept: Vec<WorkingRow> =
+            rows.iter().filter(|row| !is_orphan(row)).cloned().collect();
 
         if self.cached_max_seq() < expected_max_seq {
             *rows = self.load_working_set()?;
@@ -2693,13 +2709,22 @@ impl Session {
         let mut appended: Vec<Item> = Vec::new();
         let mut next_turn_seq = 0i64;
         for row in kept.iter_mut() {
-            let msg = &row.item;
+            // A checkpoint is already a durable surface node. It is not an Item
+            // delta and must pass through untouched.
+            if row.checkpoint().is_some() {
+                continue;
+            }
+            let msg = row
+                .item()
+                .expect("non-checkpoint payload is an item")
+                .clone();
             if let Some(seq) = row.log_seq {
                 let same = projection
-                    .items_by_seq
+                    .payloads_by_seq
                     .get(&seq)
+                    .and_then(WorkingPayload::as_item)
                     .and_then(|existing| serde_json::to_value(existing).ok())
-                    == serde_json::to_value(msg).ok();
+                    == serde_json::to_value(&msg).ok();
                 if same {
                     // The bytes are already what the turn is committing. If the row
                     // settled, this is the idempotent case and nothing is written.
@@ -2707,18 +2732,12 @@ impl Session {
                     // seal: a streamed row must not survive its own commit as
                     // `in_progress`.
                     if row_is_settled(&tx, &self.id, seq)? {
-                        set_item_result_data(
-                            &tx,
-                            &self.id,
-                            seq,
-                            msg,
-                            &ui_data_by_call_id,
-                        )?;
+                        set_item_result_data(&tx, &self.id, seq, &msg, &ui_data_by_call_id)?;
                         continue;
                     }
-                    seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
-                    set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
-                    projection.seal_item(seq, msg);
+                    seal_event_row(&tx, &self.id, &self.data_root, seq, &msg)?;
+                    set_item_result_data(&tx, &self.id, seq, &msg, &ui_data_by_call_id)?;
+                    projection.seal_item(seq, &msg);
                     sealed_seqs.push(seq);
                     sealed_items.push(msg.clone());
                     mutated = true;
@@ -2734,27 +2753,27 @@ impl Session {
                 if row_is_settled(&tx, &self.id, seq)? {
                     row.log_seq = None;
                 } else {
-                    seal_event_row(&tx, &self.id, &self.data_root, seq, msg)?;
-                    set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
-                    projection.seal_item(seq, msg);
+                    seal_event_row(&tx, &self.id, &self.data_root, seq, &msg)?;
+                    set_item_result_data(&tx, &self.id, seq, &msg, &ui_data_by_call_id)?;
+                    projection.seal_item(seq, &msg);
                     sealed_seqs.push(seq);
                     sealed_items.push(msg.clone());
                     mutated = true;
                     continue;
                 }
             }
-            let kind = surface_event_type_of(msg).as_str().to_owned();
-            let mut draft =
-                EventDraft::surface_item(surface_event_type_of(msg), msg, SurfaceOp::Append)?;
-            draft.time = message_timestamp(msg);
+            let event_type = surface_event_type_of(&msg);
+            let kind = event_type.as_str().to_owned();
+            let mut draft = EventDraft::surface_item(event_type, &msg, SurfaceOp::Append)?;
+            draft.time = message_timestamp(&msg);
             let (seq, _) =
                 self.admit_draft_in_tx(&tx, draft, &tid, next_turn_seq, &kind, 0, &mut projection)?;
-            set_item_result_data(&tx, &self.id, seq, msg, &ui_data_by_call_id)?;
+            set_item_result_data(&tx, &self.id, seq, &msg, &ui_data_by_call_id)?;
             row.log_seq = Some(seq);
             next_turn_seq += 1;
             mutated = true;
             appended_seqs.push(seq);
-            appended.push(msg.clone());
+            appended.push(msg);
         }
 
         let mut preview_items = appended.clone();
@@ -2769,7 +2788,6 @@ impl Session {
             mutated,
         })
     }
-
     /// User-message anchors around `anchor_seq` (`None` = latest `item/user`).
     pub fn user_anchor_window(
         &self,
@@ -3181,7 +3199,7 @@ impl Session {
     }
 
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
-    pub fn apply_compact_checkpoint(&self, summary: &Item, token_estimate: i64) -> Result<i64> {
+    pub fn apply_compact_checkpoint(&self, summary: &str, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
         self.apply_compact_checkpoint_checked(summary, None, token_estimate, None)
     }
@@ -3198,7 +3216,7 @@ impl Session {
     /// keep (pointer set to N so only the summary is visible until new inserts).
     pub fn apply_compact_checkpoint_from(
         &self,
-        summary: &Item,
+        summary: &str,
         kept_from_seq: Option<i64>,
         token_estimate: i64,
     ) -> Result<i64> {
@@ -3209,7 +3227,7 @@ impl Session {
     /// no longer matches `expected_view_len` (log truncated under this compact).
     pub fn apply_compact_checkpoint_checked(
         &self,
-        summary: &Item,
+        summary: &str,
         kept_from_seq: Option<i64>,
         token_estimate: i64,
         expected_view_len: Option<usize>,
@@ -3218,15 +3236,7 @@ impl Session {
         let now = chrono::Utc::now().timestamp_millis();
         let mut projection = self.projection.borrow().clone();
         if let Some(expected) = expected_view_len {
-            let view_len = project_working_pairs(&projection.surface, |seq| {
-                projection.items_by_seq.get(&seq).cloned().ok_or_else(|| {
-                    LitecodeError::InvalidSessionEvent(format!(
-                        "surface seq {seq} missing from cache"
-                    ))
-                })
-            })?
-            .len();
-            if view_len != expected {
+            if self.load_working_set()?.len() != expected {
                 return Err(LitecodeError::Canceled);
             }
         }
@@ -3237,8 +3247,11 @@ impl Session {
             (SurfaceOp::Replace { start, .. }, Some(k)) => (*start, k as Seq),
             (SurfaceOp::Replace { start, .. }, None) => (*start, projection.next_seq),
         };
-        let summary = item_text_preview(summary);
-        let compacted = crate::session::model::CompactedBody { summary, from, to };
+        let compacted = crate::session::model::CompactedBody {
+            summary: summary.to_string(),
+            from,
+            to,
+        };
         let draft = EventDraft {
             time: now,
             event_type: EventType::Compacted,
@@ -3259,7 +3272,10 @@ impl Session {
             &mut projection,
         )?;
         if projection.surface.nodes.contains(&seq) {
-            projection.items_by_seq.insert(seq, compacted.agent_item());
+            projection.payloads_by_seq.insert(
+                seq,
+                WorkingPayload::Checkpoint(CompactionCheckpoint::from(compacted.clone())),
+            );
         }
         tx.execute(
             "UPDATE sessions SET checkpoint_seq = ?1, compacted_seq = ?1, kept_from_seq = ?2, spine_from = ?1, updated_at = ?3 WHERE id = ?4",
@@ -3277,11 +3293,13 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    
+    use crate::session::event::spine_agent_item;
+    use crate::session::surface::project_working_pairs;
+
     use super::*;
     use crate::authority::responses::{
-        AssistantRole,
-        MessageItem, OutputMessage, OutputMessageContent, OutputStatus, OutputTextContent,
+        AssistantRole, MessageItem, OutputMessage, OutputMessageContent, OutputStatus,
+        OutputTextContent,
     };
     use crate::types::user_text;
 
@@ -3357,11 +3375,7 @@ mod tests {
             .unwrap();
 
         let n = session
-            .apply_compact_checkpoint_from(
-                &user_text("[Conversation summary]\nprior"),
-                Some(keep_tail_seq),
-                42,
-            )
+            .apply_compact_checkpoint_from("[Conversation summary]\nprior", Some(keep_tail_seq), 42)
             .unwrap();
 
         let detail_after: i64 = session
@@ -3405,7 +3419,11 @@ mod tests {
                 .any(|p| p == "archive-a" || p == "archive-b"),
             "turn working set must not include pre-kept archive"
         );
-        assert!(previews.iter().any(|p| p.contains("Conversation summary")));
+        assert!(
+            previews
+                .iter()
+                .any(|p| p.contains("prior") && p.matches("<compacted-summary>").count() == 1)
+        );
         assert!(previews.iter().any(|p| p == "keep-tail"));
     }
 
@@ -3426,7 +3444,7 @@ mod tests {
             )
             .unwrap();
         let first = session
-            .apply_compact_checkpoint_from(&user_text("cut-1"), Some(keep_first), 10)
+            .apply_compact_checkpoint_from("cut-1", Some(keep_first), 10)
             .unwrap();
         session
             .insert_detail_rows(&[user_text("d"), user_text("e")])
@@ -3442,7 +3460,7 @@ mod tests {
             )
             .unwrap();
         session
-            .apply_compact_checkpoint_from(&user_text("cut-2"), Some(keep_second), 10)
+            .apply_compact_checkpoint_from("cut-2", Some(keep_second), 10)
             .unwrap();
         // Users a,b,c then a compact, then d. Truncate from d's seq.
         session.revert_to_user_anchor(keep_second).unwrap();
@@ -3634,7 +3652,7 @@ mod tests {
             ])
             .unwrap();
         session
-            .apply_compact_checkpoint_from(&user_text("sum"), Some(2), 10)
+            .apply_compact_checkpoint_from("sum", Some(2), 10)
             .unwrap();
         session.insert_detail_rows(&[user_text("e")]).unwrap();
         let cached = session.projection.borrow().surface.nodes.clone();
@@ -3737,40 +3755,63 @@ mod tests {
                 .map(|row| {
                     (
                         row.log_seq.expect("writer working row has seq"),
-                        item_text_preview(&row.item),
+                        item_text_preview(&row.payload.model_item()),
                     )
                 })
                 .collect::<Vec<_>>()
         };
         assert_eq!(writer_ids(&session), fold_ids(&session));
         session
-            .apply_compact_checkpoint_from(&user_text("sum"), Some(1), 10)
+            .apply_compact_checkpoint_from("sum", Some(1), 10)
             .unwrap();
         let writer = writer_ids(&session);
         let folded = fold_ids(&session);
         assert_eq!(writer, folded);
-        assert_eq!(writer[0].1, "sum");
+        assert!(writer[0].1.contains("sum"));
+        assert_eq!(writer[0].1.matches("<compacted-summary>").count(), 1);
         assert!(writer.iter().any(|(seq, text)| *seq == 1 && text == "b"));
     }
 
     #[test]
-    fn compact_summary_agent_view_is_assistant_and_survives_reload() {
+    fn compact_checkpoint_survives_reload_as_checkpoint_payload() {
         use crate::authority::responses::MessageItem;
         let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
         session
             .insert_detail_rows(&[user_text("old"), user_text("keep")])
             .unwrap();
-        session
-            .apply_compact_checkpoint_from(&user_text("rolled-up"), Some(1), 10)
-            .unwrap();
+        let checkpoint_seq = session
+            .apply_compact_checkpoint_from("rolled-up", Some(1), 10)
+            .unwrap() as u64;
+
+        let rows = session.load_working_set().unwrap();
+        let first = rows.first().expect("checkpoint row");
+        assert_eq!(first.log_seq, Some(checkpoint_seq));
+        let checkpoint = first
+            .checkpoint()
+            .expect("compacted row must retain checkpoint payload");
+        assert_eq!(checkpoint.summary, "rolled-up");
+        assert_eq!(checkpoint.from, 0);
+        assert_eq!(
+            checkpoint.to, 1,
+            "keep-recent exclusive end is first kept seq"
+        );
+        assert!(
+            first.item().is_none(),
+            "checkpoint is never an Item payload"
+        );
+
         let loaded = session.load_transcript().unwrap();
         match &loaded[0] {
-            Item::Message(MessageItem::Output(out)) => {
-                assert_eq!(out.role, AssistantRole::Assistant);
+            Item::Message(MessageItem::Input(message)) => {
+                assert_eq!(message.role, InputRole::User);
             }
-            other => panic!("expected assistant compact summary, got {other:?}"),
+            other => panic!("expected user checkpoint, got {other:?}"),
         }
-        assert!(item_text_preview(&loaded[0]).contains("rolled-up"));
+        let text = item_text_preview(&loaded[0]);
+        assert!(text.contains("rolled-up"));
+        assert_eq!(text.matches("<compacted-summary>").count(), 1);
+        assert!(!matches!(loaded[0], Item::Message(MessageItem::Output(_))));
+
         let body: CompactedBody = serde_json::from_value(
             session
                 .load_events()
@@ -3781,17 +3822,26 @@ mod tests {
                 .data,
         )
         .unwrap();
+        assert_eq!(body.summary, "rolled-up");
         assert_eq!(body.from, 0);
-        assert_eq!(body.to, 1, "keep-recent exclusive end is first kept seq");
-        session.hydrate_projection().unwrap();
-        match &session.load_transcript().unwrap()[0] {
-            Item::Message(MessageItem::Output(out)) => {
-                assert_eq!(out.role, AssistantRole::Assistant);
-            }
-            other => panic!("reload must keep assistant summary, got {other:?}"),
-        }
-    }
+        assert_eq!(body.to, 1);
 
+        session.hydrate_projection().unwrap();
+        let reloaded = session.load_working_set().unwrap();
+        let first = reloaded.first().expect("reloaded checkpoint");
+        assert_eq!(first.log_seq, Some(checkpoint_seq));
+        assert_eq!(
+            first
+                .checkpoint()
+                .expect("reload must preserve checkpoint payload")
+                .summary,
+            "rolled-up"
+        );
+        assert!(matches!(
+            &session.load_transcript().unwrap()[0],
+            Item::Message(MessageItem::Input(message)) if message.role == InputRole::User
+        ));
+    }
     #[test]
     fn tool_result_data_round_trips_beside_the_item_without_entering_it() {
         use crate::authority::responses::{
@@ -3823,10 +3873,7 @@ mod tests {
             },
             "ok": true
         });
-        let mut rows = vec![
-            WorkingRow::pending(call),
-            WorkingRow::pending(output),
-        ];
+        let mut rows = vec![WorkingRow::pending(call), WorkingRow::pending(output)];
 
         let outcome = session
             .commit_turn_delta_with_orphan_cleanup(
@@ -3855,7 +3902,11 @@ mod tests {
         assert!(call_event.result_data.is_none());
         assert_eq!(result_event.result_data.as_ref(), Some(&data));
         // The Responses Item is unchanged: UI data never enters the body.
-        assert!(!serde_json::to_string(&result_event.data).unwrap().contains("by_tool"));
+        assert!(
+            !serde_json::to_string(&result_event.data)
+                .unwrap()
+                .contains("by_tool")
+        );
         assert_eq!(
             crate::session::derive_transcript_items(&events)
                 .unwrap()
@@ -3863,5 +3914,4 @@ mod tests {
             2
         );
     }
-
 }

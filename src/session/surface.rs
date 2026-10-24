@@ -7,6 +7,7 @@ use super::event::{
     skip_unmatched_tool_output, spine_agent_item,
 };
 use super::model::CompactedBody;
+use super::working::WorkingPayload;
 use crate::types::{Item, LitecodeError, Result};
 
 /// Transfer applied by a surface-eligible event.
@@ -265,36 +266,52 @@ pub fn derive_messages(events: &[SessionEvent]) -> Result<Vec<Item>> {
     Ok(out)
 }
 
-/// Model-visible `(seq, Item)` pairs in surface order, with the same skip rules
-/// as [`derive_messages`].
-pub fn project_working_pairs(
+/// Durable working-set projection in surface order. Checkpoint payloads keep
+/// their role-free identity; only Item payloads participate in item skip rules.
+pub fn project_working_payloads(
     surface: &Surface,
-    lookup: impl Fn(Seq) -> Result<Item>,
-) -> Result<Vec<(Seq, Item)>> {
+    lookup: impl Fn(Seq) -> Result<WorkingPayload>,
+) -> Result<Vec<(Seq, WorkingPayload)>> {
     let mut loaded = Vec::with_capacity(surface.nodes.len());
     for seq in &surface.nodes {
         loaded.push((*seq, lookup(*seq)?));
     }
     let valid_call_ids: std::collections::HashSet<String> = loaded
         .iter()
-        .filter_map(|(_, item)| match item {
-            Item::FunctionCall(fc) => Some(fc.call_id.clone()),
+        .filter_map(|(_, payload)| match payload.as_item() {
+            Some(Item::FunctionCall(fc)) => Some(fc.call_id.clone()),
             _ => None,
         })
         .collect();
     let mut out = Vec::with_capacity(loaded.len());
-    for (seq, item) in loaded {
-        if skip_empty_assistant_item(&item) {
-            continue;
+    for (seq, payload) in loaded {
+        if let Some(item) = payload.as_item() {
+            if skip_empty_assistant_item(item) {
+                continue;
+            }
+            if skip_unmatched_tool_output(item, &valid_call_ids) {
+                continue;
+            }
         }
-        if skip_unmatched_tool_output(&item, &valid_call_ids) {
-            continue;
-        }
-        out.push((seq, item));
+        out.push((seq, payload));
     }
     Ok(out)
 }
 
+/// Model-visible `(seq, Item)` pairs in surface order, with the same skip rules
+/// as [`derive_messages`]. Compatibility projection: checkpoint payloads use the
+/// same unique user projector as the working-set path.
+pub fn project_working_pairs(
+    surface: &Surface,
+    lookup: impl Fn(Seq) -> Result<Item>,
+) -> Result<Vec<(Seq, Item)>> {
+    Ok(
+        project_working_payloads(surface, |seq| Ok(WorkingPayload::item(lookup(seq)?)))?
+            .into_iter()
+            .map(|(seq, payload)| (seq, payload.model_item()))
+            .collect(),
+    )
+}
 /// Diff/Restore baseline folded from the current spine.
 pub fn spine_reminder_view(events: &[SessionEvent]) -> Result<crate::reminder::SpineReminderView> {
     let surface = fold_surface(events)?;
@@ -358,11 +375,4 @@ pub fn derive_transcript_items(events: &[SessionEvent]) -> Result<Vec<Item>> {
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-
-}
+mod tests {}

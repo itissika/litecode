@@ -335,7 +335,7 @@ mod tests {
             ],
         )
         .unwrap();
-        data.compact_from(&sid, &user_text("[summary] prior archived"), Some(2), 10)
+        data.compact_from(&sid, "[summary] prior archived", Some(2), 10)
             .unwrap();
 
         let tool = warmed_tool(root);
@@ -461,5 +461,4 @@ mod tests {
         );
         let _ = id;
     }
-
 }

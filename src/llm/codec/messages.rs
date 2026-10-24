@@ -1205,6 +1205,24 @@ reasoning = { summary = "summarized", tiers = { low = "low", medium = "high", hi
     /// One conversation, two turns. The earlier request's messages are a prefix
     /// of the later one: history is append-only, including signed thinking.
     #[test]
+    fn checkpoint_serializes_as_a_user_message() {
+        let checkpoint = crate::session::working::CompactionCheckpoint {
+            summary: "## Primary Request and Intent\n- ship checkpoint identity".into(),
+            from: 1,
+            to: 2,
+        };
+        let body = codec()
+            .encode_body(&request(vec![checkpoint.model_item()]), true)
+            .unwrap();
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 1, "{body}");
+        assert_eq!(messages[0]["role"], "user", "{body}");
+        let text = messages[0].to_string();
+        assert_eq!(text.matches("<compacted-summary>").count(), 1, "{body}");
+        assert!(text.contains("ship checkpoint identity"));
+    }
+
+    #[test]
     fn later_turn_extends_the_previous_messages_prefix() {
         let first = codec()
             .encode_body(

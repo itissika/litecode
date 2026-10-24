@@ -13,12 +13,14 @@ use crate::llm::CompactionRequestContext;
 use crate::runtime::observer::{
     CompactionFailKind, CompactionStage, CompactionTrigger, InternalEvent,
 };
+use crate::session::event::Seq;
 use crate::session::manager::SessionManager;
-use crate::session::working::{WorkingRow, project_items};
+#[cfg(test)]
+use crate::session::working::WorkingPayload;
+use crate::session::working::{CompactedView, CompactionCheckpoint, WorkingRow, project_items};
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
-use super::summary::compact_summary_message;
 
 /// Wall-clock cap for the compact LLM call.
 ///
@@ -120,6 +122,65 @@ impl SummaryArtifact {
         }
         Ok(())
     }
+}
+
+/// The seq-aware plan for one compaction. The prefix/cut are item indexes into
+/// the persisted working set; `kept_from_seq` and `prior_checkpoint_seq` are
+/// identities, never summary text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionPlan {
+    pub trigger: CompactionTrigger,
+    pub prefix_len: usize,
+    pub cut: usize,
+    pub kept_from_seq: Seq,
+    pub prior_checkpoint_seq: Option<Seq>,
+    pub summary_cap: u32,
+}
+
+/// Minimal PR-4 contract placeholder. PR-4 fills the actual replacements; PR-2
+/// only keeps the outcome boundary stable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PruneReplacement {
+    pub seq: Seq,
+    pub item: Item,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MechanicalPrunePlan {
+    pub replacements: Vec<PruneReplacement>,
+    pub estimated_saved_tokens: usize,
+}
+
+/// Minimal PR-5 contract placeholder. PR-5 fills retry/quality details; PR-2
+/// only carries the PR-1 finish/empty gate result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SummaryFailure {
+    Finish(SummaryFinish),
+    Empty,
+    ToolCall,
+}
+
+/// PR-2 acceptance boundary. PR-5 fills the quality score and failure details;
+/// PR-2 only records that the PR-1 finish/empty gate accepted the artifact.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SummaryReview {
+    pub accepted: bool,
+    pub score: u8,
+    pub failures: Vec<SummaryFailure>,
+}
+
+/// One successful compaction at the boundary between summarize and commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionOutcome {
+    pub checkpoint_seq: Seq,
+    pub checkpoint: CompactionCheckpoint,
+    pub plan: CompactionPlan,
+    pub prune: Option<MechanicalPrunePlan>,
+    pub summary: SummaryArtifact,
+    pub review: SummaryReview,
+    pub tokens_before: usize,
+    pub tokens_after: usize,
+    pub summary_attempts: u8,
 }
 
 fn worse_summary_finish(a: SummaryFinish, b: SummaryFinish) -> SummaryFinish {
@@ -290,7 +351,7 @@ impl CompactPolicy {
         Ok(false)
     }
 
-    /// Returns `Ok(Some(artifact))` when history was rewritten; `Ok(None)` when
+    /// Returns the PR-1 artifact when history was rewritten; `Ok(None)` when
     /// keep-recent found nothing to discard (no checkpoint written). The
     /// provider finish/usage/model stays on the artifact across the compaction
     /// boundary instead of being collapsed to a boolean or plain summary text.
@@ -316,9 +377,9 @@ impl CompactPolicy {
         let expected_revision = sessions.data().revision_blocking(session_id)?;
         let prefix_len = persisted_prefix_len(rows);
         let tail = rows.split_off(prefix_len);
-        let mut transcript = project_items(rows);
+        let transcript = project_items(rows);
 
-        let Some(cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
+        let Some(raw_cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
             tracing::debug!(
                 keep_recent_tokens = budget.keep_recent_tokens,
                 prefix_len,
@@ -328,8 +389,21 @@ impl CompactPolicy {
             return Ok(None);
         };
 
+        // Checkpoint identity, not summary text, decides the leading boundary.
+        // A leading checkpoint is item zero; when keep-recent can compact, the
+        // discarded range must include it, so cut is at least one.
+        let prior_checkpoint_seq = rows
+            .first()
+            .and_then(|row| row.checkpoint().and_then(|_| row.log_seq));
+        let cut = if prior_checkpoint_seq.is_some() {
+            raw_cut.max(1)
+        } else {
+            raw_cut
+        };
+        debug_assert!(prior_checkpoint_seq.is_none() || cut > 0);
+
         let kept_from_seq = match rows.get(cut).and_then(|row| row.log_seq) {
-            Some(seq) => seq as i64,
+            Some(seq) => seq,
             None => {
                 *rows = snapshot;
                 let err = LitecodeError::ToolExecution(format!(
@@ -348,6 +422,21 @@ impl CompactPolicy {
             }
         };
 
+        let limit = budget.budget_limit();
+        let summary_max_tokens = budget
+            .compact_output_tokens(max_tokens)
+            .min(request.max_output_tokens);
+        let plan = CompactionPlan {
+            trigger,
+            prefix_len,
+            cut,
+            kept_from_seq,
+            prior_checkpoint_seq,
+            summary_cap: summary_max_tokens,
+        };
+        let tokens_before =
+            rows_occupancy_count(budget, sessions, session_id, prompt_baseline, &snapshot);
+
         emit_compact_lifecycle(
             sessions,
             session_id,
@@ -358,17 +447,11 @@ impl CompactPolicy {
             None,
         );
 
-        let limit = budget.budget_limit();
-        let summary_max_tokens = budget
-            .compact_output_tokens(max_tokens)
-            .min(request.max_output_tokens);
-
         let artifact = match Self::first_pass_compaction(
             request,
             summary_max_tokens,
             cut,
             &snapshot,
-            &mut transcript,
             sessions,
             cancel,
         )
@@ -389,11 +472,43 @@ impl CompactPolicy {
             return Err(err);
         }
 
+        // PR-2 keeps the PR-1 finish/empty gate as the only review criterion.
+        // PR-5 fills score and quality failures; this boundary is already the
+        // one the commit below must pass.
+        let mut review_failures = Vec::new();
+        if artifact.finish != SummaryFinish::Completed {
+            review_failures.push(SummaryFailure::Finish(artifact.finish));
+        }
+        if artifact.text.trim().is_empty() {
+            review_failures.push(SummaryFailure::Empty);
+        }
+        let review = SummaryReview {
+            accepted: review_failures.is_empty(),
+            score: 0,
+            failures: review_failures,
+        };
+        if !review.accepted {
+            *rows = snapshot;
+            let err = LitecodeError::CompactionFailed;
+            emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
+            return Err(err);
+        }
+
+        let kept = transcript[cut..].to_vec();
+        let checkpoint = CompactionCheckpoint {
+            summary: artifact.text.clone(),
+            from: snapshot
+                .first()
+                .and_then(|row| row.log_seq)
+                .unwrap_or(kept_from_seq),
+            to: kept_from_seq,
+        };
         let final_count = {
-            let mut view = transcript.clone();
-            view.extend(tail.iter().map(|row| row.item.clone()));
+            let mut view = vec![checkpoint.model_item()];
+            view.extend(kept.iter().cloned());
+            view.extend(tail.iter().map(|row| row.payload.model_item()));
             drop_stale_media(&mut view);
-            // The rewritten transcript is not a suffix of the billed request.
+            // The rewritten view is not a suffix of the billed request.
             budget.occupancy_token_count(&view, &[], None)
         };
         if final_count > limit {
@@ -408,35 +523,68 @@ impl CompactPolicy {
             return Err(err);
         }
 
-        // Persist replace; memory working set is reloaded from fold, not rebuilt as [summary]+kept.
-        let summary_item = transcript
-            .first()
-            .cloned()
-            .unwrap_or_else(|| compact_summary_message(&artifact.text, false));
-
-        if let Err(e) =
-            sessions.mutate_blocking(crate::session::data::command::SessionMutation::Compact {
+        // Persist only the raw, role-free summary. The framed user checkpoint is
+        // a model projection and must never round-trip into durable storage.
+        let receipt = match sessions.mutate_blocking(
+            crate::session::data::command::SessionMutation::Compact {
                 session_id: session_id.to_string(),
                 expected_revision,
                 operation_id: crate::session::data::command::MutationId::new(),
-                summary: summary_item,
+                summary: artifact.text.clone(),
                 token_estimate: final_count as i64,
-                kept_from: Some(kept_from_seq as crate::session::event::Seq),
+                kept_from: Some(kept_from_seq),
                 expected_prefix: Some(prefix_len),
+            },
+        ) {
+            Ok(receipt) => receipt,
+            Err(e) => {
+                *rows = snapshot;
+                emit_compact_lifecycle(
+                    sessions,
+                    session_id,
+                    trigger,
+                    CompactionStage::Failed,
+                    operation_id,
+                    Some(CompactionFailKind::Failed),
+                    Some(e.to_string()),
+                );
+                return Err(e.into());
+            }
+        };
+        let checkpoint_seq = match receipt.outcome {
+            crate::session::data::command::CommitKind::Compacted { seq } => seq,
+            other => {
+                *rows = snapshot;
+                let err = LitecodeError::ToolExecution(format!(
+                    "compact mutation returned unexpected outcome {other:?}"
+                ));
+                emit_compact_failed(sessions, session_id, trigger, operation_id, &err);
+                return Err(err);
+            }
+        };
+        // Prefer the exact body just persisted. The computed body is a fallback
+        // for an events read failure; the seq is already authoritative.
+        let checkpoint = sessions
+            .data()
+            .events_blocking(session_id)
+            .ok()
+            .and_then(|events| events.into_iter().find(|event| event.seq == checkpoint_seq))
+            .and_then(|event| {
+                serde_json::from_value::<crate::session::model::CompactedBody>(event.data).ok()
             })
-        {
-            *rows = snapshot;
-            emit_compact_lifecycle(
-                sessions,
-                session_id,
-                trigger,
-                CompactionStage::Failed,
-                operation_id,
-                Some(CompactionFailKind::Failed),
-                Some(e.to_string()),
-            );
-            return Err(e.into());
-        }
+            .map(CompactionCheckpoint::from)
+            .unwrap_or(checkpoint);
+        let outcome = CompactionOutcome {
+            checkpoint_seq,
+            checkpoint: checkpoint.clone(),
+            plan,
+            prune: None,
+            summary: artifact,
+            review,
+            tokens_before,
+            tokens_after: final_count,
+            summary_attempts: 1,
+        };
 
         // One reload. The pending tail was split off before the summary call.
         // ISSUE-035 / WP-039: after Compact has committed, DB is sole truth.
@@ -467,9 +615,11 @@ impl CompactPolicy {
                     error = %e,
                     "compact persisted but working_set reload failed; installing emergency cache"
                 );
-                let mut emergency: Vec<WorkingRow> =
-                    transcript.into_iter().map(WorkingRow::pending).collect();
-                emergency.extend(tail);
+                let mut emergency = vec![WorkingRow::persisted_checkpoint(
+                    checkpoint_seq,
+                    outcome.checkpoint.clone(),
+                )];
+                emergency.extend(snapshot[cut..].iter().cloned());
                 *rows = emergency;
                 prompt_baseline.clear();
                 emit_compact_lifecycle(
@@ -481,12 +631,24 @@ impl CompactPolicy {
                     None,
                     None,
                 );
-                return Ok(Some(artifact));
+                return Ok(Some(outcome.summary));
             }
         };
         model.extend(tail);
         *rows = model;
 
+        tracing::info!(
+            checkpoint_seq = outcome.checkpoint_seq,
+            checkpoint_from = outcome.checkpoint.from,
+            checkpoint_to = outcome.checkpoint.to,
+            prior_checkpoint_seq = ?outcome.plan.prior_checkpoint_seq,
+            tokens_before = outcome.tokens_before,
+            tokens_after = outcome.tokens_after,
+            summary_attempts = outcome.summary_attempts,
+            review_score = outcome.review.score,
+            "compaction checkpoint committed"
+        );
+        let summary = outcome.summary;
         prompt_baseline.clear();
         emit_compact_lifecycle(
             sessions,
@@ -497,15 +659,13 @@ impl CompactPolicy {
             None,
             None,
         );
-        Ok(Some(artifact))
+        Ok(Some(summary))
     }
-
     async fn first_pass_compaction(
         request: &CompactionRequestContext,
         max_tokens: u32,
         cut: usize,
         rows: &[WorkingRow],
-        transcript: &mut Transcript,
         sessions: &SessionManager,
         cancel: &CancellationToken,
     ) -> Result<SummaryArtifact> {
@@ -516,24 +676,17 @@ impl CompactPolicy {
         // The request input is the discarded prefix in original Item order,
         // projected exactly as the main view would project it. `kept` stays in
         // the working set and never enters this request.
-        let kept = transcript[cut..].to_vec();
         let prefix = build_compaction_input(request, sessions, rows, cut)?;
         let artifact = Self::call_llm_compact(request, prefix, max_tokens, cancel).await?;
 
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
         }
-
-        transcript.clear();
-        transcript.push(compact_summary_message(&artifact.text, false));
-        transcript.extend(kept);
-
         tracing::info!(
             summary_len = artifact.text.len(),
             finish = ?artifact.finish,
             model = %artifact.model,
             usage = ?artifact.usage,
-            kept = transcript.len().saturating_sub(1),
             "keep-recent compaction succeeded"
         );
         Ok(artifact)
@@ -669,12 +822,24 @@ fn build_compaction_input(
     rows: &[WorkingRow],
     cut: usize,
 ) -> Result<Vec<Item>> {
-    let turn_view = project_items(rows);
-    let source_seqs: Vec<Option<crate::session::event::Seq>> =
-        rows.iter().map(|row| row.log_seq).collect();
+    let (turn_view, source_seqs, inherited_before_checkpoint) =
+        if let Some(view) = CompactedView::from_working_rows(rows) {
+            (
+                view.items,
+                view.item_seqs,
+                Some(view.inherited_before_checkpoint),
+            )
+        } else {
+            (
+                project_items(rows),
+                rows.iter().map(|row| row.log_seq).collect(),
+                None,
+            )
+        };
     let projection = project_model_view(
         &turn_view,
         &source_seqs,
+        inherited_before_checkpoint.as_deref(),
         request.target.as_ref(),
         &sessions.data_root_path(),
     );
@@ -1128,7 +1293,7 @@ max_output = 8192
             .expect("pre-compact working set");
         let before_previews: Vec<String> = rows
             .iter()
-            .map(|row| item_text_preview(&row.item))
+            .map(|row| item_text_preview(&row.payload.model_item()))
             .collect();
         rows.push(WorkingRow::pending(user_text("pending-tail-after-prefix")));
 
@@ -1155,7 +1320,7 @@ max_output = 8192
 
         let mem_previews: Vec<String> = rows
             .iter()
-            .map(|row| item_text_preview(&row.item))
+            .map(|row| item_text_preview(&row.payload.model_item()))
             .collect();
         assert!(
             mem_previews.first().is_some_and(|t| {
@@ -1174,20 +1339,31 @@ max_output = 8192
             before_previews.as_slice(),
             "memory must not equal pre-compact snapshot content"
         );
+        let checkpoint_row = rows.first().expect("emergency checkpoint");
+        assert!(checkpoint_row.checkpoint().is_some());
         assert!(
-            rows.iter().all(|row| row.log_seq.is_none()),
-            "emergency cache rows are pending"
+            checkpoint_row.log_seq.is_some(),
+            "emergency checkpoint must retain the committed seq"
+        );
+        assert!(
+            rows.last().is_some_and(|row| row.log_seq.is_none()),
+            "the unpersisted tail remains pending"
         );
 
         let db_rows = sessions
             .data()
             .working_set_blocking(&sid)
             .expect("DB working set");
-        let db0 = item_text_preview(&db_rows[0].item);
+        let db0 = item_text_preview(&db_rows[0].payload.model_item());
         assert!(
             db0.contains("## summary") && !db0.starts_with("[Conversation summary]"),
             "DB must show compacted summary, got {db0}"
         );
+        assert_eq!(
+            checkpoint_row.log_seq, db_rows[0].log_seq,
+            "emergency checkpoint seq must match DB truth"
+        );
+        assert!(matches!(&db_rows[0].payload, WorkingPayload::Checkpoint(_)));
         assert!(
             db_rows.iter().all(|row| row.log_seq.is_some()),
             "DB fold rows must be persisted"

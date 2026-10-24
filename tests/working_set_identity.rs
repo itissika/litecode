@@ -1,15 +1,15 @@
 //! Locks the turn/writer working window against reader full-log fold.
-//! Asserts seq identity of the visible set, not whether a hot path scanned the log.
+//! Asserts payload/seq identity, not just rendered text.
 
 use std::sync::Arc;
 
 use litecode::config::TurnGuard;
 use litecode::context_pipeline::{Context, ContextPipeline};
 use litecode::session::data::command::{CommitKind, MutationId, SessionMutation};
-use litecode::session::event::spine_agent_item;
+use litecode::session::event::spine_working_payload;
 use litecode::session::manager::SessionManager;
-use litecode::session::surface::project_working_pairs;
-use litecode::session::{WorkingRow, fold_surface};
+use litecode::session::surface::project_working_payloads;
+use litecode::session::{WorkingPayload, WorkingRow, fold_surface};
 use litecode::types::{item_text_preview, user_text};
 
 fn sessions() -> Arc<SessionManager> {
@@ -33,10 +33,10 @@ fn open_with_users(texts: &[&str]) -> (Arc<SessionManager>, String) {
     (sessions, sid)
 }
 
-fn fold_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
+fn fold_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, WorkingPayload)> {
     let events = sessions.data().events_blocking(sid).unwrap();
     let surface = fold_surface(&events).unwrap();
-    project_working_pairs(&surface, |seq| {
+    project_working_payloads(&surface, |seq| {
         events
             .iter()
             .find(|e| e.seq == seq)
@@ -45,15 +45,12 @@ fn fold_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
                     "surface seq {seq} missing"
                 ))
             })
-            .and_then(spine_agent_item)
+            .and_then(spine_working_payload)
     })
     .unwrap()
-    .into_iter()
-    .map(|(seq, item)| (seq, item_text_preview(&item)))
-    .collect()
 }
 
-fn reader_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
+fn reader_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, WorkingPayload)> {
     sessions
         .data()
         .working_set_blocking(sid)
@@ -62,25 +59,33 @@ fn reader_visible(sessions: &SessionManager, sid: &str) -> Vec<(u64, String)> {
         .map(|row| {
             (
                 row.log_seq.expect("reader working row must have seq"),
-                item_text_preview(&row.item),
+                row.payload,
             )
         })
         .collect()
+}
+
+fn text(payload: &WorkingPayload) -> String {
+    item_text_preview(&payload.model_item())
 }
 
 fn assert_reader_matches_fold(sessions: &SessionManager, sid: &str) {
     assert_eq!(
         reader_visible(sessions, sid),
         fold_visible(sessions, sid),
-        "reader working_set_blocking must equal fold_surface + project_working_pairs"
+        "reader working_set_blocking must preserve the same payloads as fold_surface"
     );
 }
 
 #[test]
 fn append_rows_reader_working_set_matches_full_fold() {
     let (sessions, sid) = open_with_users(&["a", "b", "c"]);
+    let visible = fold_visible(&sessions, &sid);
     assert_eq!(
-        fold_visible(&sessions, &sid),
+        visible
+            .iter()
+            .map(|(seq, payload)| (*seq, text(payload)))
+            .collect::<Vec<_>>(),
         vec![(0, "a".into()), (1, "b".into()), (2, "c".into())]
     );
     assert_reader_matches_fold(&sessions, &sid);
@@ -95,17 +100,32 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
             session_id: sid.clone(),
             expected_revision: expected,
             operation_id: MutationId::new(),
-            summary: user_text("sum"),
+            summary: "sum".into(),
             token_estimate: 10,
             kept_from: Some(1),
             expected_prefix: None,
         })
         .unwrap();
     let visible = fold_visible(&sessions, &sid);
-    assert_eq!(visible[0].1, "sum", "checkpoint must lead the working set");
+    let checkpoint = visible
+        .first()
+        .expect("checkpoint row")
+        .1
+        .checkpoint()
+        .expect("checkpoint payload");
+    assert_eq!(checkpoint.summary, "sum");
+    assert_eq!(checkpoint.from, 0);
+    assert_eq!(checkpoint.to, 1);
+    assert_eq!(
+        text(&visible[0].1).matches("<compacted-summary>").count(),
+        1,
+        "checkpoint projection must contain exactly one wrapper"
+    );
     assert!(
-        visible.iter().any(|(seq, text)| *seq == 1 && text == "b"),
-        "keep-recent must retain seq 1: {visible:?}"
+        visible
+            .iter()
+            .any(|(seq, payload)| *seq == 1 && text(payload) == "b"),
+        "keep-recent must retain seq 1"
     );
     assert_reader_matches_fold(&sessions, &sid);
 }
@@ -125,7 +145,9 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
         WorkingRow::pending(user_text("c")),
         WorkingRow::pending(user_text("stale")),
     ];
-    let (kind, working, _) = sessions.commit_turn_delta(&sid, stale, 2, "t1", &[]).unwrap();
+    let (kind, working, _) = sessions
+        .commit_turn_delta(&sid, stale, 2, "t1", &[])
+        .unwrap();
     assert!(
         matches!(kind, CommitKind::Idempotent),
         "truncated log must discard the delta, got {kind:?}"
@@ -135,11 +157,17 @@ fn revert_then_commit_discard_returns_fold_window_and_does_not_append() {
         .map(|row| {
             (
                 row.log_seq.expect("discarded window is persisted"),
-                item_text_preview(&row.item),
+                item_text_preview(&row.payload.model_item()),
             )
         })
         .collect();
-    assert_eq!(got, fold_visible(&sessions, &sid));
+    assert_eq!(
+        got,
+        fold_visible(&sessions, &sid)
+            .iter()
+            .map(|(seq, payload)| (*seq, text(payload)))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(got, vec![(0, "a".into())]);
     assert_eq!(sessions.entry_wire_seq_cursor(&sid), (0, 3));
 
@@ -170,11 +198,17 @@ fn commit_applied_window_matches_fold() {
         .map(|row| {
             (
                 row.log_seq.expect("applied rows are persisted"),
-                item_text_preview(&row.item),
+                item_text_preview(&row.payload.model_item()),
             )
         })
         .collect();
-    assert_eq!(got, fold_visible(&sessions, &sid));
+    assert_eq!(
+        got,
+        fold_visible(&sessions, &sid)
+            .iter()
+            .map(|(seq, payload)| (*seq, text(payload)))
+            .collect::<Vec<_>>()
+    );
     assert_eq!(got, vec![(0, "a".into()), (1, "b".into())]);
 }
 
@@ -197,12 +231,18 @@ fn pipeline_begin_turn_pending_tail_has_no_log_seq() {
     assert!(rows.iter().all(|row| row.log_seq.is_some()));
     assert_eq!(
         rows.iter()
-            .map(|row| (row.log_seq.unwrap(), item_text_preview(&row.item)))
+            .map(|row| (
+                row.log_seq.unwrap(),
+                item_text_preview(&row.payload.model_item())
+            ))
             .collect::<Vec<_>>(),
         fold_visible(&sessions, &sid)
+            .iter()
+            .map(|(seq, payload)| (*seq, text(payload)))
+            .collect::<Vec<_>>()
     );
 
-    rows.push(litecode::session::WorkingRow::pending(user_text("pending")));
+    rows.push(WorkingRow::pending(user_text("pending")));
     assert!(
         rows.last().is_some_and(|row| row.log_seq.is_none()),
         "unpersisted tail must not carry a seq"

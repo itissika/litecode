@@ -142,13 +142,6 @@ pub struct CompactedBody {
     pub to: Seq,
 }
 
-impl CompactedBody {
-    /// AgentView assembly: synthetic assistant `Item`. Never a user message.
-    pub fn agent_item(&self) -> crate::types::Item {
-        crate::types::assistant_text(&self.summary)
-    }
-}
-
 /// The only persisted SessionMeta fields. Live and catalog projections do not
 /// belong in this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

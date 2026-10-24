@@ -237,7 +237,7 @@ pub(crate) fn preview_session_model(
     let rows = sessions.data().working_set_blocking(session_id)?;
     let seqs: Vec<Option<crate::session::event::Seq>> =
         rows.iter().map(|row| row.log_seq).collect();
-    let mut items: Vec<Item> = rows.into_iter().map(|row| row.item).collect();
+    let mut items: Vec<Item> = crate::session::working::project_items(&rows);
     let origins = sessions.request_origins(session_id).unwrap_or_default();
     let producers = producers_from_origins(origins, &seqs);
     let rebased = vec![false; items.len()];

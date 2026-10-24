@@ -924,9 +924,8 @@ fn spill_footer(
         .map(|(handle, n)| format!("{handle} {n}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut out = format!(
-        "\nShowing {shown} of {total} hits; the remaining {remaining} are in {location}."
-    );
+    let mut out =
+        format!("\nShowing {shown} of {total} hits; the remaining {remaining} are in {location}.");
     if !per_session.is_empty() {
         out.push_str(&format!("\nMore in: {per_session}."));
     }
@@ -1372,7 +1371,6 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
         }
-
     }
 
     /// One hit for the ordering tests. Ranking reads the rank key, never the
@@ -1458,8 +1456,7 @@ mod tests {
                 ],
             )
             .unwrap();
-            data.compact_from(&id, &user_text("sum"), Some(1), 3)
-                .unwrap();
+            data.compact_from(&id, "sum", Some(1), 3).unwrap();
             id
         };
         let reader = SessionDataReader::open(&db);
@@ -1542,5 +1539,4 @@ mod tests {
         let whole = build_agent_view(&reader, &hits, dir.path()).unwrap();
         assert!(!whole.contains("Showing"), "{whole}");
     }
-
 }

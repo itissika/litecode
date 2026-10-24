@@ -49,7 +49,7 @@ fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
             session_id: sid.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
-            summary: user_text(summary),
+            summary: summary.to_string(),
             token_estimate: 10,
             kept_from: None,
             expected_prefix: None,

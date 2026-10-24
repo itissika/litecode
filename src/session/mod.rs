@@ -45,9 +45,12 @@ pub use model::{
     CompactedBody, LogState, SESSION_LOG_SCHEMA_VERSION, SessionKind, SessionLogRow, SessionMeta,
 };
 pub use store::{Session, SessionContextMeter, TranscriptRow};
-pub use surface::{Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface};
+pub use surface::{
+    Surface, SurfaceOp, derive_messages, derive_transcript_items, fold_surface,
+    project_working_payloads,
+};
 pub use task_state::{
     PlanRef, TaskReminders, TodoItem, TodoStatus, prune_stale_active_plan, render_todos,
 };
-pub use working::{WorkingRow, project_items};
+pub use working::{CompactedView, CompactionCheckpoint, WorkingPayload, WorkingRow, project_items};
 pub use workspace_lock::{WorkspaceLock, WorkspaceWriteLease};

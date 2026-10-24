@@ -340,7 +340,7 @@ fn a_finalised_row_is_never_rewritten() {
         .iter_mut()
         .find(|row| row.log_seq == Some(stream_seq as u64))
         .expect("streamed row");
-    streamed.item = f.finished("asst_1", "Hello world");
+    streamed.replace_item(f.finished("asst_1", "Hello world"));
     f.mutate(f.with_rev(SessionMutation::CommitTurnDelta {
         session_id: f.sid.clone(),
         expected_revision: 0,

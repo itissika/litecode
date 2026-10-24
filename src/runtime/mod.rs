@@ -1129,7 +1129,7 @@ impl AgentRuntime {
                 working
                     .iter()
                     .rev()
-                    .find(|row| row.kind == crate::session::model::SessionKind::ItemUser)
+                    .find(|row| row.kind() == crate::session::model::SessionKind::ItemUser)
                     .and_then(|row| row.log_seq)
             } else {
                 None

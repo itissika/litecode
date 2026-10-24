@@ -187,7 +187,8 @@ pub enum SessionMutation {
         session_id: String,
         expected_revision: u64,
         operation_id: MutationId,
-        summary: Item,
+        /// Raw, role-free checkpoint summary. Never a projected model Item.
+        summary: String,
         token_estimate: i64,
         kept_from: Option<Seq>,
         expected_prefix: Option<usize>,

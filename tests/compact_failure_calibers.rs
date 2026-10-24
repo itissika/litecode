@@ -62,7 +62,9 @@ fn setup_workspace_and_session(
 }
 
 fn row_previews(rows: &[WorkingRow]) -> Vec<String> {
-    rows.iter().map(|r| item_text_preview(&r.item)).collect()
+    rows.iter()
+        .map(|r| item_text_preview(&r.payload.model_item()))
+        .collect()
 }
 
 /// Caliber 2: empty-summary compact failure restores the in-memory working-set

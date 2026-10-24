@@ -446,7 +446,7 @@ impl SessionData {
     pub fn compact_from(
         &self,
         session_id: &str,
-        summary: &crate::types::Item,
+        summary: &str,
         kept_from: Option<i64>,
         token_estimate: i64,
     ) -> Result<()> {
@@ -455,7 +455,7 @@ impl SessionData {
             session_id: session_id.to_string(),
             expected_revision: expected,
             operation_id: MutationId::new(),
-            summary: summary.clone(),
+            summary: summary.to_string(),
             token_estimate,
             kept_from: kept_from.map(|s| s as crate::session::event::Seq),
             expected_prefix: None,

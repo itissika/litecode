@@ -313,7 +313,7 @@ fn loaded_items(sessions: &SessionManager, sid: &str) -> Vec<Item> {
         .working_set_blocking(sid)
         .unwrap()
         .into_iter()
-        .map(|row| row.item)
+        .map(|row| row.payload.model_item())
         .collect()
 }
 
@@ -356,7 +356,7 @@ async fn prepare_after_stream_persist_seal_keeps_prior_prefix() {
             .working_set_blocking(&sid)
             .unwrap()
             .iter()
-            .filter(|row| matches!(&row.item, Item::FunctionCall(fc) if fc.call_id == "c1"))
+            .filter(|row| matches!(row.item(), Some(Item::FunctionCall(fc)) if fc.call_id == "c1"))
             .count(),
         1,
         "one provider item keeps one row"
