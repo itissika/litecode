@@ -38,6 +38,8 @@ pub struct ItemTokenBreakdown {
     pub tool_call: usize,
     pub tool_output: usize,
     pub conversation: usize,
+    /// Fixed request-envelope tokens (codec wrapper, JSON punctuation, etc.).
+    pub prompt_overhead: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub per_tool: Vec<ToolTokenRow>,
 }
@@ -49,6 +51,7 @@ impl ItemTokenBreakdown {
             .saturating_add(self.tool_call)
             .saturating_add(self.tool_output)
             .saturating_add(self.conversation)
+            .saturating_add(self.prompt_overhead)
     }
 }
 
@@ -229,19 +232,12 @@ pub fn apply_prompt_overhead(
     });
 }
 
-/// Autocompact fires when estimated tokens exceed this fraction of the model context window.
-///
-/// `0.8` leaves headroom for the model reply / tool schemas while still compacting before
-/// hard context overflow. Threshold and [`compute_token_estimate`] share the same token units.
+/// Soft-window ceiling used as one input to `ContextMeter::compact_at` and to
+/// the existing keep-recent sizing. The actual auto trigger is the unified
+/// meter's strict `used_tokens > compact_at` decision.
 pub fn autocompact_threshold(context_window: usize) -> usize {
     (context_window as f64 * 0.8) as usize
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-
-}
+mod tests {}

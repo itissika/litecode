@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
+use crate::context_pipeline::{
+    ContextEnvelope, ContextMeter, ContextMeterSource, request_token_breakdown,
+};
 use crate::llm::ModelRequest;
-use crate::llm::ToolDef;
 use crate::runtime::observer::{FailReason, InternalEvent, TurnError, TurnPhase, TurnTokenStats};
-use crate::session::{apply_prompt_overhead, compute_token_breakdown, count_text_tokens};
 use crate::types::{FunctionToolCall, Item, Result, ToolResultData, Transcript};
 
 use crate::agent::AgentDeps;
@@ -40,6 +41,7 @@ impl AgentDeps for AgentRuntime {
         // Fail closed before request build when Items require unsupported modalities.
         crate::runtime::validate_llm_input_capabilities(&view.items, &self.turn_llm.model)?;
         let token_count = view.token_count;
+        let context_meter = view.context_meter;
         let (request, origin_seq) = self.build_model_request(
             &instructions,
             view.items,
@@ -47,6 +49,7 @@ impl AgentDeps for AgentRuntime {
             &view.rebased,
             token_count,
             view.projected_parts,
+            context_meter,
         )?;
         build_lap.done();
         // Turn entry -> first request leaves this process (once per turn).
@@ -581,6 +584,7 @@ impl AgentRuntime {
         request: &ModelRequest,
         token_count: usize,
         health: &LlmRequestHealth,
+        context_meter: &ContextMeter,
     ) {
         // `token_estimate` is local budget telemetry only — never meter/ring truth.
         self.emit_internal(InternalEvent::LlmRequestBuilt {
@@ -590,6 +594,8 @@ impl AgentRuntime {
             tools_count: request.tools.len(),
             context_window: self.turn_llm.context_window,
             token_breakdown: request_token_breakdown(request),
+            context_envelope: ContextEnvelope::from_request(request),
+            context_meter: context_meter.clone(),
             sticky_model_id: health.sticky_model_id.clone(),
             turn_model_ref: health.turn_model_ref.clone(),
             turn_provider_id: health.turn_provider_id.clone(),
@@ -622,6 +628,7 @@ impl AgentRuntime {
         rebased: &[bool],
         token_count: usize,
         projected_parts: u32,
+        context_meter: ContextMeter,
     ) -> Result<(ModelRequest, crate::session::event::Seq)> {
         let tool_schemas = self.rctx().tool_defs();
 
@@ -634,6 +641,11 @@ impl AgentRuntime {
         let provider_id = self.turn_llm.provider_id.clone();
         let endpoint_type = self.turn_llm.model.endpoint_type.as_str().to_string();
         let model_ref = self.turn_llm.model_ref.clone();
+        let context_envelope = ContextEnvelope::from_request_parts(
+            instructions,
+            &tool_schemas,
+            self.turn_llm.max_tokens,
+        );
         let producers = self.llm_input_producers(&item_seqs);
         let mut input = input;
         let rebased_true_count = rebased.iter().filter(|flag| **flag).count() as u32;
@@ -661,7 +673,7 @@ impl AgentRuntime {
         let reasoning_wholly_omitted = 0u32;
         // Origin is an append-only control-plane row written before the request:
         // items this request produces inherit its provider.
-        let origin_seq = self.record_request_origin()?;
+        let origin_seq = self.record_request_origin(&context_envelope)?;
         tracing::info!(
             target: "litecode.debug.llm_request",
             session_id = %self.session_id,
@@ -724,7 +736,7 @@ impl AgentRuntime {
             session_id: Some(self.session_id.clone()),
             purpose: crate::llm::RequestPurpose::Main,
         };
-        self.emit_llm_request_built(&request, token_count, &health);
+        self.emit_llm_request_built(&request, token_count, &health, &context_meter);
         Ok((request, origin_seq))
     }
 
@@ -746,7 +758,10 @@ impl AgentRuntime {
 
     /// Append the request boundary before sending, so the next durable Item row
     /// inherits exactly this turn/step's provider.
-    fn record_request_origin(&self) -> Result<crate::session::event::Seq> {
+    fn record_request_origin(
+        &self,
+        context_envelope: &ContextEnvelope,
+    ) -> Result<crate::session::event::Seq> {
         let turn_id = self.context_pipeline.current_turn_id().ok_or_else(|| {
             crate::types::LitecodeError::Llm(
                 "request origin cannot be recorded without a turn id".into(),
@@ -760,6 +775,7 @@ impl AgentRuntime {
             "endpoint_type": self.turn_llm.model.endpoint_type.as_str(),
             "provider_id": self.turn_llm.provider_id,
             "model_ref": self.turn_llm.model_ref,
+            "context_envelope": context_envelope,
         });
         self.sessions
             .append_request_origin(&self.session_id, &record)
@@ -789,6 +805,8 @@ impl AgentRuntime {
         let totals = &mut self.turn_usage_totals;
         let prompt_usage_baseline = &self.prompt_usage_baseline;
         let covered_seq = origin_seq;
+        let meter_context_window = self.turn_llm.context_window;
+        let meter_output_reserve = request.max_output_tokens as usize;
         let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<TurnTokenStats>));
         let usage_slot_cb = std::sync::Arc::clone(&usage_slot);
         // The stream and the terminal payload describe the same items. This is
@@ -864,6 +882,13 @@ impl AgentRuntime {
                             cache_hit_tokens: cache_hit,
                             cache_miss_tokens: cache_miss,
                             stop_reason,
+                            context_meter: ContextMeter::new(
+                                meter_context_window,
+                                meter_output_reserve,
+                                ContextMeter::safety_headroom(meter_context_window),
+                                prompt as usize,
+                                ContextMeterSource::Provider,
+                            ),
                         });
                     } else {
                         tracing::info!(
@@ -991,27 +1016,6 @@ fn estimate_request_body_bytes(request: &ModelRequest) -> usize {
         })
         .sum();
     items + tools + request.instructions.len() + 512
-}
-
-fn request_token_breakdown(request: &ModelRequest) -> crate::session::estimate::ItemTokenBreakdown {
-    let mut bd = compute_token_breakdown(&request.input);
-    let schemas: Vec<(String, usize)> = request
-        .tools
-        .iter()
-        .map(|t| (t.name.clone(), tool_schema_tokens(t)))
-        .collect();
-    apply_prompt_overhead(&mut bd, &request.instructions, &schemas);
-    bd
-}
-
-fn tool_schema_tokens(tool: &ToolDef) -> usize {
-    let payload = serde_json::json!({
-        "type": "function",
-        "name": tool.name,
-        "description": tool.description,
-        "parameters": tool.input_schema,
-    });
-    count_text_tokens(&payload.to_string())
 }
 
 /// No FunctionCall → stop. Stop hooks cannot override this after persist.

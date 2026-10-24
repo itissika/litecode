@@ -77,6 +77,21 @@ async fn manual_compact_failure_e2e_releases_lease_and_retry_starts() {
     let provider = Arc::new(ScriptedProvider::with_texts(&["", ""]));
     let mut ctrl = controller(Arc::clone(&sessions), fixture.dir.path(), provider);
 
+    // Cold UI snapshot and manual gate must agree before any provider bill:
+    // the server seeds the full local envelope and publishes the decision.
+    ctrl.subscribe_checked(&sid).await.expect("subscribe");
+    let snap = ctrl.snapshot_for(&sid).expect("cold snapshot");
+    assert!(snap.context_meter.manual_eligible());
+    assert_eq!(snap.compact_eligible, snap.context_meter.manual_eligible());
+    assert_eq!(
+        snap.context_tokens_estimate, snap.context_meter.used_tokens,
+        "legacy display estimate mirrors unified ContextMeter"
+    );
+    assert!(
+        snap.context_meter.used_tokens > snap.context_envelope.prompt_overhead_tokens,
+        "cold local fallback includes the seeded system/tools envelope"
+    );
+
     let op1 = ctrl
         .start_manual_compact(&sid)
         .await

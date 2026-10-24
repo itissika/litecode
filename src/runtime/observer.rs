@@ -175,9 +175,15 @@ pub enum InternalEvent {
         token_estimate: usize,
         tools_count: usize,
         context_window: usize,
-        /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+        /// Item-text mix for the occupancy bar.
         #[serde(default)]
         token_breakdown: crate::session::estimate::ItemTokenBreakdown,
+        /// Server-owned request envelope used by the unified ContextMeter.
+        #[serde(default)]
+        context_envelope: crate::context_pipeline::ContextEnvelope,
+        /// Server meter for this exact projected request.
+        #[serde(default)]
+        context_meter: crate::context_pipeline::ContextMeter,
         // --- WP-191 request health (serde default for older consumers) ---
         #[serde(default)]
         sticky_model_id: String,
@@ -221,6 +227,9 @@ pub enum InternalEvent {
         cache_hit_tokens: u64,
         cache_miss_tokens: u64,
         stop_reason: String,
+        /// Provider-covered server meter for the completed request.
+        #[serde(default)]
+        context_meter: crate::context_pipeline::ContextMeter,
     },
     Compaction {
         kind: CompactionKind,
@@ -397,5 +406,4 @@ mod tests {
         let v = serde_json::to_value(TurnErrorKind::CompactionFailed).unwrap();
         assert_eq!(v, "compaction_failed");
     }
-
 }

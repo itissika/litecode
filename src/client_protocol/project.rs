@@ -67,16 +67,17 @@ pub fn binding_projection(
         .as_str()
         .to_string();
     let context_mode_enum = ContextMode::parse(&context_mode).unwrap_or_default();
-    let (api_model_id, label, context_window) = match model_id.as_deref() {
+    let (api_model_id, label, context_window, max_output_tokens) = match model_id.as_deref() {
         Some(id) => match resolved.catalog().model(id) {
             Some(m) => (
                 m.id.clone(),
                 m.label.clone(),
                 effective_context_window(m, context_mode_enum),
+                m.max_output,
             ),
-            None => (String::new(), String::new(), 0),
+            None => (String::new(), String::new(), 0, 0),
         },
-        None => (String::new(), String::new(), 0),
+        None => (String::new(), String::new(), 0, 0),
     };
     SessionBindingProjection {
         agent_id,
@@ -84,6 +85,7 @@ pub fn binding_projection(
         api_model_id,
         label,
         context_window,
+        max_output_tokens,
         thinking_tier,
         context_mode,
     }
@@ -116,16 +118,17 @@ pub fn list_binding_projection(
         .as_str()
         .to_string();
     let context_mode_enum = ContextMode::parse(&context_mode).unwrap_or_default();
-    let (api_model_id, label, context_window) = match model_id.as_deref() {
+    let (api_model_id, label, context_window, max_output_tokens) = match model_id.as_deref() {
         Some(id) => match resolved.catalog().model(id) {
             Some(m) => (
                 m.id.clone(),
                 m.label.clone(),
                 effective_context_window(m, context_mode_enum),
+                m.max_output,
             ),
-            None => (String::new(), String::new(), 0),
+            None => (String::new(), String::new(), 0, 0),
         },
-        None => (String::new(), String::new(), 0),
+        None => (String::new(), String::new(), 0, 0),
     };
     SessionBindingProjection {
         agent_id,
@@ -133,6 +136,7 @@ pub fn list_binding_projection(
         api_model_id,
         label,
         context_window,
+        max_output_tokens,
         thinking_tier,
         context_mode,
     }
@@ -318,6 +322,8 @@ fn project_with(
             tools_count,
             context_window,
             token_breakdown,
+            context_envelope,
+            context_meter,
             sticky_model_id,
             turn_model_ref,
             turn_provider_id,
@@ -345,6 +351,8 @@ fn project_with(
                 tools_count: *tools_count,
                 context_window: *context_window,
                 token_breakdown: token_breakdown.clone(),
+                context_envelope: context_envelope.clone(),
+                context_meter: context_meter.clone(),
                 sticky_model_id: sticky_model_id.clone(),
                 turn_model_ref: turn_model_ref.clone(),
                 turn_provider_id: turn_provider_id.clone(),
@@ -370,6 +378,7 @@ fn project_with(
             cache_hit_tokens,
             cache_miss_tokens,
             stop_reason,
+            context_meter,
         } => turn_event_ids(
             session_id,
             turn_id,
@@ -379,6 +388,7 @@ fn project_with(
                 cache_hit_tokens: *cache_hit_tokens,
                 cache_miss_tokens: *cache_miss_tokens,
                 stop_reason: stop_reason.clone(),
+                context_meter: context_meter.clone(),
             },
         ),
         InternalEvent::Compaction { kind, detail } => turn_event_ids(
@@ -769,6 +779,40 @@ pub fn session_snapshot(snapshot: SessionSnapshot) -> serde_json::Value {
         "session/snapshot",
         serde_json::to_value(snapshot).unwrap_or_default(),
     )
+}
+
+/// Omit server-owned context fields when a cold runtime could not be built.
+///
+/// A zero/default envelope is not a measurement: leaving it on the wire would
+/// make the client claim a fake `LocalEnvelope`. Omitted optional fields mean
+/// "unknown" and the UI keeps the ring in its unavailable state.
+pub fn omit_snapshot_context_fields(msg: &mut serde_json::Value) {
+    fn strip(obj: &mut serde_json::Map<String, serde_json::Value>) {
+        for key in [
+            "context_meter",
+            "context_envelope",
+            "context_token_breakdown",
+            "context_tokens_estimate",
+            "context_window",
+            "compact_eligible",
+        ] {
+            obj.remove(key);
+        }
+    }
+
+    let Some(params) = msg
+        .get_mut("params")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    strip(params);
+    if let Some(snapshot) = params
+        .get_mut("snapshot")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        strip(snapshot);
+    }
 }
 
 /// G0: lifecycle event — session deleted (sent before the entry is removed).
@@ -1222,7 +1266,8 @@ pub fn buffer_snapshot(
     turn: Option<super::protocol::TurnSnapshot>,
     last_turn_token_stats: Option<TurnTokenStats>,
     cumulative_token_stats: Option<TurnTokenStats>,
-    context_tokens_estimate: usize,
+    context_meter: &crate::context_pipeline::ContextMeter,
+    context_envelope: &crate::context_pipeline::ContextEnvelope,
     compacting: bool,
 ) -> SessionSnapshot {
     SessionSnapshot {
@@ -1258,13 +1303,12 @@ pub fn buffer_snapshot(
             revision,
         },
         turn,
-        context_window: binding.context_window,
-        context_tokens_estimate,
+        context_window: context_meter.context_window,
+        context_tokens_estimate: context_meter.used_tokens,
         context_token_breakdown: crate::session::estimate::ItemTokenBreakdown::default(),
-        compact_eligible: crate::context_pipeline::manual_compact_eligible(
-            binding.context_window,
-            context_tokens_estimate,
-        ),
+        context_meter: context_meter.clone(),
+        context_envelope: context_envelope.clone(),
+        compact_eligible: context_meter.manual_eligible(),
         compacting,
         last_turn_token_stats,
         cumulative_token_stats,
@@ -1326,7 +1370,7 @@ mod wp025_turn_error_tests {
 
 #[cfg(test)]
 mod wp186_pending_permissions_tests {
-    
+
     use crate::client_protocol::protocol::{
         BufferState, PermissionRequest, SessionSnapshot, WireTurnPhase,
     };
@@ -1351,6 +1395,8 @@ mod wp186_pending_permissions_tests {
             context_window: 0,
             context_tokens_estimate: 0,
             context_token_breakdown: Default::default(),
+            context_meter: Default::default(),
+            context_envelope: Default::default(),
             compact_eligible: false,
             compacting: false,
             last_turn_token_stats: None,

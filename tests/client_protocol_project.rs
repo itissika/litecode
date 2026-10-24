@@ -1,7 +1,5 @@
 use litecode::client_protocol::project;
-use litecode::client_protocol::protocol::{
-    TurnEndReason, TurnTokenStats, WireTurnPhase,
-};
+use litecode::client_protocol::protocol::{TurnEndReason, TurnTokenStats, WireTurnPhase};
 use litecode::runtime::observer::{InternalEvent, TurnErrorKind};
 
 fn sample_snapshot() -> litecode::client_protocol::protocol::SessionSnapshot {
@@ -19,10 +17,24 @@ fn sample_snapshot() -> litecode::client_protocol::protocol::SessionSnapshot {
         api_model_id: "m-api".into(),
         label: "M".into(),
         context_window: 0,
+        max_output_tokens: 0,
         thinking_tier: "medium".into(),
         context_mode: "standard".into(),
     };
-    project::buffer_snapshot("s1", "/p", &binding, -1, 0, 0, turn, None, None, 0, false)
+    project::buffer_snapshot(
+        "s1",
+        "/p",
+        &binding,
+        -1,
+        0,
+        0,
+        turn,
+        None,
+        None,
+        &litecode::context_pipeline::ContextMeter::default(),
+        &litecode::context_pipeline::ContextEnvelope::default(),
+        false,
+    )
 }
 
 #[test]
@@ -102,4 +114,3 @@ fn turn_finished_auto_compact_failure_is_compaction_failed() {
     assert_eq!(msg["params"]["error"]["retryable"], false);
     assert_eq!(msg["params"]["error"]["message"], "compaction blew up");
 }
-

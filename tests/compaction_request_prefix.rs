@@ -21,8 +21,8 @@ use litecode::client_protocol::controller::SessionController;
 use litecode::config::global_db;
 use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState};
 use litecode::context_pipeline::{
-    BudgetPolicy, CompactPolicy, Context, ContextPipeline, ProviderPromptBaseline,
-    keep_recent::find_keep_recent_cut,
+    BudgetPolicy, CompactPolicy, Context, ContextEnvelope, ContextMeter, ContextPipeline,
+    ProviderPromptBaseline, keep_recent::find_keep_recent_cut, safety_headroom,
 };
 use litecode::engines::WorkspaceEngines;
 use litecode::llm::{
@@ -293,9 +293,15 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
         .collect();
     sessions.insert_detail_rows(&sid, &extra).unwrap();
     let rows_before_second_turn = sessions.data().working_set_blocking(&sid).unwrap();
-    let occupancy =
-        BudgetPolicy::new(128_000).token_count(&project_items(&rows_before_second_turn), 0);
-    assert!(occupancy > BudgetPolicy::new(128_000).autocompact_threshold());
+    let envelope = ContextEnvelope::cold(8192);
+    let occupancy = ContextMeter::measure_local(
+        128_000,
+        envelope.output_reserve,
+        safety_headroom(128_000),
+        &envelope,
+        &project_items(&rows_before_second_turn),
+    );
+    assert!(occupancy.should_compact(), "used={}", occupancy.used_tokens);
     let cut_before_second_turn = find_keep_recent_cut(
         &project_items(&rows_before_second_turn),
         BudgetPolicy::new(128_000).keep_recent_tokens,
@@ -617,6 +623,7 @@ modalities = ["text"]
         &CancellationToken::new(),
         CompactionTrigger::Auto,
         None,
+        &sessions.data_root_path(),
     )
     .await
     .expect("auto compaction");

@@ -1,5 +1,6 @@
 pub mod budget;
 pub mod compact;
+pub mod context_meter;
 pub mod env;
 pub mod estimate;
 pub mod keep_recent;
@@ -20,13 +21,16 @@ use crate::session::store::Session;
 use crate::session::working::{CompactedView, WorkingRow, project_items};
 use crate::types::{Item, LitecodeError, Result, ToolResultData};
 
-pub use budget::{
-    BudgetPolicy, OccupancyBill, ProviderPromptBaseline, manual_compact_eligible,
-    occupancy_bill_from, ring_occupancy,
-};
+pub use budget::{BudgetPolicy, OccupancyBill, ProviderPromptBaseline, occupancy_bill_from};
 pub use compact::{
     CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPrunePlan, PruneReplacement,
     SummaryArtifact, SummaryFailure, SummaryFinish, SummaryReview, SummaryUsage,
+};
+pub use context_meter::{
+    ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
+    measure_persisted_context, measure_persisted_context_with_breakdown, measure_request_context,
+    persisted_occupancy_bill, request_token_breakdown, request_token_breakdown_for_rows,
+    safety_headroom, tool_schema_tokens, working_set_items,
 };
 pub use env::{Context, build_context};
 pub use system::build_system_prompt;
@@ -46,6 +50,8 @@ struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
     working: Vec<WorkingRow>,
+    /// Fixed request shape frozen by the latest `compact_step` call.
+    envelope: ContextEnvelope,
     /// Last observed log `MAX(seq)` (`-1` if empty). A later commit treats a
     /// smaller cursor as a revert and discards the turn's tail.
     log_max_seq: i64,
@@ -92,14 +98,39 @@ fn align_padded_item_seqs(
 /// a synthetic unanswered-call pad inherits the call's source index.
 pub(crate) struct ModelProjection {
     pub items: Vec<Item>,
+    /// Durable provenance for compaction/prefix identity. Synthetic pads stay
+    /// `None` here.
     pub item_seqs: Vec<Option<crate::session::event::Seq>>,
+    /// Provider-bill coverage provenance. Synthetic pads inherit the source
+    /// call's seq; ordinary items keep their durable seq.
+    pub coverage_seqs: Vec<Option<crate::session::event::Seq>>,
     pub source_indices: Vec<Option<usize>>,
     pub rebased: Vec<bool>,
     pub projected_parts: u32,
 }
 
-/// Map padded view items back to their source item index. The pad is appended
-/// beside its unanswered call, so it inherits that call's index.
+/// Resolve a synthetic pad to the unanswered call it repairs.
+///
+/// `pad_unanswered_calls` emits all pads for a batch only after the whole
+/// call batch, so "the previous source item" is wrong for two or more
+/// consecutive unanswered calls. The provider call id is unique within a
+/// request and is the stable join key between a pad and its source call.
+fn pad_source_index(source_items: &[Item], before: usize, item: &Item) -> Option<usize> {
+    let Item::FunctionCallOutput(output) = item else {
+        return None;
+    };
+    source_items[..before]
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, source)| match source {
+            Item::FunctionCall(call) if call.call_id == output.call_id => Some(index),
+            _ => None,
+        })
+}
+
+/// Map padded view items back to their source item index. A synthetic pad
+/// inherits its source call's index while remaining `None` in `item_seqs`.
 fn align_padded_item_sources(source_items: &[Item], view_items: &[Item]) -> Vec<Option<usize>> {
     let mut source_index = 0usize;
     let aligned: Vec<_> = view_items
@@ -110,9 +141,7 @@ fn align_padded_item_sources(source_items: &[Item], view_items: &[Item]) -> Vec<
                 source_index += 1;
                 Some(index)
             } else {
-                // Pad produced by `Session::pad_unanswered_calls` immediately
-                // after the call at `source_index - 1`.
-                source_index.checked_sub(1)
+                pad_source_index(source_items, source_index, item)
             }
         })
         .collect();
@@ -141,6 +170,10 @@ pub(crate) fn project_model_view(
     Session::pad_unanswered_calls(&mut llm_items);
     let item_seqs = align_padded_item_seqs(turn_view, source_seqs, &llm_items);
     let source_indices = align_padded_item_sources(turn_view, &llm_items);
+    let coverage_seqs = source_indices
+        .iter()
+        .map(|source_index| source_index.and_then(|index| source_seqs[index]))
+        .collect();
     let projected_parts = crate::runtime::project_llm_input_for_model(&mut llm_items, model);
     // Runs before refs expand, so a dropped part never becomes a data URL.
     let mut rebased = media_budget::drop_stale_media(&mut llm_items);
@@ -159,11 +192,57 @@ pub(crate) fn project_model_view(
     ModelProjection {
         items: llm_items,
         item_seqs,
+        coverage_seqs,
         source_indices,
         rebased,
         projected_parts,
     }
 }
+
+/// The unprojected turn view and its provenance inputs.
+fn working_turn_view(
+    rows: &[WorkingRow],
+) -> (
+    Vec<Item>,
+    Vec<Option<crate::session::event::Seq>>,
+    Option<Vec<bool>>,
+) {
+    if let Some(view) = CompactedView::from_working_rows(rows) {
+        (
+            view.items,
+            view.item_seqs,
+            Some(view.inherited_before_checkpoint),
+        )
+    } else {
+        (
+            project_items(rows),
+            rows.iter().map(|row| row.log_seq).collect(),
+            None,
+        )
+    }
+}
+
+/// Build the exact model-visible request projection from persisted/staged rows.
+///
+/// Auto, manual, UI, and `build_view` all call this helper, so pads, capability
+/// projection, stale-media rewriting, and media-ref expansion are measured as
+/// the request would send them.
+pub(crate) fn project_working_rows(
+    rows: &[WorkingRow],
+    model: &crate::provider_catalog::ResolvedModel,
+    data_root: &std::path::Path,
+) -> (Vec<Item>, ModelProjection) {
+    let (turn_view, source_seqs, inherited_before_checkpoint) = working_turn_view(rows);
+    let projection = project_model_view(
+        &turn_view,
+        &source_seqs,
+        inherited_before_checkpoint.as_deref(),
+        model,
+        data_root,
+    );
+    (turn_view, projection)
+}
+
 /// Bind this step's items onto stream rows opened after `cursor`. A provider
 /// id is only unique inside one call, so older rows are not candidates.
 fn attach_step_items(rows: &mut Vec<WorkingRow>, items: &[Item], cursor: i64) {
@@ -199,6 +278,7 @@ impl ContextPipeline {
                 hot: HotView::new(),
                 prepared: None,
                 working: Vec::new(),
+                envelope: ContextEnvelope::default(),
                 log_max_seq: -1,
                 turn_id: None,
             }),
@@ -211,11 +291,27 @@ impl ContextPipeline {
         self
     }
 
+    /// Raw binding window used by this pipeline. `BudgetPolicy` keeps its 128k
+    /// fallback only for keep-recent sizing; pressure meters must see the raw
+    /// 0/1 window so they stay non-pressure.
+    pub fn context_window(&self) -> usize {
+        self.budget.context_window
+    }
+
     pub fn data_root(&self) -> &PathBuf {
         &self.data_root
     }
 
     pub fn sync_context(&self, _ctx: &Context) {}
+
+    /// Freeze the fixed request envelope without running compaction. Production
+    /// calls this through `compact_step`; tests use it to measure a prepared view.
+    pub fn freeze_request_envelope(&self, envelope: ContextEnvelope) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .envelope = envelope;
+    }
 
     pub fn prepared_view(&self) -> Option<PreparedView> {
         self.state
@@ -352,6 +448,10 @@ impl ContextPipeline {
         }
 
         self.sync_turn_working(sessions, session_id);
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.envelope = ContextEnvelope::from_compaction_request(compaction_request);
+        }
         let mut rows = self.working_set();
         let compacted = self
             .compact
@@ -365,6 +465,7 @@ impl ContextPipeline {
                 &mut rows,
                 step,
                 cancel,
+                &self.data_root,
             )
             .await?;
 
@@ -395,45 +496,32 @@ impl ContextPipeline {
         model: &crate::provider_catalog::ResolvedModel,
     ) -> Result<()> {
         self.sync_turn_working(sessions, session_id);
-        let (turn_view, source_seqs, inherited_before_checkpoint) = {
+        let (rows, envelope) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(view) = CompactedView::from_working_rows(&state.working) {
-                (
-                    view.items,
-                    view.item_seqs,
-                    Some(view.inherited_before_checkpoint),
-                )
-            } else {
-                (
-                    project_items(&state.working),
-                    state
-                        .working
-                        .iter()
-                        .map(|row| row.log_seq)
-                        .collect::<Vec<_>>(),
-                    None,
-                )
-            }
+            (state.working.clone(), state.envelope.clone())
         };
-
-        let projection = project_model_view(
-            &turn_view,
-            &source_seqs,
-            inherited_before_checkpoint.as_deref(),
-            model,
-            &self.data_root,
-        );
+        let (turn_view, projection) = project_working_rows(&rows, model, &self.data_root);
         let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
-        let token_count =
-            self.budget
-                .occupancy_token_count(&projection.items, &projection.item_seqs, bill);
+        let context_window = self.budget.context_window;
+        let meter = ContextMeter::measure(
+            context_window,
+            envelope.output_reserve,
+            ContextMeter::safety_headroom(context_window),
+            &envelope,
+            &projection.items,
+            &projection.coverage_seqs,
+            bill,
+        );
+        let token_count = meter.used_tokens;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.hot.replace(turn_view);
         state.prepared = Some(PreparedView {
             items: projection.items,
             item_seqs: projection.item_seqs,
+            coverage_seqs: projection.coverage_seqs,
             rebased: projection.rebased,
             token_count,
+            context_meter: meter,
             projected_parts: projection.projected_parts,
             instructions: None,
         });
@@ -536,24 +624,57 @@ impl ContextPipeline {
         })
     }
 
-    /// Token estimate for the last prepared view or hot items.
+    /// Unified prompt occupancy for the last prepared view, or a local-envelope
+    /// estimate when no request has been prepared yet.
     pub fn current_token_estimate(&self, turn_items: &[Item]) -> usize {
-        if let Some(count) = self
+        let (prepared, envelope) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.prepared.as_ref().map(|view| view.token_count),
+                state.envelope.clone(),
+            )
+        };
+        if let Some(count) = prepared {
+            return count;
+        }
+        let context_window = self.budget.context_window;
+        ContextMeter::measure_local(
+            context_window,
+            envelope.output_reserve,
+            ContextMeter::safety_headroom(context_window),
+            &envelope,
+            turn_items,
+        )
+        .used_tokens
+    }
+
+    /// Test/telemetry convenience only. Production auto pressure is decided in
+    /// `CompactPolicy::compact_if_needed` from the same [`ContextMeter`].
+    pub fn will_compact(&self, items: &[Item], last_prompt_tokens: u64) -> bool {
+        let envelope = self
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .prepared
-            .as_ref()
-            .map(|view| view.token_count)
-        {
-            return count;
-        }
-        self.budget.token_count(turn_items, 0)
-    }
-
-    pub fn will_compact(&self, items: &[Item], last_prompt_tokens: u64) -> bool {
-        let token_count = self.budget.token_count(items, last_prompt_tokens);
-        self.budget.should_compact(token_count)
+            .envelope
+            .clone();
+        let context_window = self.budget.context_window;
+        let bill = (last_prompt_tokens > 0).then_some(OccupancyBill {
+            prompt_tokens: last_prompt_tokens,
+            // With `None`, persisted rows with a seq are covered. Fake seqs are
+            // enough here because this helper has no durable row list.
+            covered_seq: None,
+        });
+        let seqs = vec![Some(0); items.len()];
+        ContextMeter::measure(
+            context_window,
+            envelope.output_reserve,
+            ContextMeter::safety_headroom(context_window),
+            &envelope,
+            items,
+            &seqs,
+            bill,
+        )
+        .should_compact()
     }
 }
 
@@ -584,6 +705,38 @@ mod turn_window_tests {
             align_padded_item_sources(&source, &view),
             vec![Some(0), Some(1), Some(1)],
             "the pad must share the call's source index so it follows it across compaction"
+        );
+    }
+
+    #[test]
+    fn batched_unanswered_calls_keep_distinct_coverage_provenance() {
+        use crate::authority::responses::FunctionToolCall;
+
+        let source = vec![
+            user_text("go"),
+            Item::FunctionCall(FunctionToolCall {
+                call_id: "call-1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                id: Some("fc-1".into()),
+                status: None,
+                namespace: None,
+            }),
+            Item::FunctionCall(FunctionToolCall {
+                call_id: "call-2".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+                id: Some("fc-2".into()),
+                status: None,
+                namespace: None,
+            }),
+        ];
+        let mut view = source.clone();
+        Session::pad_unanswered_calls(&mut view);
+        assert_eq!(
+            align_padded_item_sources(&source, &view),
+            vec![Some(0), Some(1), Some(2), Some(1), Some(2)],
+            "each batched pad must inherit its own call, not the last pending call"
         );
     }
 

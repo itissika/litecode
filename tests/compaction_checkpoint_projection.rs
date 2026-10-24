@@ -74,6 +74,7 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
             COMPACT_MAX_OUTPUT_TOKENS,
             &cancel,
             Some("pr2-first"),
+            &sessions.data_root_path(),
         )
         .await
         .unwrap(),
@@ -168,6 +169,7 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
             COMPACT_MAX_OUTPUT_TOKENS,
             &cancel,
             Some("pr2-second"),
+            &sessions.data_root_path(),
         )
         .await
         .unwrap(),

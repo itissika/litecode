@@ -100,6 +100,7 @@ async fn compact_failure_restores_transcript_snapshot() {
         1024,
         &CancellationToken::new(),
         Some("op-restore"),
+        &sessions.data_root_path(),
     )
     .await
     .expect_err("empty summary must fail compact");
@@ -154,14 +155,16 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
 
     let provider = ScriptedProvider::with_text("");
     let prompt_baseline = ProviderPromptBaseline::default();
-    // Force auto compact threshold (>80% of 10_000).
+    // Force auto pressure on the same 10_000-token request window.
     prompt_baseline.record(8_500, u64::MAX);
+    let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    request.context_window = pipeline.context_window();
 
     let err = pipeline
         .compact_step(
             &sessions,
             &sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &prompt_baseline,
             1,
@@ -232,6 +235,7 @@ async fn manual_compact_failure_releases_lease_for_retry() {
         1024,
         &CancellationToken::new(),
         Some(&op_id),
+        &sessions.data_root_path(),
     )
     .await
     .expect_err("manual compact empty summary must fail");

@@ -1,14 +1,13 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::context_pipeline::estimate::{autocompact_threshold, compute_token_estimate};
-use crate::context_pipeline::keep_recent::default_keep_recent_tokens;
+use crate::session::estimate::autocompact_threshold;
 use crate::session::store::{ProviderUsageRollup, SessionContextMeter, occupancy_usage};
-use crate::types::{Item, LitecodeError, Result};
 
 /// Provider-reported prompt usage tied to the request header seq that opened it.
 ///
 /// Rows after that seq, and rows that have not been persisted yet, have not
-/// reached the provider. Budget checks add a local estimate for that suffix.
+/// reached the provider. A [`ContextMeter`](super::ContextMeter) adds a local
+/// estimate for only that suffix.
 #[derive(Debug, Default)]
 pub struct ProviderPromptBaseline {
     prompt_tokens: AtomicU64,
@@ -77,23 +76,14 @@ pub fn occupancy_bill_from(
     })
 }
 
-/// Occupancy the ring shows: provider prompt when present, otherwise the local estimate.
-pub fn ring_occupancy(provider_prompt_tokens: Option<u64>, local_estimate: usize) -> usize {
-    provider_prompt_tokens
-        .filter(|tokens| *tokens > 0)
-        .map(|tokens| tokens as usize)
-        .unwrap_or(local_estimate)
-}
-
-/// Fallback when context_window is unset (rough tokens).
+/// Fallback when context_window is unset (rough tokens for keep-recent only).
 pub const FALLBACK_BUDGET_LIMIT: usize = 128_000;
 
-/// Inclusive 30% product gate for user-triggered compaction.
-pub fn manual_compact_eligible(context_window: usize, token_count: usize) -> bool {
-    context_window > 0 && token_count.saturating_mul(100) >= context_window.saturating_mul(30)
-}
-
-/// Token budget policy for context preparation.
+/// Retention policy for context preparation.
+///
+/// Pressure/eligibility lives exclusively in
+/// [`ContextMeter`](super::ContextMeter); this type retains the existing
+/// LiteCode keep-recent and summary-cap policy.
 #[derive(Debug, Clone)]
 pub struct BudgetPolicy {
     pub context_window: usize,
@@ -137,108 +127,43 @@ impl BudgetPolicy {
         }
     }
 
+    /// The 0.8 soft-window component retained for keep-recent sizing and fixture
+    /// calibration. Pressure decisions must use [`ContextMeter::compact_at`].
     pub fn autocompact_threshold(&self) -> usize {
         autocompact_threshold(self.budget_limit())
     }
-
-    /// Provider `usage.prompt_tokens` (last request) is authoritative when present;
-    /// otherwise whole-transcript local estimate — never a sum across LLM calls.
-    pub fn token_count(&self, items: &[Item], provider_tokens: u64) -> usize {
-        if provider_tokens > 0 {
-            provider_tokens as usize
-        } else {
-            self.local_token_count(items)
-        }
-    }
-
-    /// Provider prompt plus a local estimate of rows the bill does not cover.
-    ///
-    /// A row is uncovered when it has no seq, or its seq is after `covered_seq`.
-    /// `None` uses the local estimate of the whole set — a rewritten transcript
-    /// after compact is not a suffix of the billed request.
-    pub fn occupancy_token_count(
-        &self,
-        items: &[Item],
-        seqs: &[Option<u64>],
-        bill: Option<OccupancyBill>,
-    ) -> usize {
-        let Some(bill) = bill.filter(|bill| bill.prompt_tokens > 0) else {
-            return self.local_token_count(items);
-        };
-        if seqs.len() != items.len() {
-            return self.local_token_count(items);
-        }
-        let mut suffix = Vec::new();
-        for (item, seq) in items.iter().zip(seqs.iter()) {
-            let after = match (bill.covered_seq, seq) {
-                (Some(covered), Some(row_seq)) => *row_seq > covered,
-                (Some(_), None) => true,
-                (None, None) => true,
-                (None, Some(_)) => false,
-            };
-            if after {
-                suffix.push(item.clone());
-            }
-        }
-        (bill.prompt_tokens as usize).saturating_add(compute_token_estimate(&suffix))
-    }
-
-    pub fn enforce_token_count(&self, token_count: usize) -> Result<()> {
-        if token_count > self.budget_limit() {
-            Err(LitecodeError::TokenBudgetExceeded)
-        } else {
-            Ok(())
-        }
-    }
-
-    fn local_token_count(&self, items: &[Item]) -> usize {
-        compute_token_estimate(items)
-    }
-
-    pub fn should_compact(&self, token_count: usize) -> bool {
-        token_count > self.autocompact_threshold()
-    }
-
-    pub fn enforce_hard_limit(&self, items: &[Item], provider_tokens: u64) -> Result<()> {
-        let count = self.token_count(items, provider_tokens);
-        if count > self.budget_limit() {
-            return Err(LitecodeError::TokenBudgetExceeded);
-        }
-        Ok(())
-    }
-
-    pub fn log_iteration(&self, step: u64, token_count: usize) {
-        let budget = self.budget_limit();
-        tracing::debug!(step, token_count, budget, "loop iteration");
-    }
 }
+
+use crate::context_pipeline::keep_recent::default_keep_recent_tokens;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context_pipeline::context_meter::ContextMeter;
+    use crate::context_pipeline::context_meter::ContextMeterSource;
     use crate::types::user_text;
 
     #[test]
     fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix() {
-        let budget = BudgetPolicy::new(10_000);
+        let env = crate::context_pipeline::ContextEnvelope::default();
         let items = vec![user_text("sent"), user_text("x".repeat(4_000))];
         let seqs = vec![Some(4), Some(9)];
         let bill = OccupancyBill {
             prompt_tokens: 7_000,
             covered_seq: Some(4),
         };
-        assert_eq!(
-            budget.occupancy_token_count(&items, &seqs, Some(bill)),
-            7_000 + compute_token_estimate(&items[1..])
+        let suffix = crate::context_pipeline::estimate::compute_token_estimate(&items[1..]);
+        let meter = ContextMeter::measure(
+            10_000,
+            env.output_reserve,
+            ContextMeter::safety_headroom(10_000),
+            &env,
+            &items,
+            &seqs,
+            Some(bill),
         );
-    }
-
-    #[test]
-    fn rewritten_view_does_not_reuse_a_provider_bill() {
-        let budget = BudgetPolicy::new(10_000);
-        let items = vec![user_text("summary")];
-        let local = compute_token_estimate(&items);
-        assert_eq!(budget.occupancy_token_count(&items, &[], None), local);
+        assert_eq!(meter.used_tokens, 7_000 + suffix);
+        assert_eq!(meter.source, ContextMeterSource::ProviderPlusSuffix);
     }
 
     #[test]
@@ -275,12 +200,5 @@ mod tests {
             Some(4)
         );
         assert!(occupancy_bill_from(&empty, Some(8), &rollup, &meter).is_none());
-    }
-
-    #[test]
-    fn manual_compact_gate_is_inclusive_at_thirty_percent() {
-        assert!(!manual_compact_eligible(0, 10_000));
-        assert!(!manual_compact_eligible(10_000, 2_999));
-        assert!(manual_compact_eligible(10_000, 3_000));
     }
 }

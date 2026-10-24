@@ -393,13 +393,21 @@ pub struct SessionSnapshot {
     pub turn: Option<TurnSnapshot>,
     #[serde(default)]
     pub context_window: usize,
-    /// Local estimate of the current model working set. The ring uses it only
-    /// when no provider prompt is showing. Also the manual-compaction gate.
+    /// Legacy display mirror of [`ContextMeter::used_tokens`]. It is never a
+    /// threshold input; eligibility and occupancy come from `context_meter`.
     #[serde(default)]
     pub context_tokens_estimate: usize,
     /// Item-text buckets aligned with the last prepared request when present.
     #[serde(default)]
     pub context_token_breakdown: crate::session::estimate::ItemTokenBreakdown,
+    /// Unified occupancy/pressure truth. The UI must consume this object rather
+    /// than derive a threshold from provider/transcript fields.
+    #[serde(default)]
+    pub context_meter: crate::context_pipeline::ContextMeter,
+    /// Server-owned request envelope used for the local fallback.
+    #[serde(default)]
+    pub context_envelope: crate::context_pipeline::ContextEnvelope,
+    /// Server decision for manual compaction (inclusive 30% gate).
     #[serde(default)]
     pub compact_eligible: bool,
     /// Standalone manual compaction owns the session (not part of `turn`).
@@ -474,6 +482,9 @@ pub struct SessionBindingProjection {
     pub api_model_id: String,
     pub label: String,
     pub context_window: usize,
+    /// Effective main-model output cap for the current binding. The server uses
+    /// this to seed the cold ContextMeter output reserve.
+    pub max_output_tokens: u32,
     pub thinking_tier: String,
     pub context_mode: String,
 }
@@ -579,9 +590,15 @@ pub enum WireEvent {
         token_estimate: usize,
         tools_count: usize,
         context_window: usize,
-        /// Local item-text mix for the occupancy bar. Not meter/ring truth.
+        /// Item-text mix for the occupancy bar.
         #[serde(default)]
         token_breakdown: crate::session::estimate::ItemTokenBreakdown,
+        /// Server-owned request envelope used by the unified ContextMeter.
+        #[serde(default)]
+        context_envelope: crate::context_pipeline::ContextEnvelope,
+        /// Server meter for this exact projected request.
+        #[serde(default)]
+        context_meter: crate::context_pipeline::ContextMeter,
         // --- WP-191 request health (serde default for older consumers) ---
         #[serde(default)]
         sticky_model_id: String,
@@ -625,6 +642,9 @@ pub enum WireEvent {
         cache_hit_tokens: u64,
         cache_miss_tokens: u64,
         stop_reason: String,
+        /// Provider-covered server meter for the completed request.
+        #[serde(default)]
+        context_meter: crate::context_pipeline::ContextMeter,
     },
     Compaction {
         kind: CompactionKind,

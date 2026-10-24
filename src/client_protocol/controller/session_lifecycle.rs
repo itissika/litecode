@@ -5,11 +5,10 @@ use crate::client_protocol::protocol::{
     ErrorCode, OperationKind, SessionBindingProjection, SessionInfo,
 };
 use crate::context_pipeline::{
-    BudgetPolicy, CompactPolicy, manual_compact_eligible, ring_occupancy,
+    BudgetPolicy, CompactPolicy, ContextEnvelope, measure_persisted_context_with_breakdown,
 };
 use crate::permission::PermissionSink;
 use crate::runtime::{TurnOptions, spawn_turn};
-use crate::session::estimate::compute_token_breakdown;
 use crate::session::store::Session;
 use crate::types::{LitecodeError, UserInput};
 use tokio_util::sync::CancellationToken;
@@ -18,26 +17,6 @@ use super::{SessionController, StartTurnError};
 
 #[cfg(test)]
 mod occupancy_gate_tests {}
-
-/// Latest unretired provider prompt, matching the occupancy ring.
-fn provider_occupancy_prompt(
-    sessions: &crate::session::manager::SessionManager,
-    session_id: &str,
-) -> Option<u64> {
-    let compacted_seq = sessions
-        .data()
-        .meta_blocking(session_id)
-        .ok()
-        .and_then(|meta| meta.compacted_seq);
-    let rollup = sessions.provider_usage_rollup(session_id).ok()?;
-    let meter = sessions
-        .data()
-        .meter_blocking(session_id)
-        .unwrap_or_default();
-    crate::session::store::occupancy_usage(&rollup, compacted_seq, &meter)
-        .map(|usage| usage.prompt_tokens)
-        .filter(|tokens| *tokens > 0)
-}
 
 enum TurnLaunch {
     User {
@@ -323,22 +302,30 @@ impl SessionController {
         let mut transcript = self.sessions.data().transcript_blocking(session_id)?;
         Session::snip_stale_results(&mut transcript);
         let budget = BudgetPolicy::new(compaction_request.context_window);
-        let local_count = budget.token_count(&transcript, 0);
-        let occupancy = ring_occupancy(
-            provider_occupancy_prompt(&self.sessions, session_id),
-            local_count,
-        );
-        if !manual_compact_eligible(compaction_request.context_window, occupancy) {
+        let envelope = ContextEnvelope::from_compaction_request(&compaction_request);
+        let data_root = self.sessions.data_root_path();
+        let (meter, breakdown) = measure_persisted_context_with_breakdown(
+            &self.sessions,
+            session_id,
+            compaction_request.context_window,
+            &envelope,
+            &compaction_request.target,
+            &data_root,
+        )?;
+        // Publish the exact server meter+buckets before returning either gate
+        // result so a refreshed UI sees the same projection the decision used.
+        if let Some(proj) = self.projection_mut(session_id) {
+            proj.context_window = compaction_request.context_window;
+            proj.context_envelope = envelope.clone();
+            proj.context_meter = meter.clone();
+            proj.context_tokens_estimate = meter.used_tokens;
+            proj.context_token_breakdown = breakdown;
+        }
+        if !meter.manual_eligible() {
             return Err(LitecodeError::NothingToCompact);
         }
         if !CompactPolicy::can_compact(&budget, &transcript) {
             return Err(LitecodeError::NothingToCompact);
-        }
-
-        if let Some(proj) = self.projection_mut(session_id) {
-            proj.context_window = compaction_request.context_window;
-            proj.context_tokens_estimate = local_count;
-            proj.context_token_breakdown = compute_token_breakdown(&transcript);
         }
 
         let sessions = Arc::clone(&self.sessions);
@@ -365,6 +352,7 @@ impl SessionController {
                     crate::context_pipeline::keep_recent::COMPACT_MAX_OUTPUT_TOKENS,
                     &cancel,
                     Some(&op_id),
+                    &data_root,
                 ),
             )
             .await
@@ -393,17 +381,71 @@ impl SessionController {
         let binding = self.session_binding(&sid);
         let project = self.project.clone();
         let (last_seq, next_seq) = self.sessions.entry_wire_seq_cursor(&sid);
+        let depth = self
+            .sessions
+            .data()
+            .meta_blocking(&sid)
+            .map(|meta| meta.subagent_depth)
+            .unwrap_or(0);
+        let seeded = match self
+            .cold_compaction_request(&sid, &binding.agent_id, depth)
+            .await
+        {
+            Ok(request) => {
+                let envelope =
+                    crate::context_pipeline::ContextEnvelope::from_compaction_request(&request);
+                let meter = measure_persisted_context_with_breakdown(
+                    &self.sessions,
+                    &sid,
+                    request.context_window,
+                    &envelope,
+                    &request.target,
+                    &self.sessions.data_root_path(),
+                )
+                .ok()
+                .map(|(meter, _)| (envelope, meter));
+                if meter.is_none() {
+                    tracing::warn!(
+                        session_id = %sid,
+                        "new session could not measure its cold request projection"
+                    );
+                }
+                meter
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %sid,
+                    %error,
+                    "new session could not build its cold request envelope"
+                );
+                None
+            }
+        };
+        // If the cold runtime cannot be built there is no measured envelope to
+        // publish. Omit the optional context fields from the wire snapshot
+        // rather than inventing a 0/0 LocalEnvelope; the next successful
+        // subscribe will seed the full server-owned request shape.
+        let context_seeded = seeded.is_some();
+        let (envelope, meter) = match seeded {
+            Some(seeded) => seeded,
+            None => (
+                crate::context_pipeline::ContextEnvelope::default(),
+                crate::context_pipeline::ContextMeter::default(),
+            ),
+        };
         let snapshot = project::buffer_snapshot(
-            &sid, &project, &binding, last_seq, next_seq, 0, None, None, None, 0, false,
+            &sid, &project, &binding, last_seq, next_seq, 0, None, None, None, &meter, &envelope,
+            false,
         );
-        self._workspace_outgoing.push(project::operation_result(
-            OperationKind::NewSession,
-            true,
-            None,
-            snapshot.clone(),
-        ));
-        self._workspace_outgoing
-            .push(project::session_snapshot(snapshot));
+        let mut operation_msg =
+            project::operation_result(OperationKind::NewSession, true, None, snapshot.clone());
+        let mut snapshot_msg = project::session_snapshot(snapshot);
+        if !context_seeded {
+            project::omit_snapshot_context_fields(&mut operation_msg);
+            project::omit_snapshot_context_fields(&mut snapshot_msg);
+        }
+        self._workspace_outgoing.push(operation_msg);
+        self._workspace_outgoing.push(snapshot_msg);
         if let Ok(sessions) = self.list_sessions().await {
             let session_list_msg = project::session_list(sessions);
             for proj in self.projections.values_mut() {
@@ -455,7 +497,8 @@ impl SessionController {
             None,
             None,
             None,
-            0,
+            &crate::context_pipeline::ContextMeter::default(),
+            &crate::context_pipeline::ContextEnvelope::default(),
             false,
         );
         self._workspace_outgoing.push(project::operation_result(
@@ -690,9 +733,10 @@ impl SessionController {
             "session model switched"
         );
         let binding = self.session_binding(session_id);
+        let request_model = self.resolved_model_for_binding(&binding);
         if let Some(proj) = self.projection_mut(session_id) {
             proj.context_window = binding.context_window;
-            proj.refresh_context_estimate();
+            proj.set_request_model(request_model);
             proj.push_operation_ok(OperationKind::SetModel, &project, &binding);
         }
         Ok(())

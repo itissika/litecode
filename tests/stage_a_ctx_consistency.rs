@@ -13,7 +13,8 @@ use litecode::config::TurnGuard;
 use litecode::config::workspace::set_runtime_paths;
 use litecode::context_pipeline::Context;
 use litecode::context_pipeline::{
-    BudgetPolicy, CompactPolicy, ContextPipeline, ProviderPromptBaseline,
+    BudgetPolicy, CompactPolicy, ContextEnvelope, ContextMeter, ContextPipeline,
+    ProviderPromptBaseline, safety_headroom,
 };
 use litecode::session::event::spine_agent_item;
 use litecode::session::manager::SessionManager;
@@ -89,11 +90,13 @@ async fn prepare(
     let prompt_baseline = ProviderPromptBaseline::default();
     // Covers every persisted row. Pending rows stay a local suffix.
     prompt_baseline.record(last_prompt_tokens, u64::MAX);
+    let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    request.context_window = pipeline.context_window();
     pipeline
         .compact_step(
             sessions,
             sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &prompt_baseline,
             step,
@@ -155,8 +158,15 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
 
     let transcript = sessions.data().transcript_blocking(&sid).unwrap();
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
-    let estimate = budget.token_count(&transcript, 0);
-    assert!(!budget.should_compact(estimate));
+    let envelope = ContextEnvelope::from_request_parts("system", &[], 8192);
+    let meter = ContextMeter::measure_local(
+        128_000,
+        envelope.output_reserve,
+        safety_headroom(128_000),
+        &envelope,
+        &transcript,
+    );
+    assert!(!meter.should_compact());
 
     let provider = ScriptedProvider::with_text("manual compact summary");
     let compacted = CompactPolicy::compact_now(
@@ -167,6 +177,7 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
         1024,
         &CancellationToken::new(),
         None,
+        &sessions.data_root_path(),
     )
     .await
     .unwrap();
@@ -211,6 +222,7 @@ async fn pipeline_compact_reloads_working_set_from_fold() {
         1024,
         &CancellationToken::new(),
         None,
+        &sessions.data_root_path(),
     )
     .await
     .expect("compact_now");
@@ -477,11 +489,13 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
+    let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    request.context_window = pipeline.context_window();
     let compacted = pipeline
         .compact_step(
             &sessions,
             &sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &prompt_baseline,
             1,
@@ -564,11 +578,13 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
+    let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    request.context_window = pipeline.context_window();
     let compacted = pipeline
         .compact_step(
             &sessions,
             &sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &prompt_baseline,
             1,
@@ -652,11 +668,13 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let model = test_model();
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
+    let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
+    request.context_window = pipeline.context_window();
     pipeline
         .compact_step(
             &sessions,
             &sid,
-            &common::test_compaction_request(Arc::new(provider), "system", vec![], &sid),
+            &request,
             1024,
             &prompt_baseline,
             2,

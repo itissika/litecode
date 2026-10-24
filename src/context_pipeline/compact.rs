@@ -7,7 +7,6 @@ use std::cell::Cell;
 
 use crate::authority::responses::{MessageItem, OutputStatus};
 use crate::context_pipeline::keep_recent::find_keep_recent_cut;
-use crate::context_pipeline::media_budget::drop_stale_media;
 use crate::context_pipeline::project_model_view;
 use crate::llm::CompactionRequestContext;
 use crate::runtime::observer::{
@@ -21,6 +20,7 @@ use crate::session::working::{CompactedView, CompactionCheckpoint, WorkingRow, p
 use crate::types::{Item, LitecodeError, Result, Transcript, item_text_preview};
 
 use super::budget::{BudgetPolicy, ProviderPromptBaseline};
+use super::context_meter::{ContextEnvelope, ContextMeter, working_set_items};
 
 /// Wall-clock cap for the compact LLM call.
 ///
@@ -209,8 +209,9 @@ impl CompactPolicy {
 
     /// One-shot user-triggered compaction.
     ///
-    /// Product eligibility is enforced by the caller. This deliberately skips
-    /// the automatic 80% policy and post-compact loop reminders.
+    /// Product eligibility is enforced by the caller's `ContextMeter`. This
+    /// deliberately skips the automatic pressure trigger and post-compact loop
+    /// reminders.
     pub async fn compact_now(
         budget: &BudgetPolicy,
         sessions: &SessionManager,
@@ -219,6 +220,7 @@ impl CompactPolicy {
         max_tokens: u32,
         cancel: &CancellationToken,
         operation_id: Option<&str>,
+        data_root: &std::path::Path,
     ) -> Result<bool> {
         let mut rows = sessions.data().working_set_blocking(session_id)?;
         let items = project_items(&rows);
@@ -247,6 +249,7 @@ impl CompactPolicy {
             cancel,
             CompactionTrigger::Manual,
             operation_id,
+            data_root,
         )
         .await?;
         let Some(artifact) = outcome else {
@@ -281,6 +284,7 @@ impl CompactPolicy {
         rows: &mut Vec<WorkingRow>,
         step: u64,
         cancel: &CancellationToken,
+        data_root: &std::path::Path,
     ) -> Result<bool> {
         // Returns `true` when a full compaction actually ran — the single source
         // of truth for "did we compact" (the caller drives phase/compaction
@@ -289,15 +293,22 @@ impl CompactPolicy {
             return Ok(false);
         }
 
-        let items = budget_items(rows);
-        let token_count = rows_occupancy_count(budget, sessions, session_id, prompt_baseline, rows);
-        budget.log_iteration(step, token_count);
+        let meter = context_meter_for_rows(
+            sessions,
+            session_id,
+            request,
+            prompt_baseline,
+            rows,
+            data_root,
+        );
+        meter.log_iteration(step);
 
-        if budget.should_compact(token_count) {
+        if meter.should_compact() {
             if cancel.is_cancelled() {
                 return Ok(false);
             }
 
+            let items = budget_items(rows);
             let prefix_len = persisted_prefix_len(rows);
             if find_keep_recent_cut(&items[..prefix_len], budget.keep_recent_tokens).is_none() {
                 tracing::debug!(
@@ -306,11 +317,17 @@ impl CompactPolicy {
                     prefix_len,
                     "keep-recent: entire persisted prefix within keep window, skipping compact"
                 );
-                budget.enforce_token_count(token_count)?;
+                meter.enforce_prompt_limit()?;
                 return Ok(false);
             }
 
-            tracing::info!("token budget > 80%, triggering compaction");
+            tracing::info!(
+                used_tokens = meter.used_tokens,
+                compact_at = meter.compact_at,
+                prompt_limit = meter.prompt_limit,
+                source = ?meter.source,
+                "context pressure reached; triggering compaction"
+            );
             let outcome = Self::compact_transcript(
                 budget,
                 sessions,
@@ -322,6 +339,7 @@ impl CompactPolicy {
                 cancel,
                 CompactionTrigger::Auto,
                 None,
+                data_root,
             )
             .await?;
             let did_compact = outcome.is_some();
@@ -337,17 +355,23 @@ impl CompactPolicy {
             if cancel.is_cancelled() {
                 return Ok(false);
             }
-            // Defensive: if compact was skipped (e.g. cut race),
-            // still enforce the hard limit so over-budget tokens cannot slip through.
+            // Defensive: if compact was skipped (e.g. cut race), still enforce
+            // the shared hard prompt limit so over-budget cannot slip through.
             if !did_compact {
-                let count =
-                    rows_occupancy_count(budget, sessions, session_id, prompt_baseline, rows);
-                budget.enforce_token_count(count)?;
+                let meter = context_meter_for_rows(
+                    sessions,
+                    session_id,
+                    request,
+                    prompt_baseline,
+                    rows,
+                    data_root,
+                );
+                meter.enforce_prompt_limit()?;
             }
             return Ok(did_compact);
         }
 
-        budget.enforce_token_count(token_count)?;
+        meter.enforce_prompt_limit()?;
         Ok(false)
     }
 
@@ -366,6 +390,7 @@ impl CompactPolicy {
         cancel: &CancellationToken,
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
+        data_root: &std::path::Path,
     ) -> Result<Option<SummaryArtifact>> {
         if cancel.is_cancelled() {
             return Ok(None);
@@ -422,7 +447,6 @@ impl CompactPolicy {
             }
         };
 
-        let limit = budget.budget_limit();
         let summary_max_tokens = budget
             .compact_output_tokens(max_tokens)
             .min(request.max_output_tokens);
@@ -434,8 +458,15 @@ impl CompactPolicy {
             prior_checkpoint_seq,
             summary_cap: summary_max_tokens,
         };
-        let tokens_before =
-            rows_occupancy_count(budget, sessions, session_id, prompt_baseline, &snapshot);
+        let tokens_before = context_meter_for_rows(
+            sessions,
+            session_id,
+            request,
+            prompt_baseline,
+            &snapshot,
+            data_root,
+        )
+        .used_tokens;
 
         emit_compact_lifecycle(
             sessions,
@@ -503,19 +534,30 @@ impl CompactPolicy {
                 .unwrap_or(kept_from_seq),
             to: kept_from_seq,
         };
-        let final_count = {
+        let envelope = ContextEnvelope::from_compaction_request(request);
+        let final_meter = {
             let mut view = vec![checkpoint.model_item()];
             view.extend(kept.iter().cloned());
             view.extend(tail.iter().map(|row| row.payload.model_item()));
-            drop_stale_media(&mut view);
-            // The rewritten view is not a suffix of the billed request.
-            budget.occupancy_token_count(&view, &[], None)
+            let view_seqs = vec![None; view.len()];
+            let projection =
+                super::project_model_view(&view, &view_seqs, None, &request.target, data_root);
+            // The rewritten view is not a suffix of the billed request; count
+            // the complete local envelope over the same request projection.
+            ContextMeter::measure_local(
+                request.context_window,
+                envelope.output_reserve,
+                ContextMeter::safety_headroom(request.context_window),
+                &envelope,
+                &projection.items,
+            )
         };
-        if final_count > limit {
+        let final_count = final_meter.used_tokens;
+        if final_meter.is_over_prompt_limit() {
             *rows = snapshot;
             tracing::error!(
                 final_count,
-                limit,
+                limit = final_meter.prompt_limit,
                 "token budget still exceeded after autocompact"
             );
             let err = LitecodeError::TokenBudgetExceeded;
@@ -974,30 +1016,32 @@ fn emit_compact_failed(
 }
 
 /// Items as the model view will carry them, so the budget never counts media
-/// that [`drop_stale_media`] removes from the request.
+/// that `drop_stale_media` removes from the request.
 fn budget_items(rows: &[WorkingRow]) -> Vec<Item> {
-    budget_items_with_seqs(rows).0
+    working_set_items(rows).0
 }
 
-fn budget_items_with_seqs(rows: &[WorkingRow]) -> (Vec<Item>, Vec<Option<u64>>) {
-    let seqs = rows.iter().map(|row| row.log_seq).collect();
-    let mut items = project_items(rows);
-    drop_stale_media(&mut items);
-    (items, seqs)
-}
-
-/// Provider prompt for the latest unretired bill, plus a local estimate of rows
-/// written after that request. No bill → the whole working set is local.
-fn rows_occupancy_count(
-    budget: &BudgetPolicy,
+/// The one auto/manual/UI measurement path for current working rows. Auto
+/// supplies its in-memory baseline; manual/UI use the persisted equivalent.
+fn context_meter_for_rows(
     sessions: &SessionManager,
     session_id: &str,
+    request: &CompactionRequestContext,
     baseline: &ProviderPromptBaseline,
     rows: &[WorkingRow],
-) -> usize {
-    let (items, seqs) = budget_items_with_seqs(rows);
-    let bill = super::resolve_occupancy_bill(sessions, session_id, baseline);
-    budget.occupancy_token_count(&items, &seqs, bill)
+    data_root: &std::path::Path,
+) -> ContextMeter {
+    let envelope = ContextEnvelope::from_compaction_request(request);
+    crate::context_pipeline::measure_request_context(
+        sessions,
+        session_id,
+        request.context_window,
+        &envelope,
+        baseline,
+        rows,
+        &request.target,
+        data_root,
+    )
 }
 
 /// Leading rows that already have a `log_seq`. Pending rows sit after them.
@@ -1313,6 +1357,7 @@ max_output = 8192
             &CancellationToken::new(),
             CompactionTrigger::Manual,
             Some("wp039-reload-err"),
+            &sessions.data_root_path(),
         )
         .await
         .expect("persist ok + reload err must return Ok");
@@ -1438,14 +1483,25 @@ max_output = 8192
         let local = crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows));
         assert!(
             local > budget.autocompact_threshold(),
-            "local estimate {local} must clear 80%"
-        );
-        assert_eq!(
-            rows_occupancy_count(&budget, &sessions, &sid, &baseline, &rows),
-            1_000
+            "local estimate {local} must clear the soft window line"
         );
         let provider = Arc::new(CountingProvider::new());
-        let request = compact_context(provider.clone());
+        let mut request = compact_context(provider.clone());
+        request.context_window = budget.budget_limit();
+        request.max_output_tokens = 1_024;
+        let meter = context_meter_for_rows(
+            &sessions,
+            &sid,
+            &request,
+            &baseline,
+            &rows,
+            &sessions.data_root_path(),
+        );
+        assert_eq!(meter.used_tokens, 1_000);
+        assert_eq!(
+            meter.source,
+            crate::context_pipeline::ContextMeterSource::Provider
+        );
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
@@ -1457,6 +1513,7 @@ max_output = 8192
                 &mut rows,
                 1,
                 &CancellationToken::new(),
+                &sessions.data_root_path(),
             )
             .await
             .unwrap();
@@ -1474,7 +1531,9 @@ max_output = 8192
         let budget = BudgetPolicy::new(10_000);
         let baseline = ProviderPromptBaseline::default();
         let provider = Arc::new(CountingProvider::new());
-        let request = compact_context(provider.clone());
+        let mut request = compact_context(provider.clone());
+        request.context_window = budget.budget_limit();
+        request.max_output_tokens = 1_024;
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
@@ -1486,6 +1545,7 @@ max_output = 8192
                 &mut rows,
                 1,
                 &CancellationToken::new(),
+                &sessions.data_root_path(),
             )
             .await
             .unwrap();
@@ -1495,15 +1555,32 @@ max_output = 8192
         let stale = ProviderPromptBaseline::default();
         stale.record(9_000, header);
         let rows = sessions.data().working_set_blocking(&sid).unwrap();
-        let count = rows_occupancy_count(&budget, &sessions, &sid, &stale, &rows);
-        let local = crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows));
-        assert_eq!(
-            count, local,
-            "a compact must retire the old provider prompt"
+        let meter = context_meter_for_rows(
+            &sessions,
+            &sid,
+            &request,
+            &stale,
+            &rows,
+            &sessions.data_root_path(),
         );
-        assert!(count < budget.autocompact_threshold(), "count {count}");
+        let envelope = ContextEnvelope::from_compaction_request(&request);
+        let local = envelope.fixed_prompt_tokens().saturating_add(
+            crate::context_pipeline::estimate::compute_token_estimate(&budget_items(&rows)),
+        );
+        assert_eq!(
+            meter.used_tokens, local,
+            "a compact must retire the old provider prompt and count the full local envelope"
+        );
+        assert_eq!(
+            meter.source,
+            crate::context_pipeline::ContextMeterSource::LocalEnvelope
+        );
+        assert!(meter.used_tokens <= meter.prompt_limit, "count {local}");
+        assert!(!meter.should_compact(), "count {local}");
         let provider = Arc::new(CountingProvider::new());
-        let request = compact_context(provider.clone());
+        let mut request = compact_context(provider.clone());
+        request.context_window = budget.budget_limit();
+        request.max_output_tokens = 1_024;
         let mut rows = rows;
         let did = CompactPolicy
             .compact_if_needed(
@@ -1516,6 +1593,7 @@ max_output = 8192
                 &mut rows,
                 2,
                 &CancellationToken::new(),
+                &sessions.data_root_path(),
             )
             .await
             .unwrap();

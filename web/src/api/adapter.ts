@@ -360,9 +360,12 @@ export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {
       return { step: event.step, stepMax: event.step_max };
     case "llm_request_built":
       return {
-        // token_estimate is local budget telemetry — not ring truth.
-        contextWindow: event.context_window ?? 0,
+        // token_estimate is local budget telemetry, not ring truth.
+        contextWindow: event.context_meter?.context_window ?? event.context_window ?? 0,
         tokenBreakdown: event.token_breakdown,
+        contextEnvelope: event.context_envelope,
+        contextMeter: event.context_meter,
+        compactEligible: event.context_meter?.compact_eligible,
       };
     case "llm_completed":
       return {
@@ -370,6 +373,8 @@ export function applyTurnEventMeta(event: WireEvent): Partial<TurnMeta> {
         completionTokens: event.completion_tokens,
         cacheHitTokens: event.cache_hit_tokens,
         cacheMissTokens: event.cache_miss_tokens,
+        contextMeter: event.context_meter,
+        compactEligible: event.context_meter?.compact_eligible,
         stopReason: event.stop_reason,
       };
     case "compaction":

@@ -1,8 +1,11 @@
 import type { CSSProperties } from "react";
 import { ArrowsInSimple, CircleNotch } from "@phosphor-icons/react";
-import { manualCompactReady, occupancyTokens, useTurnStore } from "../stores/turnStore";
+import { useTurnStore } from "../stores/turnStore";
 import { useConnectionStore } from "../stores/connectionStore";
-import type { ItemTokenBreakdown } from "../api/types";
+import type {
+  ContextMeterSource,
+  ItemTokenBreakdown,
+} from "../api/types";
 import { FoldCard } from "./FoldCard";
 import { Popover } from "./ui/Popover";
 
@@ -91,7 +94,10 @@ function occupancyMix(
   bd: ItemTokenBreakdown | undefined,
 ): { tiers: OccupancySegment[]; tools: ToolOccupancy[] } | null {
   if (!bd || used <= 0) return null;
-  const system = Math.max(0, bd.system ?? 0);
+  const system = Math.max(
+    0,
+    (bd.system ?? 0) + (bd.prompt_overhead ?? 0),
+  );
   const toolDefs = Math.max(0, bd.tool_schema ?? 0);
   const toolCall = Math.max(0, bd.tool_call ?? 0);
   const toolOutput = Math.max(0, bd.tool_output ?? 0);
@@ -146,6 +152,17 @@ function occupancyMix(
   return { tiers, tools };
 }
 
+function contextMeterSourceLabel(source: ContextMeterSource): string {
+  switch (source) {
+    case "provider":
+      return "provider usage";
+    case "provider_plus_suffix":
+      return "provider usage + local suffix";
+    case "local_envelope":
+      return "local request envelope";
+  }
+}
+
 export function ContextUsageRing({
   sessionId,
   readOnly = false,
@@ -155,17 +172,27 @@ export function ContextUsageRing({
    *  Compaction action (a write) stays in the human-owned primary panel. */
   readOnly?: boolean;
 }) {
-  // Live occupancy prefers provider prompt_tokens (updates each llm_completed
-  // step). After compact the backend clears last-turn stats, so we fall back to
-  // the working-set estimate until the next main-model call.
+  // Occupancy is server-owned. `contextMeter` is the single authority for used
+  // tokens and manual eligibility; raw provider prompt is only cache-hit truth.
+  // Legacy context_tokens_estimate is a display fallback when an older server
+  // snapshot omitted the meter, never a local threshold input.
+  const meter = useTurnStore(
+    (s) => s.byId.get(sessionId)?.contextMeter ?? null,
+  );
   const estimate = useTurnStore(
     (s) => s.byId.get(sessionId)?.contextTokensEstimate ?? 0,
   );
   const providerPrompt = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnPromptTokens ?? 0,
   );
-  const used = occupancyTokens(providerPrompt, estimate);
-  const total = useTurnStore((s) => s.byId.get(sessionId)?.contextWindow ?? 0);
+  const used = meter?.used_tokens ?? (estimate > 0 ? estimate : null);
+  const contextWindow = useTurnStore(
+    (s) => s.byId.get(sessionId)?.contextWindow ?? 0,
+  );
+  const total = meter?.context_window ?? contextWindow;
+  const compactEligible = useTurnStore(
+    (s) => s.byId.get(sessionId)?.compactEligible ?? false,
+  );
   const cacheHit = useTurnStore(
     (s) => s.byId.get(sessionId)?.lastTurnCacheHitTokens ?? 0,
   );
@@ -195,7 +222,7 @@ export function ContextUsageRing({
     (s) => s.byId.get(sessionId)?.sessionBilledTokens ?? null,
   );
 
-  const hasOccupancy = used > 0;
+  const hasOccupancy = used !== null && used > 0;
   const hasProviderTruth = providerPrompt > 0;
   const pct = hasOccupancy && total > 0 ? Math.min(used / total, 1) : 0;
   const hitRate = hasProviderTruth ? cacheHitRate(cacheHit, cacheMiss) : null;
@@ -234,14 +261,7 @@ export function ContextUsageRing({
   const toolRows = mix?.tools ?? [];
   const hasMix = segments.length > 0;
   const compactDisabled =
-    !connected ||
-    runState !== "idle" ||
-    compacting ||
-    !manualCompactReady({
-      lastTurnPromptTokens: providerPrompt,
-      contextTokensEstimate: estimate,
-      contextWindow: total,
-    });
+    !connected || runState !== "idle" || compacting || !compactEligible;
 
   return (
     <Popover
@@ -314,7 +334,7 @@ export function ContextUsageRing({
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-(--_dk-text-muted)">Context</span>
                 <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                  {hasOccupancy ? formatToken(used) : "--"}
+                  {used !== null ? formatToken(used) : "--"}
                   {" / "}
                   {total > 0 ? formatToken(total) : "--"}
                   {hasOccupancy && total > 0 && (
@@ -335,7 +355,7 @@ export function ContextUsageRing({
                         key={seg.key}
                         className="h-full min-w-px"
                         style={{
-                          width: `${(seg.tokens / used) * 100}%`,
+                          width: `${(seg.tokens / (used ?? 1)) * 100}%`,
                           backgroundColor: seg.color,
                         }}
                         title={`${seg.label} ${formatToken(seg.tokens)}`}
@@ -411,6 +431,17 @@ export function ContextUsageRing({
               {hasOccupancy && total === 0 && (
                 <span className="text-(--_dk-text-disabled)">
                   No context window configured
+                </span>
+              )}
+              <span className="text-(--_dk-text-disabled)">
+                {meter
+                  ? `Source: ${contextMeterSourceLabel(meter.source)}`
+                  : "No server meter (legacy display fallback)"}
+              </span>
+              {meter && (
+                <span className="font-mono text-(--_dk-text-disabled)">
+                  prompt limit {formatToken(meter.prompt_limit)} · auto at{" "}
+                  {formatToken(meter.compact_at)}
                 </span>
               )}
             </div>

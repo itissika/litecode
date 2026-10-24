@@ -42,11 +42,19 @@ pub struct PreparedView {
     /// tool-call pad). The mapping is carried positionally; provider IDs are not
     /// used to recover it because providers may reuse IDs across requests.
     pub item_seqs: Vec<Option<crate::session::event::Seq>>,
+    /// Provider-bill coverage provenance, parallel to `items`.
+    ///
+    /// Ordinary items use their durable seq. A synthetic pad inherits the seq
+    /// of the unanswered call it was generated for, so a provider bill that
+    /// covered that call does not charge the pad again as local suffix.
+    pub coverage_seqs: Vec<Option<crate::session::event::Seq>>,
     /// Per item, parallel to `items`: produced on a prefix this view no longer
     /// sends as it was (compaction or a stale-media note). A signature bound to
     /// that prefix cannot verify.
     pub rebased: Vec<bool>,
     pub token_count: usize,
+    /// Server-owned occupancy/pressure measurement for this exact projection.
+    pub context_meter: crate::context_pipeline::ContextMeter,
     /// Media parts this view replaced with text placeholders for the target
     /// model. Counted at build time because the projection must run before
     /// media refs are expanded; carried into the request's port report.

@@ -156,7 +156,8 @@ fn operation_error(
             None,
             None,
             None,
-            0,
+            &crate::context_pipeline::ContextMeter::default(),
+            &crate::context_pipeline::ContextEnvelope::default(),
             false,
         )
     });
@@ -2088,7 +2089,6 @@ mod compact_error_tests {
         assert_eq!(v["error"]["data"]["retryable"], true);
         assert_eq!(v["error"]["data"]["message"], v["error"]["message"]);
     }
-
 }
 
 #[cfg(test)]

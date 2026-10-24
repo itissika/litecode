@@ -58,7 +58,7 @@ describe("turnStore convergence", () => {
     } as never);
   });
 
-  it("starts manual compact from ring occupancy, not the server flag", () => {
+  it("starts manual compact from the server eligibility decision", () => {
     const sessionId = "s-compact";
     const sendRpc = vi.fn(async () => ({
       accepted: true,
@@ -73,8 +73,8 @@ describe("turnStore convergence", () => {
             ...EMPTY_SLICE,
             contextWindow: 1000,
             contextTokensEstimate: 100,
-            lastTurnPromptTokens: 300,
-            compactEligible: false,
+            lastTurnPromptTokens: 100,
+            compactEligible: true,
           },
         ],
       ]),
@@ -88,7 +88,7 @@ describe("turnStore convergence", () => {
     });
   });
 
-  it("does not start manual compact when ring occupancy is under 30 percent", () => {
+  it("does not start manual compact when the server says ineligible", () => {
     const sessionId = "s-compact-low";
     const sendRpc = vi.fn(async () => ({
       accepted: true,
@@ -103,8 +103,8 @@ describe("turnStore convergence", () => {
             ...EMPTY_SLICE,
             contextWindow: 1000,
             contextTokensEstimate: 900,
-            lastTurnPromptTokens: 299,
-            compactEligible: true,
+            lastTurnPromptTokens: 900,
+            compactEligible: false,
           },
         ],
       ]),
@@ -452,6 +452,39 @@ describe("turnStore convergence", () => {
     expect(slice.sessionPromptTokens).toBe(9000);
     expect(slice.sessionCacheHitTokens).toBe(7200);
     expect(slice.sessionCacheMissTokens).toBe(1800);
+  });
+
+  it("hydrates occupancy and manual eligibility only from server ContextMeter", () => {
+    const sessionId = "s2-context-meter";
+    useTurnStore.getState().applySnapshotMeter(sessionId, {
+      ...snapshot(sessionId),
+      context_window: 1000,
+      context_tokens_estimate: 400,
+      compact_eligible: true,
+      context_meter: {
+        context_window: 1000,
+        output_reserve: 100,
+        safety_headroom: 125,
+        prompt_limit: 900,
+        compact_at: 775,
+        used_tokens: 300,
+        source: "provider_plus_suffix",
+        compact_eligible: true,
+      },
+      context_envelope: {
+        instructions_tokens: 20,
+        tools_tokens: 30,
+        prompt_overhead_tokens: 64,
+        output_reserve: 100,
+      },
+    });
+    const slice = useTurnStore.getState().byId.get(sessionId)!;
+    expect(slice.contextMeter?.used_tokens).toBe(300);
+    expect(slice.contextMeter?.source).toBe("provider_plus_suffix");
+    expect(slice.contextMeter?.prompt_limit).toBe(900);
+    expect(slice.contextMeter?.compact_at).toBe(775);
+    expect(slice.contextEnvelope?.output_reserve).toBe(100);
+    expect(slice.compactEligible).toBe(true);
   });
 
   it("llm_completed events accumulate session totals; turn_finished overwrites with snapshot", () => {

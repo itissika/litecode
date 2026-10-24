@@ -515,9 +515,15 @@ export interface SessionSnapshot {
   buffer: BufferState;
   turn: TurnSnapshot | null;
   context_window?: number;
+  /** Legacy display mirror of ContextMeter.used_tokens; never a threshold. */
   context_tokens_estimate?: number;
-  /** Local item-text mix for the occupancy bar. Not provider ring truth. */
+  /** Item-text mix for the occupancy bar. */
   context_token_breakdown?: ItemTokenBreakdown;
+  /** Unified server-side occupancy/pressure snapshot. Authoritative. */
+  context_meter?: ContextMeter;
+  /** Server-owned fixed request envelope used by the local fallback. */
+  context_envelope?: ContextEnvelope;
+  /** Server manual-compaction decision (inclusive 30% gate). */
   compact_eligible?: boolean;
   compacting?: boolean;
   /** Last-known provider usage for context ring hydrate after refresh. */
@@ -654,6 +660,8 @@ export interface ItemTokenBreakdown {
   tool_call?: number;
   tool_output: number;
   conversation: number;
+  /** Fixed request-protocol envelope counted by ContextMeter. */
+  prompt_overhead?: number;
   per_tool?: ToolTokenRow[];
 }
 
@@ -663,8 +671,35 @@ export const EMPTY_TOKEN_BREAKDOWN: ItemTokenBreakdown = {
   tool_call: 0,
   tool_output: 0,
   conversation: 0,
+  prompt_overhead: 0,
   per_tool: [],
 };
+
+/** Fixed server-owned request envelope; never rebuilt in the browser. */
+export interface ContextEnvelope {
+  instructions_tokens: number;
+  tools_tokens: number;
+  prompt_overhead_tokens: number;
+  output_reserve: number;
+}
+
+export type ContextMeterSource =
+  | "provider"
+  | "provider_plus_suffix"
+  | "local_envelope";
+
+/** Unified prompt occupancy and pressure thresholds from the Rust server. */
+export interface ContextMeter {
+  context_window: number;
+  output_reserve: number;
+  safety_headroom: number;
+  prompt_limit: number;
+  compact_at: number;
+  used_tokens: number;
+  source: ContextMeterSource;
+  /** Inclusive 30% manual gate; UI consumes this, never recomputes it. */
+  compact_eligible: boolean;
+}
 
 export interface TurnFinished {
   turn_id: string;
@@ -786,6 +821,8 @@ export type WireEvent =
       tools_count: number;
       context_window?: number;
       token_breakdown?: ItemTokenBreakdown;
+      context_envelope?: ContextEnvelope;
+      context_meter?: ContextMeter;
     }
   | {
       type: "llm_completed";
@@ -794,6 +831,7 @@ export type WireEvent =
       cache_hit_tokens: number;
       cache_miss_tokens: number;
       stop_reason: string;
+      context_meter?: ContextMeter;
     }
   | { type: "compaction"; kind: CompactionKind; detail: string | null }
   | {
@@ -841,6 +879,9 @@ export interface TurnMeta {
   cacheHitTokens: number;
   cacheMissTokens: number;
   tokenBreakdown?: ItemTokenBreakdown;
+  contextEnvelope?: ContextEnvelope;
+  contextMeter?: ContextMeter;
+  compactEligible?: boolean;
   stopReason: string | null;
   lastCompaction: { kind: CompactionKind; detail: string | null } | null;
   lastPermissionResolved: {

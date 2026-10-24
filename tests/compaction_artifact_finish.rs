@@ -90,6 +90,7 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
             &cancel,
             CompactionTrigger::Auto,
             Some(&format!("summary-gate-{index}")),
+            &sessions.data_root_path(),
         )
         .await
         .expect_err(label);
@@ -462,6 +463,7 @@ async fn assert_real_codec_case_rejected(case: CodecCase) {
         &CancellationToken::new(),
         CompactionTrigger::Auto,
         Some(case.name),
+        &sessions.data_root_path(),
     )
     .await
     .expect_err(case.name);
@@ -535,6 +537,7 @@ async fn successful_real_codec_preserves_artifact_finish_usage_and_model() {
         &CancellationToken::new(),
         CompactionTrigger::Auto,
         Some("real-codec-finish-success"),
+        &sessions.data_root_path(),
     )
     .await
     .expect("completed summary")

@@ -19,7 +19,7 @@ use crate::permission::PermissionSink;
 use crate::runtime::RuntimeHandle;
 use crate::runtime::observer::InternalEnvelope;
 use crate::runtime::observer::TurnPhase;
-use crate::session::estimate::{ItemTokenBreakdown, compute_token_breakdown};
+use crate::session::estimate::ItemTokenBreakdown;
 use crate::session::manager::SessionManager;
 use crate::session::snapshot;
 use crate::types::LitecodeError;
@@ -83,11 +83,23 @@ pub struct Projection {
     pub outgoing: Vec<serde_json::Value>,
     pub turn_completed_emitted: bool,
     pub context_window: usize,
-    /// Cached local estimate of the model working set. Recomputed only when the
-    /// durable transcript or effective context binding changes.
+    /// Unified prompt occupancy from the server-owned ContextMeter. Kept in
+    /// sync with `context_meter.used_tokens`; legacy field for wire consumers.
     pub context_tokens_estimate: usize,
+    /// Authoritative occupancy/pressure snapshot inputs.
+    pub context_meter: crate::context_pipeline::ContextMeter,
+    /// Server-owned fixed request envelope (instructions/tools/overhead/output)
+    /// used for local fallback. Seeded from the latest request origin row and
+    /// refreshed from live `LlmRequestBuilt` / manual compaction setup.
+    pub context_envelope: crate::context_pipeline::ContextEnvelope,
+    /// Resolved main-turn model used to build the exact request projection.
+    /// `None` only in projection-only tests that do not exercise the meter.
+    pub request_model: Option<Arc<crate::provider_catalog::ResolvedModel>>,
     /// Item-text mix for the occupancy bar. Request-aligned after `LlmRequestBuilt`.
     pub context_token_breakdown: crate::session::estimate::ItemTokenBreakdown,
+    /// No persisted/cold request shape is available, so context fields must be
+    /// omitted from every outgoing snapshot instead of publishing a fake meter.
+    pub(crate) context_unknown: bool,
     /// Last-known provider usage (persisted session meter); feeds snapshot ring hydrate.
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
@@ -122,7 +134,7 @@ impl Projection {
         event: &crate::session::event::SessionEvent,
         child_session_id: Option<String>,
     ) {
-        self.outgoing.push(project::buffer_log_row(
+        self.push_outgoing(project::buffer_log_row(
             &self.session_id,
             event,
             child_session_id,
@@ -172,39 +184,123 @@ impl Projection {
         }
     }
 
-    fn estimate_context_tokens(
-        sessions: &SessionManager,
-        session_id: &str,
-        window: usize,
-    ) -> (usize, ItemTokenBreakdown) {
-        sessions
-            .data()
-            .transcript_blocking(session_id)
-            .map(|mut items| {
-                crate::session::store::Session::snip_stale_results(&mut items);
-                let n = crate::context_pipeline::BudgetPolicy::new(window).token_count(&items, 0);
-                (n, compute_token_breakdown(&items))
-            })
-            .unwrap_or((0, ItemTokenBreakdown::default()))
+    fn measure_context(
+        &self,
+        context_window: usize,
+        max_output_tokens: u32,
+    ) -> Option<crate::context_pipeline::ContextMeter> {
+        let model = self.request_model.as_ref()?;
+        let output_reserve = if max_output_tokens > 0 {
+            max_output_tokens as usize
+        } else {
+            self.context_envelope.output_reserve
+        };
+        let envelope = self
+            .context_envelope
+            .clone()
+            .with_output_reserve(output_reserve);
+        crate::context_pipeline::measure_persisted_context(
+            &self.sessions,
+            &self.session_id,
+            context_window,
+            &envelope,
+            model,
+            &self.sessions.data_root_path(),
+        )
+        .ok()
     }
 
     fn refresh_context_estimate(&mut self) {
-        let (n, bd) =
-            Self::estimate_context_tokens(&self.sessions, &self.session_id, self.context_window);
-        self.context_tokens_estimate = n;
-        // Keep last-request mix while provider occupancy is showing that request.
-        // After compact (meter cleared) fall back to the remaining working set.
-        if self.last_turn_token_stats.is_none() {
-            self.context_token_breakdown = bd;
+        let Some(model) = self.request_model.as_ref() else {
+            return;
+        };
+        let envelope = self
+            .context_envelope
+            .clone()
+            .with_output_reserve(self.context_envelope.output_reserve);
+        let Ok((meter, breakdown)) =
+            crate::context_pipeline::measure_persisted_context_with_breakdown(
+                &self.sessions,
+                &self.session_id,
+                self.context_window,
+                &envelope,
+                model,
+                &self.sessions.data_root_path(),
+            )
+        else {
+            return;
+        };
+        self.context_tokens_estimate = meter.used_tokens;
+        self.context_meter = meter;
+        // Meter and bucket mix came from the same projection above. Provider
+        // usage scales this mix in the ring, so retaining a request-time mix
+        // after a suffix commit would misattribute the new occupancy.
+        self.context_token_breakdown = breakdown;
+    }
+
+    fn snapshot_meter(
+        &self,
+        context_window: usize,
+        max_output_tokens: u32,
+    ) -> crate::context_pipeline::ContextMeter {
+        let raw_output = if max_output_tokens > 0 {
+            max_output_tokens as usize
+        } else {
+            self.context_envelope.output_reserve
+        };
+        let effective_output = raw_output.min(context_window.saturating_sub(2));
+        if self.context_meter.context_window == context_window
+            && self.context_meter.output_reserve == effective_output
+        {
+            return self.context_meter.clone();
         }
+        self.measure_context(context_window, max_output_tokens)
+            .unwrap_or_else(|| {
+                // No resolved model means there is no request projection to
+                // measure. Publish a disabled local meter rather than a
+                // transcript-only estimate.
+                crate::context_pipeline::ContextMeter::new(
+                    context_window,
+                    raw_output,
+                    crate::context_pipeline::safety_headroom(context_window),
+                    self.context_envelope.fixed_prompt_tokens(),
+                    crate::context_pipeline::ContextMeterSource::LocalEnvelope,
+                )
+            })
     }
 }
 
 impl Projection {
     pub fn new(session_id: String, sessions: Arc<SessionManager>, context_window: usize) -> Self {
+        Self::new_with_model(session_id, sessions, context_window, None)
+    }
+
+    pub fn new_with_model(
+        session_id: String,
+        sessions: Arc<SessionManager>,
+        context_window: usize,
+        request_model: Option<Arc<crate::provider_catalog::ResolvedModel>>,
+    ) -> Self {
         let (_, next_seq) = sessions.entry_wire_seq_cursor(&session_id);
-        let (context_tokens_estimate, context_token_breakdown) =
-            Self::estimate_context_tokens(&sessions, &session_id, context_window);
+        let context_envelope =
+            crate::context_pipeline::latest_persisted_envelope(&sessions, &session_id)
+                .unwrap_or_else(|| crate::context_pipeline::ContextEnvelope::cold(0));
+        let (context_meter, context_token_breakdown) = match request_model.as_ref() {
+            Some(model) => crate::context_pipeline::measure_persisted_context_with_breakdown(
+                &sessions,
+                &session_id,
+                context_window,
+                &context_envelope,
+                model,
+                &sessions.data_root_path(),
+            )
+            .unwrap_or_default(),
+            None => (
+                crate::context_pipeline::ContextMeter::default(),
+                crate::session::estimate::ItemTokenBreakdown::default(),
+            ),
+        };
+        let context_tokens_estimate = context_meter.used_tokens;
         let meter = sessions
             .data()
             .meter_blocking(&session_id)
@@ -257,7 +353,11 @@ impl Projection {
             turn_completed_emitted: false,
             context_window,
             context_tokens_estimate,
+            context_meter,
+            context_envelope,
+            request_model,
             context_token_breakdown,
+            context_unknown: false,
             last_turn_token_stats,
             cumulative_token_stats,
             provider_billed_tokens,
@@ -278,14 +378,44 @@ impl Projection {
         std::mem::take(&mut self.outgoing)
     }
 
-    pub fn push_outgoing(&mut self, msg: serde_json::Value) {
+    pub fn push_outgoing(&mut self, mut msg: serde_json::Value) {
+        if self.context_unknown {
+            project::omit_snapshot_context_fields(&mut msg);
+        }
         self.outgoing.push(msg);
     }
 
     // ── snapshot ──
 
+    /// Replace the server-owned request envelope and immediately refresh the
+    /// projected meter/breakdown. Used by cold seeding and tests.
+    pub fn set_context_envelope(&mut self, envelope: crate::context_pipeline::ContextEnvelope) {
+        self.context_envelope = envelope;
+        self.context_unknown = false;
+        self.refresh_context_estimate();
+    }
+
+    /// Replace the resolved request model and refresh from the real projection.
+    pub fn set_request_model(
+        &mut self,
+        model: Option<Arc<crate::provider_catalog::ResolvedModel>>,
+    ) {
+        self.request_model = model;
+        self.refresh_context_estimate();
+    }
+
     pub fn snapshot(&self, project: &str, binding: &SessionBindingProjection) -> SessionSnapshot {
         let (last_seq, next_seq) = self.seq_cursor();
+        let context_window = if binding.context_window > 0 {
+            binding.context_window
+        } else {
+            self.context_window
+        };
+        let meter = self.snapshot_meter(context_window, binding.max_output_tokens);
+        let envelope = self
+            .context_envelope
+            .clone()
+            .with_output_reserve(meter.output_reserve);
         let mut snap = project::buffer_snapshot(
             &self.session_id,
             project,
@@ -296,19 +426,11 @@ impl Projection {
             self.turn_snapshot(),
             self.last_turn_token_stats.clone(),
             self.cumulative_token_stats.clone(),
-            self.context_tokens_estimate,
+            &meter,
+            &envelope,
             self.sessions.is_compacting_blocking(&self.session_id),
         );
         snap.context_token_breakdown = self.context_token_breakdown.clone();
-        snap.compact_eligible = crate::context_pipeline::manual_compact_eligible(
-            binding.context_window,
-            crate::context_pipeline::ring_occupancy(
-                self.last_turn_token_stats
-                    .as_ref()
-                    .map(|stats| stats.prompt_tokens),
-                self.context_tokens_estimate,
-            ),
-        );
         if self.provider_billed_requests == 0 {
             snap.provider_billed_tokens = None;
             snap.provider_billed_requests = None;
@@ -463,19 +585,31 @@ impl Projection {
                 .sessions
                 .find_function_call_event(&self.session_id, call_id)
         {
-            self.outgoing.push(project::buffer_log_row(
+            self.push_outgoing(project::buffer_log_row(
                 &self.session_id,
                 &event,
                 Some(child_session_id.clone()),
             ));
         }
+        let publish_live_meter = matches!(
+            &ev,
+            InternalEvent::LlmRequestBuilt { .. }
+                | InternalEvent::LlmCompleted { .. }
+                | InternalEvent::StepCommitted
+        );
         let msg = if project::event_needs_snapshot(&ev) {
             project::project(&ev, &self.snapshot(project, binding))
         } else {
             project::project_live(&ev, &self.session_id, self.turn_id.as_deref())
         };
         if let Some(msg) = msg {
-            self.outgoing.push(msg);
+            self.push_outgoing(msg);
+        }
+        if publish_live_meter {
+            // Request/completion events carry the exact server meter, and a
+            // step commit refreshes it from the persisted bill+suffix. Push a
+            // full snapshot so the browser never has to reconstruct thresholds.
+            self.push_outgoing(project::session_snapshot(self.snapshot(project, binding)));
         }
     }
 
@@ -505,12 +639,9 @@ impl Projection {
         // append always lands on the high-water (never in a hole left by a revert).
         let (new_last, new_next) = self.seq_cursor();
         self.next_seq = new_next;
-        // Provider occupancy is ring truth while a request's usage is showing.
-        // Skip the full-log local estimate on step commits; compact clears the
-        // meter and still needs a working-set refresh.
-        if self.last_turn_token_stats.is_none() {
-            self.refresh_context_estimate();
-        }
+        // Provider bill + uncovered suffix is recomputed on every durable
+        // commit; a compact also lands here after clearing last-turn stats.
+        self.refresh_context_estimate();
         if self.next_seq > old_next {
             match self
                 .sessions
@@ -889,19 +1020,29 @@ impl Projection {
             crate::runtime::observer::InternalEvent::LlmRequestBuilt {
                 context_window,
                 token_breakdown,
+                context_envelope,
+                context_meter,
                 ..
             } => {
                 // Local `token_estimate` is budget-only — never occupancy/ring truth.
                 self.context_window = *context_window;
                 self.context_token_breakdown = token_breakdown.clone();
+                self.context_envelope = context_envelope.clone();
+                self.context_meter = context_meter.clone();
+                self.context_tokens_estimate = context_meter.used_tokens;
+                self.context_unknown = false;
             }
             crate::runtime::observer::InternalEvent::LlmCompleted {
                 prompt_tokens,
                 completion_tokens,
                 cache_hit_tokens,
                 cache_miss_tokens,
+                context_meter,
                 ..
             } => {
+                self.context_meter = context_meter.clone();
+                self.context_tokens_estimate = context_meter.used_tokens;
+                self.context_unknown = false;
                 self.last_turn_token_stats =
                     Some(crate::client_protocol::protocol::TurnTokenStats {
                         prompt_tokens: *prompt_tokens,
@@ -945,6 +1086,9 @@ impl Projection {
                 if turn_token_stats.has_provider_usage() {
                     self.last_turn_token_stats = Some(turn_token_stats.clone());
                 }
+                // Provider usage is now persisted on its request header; refresh
+                // the same meter the next auto/manual gate will consume.
+                self.refresh_context_estimate();
             }
             crate::runtime::observer::InternalEvent::BufferChanged {
                 last_seq: _,
@@ -1072,9 +1216,54 @@ impl SessionController {
         let context_window = binding.context_window;
 
         let sessions = self.sessions.clone();
-        let mut proj = Projection::new(session_id.to_string(), sessions, context_window);
+        let request_model = self.resolved_model_for_binding(&binding);
+        let mut proj = Projection::new_with_model(
+            session_id.to_string(),
+            sessions.clone(),
+            context_window,
+            request_model,
+        );
         proj.max_file_revert_seq =
             snapshot::max_file_revert_seq(&self.runtime.workspace.paths.snapshots_dir, session_id);
+
+        // Cold subscribe with no persisted request header: seed the full
+        // server-owned envelope from the same main-turn shape a real request
+        // would use. The browser never reconstructs instructions/tools/output.
+        let has_persisted_envelope =
+            crate::context_pipeline::latest_persisted_envelope(&sessions, session_id).is_some();
+        let mut cold_seed_unknown = false;
+        if !has_persisted_envelope {
+            let agent_id = binding.agent_id.clone();
+            let depth = self
+                .sessions
+                .data()
+                .meta_blocking(session_id)
+                .map(|meta| meta.subagent_depth)
+                .unwrap_or(0);
+            match self
+                .cold_compaction_request(session_id, &agent_id, depth)
+                .await
+            {
+                Ok(request) => {
+                    proj.set_request_model(Some(Arc::clone(&request.target)));
+                    proj.set_context_envelope(
+                        crate::context_pipeline::ContextEnvelope::from_compaction_request(&request),
+                    );
+                }
+                Err(error) => {
+                    cold_seed_unknown = true;
+                    tracing::warn!(
+                        session_id = %session_id,
+                        %error,
+                        "subscribe could not cold-seed the server request envelope"
+                    );
+                }
+            }
+        }
+        // If the cold runtime could not produce a request shape, every
+        // snapshot emitted below (including buffered-event restore snapshots)
+        // must omit the context fields rather than publish 0/0.
+        proj.context_unknown = cold_seed_unknown;
 
         // R7: if a turn is already running for this session, restore state.
         if let Some(progress) = cached
@@ -1339,6 +1528,38 @@ impl SessionController {
         )
     }
 
+    pub(super) fn resolved_model_for_binding(
+        &self,
+        binding: &SessionBindingProjection,
+    ) -> Option<Arc<crate::provider_catalog::ResolvedModel>> {
+        binding
+            .model_id
+            .as_deref()
+            .and_then(|id| self.runtime.resolved.catalog().model(id).cloned())
+    }
+
+    /// Build the same full server-owned request envelope a cold subscription
+    /// uses. This is shared by `session/new` so its first snapshot never
+    /// publishes a 0/0 instructions/tools placeholder.
+    pub(super) async fn cold_compaction_request(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        depth: u32,
+    ) -> anyhow::Result<crate::llm::CompactionRequestContext> {
+        self.runtime.sync_workspace_tool_readiness();
+        let mut runtime = self.runtime.build_runtime(
+            session_id.to_string(),
+            Arc::clone(&self.sessions),
+            agent_id,
+            depth,
+            crate::permission::deny_permission_sink(),
+            Arc::new(crate::runtime::observer::NoopObserver),
+        )?;
+        runtime.ensure_tooling_initialized().await;
+        Ok(runtime.compaction_request_context()?)
+    }
+
     pub(super) fn runtime_step_max(&self, session_id: &str) -> u32 {
         let primary = self
             .sessions
@@ -1450,17 +1671,12 @@ mod merged_channel_tests {
     //! blocking the session-side broadcast. This mirrors the production
     //! forwarder in `subscribe_checked` (bounded `mpsc::channel(1024)` +
     //! `try_send` with `Full => drop + ProjectionLagged`).
-
-    
-    
-
 }
 
 #[cfg(test)]
 mod compact_item_wire_tests {
     use super::*;
-    
-    
+
     use crate::types::user_text;
     use std::sync::Arc;
 
@@ -1493,6 +1709,126 @@ mod compact_item_wire_tests {
         out.iter()
             .filter(|msg| msg["method"] == crate::client_protocol::protocol::methods::BUFFER_ITEM)
             .collect()
+    }
+
+    fn meter(
+        used: usize,
+        source: crate::context_pipeline::ContextMeterSource,
+    ) -> crate::context_pipeline::ContextMeter {
+        crate::context_pipeline::ContextMeter::new(1_000, 100, 125, used, source)
+    }
+
+    fn request_built_event(
+        context_meter: crate::context_pipeline::ContextMeter,
+        context_envelope: crate::context_pipeline::ContextEnvelope,
+    ) -> InternalEvent {
+        InternalEvent::LlmRequestBuilt {
+            model: "m".into(),
+            endpoint: "responses".into(),
+            token_estimate: context_meter.used_tokens,
+            tools_count: 2,
+            context_window: context_meter.context_window,
+            token_breakdown: crate::session::estimate::ItemTokenBreakdown::default(),
+            context_envelope,
+            context_meter,
+            sticky_model_id: String::new(),
+            turn_model_ref: String::new(),
+            turn_provider_id: String::new(),
+            turn_endpoint_type: String::new(),
+            bind_matches_sticky: false,
+            origin_provider_id: String::new(),
+            origin_endpoint_type: String::new(),
+            origin_model_ref: String::new(),
+            ciphertexts_stripped: 0,
+            rebased_stripped: 0,
+            reasoning_dropped: 0,
+            reasoning_wholly_omitted: 0,
+            rebased_true_count: 0,
+            projection_rewrote: false,
+            severity: String::new(),
+            code: String::new(),
+            message: String::new(),
+        }
+    }
+
+    fn latest_snapshot(out: &[serde_json::Value]) -> &serde_json::Value {
+        out.iter()
+            .rev()
+            .find(|msg| msg["method"] == "session/snapshot")
+            .expect("server meter snapshot")
+    }
+
+    #[test]
+    fn request_completion_and_step_events_publish_the_live_server_meter() {
+        let (mut proj, _sid, _sessions) = setup_with_details(&["u0"]);
+        proj.apply_turn_started("t-meter".into(), 3);
+        let envelope =
+            crate::context_pipeline::ContextEnvelope::from_request_parts("system", &[], 100);
+        let request_meter = meter(
+            900,
+            crate::context_pipeline::ContextMeterSource::ProviderPlusSuffix,
+        );
+        proj.on_event(
+            request_built_event(request_meter.clone(), envelope.clone()),
+            "/p",
+            &binding(),
+        );
+        let out = proj.take_outgoing();
+        let live = out
+            .iter()
+            .find(|msg| msg["method"] == "agent/turn_event")
+            .expect("live request event");
+        assert_eq!(
+            live["params"]["event"]["context_meter"],
+            serde_json::to_value(&request_meter).unwrap()
+        );
+        let snap = latest_snapshot(&out)["params"].clone();
+        assert_eq!(
+            snap["context_meter"],
+            serde_json::to_value(&request_meter).unwrap()
+        );
+        assert_eq!(snap["context_tokens_estimate"], 900);
+        assert_eq!(snap["compact_eligible"], true);
+
+        let completed_meter = meter(1_000, crate::context_pipeline::ContextMeterSource::Provider);
+        proj.on_event(
+            InternalEvent::LlmCompleted {
+                prompt_tokens: 1_000,
+                completion_tokens: 10,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 1_000,
+                stop_reason: "stop".into(),
+                context_meter: completed_meter.clone(),
+            },
+            "/p",
+            &binding(),
+        );
+        let out = proj.take_outgoing();
+        let live = out
+            .iter()
+            .find(|msg| msg["method"] == "agent/turn_event")
+            .expect("live completion event");
+        assert_eq!(
+            live["params"]["event"]["context_meter"],
+            serde_json::to_value(&completed_meter).unwrap()
+        );
+        let snap = latest_snapshot(&out)["params"].clone();
+        assert_eq!(
+            snap["context_meter"],
+            serde_json::to_value(&completed_meter).unwrap()
+        );
+        assert_eq!(snap["context_tokens_estimate"], 1_000);
+
+        // Even with no resolved model in this projection-only test, the step
+        // commit must not leave the ring on a stale meter: it still publishes
+        // the authoritative current value.
+        proj.on_event(InternalEvent::StepCommitted, "/p", &binding());
+        let out = proj.take_outgoing();
+        let snap = latest_snapshot(&out)["params"].clone();
+        assert_eq!(
+            snap["context_meter"],
+            serde_json::to_value(&completed_meter).unwrap()
+        );
     }
 
     #[test]
@@ -1639,5 +1975,4 @@ mod compact_item_wire_tests {
         assert_eq!(proj.snapshot("/p", &binding()).buffer.last_seq, 9);
         assert_eq!(proj.next_seq, 10);
     }
-
 }

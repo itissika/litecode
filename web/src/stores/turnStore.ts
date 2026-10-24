@@ -11,6 +11,8 @@ import type {
   AskKind,
   AskOption,
   AskQuestion,
+  ContextEnvelope,
+  ContextMeter,
   ContextMode,
   ItemTokenBreakdown,
   PendingMessage,
@@ -91,8 +93,13 @@ export interface TurnSlice {
   turnStepMax: number | null;
   contextWindow: number;
   contextTokensEstimate: number;
-  /** Local item-text mix. The ring scales it onto the provider prompt. */
+  /** Item-text mix for the ring; occupancy total comes from contextMeter. */
   contextTokenBreakdown: ItemTokenBreakdown;
+  /** Server-owned unified meter. Null until a server snapshot provides one. */
+  contextMeter: ContextMeter | null;
+  /** Server-owned fixed envelope used by the local fallback. */
+  contextEnvelope: ContextEnvelope | null;
+  /** Server manual-compaction decision. Never recomputed in the UI. */
   compactEligible: boolean;
   compacting: boolean;
   /** Provider last-request prompt_tokens (truth). 0 = absent. */
@@ -132,27 +139,6 @@ export function emptySlice(): TurnSlice {
   return { ...EMPTY_SLICE };
 }
 
-/** Ring occupancy: provider prompt when the last request reported one, else the local estimate. */
-export function occupancyTokens(providerPrompt: number, estimate: number): number {
-  return providerPrompt > 0 ? providerPrompt : estimate;
-}
-
-/** Inclusive 30% gate, same inputs as the occupancy ring. */
-export function manualCompactReady(
-  slice: Pick<
-    TurnSlice,
-    "lastTurnPromptTokens" | "contextTokensEstimate" | "contextWindow"
-  >,
-): boolean {
-  const window = slice.contextWindow;
-  if (window <= 0) return false;
-  const used = occupancyTokens(
-    slice.lastTurnPromptTokens,
-    slice.contextTokensEstimate,
-  );
-  return used * 100 >= window * 30;
-}
-
 function billedFromSnapshot(snap: SessionSnapshot): {
   sessionBilledTokens: number | null;
   billedRequestCount: number;
@@ -179,6 +165,8 @@ export const EMPTY_SLICE: TurnSlice = {
   contextWindow: 0,
   contextTokensEstimate: 0,
   contextTokenBreakdown: EMPTY_TOKEN_BREAKDOWN,
+  contextMeter: null,
+  contextEnvelope: null,
   compactEligible: false,
   compacting: false,
   lastTurnPromptTokens: 0,
@@ -665,7 +653,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (
         current.runState !== "idle" ||
         current.compacting ||
-        !manualCompactReady(current)
+        !current.compactEligible
       ) {
         return;
       }
@@ -878,6 +866,16 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (metaUpdate.tokenBreakdown !== undefined) {
         mapped.contextTokenBreakdown = metaUpdate.tokenBreakdown;
       }
+      if (metaUpdate.contextEnvelope !== undefined) {
+        mapped.contextEnvelope = metaUpdate.contextEnvelope;
+      }
+      if (metaUpdate.contextMeter !== undefined) {
+        mapped.contextMeter = metaUpdate.contextMeter;
+        mapped.contextTokensEstimate = metaUpdate.contextMeter.used_tokens;
+      }
+      if (metaUpdate.compactEligible !== undefined) {
+        mapped.compactEligible = metaUpdate.compactEligible;
+      }
       if (metaUpdate.promptTokens !== undefined)
         mapped.lastTurnPromptTokens = metaUpdate.promptTokens;
       if (metaUpdate.completionTokens !== undefined)
@@ -1032,7 +1030,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
-        compactEligible: snap.compact_eligible ?? false,
+        contextMeter: snap.context_meter ?? null,
+        contextEnvelope: snap.context_envelope ?? null,
+        compactEligible:
+          snap.compact_eligible ??
+          snap.context_meter?.compact_eligible ??
+          false,
         compacting: snap.compacting ?? false,
         activePlanPath: snap.active_plan_path ?? null,
         llmReconnect: reconnectAfterFinish(
@@ -1122,15 +1125,19 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       const permissionQueue = hasPendingPermissions
         ? (snap.pending_permissions ?? []).map(toPendingPermission)
         : undefined;
-      // Snapshot meter is authoritative: absent last_turn_token_stats (e.g.
-      // post-compact) must clear stale provider occupancy so the ring can
-      // fall back to context_tokens_estimate.
+      // Snapshot meter is authoritative. The legacy estimate is only a
+      // display fallback for older servers that omitted `context_meter`.
       patch(sessionId, {
         contextWindow: snap.context_window ?? 0,
         contextTokensEstimate: snap.context_tokens_estimate ?? 0,
         contextTokenBreakdown:
           snap.context_token_breakdown ?? EMPTY_TOKEN_BREAKDOWN,
-        compactEligible: snap.compact_eligible ?? false,
+        contextMeter: snap.context_meter ?? null,
+        contextEnvelope: snap.context_envelope ?? null,
+        compactEligible:
+          snap.compact_eligible ??
+          snap.context_meter?.compact_eligible ??
+          false,
         compacting: snap.compacting ?? false,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,
         lastTurnCompletionTokens: tts?.completion_tokens ?? 0,
