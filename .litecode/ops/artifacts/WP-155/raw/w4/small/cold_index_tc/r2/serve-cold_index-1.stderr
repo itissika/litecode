@@ -1,8 +1,0 @@
-2026-10-14T16:02:39.643372Z  INFO log dir: /workspace/litecode/.tmp/wp154/small/.litecode/logs
-2026-10-14T16:02:39.643592Z  INFO log file: /workspace/litecode/.tmp/wp154/small/.litecode/logs/litecode.log
-2026-10-14T16:02:39.643598Z  INFO workspace ready workspace=/workspace/litecode/.tmp/wp154/small session_db=/workspace/litecode/.tmp/wp154/small/.litecode/sessions.db
-2026-10-14T16:02:39.643617Z  INFO web dist: /workspace/litecode/.tmp/wp154/webstub
-2026-10-14T16:02:39.660841Z  INFO LITECODE_READY http://127.0.0.1:41611/
-2026-10-14T16:02:39.672873Z  INFO websocket connected hint=None projections=0
-2026-10-14T16:02:40.907226Z  INFO sparse session index rebuilt rows=0 settled=0
-2026-10-14T16:02:41.235583Z  INFO serve shutting down (stdin EOF)

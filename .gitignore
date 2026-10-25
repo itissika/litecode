@@ -83,3 +83,6 @@ nul
 
 # local rustup mirror
 .litecode/ops/.toolchain/
+
+# WP 产物本机留、不入仓（保留 !.litecode/ops/ 以便跟踪 board/tools；artifacts 单独排除）
+.litecode/ops/artifacts/

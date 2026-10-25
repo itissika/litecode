@@ -502,6 +502,7 @@ node .litecode/ops/tools/wp.mjs reassign --as <approver|父包 owner> --id WP-x 
 ## 边界
 
 - 仅 team-ops 维护；产品 bot / 群对本启动无感知，直至 Andy 群内统一启动
+- **WP 产物（`.litecode/ops/artifacts/`）本机保留，不入仓、不推远端。**
 ## tools_version 20（WP-171，2026-10-15）
 - 新增 `ops.init_env`：`bash .litecode/ops/tools/init_env.sh`，新电脑一键初始化，流程与证据见 `.litecode/ops/artifacts/WP-171/init-flow.md`。
 - `cargo_env.sh` 的 LC_ROOT 可覆盖（默认取脚本所在仓库）；仓库加 `rust-toolchain.toml` pin。
