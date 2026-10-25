@@ -174,8 +174,8 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
         "Overflow/Succeeded must carry measured token fields: {succeeded:?}"
     );
     assert!(
-        succeeded.summary_attempts.is_some() && succeeded.review_score.is_some(),
-        "Overflow/Succeeded must carry summary attempt and review fields: {succeeded:?}"
+        succeeded.summary_attempts.is_some(),
+        "Overflow/Succeeded must carry the summary attempt count: {succeeded:?}"
     );
     assert_eq!(
         succeeded.overflow_retry,

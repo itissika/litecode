@@ -22,7 +22,7 @@ use litecode::config::global_db;
 use litecode::config::{ConfigManager, SettingsWriter, TurnGuard, WorkspaceState};
 use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, Context, ContextEnvelope, ContextMeter, ContextPipeline,
-    ProviderPromptBaseline, keep_recent::find_keep_recent_cut, safety_headroom,
+    ProviderPromptBaseline, keep_recent::find_keep_recent_cut,
 };
 use litecode::engines::WorkspaceEngines;
 use litecode::llm::{
@@ -301,7 +301,6 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
     let occupancy = ContextMeter::measure_local(
         128_000,
         envelope.output_reserve,
-        safety_headroom(128_000),
         &envelope,
         &project_items(&rows_before_second_turn),
     );

@@ -15,8 +15,8 @@ use crate::context_pipeline::budget::{OccupancyBill, ProviderPromptBaseline, occ
 use crate::llm::{CompactionRequestContext, ModelRequest, ToolDef};
 use crate::provider_catalog::ResolvedModel;
 use crate::session::estimate::{
-    ItemTokenBreakdown, apply_prompt_overhead, autocompact_threshold, compute_token_breakdown,
-    compute_token_estimate, count_text_tokens,
+    ItemTokenBreakdown, apply_prompt_overhead, compute_token_breakdown, compute_token_estimate,
+    count_text_tokens,
 };
 use crate::session::manager::SessionManager;
 use crate::session::working::WorkingRow;
@@ -28,13 +28,6 @@ pub const REQUEST_PROMPT_OVERHEAD_TOKENS: usize = 64;
 
 /// Inclusive product floor for user-triggered compaction.
 pub use super::limits::MANUAL_COMPACT_RATIO_PERCENT;
-/// Upper bound for the explicit pressure headroom.
-pub use super::limits::MAX_PROMPT_RESERVE_TOKENS as MAX_SAFETY_HEADROOM_TOKENS;
-
-/// Single safety-headroom policy: `min(16_384, context_window / 8)`.
-pub fn safety_headroom(context_window: usize) -> usize {
-    (context_window / 8).min(MAX_SAFETY_HEADROOM_TOKENS)
-}
 
 /// The full fixed side of one main-model request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,13 +112,11 @@ pub enum ContextMeterSource {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextMeter {
     pub context_window: usize,
-    /// Effective request output reservation (`max_output_tokens` after small-window clamp).
+    /// Provider model maximum output (`max_output`); never added to used tokens.
     pub output_reserve: usize,
-    /// Explicit pressure headroom: `min(16_384, context_window / 8)` by policy.
-    pub safety_headroom: usize,
-    /// Hard prompt ceiling: `context_window - output_reserve`.
+    /// Hard prompt ceiling: `W - O`, saturating at zero for tiny windows.
     pub prompt_limit: usize,
-    /// Auto pressure line: `min(0.8W, prompt_limit - safety_headroom)`, clamped.
+    /// Auto pressure line: `min(0.8W, W - O)`.
     pub compact_at: usize,
     /// Prompt occupancy only. The output reserve is represented by `prompt_limit`.
     pub used_tokens: usize,
@@ -141,63 +132,22 @@ impl ContextMeter {
     pub fn new(
         context_window: usize,
         output_reserve: usize,
-        safety_headroom: usize,
         used_tokens: usize,
         source: ContextMeterSource,
     ) -> Self {
-        if context_window == 0 {
-            return Self {
-                context_window: 0,
-                output_reserve: 0,
-                safety_headroom,
-                prompt_limit: 0,
-                compact_at: 0,
-                used_tokens,
-                source,
-                compact_eligible: false,
-            };
-        }
-
-        // A one-token window cannot hold a meaningful prompt plus reply. It is
-        // explicitly disabled rather than reporting permanent pressure.
-        if context_window == 1 {
-            return Self {
-                context_window,
-                output_reserve: 0,
-                safety_headroom,
-                prompt_limit: 1,
-                compact_at: 0,
-                used_tokens,
-                source,
-                compact_eligible: false,
-            };
-        }
-
-        // Leave at least two prompt tokens on absurdly small windows so the
-        // pressure line can stay strictly below the hard prompt limit.
-        let output_reserve = output_reserve.min(context_window.saturating_sub(2));
         let prompt_limit = context_window.saturating_sub(output_reserve);
-        let soft_limit = autocompact_threshold(context_window);
-        let headroom_limited = prompt_limit.saturating_sub(safety_headroom);
-        let compact_at = soft_limit
-            .min(headroom_limited)
-            .clamp(1, prompt_limit.saturating_sub(1));
-
+        let compact_at = (context_window.saturating_mul(4) / 5).min(prompt_limit);
         Self {
             context_window,
             output_reserve,
-            safety_headroom,
             prompt_limit,
             compact_at,
             used_tokens,
             source,
-            compact_eligible: used_tokens.saturating_mul(100)
-                >= context_window.saturating_mul(MANUAL_COMPACT_RATIO_PERCENT),
+            compact_eligible: context_window > 1
+                && used_tokens.saturating_mul(100)
+                    >= context_window.saturating_mul(MANUAL_COMPACT_RATIO_PERCENT),
         }
-    }
-
-    pub fn safety_headroom(context_window: usize) -> usize {
-        safety_headroom(context_window)
     }
 
     /// W=0 means the binding is unknown and W=1 cannot hold a prompt plus
@@ -237,7 +187,6 @@ impl ContextMeter {
             step,
             context_window = self.context_window,
             output_reserve = self.output_reserve,
-            safety_headroom = self.safety_headroom,
             prompt_limit = self.prompt_limit,
             compact_at = self.compact_at,
             used_tokens = self.used_tokens,
@@ -261,7 +210,6 @@ impl ContextMeter {
     pub fn measure(
         context_window: usize,
         output_reserve: usize,
-        safety_headroom: usize,
         envelope: &ContextEnvelope,
         items: &[Item],
         coverage_seqs: &[Option<u64>],
@@ -290,7 +238,6 @@ impl ContextMeter {
             return Self::new(
                 context_window,
                 output_reserve,
-                safety_headroom,
                 (bill.prompt_tokens as usize).saturating_add(compute_token_estimate(&suffix)),
                 source,
             );
@@ -302,7 +249,6 @@ impl ContextMeter {
         Self::new(
             context_window,
             output_reserve,
-            safety_headroom,
             used_tokens,
             ContextMeterSource::LocalEnvelope,
         )
@@ -311,19 +257,10 @@ impl ContextMeter {
     pub fn measure_local(
         context_window: usize,
         output_reserve: usize,
-        safety_headroom: usize,
         envelope: &ContextEnvelope,
         items: &[Item],
     ) -> Self {
-        Self::measure(
-            context_window,
-            output_reserve,
-            safety_headroom,
-            envelope,
-            items,
-            &[],
-            None,
-        )
+        Self::measure(context_window, output_reserve, envelope, items, &[], None)
     }
 }
 
@@ -331,7 +268,6 @@ impl ContextMeter {
 pub fn measure_request_context(
     sessions: &SessionManager,
     session_id: &str,
-    context_window: usize,
     envelope: &ContextEnvelope,
     baseline: &ProviderPromptBaseline,
     rows: &[WorkingRow],
@@ -342,9 +278,8 @@ pub fn measure_request_context(
     let (_turn_view, projection) =
         crate::context_pipeline::project_working_rows(rows, model, data_root);
     ContextMeter::measure(
-        context_window,
-        envelope.output_reserve,
-        ContextMeter::safety_headroom(context_window),
+        model.context_window_max,
+        model.max_output as usize,
         envelope,
         &projection.items,
         &projection.coverage_seqs,
@@ -396,7 +331,6 @@ pub fn latest_persisted_envelope(
 pub fn measure_persisted_context_with_breakdown(
     sessions: &SessionManager,
     session_id: &str,
-    context_window: usize,
     envelope: &ContextEnvelope,
     model: &ResolvedModel,
     data_root: &Path,
@@ -406,9 +340,8 @@ pub fn measure_persisted_context_with_breakdown(
     let (_turn_view, projection) =
         crate::context_pipeline::project_working_rows(&rows, model, data_root);
     let meter = ContextMeter::measure(
-        context_window,
-        envelope.output_reserve,
-        ContextMeter::safety_headroom(context_window),
+        model.context_window_max,
+        model.max_output as usize,
         envelope,
         &projection.items,
         &projection.coverage_seqs,
@@ -423,20 +356,12 @@ pub fn measure_persisted_context_with_breakdown(
 pub fn measure_persisted_context(
     sessions: &SessionManager,
     session_id: &str,
-    context_window: usize,
     envelope: &ContextEnvelope,
     model: &ResolvedModel,
     data_root: &Path,
 ) -> Result<ContextMeter> {
-    measure_persisted_context_with_breakdown(
-        sessions,
-        session_id,
-        context_window,
-        envelope,
-        model,
-        data_root,
-    )
-    .map(|(meter, _)| meter)
+    measure_persisted_context_with_breakdown(sessions, session_id, envelope, model, data_root)
+        .map(|(meter, _)| meter)
 }
 
 /// Token-bucket breakdown for the same projected request shape used by the
@@ -501,112 +426,64 @@ mod tests {
     }
 
     #[test]
-    fn threshold_table_covers_window_output_and_headroom() {
+    fn provider_window_and_output_table_uses_min_of_eighty_percent_and_prompt_limit() {
         let cases = [
-            // W, O, H, prompt_limit, compact_at
-            (
-                1_000_000usize,
-                100_000usize,
-                16_384usize,
-                900_000usize,
-                800_000usize,
-            ),
-            (1_000_000, 256_000, 16_384, 744_000, 727_616),
-            (128_000, 8_192, 16_000, 119_808, 102_400),
-            (10_000, 1_024, 1_250, 8_976, 7_726),
-            (1_000, 100, 125, 900, 775),
+            // W, O, prompt_limit, compact_at
+            (1_000_000usize, 128_000usize, 872_000usize, 800_000usize),
+            (256_000, 64_000, 192_000, 192_000),
+            (1_000_000, 256_000, 744_000, 744_000),
+            (256_000, 128_000, 128_000, 128_000),
         ];
-        for (window, output, headroom, expected_limit, expected_compact_at) in cases {
-            let meter = ContextMeter::new(
-                window,
-                output,
-                headroom,
-                0,
-                ContextMeterSource::LocalEnvelope,
-            );
+        for (window, output, expected_limit, expected_compact_at) in cases {
+            let meter = ContextMeter::new(window, output, 0, ContextMeterSource::LocalEnvelope);
             assert_eq!(meter.prompt_limit, expected_limit, "W={window} O={output}");
             assert_eq!(
                 meter.compact_at, expected_compact_at,
-                "W={window} O={output} H={headroom}"
-            );
-            assert!(meter.compact_at > 0);
-            assert!(meter.compact_at < meter.prompt_limit);
-        }
-    }
-
-    #[test]
-    fn safety_headroom_is_one_policy() {
-        assert_eq!(ContextMeter::safety_headroom(0), 0);
-        assert_eq!(ContextMeter::safety_headroom(1_000), 125);
-        assert_eq!(ContextMeter::safety_headroom(128_000), 16_000);
-        assert_eq!(ContextMeter::safety_headroom(1_000_000), 16_384);
-    }
-
-    #[test]
-    fn small_windows_clamp_output_and_keep_pressure_below_hard_limit() {
-        for (window, output) in [(2usize, 99usize), (8, 100), (100, 90), (128, 65_536)] {
-            let meter = ContextMeter::new(
-                window,
-                output,
-                ContextMeter::safety_headroom(window),
-                0,
-                ContextMeterSource::LocalEnvelope,
-            );
-            assert!(meter.prompt_limit > 0, "W={window} O={output}");
-            assert!(meter.compact_at > 0, "W={window} O={output}");
-            if meter.prompt_limit > 1 {
-                assert!(meter.compact_at < meter.prompt_limit);
-            }
-            assert!(meter.output_reserve < window);
-        }
-    }
-
-    #[test]
-    fn degenerate_window_table_disables_pressure() {
-        // W, O, H, effective O, prompt_limit, compact_at, used
-        let cases = [
-            (0usize, 0usize, 0usize, 0usize, 0usize, 0usize, 100usize),
-            (1, 0, 0, 0, 1, 0, 100),
-            (1, 8, 0, 0, 1, 0, 100),
-            (2, 0, 0, 0, 2, 1, 1),
-            (2, 99, 0, 0, 2, 1, 2),
-            (8, 4, 1, 4, 4, 3, 4),
-            (8, 100, 1, 6, 2, 1, 2),
-        ];
-        for (window, output, headroom, effective_output, prompt_limit, compact_at, used) in cases {
-            let meter = ContextMeter::new(
-                window,
-                output,
-                headroom,
-                used,
-                ContextMeterSource::LocalEnvelope,
-            );
-            assert_eq!(
-                meter.output_reserve, effective_output,
                 "W={window} O={output}"
             );
-            assert_eq!(meter.prompt_limit, prompt_limit, "W={window} O={output}");
-            assert_eq!(
-                meter.compact_at, compact_at,
-                "W={window} O={output} H={headroom}"
-            );
-            if window <= 1 {
-                assert!(!meter.pressure_enabled());
-                assert!(
-                    !meter.should_compact(),
-                    "W={window} must not report pressure"
-                );
-                assert!(!meter.manual_eligible());
-                assert!(!meter.is_over_prompt_limit());
-                meter
-                    .enforce_prompt_limit()
-                    .expect("degenerate windows are non-pressure");
-            } else {
-                assert!(meter.pressure_enabled());
-                assert!(meter.compact_at > 0);
-                assert!(meter.compact_at < meter.prompt_limit);
-            }
+            assert_eq!(meter.output_reserve, output);
+            assert_eq!(meter.compact_at, (window * 4 / 5).min(window - output));
         }
+    }
+
+    #[test]
+    fn small_windows_only_saturate_non_negative_values() {
+        let cases = [
+            // W, O, prompt_limit, compact_at, pressure
+            (0usize, 0usize, 0usize, 0usize, false),
+            (1, 8, 0, 0, false),
+            (2, 99, 0, 0, true),
+            (8, 4, 4, 4, true),
+        ];
+        for (window, output, expected_limit, expected_compact_at, expected_pressure) in cases {
+            let meter = ContextMeter::new(window, output, 1, ContextMeterSource::LocalEnvelope);
+            assert_eq!(meter.output_reserve, output, "W={window} O={output}");
+            assert_eq!(meter.prompt_limit, expected_limit, "W={window} O={output}");
+            assert_eq!(
+                meter.compact_at, expected_compact_at,
+                "W={window} O={output}"
+            );
+            assert_eq!(meter.pressure_enabled(), expected_pressure);
+        }
+    }
+
+    #[test]
+    fn auto_gate_is_strictly_above_min_of_eighty_percent_and_prompt_limit() {
+        let below = ContextMeter::new(10_000, 1_024, 7_999, ContextMeterSource::LocalEnvelope);
+        let at = ContextMeter::new(10_000, 1_024, 8_000, ContextMeterSource::LocalEnvelope);
+        let over = ContextMeter::new(10_000, 1_024, 8_001, ContextMeterSource::LocalEnvelope);
+        assert!(!below.should_compact());
+        assert!(!at.should_compact(), "auto trigger is strict > compact_at");
+        assert!(over.should_compact());
+    }
+
+    #[test]
+    fn manual_gate_is_inclusive_at_thirty_percent_of_window() {
+        let below = ContextMeter::new(10_000, 0, 2_999, ContextMeterSource::LocalEnvelope);
+        let at = ContextMeter::new(10_000, 0, 3_000, ContextMeterSource::LocalEnvelope);
+        assert!(!below.manual_eligible());
+        assert!(at.manual_eligible());
+        assert!(at.compact_eligible);
     }
 
     #[test]
@@ -619,15 +496,7 @@ mod tests {
         let env = ContextEnvelope::from_request_parts("system instructions", &tools, 512);
         let items = vec![user_text("hello world"), assistant_text("done")];
         let input_tokens = compute_token_estimate(&items);
-        let meter = ContextMeter::measure(
-            10_000,
-            env.output_reserve,
-            ContextMeter::safety_headroom(10_000),
-            &env,
-            &items,
-            &[],
-            None,
-        );
+        let meter = ContextMeter::measure(10_000, env.output_reserve, &env, &items, &[], None);
 
         assert_eq!(meter.source, ContextMeterSource::LocalEnvelope);
         assert_eq!(
@@ -657,20 +526,11 @@ mod tests {
             covered_seq: Some(4),
         };
         let suffix_tokens = compute_token_estimate(&items[1..]);
-        let meter = ContextMeter::measure(
-            10_000,
-            env.output_reserve,
-            ContextMeter::safety_headroom(10_000),
-            &env,
-            &items,
-            &seqs,
-            Some(bill),
-        );
+        let meter =
+            ContextMeter::measure(10_000, env.output_reserve, &env, &items, &seqs, Some(bill));
 
         assert_eq!(meter.source, ContextMeterSource::ProviderPlusSuffix);
         assert_eq!(meter.used_tokens, 7_000 + suffix_tokens);
-        // Exactly one bill + suffix: the covered prefix and the local fixed
-        // overhead are not present in the local suffix term.
     }
 
     #[test]
@@ -684,7 +544,6 @@ mod tests {
         let meter = ContextMeter::measure(
             1_000,
             env.output_reserve,
-            ContextMeter::safety_headroom(1_000),
             &env,
             &items,
             &[Some(9)],
@@ -692,42 +551,5 @@ mod tests {
         );
         assert_eq!(meter.source, ContextMeterSource::Provider);
         assert_eq!(meter.used_tokens, 321);
-    }
-
-    #[test]
-    fn auto_gate_is_strictly_above_the_pressure_line() {
-        let below = ContextMeter::new(
-            10_000,
-            1_024,
-            1_250,
-            7_725,
-            ContextMeterSource::LocalEnvelope,
-        );
-        let at = ContextMeter::new(
-            10_000,
-            1_024,
-            1_250,
-            7_726,
-            ContextMeterSource::LocalEnvelope,
-        );
-        let over = ContextMeter::new(
-            10_000,
-            1_024,
-            1_250,
-            7_727,
-            ContextMeterSource::LocalEnvelope,
-        );
-        assert!(!below.should_compact());
-        assert!(!at.should_compact(), "auto trigger is strict > compact_at");
-        assert!(over.should_compact());
-    }
-
-    #[test]
-    fn manual_gate_is_inclusive_at_thirty_percent_of_window() {
-        let below = ContextMeter::new(10_000, 0, 0, 2_999, ContextMeterSource::LocalEnvelope);
-        let at = ContextMeter::new(10_000, 0, 0, 3_000, ContextMeterSource::LocalEnvelope);
-        assert!(!below.manual_eligible());
-        assert!(at.manual_eligible());
-        assert!(at.compact_eligible);
     }
 }

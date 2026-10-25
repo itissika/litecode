@@ -265,7 +265,6 @@ describe("turnStore convergence", () => {
       tokens_pruned: 10,
       tokens_after: 70,
       summary_attempts: 2,
-      review_score: 4,
       overflow_retry: 0,
     };
     useTurnStore.getState().onCompactLifecycle({
@@ -284,7 +283,6 @@ describe("turnStore convergence", () => {
       tokens_pruned: 10,
       tokens_after: 80,
       summary_attempts: 2,
-      review_score: 2,
       overflow_retry: 1,
     };
     useTurnStore.getState().onCompactLifecycle({
@@ -535,9 +533,8 @@ describe("turnStore convergence", () => {
       context_meter: {
         context_window: 1000,
         output_reserve: 100,
-        safety_headroom: 125,
         prompt_limit: 900,
-        compact_at: 775,
+        compact_at: 800,
         used_tokens: 300,
         source: "provider_plus_suffix",
         compact_eligible: true,
@@ -553,7 +550,7 @@ describe("turnStore convergence", () => {
     expect(slice.contextMeter?.used_tokens).toBe(300);
     expect(slice.contextMeter?.source).toBe("provider_plus_suffix");
     expect(slice.contextMeter?.prompt_limit).toBe(900);
-    expect(slice.contextMeter?.compact_at).toBe(775);
+    expect(slice.contextMeter?.compact_at).toBe(800);
     expect(slice.contextEnvelope?.output_reserve).toBe(100);
     expect(slice.compactEligible).toBe(true);
   });

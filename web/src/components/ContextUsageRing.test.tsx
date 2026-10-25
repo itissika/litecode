@@ -12,9 +12,8 @@ function meter(compactEligible: boolean, usedTokens = 800): ContextMeter {
   return {
     context_window: 1_000,
     output_reserve: 100,
-    safety_headroom: 125,
     prompt_limit: 900,
-    compact_at: 775,
+    compact_at: 800,
     used_tokens: usedTokens,
     source: "provider_plus_suffix",
     compact_eligible: compactEligible,

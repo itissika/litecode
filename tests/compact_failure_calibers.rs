@@ -158,7 +158,12 @@ async fn auto_compact_failure_restores_pipeline_working_set() {
     // Force auto pressure on the same 10_000-token request window.
     prompt_baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
 
     let err = pipeline
         .compact_step(

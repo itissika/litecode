@@ -14,7 +14,7 @@ use litecode::config::workspace::set_runtime_paths;
 use litecode::context_pipeline::Context;
 use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextEnvelope, ContextMeter, ContextPipeline,
-    ProviderPromptBaseline, safety_headroom,
+    ProviderPromptBaseline,
 };
 use litecode::session::event::spine_working_payload;
 use litecode::session::manager::SessionManager;
@@ -91,7 +91,12 @@ async fn prepare(
     // Covers every persisted row. Pending rows stay a local suffix.
     prompt_baseline.record(last_prompt_tokens, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
     pipeline
         .compact_step(
             sessions,
@@ -168,13 +173,8 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     let transcript = sessions.data().transcript_blocking(&sid).unwrap();
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let envelope = ContextEnvelope::from_request_parts("system", &[], 8192);
-    let meter = ContextMeter::measure_local(
-        128_000,
-        envelope.output_reserve,
-        safety_headroom(128_000),
-        &envelope,
-        &transcript,
-    );
+    let meter =
+        ContextMeter::measure_local(128_000, envelope.output_reserve, &envelope, &transcript);
     assert!(!meter.should_compact());
 
     let provider = common::DshSummaryProvider::new();
@@ -506,7 +506,12 @@ async fn compact_rebuild_does_not_repeat_kept_call_ids() {
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -596,7 +601,12 @@ async fn compact_keeps_pending_tail_after_post_compact_reminder() {
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
     let compacted = pipeline
         .compact_step(
             &sessions,
@@ -687,7 +697,12 @@ async fn compact_reminder_rides_on_checkpoint_not_extra_user_detail() {
     let prompt_baseline = ProviderPromptBaseline::default();
     prompt_baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
     pipeline
         .compact_step(
             &sessions,

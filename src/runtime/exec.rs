@@ -954,7 +954,6 @@ impl AgentRuntime {
                             context_meter: ContextMeter::new(
                                 meter_context_window,
                                 meter_output_reserve,
-                                ContextMeter::safety_headroom(meter_context_window),
                                 prompt as usize,
                                 ContextMeterSource::Provider,
                             ),

@@ -689,7 +689,6 @@ export type ContextMeterSource =
 export interface ContextMeter {
   context_window: number;
   output_reserve: number;
-  safety_headroom: number;
   prompt_limit: number;
   compact_at: number;
   used_tokens: number;
@@ -736,7 +735,6 @@ export interface CompactionTelemetry {
   tokens_pruned?: number;
   tokens_after?: number;
   summary_attempts?: number;
-  review_score?: number;
   overflow_retry?: number;
 }
 

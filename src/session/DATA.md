@@ -155,6 +155,8 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 该消息的角色是 `user`，只在投影结果中出现，绝不回写 SessionEvent。旧库 summary 文本若以 `[Conversation summary]` 或 `[Aggressive summary]` 开头，只在 projector 边界剥掉标签；cut、rebase、role、previous-summary 等决策一律使用结构化 checkpoint 身份，绝不解析文本前缀。
 
+摘要验收只检查 provider finish 为 `Completed`、trim 后非空、无 tool call/image、且 `summary_tokens < source_tokens`；失败时以完全相同的请求重试一次，第二次失败是硬失败且不写 checkpoint。不存在质量分、章节、anchor、placeholder 或 prior-summary 验收启发式。
+
 #### `reminder/*` — 一条提醒独占一个 seq
 
 提醒只有一个写入口 `append_reminder`。body 是冻结的 `Reminder` JSON（结构化字段 + 写入时生成的 `text`），不是 `Item`。AgentView 对每个 reminder seq 投影恰好一个 user `Item`：`<system-reminder>\n{text}\n</system-reminder>`。已发送前缀不重写。锚点仍只认 `item/user`。

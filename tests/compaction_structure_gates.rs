@@ -299,7 +299,6 @@ fn lifecycle_carries_unified_telemetry() {
         "tokens_pruned",
         "tokens_after",
         "summary_attempts",
-        "review_score",
         "overflow_retry",
     ] {
         assert!(
@@ -313,4 +312,46 @@ fn lifecycle_carries_unified_telemetry() {
     assert!(
         compact.contains("overflow_retry: Some(u8::from(trigger == CompactionTrigger::Overflow))")
     );
+}
+
+#[test]
+fn pr7_uses_provider_capacity_and_minimal_summary_acceptance() {
+    let meter = read("src/context_pipeline/context_meter.rs");
+    let production = production_part(&meter);
+    assert!(production.contains("context_window.saturating_sub(output_reserve)"));
+    assert!(production.contains("(context_window.saturating_mul(4) / 5).min(prompt_limit)"));
+    for removed in ["safety_headroom", "MAX_SAFETY_HEADROOM_TOKENS"] {
+        assert!(
+            !production.contains(removed),
+            "removed meter policy remains: {removed}"
+        );
+    }
+
+    let compact = read("src/context_pipeline/compact.rs");
+    let compact_production = production_part(&compact);
+    for removed in [
+        "SummaryAcceptanceConfig",
+        "DSH_SUMMARY_SECTIONS",
+        "summary_quality_threshold",
+        "summary_min_saved_tokens",
+        "latest_user_text",
+        "recent_user_anchor",
+    ] {
+        assert!(
+            !compact_production.contains(removed),
+            "removed summary acceptance heuristic remains: {removed}"
+        );
+    }
+    assert!(compact_production.contains("summary_tokens >= source_tokens"));
+    assert!(compact_production.contains("pub const MAX_SUMMARY_ATTEMPTS: u8 = 2;"));
+    assert_eq!(
+        compact_production
+            .matches("for attempt in 1..=MAX_SUMMARY_ATTEMPTS")
+            .count(),
+        1,
+        "exactly one loop implements two attempts"
+    );
+
+    let observer = read("src/runtime/observer.rs");
+    assert!(!observer.contains("review_score"));
 }

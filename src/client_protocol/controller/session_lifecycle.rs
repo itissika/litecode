@@ -307,7 +307,6 @@ impl SessionController {
         let (meter, breakdown) = measure_persisted_context_with_breakdown(
             &self.sessions,
             session_id,
-            compaction_request.context_window,
             &envelope,
             &compaction_request.target,
             &data_root,
@@ -405,7 +404,6 @@ impl SessionController {
                 let meter = measure_persisted_context_with_breakdown(
                     &self.sessions,
                     &sid,
-                    request.context_window,
                     &envelope,
                     &request.target,
                     &self.sessions.data_root_path(),

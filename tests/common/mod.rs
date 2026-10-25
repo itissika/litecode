@@ -266,8 +266,8 @@ pub use responses_replay::{
 };
 pub use runtime::{
     TestAgentSpec, build_runtime_with_provider, build_runtime_with_provider_and_observer,
-    test_agent, test_compaction_request, test_resolved, test_resolved_with_budget,
-    test_sessions_manager, test_turn_binding,
+    set_compaction_request_capacity, test_agent, test_compaction_request, test_resolved,
+    test_resolved_with_budget, test_sessions_manager, test_turn_binding,
 };
 pub use scripted_provider::{DshSummaryProvider, ScriptedProvider};
 #[allow(unused_imports)]

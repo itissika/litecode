@@ -7,7 +7,7 @@
 /// Context-window fallback when a session/model has no catalog window.
 pub const FALLBACK_CONTEXT_WINDOW: usize = 128_000;
 
-/// Largest prompt-side reserve used by the keep-recent split or safety headroom.
+/// Largest prompt-side reserve used by the keep-recent split.
 pub const MAX_PROMPT_RESERVE_TOKENS: usize = 16_384;
 
 /// Verbatim recent-window cap retained across compaction.

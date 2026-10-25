@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use std::cell::Cell;
 
 use crate::authority::responses::{
-    FunctionCallOutput, InputContent, InputRole, InputTextContent, MessageItem, OutputStatus,
+    FunctionCallOutput, InputContent, InputTextContent, MessageItem, OutputStatus,
 };
 use crate::context_pipeline::keep_recent::find_keep_recent_cut;
 use crate::context_pipeline::project_model_view;
@@ -37,7 +37,7 @@ pub type SummaryUsage = crate::session::store::ProviderUsage;
 /// Terminal status of the provider call that produced a summary.
 ///
 /// PR-1 preserves this status so an incomplete/truncated summary can never be
-/// committed as a checkpoint. Retry/quality policy stays in PR-5.
+/// committed as a checkpoint. PR-7 keeps the acceptance gate minimal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryFinish {
     Completed,
@@ -56,6 +56,7 @@ pub enum SummaryFinish {
 pub struct SummaryArtifact {
     pub text: String,
     pub finish: SummaryFinish,
+    pub has_image: bool,
     pub usage: Option<SummaryUsage>,
     pub model: String,
 }
@@ -70,6 +71,7 @@ impl SummaryArtifact {
         let has_tool_call = items
             .iter()
             .any(|item| matches!(item, Item::FunctionCall(_)));
+        let has_image = items.iter().any(item_has_image);
         let mut item_finish = None;
         for item in items {
             if let Item::Message(MessageItem::Output(message)) = item {
@@ -109,6 +111,7 @@ impl SummaryArtifact {
         Self {
             text,
             finish,
+            has_image,
             usage,
             model,
         }
@@ -266,125 +269,38 @@ impl MechanicalPrunePlan {
     }
 }
 
-/// Why a summary failed the mechanical PR-5 acceptance gate.
+/// Minimal summary acceptance failures. No section, anchor, placeholder,
+/// quality-score, prior-summary, or latest-user heuristics participate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SummaryFailure {
     Finish(SummaryFinish),
     Empty,
     ToolCall,
-    Preamble,
-    MissingSection(String),
-    SectionOrder,
-    MissingPrimaryRequest,
-    PlaceholderContent(String),
-    NonActionableWork(String),
-    MissingSectionAnchor(String),
-    PriorSummaryCopied {
-        overlap_percent: u8,
-    },
-    TooLong {
+    Image,
+    NotSmaller {
         summary_tokens: usize,
         source_tokens: usize,
     },
-    InsufficientSavings {
-        savings: usize,
-        required: usize,
-    },
-    MissingRecentUserAnchor,
-    LowValue,
-    QualityBelowThreshold {
-        score: u8,
-        threshold: u8,
-    },
 }
 
-/// All mechanical acceptance knobs live here; no scattered ratio/floor values.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SummaryAcceptanceConfig {
-    /// Maximum summary/source token ratio, in whole percent.
-    pub max_summary_ratio_percent: u8,
-    /// Required share of applicable quality checks, in whole percent.
-    pub quality_percent: u8,
-    /// Floor for minimum saved tokens.
-    pub min_saved_tokens_floor: usize,
-    /// Context-window divisor for the minimum-savings target.
-    pub min_saved_window_divisor: usize,
-}
-
-impl Default for SummaryAcceptanceConfig {
-    fn default() -> Self {
-        Self {
-            max_summary_ratio_percent: 30,
-            quality_percent: 75,
-            min_saved_tokens_floor: 8_192,
-            min_saved_window_divisor: 20,
-        }
-    }
-}
-
-/// The eight mandatory DSH section headings, in order.
-pub const DSH_SUMMARY_SECTIONS: [&str; 8] = [
-    "Primary Request and Intent",
-    "Key Technical Concepts",
-    "Files and Code",
-    "Errors and Fixes",
-    "Pending Jobs",
-    "Current Work",
-    "Next Step",
-    "Critical Context",
-];
-
-/// One total-attempt budget: first try plus one retry.
+/// One total-attempt budget: first try plus one identical retry.
 pub const MAX_SUMMARY_ATTEMPTS: u8 = 2;
-/// A new checkpoint that overlaps this much with the prior summary is a copy,
-/// not a merge of new information.
-pub const PRIOR_SUMMARY_OVERLAP_PERCENT: u8 = 80;
 /// Provider-confirmed context overflow may recover at most once.
 pub const MAX_CONTEXT_OVERFLOW_RETRIES: u8 = 1;
 
-/// Effective minimum saved tokens for a summary. The target is
-/// `min(max(floor, W/divisor), floor(source_tokens * 50%))` so it never
-/// demands discarding more than half of the source.
-pub fn summary_min_saved_tokens(
-    config: &SummaryAcceptanceConfig,
-    context_window: usize,
-    source_tokens: usize,
-) -> usize {
-    let floor = config
-        .min_saved_tokens_floor
-        .max(context_window / config.min_saved_window_divisor.max(1));
-    floor.min(source_tokens / 2)
-}
-
-/// Mechanical quality threshold: `ceil(applicable * quality_percent / 100)`.
-pub fn summary_quality_threshold(config: &SummaryAcceptanceConfig, applicable: u8) -> u8 {
-    let numerator = u32::from(applicable) * u32::from(config.quality_percent);
-    numerator.div_ceil(100) as u8
-}
-
-/// PR-5 acceptance boundary. Hard failures are fatal; quality checks are
-/// scored mechanically (no LLM judge) and must clear the configured threshold.
+/// Minimal accepted-summary review.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummaryReview {
     pub accepted: bool,
-    pub score: u8,
-    pub applicable_checks: u8,
-    pub threshold: u8,
     pub failures: Vec<SummaryFailure>,
 }
 
-/// Pure, model-free summary gate. `source_items` is the exact discarded
-/// prefix sent to the summarizer; `context_window` supplies the W/20 floor.
+/// Model-free summary gate: completed, non-empty, no tool/image output, and
+/// strictly smaller than the discarded source prefix.
 pub struct SummaryAcceptance;
 
 impl SummaryAcceptance {
-    pub fn review(
-        artifact: &SummaryArtifact,
-        source_items: &[Item],
-        context_window: usize,
-        prior_summary: Option<&str>,
-        config: &SummaryAcceptanceConfig,
-    ) -> SummaryReview {
+    pub fn review(artifact: &SummaryArtifact, source_items: &[Item]) -> SummaryReview {
         let text = artifact.text.trim();
         let source_tokens = crate::session::estimate::compute_token_estimate(source_items).max(1);
         let summary_tokens = if text.is_empty() {
@@ -394,107 +310,26 @@ impl SummaryAcceptance {
         };
         let mut failures = Vec::new();
 
-        if artifact.finish == SummaryFinish::ToolCall {
-            failures.push(SummaryFailure::ToolCall);
-        } else if artifact.finish != SummaryFinish::Completed {
-            failures.push(SummaryFailure::Finish(artifact.finish));
+        match artifact.finish {
+            SummaryFinish::Completed => {}
+            SummaryFinish::ToolCall => failures.push(SummaryFailure::ToolCall),
+            other => failures.push(SummaryFailure::Finish(other)),
         }
         if text.is_empty() {
             failures.push(SummaryFailure::Empty);
         }
-
-        let parsed = parse_dsh_summary(text);
-        if !text.is_empty() {
-            if parsed.preamble.trim().is_empty() {
-                // No preamble: start at the first heading.
-            } else {
-                failures.push(SummaryFailure::Preamble);
-            }
-            for section in DSH_SUMMARY_SECTIONS {
-                if !parsed.sections.iter().any(|(name, _)| name == section) {
-                    failures.push(SummaryFailure::MissingSection(section.to_string()));
-                }
-            }
-            let recognized: Vec<&str> = parsed
-                .sections
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect();
-            if recognized != DSH_SUMMARY_SECTIONS {
-                failures.push(SummaryFailure::SectionOrder);
-            }
-
-            let source_has_text = source_items
-                .iter()
-                .any(|item| !item_text_preview(item).trim().is_empty());
-            let source_anchors = source_anchor_categories(source_items);
-            failures.extend(summary_content_failures(
-                &parsed,
-                &source_anchors,
-                source_has_text,
-            ));
-
-            let max_summary_tokens =
-                source_tokens.saturating_mul(usize::from(config.max_summary_ratio_percent)) / 100;
-            if summary_tokens > max_summary_tokens {
-                failures.push(SummaryFailure::TooLong {
-                    summary_tokens,
-                    source_tokens,
-                });
-            }
-            let savings = source_tokens.saturating_sub(summary_tokens);
-            let required = summary_min_saved_tokens(config, context_window, source_tokens);
-            if savings < required {
-                failures.push(SummaryFailure::InsufficientSavings { savings, required });
-            }
-
-            let recent_anchor = latest_user_text(source_items)
-                .as_deref()
-                .and_then(recent_user_anchor);
-            if let Some(anchor) = recent_anchor.as_deref() {
-                let primary = section_body(&parsed, "Primary Request and Intent");
-                if !primary.contains(anchor) {
-                    failures.push(SummaryFailure::MissingRecentUserAnchor);
-                }
-            }
-            // A user message may itself contain an apology/refusal phrase.
-            // Judge low-value text on the summary around the verbatim anchor,
-            // not on the user's own words.
-            let low_value_probe = recent_anchor
-                .as_deref()
-                .map(|anchor| text.replace(anchor, ""))
-                .unwrap_or_else(|| text.to_string());
-            if has_low_value_summary_pattern(&low_value_probe) {
-                failures.push(SummaryFailure::LowValue);
-            }
+        if artifact.has_image {
+            failures.push(SummaryFailure::Image);
         }
-
-        let prior_overlap = prior_summary
-            .map(|prior| prior_summary_overlap_percent(prior, text))
-            .unwrap_or(0);
-        if prior_summary.is_some_and(|prior| !prior.trim().is_empty())
-            && prior_overlap >= PRIOR_SUMMARY_OVERLAP_PERCENT
-        {
-            failures.push(SummaryFailure::PriorSummaryCopied {
-                overlap_percent: prior_overlap,
-            });
-        }
-
-        let prior_present = prior_summary.is_some_and(|prior| !prior.trim().is_empty());
-        let quality = quality_assessment(source_items, prior_present, prior_overlap, &parsed);
-        let threshold = summary_quality_threshold(config, quality.applicable);
-        if quality.score < threshold {
-            failures.push(SummaryFailure::QualityBelowThreshold {
-                score: quality.score,
-                threshold,
+        if summary_tokens >= source_tokens {
+            failures.push(SummaryFailure::NotSmaller {
+                summary_tokens,
+                source_tokens,
             });
         }
 
         SummaryReview {
             accepted: failures.is_empty(),
-            score: quality.score,
-            applicable_checks: quality.applicable,
-            threshold,
             failures,
         }
     }
@@ -510,598 +345,9 @@ fn as_transport_compaction_error(error: LitecodeError) -> LitecodeError {
     }
 }
 
-fn summary_retry_constraint(failures: &[SummaryFailure]) -> String {
-    let mut lines = Vec::new();
-    for failure in failures {
-        let line = match failure {
-            SummaryFailure::Finish(_) | SummaryFailure::Empty => {
-                "The previous answer was not a complete, non-empty terminal summary. Return one complete checkpoint."
-            }
-            SummaryFailure::ToolCall => {
-                "Do not call any tool or emit a function call. Return only the checkpoint text."
-            }
-            SummaryFailure::Preamble => {
-                "Start directly with the first `##` section. Do not add any preamble, apology, or conversational prose."
-            }
-            SummaryFailure::MissingSection(_) | SummaryFailure::SectionOrder => {
-                "Include exactly all eight DSH sections with their exact headings, in the required order."
-            }
-            SummaryFailure::MissingPrimaryRequest => {
-                "The `Primary Request and Intent` section must contain the user's actual request, not `(none)` or an empty bullet."
-            }
-            SummaryFailure::TooLong { .. } | SummaryFailure::InsufficientSavings { .. } => {
-                "Make the summary substantially shorter and retain only facts needed to resume the work."
-            }
-            SummaryFailure::MissingRecentUserAnchor => {
-                "The `Primary Request and Intent` section must include the most recent user message verbatim."
-            }
-            SummaryFailure::PlaceholderContent(_section) => {
-                "Replace every placeholder, `(none)`, or empty marker with concrete checkpoint content in the named section."
-            }
-            SummaryFailure::NonActionableWork(_) => {
-                "`Current Work` and `Next Step` must each state a concrete action, command, or verifiable next move; TBD, see above, and `(none)` are invalid."
-            }
-            SummaryFailure::MissingSectionAnchor(_) => {
-                "Preserve real file paths, commands, and error strings from the source in their corresponding sections; do not substitute the Primary request anchor."
-            }
-            SummaryFailure::PriorSummaryCopied { .. } => {
-                "Do not copy the prior checkpoint. Merge only still-true facts, replace stale facts with new source facts, and rewrite the summary."
-            }
-            SummaryFailure::LowValue => {
-                "Do not refuse, apologize, say you cannot help, or describe the summarization task."
-            }
-            SummaryFailure::QualityBelowThreshold { .. } => {
-                "Add concrete, actionable detail and preserve exact file paths, commands, errors, and identifiers from the source."
-            }
-        };
-        if !lines.contains(&line) {
-            lines.push(line);
-        }
-    }
-    lines.join("\n")
-}
-
-struct ParsedSummary {
-    preamble: String,
-    sections: Vec<(String, String)>,
-}
-
-fn parse_dsh_summary(text: &str) -> ParsedSummary {
-    let mut preamble = String::new();
-    let mut sections: Vec<(String, String)> = Vec::new();
-    let mut current: Option<(String, String)> = None;
-    let mut saw_heading = false;
-    for line in text.lines() {
-        if line.trim().starts_with('#') {
-            let heading = line.trim().trim_start_matches('#').trim();
-            let normalized = normalize_heading(heading);
-            saw_heading = true;
-            if let Some((name, body)) = current.take() {
-                sections.push((name, body));
-            }
-            current = Some((normalized.to_string(), String::new()));
-            continue;
-        }
-        if saw_heading {
-            if let Some((_, body)) = current.as_mut() {
-                body.push_str(line);
-                body.push('\n');
-            }
-        } else {
-            preamble.push_str(line);
-            preamble.push('\n');
-        }
-    }
-    if let Some((name, body)) = current {
-        sections.push((name, body));
-    }
-    ParsedSummary { preamble, sections }
-}
-
-fn normalize_heading(heading: &str) -> String {
-    let mut value = heading.trim();
-    let numbered = value
-        .trim_start_matches(|c: char| c.is_ascii_digit())
-        .trim_start_matches(['.', ')', ':'])
-        .trim_start();
-    if DSH_SUMMARY_SECTIONS.contains(&numbered) {
-        value = numbered;
-    }
-    value.to_string()
-}
-
-fn section_body<'a>(parsed: &'a ParsedSummary, section: &str) -> &'a str {
-    parsed
-        .sections
-        .iter()
-        .find(|(name, _)| name == section)
-        .map(|(_, body)| body.as_str())
-        .unwrap_or("")
-}
-
-fn latest_user_text(source_items: &[Item]) -> Option<String> {
-    source_items.iter().rev().find_map(|item| {
-        let Item::Message(MessageItem::Input(message)) = item else {
-            return None;
-        };
-        if !matches!(message.role, InputRole::User) {
-            return None;
-        }
-        let text = message
-            .content
-            .iter()
-            .filter_map(|part| match part {
-                InputContent::InputText(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect::<String>();
-        let trimmed = text.trim();
-        if trimmed.is_empty()
-            || trimmed.contains("<compacted-summary>")
-            || trimmed.starts_with(crate::config::global_db::CHECKPOINT_PREAMBLE)
-        {
-            return None;
-        }
-        Some(text)
-    })
-}
-
-/// The verbatim anchor is the complete recent message when it is short
-/// enough to be quoted naturally; for very long messages, a stable 240-char
-/// prefix is the mechanical anchor (still exact prose, not a paraphrase).
-fn recent_user_anchor(text: &str) -> Option<String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let anchor: String = trimmed.chars().take(240).collect();
-    Some(anchor.trim().to_string()).filter(|anchor| !anchor.is_empty())
-}
-
-fn has_low_value_summary_pattern(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    [
-        "i'm sorry",
-        "i am sorry",
-        "i cannot",
-        "i can't",
-        "i apologize",
-        "as an ai",
-        "unable to help",
-        "cannot help",
-        "here is a summary",
-        "here's a summary",
-        "summary of the conversation",
-        "this conversation is about",
-        "the conversation is about",
-        "based on the conversation",
-        "the provided conversation",
-        "i will summarize",
-        "this is a summary",
-    ]
-    .iter()
-    .any(|pattern| lower.contains(pattern))
-}
-
-fn strip_bullet(line: &str) -> &str {
-    line.trim().trim_start_matches(['-', '*', '#', ' ']).trim()
-}
-
-fn placeholder_key(line: &str) -> String {
-    strip_bullet(line)
-        .trim_matches(|c: char| {
-            c.is_whitespace()
-                || matches!(
-                    c,
-                    '.' | ':' | ';' | ',' | '*' | '_' | '`' | '(' | ')' | '[' | ']' | '{' | '}'
-                )
-        })
-        .to_ascii_lowercase()
-}
-
-fn is_none_marker(line: &str) -> bool {
-    placeholder_key(line) == "none"
-}
-
-fn normalized_placeholder_head(line: &str) -> String {
-    let key = placeholder_key(line)
-        .replace("to-do", "todo")
-        .replace("to do", "todo")
-        .replace(['—', '–'], "-");
-    key.split([':', '-', '|', ';', ','])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-fn is_placeholder_line(line: &str) -> bool {
-    let key = normalized_placeholder_head(line);
-    key.is_empty()
-        || key == "none"
-        || key == "tbd"
-        || key.starts_with("tbd ")
-        || key == "todo"
-        || key.starts_with("todo ")
-        || key.starts_with("see above")
-        || key.starts_with("see source")
-        || key.starts_with("n/a")
-        || key == "na"
-        || key.starts_with("not applicable")
-        || key.starts_with("not available")
-        || key == "unknown"
-        || key == "..."
-        || key == "…"
-}
-
-fn section_body_has_meaningful_text(body: &str) -> bool {
-    body.lines().any(|line| {
-        if line.trim().is_empty() {
-            return false;
-        }
-        !is_placeholder_line(line)
-    })
-}
-
-fn section_body_is_explicit_none(body: &str) -> bool {
-    let mut saw_marker = false;
-    for line in body.lines().filter(|line| !line.trim().is_empty()) {
-        if !is_none_marker(line) {
-            return false;
-        }
-        saw_marker = true;
-    }
-    saw_marker
-}
-
-#[derive(Debug, Default, Clone)]
-struct SourceAnchorCategories {
-    paths: Vec<String>,
-    commands: Vec<String>,
-    errors: Vec<String>,
-}
-
-impl SourceAnchorCategories {
-    fn any(&self) -> bool {
-        !self.paths.is_empty() || !self.commands.is_empty() || !self.errors.is_empty()
-    }
-}
-
-fn anchor_tokens(text: &str) -> impl Iterator<Item = &str> {
-    const TRIM_CHARS: &str = r#""'`()[]{};,:|<>"#;
-    text.split_whitespace().filter_map(|raw| {
-        let token = raw.trim_matches(|c: char| c.is_whitespace() || TRIM_CHARS.contains(c));
-        (token.len() >= 3).then_some(token)
-    })
-}
-
-fn source_anchor_categories_from_text(text: &str) -> SourceAnchorCategories {
-    let mut categories = SourceAnchorCategories::default();
-    for token in text
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .flat_map(anchor_tokens)
-    {
-        let lower = token.to_ascii_lowercase();
-        let path = (token.contains('/') || token.contains('\\'))
-            && (token.contains('.')
-                || lower.starts_with("src")
-                || lower.starts_with("tests")
-                || lower.starts_with("web"));
-        let command = [
-            "cargo",
-            "pnpm",
-            "npm",
-            "git",
-            "rg",
-            "python",
-            "node",
-            "pwsh",
-            "powershell",
-            "bash",
-            "dotnet",
-            "bun",
-            "yarn",
-        ]
-        .iter()
-        .any(|command| lower == *command || lower.starts_with(&format!("{command}:")));
-        let error = lower.contains("error")
-            || lower.contains("panic")
-            || lower.contains("exception")
-            || lower.contains("traceback")
-            || lower.contains("segfault")
-            || lower.contains("fatal")
-            || lower.starts_with("failed")
-            || lower.starts_with("failure")
-            || lower.starts_with("e0")
-            || [
-                "enoent",
-                "eacces",
-                "eperm",
-                "econnrefused",
-                "etimedout",
-                "enospc",
-                "eexist",
-                "errno",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker));
-        if path && !categories.paths.iter().any(|existing| existing == token) {
-            categories.paths.push(token.to_string());
-        }
-        if command && !categories.commands.iter().any(|existing| existing == token) {
-            categories.commands.push(token.to_string());
-        }
-        if error && !categories.errors.iter().any(|existing| existing == token) {
-            categories.errors.push(token.to_string());
-        }
-    }
-    categories
-}
-
-fn source_anchor_categories(source_items: &[Item]) -> SourceAnchorCategories {
-    let source_text = source_items
-        .iter()
-        .map(item_text_preview)
-        .collect::<Vec<_>>()
-        .join("\n");
-    source_anchor_categories_from_text(&source_text)
-}
-
-fn anchors_intersect(left: &[String], right: &[String]) -> bool {
-    left.iter()
-        .any(|left| right.iter().any(|right| left.eq_ignore_ascii_case(right)))
-}
-
-fn summary_content_failures(
-    parsed: &ParsedSummary,
-    source_anchors: &SourceAnchorCategories,
-    source_has_text: bool,
-) -> Vec<SummaryFailure> {
-    let mut failures = Vec::new();
-    let has_section = |section: &str| parsed.sections.iter().any(|(name, _)| name == section);
-
-    let primary = section_body(parsed, "Primary Request and Intent");
-    if has_section("Primary Request and Intent") && !section_body_has_meaningful_text(primary) {
-        failures.push(SummaryFailure::MissingPrimaryRequest);
-    }
-
-    if has_section("Key Technical Concepts")
-        && source_has_text
-        && !section_body_has_meaningful_text(section_body(parsed, "Key Technical Concepts"))
-    {
-        failures.push(SummaryFailure::PlaceholderContent(
-            "Key Technical Concepts".into(),
-        ));
-    }
-
-    if has_section("Files and Code") {
-        let body = section_body(parsed, "Files and Code");
-        if !section_body_has_meaningful_text(body) {
-            if !section_body_is_explicit_none(body) || !source_anchors.paths.is_empty() {
-                failures.push(SummaryFailure::PlaceholderContent("Files and Code".into()));
-            }
-        } else if !source_anchors.paths.is_empty()
-            && !anchors_intersect(
-                &source_anchors.paths,
-                &source_anchor_categories_from_text(body).paths,
-            )
-        {
-            failures.push(SummaryFailure::MissingSectionAnchor(
-                "Files and Code".into(),
-            ));
-        }
-    }
-
-    if has_section("Errors and Fixes") {
-        let body = section_body(parsed, "Errors and Fixes");
-        if !section_body_has_meaningful_text(body) {
-            if !section_body_is_explicit_none(body) || !source_anchors.errors.is_empty() {
-                failures.push(SummaryFailure::PlaceholderContent(
-                    "Errors and Fixes".into(),
-                ));
-            }
-        } else if !source_anchors.errors.is_empty()
-            && !anchors_intersect(
-                &source_anchors.errors,
-                &source_anchor_categories_from_text(body).errors,
-            )
-        {
-            failures.push(SummaryFailure::MissingSectionAnchor(
-                "Errors and Fixes".into(),
-            ));
-        }
-    }
-
-    if has_section("Pending Jobs") {
-        let body = section_body(parsed, "Pending Jobs");
-        if !section_body_has_meaningful_text(body) && !section_body_is_explicit_none(body) {
-            failures.push(SummaryFailure::PlaceholderContent("Pending Jobs".into()));
-        }
-    }
-
-    for section in ["Current Work", "Next Step"] {
-        if has_section(section) && !section_body_has_meaningful_text(section_body(parsed, section))
-        {
-            failures.push(SummaryFailure::NonActionableWork(section.into()));
-        }
-    }
-
-    if has_section("Critical Context")
-        && source_has_text
-        && !section_body_has_meaningful_text(section_body(parsed, "Critical Context"))
-    {
-        failures.push(SummaryFailure::PlaceholderContent(
-            "Critical Context".into(),
-        ));
-    }
-
-    if !source_anchors.commands.is_empty() {
-        let combined = ["Files and Code", "Current Work", "Next Step"]
-            .iter()
-            .map(|section| section_body(parsed, section))
-            .collect::<Vec<_>>()
-            .join("\n");
-        if !anchors_intersect(
-            &source_anchors.commands,
-            &source_anchor_categories_from_text(&combined).commands,
-        ) {
-            failures.push(SummaryFailure::MissingSectionAnchor(
-                "Current Work / Next Step".into(),
-            ));
-        }
-    }
-
-    failures
-}
-
-struct QualityAssessment {
-    score: u8,
-    applicable: u8,
-}
-
-fn quality_assessment(
-    source_items: &[Item],
-    prior_present: bool,
-    prior_overlap_percent: u8,
-    parsed: &ParsedSummary,
-) -> QualityAssessment {
-    let mut score = 0u8;
-    let mut applicable = 0u8;
-
-    // 1. Every DSH section has a retained body. Placeholder validity is a hard
-    // gate above; this check measures structural retention only.
-    applicable += 1;
-    if DSH_SUMMARY_SECTIONS
-        .iter()
-        .all(|section| !section_body(parsed, section).trim().is_empty())
-    {
-        score += 1;
-    }
-
-    // 2. The primary request section carries real, non-placeholder content.
-    applicable += 1;
-    if section_body_has_meaningful_text(section_body(parsed, "Primary Request and Intent")) {
-        score += 1;
-    }
-
-    // 3. Current Work and Next Step both need actionable content.
-    applicable += 1;
-    if ["Current Work", "Next Step"]
-        .iter()
-        .all(|section| section_body_has_meaningful_text(section_body(parsed, section)))
-    {
-        score += 1;
-    }
-
-    // 4. Preserve source anchor categories in non-Primary sections. The
-    // Primary recent-user anchor cannot satisfy this check by itself.
-    let source_anchors = source_anchor_categories(source_items);
-    if source_anchors.any() {
-        applicable += 1;
-        let non_primary_bodies = parsed
-            .sections
-            .iter()
-            .filter(|(name, _)| name != "Primary Request and Intent")
-            .map(|(_, body)| body.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let summary_anchors = source_anchor_categories_from_text(&non_primary_bodies);
-        let preserved = (source_anchors.paths.is_empty()
-            || anchors_intersect(&source_anchors.paths, &summary_anchors.paths))
-            && (source_anchors.commands.is_empty()
-                || anchors_intersect(&source_anchors.commands, &summary_anchors.commands))
-            && (source_anchors.errors.is_empty()
-                || anchors_intersect(&source_anchors.errors, &summary_anchors.errors));
-        if preserved {
-            score += 1;
-        }
-    }
-
-    // 5. A prior checkpoint may inform the new summary but must not be copied.
-    if prior_present {
-        applicable += 1;
-        if prior_overlap_percent < PRIOR_SUMMARY_OVERLAP_PERCENT {
-            score += 1;
-        }
-    }
-
-    QualityAssessment { score, applicable }
-}
-
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn prior_summary_overlap_percent(prior: &str, summary: &str) -> u8 {
-    let prior_trimmed = prior.trim();
-    if prior_trimmed.is_empty() {
-        return 0;
-    }
-    let prior_norm = normalize_whitespace(prior_trimmed).to_ascii_lowercase();
-    let summary_norm = normalize_whitespace(summary).to_ascii_lowercase();
-    if !prior_norm.is_empty() && summary_norm.contains(&prior_norm) {
-        return 100;
-    }
-
-    let prior_parsed = parse_dsh_summary(prior_trimmed);
-    let summary_parsed = parse_dsh_summary(summary);
-    let prior_bodies = prior_parsed
-        .sections
-        .iter()
-        .map(|(_, body)| body.as_str())
-        .chain(std::iter::once(prior_parsed.preamble.as_str()))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let summary_bodies = summary_parsed
-        .sections
-        .iter()
-        .map(|(_, body)| body.as_str())
-        .chain(std::iter::once(summary_parsed.preamble.as_str()))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let prior_tokens = content_tokens(&prior_bodies);
-    if prior_tokens.is_empty() {
-        return 0;
-    }
-    let summary_tokens = content_tokens(&summary_bodies)
-        .into_iter()
-        .collect::<std::collections::HashSet<_>>();
-    let shared = prior_tokens
-        .iter()
-        .filter(|token| summary_tokens.contains(*token))
-        .count();
-    ((shared * 100) / prior_tokens.len()).min(100) as u8
-}
-
-fn content_tokens(text: &str) -> Vec<String> {
-    const STOPWORDS: &[&str] = &[
-        "the", "and", "for", "with", "from", "this", "that", "into", "are", "was", "has", "have",
-        "not", "none", "all", "only", "any", "but", "its", "their", "then", "than", "when",
-        "where", "what", "which", "who", "how", "why",
-    ];
-    let mut tokens = Vec::new();
-    for raw in text.split_whitespace() {
-        let token = raw
-            .trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '\\' && c != '_')
-            .to_ascii_lowercase();
-        if token.len() < 3 || STOPWORDS.contains(&token.as_str()) {
-            continue;
-        }
-        if !tokens.iter().any(|existing| existing == &token) {
-            tokens.push(token);
-        }
-    }
-    tokens
-}
-
-/// A failed first summary pass. The caller still owns the measured token and
-/// lifecycle fields; this carrier preserves the per-attempt review facts that
-/// would otherwise be lost when converting the result to `LitecodeError`.
 struct SummaryPassFailure {
     error: LitecodeError,
     attempts: u8,
-    review_score: Option<u8>,
 }
 
 /// One successful compaction at the boundary between summarize and commit.
@@ -1175,6 +421,22 @@ fn item_text_chars(item: &Item) -> usize {
             FunctionCallOutput::Content(parts) => content_text_chars(parts),
         },
         _ => 0,
+    }
+}
+
+fn item_has_image(item: &Item) -> bool {
+    match item {
+        Item::Message(MessageItem::Input(message)) => message
+            .content
+            .iter()
+            .any(|part| matches!(part, InputContent::InputImage(_))),
+        Item::FunctionCallOutput(output) => match &output.output {
+            FunctionCallOutput::Content(parts) => parts
+                .iter()
+                .any(|part| matches!(part, InputContent::InputImage(_))),
+            FunctionCallOutput::Text(_) => false,
+        },
+        _ => false,
     }
 }
 
@@ -1343,8 +605,7 @@ fn context_meter_for_rows_local(
         super::project_working_rows(rows, request.target.as_ref(), data_root);
     ContextMeter::measure_local(
         request.context_window,
-        envelope.output_reserve,
-        ContextMeter::safety_headroom(request.context_window),
+        request.max_output_tokens as usize,
         &envelope,
         &projection.items,
     )
@@ -1519,7 +780,6 @@ impl CompactPolicy {
                 before_tokens.saturating_sub(after_meter.used_tokens),
                 after_meter.used_tokens,
                 Some(0),
-                None,
             );
             let err = LitecodeError::NothingToCompact;
             emit_compact_failed_with_telemetry(
@@ -1702,7 +962,7 @@ impl CompactPolicy {
                 "mechanical prune alone relieved context pressure; skipping summary"
             );
             let telemetry = prune_run.as_ref().map_or_else(
-                || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0), None),
+                || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0)),
                 |run| {
                     compaction_telemetry(
                         trigger,
@@ -1711,7 +971,6 @@ impl CompactPolicy {
                             .saturating_sub(run.meter_after.used_tokens),
                         run.meter_after.used_tokens,
                         Some(0),
-                        None,
                     )
                 },
             );
@@ -1771,7 +1030,6 @@ impl CompactPolicy {
             tokens_before,
             tokens_pruned,
             tokens_after_prune,
-            None,
             None,
         );
         let expected_revision = sessions.data().revision_blocking(session_id)?;
@@ -1862,7 +1120,6 @@ impl CompactPolicy {
                     tokens_pruned,
                     tokens_after_prune,
                     Some(failure.attempts),
-                    failure.review_score,
                 );
                 emit_compact_failed_with_telemetry(
                     sessions,
@@ -1886,7 +1143,6 @@ impl CompactPolicy {
                 tokens_pruned,
                 tokens_after_prune,
                 Some(summary_attempts),
-                Some(review.score),
             );
             emit_compact_failed_with_telemetry(
                 sessions,
@@ -1926,8 +1182,7 @@ impl CompactPolicy {
             // the complete local envelope over the same request projection.
             ContextMeter::measure_local(
                 request.context_window,
-                envelope.output_reserve,
-                ContextMeter::safety_headroom(request.context_window),
+                request.max_output_tokens as usize,
                 &envelope,
                 &projection.items,
             )
@@ -1947,7 +1202,6 @@ impl CompactPolicy {
                 tokens_pruned,
                 final_count,
                 Some(summary_attempts),
-                Some(review.score),
             );
             emit_compact_failed_with_telemetry(
                 sessions,
@@ -1982,7 +1236,6 @@ impl CompactPolicy {
                     tokens_pruned,
                     final_count,
                     Some(summary_attempts),
-                    Some(review.score),
                 );
                 emit_compact_failed_with_telemetry(
                     sessions,
@@ -2008,7 +1261,6 @@ impl CompactPolicy {
                     tokens_pruned,
                     final_count,
                     Some(summary_attempts),
-                    Some(review.score),
                 );
                 emit_compact_failed_with_telemetry(
                     sessions,
@@ -2072,7 +1324,6 @@ impl CompactPolicy {
             tokens_pruned,
             outcome.tokens_after,
             Some(outcome.summary_attempts),
-            Some(outcome.review.score),
         );
         let mut model = match reload_result {
             Ok(loaded) => loaded,
@@ -2113,7 +1364,6 @@ impl CompactPolicy {
             tokens_before = outcome.tokens_before,
             tokens_after = outcome.tokens_after,
             summary_attempts = outcome.summary_attempts,
-            review_score = outcome.review.score,
             "compaction checkpoint committed"
         );
         let summary = outcome.summary;
@@ -2142,7 +1392,6 @@ impl CompactPolicy {
             return Err(SummaryPassFailure {
                 error: LitecodeError::Canceled,
                 attempts: 0,
-                review_score: None,
             });
         }
 
@@ -2152,20 +1401,10 @@ impl CompactPolicy {
         let prefix = match build_compaction_input(request, sessions, rows, cut) {
             Ok(prefix) => prefix,
             Err(error) => {
-                return Err(SummaryPassFailure {
-                    error,
-                    attempts: 0,
-                    review_score: None,
-                });
+                return Err(SummaryPassFailure { error, attempts: 0 });
             }
         };
-        let prior_summary = rows
-            .first()
-            .and_then(|row| row.checkpoint())
-            .map(|checkpoint| checkpoint.summary_text().to_string());
-        let config = SummaryAcceptanceConfig::default();
         let mut last_review: Option<SummaryReview> = None;
-        let mut retry_constraint: Option<String> = None;
 
         for attempt in 1..=MAX_SUMMARY_ATTEMPTS {
             let artifact = match Self::call_llm_compact_once_with_timeout(
@@ -2174,7 +1413,6 @@ impl CompactPolicy {
                 max_tokens,
                 cancel,
                 COMPACT_REQUEST_TIMEOUT,
-                retry_constraint.as_deref(),
             )
             .await
             {
@@ -2183,14 +1421,12 @@ impl CompactPolicy {
                     return Err(SummaryPassFailure {
                         error: LitecodeError::Canceled,
                         attempts: attempt,
-                        review_score: last_review.as_ref().map(|review| review.score),
                     });
                 }
                 Err(error) => {
                     return Err(SummaryPassFailure {
                         error: as_transport_compaction_error(error),
                         attempts: attempt,
-                        review_score: last_review.as_ref().map(|review| review.score),
                     });
                 }
             };
@@ -2199,26 +1435,16 @@ impl CompactPolicy {
                 return Err(SummaryPassFailure {
                     error: LitecodeError::Canceled,
                     attempts: attempt,
-                    review_score: last_review.as_ref().map(|review| review.score),
                 });
             }
 
-            let review = SummaryAcceptance::review(
-                &artifact,
-                &prefix,
-                request.context_window,
-                prior_summary.as_deref(),
-                &config,
-            );
+            let review = SummaryAcceptance::review(&artifact, &prefix);
             if review.accepted {
                 tracing::info!(
                     summary_len = artifact.text.len(),
                     finish = ?artifact.finish,
                     model = %artifact.model,
                     usage = ?artifact.usage,
-                    score = review.score,
-                    applicable_checks = review.applicable_checks,
-                    threshold = review.threshold,
                     attempt,
                     "keep-recent compaction accepted"
                 );
@@ -2228,20 +1454,14 @@ impl CompactPolicy {
             tracing::warn!(
                 attempt,
                 finish = ?artifact.finish,
-                score = review.score,
-                threshold = review.threshold,
                 failures = ?review.failures,
-                "compaction summary rejected by mechanical acceptance"
+                "compaction summary rejected by minimal acceptance"
             );
-            retry_constraint = Some(summary_retry_constraint(&review.failures));
             last_review = Some(review);
         }
 
         let review = last_review.unwrap_or(SummaryReview {
             accepted: false,
-            score: 0,
-            applicable_checks: 0,
-            threshold: 0,
             failures: vec![SummaryFailure::Empty],
         });
         let kind = if review.failures.iter().any(|failure| {
@@ -2263,7 +1483,6 @@ impl CompactPolicy {
                 ),
             },
             attempts: MAX_SUMMARY_ATTEMPTS,
-            review_score: Some(review.score),
         })
     }
 
@@ -2273,7 +1492,6 @@ impl CompactPolicy {
         max_tokens: u32,
         cancel: &CancellationToken,
         timeout: Duration,
-        retry_constraint: Option<&str>,
     ) -> Result<SummaryArtifact> {
         if cancel.is_cancelled() {
             return Err(LitecodeError::Canceled);
@@ -2281,8 +1499,7 @@ impl CompactPolicy {
 
         let session_id = request.session_id.as_str();
         let model = request.model.as_str();
-        let provider_request =
-            request.build_model_request_with_retry(input, max_tokens, retry_constraint);
+        let provider_request = request.build_model_request(input, max_tokens);
         let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryUsage>));
         let terminal_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SummaryFinish>));
         let usage_cb = std::sync::Arc::clone(&usage_slot);
@@ -2485,14 +1702,12 @@ fn compaction_telemetry(
     tokens_pruned: usize,
     tokens_after: usize,
     summary_attempts: Option<u8>,
-    review_score: Option<u8>,
 ) -> CompactionTelemetry {
     CompactionTelemetry {
         tokens_before: Some(tokens_before),
         tokens_pruned: Some(tokens_pruned),
         tokens_after: Some(tokens_after),
         summary_attempts,
-        review_score,
         overflow_retry: Some(u8::from(trigger == CompactionTrigger::Overflow)),
     }
 }
@@ -2580,7 +1795,6 @@ fn context_meter_for_rows(
     crate::context_pipeline::measure_request_context(
         sessions,
         session_id,
-        request.context_window,
         &envelope,
         baseline,
         rows,
@@ -2612,7 +1826,7 @@ mod tests {
     use crate::llm::{LlmProvider, ModelRequest, RequestPurpose, ToolDef};
     use crate::platform_knobs::ThinkingSpec;
     use crate::provider_catalog::ProviderCatalog;
-    use crate::types::{StreamEvents, assistant_text, user_text};
+    use crate::types::{StreamEvents, assistant_text, user_message, user_text};
     use std::future::Future;
     use std::path::Path;
     use std::pin::Pin;
@@ -2755,18 +1969,8 @@ mod tests {
         }
     }
 
-    fn dsh_summary(anchor: &str) -> String {
-        format!(
-            "## Primary Request and Intent\n- Preserve the user request: {anchor}\n\n\n## Key Technical Concepts\n- Rust compaction pipeline and provider stream terminals\n\n## Files and Code\n- src/context_pipeline/compact.rs: summary acceptance gate\n\n## Errors and Fixes\n- finish_reason=length maps to Incomplete and is rejected\n\n## Pending Jobs\n- none\n\n## Current Work\n- Validate the summary checkpoint before persistence\n\n## Next Step\n- Commit the accepted checkpoint and continue the turn\n\n## Critical Context\n- Keep the main request prefix stable across retries"
-        )
-    }
-
-    fn summary_for_request(request: &ModelRequest) -> String {
-        let prefix = &request.input[..request.input.len().saturating_sub(1)];
-        let anchor = super::latest_user_text(prefix)
-            .and_then(|text| super::recent_user_anchor(&text))
-            .unwrap_or_default();
-        dsh_summary(&anchor)
+    fn summary_for_request(_request: &ModelRequest) -> String {
+        "Short checkpoint text for the main request.".into()
     }
 
     struct RetrySummaryProvider {
@@ -2813,7 +2017,7 @@ mod tests {
                 .push(request.clone());
             emit_completed(&mut on_event);
             let text = if attempt == 0 {
-                "not a DSH checkpoint".to_string()
+                String::new()
             } else {
                 summary_for_request(request)
             };
@@ -2853,9 +2057,7 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<Item>>> + Send + 'a>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             emit_completed(&mut on_event);
-            Box::pin(async {
-                Ok::<_, LitecodeError>(vec![assistant_text("not a valid DSH checkpoint")])
-            })
+            Box::pin(async { Ok::<_, LitecodeError>(vec![assistant_text("")]) })
         }
     }
 
@@ -2954,18 +2156,33 @@ max_output = 8192
             .model("p/compact-model")
             .expect("compact test model")
             .clone();
+        let max_output = target.max_output;
         CompactionRequestContext {
             provider,
             api_key: "sk-test".into(),
             model: target.id.clone(),
-            context_window: target.context_window,
+            context_window: target.context_window_max,
             target,
             thinking: ThinkingSpec::Tier(Default::default()),
-            max_output_tokens: 8192,
+            max_output_tokens: max_output,
             instructions: "system".into(),
             tools: vec![],
             session_id: "s1".into(),
         }
+    }
+
+    fn set_request_window(
+        request: &mut CompactionRequestContext,
+        window: usize,
+        max_output_tokens: u32,
+    ) {
+        let mut target = (*request.target).clone();
+        target.context_window = window;
+        target.context_window_max = window;
+        target.max_output = max_output_tokens;
+        request.target = Arc::new(target);
+        request.context_window = window;
+        request.max_output_tokens = max_output_tokens;
     }
 
     #[tokio::test]
@@ -2978,7 +2195,6 @@ max_output = 8192
             128,
             &cancel,
             Duration::from_millis(50),
-            None,
         )
         .await
         .expect_err("a silent provider must fail, not pend forever");
@@ -3004,7 +2220,6 @@ max_output = 8192
             128,
             &cancel,
             Duration::from_secs(30),
-            None,
         )
         .await
         .expect_err("cancel must abort the pending request");
@@ -3019,555 +2234,64 @@ max_output = 8192
         ))]
     }
 
-    fn accepted_artifact_for(source: &[Item]) -> SummaryArtifact {
-        let anchor = super::latest_user_text(source)
-            .and_then(|text| super::recent_user_anchor(&text))
-            .expect("test source has a recent user anchor");
+    fn completed_summary(text: &str) -> SummaryArtifact {
         SummaryArtifact {
-            text: dsh_summary(&anchor),
+            text: text.into(),
             finish: SummaryFinish::Completed,
+            has_image: false,
             usage: None,
             model: "m".into(),
         }
     }
 
     #[test]
-    fn summary_acceptance_accepts_complete_dsh_with_anchor() {
+    fn summary_acceptance_accepts_completed_smaller_text() {
         let source = acceptance_source("");
-        let artifact = accepted_artifact_for(&source);
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
+        let artifact = completed_summary("Short checkpoint text.");
+        let review = SummaryAcceptance::review(&artifact, &source);
         assert!(review.accepted, "{review:?}");
-        assert!(review.score >= review.threshold);
-        assert!(!review.failures.iter().any(|failure| matches!(
-            failure,
-            SummaryFailure::Finish(_) | SummaryFailure::Empty | SummaryFailure::ToolCall
-        )));
+        assert!(review.failures.is_empty());
     }
 
     #[test]
-    fn summary_acceptance_rejects_missing_terminal_finish() {
+    fn summary_acceptance_rejects_finish_empty_tool_image_and_not_smaller() {
         let source = acceptance_source("");
-        let mut artifact = accepted_artifact_for(&source);
-        artifact.finish = SummaryFinish::Missing;
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
+
+        let mut missing = completed_summary("Short checkpoint text.");
+        missing.finish = SummaryFinish::Missing;
+        let review = SummaryAcceptance::review(&missing, &source);
         assert!(
             review
                 .failures
                 .contains(&SummaryFailure::Finish(SummaryFinish::Missing))
         );
-    }
 
-    #[test]
-    fn summary_acceptance_rejects_empty_preamble_sections_and_low_value() {
-        let source = acceptance_source("");
-        let valid = accepted_artifact_for(&source);
-        let cases = [
-            (String::new(), SummaryFailure::Empty),
-            (
-                format!("Here is a summary.\n{}", valid.text),
-                SummaryFailure::Preamble,
-            ),
-            (
-                format!("{}\nI'm sorry, I can't help.", valid.text),
-                SummaryFailure::LowValue,
-            ),
-        ];
-        for (text, expected) in cases {
-            let mut artifact = valid.clone();
-            artifact.text = text;
-            let review = SummaryAcceptance::review(
-                &artifact,
-                &source,
-                128_000,
-                None,
-                &SummaryAcceptanceConfig::default(),
-            );
-            assert!(!review.accepted, "{review:?}");
-            assert!(
-                review.failures.contains(&expected),
-                "expected {expected:?}, got {:?}",
-                review.failures
-            );
-        }
+        let empty = completed_summary("   ");
+        let review = SummaryAcceptance::review(&empty, &source);
+        assert!(review.failures.contains(&SummaryFailure::Empty));
 
-        let mut artifact = valid.clone();
-        artifact.finish = SummaryFinish::ToolCall;
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
+        let tool = SummaryArtifact {
+            finish: SummaryFinish::ToolCall,
+            ..completed_summary("Short checkpoint text.")
+        };
+        let review = SummaryAcceptance::review(&tool, &source);
         assert!(review.failures.contains(&SummaryFailure::ToolCall));
 
-        let mut artifact = valid.clone();
-        artifact.text = valid
-            .text
-            .replace("## Critical Context", "## Missing Section");
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
-        assert!(
-            review
-                .failures
-                .iter()
-                .any(|failure| matches!(failure, SummaryFailure::MissingSection(_)))
-        );
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_wrong_section_order_and_missing_anchor() {
-        let source = acceptance_source("");
-        let valid = accepted_artifact_for(&source);
-        let mut artifact = valid.clone();
-        artifact.text = valid
-            .text
-            .replace("## Key Technical Concepts", "## TMP_SECTION")
-            .replace("## Primary Request and Intent", "## Key Technical Concepts")
-            .replace("## TMP_SECTION", "## Primary Request and Intent");
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
-        assert!(review.failures.contains(&SummaryFailure::SectionOrder));
-
-        let mut artifact = valid;
-        artifact.text = dsh_summary("a different recent request");
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::MissingRecentUserAnchor)
-        );
-    }
-
-    #[test]
-    fn verbatim_user_anchor_may_contain_a_refusal_phrase() {
-        let source = vec![user_text(format!(
-            "I can't log in and need src/context_pipeline/compact.rs fixed. {}",
-            "word ".repeat(1_500)
-        ))];
-        let artifact = accepted_artifact_for(&source);
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(
-            review.accepted,
-            "the user's own refusal phrase is not summary low-value content: {review:?}"
-        );
-    }
-
-    fn acceptance_source_with_anchor(prefix: &str) -> Vec<Item> {
-        vec![
-            user_text(format!("{prefix} {}", "word ".repeat(1_500))),
-            user_text("latest short request"),
-        ]
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_placeholder_action_sections() {
-        let source = acceptance_source("");
-        let mut artifact = accepted_artifact_for(&source);
-        artifact.text = artifact
-            .text
-            .replace(
-                "- Validate the summary checkpoint before persistence",
-                "- TBD",
-            )
-            .replace(
-                "- Commit the accepted checkpoint and continue the turn",
-                "- see above",
-            );
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::NonActionableWork("Current Work".into()))
-        );
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::NonActionableWork("Next Step".into()))
-        );
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_prefixed_placeholder_action_sections() {
-        for placeholder in [
-            "TBD: run the next check",
-            "TODO - implement the parser",
-            "to-do: finish the fixture",
-            "see above:",
-            "n/a: not available",
-        ] {
-            let source = acceptance_source("");
-            let mut artifact = accepted_artifact_for(&source);
-            artifact.text = artifact
-                .text
-                .replace(
-                    "- Validate the summary checkpoint before persistence",
-                    &format!("- {placeholder}"),
-                )
-                .replace(
-                    "- Commit the accepted checkpoint and continue the turn",
-                    &format!("- {placeholder}"),
-                );
-            let review = SummaryAcceptance::review(
-                &artifact,
-                &source,
-                128_000,
-                None,
-                &SummaryAcceptanceConfig::default(),
-            );
-            assert!(
-                !review.accepted,
-                "placeholder {placeholder:?} accepted: {review:?}"
-            );
-            assert!(
-                review
-                    .failures
-                    .contains(&SummaryFailure::NonActionableWork("Current Work".into())),
-                "placeholder {placeholder:?}: {review:?}"
-            );
-            assert!(
-                review
-                    .failures
-                    .contains(&SummaryFailure::NonActionableWork("Next Step".into())),
-                "placeholder {placeholder:?}: {review:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_placeholder_required_sections_and_primary_none() {
-        let source = acceptance_source("");
-        let valid = accepted_artifact_for(&source);
-
-        let mut placeholders = valid.clone();
-        placeholders.text = placeholders
-            .text
-            .replace(
-                "- Rust compaction pipeline and provider stream terminals",
-                "- (none)",
-            )
-            .replace(
-                "- src/context_pipeline/compact.rs: summary acceptance gate",
-                "- (none)",
-            )
-            .replace(
-                "- Keep the main request prefix stable across retries",
-                "- (none)",
-            );
-        let review = SummaryAcceptance::review(
-            &placeholders,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::PlaceholderContent(
-                    "Key Technical Concepts".into()
-                ))
-        );
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::PlaceholderContent("Files and Code".into()))
-        );
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::PlaceholderContent(
-                    "Critical Context".into()
-                ))
-        );
-
-        let mut primary_none = valid;
-        let primary_line = primary_none
-            .text
-            .lines()
-            .find(|line| {
-                line.trim_start()
-                    .starts_with("- Preserve the user request:")
-            })
-            .expect("primary fixture line")
-            .to_string();
-        primary_none.text = primary_none.text.replace(&primary_line, "- (none)");
-        let review = SummaryAcceptance::review(
-            &primary_none,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::MissingPrimaryRequest)
-        );
-    }
-
-    #[test]
-    fn summary_acceptance_requires_file_and_error_section_anchors() {
-        let source = acceptance_source_with_anchor(
-            "Fix src/context_pipeline/compact.rs after ENOENT failed",
-        );
-        let mut artifact = accepted_artifact_for(&source);
-        let missing_errors = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!missing_errors.accepted, "{missing_errors:?}");
-        assert!(
-            missing_errors
-                .failures
-                .contains(&SummaryFailure::MissingSectionAnchor(
-                    "Errors and Fixes".into()
-                ))
-        );
-
-        artifact.text = artifact.text.replace(
-            "- finish_reason=length maps to Incomplete and is rejected",
-            "- ENOENT failed while opening the checkpoint",
-        );
-        let accepted = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(accepted.accepted, "{accepted:?}");
-
-        let mut files_none = artifact;
-        files_none.text = files_none.text.replace(
-            "- src/context_pipeline/compact.rs: summary acceptance gate",
-            "- (none)",
-        );
-        let review = SummaryAcceptance::review(
-            &files_none,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::PlaceholderContent("Files and Code".into()))
-        );
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_high_overlap_prior_summary_even_when_short() {
-        let source = acceptance_source("");
-        let artifact = accepted_artifact_for(&source);
-        let prior = artifact.text.replace("persistence", "checkpoint storage");
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            Some(&prior),
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(matches!(
-            review.failures.last(),
-            Some(SummaryFailure::PriorSummaryCopied { overlap_percent })
-                if *overlap_percent >= PRIOR_SUMMARY_OVERLAP_PERCENT
-        ));
-
-        let short_prior = "TBD";
-        let mut copied_short = artifact;
-        copied_short.text.push_str("\n- TBD");
-        let review = SummaryAcceptance::review(
-            &copied_short,
-            &source,
-            128_000,
-            Some(short_prior),
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted, "{review:?}");
-        assert!(
-            review
-                .failures
-                .iter()
-                .any(|failure| matches!(failure, SummaryFailure::PriorSummaryCopied { .. }))
-        );
-    }
-
-    #[test]
-    fn summary_acceptance_rejects_too_long_and_insufficient_savings() {
-        let source = acceptance_source("");
-        let valid = accepted_artifact_for(&source);
-        let mut too_long = valid.clone();
-        too_long.text = format!("{}\n{}", too_long.text, "word ".repeat(2_000));
-        let review = SummaryAcceptance::review(
-            &too_long,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
-        assert!(
-            review
-                .failures
-                .iter()
-                .any(|failure| matches!(failure, SummaryFailure::TooLong { .. }))
-        );
-
-        let config = SummaryAcceptanceConfig {
-            max_summary_ratio_percent: 60,
-            ..SummaryAcceptanceConfig::default()
+        let image = SummaryArtifact {
+            has_image: true,
+            ..completed_summary("Short checkpoint text.")
         };
-        let source_tokens = crate::session::estimate::compute_token_estimate(&source).max(1);
-        let target = summary_min_saved_tokens(&config, 128_000, source_tokens);
-        let words = (source_tokens * 55 / 100).max(1);
-        let mut savings = valid.clone();
-        savings.text = format!(
-            "## Primary Request and Intent\n- {}\n",
-            "word ".repeat(words)
-        );
-        let review = SummaryAcceptance::review(&savings, &source, 128_000, None, &config);
-        assert!(!review.accepted);
+        let review = SummaryAcceptance::review(&image, &source);
+        assert!(review.failures.contains(&SummaryFailure::Image));
+
+        let too_large = completed_summary(&"word ".repeat(2_000));
+        let review = SummaryAcceptance::review(&too_large, &source);
         assert!(
             review
                 .failures
                 .iter()
-                .any(|failure| matches!(failure, SummaryFailure::InsufficientSavings { .. })),
-            "expected savings failure at target {target}, got {:?}",
-            review.failures
-        );
-    }
-
-    #[test]
-    fn summary_min_savings_formula_clamps_to_half_the_source() {
-        let config = SummaryAcceptanceConfig::default();
-        assert_eq!(summary_min_saved_tokens(&config, 128_000, 100_000), 8_192);
-        assert_eq!(summary_min_saved_tokens(&config, 80_000, 10_000), 5_000);
-        assert_eq!(summary_min_saved_tokens(&config, 128_000, 2_000), 1_000);
-    }
-
-    #[test]
-    fn summary_quality_threshold_cannot_mask_required_anchor_mismatch() {
-        let source = vec![
-            user_text(format!(
-                "Please inspect src/auth.rs and preserve the exact request. {}",
-                "word ".repeat(1_500)
-            )),
-            user_text("short final request"),
-        ];
-        let artifact = accepted_artifact_for(&source);
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        // The quality total is still 3/4, at the 75% threshold, but the hard
-        // source-anchor gate must reject a same-category wrong path.
-        assert_eq!(review.score, 3, "{review:?}");
-        assert_eq!(review.applicable_checks, 4, "{review:?}");
-        assert_eq!(review.threshold, 3, "{review:?}");
-        assert!(
-            !review.accepted,
-            "hard anchors cannot be thresholded: {review:?}"
-        );
-        assert!(
-            review
-                .failures
-                .contains(&SummaryFailure::MissingSectionAnchor(
-                    "Files and Code".into()
-                ))
-        );
-    }
-
-    #[test]
-    fn summary_quality_threshold_rounds_up_from_applicable_checks() {
-        let config = SummaryAcceptanceConfig::default();
-        assert_eq!(summary_quality_threshold(&config, 0), 0);
-        assert_eq!(summary_quality_threshold(&config, 1), 1);
-        assert_eq!(summary_quality_threshold(&config, 2), 2);
-        assert_eq!(summary_quality_threshold(&config, 3), 3);
-        assert_eq!(summary_quality_threshold(&config, 4), 3);
-        assert_eq!(summary_quality_threshold(&config, 5), 4);
-    }
-
-    #[test]
-    fn summary_acceptance_quality_threshold_rejects_non_actionable_sections() {
-        let source = acceptance_source("");
-        let artifact = SummaryArtifact {
-            text: "## Primary Request and Intent\n- (none)\n\n## Key Technical Concepts\n- rust\n\n## Files and Code\n- src/context_pipeline/compact.rs\n\n## Errors and Fixes\n- none\n\n## Pending Jobs\n- none\n\n## Current Work\n- (none)\n\n## Next Step\n- (none)\n\n## Critical Context\n- none".into(),
-            finish: SummaryFinish::Completed,
-            usage: None,
-            model: "m".into(),
-        };
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &source,
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
-        assert!(!review.accepted);
-        assert!(
-            review
-                .failures
-                .iter()
-                .any(|failure| matches!(failure, SummaryFailure::QualityBelowThreshold { .. }))
+                .any(|failure| matches!(failure, SummaryFailure::NotSmaller { .. })),
+            "{review:?}"
         );
     }
 
@@ -3580,13 +2304,7 @@ max_output = 8192
         message.status = OutputStatus::Incomplete;
         let artifact = SummaryArtifact::from_output(&[truncated], "m".into(), None, None);
         assert_eq!(artifact.finish, SummaryFinish::Missing);
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &acceptance_source(""),
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
+        let review = SummaryAcceptance::review(&artifact, &acceptance_source(""));
         assert!(
             review
                 .failures
@@ -3601,19 +2319,26 @@ max_output = 8192
             Some(SummaryFinish::Incomplete),
         );
         assert_eq!(terminal.finish, SummaryFinish::Incomplete);
-        let review = SummaryAcceptance::review(
-            &terminal,
-            &acceptance_source(""),
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
+        let review = SummaryAcceptance::review(&terminal, &acceptance_source(""));
         assert!(
             review.failures.iter().any(|failure| matches!(
                 failure,
                 SummaryFailure::Finish(SummaryFinish::Incomplete)
             ))
         );
+    }
+
+    #[test]
+    fn compaction_summary_detects_image_output() {
+        let items = vec![
+            assistant_text("short checkpoint"),
+            user_message("", &["litecode-media:probe-image".into()]),
+        ];
+        let artifact =
+            SummaryArtifact::from_output(&items, "m".into(), None, Some(SummaryFinish::Completed));
+        assert!(artifact.has_image);
+        let review = SummaryAcceptance::review(&artifact, &acceptance_source(""));
+        assert!(review.failures.contains(&SummaryFailure::Image));
     }
 
     #[test]
@@ -3633,13 +2358,7 @@ max_output = 8192
         ];
         let artifact = SummaryArtifact::from_output(&items, "m".into(), None, None);
         assert_eq!(artifact.finish, SummaryFinish::ToolCall);
-        let review = SummaryAcceptance::review(
-            &artifact,
-            &acceptance_source(""),
-            128_000,
-            None,
-            &SummaryAcceptanceConfig::default(),
-        );
+        let review = SummaryAcceptance::review(&artifact, &acceptance_source(""));
         assert!(
             review
                 .failures
@@ -3735,11 +2454,10 @@ max_output = 8192
             .map(|row| item_text_preview(&row.payload.model_item()))
             .collect();
         assert!(
-            mem_previews.first().is_some_and(|t| {
-                t.contains("## Primary Request and Intent")
-                    && !t.starts_with("[Conversation summary]")
-            }),
-            "emergency cache must lead with summary, got {mem_previews:?}"
+            mem_previews
+                .first()
+                .is_some_and(|t| t.contains("Short checkpoint text for the main request.")),
+            "emergency cache must lead with the checkpoint summary, got {mem_previews:?}"
         );
         assert!(
             mem_previews
@@ -3769,9 +2487,8 @@ max_output = 8192
             .expect("DB working set");
         let db0 = item_text_preview(&db_rows[0].payload.model_item());
         assert!(
-            db0.contains("## Primary Request and Intent")
-                && !db0.starts_with("[Conversation summary]"),
-            "DB must show compacted summary, got {db0}"
+            db0.contains("Short checkpoint text for the main request."),
+            "DB must show the compacted summary, got {db0}"
         );
         assert_eq!(
             checkpoint_row.log_seq, db_rows[0].log_seq,
@@ -3802,7 +2519,6 @@ max_output = 8192
                         assert!(telemetry.tokens_pruned.is_some());
                         assert!(telemetry.tokens_after.is_some());
                         assert!(telemetry.summary_attempts.is_some());
-                        assert!(telemetry.review_score.is_some());
                         assert_eq!(telemetry.overflow_retry, Some(0));
                     }
                     CompactionStage::Failed => saw_failed = true,
@@ -3871,8 +2587,7 @@ max_output = 8192
         );
         let provider = Arc::new(CountingProvider::new());
         let mut request = compact_context(provider.clone());
-        request.context_window = budget.budget_limit();
-        request.max_output_tokens = 1_024;
+        set_request_window(&mut request, budget.budget_limit(), 1_024);
         let meter = context_meter_for_rows(
             &sessions,
             &sid,
@@ -3906,7 +2621,7 @@ max_output = 8192
     }
 
     #[tokio::test]
-    async fn summary_retry_keeps_main_prefix_and_only_changes_trailing_constraint() {
+    async fn summary_retry_reuses_the_identical_request() {
         let (sessions, sid, _header) = open_seeded();
         let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
         let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
@@ -3928,7 +2643,7 @@ max_output = 8192
         .await
         .expect("second summary attempt is accepted")
         .expect("compaction commits after retry");
-        assert!(outcome.text.contains("## Primary Request and Intent"));
+        assert_eq!(outcome.text, "Short checkpoint text for the main request.");
         assert_eq!(
             provider.calls.load(std::sync::atomic::Ordering::SeqCst),
             2,
@@ -3936,6 +2651,11 @@ max_output = 8192
         );
         let requests = provider.requests();
         assert_eq!(requests.len(), 2);
+        assert_eq!(
+            format!("{:?}", requests[0]),
+            format!("{:?}", requests[1]),
+            "retry must reuse the exact identical ModelRequest"
+        );
         let first_prefix = &requests[0].input[..requests[0].input.len() - 1];
         let second_prefix = &requests[1].input[..requests[1].input.len() - 1];
         assert_eq!(
@@ -3948,9 +2668,11 @@ max_output = 8192
             "first attempt uses the canonical instruction"
         );
         let retry_instruction = item_text_preview(requests[1].input.last().unwrap());
-        assert!(retry_instruction.starts_with(crate::llm::COMPACTION_INSTRUCTION));
-        assert!(retry_instruction.contains("Retry correction"));
-        assert!(retry_instruction.contains("eight DSH sections"));
+        assert_eq!(
+            retry_instruction,
+            crate::llm::COMPACTION_INSTRUCTION,
+            "retry must reuse the exact same instruction"
+        );
     }
 
     async fn run_rejecting_summary(
@@ -3984,7 +2706,7 @@ max_output = 8192
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(
             error.compaction_failure_kind(),
-            Some(crate::types::CompactionFailureKind::Quality)
+            Some(crate::types::CompactionFailureKind::SummaryFinish)
         );
         assert!(
             !events
@@ -4050,8 +2772,7 @@ max_output = 8192
         let before_revision = sessions.data().revision_blocking(&sid).unwrap();
         let provider = Arc::new(InvalidSummaryProvider::new());
         let mut request = compact_context(provider.clone());
-        request.context_window = 10_000;
-        request.max_output_tokens = 1_024;
+        set_request_window(&mut request, 10_000, 1_024);
         let error = CompactPolicy::compact_transcript(
             &BudgetPolicy::new(10_000).with_keep_recent_tokens(1),
             &sessions,
@@ -4069,7 +2790,7 @@ max_output = 8192
         .expect_err("invalid summary must fail after the committed prune");
         assert_eq!(
             error.compaction_failure_kind(),
-            Some(crate::types::CompactionFailureKind::Quality)
+            Some(crate::types::CompactionFailureKind::SummaryFinish)
         );
         assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 
@@ -4256,8 +2977,7 @@ max_output = 8192
         let baseline = ProviderPromptBaseline::default();
         let provider = Arc::new(CountingProvider::new());
         let mut request = compact_context(provider.clone());
-        request.context_window = budget.budget_limit();
-        request.max_output_tokens = 1_024;
+        set_request_window(&mut request, budget.budget_limit(), 1_024);
         let did = CompactPolicy
             .compact_if_needed(
                 &budget,
@@ -4305,8 +3025,7 @@ max_output = 8192
         assert!(!meter.should_compact(), "count {local}");
         let provider = Arc::new(CountingProvider::new());
         let mut request = compact_context(provider.clone());
-        request.context_window = budget.budget_limit();
-        request.max_output_tokens = 1_024;
+        set_request_window(&mut request, budget.budget_limit(), 1_024);
         let mut rows = rows;
         let did = CompactPolicy
             .compact_if_needed(

@@ -34,6 +34,14 @@ fn test_model() -> Arc<ResolvedModel> {
         .clone()
 }
 
+fn model_with(window: usize, output: u32) -> Arc<ResolvedModel> {
+    let mut model = (*test_model()).clone();
+    model.context_window = window;
+    model.context_window_max = window;
+    model.max_output = output;
+    Arc::new(model)
+}
+
 fn binding(context_window: usize, max_output_tokens: u32) -> SessionBindingProjection {
     SessionBindingProjection {
         agent_id: "default".into(),
@@ -56,8 +64,7 @@ fn provider_request(
         ScriptedProvider::with_texts_legacy_accepting_compaction_summary(&["compact summary"]),
     );
     let mut request = common::test_compaction_request(provider, "system instructions", vec![], sid);
-    request.context_window = context_window;
-    request.max_output_tokens = max_output_tokens;
+    common::set_compaction_request_capacity(&mut request, context_window, max_output_tokens);
     request
 }
 
@@ -66,7 +73,7 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
-    let model = test_model();
+    let model = model_with(10_000, 1_024);
     let data_root = fixture.dir.path();
 
     let seed: Vec<_> = (0..30)
@@ -99,10 +106,10 @@ async fn auto_manual_and_ui_share_provider_plus_suffix_meter() {
     baseline.record(8_000, header);
 
     let auto_meter = measure_request_context(
-        &sessions, &sid, 10_000, &envelope, &baseline, &rows, &model, data_root,
+        &sessions, &sid, &envelope, &baseline, &rows, &model, data_root,
     );
     let manual_meter =
-        measure_persisted_context(&sessions, &sid, 10_000, &envelope, &model, data_root).unwrap();
+        measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
 
     let pipeline = ContextPipeline::new(10_000, test_context(data_root), data_root.to_path_buf())
         .with_keep_recent_tokens(1);
@@ -181,7 +188,7 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
-    let model = test_model();
+    let model = model_with(8_000, 1_024);
     let data_root = fixture.dir.path();
 
     let mut seed: Vec<_> = (0..30)
@@ -213,13 +220,13 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
     let suffix_tokens = litecode::session::estimate::compute_token_estimate(&[suffix_item.clone()]);
     sessions.insert_detail_rows(&sid, &[suffix_item]).unwrap();
 
-    let request = provider_request(&sid, 9_000, 1_024);
+    let request = provider_request(&sid, 8_000, 1_024);
     let envelope = ContextEnvelope::from_compaction_request(&request);
     let rows = sessions.data().working_set_blocking(&sid).unwrap();
     let baseline = ProviderPromptBaseline::default();
     baseline.record(7_000, header);
 
-    let pipeline = ContextPipeline::new(9_000, test_context(data_root), data_root.to_path_buf());
+    let pipeline = ContextPipeline::new(8_000, test_context(data_root), data_root.to_path_buf());
     pipeline.freeze_request_envelope(envelope.clone());
     pipeline.stage_working(rows.clone());
     pipeline
@@ -253,18 +260,18 @@ async fn covered_pad_is_not_charged_again_as_provider_suffix() {
     assert!(pad_tokens > 0, "the pad is a real token-bearing item");
 
     let auto_meter = measure_request_context(
-        &sessions, &sid, 9_000, &envelope, &baseline, &rows, &model, data_root,
+        &sessions, &sid, &envelope, &baseline, &rows, &model, data_root,
     );
     let manual_meter =
-        measure_persisted_context(&sessions, &sid, 9_000, &envelope, &model, data_root).unwrap();
+        measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
     let mut proj = Projection::new_with_model(
         sid.clone(),
         Arc::clone(&sessions),
-        9_000,
+        8_000,
         Some(model.clone()),
     );
     proj.set_context_envelope(envelope.clone());
-    let snap = proj.snapshot("/proj", &binding(9_000, 1_024));
+    let snap = proj.snapshot("/proj", &binding(8_000, 1_024));
 
     let expected = 7_000 + suffix_tokens;
     for (label, meter) in [
@@ -314,7 +321,7 @@ async fn local_meter_uses_the_padded_and_capability_projected_request() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
-    let model = test_model();
+    let model = model_with(10_000, 1_024);
     let data_root = fixture.dir.path();
 
     let seed = vec![
@@ -354,10 +361,10 @@ async fn local_meter_uses_the_padded_and_capability_projected_request() {
     let expected = envelope.fixed_prompt_tokens()
         + litecode::session::estimate::compute_token_estimate(&prepared.items);
     let auto_meter = measure_request_context(
-        &sessions, &sid, 10_000, &envelope, &baseline, &rows, &model, data_root,
+        &sessions, &sid, &envelope, &baseline, &rows, &model, data_root,
     );
     let manual_meter =
-        measure_persisted_context(&sessions, &sid, 10_000, &envelope, &model, data_root).unwrap();
+        measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
     let mut proj =
         Projection::new_with_model(sid.clone(), Arc::clone(&sessions), 10_000, Some(model));
     proj.set_context_envelope(envelope.clone());
@@ -381,10 +388,10 @@ async fn local_meter_uses_the_padded_and_capability_projected_request() {
 async fn degenerate_windows_share_one_meter_across_pipeline_auto_manual_and_ui() {
     let fixture = SessionDataFixture::new();
     let sessions = Arc::new(fixture.manager());
-    let model = test_model();
     let data_root = fixture.dir.path();
 
     for window in [0usize, 1, 2, 8] {
+        let model = model_with(window, 8);
         let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
         sessions
             .insert_detail_rows(&sid, &[user_text("window fixture")])
@@ -409,11 +416,10 @@ async fn degenerate_windows_share_one_meter_across_pipeline_auto_manual_and_ui()
         );
 
         let auto = measure_request_context(
-            &sessions, &sid, window, &envelope, &baseline, &rows, &model, data_root,
+            &sessions, &sid, &envelope, &baseline, &rows, &model, data_root,
         );
         let manual =
-            measure_persisted_context(&sessions, &sid, window, &envelope, &model, data_root)
-                .unwrap();
+            measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
         let mut proj = Projection::new_with_model(
             sid.clone(),
             Arc::clone(&sessions),
@@ -446,10 +452,6 @@ async fn degenerate_windows_share_one_meter_across_pipeline_auto_manual_and_ui()
                 "{label} used W={window}"
             );
             assert_eq!(meter.source, auto.source, "{label} source W={window}");
-            assert_eq!(
-                meter.safety_headroom, auto.safety_headroom,
-                "{label} headroom W={window}"
-            );
             assert_eq!(
                 meter.prompt_limit, auto.prompt_limit,
                 "{label} prompt_limit W={window}"
@@ -630,7 +632,10 @@ fn latest_persisted_envelope_round_trips_for_cold_snapshot() {
     );
     let proj = Projection::new_with_model(sid.clone(), Arc::clone(&sessions), 10_000, Some(model));
     let snap = proj.snapshot("/proj", &binding(10_000, 512));
-    assert_eq!(snap.context_envelope, envelope);
+    let mut expected_snapshot_envelope = envelope.clone();
+    expected_snapshot_envelope.output_reserve = 8_192;
+    assert_eq!(snap.context_envelope, expected_snapshot_envelope);
+    assert_eq!(snap.context_meter.output_reserve, 8_192);
     assert!(snap.context_envelope.tools_tokens > 0);
     assert_eq!(snap.context_meter.source, ContextMeterSource::LocalEnvelope);
     assert!(

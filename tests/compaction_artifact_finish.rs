@@ -156,12 +156,7 @@ async fn failed_summary_finish_never_writes_a_compacted_checkpoint() {
     );
 }
 
-async fn assert_rejected_quality_summary(
-    anchor: &str,
-    summary: String,
-    label: &str,
-    expected_failure: &str,
-) {
+async fn assert_legacy_heuristic_summary_is_accepted(anchor: &str, summary: String, label: &str) {
     let sessions = Arc::new(SessionManager::new_for_test(
         Arc::new(litecode::config::TurnGuard::new()),
         String::new(),
@@ -176,22 +171,17 @@ async fn assert_rejected_quality_summary(
     seed.push(user_text(format!("{label}-kept-tail")));
     sessions.insert_detail_rows(&sid, &seed).unwrap();
     let mut rows = sessions.data().working_set_blocking(&sid).unwrap();
-    let before = row_snapshot(&rows);
 
     let response = vec![common::assistant_text_item(
         &summary,
-        "msg_rejected_summary",
+        "msg_accepted_summary",
     )];
-    let recording = Arc::new(RecordingProvider::new(vec![response.clone(), response]));
-    let captured = Arc::clone(&recording);
+    let recording = Arc::new(RecordingProvider::new(vec![response]));
     let provider: Arc<dyn LlmProvider> = recording;
     let request =
         common::test_compaction_request(provider, "main system / instructions", Vec::new(), &sid);
-    let Some(mut lifecycle) = sessions.subscribe(&sid) else {
-        panic!("lifecycle subscription");
-    };
 
-    let error = CompactPolicy::compact_transcript(
+    let artifact = CompactPolicy::compact_transcript(
         &BudgetPolicy::new(128_000).with_keep_recent_tokens(1),
         &sessions,
         &sid,
@@ -205,83 +195,22 @@ async fn assert_rejected_quality_summary(
         &sessions.data_root_path(),
     )
     .await
-    .expect_err("rejected summary must not be accepted");
-    assert_eq!(
-        error.compaction_failure_kind(),
-        Some(litecode::types::CompactionFailureKind::Quality),
-        "{label}: quality gate must use the structured Quality subtype: {error:?}"
-    );
+    .expect("legacy heuristic text is accepted under the minimal contract")
+    .expect("compaction commits");
+    assert_eq!(artifact.text, summary);
     assert!(
-        error.to_string().contains(expected_failure),
-        "{label}: expected {expected_failure} in rejection, got {error}"
-    );
-    let mut lifecycle_fail_kind = None;
-    let mut failed_telemetry = None;
-    while let Ok(envelope) = lifecycle.try_recv() {
-        if let InternalEvent::CompactionLifecycle {
-            stage: CompactionStage::Failed,
-            fail_kind,
-            telemetry,
-            ..
-        } = envelope.event
-        {
-            lifecycle_fail_kind = fail_kind;
-            failed_telemetry = Some(telemetry);
-        }
-    }
-    assert_eq!(
-        lifecycle_fail_kind,
-        Some(CompactionFailKind::Quality),
-        "{label}: lifecycle Failed event must retain the structured quality subtype"
-    );
-    let telemetry = failed_telemetry.expect("quality failure telemetry");
-    assert!(
-        telemetry.tokens_before.is_some()
-            && telemetry.tokens_pruned.is_some()
-            && telemetry.tokens_after.is_some(),
-        "{label}: quality failure must retain measured token fields: {telemetry:?}"
-    );
-    assert_eq!(
-        telemetry.summary_attempts,
-        Some(2),
-        "{label}: quality failure must report both total attempts"
-    );
-    assert!(
-        telemetry.review_score.is_some(),
-        "{label}: quality failure must retain the final review score: {telemetry:?}"
-    );
-    assert_eq!(
-        telemetry.overflow_retry,
-        Some(0),
-        "{label}: non-overflow failure must report zero overflow retries"
-    );
-    assert_eq!(
-        row_snapshot(&rows),
-        before,
-        "{label}: rejected quality summary must restore in-memory rows"
-    );
-    assert_eq!(
-        row_snapshot(&sessions.data().working_set_blocking(&sid).unwrap()),
-        before,
-        "{label}: durable rows must remain unchanged"
-    );
-    let events = sessions.data().events_blocking(&sid).unwrap();
-    assert!(
-        !events
+        sessions
+            .data()
+            .events_blocking(&sid)
+            .unwrap()
             .iter()
             .any(|event| matches!(event.event_type, EventType::Compacted)),
-        "{label}: a quality-rejected summary must not write a Compacted event"
-    );
-    let requests = captured.captured();
-    assert_eq!(
-        requests.len(),
-        2,
-        "{label}: quality failures get exactly one retry"
+        "{label}: accepted summary writes Compacted"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn placeholder_summary_is_a_quality_failure_without_checkpoint_or_row_mutation() {
+async fn placeholder_text_is_accepted_without_a_quality_gate() {
     let anchor = "quality-placeholder-anchor";
     let weak = valid_summary(anchor)
         .replace(
@@ -292,11 +221,11 @@ async fn placeholder_summary_is_a_quality_failure_without_checkpoint_or_row_muta
             "- Continue the main request after the accepted checkpoint",
             "- see above",
         );
-    assert_rejected_quality_summary(anchor, weak, "quality-placeholder", "NonActionableWork").await;
+    assert_legacy_heuristic_summary_is_accepted(anchor, weak, "quality-placeholder").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn prefixed_placeholder_summary_is_a_quality_failure_without_checkpoint() {
+async fn prefixed_placeholder_text_is_accepted_without_a_quality_gate() {
     let anchor = "quality-prefixed-anchor";
     let weak = valid_summary(anchor)
         .replace(
@@ -307,11 +236,11 @@ async fn prefixed_placeholder_summary_is_a_quality_failure_without_checkpoint() 
             "- Continue the main request after the accepted checkpoint",
             "- TODO: implement the pending parser",
         );
-    assert_rejected_quality_summary(anchor, weak, "quality-prefixed", "NonActionableWork").await;
+    assert_legacy_heuristic_summary_is_accepted(anchor, weak, "quality-prefixed").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn wrong_source_anchor_summary_is_a_quality_failure_without_checkpoint() {
+async fn unrelated_source_anchor_text_is_accepted_without_a_quality_gate() {
     let anchor = "wrong-anchor-request src/context_pipeline/compact.rs ENOENT";
     let wrong = valid_summary(anchor)
         .replace(
@@ -322,13 +251,7 @@ async fn wrong_source_anchor_summary_is_a_quality_failure_without_checkpoint() {
             "- max_output_tokens and max_tokens map to incomplete summaries",
             "- EACCES permission denied while opening a different file",
         );
-    assert_rejected_quality_summary(
-        anchor,
-        wrong,
-        "quality-wrong-anchor",
-        "MissingSectionAnchor",
-    )
-    .await;
+    assert_legacy_heuristic_summary_is_accepted(anchor, wrong, "quality-wrong-anchor").await;
 }
 
 fn valid_summary(anchor: &str) -> String {

@@ -25,9 +25,8 @@ pub enum RequestPurpose {
     Compaction,
 }
 
-/// Last input item of every compaction request. DSH's 8-section instruction
-/// is the single source; only the recent-user verbatim anchor line is LiteCode's
-/// additive rule.
+/// Last input item of every compaction request. The instruction is the single
+/// source for the compaction call mode.
 pub use crate::config::global_db::COMPACTION_INSTRUCTION;
 /// Everything a compaction call inherits from the current main turn.
 ///
@@ -61,26 +60,12 @@ impl CompactionRequestContext {
     /// The caller supplies the already model-projected discarded prefix in
     /// original Item order. Only output-side controls and the trailing
     /// instruction differ from a main request.
-    pub fn build_model_request(&self, input: Vec<Item>, max_output_tokens: u32) -> ModelRequest {
-        self.build_model_request_with_retry(input, max_output_tokens, None)
-    }
-
-    /// Build the same compaction request, optionally appending one correction
-    /// after the DSH instruction. The main prefix is never changed: a retry
-    /// differs only in the trailing instruction, preserving prompt cache.
-    pub fn build_model_request_with_retry(
+    pub fn build_model_request(
         &self,
         mut input: Vec<Item>,
         max_output_tokens: u32,
-        retry_constraint: Option<&str>,
     ) -> ModelRequest {
-        let instruction = match retry_constraint {
-            Some(constraint) => format!(
-                "{COMPACTION_INSTRUCTION}\n\nRetry correction (the previous summary was rejected):\n{constraint}"
-            ),
-            None => COMPACTION_INSTRUCTION.to_string(),
-        };
-        input.push(user_text(instruction));
+        input.push(user_text(COMPACTION_INSTRUCTION.to_string()));
         ModelRequest {
             model: self.model.clone(),
             instructions: self.instructions.clone(),

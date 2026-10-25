@@ -185,7 +185,6 @@ impl Projection {
 
     fn measure_context(
         &self,
-        context_window: usize,
         max_output_tokens: u32,
     ) -> Option<crate::context_pipeline::ContextMeter> {
         let model = self.request_model.as_ref()?;
@@ -201,7 +200,6 @@ impl Projection {
         crate::context_pipeline::measure_persisted_context(
             &self.sessions,
             &self.session_id,
-            context_window,
             &envelope,
             model,
             &self.sessions.data_root_path(),
@@ -221,7 +219,6 @@ impl Projection {
             crate::context_pipeline::measure_persisted_context_with_breakdown(
                 &self.sessions,
                 &self.session_id,
-                self.context_window,
                 &envelope,
                 model,
                 &self.sessions.data_root_path(),
@@ -247,25 +244,22 @@ impl Projection {
         } else {
             self.context_envelope.output_reserve
         };
-        let effective_output = raw_output.min(context_window.saturating_sub(2));
         if self.context_meter.context_window == context_window
-            && self.context_meter.output_reserve == effective_output
+            && self.context_meter.output_reserve == raw_output
         {
             return self.context_meter.clone();
         }
-        self.measure_context(context_window, max_output_tokens)
-            .unwrap_or_else(|| {
-                // No resolved model means there is no request projection to
-                // measure. Publish a disabled local meter rather than a
-                // transcript-only estimate.
-                crate::context_pipeline::ContextMeter::new(
-                    context_window,
-                    raw_output,
-                    crate::context_pipeline::safety_headroom(context_window),
-                    self.context_envelope.fixed_prompt_tokens(),
-                    crate::context_pipeline::ContextMeterSource::LocalEnvelope,
-                )
-            })
+        self.measure_context(max_output_tokens).unwrap_or_else(|| {
+            // No resolved model means there is no request projection to
+            // measure. Publish a disabled local meter rather than a
+            // transcript-only estimate.
+            crate::context_pipeline::ContextMeter::new(
+                context_window,
+                raw_output,
+                self.context_envelope.fixed_prompt_tokens(),
+                crate::context_pipeline::ContextMeterSource::LocalEnvelope,
+            )
+        })
     }
 }
 
@@ -288,7 +282,6 @@ impl Projection {
             Some(model) => crate::context_pipeline::measure_persisted_context_with_breakdown(
                 &sessions,
                 &session_id,
-                context_window,
                 &context_envelope,
                 model,
                 &sessions.data_root_path(),
@@ -1711,7 +1704,7 @@ mod compact_item_wire_tests {
         used: usize,
         source: crate::context_pipeline::ContextMeterSource,
     ) -> crate::context_pipeline::ContextMeter {
-        crate::context_pipeline::ContextMeter::new(1_000, 100, 125, used, source)
+        crate::context_pipeline::ContextMeter::new(1_000, 100, used, source)
     }
 
     fn request_built_event(
@@ -1793,7 +1786,6 @@ mod compact_item_wire_tests {
             tokens_pruned: Some(10),
             tokens_after: Some(70),
             summary_attempts: Some(2),
-            review_score: Some(4),
             overflow_retry: Some(0),
         };
 
@@ -1822,7 +1814,6 @@ mod compact_item_wire_tests {
             assert_eq!(wire["tokens_pruned"], 10);
             assert_eq!(wire["tokens_after"], 70);
             assert_eq!(wire["summary_attempts"], 2);
-            assert_eq!(wire["review_score"], 4);
             assert_eq!(wire["overflow_retry"], 0);
         }
     }

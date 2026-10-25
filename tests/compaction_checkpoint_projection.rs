@@ -248,7 +248,7 @@ async fn second_compaction_reuses_one_checkpoint_prefix_and_merge_prior_instruct
 }
 
 #[test]
-fn dsh_instruction_has_eight_sections_in_order_and_one_anchor_line() {
+fn dsh_instruction_has_eight_sections_in_order_and_no_anchor_contract() {
     let sections = [
         "## Primary Request and Intent",
         "## Key Technical Concepts",
@@ -267,12 +267,9 @@ fn dsh_instruction_has_eight_sections_in_order_and_one_anchor_line() {
         cursor += index + section.len();
     }
     assert!(COMPACTION_INSTRUCTION.starts_with("You are now acting as the compaction call mode"));
-    assert_eq!(
-        COMPACTION_INSTRUCTION
-            .matches("include the most recent user message verbatim")
-            .count(),
-        1,
-        "only the single LiteCode anchor line was added"
+    assert!(
+        !COMPACTION_INSTRUCTION.contains("most recent user message"),
+        "the instruction must not impose a latest-user anchor contract"
     );
     assert!(
         COMPACTION_INSTRUCTION

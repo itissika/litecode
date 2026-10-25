@@ -50,8 +50,8 @@ pub enum CompactionFailKind {
 
 /// Metrics attached to every compaction lifecycle transition. Token and
 /// overflow fields are populated as soon as the surface is measured; summary
-/// attempts and review score are populated once a summary attempt has finished.
-/// A failed transition never discards metrics that were already measured.
+/// attempts are populated once a summary attempt has finished. A failed
+/// transition never discards metrics that were already measured.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactionTelemetry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,8 +62,6 @@ pub struct CompactionTelemetry {
     pub tokens_after: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_attempts: Option<u8>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub review_score: Option<u8>,
     /// Number of provider-overflow recovery retries represented by this run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow_retry: Option<u8>,

@@ -142,15 +142,13 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
     let provider = Arc::new(RecordingProvider::new(vec![]));
     let mut request =
         common::test_compaction_request(provider.clone(), "main instructions", vec![], &sid);
-    request.context_window = 12_000;
-    request.max_output_tokens = 1_024;
+    common::set_compaction_request_capacity(&mut request, 12_000, 1_024);
 
     let envelope = ContextEnvelope::from_compaction_request(&request);
     let baseline = ProviderPromptBaseline::default();
     let before_meter = measure_request_context(
         &sessions,
         &sid,
-        request.context_window,
         &envelope,
         &baseline,
         &before_rows,
@@ -308,7 +306,6 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
     let after_meter = measure_request_context(
         &sessions,
         &sid,
-        request.context_window,
         &after_envelope,
         &baseline,
         &after_rows,
@@ -363,15 +360,13 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
     ));
     let captured = Arc::clone(&provider);
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
-    request.context_window = 7_000;
-    request.max_output_tokens = 512;
+    common::set_compaction_request_capacity(&mut request, 7_000, 512);
 
     let envelope = ContextEnvelope::from_compaction_request(&request);
     let baseline = ProviderPromptBaseline::default();
     let meter = measure_request_context(
         &sessions,
         &sid,
-        request.context_window,
         &envelope,
         &baseline,
         &before_rows,
@@ -523,8 +518,7 @@ async fn stale_provider_bill_cannot_hide_prune_savings_after_cold_restart() {
         let provider = Arc::new(RecordingProvider::new(vec![]));
         let mut request =
             common::test_compaction_request(provider, "main instructions", vec![], &sid);
-        request.context_window = 12_000;
-        request.max_output_tokens = 1_024;
+        common::set_compaction_request_capacity(&mut request, 12_000, 1_024);
 
         let baseline = ProviderPromptBaseline::default();
         let pipeline = ContextPipeline::new(
@@ -583,8 +577,7 @@ async fn stale_provider_bill_cannot_hide_prune_savings_after_cold_restart() {
     let meta = sessions.data().meta_blocking(&sid).expect("cold meta");
     let provider = Arc::new(RecordingProvider::new(vec![]));
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
-    request.context_window = 12_000;
-    request.max_output_tokens = 1_024;
+    common::set_compaction_request_capacity(&mut request, 12_000, 1_024);
     let pipeline = ContextPipeline::new(
         12_000,
         Context {
@@ -688,8 +681,7 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
 
     let provider = Arc::new(RecordingProvider::new(vec![]));
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
-    request.context_window = 12_000;
-    request.max_output_tokens = 1_024;
+    common::set_compaction_request_capacity(&mut request, 12_000, 1_024);
 
     let pipeline = ContextPipeline::new(
         12_000,
@@ -880,10 +872,6 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
             telemetry.summary_attempts,
             Some(0),
             "prune-only {stage} must report zero summary attempts"
-        );
-        assert_eq!(
-            telemetry.review_score, None,
-            "prune-only {stage} must report no review score"
         );
         assert_eq!(
             telemetry.overflow_retry,

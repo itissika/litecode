@@ -653,7 +653,12 @@ async fn restore_row_lands_after_compacted_and_prefix_stays() {
     let baseline = ProviderPromptBaseline::default();
     baseline.record(8_500, u64::MAX);
     let mut request = common::test_compaction_request(Arc::new(provider), "system", vec![], &sid);
-    request.context_window = pipeline.context_window();
+    let max_output_tokens = request.max_output_tokens;
+    common::set_compaction_request_capacity(
+        &mut request,
+        pipeline.context_window(),
+        max_output_tokens,
+    );
     let compacted = pipeline
         .compact_step(&sessions, &sid, &request, 1024, &baseline, 1, &cancel)
         .await

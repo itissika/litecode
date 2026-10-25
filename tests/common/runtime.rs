@@ -130,7 +130,7 @@ pub fn test_turn_binding(
         provider_id: model.provider_id.clone(),
         model_ref: model.reference.clone(),
         api_model_id: model.id.clone(),
-        context_window: model.context_window,
+        context_window: model.context_window_max,
         max_tokens: model.max_output,
         thinking_tier: Default::default(),
         context_mode: Default::default(),
@@ -159,7 +159,7 @@ pub fn test_compaction_request(
         provider,
         api_key: "test-key".into(),
         model: target.id.clone(),
-        context_window: target.context_window,
+        context_window: target.context_window_max,
         max_output_tokens: target.max_output,
         target,
         thinking: litecode::platform_knobs::ThinkingSpec::Tier(Default::default()),
@@ -168,6 +168,22 @@ pub fn test_compaction_request(
         session_id: session_id.to_string(),
     }
 }
+/// Keep the duplicated compaction request capacity fields and its resolved
+/// model target in lockstep for tests that deliberately use a smaller window.
+pub fn set_compaction_request_capacity(
+    request: &mut litecode::llm::CompactionRequestContext,
+    context_window: usize,
+    max_output_tokens: u32,
+) {
+    let mut target = (*request.target).clone();
+    target.context_window = context_window;
+    target.context_window_max = context_window;
+    target.max_output = max_output_tokens;
+    request.target = Arc::new(target);
+    request.context_window = context_window;
+    request.max_output_tokens = max_output_tokens;
+}
+
 /// Build `AgentRuntime` against a live `LlmProvider` (Responses product path).
 ///
 /// `cwd` must already contain an initialized `.litecode/` (see [`test_workspace`]).

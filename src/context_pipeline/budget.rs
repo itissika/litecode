@@ -174,15 +174,8 @@ mod tests {
             covered_seq: Some(4),
         };
         let suffix = crate::context_pipeline::estimate::compute_token_estimate(&items[1..]);
-        let meter = ContextMeter::measure(
-            10_000,
-            env.output_reserve,
-            ContextMeter::safety_headroom(10_000),
-            &env,
-            &items,
-            &seqs,
-            Some(bill),
-        );
+        let meter =
+            ContextMeter::measure(10_000, env.output_reserve, &env, &items, &seqs, Some(bill));
         assert_eq!(meter.used_tokens, 7_000 + suffix);
         assert_eq!(meter.source, ContextMeterSource::ProviderPlusSuffix);
     }

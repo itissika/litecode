@@ -23,9 +23,12 @@ The unique production execution path is:
 4. `first_pass_compaction` runs only the summary attempt loop and invokes
    `call_llm_compact_once_with_timeout` with the main request shape plus
    `COMPACTION_INSTRUCTION`. `MAX_SUMMARY_ATTEMPTS` is the total attempt budget
-   (two total attempts: the first call plus one correction retry), not an
-   additional retry count. Each `SummaryArtifact` is reviewed for finish,
-   structure, quality, and savings before it is accepted.
+   (exactly two attempts), not an additional retry count. The retry reuses the
+   exact same request (prefix, instruction, and output cap). A summary is
+   accepted only when the provider finish is `Completed`, its trimmed text is
+   non-empty, it contains no tool call or image, and
+   `summary_tokens < source_tokens`. There is no section, quality-score,
+   anchor, placeholder, prior-summary, or latest-user review heuristic.
 5. A successful checkpoint is committed as one role-free `compacted` row. The
    summary output cap and keep-recent retention come from
    `context_pipeline::limits`; the keep-recent policy is not redefined here.
@@ -57,15 +60,23 @@ may inspect them.
 ## ContextMeter and token accounting
 
 `ContextMeter` is the single server-owned source for occupancy, pressure,
-manual eligibility, and safety headroom. Provider usage is the occupancy bill;
-the local request envelope, projected suffix, and media estimate supply the
-breakdown. Token accounting uses the shared helpers in
-`session::estimate`; no compaction module keeps a second threshold formula or
-a second breakdown implementation.
+manual eligibility, prompt limit, and UI display. It uses the provider/model
+capacities directly: `W = context_window_max` and `O = max_output`. Therefore
+`prompt_limit = W - O` and `compact_at = min(0.8W, W - O)`, with non-negative
+saturating arithmetic for degenerate windows. There is no safety-headroom
+allowance, secondary output clamp, default-tier participation, or independent
+`O` budget. The persisted `ContextMode::Standard`/`Max` preference no longer
+selects `W` for compaction.
 
-Manual compaction is allowed only when `ContextMeter` says the inclusive
-manual ratio gate is met. Auto pressure uses the same meter, not a duplicate
-budget check.
+Provider usage is the occupancy bill; the local request envelope, projected
+suffix, and media estimate supply the breakdown. Token accounting uses the
+shared helpers in `session::estimate`; no compaction module keeps a second
+threshold formula or a second breakdown implementation.
+
+Auto compaction triggers only when `used_tokens > compact_at` (strictly
+greater). Manual compaction is allowed only when `ContextMeter` says the
+inclusive 30%-of-`W` manual ratio gate is met. Auto, manual, prepared, and UI
+paths consume the same meter and therefore the same `W`/`O`.
 
 ## Lifecycle and telemetry
 
@@ -77,12 +88,15 @@ The unified lifecycle event is `InternalEvent::CompactionLifecycle`. It carries
 - `tokens_pruned`
 - `tokens_after`
 - `summary_attempts`
-- `review_score`
 - `overflow_retry`
 
 The succeeded event is emitted exactly once per execute path. Prune-only
-success reports `summary_attempts = 0` and no review score. Failed events keep
-the same trigger/stage identity and subtype mapping.
+success reports `summary_attempts = 0`. Failed events keep the same
+trigger/stage identity and subtype mapping. If the second identical summary
+attempt fails acceptance, the compaction is a hard failure: no checkpoint is
+written and lifecycle telemetry carries the failure subtype and
+`summary_attempts = 2`. A mechanical prune that already committed before the
+summary stage remains committed.
 
 ## Structural gates
 

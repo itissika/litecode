@@ -32,7 +32,7 @@ pub use compact::{
 pub use context_meter::{
     ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
     measure_persisted_context, measure_persisted_context_with_breakdown, measure_request_context,
-    request_token_breakdown, request_token_breakdown_for_rows, safety_headroom, tool_schema_tokens,
+    request_token_breakdown, request_token_breakdown_for_rows, tool_schema_tokens,
 };
 pub use env::{Context, build_context};
 pub use limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP, MAX_PROMPT_RESERVE_TOKENS};
@@ -581,11 +581,9 @@ impl ContextPipeline {
         };
         let (turn_view, projection) = project_working_rows(&rows, model, &self.data_root);
         let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
-        let context_window = self.budget.context_window;
         let meter = ContextMeter::measure(
-            context_window,
-            envelope.output_reserve,
-            ContextMeter::safety_headroom(context_window),
+            model.context_window_max,
+            model.max_output as usize,
             &envelope,
             &projection.items,
             &projection.coverage_seqs,
@@ -720,7 +718,6 @@ impl ContextPipeline {
         ContextMeter::measure_local(
             context_window,
             envelope.output_reserve,
-            ContextMeter::safety_headroom(context_window),
             &envelope,
             turn_items,
         )
@@ -747,7 +744,6 @@ impl ContextPipeline {
         ContextMeter::measure(
             context_window,
             envelope.output_reserve,
-            ContextMeter::safety_headroom(context_window),
             &envelope,
             items,
             &seqs,
