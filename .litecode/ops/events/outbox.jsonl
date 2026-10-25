@@ -384,3 +384,5 @@
 {"event_id":"E-1792662874920-16180-WP213-approval_requested","ts":"2026-10-22T09:54:34.920Z","type":"team_ops.approval_requested","wp":"WP-213","target":"gm"}
 {"event_id":"E-1792663494058-16620-WP213-acceptance_requested","ts":"2026-10-22T10:04:54.058Z","type":"team_ops.acceptance_requested","wp":"WP-213","target":"gm"}
 {"event_id":"E-1792899203397-72780-WP214-approval_requested","ts":"2026-10-25T03:33:23.397Z","type":"team_ops.approval_requested","wp":"WP-214","target":"gm"}
+{"event_id":"E-1792899388508-4150-WP214-acceptance_requested","ts":"2026-10-25T03:36:28.508Z","type":"team_ops.acceptance_requested","wp":"WP-214","target":"gm"}
+{"event_id":"E-1792899388609-4151-watcher-restarted","ts":"2026-10-25T03:36:28.609Z","type":"team_ops.watcher_restarted","wp":null,"target":"gm"}

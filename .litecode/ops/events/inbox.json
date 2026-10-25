@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-10-25T03:33:23.400Z",
+  "updated_at": "2026-10-25T03:36:28.613Z",
   "inbox": [
     {
       "id": "E-1791726345823",
@@ -8915,6 +8915,41 @@
           "WP-214"
         ],
         "target": "gm"
+      }
+    },
+    {
+      "id": "E-1792899388508-4150-WP214-acceptance_requested",
+      "ts": "2026-10-25T03:36:28.508Z",
+      "type": "team_ops.acceptance_requested",
+      "source": "ops.wp",
+      "summary": "WP-214 awaiting acceptance by gm (owner backend_mid)",
+      "wp": "WP-214",
+      "acked": [],
+      "meta": {
+        "stage": "acceptance",
+        "approver": "gm",
+        "owner": "backend_mid",
+        "path": [
+          "WP-214"
+        ],
+        "target": "gm"
+      }
+    },
+    {
+      "id": "E-1792899388609-4151-watcher-restarted",
+      "ts": "2026-10-25T03:36:28.609Z",
+      "type": "team_ops.watcher_restarted",
+      "source": "ops.wp",
+      "wp": null,
+      "acked": [],
+      "summary": "wp_watch not running (last heartbeat 2026-10-25T03:27:27.069Z); ops.wp triggered ensure/restart",
+      "meta": {
+        "target": "gm",
+        "ok": null,
+        "last_heartbeat_at": "2026-10-25T03:27:27.069Z",
+        "age_sec": 542,
+        "old_pid": 757194,
+        "via": "ops.wp softEnsure"
       }
     }
   ],

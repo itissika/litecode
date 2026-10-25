@@ -16195,12 +16195,12 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "ready",
+      "status": "done",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-214",
-      "progress": "plan approved by gm",
+      "progress": "closed done by gm: PASS research-only @df89c18: prune-only by design (no clickable mark); manual=auto via compact_transcript; no FE handoff; zero product diff; done_when met",
       "status_entered_at": null,
       "parent": null,
       "goal": "调研锁定：手动/自动 compact 后是否仍应出现可点击 compact point；断点在 FE 还是 session/agent 投影数据（只分析不改码）",
@@ -16233,6 +16233,25 @@
           "actor": "gm",
           "action": "approve",
           "note": "Q1-Q9 按推荐；只调研不改码"
+        },
+        {
+          "ts": "2026-10-25T03:34:18.456Z",
+          "actor": "backend_mid",
+          "action": "start",
+          "note": null
+        },
+        {
+          "ts": "2026-10-25T03:36:28.507Z",
+          "actor": "backend_mid",
+          "action": "deliver",
+          "note": "research-only @ df89c18: prune-only by design; no FE handoff; report+acceptance pushed"
+        },
+        {
+          "ts": "2026-10-25T03:37:08.296Z",
+          "actor": "gm",
+          "action": "close",
+          "note": "PASS research-only @df89c18: prune-only by design (no clickable mark); manual=auto via compact_transcript; no FE handoff; zero product diff; done_when met",
+          "to": "done"
         }
       ]
     }
