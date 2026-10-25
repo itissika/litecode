@@ -13,6 +13,7 @@ use litecode::context_pipeline::{
     Context, ContextEnvelope, ContextMeterSource, ContextPipeline, ProviderPromptBaseline,
     measure_persisted_context, measure_request_context, request_token_breakdown_for_rows,
 };
+use litecode::platform_knobs::ContextMode;
 use litecode::provider_catalog::ResolvedModel;
 use litecode::runtime::observer::{InternalEvent, TurnEndReason, TurnTokenStats};
 use litecode::types::{Item, user_message, user_text};
@@ -644,4 +645,52 @@ fn latest_persisted_envelope_round_trips_for_cold_snapshot() {
                 + snap.context_envelope.tools_tokens
                 + snap.context_envelope.prompt_overhead_tokens
     );
+}
+#[tokio::test(flavor = "current_thread")]
+async fn standard_and_max_modes_select_product_window_but_share_model_prompt_limit() {
+    let fixture = SessionDataFixture::new();
+    let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
+    let sessions = Arc::new(fixture.manager());
+    let data_root = fixture.dir.path();
+    let mut model = (*test_model()).clone();
+    model.context_window = 256_000;
+    model.context_window_max = 1_000_000;
+    model.max_output = 128_000;
+    let model = Arc::new(model);
+    let envelope = ContextEnvelope::from_request_parts("system", &[], 128_000);
+    let baseline = ProviderPromptBaseline::default();
+
+    let standard = measure_request_context(
+        &sessions,
+        &sid,
+        &envelope,
+        &baseline,
+        &[],
+        &model,
+        data_root,
+    );
+    assert_eq!(standard.context_window, 256_000);
+    assert_eq!(standard.prompt_limit, 872_000);
+    assert_eq!(standard.compact_at, 204_800);
+    let standard_ui =
+        measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
+    assert_eq!(standard_ui.context_window, 256_000);
+    assert_eq!(standard_ui.compact_at, 204_800);
+
+    sessions.set_context_mode(&sid, ContextMode::Max).unwrap();
+    let max = measure_request_context(
+        &sessions,
+        &sid,
+        &envelope,
+        &baseline,
+        &[],
+        &model,
+        data_root,
+    );
+    assert_eq!(max.context_window, 1_000_000);
+    assert_eq!(max.prompt_limit, 872_000);
+    assert_eq!(max.compact_at, 800_000);
+    let max_ui = measure_persisted_context(&sessions, &sid, &envelope, &model, data_root).unwrap();
+    assert_eq!(max_ui.context_window, 1_000_000);
+    assert_eq!(max_ui.compact_at, 800_000);
 }

@@ -253,8 +253,14 @@ impl Projection {
             // No resolved model means there is no request projection to
             // measure. Publish a disabled local meter rather than a
             // transcript-only estimate.
+            let model_context_window = self
+                .request_model
+                .as_ref()
+                .map(|model| model.context_window_max)
+                .unwrap_or(context_window);
             crate::context_pipeline::ContextMeter::new(
                 context_window,
+                model_context_window,
                 raw_output,
                 self.context_envelope.fixed_prompt_tokens(),
                 crate::context_pipeline::ContextMeterSource::LocalEnvelope,
@@ -1704,7 +1710,7 @@ mod compact_item_wire_tests {
         used: usize,
         source: crate::context_pipeline::ContextMeterSource,
     ) -> crate::context_pipeline::ContextMeter {
-        crate::context_pipeline::ContextMeter::new(1_000, 100, used, source)
+        crate::context_pipeline::ContextMeter::new(1_000, 1_000, 100, used, source)
     }
 
     fn request_built_event(

@@ -114,9 +114,9 @@ pub struct ContextMeter {
     pub context_window: usize,
     /// Provider model maximum output (`max_output`); never added to used tokens.
     pub output_reserve: usize,
-    /// Hard prompt ceiling: `W - O`, saturating at zero for tiny windows.
+    /// Hard prompt ceiling: model maximum context minus output reserve.
     pub prompt_limit: usize,
-    /// Auto pressure line: `min(0.8W, W - O)`.
+    /// Auto pressure line: `min(0.8 selected window, prompt_limit)`.
     pub compact_at: usize,
     /// Prompt occupancy only. The output reserve is represented by `prompt_limit`.
     pub used_tokens: usize,
@@ -131,11 +131,12 @@ impl ContextMeter {
     /// pressure formula; all callers answer their question from this result.
     pub fn new(
         context_window: usize,
+        model_context_window: usize,
         output_reserve: usize,
         used_tokens: usize,
         source: ContextMeterSource,
     ) -> Self {
-        let prompt_limit = context_window.saturating_sub(output_reserve);
+        let prompt_limit = model_context_window.saturating_sub(output_reserve);
         let compact_at = (context_window.saturating_mul(4) / 5).min(prompt_limit);
         Self {
             context_window,
@@ -209,6 +210,7 @@ impl ContextMeter {
     #[allow(clippy::too_many_arguments)]
     pub fn measure(
         context_window: usize,
+        model_context_window: usize,
         output_reserve: usize,
         envelope: &ContextEnvelope,
         items: &[Item],
@@ -237,6 +239,7 @@ impl ContextMeter {
             };
             return Self::new(
                 context_window,
+                model_context_window,
                 output_reserve,
                 (bill.prompt_tokens as usize).saturating_add(compute_token_estimate(&suffix)),
                 source,
@@ -248,6 +251,7 @@ impl ContextMeter {
             .saturating_add(compute_token_estimate(items));
         Self::new(
             context_window,
+            model_context_window,
             output_reserve,
             used_tokens,
             ContextMeterSource::LocalEnvelope,
@@ -256,11 +260,20 @@ impl ContextMeter {
 
     pub fn measure_local(
         context_window: usize,
+        model_context_window: usize,
         output_reserve: usize,
         envelope: &ContextEnvelope,
         items: &[Item],
     ) -> Self {
-        Self::measure(context_window, output_reserve, envelope, items, &[], None)
+        Self::measure(
+            context_window,
+            model_context_window,
+            output_reserve,
+            envelope,
+            items,
+            &[],
+            None,
+        )
     }
 }
 
@@ -277,7 +290,10 @@ pub fn measure_request_context(
     let bill = super::resolve_occupancy_bill(sessions, session_id, baseline);
     let (_turn_view, projection) =
         crate::context_pipeline::project_working_rows(rows, model, data_root);
+    let mode = session_context_mode(sessions, session_id);
+    let context_window = crate::platform_knobs::effective_context_window(model, mode);
     ContextMeter::measure(
+        context_window,
         model.context_window_max,
         model.max_output as usize,
         envelope,
@@ -288,6 +304,22 @@ pub fn measure_request_context(
 }
 
 /// Persisted provider bill, with the request-header seq it covers.
+fn session_context_mode(
+    sessions: &SessionManager,
+    session_id: &str,
+) -> crate::platform_knobs::ContextMode {
+    sessions
+        .context_mode(session_id)
+        .or_else(|| {
+            sessions
+                .data()
+                .meta_blocking(session_id)
+                .ok()
+                .and_then(|meta| crate::platform_knobs::ContextMode::parse(&meta.context_mode))
+        })
+        .unwrap_or_default()
+}
+
 pub fn persisted_occupancy_bill(
     sessions: &SessionManager,
     session_id: &str,
@@ -339,7 +371,10 @@ pub fn measure_persisted_context_with_breakdown(
     let rows = sessions.data().working_set_blocking(session_id)?;
     let (_turn_view, projection) =
         crate::context_pipeline::project_working_rows(&rows, model, data_root);
+    let mode = session_context_mode(sessions, session_id);
+    let context_window = crate::platform_knobs::effective_context_window(model, mode);
     let meter = ContextMeter::measure(
+        context_window,
         model.context_window_max,
         model.max_output as usize,
         envelope,
@@ -435,7 +470,8 @@ mod tests {
             (256_000, 128_000, 128_000, 128_000),
         ];
         for (window, output, expected_limit, expected_compact_at) in cases {
-            let meter = ContextMeter::new(window, output, 0, ContextMeterSource::LocalEnvelope);
+            let meter =
+                ContextMeter::new(window, window, output, 0, ContextMeterSource::LocalEnvelope);
             assert_eq!(meter.prompt_limit, expected_limit, "W={window} O={output}");
             assert_eq!(
                 meter.compact_at, expected_compact_at,
@@ -444,6 +480,20 @@ mod tests {
             assert_eq!(meter.output_reserve, output);
             assert_eq!(meter.compact_at, (window * 4 / 5).min(window - output));
         }
+    }
+
+    #[test]
+    fn selected_window_uses_eighty_percent_while_prompt_limit_uses_model_window() {
+        let meter = ContextMeter::new(
+            256_000,
+            1_000_000,
+            128_000,
+            0,
+            ContextMeterSource::LocalEnvelope,
+        );
+        assert_eq!(meter.context_window, 256_000);
+        assert_eq!(meter.prompt_limit, 872_000);
+        assert_eq!(meter.compact_at, 204_800);
     }
 
     #[test]
@@ -456,7 +506,8 @@ mod tests {
             (8, 4, 4, 4, true),
         ];
         for (window, output, expected_limit, expected_compact_at, expected_pressure) in cases {
-            let meter = ContextMeter::new(window, output, 1, ContextMeterSource::LocalEnvelope);
+            let meter =
+                ContextMeter::new(window, window, output, 1, ContextMeterSource::LocalEnvelope);
             assert_eq!(meter.output_reserve, output, "W={window} O={output}");
             assert_eq!(meter.prompt_limit, expected_limit, "W={window} O={output}");
             assert_eq!(
@@ -469,9 +520,27 @@ mod tests {
 
     #[test]
     fn auto_gate_is_strictly_above_min_of_eighty_percent_and_prompt_limit() {
-        let below = ContextMeter::new(10_000, 1_024, 7_999, ContextMeterSource::LocalEnvelope);
-        let at = ContextMeter::new(10_000, 1_024, 8_000, ContextMeterSource::LocalEnvelope);
-        let over = ContextMeter::new(10_000, 1_024, 8_001, ContextMeterSource::LocalEnvelope);
+        let below = ContextMeter::new(
+            10_000,
+            10_000,
+            1_024,
+            7_999,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let at = ContextMeter::new(
+            10_000,
+            10_000,
+            1_024,
+            8_000,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let over = ContextMeter::new(
+            10_000,
+            10_000,
+            1_024,
+            8_001,
+            ContextMeterSource::LocalEnvelope,
+        );
         assert!(!below.should_compact());
         assert!(!at.should_compact(), "auto trigger is strict > compact_at");
         assert!(over.should_compact());
@@ -479,8 +548,8 @@ mod tests {
 
     #[test]
     fn manual_gate_is_inclusive_at_thirty_percent_of_window() {
-        let below = ContextMeter::new(10_000, 0, 2_999, ContextMeterSource::LocalEnvelope);
-        let at = ContextMeter::new(10_000, 0, 3_000, ContextMeterSource::LocalEnvelope);
+        let below = ContextMeter::new(10_000, 10_000, 0, 2_999, ContextMeterSource::LocalEnvelope);
+        let at = ContextMeter::new(10_000, 10_000, 0, 3_000, ContextMeterSource::LocalEnvelope);
         assert!(!below.manual_eligible());
         assert!(at.manual_eligible());
         assert!(at.compact_eligible);
@@ -496,7 +565,8 @@ mod tests {
         let env = ContextEnvelope::from_request_parts("system instructions", &tools, 512);
         let items = vec![user_text("hello world"), assistant_text("done")];
         let input_tokens = compute_token_estimate(&items);
-        let meter = ContextMeter::measure(10_000, env.output_reserve, &env, &items, &[], None);
+        let meter =
+            ContextMeter::measure(10_000, 10_000, env.output_reserve, &env, &items, &[], None);
 
         assert_eq!(meter.source, ContextMeterSource::LocalEnvelope);
         assert_eq!(
@@ -526,8 +596,15 @@ mod tests {
             covered_seq: Some(4),
         };
         let suffix_tokens = compute_token_estimate(&items[1..]);
-        let meter =
-            ContextMeter::measure(10_000, env.output_reserve, &env, &items, &seqs, Some(bill));
+        let meter = ContextMeter::measure(
+            10_000,
+            10_000,
+            env.output_reserve,
+            &env,
+            &items,
+            &seqs,
+            Some(bill),
+        );
 
         assert_eq!(meter.source, ContextMeterSource::ProviderPlusSuffix);
         assert_eq!(meter.used_tokens, 7_000 + suffix_tokens);
@@ -542,6 +619,7 @@ mod tests {
             covered_seq: Some(9),
         };
         let meter = ContextMeter::measure(
+            1_000,
             1_000,
             env.output_reserve,
             &env,

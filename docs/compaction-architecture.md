@@ -60,13 +60,21 @@ may inspect them.
 ## ContextMeter and token accounting
 
 `ContextMeter` is the single server-owned source for occupancy, pressure,
-manual eligibility, prompt limit, and UI display. It uses the provider/model
-capacities directly: `W = context_window_max` and `O = max_output`. Therefore
-`prompt_limit = W - O` and `compact_at = min(0.8W, W - O)`, with non-negative
-saturating arithmetic for degenerate windows. There is no safety-headroom
-allowance, secondary output clamp, default-tier participation, or independent
-`O` budget. The persisted `ContextMode::Standard`/`Max` preference no longer
-selects `W` for compaction.
+manual eligibility, prompt limit, and UI display. It separates the selected
+product window from the provider's physical capacity:
+
+- `context_window` is the selected product window. `standard` uses the model's
+  standard/default budget (normally 256K, or the model maximum when smaller);
+  `max` uses the provider model maximum.
+- `prompt_limit` is the physical prompt ceiling:
+  `model_max_context - max_output`.
+- `compact_at` is `min(0.8 * selected_context_window, prompt_limit)`, with
+  non-negative saturating arithmetic for degenerate windows.
+
+There is no safety-headroom allowance, secondary output clamp, independent
+`O` budget, or implicit substitution of the provider maximum for the selected
+product window. The selected `W` is also the `context_window` published to the
+UI, so the standard and max modes produce different pressure points.
 
 Provider usage is the occupancy bill; the local request envelope, projected
 suffix, and media estimate supply the breakdown. Token accounting uses the

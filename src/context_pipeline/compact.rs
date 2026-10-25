@@ -605,6 +605,7 @@ fn context_meter_for_rows_local(
         super::project_working_rows(rows, request.target.as_ref(), data_root);
     ContextMeter::measure_local(
         request.context_window,
+        request.target.context_window_max,
         request.max_output_tokens as usize,
         &envelope,
         &projection.items,
@@ -1182,6 +1183,7 @@ impl CompactPolicy {
             // the complete local envelope over the same request projection.
             ContextMeter::measure_local(
                 request.context_window,
+                request.target.context_window_max,
                 request.max_output_tokens as usize,
                 &envelope,
                 &projection.items,

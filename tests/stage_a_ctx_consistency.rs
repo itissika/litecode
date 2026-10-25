@@ -173,8 +173,13 @@ async fn manual_compact_bypasses_auto_threshold_and_preserves_full_history() {
     let transcript = sessions.data().transcript_blocking(&sid).unwrap();
     let budget = BudgetPolicy::new(128_000).with_keep_recent_tokens(1);
     let envelope = ContextEnvelope::from_request_parts("system", &[], 8192);
-    let meter =
-        ContextMeter::measure_local(128_000, envelope.output_reserve, &envelope, &transcript);
+    let meter = ContextMeter::measure_local(
+        128_000,
+        128_000,
+        envelope.output_reserve,
+        &envelope,
+        &transcript,
+    );
     assert!(!meter.should_compact());
 
     let provider = common::DshSummaryProvider::new();

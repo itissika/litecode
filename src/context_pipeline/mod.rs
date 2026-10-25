@@ -59,6 +59,8 @@ struct PipelineState {
     /// smaller cursor as a revert and discards the turn's tail.
     log_max_seq: i64,
     turn_id: Option<String>,
+    /// Provider model maximum context used for the hard prompt ceiling.
+    model_context_window: usize,
 }
 
 /// L1 context pipeline: single prepare / commit entry for LLM-bound context.
@@ -308,6 +310,7 @@ impl ContextPipeline {
                 envelope: ContextEnvelope::default(),
                 log_max_seq: -1,
                 turn_id: None,
+                model_context_window: 0,
             }),
         }
     }
@@ -582,6 +585,7 @@ impl ContextPipeline {
         let (turn_view, projection) = project_working_rows(&rows, model, &self.data_root);
         let bill = resolve_occupancy_bill(sessions, session_id, prompt_baseline);
         let meter = ContextMeter::measure(
+            self.budget.context_window,
             model.context_window_max,
             model.max_output as usize,
             &envelope,
@@ -591,6 +595,7 @@ impl ContextPipeline {
         );
         let token_count = meter.used_tokens;
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.model_context_window = model.context_window_max;
         state.hot.replace(turn_view);
         state.prepared = Some(PreparedView {
             items: projection.items,
@@ -704,19 +709,26 @@ impl ContextPipeline {
     /// Unified prompt occupancy for the last prepared view, or a local-envelope
     /// estimate when no request has been prepared yet.
     pub fn current_token_estimate(&self, turn_items: &[Item]) -> usize {
-        let (prepared, envelope) = {
+        let (prepared, envelope, model_context_window) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.prepared.as_ref().map(|view| view.token_count),
                 state.envelope.clone(),
+                state.model_context_window,
             )
         };
         if let Some(count) = prepared {
             return count;
         }
         let context_window = self.budget.context_window;
+        let model_context_window = if model_context_window > 0 {
+            model_context_window
+        } else {
+            context_window
+        };
         ContextMeter::measure_local(
             context_window,
+            model_context_window,
             envelope.output_reserve,
             &envelope,
             turn_items,
@@ -727,13 +739,16 @@ impl ContextPipeline {
     /// Test/telemetry convenience only. Production auto pressure is decided in
     /// `CompactPolicy::compact_if_needed` from the same [`ContextMeter`].
     pub fn will_compact(&self, items: &[Item], last_prompt_tokens: u64) -> bool {
-        let envelope = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .envelope
-            .clone();
+        let (envelope, model_context_window) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (state.envelope.clone(), state.model_context_window)
+        };
         let context_window = self.budget.context_window;
+        let model_context_window = if model_context_window > 0 {
+            model_context_window
+        } else {
+            context_window
+        };
         let bill = (last_prompt_tokens > 0).then_some(OccupancyBill {
             prompt_tokens: last_prompt_tokens,
             // With `None`, persisted rows with a seq are covered. Fake seqs are
@@ -743,6 +758,7 @@ impl ContextPipeline {
         let seqs = vec![Some(0); items.len()];
         ContextMeter::measure(
             context_window,
+            model_context_window,
             envelope.output_reserve,
             &envelope,
             items,

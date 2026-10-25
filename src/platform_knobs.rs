@@ -80,13 +80,16 @@ impl ContextMode {
     }
 }
 
-/// Provider/model true maximum context for occupancy and compaction.
+/// Context window selected by the product mode.
 ///
-/// `ContextMode` remains a persisted UI preference, but it no longer selects
-/// the compaction window: every meter uses the model's catalog maximum so the
-/// provider ceiling cannot be understated by the standard/default tier.
-pub fn effective_context_window(model: &ResolvedModel, _mode: ContextMode) -> usize {
-    model.context_window_max
+/// `Standard` uses the model's standard/default budget (normally 256K, or the
+/// model maximum when smaller); `Max` uses the model's true maximum. The
+/// physical prompt ceiling still uses the model maximum separately.
+pub fn effective_context_window(model: &ResolvedModel, mode: ContextMode) -> usize {
+    match mode {
+        ContextMode::Standard => model.context_window,
+        ContextMode::Max => model.context_window_max,
+    }
 }
 
 #[cfg(test)]

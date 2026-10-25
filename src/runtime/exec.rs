@@ -875,6 +875,7 @@ impl AgentRuntime {
         let prompt_usage_baseline = &self.prompt_usage_baseline;
         let covered_seq = origin_seq;
         let meter_context_window = self.turn_llm.context_window;
+        let meter_model_context_window = self.turn_llm.model.context_window_max;
         let meter_output_reserve = request.max_output_tokens as usize;
         let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<TurnTokenStats>));
         let usage_slot_cb = std::sync::Arc::clone(&usage_slot);
@@ -953,6 +954,7 @@ impl AgentRuntime {
                             stop_reason,
                             context_meter: ContextMeter::new(
                                 meter_context_window,
+                                meter_model_context_window,
                                 meter_output_reserve,
                                 prompt as usize,
                                 ContextMeterSource::Provider,

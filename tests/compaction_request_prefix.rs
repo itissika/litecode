@@ -300,6 +300,7 @@ async fn auto_compaction_request_uses_current_turn_binding_and_main_prefix() {
     let envelope = ContextEnvelope::cold(8192);
     let occupancy = ContextMeter::measure_local(
         128_000,
+        128_000,
         envelope.output_reserve,
         &envelope,
         &project_items(&rows_before_second_turn),
