@@ -16181,6 +16181,39 @@
           "to": "done"
         }
       ]
+    },
+    {
+      "id": "WP-214",
+      "domain": "client-ux",
+      "title": "compact point 可点击性调研",
+      "result": "调研报告，不改码",
+      "done_when": [
+        "报告分别回答手动/自动是否应出现可点击 compact point",
+        "标出断裂位置并判定 FE bug / 数据结构错位 / 设计废弃",
+        "关键结论附 file:line",
+        "产物在 artifacts/WP-214 且无产品代码 diff"
+      ],
+      "owner": "backend_mid",
+      "reviewer": "gm",
+      "status": "drafting",
+      "depends_on": [],
+      "blocker": null,
+      "handoff_path": null,
+      "artifact_path": ".litecode/ops/artifacts/WP-214",
+      "progress": "drafting",
+      "status_entered_at": null,
+      "parent": null,
+      "goal": "调研锁定：手动/自动 compact 后是否仍应出现可点击 compact point；断点在 FE 还是 session/agent 投影数据（只分析不改码）",
+      "approver": "gm",
+      "content": null,
+      "history": [
+        {
+          "ts": "2026-10-25T03:31:34.100Z",
+          "actor": "gm",
+          "action": "create",
+          "note": "goal: 调研锁定：手动/自动 compact 后是否仍应出现可点击 compact point；断点在 FE 还是 session/agent 投影数据（只分析不改码）"
+        }
+      ]
     }
   ],
   "pipelines": [
