@@ -12,7 +12,7 @@
 <!-- WP_STATUS:BEGIN (auto, wp_gate/tick 生成，勿手改) -->
 ## WP 状态
 
-> 自动生成于 2026-10-25T03:33:23.491Z，来源 `.litecode/ops/board.json`
+> 自动生成于 2026-10-25T03:34:05.057Z，来源 `.litecode/ops/board.json`
 
 | id | 标题 | status | owner | reviewer |
 |---|---|---|---|---|
@@ -229,7 +229,7 @@
 | WP-211 | run_code 体验残留三刀 | done | backend_mid | gm |
 | WP-212 | run_code 收尾瑕疵 | done | backend_mid | gm |
 | WP-213 | run_code 提示词改造 | done | backend_mid | gm |
-| WP-214 | compact point 可点击性调研 | awaiting_approval | backend_mid | gm |
+| WP-214 | compact point 可点击性调研 | ready | backend_mid | gm |
 <!-- WP_STATUS:END -->
 
 ## 最近更新

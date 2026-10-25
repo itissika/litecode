@@ -16195,13 +16195,13 @@
       ],
       "owner": "backend_mid",
       "reviewer": "gm",
-      "status": "awaiting_approval",
+      "status": "ready",
       "depends_on": [],
       "blocker": null,
       "handoff_path": null,
       "artifact_path": ".litecode/ops/artifacts/WP-214",
-      "progress": "plan awaiting approval by gm",
-      "status_entered_at": "2026-10-25T03:33:23.396Z",
+      "progress": "plan approved by gm",
+      "status_entered_at": null,
       "parent": null,
       "goal": "调研锁定：手动/自动 compact 后是否仍应出现可点击 compact point；断点在 FE 还是 session/agent 投影数据（只分析不改码）",
       "approver": "gm",
@@ -16227,6 +16227,12 @@
           "actor": "backend_mid",
           "action": "submit",
           "note": "只读调研方案：触发→指针→投影→FE 可点条件；report.md；不改码；Q1–Q9；基线 2735592；FE 断则 handoff frontend_mid"
+        },
+        {
+          "ts": "2026-10-25T03:34:04.958Z",
+          "actor": "gm",
+          "action": "approve",
+          "note": "Q1-Q9 按推荐；只调研不改码"
         }
       ]
     }
