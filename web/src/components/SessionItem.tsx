@@ -1,4 +1,5 @@
 import { memo, useEffect, useState } from "react";
+import { Trash } from "@phosphor-icons/react";
 import type { SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
 import { useTurnStore } from "../stores/turnStore";
@@ -98,56 +99,57 @@ export const SessionItem = memo(function SessionItem({
   const relative = formatRelative(session.updated_at, now);
 
   return (
-    <div
-      className="group flex h-9 cursor-pointer items-center gap-2 px-3 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
-      onClick={() => onOpen(session.id)}
-    >
-      {/* Middle group: status bar + glow (rendered by SessionStatusDot, anchored
-          to this content) followed by the conversation preview and the live
-          summary glyph. The glow is pinned to the content's right edge so it can
-          never overrun into the live-summary glyphs. */}
-      <SessionStatusDot status={shown}>
-        {/* Conversation summary — adapts to content width, capped + truncated.
-            `min-w-0` lets it shrink below content as the row narrows. */}
-        <span
-          className="max-w-32 min-w-0 text-(--_dk-text-secondary)"
-          title={preview || undefined}
-        >
-          <span className="block truncate text-[11px]">
-            {preview || (
-              <span className="text-(--_dk-text-disabled)">No preview</span>
-            )}
+    <div className="group relative h-9">
+      <div
+        className="flex h-9 cursor-pointer items-center gap-2 pl-3 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
+        onClick={() => onOpen(session.id)}
+      >
+        {/* Middle group: status bar + glow (rendered by SessionStatusDot, anchored
+            to this content) followed by the conversation preview and the live
+            summary glyph. The glow is pinned to the content's right edge so it can
+            never overrun into the live-summary glyphs. */}
+        <SessionStatusDot status={shown}>
+          {/* Conversation summary — adapts to content width, capped + truncated.
+              `min-w-0` lets it shrink below content as the row narrows. */}
+          <span
+            className="max-w-32 min-w-0 text-(--_dk-text-secondary)"
+            title={preview || undefined}
+          >
+            <span className="block truncate text-[11px]">
+              {preview || (
+                <span className="text-(--_dk-text-disabled)">No preview</span>
+              )}
+            </span>
           </span>
-        </span>
-        {/* Live summary — real-time step label when active, else a triggered emoji. */}
-        <LivePreview
-          stepKinds={session.step_kinds ?? []}
-          running={session.running}
-          updatedAt={session.updated_at}
-          now={now}
-        />
-      </SessionStatusDot>
-      {/* Right slot: time by default, delete button on hover (shared slot).
-          `min-w-0` (dropping `shrink-0`) lets it collapse to near-zero at extreme
-          narrow widths so the row can shrink until only the time glyph remains. */}
-      <div className="relative flex h-4 w-10 min-w-0 items-center justify-end">
-        <span className="pointer-events-none absolute inset-0 flex items-center justify-end text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">
-          {relative}
-        </span>
-        <button
-          type="button"
-          disabled={deleteBlocked}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (!deleteBlocked) onDelete(session.id);
-          }}
-          aria-label={deleteLabel}
-          className="pointer-events-none absolute inset-0 flex items-center justify-end text-[11px] text-(--_dk-text-muted) opacity-0 transition-opacity hover:text-(--_dk-ix-danger-fg) group-hover:pointer-events-auto group-hover:opacity-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-0 disabled:group-hover:opacity-40"
-          title={deleteLabel}
-        >
-          ✕
-        </button>
+          {/* Live summary — real-time step label when active, else a triggered emoji. */}
+          <LivePreview
+            stepKinds={session.step_kinds ?? []}
+            running={session.running}
+            updatedAt={session.updated_at}
+            now={now}
+          />
+        </SessionStatusDot>
       </div>
+      {/* Time while idle; the delete square takes its place on hover. */}
+      <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-[10px] text-(--_dk-text-muted) transition-opacity group-hover:opacity-0">
+        {relative}
+      </span>
+      {/* Row-height square delete target, flush to the row's right edge. It is a
+          sibling of the clickable row, so hovering it never paints the row —
+          only its own borderless danger wash shows. */}
+      <button
+        type="button"
+        disabled={deleteBlocked}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!deleteBlocked) onDelete(session.id);
+        }}
+        aria-label={deleteLabel}
+        className="btn-danger btn-icon pointer-events-none absolute right-0 top-0 h-9 w-9 p-0 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-0 disabled:group-hover:opacity-40"
+        title={deleteLabel}
+      >
+        <Trash size={14} aria-hidden />
+      </button>
     </div>
   );
 });

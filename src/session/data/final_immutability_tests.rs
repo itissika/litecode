@@ -628,6 +628,63 @@ fn assert_interrupted_output(body: &str, call_id: &str, name: &str) {
     }
 }
 
+/// B: a pending ask is a live-turn marker. After a restart the old sidecar row
+/// must go, and the permission-class tail must be closed like any other orphan.
+#[test]
+fn a_restart_clears_pending_asks_and_seals_the_ask_tail() {
+    let dir = TempDir::new().expect("tempdir");
+    let db = dir.path().join("sessions.db");
+    let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+
+    let sid = {
+        let data = SessionData::open(&lease, &db).expect("open");
+        let sid = data.create_session("/p", "default", None).expect("create");
+        data.mutate_blocking(SessionMutation::InsertDetails {
+            session_id: sid.clone(),
+            expected_revision: data.revision_blocking(&sid).expect("revision"),
+            operation_id: MutationId::new(),
+            items: vec![
+                user_text("which one?"),
+                function_call("call_ask", "ask_user"),
+            ],
+            turn_id: "t-ask".into(),
+        })
+        .expect("insert");
+        data.save_pending_permissions_blocking(
+            &sid,
+            data.revision_blocking(&sid).expect("revision"),
+            vec![crate::session::pending::PendingPermissionRecord {
+                session_id: sid.clone(),
+                turn_id: "t-ask".into(),
+                request_id: "req-ask".into(),
+                tool: "ask_user".into(),
+                rule_id: "ask_user".into(),
+                summary: "which one?".into(),
+                kind: crate::permission::AskKind::AskUser,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                call_id: Some("call_ask".into()),
+            }],
+        )
+        .expect("sidecar");
+        sid
+    };
+
+    let _data = SessionData::open(&lease, &db).expect("reopen");
+    let conn = Connection::open(&db).expect("db");
+    assert!(
+        super::sqlite::pending::list_pending(&conn, &sid)
+            .expect("list")
+            .is_empty(),
+        "a new process has no live ask; the sidecar is cleared"
+    );
+    let settled = settled_bodies(&db, &sid);
+    let last = settled.values().last().expect("tail output");
+    assert_interrupted_output(last, "call_ask", "ask_user");
+}
+
 /// A revert must not let a later append reuse a deleted seq, across a reopen.
 #[test]
 fn reopen_after_revert_does_not_reuse_a_deleted_seq() {

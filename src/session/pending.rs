@@ -1,8 +1,10 @@
-//! WP-186: durable pending user-gate asks (ask_user | permission | approval).
+//! WP-186: pending user-gate asks (ask_user | permission | approval).
 //!
-//! Transcript keeps the intentional unsealed `item/tool_call`; this sidecar
-//! holds enough metadata to re-hydrate `pending_permissions` on snapshot/attach
-//! and to divert startup seal away from permission-class tails.
+//! B: this is a live-turn sidecar, not cross-process truth. A row is written
+//! only while the owning turn is live in this process; the writer clears all
+//! rows at startup and the manager clears a turn's rows when it ends. It
+//! survives a disconnect (same process) so seal repair does not close a call
+//! whose `ask_user` may still be answered after reconnect.
 
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +36,8 @@ pub struct PendingPermissionRecord {
 }
 
 impl PendingPermissionRecord {
-    /// Tool names that are always permission-class even without a sidecar row
-    /// (R4 name-fallback for old DBs).
+    /// Tool names that are always permission-class. Used only as a conservative
+    /// fallback when the sidecar lookup itself fails.
     pub fn is_permission_class_tool_name(name: &str) -> bool {
         matches!(name, "ask_user" | "ask-user")
     }

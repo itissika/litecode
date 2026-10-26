@@ -452,6 +452,9 @@ pub async fn handle_jsonrpc(
                 session_id: String::new(),
             });
             let sid = resolve_sid(session, &params.session_id);
+            // B: Stop invalidates this session's asks immediately; no card may
+            // survive a turn that is being cancelled.
+            session.sessions.clear_pending_permissions(&sid);
             // WP-091 R1 / P2: report truthfully; children are allowed.
             let outcome = session
                 .sessions
@@ -1574,7 +1577,6 @@ fn abort_all_pending_asks(pending_asks: &mut HashMap<String, PendingAsk>) -> Vec
 }
 
 /// Disconnect / Quit: drop connection-local oneshots without Deny/Skipped (WP-186).
-/// Durable sidecar + session list keep the pending cards for the next attach.
 fn retain_pending_on_disconnect(
     pending_asks: &mut HashMap<String, PendingAsk>,
 ) -> Vec<(String, String)> {
@@ -1587,6 +1589,24 @@ fn retain_pending_on_disconnect(
             (pending.session_id, pending.tool)
         })
         .collect()
+}
+
+/// B: the reply_tx is connection-local, so after a disconnect nobody can answer
+/// these asks. Clear their sidecar rows; otherwise the next snapshot rebuilds a
+/// card that has no live turn behind it.
+fn retain_and_clear_pending(
+    session: &SessionController,
+    pending_asks: &mut HashMap<String, PendingAsk>,
+) -> Vec<(String, String)> {
+    let listed = retain_pending_on_disconnect(pending_asks);
+    let mut cleared: Vec<String> = Vec::new();
+    for (session_id, _) in &listed {
+        if !cleared.contains(session_id) {
+            session.sessions.clear_pending_permissions(session_id);
+            cleared.push(session_id.clone());
+        }
+    }
+    listed
 }
 
 /// @deprecated name kept for test migration — Cancel semantics are Aborted.
@@ -1691,6 +1711,42 @@ pub async fn run_session_loop(
             }
 
             Some(perm) = perm_rx.recv() => {
+                // Link transcript call_id when the FunctionCall is already logged.
+                let linked_call_id = session
+                    .sessions
+                    .latest_unanswered_call_id_for_tool(&perm.session_id, &perm.tool);
+                // B: register only while the owning turn is live. A process
+                // restart or a turn that already ended must not show a card:
+                // nobody is waiting on the oneshot any more.
+                let registered = session.sessions.upsert_pending_permission(
+                    crate::session::pending::PendingPermissionRecord {
+                        session_id: perm.session_id.clone(),
+                        turn_id: perm.turn_id.clone(),
+                        request_id: perm.request_id.clone(),
+                        tool: perm.tool.clone(),
+                        rule_id: perm.rule_id.clone(),
+                        summary: perm.summary.clone(),
+                        kind: perm.kind,
+                        free_text: perm.free_text,
+                        options: perm.options.clone(),
+                        multi_select: perm.multi_select,
+                        questions: perm.questions.clone(),
+                        call_id: linked_call_id,
+                    },
+                );
+                if !registered {
+                    tracing::warn!(
+                        session_id = %perm.session_id,
+                        request_id = %perm.request_id,
+                        turn_id = %perm.turn_id,
+                        "ask arrived after its turn ended; replying Aborted"
+                    );
+                    // A grant that raced ahead of a dead ask is dead too.
+                    let _ = take_stray_grant_for(session, &perm.request_id);
+                    let _ = perm.reply_tx.send(AskReply::from_outcome(AskOutcome::Aborted));
+                    continue;
+                }
+
                 let sid = perm.session_id.clone();
                 let project = session.project.clone();
                 let binding = session.session_binding(&sid);
@@ -1716,28 +1772,6 @@ pub async fn run_session_loop(
                         emit(&response_tx, msg);
                     }
                 }
-
-                // WP-186: durable sidecar + in-memory list (kind required on write).
-                // Link transcript call_id when the FunctionCall is already logged.
-                let linked_call_id = session
-                    .sessions
-                    .latest_unanswered_call_id_for_tool(&perm.session_id, &perm.tool);
-                session.sessions.upsert_pending_permission(
-                    crate::session::pending::PendingPermissionRecord {
-                        session_id: perm.session_id.clone(),
-                        turn_id: perm.turn_id.clone(),
-                        request_id: perm.request_id.clone(),
-                        tool: perm.tool.clone(),
-                        rule_id: perm.rule_id.clone(),
-                        summary: perm.summary.clone(),
-                        kind: perm.kind,
-                        free_text: perm.free_text,
-                        options: perm.options.clone(),
-                        multi_select: perm.multi_select,
-                        questions: perm.questions.clone(),
-                        call_id: linked_call_id,
-                    },
-                );
 
                 // Race: grant may have arrived before this Ask was registered.
                 let buffered_grant = take_stray_grant_for(session, &perm.request_id);
@@ -1801,8 +1835,8 @@ pub async fn run_session_loop(
             req = request_rx.recv() => {
                 match req {
                     Some(SessionRequest::Quit) => {
-                        // WP-186: disconnect/quit keeps durable pending; no fake Deny.
-                        let _ = retain_pending_on_disconnect(&mut pending_asks);
+                        // B: quit ends this connection's asks; no fake Deny.
+                        let _ = retain_and_clear_pending(session, &mut pending_asks);
                         let sids: Vec<String> = session.projections.keys().cloned().collect();
                         for sid in &sids {
                             let _ = session.sessions.cancel_turn(sid, crate::types::StopOrigin::User).await;
@@ -1831,8 +1865,8 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
-                            // Connection tearing down — retain durable pending.
-                            let _ = retain_pending_on_disconnect(&mut pending_asks);
+                            // B: connection tearing down — its asks are dead.
+                            let _ = retain_and_clear_pending(session, &mut pending_asks);
                             break;
                         }
                     }
@@ -1891,20 +1925,43 @@ pub async fn run_session_loop(
                                 selected,
                                 answers,
                             } => {
-                                // Mismatch / early grant: keep in stray, never drop.
-                                tracing::warn!(
-                                    request_id = %request_id,
-                                    "grant_permission with no matching pending ask; buffering as stray"
-                                );
-                                session.stray_grants.push_back(SessionRequest::PermissionGrant {
-                                    request_id,
-                                    tool,
-                                    approved,
-                                    always,
-                                    free_text,
-                                    selected,
-                                    answers,
-                                });
+                                // B: a request owned by a dead turn can never be
+                                // answered. Drop the stale row and resolve the
+                                // card; otherwise the next snapshot re-adds it.
+                                if let Some(stale_sid) = session
+                                    .sessions
+                                    .clear_pending_permission_if_turn_dead(&request_id)
+                                {
+                                    tracing::warn!(
+                                        request_id = %request_id,
+                                        session_id = %stale_sid,
+                                        "grant_permission for a dead turn; cleared stale pending ask"
+                                    );
+                                    emit_permission_resolved(
+                                        session,
+                                        &response_tx,
+                                        &stale_sid,
+                                        &tool,
+                                        approved,
+                                        always,
+                                    );
+                                } else {
+                                    // Mismatch / early grant / another connection:
+                                    // keep in stray, never drop.
+                                    tracing::warn!(
+                                        request_id = %request_id,
+                                        "grant_permission with no matching pending ask; buffering as stray"
+                                    );
+                                    session.stray_grants.push_back(SessionRequest::PermissionGrant {
+                                        request_id,
+                                        tool,
+                                        approved,
+                                        always,
+                                        free_text,
+                                        selected,
+                                        answers,
+                                    });
+                                }
                             }
                         }
                     }
@@ -1918,8 +1975,8 @@ pub async fn run_session_loop(
                         session.unsubscribe(&session_id);
                     }
                     None => {
-                        // WP-186: WS gone — retain durable pending, no Deny.
-                        let _ = retain_pending_on_disconnect(&mut pending_asks);
+                        // B: WS gone — its asks can no longer be answered.
+                        let _ = retain_and_clear_pending(session, &mut pending_asks);
                         break;
                     }
                 }
@@ -1940,7 +1997,7 @@ pub async fn run_session_loop(
             for req in deferred {
                 match req {
                     SessionRequest::Quit => {
-                        let _ = retain_pending_on_disconnect(&mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks);
                         let _ = session
                             .sessions
                             .cancel_turn(&sid, crate::types::StopOrigin::User)
@@ -1974,7 +2031,7 @@ pub async fn run_session_loop(
                         if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub)
                             .await
                         {
-                            let _ = retain_pending_on_disconnect(&mut pending_asks);
+                            let _ = retain_and_clear_pending(session, &mut pending_asks);
                             return;
                         }
                     }
@@ -2001,7 +2058,7 @@ pub async fn run_session_loop(
         for req in dummy_deferred {
             match req {
                 SessionRequest::Quit => {
-                    let _ = retain_pending_on_disconnect(&mut pending_asks);
+                    let _ = retain_and_clear_pending(session, &mut pending_asks);
                     break;
                 }
                 SessionRequest::Cancel => {
@@ -2012,7 +2069,7 @@ pub async fn run_session_loop(
                 }
                 SessionRequest::JsonRpc(rpc) => {
                     if handle_jsonrpc(session, &response_tx, &perm_tx, &rpc, &terminal_hub).await {
-                        let _ = retain_pending_on_disconnect(&mut pending_asks);
+                        let _ = retain_and_clear_pending(session, &mut pending_asks);
                         return;
                     }
                 }
@@ -2291,6 +2348,7 @@ mod ask_loop_tests {
     use std::sync::atomic::AtomicU64;
     use std::time::Duration;
     use tokio::sync::{mpsc, oneshot};
+    use tokio_util::sync::CancellationToken;
 
     fn test_runtime(root: &std::path::Path) -> (RuntimeHandle, Arc<SessionManager>) {
         let mut global = GlobalSettings::default();
@@ -2329,6 +2387,21 @@ mod ask_loop_tests {
     async fn unknown_grant_is_buffered_as_stray_then_consumed() {
         let dir = tempfile::tempdir().unwrap();
         let (runtime, sessions) = test_runtime(dir.path());
+        let session_id = sessions
+            .open_session("/proj", "default", None)
+            .await
+            .unwrap();
+        sessions
+            .begin_turn(
+                &session_id,
+                "turn-1".into(),
+                CancellationToken::new(),
+                5,
+                "default",
+                "/proj",
+            )
+            .unwrap();
+        let turns = Arc::clone(&sessions);
         let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
 
         let (request_tx, request_rx) = mpsc::unbounded_channel();
@@ -2366,7 +2439,7 @@ mod ask_loop_tests {
         let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
         perm_tx
             .send(PendingPermission {
-                session_id: "sess-ask".into(),
+                session_id: session_id.clone(),
                 agent_name: "default".into(),
                 turn_id: "turn-1".into(),
                 request_id: "req-early".into(),
@@ -2387,6 +2460,63 @@ mod ask_loop_tests {
             .expect("stray grant should resolve Ask")
             .expect("oneshot open");
         assert_eq!(reply.outcome, AskOutcome::Allow { always: false });
+        let _ = turns.finish_turn(&session_id, "turn-1");
+
+        let _ = request_tx.send(SessionRequest::Quit);
+        let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ask_after_its_turn_ended_is_rejected_without_a_card() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runtime, sessions) = test_runtime(dir.path());
+        let session_id = sessions
+            .open_session("/proj", "default", None)
+            .await
+            .unwrap();
+        let mut controller = SessionController::with_turn_guard(runtime, None, sessions).unwrap();
+
+        let (request_tx, request_rx) = mpsc::unbounded_channel();
+        let (response_tx, _response_rx) = mpsc::unbounded_channel();
+        let (perm_tx, perm_rx) = mpsc::unbounded_channel();
+        let perm_tx_loop = perm_tx.clone();
+        let hub = Arc::new(crate::terminal::TerminalHub::new());
+        let loop_handle = tokio::spawn(async move {
+            run_session_loop(
+                &mut controller,
+                request_rx,
+                response_tx,
+                perm_tx_loop,
+                perm_rx,
+                hub,
+            )
+            .await;
+        });
+
+        let (reply_tx, reply_rx) = oneshot::channel::<AskReply>();
+        perm_tx
+            .send(PendingPermission {
+                session_id,
+                agent_name: "default".into(),
+                turn_id: "dead-turn".into(),
+                request_id: "req-late".into(),
+                tool: "ask_user".into(),
+                rule_id: "ask_user".into(),
+                summary: "which one?".into(),
+                kind: AskKind::AskUser,
+                free_text: false,
+                options: Vec::new(),
+                multi_select: false,
+                questions: Vec::new(),
+                reply_tx,
+            })
+            .unwrap();
+
+        let reply = tokio::time::timeout(Duration::from_secs(2), reply_rx)
+            .await
+            .expect("late ask should be answered immediately")
+            .expect("oneshot open");
+        assert_eq!(reply.outcome, AskOutcome::Aborted);
 
         let _ = request_tx.send(SessionRequest::Quit);
         let _ = tokio::time::timeout(Duration::from_secs(2), loop_handle).await;

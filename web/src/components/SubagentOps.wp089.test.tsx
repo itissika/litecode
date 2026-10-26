@@ -12,11 +12,12 @@ import { childStatusWord, deletedChildIds } from "../lib/subagentUi";
 import { useConnectionStore } from "../stores/connectionStore";
 import { useMessageStore } from "../stores/messageStore";
 import {
+  resetDeleteSessionInFlight,
   resetListSessionsInFlight,
   useSessionStore,
 } from "../stores/sessionStore";
 import { useToastStore } from "../stores/toastStore";
-import { useTurnStore } from "../stores/turnStore";
+import { EMPTY_SLICE, useTurnStore } from "../stores/turnStore";
 import { AgentChatInput } from "./AgentChatInput";
 import { SessionStatusLine } from "./SessionStatusLine";
 import { SubagentRosterPanel } from "./SubagentRosterPanel";
@@ -64,6 +65,7 @@ function mockRpc(impl: (method: string, params?: unknown) => unknown) {
 const toasts = () => useToastStore.getState().toasts;
 
 beforeEach(() => {
+  resetDeleteSessionInFlight();
   resetListSessionsInFlight();
   vi.mocked(closePanel).mockClear();
   useTurnStore.setState({ byId: new Map() });
@@ -98,7 +100,22 @@ describe("WP-089 T1 子会话视图", () => {
     expect(screen.queryByTestId("subagent-stop")).toBeNull();
 
     for (const status of ["running", "running_with_subagent", "stopping"] as const) {
-      act(() => setChild({ status, running: true }));
+      act(() => {
+        setChild({ status, running: true });
+        // The derived view subscribes to the child, so a live turn arrives as
+        // `runState` too. That is when stop matters — it must not be disabled.
+        useTurnStore.setState({
+          byId: new Map([
+            [
+              CHILD,
+              {
+                ...EMPTY_SLICE,
+                runState: status === "stopping" ? "cancelling" : "running",
+              },
+            ],
+          ]),
+        });
+      });
       rerender(<AgentChatInput sessionId={CHILD} variant="subagent" />);
       expect((screen.getByTestId("subagent-stop") as HTMLButtonElement).disabled).toBe(false);
     }
@@ -245,14 +262,60 @@ describe("WP-089 T6 lifecycle 原始 status", () => {
 });
 
 describe("WP-089 T7 回归：主会话删除", () => {
-  it("在跑不删；idle 删除走 session/delete 并只关 agent 面板", () => {
+  it("在跑不删；idle 删除走 session/delete 并只关 agent 面板", async () => {
     useSessionStore.setState({ sessions: [session("main", { running: true })] } as never);
     useSessionStore.getState().deleteSession("main");
     expect(sendRpc).not.toHaveBeenCalled();
     useSessionStore.setState({ sessions: [session("main")] } as never);
     useSessionStore.getState().deleteSession("main");
     expect(sendRpc).toHaveBeenCalledWith("session/delete", { id: "main" });
-    expect(closePanel).toHaveBeenCalledWith("agent-main");
+    // Not optimistic: the row survives until the server confirms.
+    expect(useSessionStore.getState().sessions).toHaveLength(1);
+    expect(closePanel).not.toHaveBeenCalled();
+    await waitFor(() => expect(closePanel).toHaveBeenCalledWith("agent-main"));
+    expect(useSessionStore.getState().sessions).toHaveLength(0);
+  });
+
+  it("删除提交后，晚到的旧 session/list 不会复活该行", async () => {
+    useSessionStore.setState({ sessions: [session("main")] } as never);
+    useSessionStore.getState().deleteSession("main");
+    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(0));
+
+    useSessionStore.getState().onSessionList([session("main"), session("other")]);
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toEqual(["other"]);
+  });
+
+  it("删除提交后，晚到的 lifecycle 不会 upsert 回来", async () => {
+    useSessionStore.setState({ sessions: [session("main")] } as never);
+    useSessionStore.getState().deleteSession("main");
+    await waitFor(() =>
+      expect(useSessionStore.getState().deletedSessionIds.main).toBe(true),
+    );
+    useSessionStore.getState().onSessionLifecycle({
+      session_id: "main",
+      event: "preview_updated",
+      turn: null,
+      preview: "late",
+    });
+    expect(useSessionStore.getState().sessions.some((s) => s.id === "main")).toBe(false);
+  });
+
+  it("同一会话的删除在飞行中不重复发送", async () => {
+    let finish!: (v: unknown) => void;
+    mockRpc((method) => {
+      if (method === "session/delete") {
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      }
+      return {};
+    });
+    useSessionStore.setState({ sessions: [session("main")] } as never);
+    useSessionStore.getState().deleteSession("main");
+    useSessionStore.getState().deleteSession("main");
+    expect(sendRpc).toHaveBeenCalledTimes(1);
+    finish({});
+    await waitFor(() => expect(useSessionStore.getState().sessions).toHaveLength(0));
   });
 });
 

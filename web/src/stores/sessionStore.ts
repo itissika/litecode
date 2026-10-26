@@ -34,6 +34,15 @@ export function resetListSessionsInFlight(): void {
   listPending = false;
 }
 
+/** One delete per id at a time. The row stays visible until the commit, so a
+ *  second click must not send a duplicate `session/delete` — the server treats
+ *  an already-gone id as an error, not a no-op. */
+const deleteInFlight = new Set<string>();
+/** Test hook: reset the delete in-flight guard. */
+export function resetDeleteSessionInFlight(): void {
+  deleteInFlight.clear();
+}
+
 /** Ordering granularity: one minute — the resolution of the sidebar's own
  *  relative label ("1m", "2m", …). `updated_at` moves on every streamed flush
  *  (the runtime coalesces at 80ms), so comparing raw milliseconds makes two
@@ -313,7 +322,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     }
 
     if (op.op === "delete_session") {
-      // RPC catch already toasts; refresh list so optimistic remove can roll back.
+      // RPC catch already toasts; re-pull so the row follows the server's state.
       get().listSessions();
       return;
     }
@@ -379,8 +388,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     applySnapshot,
 
     onSessionList: (sessions: SessionInfo[]) => {
+      // A `session/list` snapshot can be built before a delete and arrive
+      // after it (the fast path runs off the serial loop). Drop ids already
+      // confirmed deleted so a late snapshot cannot resurrect a row.
+      const deleted = get().deletedSessionIds;
       set({
-        sessions: sortSessions(sessions),
+        sessions: sortSessions(sessions.filter((s) => !deleted[s.id])),
         sessionsLoading: false,
         sessionListError: null,
       });
@@ -425,6 +438,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
               }
             : { deletedSessionIds };
         }
+        // Late events for an id already confirmed deleted must not upsert it
+        // back into the sidebar.
+        if (state.deletedSessionIds[session_id]) return {};
         if (event === "status_changed") {
           // WP-086: aggregate status only; turn / step state untouched.
           if (!status || !exists) return {};
@@ -616,16 +632,26 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         return;
       }
 
-      // Optimistic: gone from list and panel immediately.
-      set({
-        sessions: sortSessions(get().sessions.filter((s) => s.id !== id)),
-      });
-      useConnectionStore.getState().unsubscribeSession(id);
-      closePanel(`agent-${id}`);
+      if (deleteInFlight.has(id)) return;
+      deleteInFlight.add(id);
 
       useConnectionStore
         .getState()
         .sendRpc("session/delete", { id })
+        .then(() => {
+          // Confirmed by the server. Remove now — not before — so a rejected
+          // delete never makes the row disappear and come back. Tombstone the
+          // id so a stale list snapshot cannot re-add it.
+          set((state) => ({
+            deletedSessionIds: {
+              ...state.deletedSessionIds,
+              [id]: true as const,
+            },
+            sessions: sortSessions(state.sessions.filter((s) => s.id !== id)),
+          }));
+          useConnectionStore.getState().unsubscribeSession(id);
+          closePanel(`agent-${id}`);
+        })
         .catch((err: unknown) => {
           const code = rpcErrorCode(err);
           useToastStore
@@ -635,6 +661,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
               "error",
             );
           get().listSessions();
+        })
+        .finally(() => {
+          deleteInFlight.delete(id);
         });
     },
 
@@ -678,8 +707,9 @@ export const useSessionStore = create<SessionStore>((set, get) => {
         .getState()
         .sendRpc<{ sessions: SessionInfo[] }>("session/list")
         .then((data) => {
+          const deleted = get().deletedSessionIds;
           set({
-            sessions: sortSessions(data.sessions),
+            sessions: sortSessions(data.sessions.filter((s) => !deleted[s.id])),
             sessionsLoading: false,
             sessionListError: null,
           });

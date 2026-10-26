@@ -281,6 +281,19 @@ fn writer_loop(
         deleted_files: Vec::new(),
     };
     cleanup_orphan_blob_files(&state);
+    // B: a new process has no live turn, so every pending ask is stale. Clear
+    // the live-turn marker before seal repair; otherwise a restarted app
+    // rehydrates a card no agent is waiting on.
+    match crate::session::data::sqlite::pending::clear_all_pending(state.db.conn()) {
+        Ok(rows) if rows > 0 => {
+            tracing::info!(rows, "cleared pending permissions left by a previous run")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            error = %error,
+            "could not clear pending permissions left by a previous run"
+        ),
+    }
     if let Err(error) = seal_orphaned_in_progress(&state) {
         // Not fatal: a session that cannot be sealed yet is a session that will
         // be sealed when it is next resumed. Refusing to serve writes over it

@@ -426,6 +426,10 @@ export function AgentChatInput({
   const hasModel = Boolean(sessionModelId) || availableModels.length > 0;
   const connBlocked =
     connection !== "connected" || isRunning || compacting || replaying;
+  // Stop is the one control that must survive a live turn: `connBlocked`
+  // folds in `isRunning`, which is exactly the state a stop exists to
+  // interrupt. Only a dead connection blocks the cancel RPC.
+  const stopBlocked = connection !== "connected";
   const isBlocked = connBlocked || !hasModel;
   // While a turn is live, the composer queues instead of starting: the server
   // owns the queue (memory-only) and injects it at the next request seam.
@@ -623,7 +627,7 @@ export function AgentChatInput({
                 data-testid="subagent-stop"
                 aria-label="停止子会话"
                 title="停止"
-                disabled={connBlocked}
+                disabled={stopBlocked}
                 onClick={() => stopSubagent(sessionId)}
                 className="ml-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-40"
               >

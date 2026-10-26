@@ -268,7 +268,8 @@ pub struct SessionRecord {
     /// Queued user messages for the live turn. Outlives a turn (a cancel keeps
     /// the queue for the follow-up flush) but never touches the session log.
     pending_messages: Vec<PendingMessage>,
-    /// WP-186: durable user-gate asks mirrored from `session_pending_permissions`.
+    /// B: asks owned by this process's live turn. Never hydrated from the DB;
+    /// the sidecar row is a mirror for seal repair and the turn-end clear.
     pending_permissions: Vec<crate::session::pending::PendingPermissionRecord>,
     /// WP-098 R-Q: child follow-up turns. Separate from `pending_messages`,
     /// never claimed at a step seam, memory-only (ISSUE on restart loss).
@@ -783,15 +784,8 @@ impl SessionManager {
         }
         let mut record = SessionRecord::from_meta(&meta, task_state, revision);
         record.project = None;
-        // WP-186: hydrate pending user-gate asks from the P1 sidecar.
-        match self.data.pending_permissions_blocking(session_id) {
-            Ok(pending) => record.pending_permissions = pending,
-            Err(e) => tracing::warn!(
-                error = %e,
-                session_id,
-                "failed to load pending_permissions on resume"
-            ),
-        }
+        // B: the sidecar is a live-turn marker. A resumed session has no live
+        // turn in this process, so it must not rehydrate a card from the DB.
         records.insert(session_id.to_string(), record);
         Ok(())
     }
@@ -1196,6 +1190,9 @@ impl SessionManager {
     ///
     /// Idempotent when already Idle or turn_id mismatches a different live turn.
     pub fn finish_turn(&self, session_id: &str, turn_id: &str) -> Option<TurnProgress> {
+        // B: this turn's asks are unanswerable from here on, even when the
+        // activity already moved on (a repeated finish must not leave a row).
+        self.clear_pending_permissions_for_turn(session_id, turn_id);
         let progress = {
             let mut records = self.records.lock().unwrap();
             let record = records.get_mut(session_id)?;
@@ -1606,92 +1603,190 @@ impl SessionManager {
             .unwrap_or_default()
     }
 
-    /// WP-186: upsert one pending ask in memory + durable sidecar.
-    pub fn upsert_pending_permission(&self, rec: crate::session::pending::PendingPermissionRecord) {
+    /// B: register one live ask in memory + the sidecar marker. Returns false
+    /// when the owning turn is no longer live; the caller must reply Aborted
+    /// instead of showing a card.
+    pub fn upsert_pending_permission(
+        &self,
+        rec: crate::session::pending::PendingPermissionRecord,
+    ) -> bool {
         let session_id = rec.session_id.clone();
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(&session_id) else {
-            tracing::warn!(
-                session_id = %session_id,
-                request_id = %rec.request_id,
-                "upsert_pending_permission: no session record"
+        {
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(&session_id) else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    request_id = %rec.request_id,
+                    "upsert_pending_permission: no session record"
+                );
+                return false;
+            };
+            let live = matches!(
+                &record.activity,
+                SessionActivity::RunningTurn(live)
+                    if live.turn_id.as_str() == rec.turn_id.as_str()
+            ) || matches!(
+                &record.activity,
+                SessionActivity::StartingTurn { turn_id, .. }
+                    if turn_id.as_str() == rec.turn_id.as_str()
             );
-            return;
-        };
-        if let Some(pos) = record
-            .pending_permissions
-            .iter()
-            .position(|p| p.request_id == rec.request_id)
-        {
-            record.pending_permissions[pos] = rec.clone();
-        } else {
-            record.pending_permissions.push(rec.clone());
-        }
-        let pending = record.pending_permissions.clone();
-        let expected = record.revision;
-        drop(records);
-        if let Err(e) = self
-            .data
-            .save_pending_permissions_blocking(&session_id, expected, pending)
-        {
-            tracing::warn!(error = %e, session_id = %session_id, "persist pending_permissions failed");
-        } else if let Ok(rev) = self.data.revision_blocking(&session_id) {
-            if let Some(record) = self.records.lock().unwrap().get_mut(&session_id) {
-                record.revision = rev;
+            if !live {
+                tracing::warn!(
+                    session_id = %session_id,
+                    request_id = %rec.request_id,
+                    turn_id = %rec.turn_id,
+                    "upsert_pending_permission: turn is no longer live"
+                );
+                return false;
             }
+            if let Some(pos) = record
+                .pending_permissions
+                .iter()
+                .position(|p| p.request_id == rec.request_id)
+            {
+                record.pending_permissions[pos] = rec;
+            } else {
+                record.pending_permissions.push(rec);
+            }
+        }
+        self.persist_pending_permissions(&session_id);
+        true
+    }
+
+    /// B: remove one pending ask (user answered / cancelled that request).
+    pub fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
+        let changed = {
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(session_id) else {
+                return;
+            };
+            let before = record.pending_permissions.len();
+            record
+                .pending_permissions
+                .retain(|p| p.request_id != request_id);
+            record.pending_permissions.len() != before
+        };
+        if changed {
+            self.persist_pending_permissions(session_id);
         }
     }
 
-    /// WP-186: remove one pending ask (user answered / cancelled that request).
-    pub fn remove_pending_permission(&self, session_id: &str, request_id: &str) {
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(session_id) else {
-            return;
+    /// B: clear all pending asks (Cancel → Aborted path).
+    pub fn clear_pending_permissions(&self, session_id: &str) {
+        let changed = {
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(session_id) else {
+                return;
+            };
+            if record.pending_permissions.is_empty() {
+                return;
+            }
+            record.pending_permissions.clear();
+            true
         };
-        let before = record.pending_permissions.len();
+        if changed {
+            self.persist_pending_permissions(session_id);
+        }
+    }
+
+    /// B: a finished turn's asks can never be answered again.
+    pub fn clear_pending_permissions_for_turn(&self, session_id: &str, turn_id: &str) {
+        let changed = {
+            let mut records = self.records.lock().unwrap();
+            let Some(record) = records.get_mut(session_id) else {
+                return;
+            };
+            let before = record.pending_permissions.len();
+            record
+                .pending_permissions
+                .retain(|p| p.turn_id.as_str() != turn_id);
+            record.pending_permissions.len() != before
+        };
+        if changed {
+            self.persist_pending_permissions(session_id);
+        }
+    }
+
+    /// B: a grant for a dead turn cannot wake anyone; drop its stale row and
+    /// report the session so the caller can resolve the card. `None` means the
+    /// turn is still live (another connection may own the ask) or no row
+    /// matches (an early grant).
+    pub fn clear_pending_permission_if_turn_dead(&self, request_id: &str) -> Option<String> {
+        let mut records = self.records.lock().unwrap();
+        let mut hit: Option<(String, String)> = None;
+        for (session_id, record) in records.iter() {
+            if let Some(pending) = record
+                .pending_permissions
+                .iter()
+                .find(|p| p.request_id == request_id)
+            {
+                hit = Some((session_id.clone(), pending.turn_id.clone()));
+                break;
+            }
+        }
+        let (session_id, turn_id) = hit?;
+        let live = records
+            .get(&session_id)
+            .is_some_and(|record| match &record.activity {
+                SessionActivity::RunningTurn(live) => live.turn_id.as_str() == turn_id.as_str(),
+                SessionActivity::StartingTurn { turn_id: t, .. } => {
+                    t.as_str() == turn_id.as_str()
+                }
+                _ => false,
+            });
+        if live {
+            return None;
+        }
+        let record = records.get_mut(&session_id)?;
         record
             .pending_permissions
             .retain(|p| p.request_id != request_id);
-        if record.pending_permissions.len() == before {
-            return;
-        }
-        let pending = record.pending_permissions.clone();
-        let expected = record.revision;
         drop(records);
-        if let Err(e) = self
-            .data
-            .save_pending_permissions_blocking(session_id, expected, pending)
-        {
-            tracing::warn!(error = %e, session_id, "persist pending_permissions after remove failed");
-        } else if let Ok(rev) = self.data.revision_blocking(session_id) {
-            if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
-                record.revision = rev;
-            }
-        }
+        self.persist_pending_permissions(&session_id);
+        Some(session_id)
     }
 
-    /// WP-186: clear all pending asks (Cancel → Aborted path).
-    pub fn clear_pending_permissions(&self, session_id: &str) {
-        let mut records = self.records.lock().unwrap();
-        let Some(record) = records.get_mut(session_id) else {
-            return;
-        };
-        if record.pending_permissions.is_empty() {
-            return;
-        }
-        record.pending_permissions.clear();
-        let expected = record.revision;
-        drop(records);
-        if let Err(e) =
-            self.data
-                .save_pending_permissions_blocking(session_id, expected, Vec::new())
-        {
-            tracing::warn!(error = %e, session_id, "persist clear pending_permissions failed");
-        } else if let Ok(rev) = self.data.revision_blocking(session_id) {
-            if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
-                record.revision = rev;
+    /// B: rewrite the sidecar from the in-memory list. The durable revision is
+    /// the CAS authority; a concurrent turn write may win between the list
+    /// snapshot and the save, so on conflict recapture and retry.
+    fn persist_pending_permissions(&self, session_id: &str) -> bool {
+        for _ in 0..3 {
+            let pending = {
+                let records = self.records.lock().unwrap();
+                let Some(record) = records.get(session_id) else {
+                    return false;
+                };
+                record.pending_permissions.clone()
+            };
+            let expected = self.data.revision_blocking(session_id).unwrap_or(0);
+            match self
+                .data
+                .save_pending_permissions_blocking(session_id, expected, pending)
+            {
+                Ok(_) => {
+                    if let Ok(revision) = self.data.revision_blocking(session_id) {
+                        if let Some(record) = self.records.lock().unwrap().get_mut(session_id) {
+                            record.revision = revision;
+                        }
+                    }
+                    return true;
+                }
+                Err(LitecodeError::SessionConflict { .. }) => continue,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        session_id,
+                        "persist pending_permissions failed"
+                    );
+                    return false;
+                }
             }
         }
+        tracing::warn!(
+            session_id,
+            "persist pending_permissions kept conflicting; gave up"
+        );
+        false
     }
 
     pub fn has_pending_messages(&self, session_id: &str) -> bool {
@@ -3977,6 +4072,113 @@ mod child_session_tests {
         assert_eq!(
             mgr.get_cached_progress(&sid).map(|p| p.turn_id),
             Some("t2".into())
+        );
+    }
+
+    fn pending_ask(
+        session_id: &str,
+        turn_id: &str,
+        request_id: &str,
+    ) -> crate::session::pending::PendingPermissionRecord {
+        crate::session::pending::PendingPermissionRecord {
+            session_id: session_id.into(),
+            turn_id: turn_id.into(),
+            request_id: request_id.into(),
+            tool: "ask_user".into(),
+            rule_id: "ask_user".into(),
+            summary: "which one?".into(),
+            kind: crate::permission::AskKind::AskUser,
+            free_text: false,
+            options: Vec::new(),
+            multi_select: false,
+            questions: Vec::new(),
+            call_id: Some(format!("call-{request_id}")),
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_turn_clears_its_pending_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        mgr.begin_turn(
+            &sid,
+            "t-ask".into(),
+            CancellationToken::new(),
+            5,
+            "default",
+            "/proj",
+        )
+        .unwrap();
+
+        assert!(mgr.upsert_pending_permission(pending_ask(&sid, "t-ask", "req-ask")));
+        assert_eq!(mgr.pending_permissions_snapshot(&sid).len(), 1);
+        assert_eq!(
+            mgr.data()
+                .pending_permissions_blocking(&sid)
+                .unwrap()
+                .len(),
+            1
+        );
+
+        assert!(mgr.finish_turn(&sid, "t-ask").is_some());
+        assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
+        assert!(
+            mgr.data()
+                .pending_permissions_blocking(&sid)
+                .unwrap()
+                .is_empty(),
+            "turn end must clear the sidecar row"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_for_a_dead_turn_is_not_registered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+
+        assert!(!mgr.upsert_pending_permission(pending_ask(&sid, "dead-turn", "req-dead")));
+        assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
+        assert!(
+            mgr.data()
+                .pending_permissions_blocking(&sid)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn dead_turn_grant_clears_the_stale_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let (_guard, mgr) = wp090_mgr(&dir);
+        let sid = mgr.open_session("/proj", "default", None).await.unwrap();
+        let stale = pending_ask(&sid, "dead-turn", "req-dead");
+        mgr.records
+            .lock()
+            .unwrap()
+            .get_mut(&sid)
+            .unwrap()
+            .pending_permissions
+            .push(stale.clone());
+        mgr.data()
+            .save_pending_permissions_blocking(
+                &sid,
+                mgr.data().revision_blocking(&sid).unwrap(),
+                vec![stale],
+            )
+            .unwrap();
+
+        assert_eq!(
+            mgr.clear_pending_permission_if_turn_dead("req-dead"),
+            Some(sid.clone())
+        );
+        assert!(mgr.pending_permissions_snapshot(&sid).is_empty());
+        assert!(
+            mgr.data()
+                .pending_permissions_blocking(&sid)
+                .unwrap()
+                .is_empty()
         );
     }
 

@@ -1,4 +1,9 @@
 //! P1 sidecar: `session_pending_permissions` table (WP-186).
+//!
+//! B: this is a live-turn marker, not cross-process truth. The writer clears
+//! every row at process start (no turn is live then), and the manager clears a
+//! turn's rows when that turn ends. A row exists only while this process has a
+//! live turn waiting on it, and so seal repair leaves that turn's call open.
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -148,16 +153,22 @@ pub fn clear_pending(conn: &Connection, session_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// True when this call_id (or tool name fallback) should skip interrupt seal.
+/// B: a new process has no live turn, so every sidecar row is stale.
+/// Returns how many rows were removed.
+pub fn clear_all_pending(conn: &Connection) -> Result<usize> {
+    conn.execute("DELETE FROM session_pending_permissions", [])
+        .map_err(|e| LitecodeError::SessionStorage(format!("clear all pending: {e}")))
+}
+
+/// True when a pending sidecar row says this call is a live ask. A tool name
+/// alone is not enough: at process start the table is cleared and the tail is
+/// sealed as interrupted like any other call.
 pub fn should_skip_seal_for_call(
     conn: &Connection,
     session_id: &str,
     call_id: &str,
     tool_name: &str,
 ) -> Result<bool> {
-    if PendingPermissionRecord::is_permission_class_tool_name(tool_name) {
-        return Ok(true);
-    }
     let hit: Option<i64> = conn
         .query_row(
             "SELECT 1 FROM session_pending_permissions
@@ -183,52 +194,6 @@ pub fn should_skip_seal_for_call(
         .optional()
         .map_err(|e| LitecodeError::SessionStorage(format!("skip-seal tool lookup: {e}")))?;
     Ok(by_tool.is_some())
-}
-
-/// R4: old DB with unanswered ask_user tail but no sidecar row.
-/// Synthesize a durable pending so snapshot can re-hang the card (stable request_id).
-pub fn ensure_name_fallback_pending(
-    conn: &Connection,
-    session_id: &str,
-    turn_id: &str,
-    call_id: &str,
-    tool_name: &str,
-) -> Result<()> {
-    // Only synthesize for name-class tools; sidecar-backed skips already have a row.
-    if !PendingPermissionRecord::is_permission_class_tool_name(tool_name) {
-        return Ok(());
-    }
-    let recovered_id = format!("recovered:{call_id}");
-    let hit: Option<i64> = conn
-        .query_row(
-            "SELECT 1 FROM session_pending_permissions
-             WHERE session_id = ?1 AND (call_id = ?2 OR request_id = ?3)
-             LIMIT 1",
-            params![session_id, call_id, recovered_id.as_str()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| LitecodeError::SessionStorage(format!("fallback lookup: {e}")))?;
-    if hit.is_some() {
-        return Ok(());
-    }
-    upsert_pending(
-        conn,
-        &PendingPermissionRecord {
-            session_id: session_id.to_string(),
-            turn_id: turn_id.to_string(),
-            request_id: recovered_id,
-            tool: tool_name.to_string(),
-            rule_id: tool_name.to_string(),
-            summary: format!("Recovered pending {tool_name}"),
-            kind: AskKind::AskUser,
-            free_text: false,
-            options: Vec::new(),
-            multi_select: false,
-            questions: Vec::new(),
-            call_id: Some(call_id.to_string()),
-        },
-    )
 }
 
 /// Fill `call_id` on the oldest pending row for this session+tool that still
@@ -257,4 +222,38 @@ pub fn backfill_call_id(
     )
     .map_err(|e| LitecodeError::SessionStorage(format!("backfill pending call_id: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(session_id: &str, request_id: &str) -> PendingPermissionRecord {
+        PendingPermissionRecord {
+            session_id: session_id.to_string(),
+            turn_id: "t1".into(),
+            request_id: request_id.into(),
+            tool: "ask_user".into(),
+            rule_id: "ask_user".into(),
+            summary: "which one?".into(),
+            kind: AskKind::AskUser,
+            free_text: false,
+            options: Vec::new(),
+            multi_select: false,
+            questions: Vec::new(),
+            call_id: None,
+        }
+    }
+
+    #[test]
+    fn clear_all_pending_removes_rows_from_every_session() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_pending_permissions_table(&conn).unwrap();
+        upsert_pending(&conn, &record("s1", "r1")).unwrap();
+        upsert_pending(&conn, &record("s2", "r2")).unwrap();
+
+        assert_eq!(clear_all_pending(&conn).unwrap(), 2);
+        assert!(list_pending(&conn, "s1").unwrap().is_empty());
+        assert!(list_pending(&conn, "s2").unwrap().is_empty());
+    }
 }
