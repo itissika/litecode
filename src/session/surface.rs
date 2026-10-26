@@ -17,6 +17,20 @@ pub enum SurfaceOp {
     Replace { start: Seq, end: Seq },
 }
 
+impl SurfaceOp {
+    /// Whether applying this op can change rows the reader already folded.
+    ///
+    /// A caller that only reads the suffix `held_max + 1 ..` may extend its view
+    /// only when this is false for every new row. Exhaustive on purpose: a new
+    /// op variant must be classified here before it can compile.
+    pub fn is_retroactive(&self, held_max: Option<Seq>) -> bool {
+        match self {
+            Self::Append => false,
+            Self::Replace { start, .. } => held_max.is_some_and(|held| *start <= held),
+        }
+    }
+}
+
 impl Serialize for SurfaceOp {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {
@@ -205,6 +219,20 @@ pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<Su
             }))
         }
     }
+}
+
+/// Whether this event can change rows below `held_max` when appended.
+///
+/// A `compacted` row always counts: it replaces a range chosen by its body even
+/// when it carries no explicit `surface_op`.
+pub fn is_retroactive(event: &SessionEvent, held_max: Option<Seq>) -> bool {
+    if matches!(event.event_type, EventType::Compacted) {
+        return true;
+    }
+    event
+        .surface_op
+        .as_ref()
+        .is_some_and(|op| op.is_retroactive(held_max))
 }
 
 /// Commit one previously validated surface transition.

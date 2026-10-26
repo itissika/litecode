@@ -32,6 +32,7 @@ pub use compact::{
 pub use context_meter::{
     ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
     measure_persisted_context, measure_persisted_context_with_breakdown, measure_request_context,
+    measure_working_rows_with_breakdown,
     request_token_breakdown, request_token_breakdown_for_rows, tool_schema_tokens,
 };
 pub use env::{Context, build_context};
@@ -53,6 +54,12 @@ struct PipelineState {
     hot: HotView,
     prepared: Option<PreparedView>,
     working: Vec<WorkingRow>,
+    /// Fold of the log behind `working`. `None` means "rebuild from the full
+    /// log next time"; only the fold itself and `begin_turn` may install one.
+    view: Option<crate::session::view::WorkingView>,
+    /// Whether the last `sync_turn_working` extended the held fold instead of
+    /// re-reading the log. Observability only; never read for control flow.
+    last_sync_incremental: bool,
     /// Fixed request shape frozen by the latest `compact_step` call.
     envelope: ContextEnvelope,
     /// Last observed log `MAX(seq)` (`-1` if empty). A later commit treats a
@@ -307,6 +314,8 @@ impl ContextPipeline {
                 hot: HotView::new(),
                 prepared: None,
                 working: Vec::new(),
+                view: None,
+                last_sync_incremental: false,
                 envelope: ContextEnvelope::default(),
                 log_max_seq: -1,
                 turn_id: None,
@@ -368,6 +377,15 @@ impl ContextPipeline {
             .clone()
     }
 
+    /// Whether the last cursor-driven sync extended the held fold instead of
+    /// re-reading the whole session log.
+    pub fn last_sync_incremental(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .last_sync_incremental
+    }
+
     /// The turn this pipeline is currently running, if any.
     ///
     /// Rows written while a turn is running belong to it; nothing may be written
@@ -395,14 +413,19 @@ impl ContextPipeline {
         session_id: &str,
         turn_id: Option<String>,
     ) -> Result<Vec<WorkingRow>> {
-        let rows = sessions.data().working_set_blocking(session_id)?;
+        let events = sessions.data().events_blocking(session_id)?;
+        let mut view = crate::session::view::WorkingView::from_events(&events)?;
+        view.set_epoch(sessions.entry_truncate_epoch(session_id));
+        let rows = view.rows()?;
+        let hot = project_items(&rows);
         let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
 
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.turn_id = turn_id;
         state.log_max_seq = max_seq;
         state.working = rows.clone();
-        state.hot.replace(project_items(&rows));
+        state.hot.replace(hot);
+        state.view = Some(view);
         state.prepared = None;
         Ok(rows)
     }
@@ -412,13 +435,20 @@ impl ContextPipeline {
     pub fn stage_working(&self, rows: Vec<WorkingRow>) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows;
+        state.view = None;
     }
 
     /// Reload when the log cursor moved. Pending rows (`log_seq == None`) are
     /// appended after the fold. A shorter log is a revert: drop the pending
     /// tail and leave `log_max_seq` so the next commit still sees the shrink.
+    ///
+    /// The reload extends the held fold with the rows the log gained instead of
+    /// re-reading the whole session. [`extend_view`] refuses (and this falls
+    /// back to the full read) whenever the suffix is not a plain, non-retroactive
+    /// append, so the worst case is the previous cost and never a stale view.
     fn sync_turn_working(&self, sessions: &SessionManager, session_id: &str) {
         let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
+        let epoch = sessions.entry_truncate_epoch(session_id);
         let (must_reload, shrunk, pending) = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let shrunk = !state.working.is_empty() && max_seq < state.log_max_seq;
@@ -434,14 +464,42 @@ impl ContextPipeline {
         if !must_reload {
             return;
         }
+
+        let held = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.view.take()
+        };
+        if let Some(mut view) = held
+            && view.extend(epoch, max_seq, |from, to| {
+                sessions.entry_load_events_range(session_id, from, to)
+            })
+            && let Ok(mut rows) = view.rows()
+        {
+            if !shrunk {
+                rows.extend(pending);
+            }
+            let hot = project_items(&rows);
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.working = rows;
+            state.hot.replace(hot);
+            state.view = Some(view);
+            state.last_sync_incremental = true;
+            state.log_max_seq = max_seq;
+            return;
+        }
+
         let Ok(mut rows) = sessions.data().working_set_blocking(session_id) else {
             return;
         };
         if !shrunk {
             rows.extend(pending);
         }
+        let hot = project_items(&rows);
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         state.working = rows;
+        state.hot.replace(hot);
+        state.view = None;
+        state.last_sync_incremental = false;
         if !shrunk {
             state.log_max_seq = max_seq;
         }
@@ -452,6 +510,7 @@ impl ContextPipeline {
         state.turn_id = None;
         state.log_max_seq = -1;
         state.working.clear();
+        state.view = None;
         state.hot.replace(Vec::new());
         state.prepared = None;
     }
@@ -511,6 +570,7 @@ impl ContextPipeline {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.log_max_seq = max_seq;
             state.working = rows;
+            state.view = None;
         }
         Ok(compacted)
     }
@@ -554,6 +614,7 @@ impl ContextPipeline {
             let max_seq = sessions.entry_wire_seq_cursor(session_id).0;
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.working = loaded;
+            state.view = None;
             state.log_max_seq = max_seq;
             state.prepared = None;
         }

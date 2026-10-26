@@ -179,6 +179,19 @@ impl SessionData {
         }
     }
 
+    /// How many times this session's tail has been truncated (revert). A fold
+    /// built against a different value must be rebuilt.
+    pub fn truncate_epoch_blocking(&self, session_id: &str) -> Result<u64> {
+        match self.read_blocking(SessionRead::TruncateEpoch {
+            session_id: session_id.to_string(),
+        })? {
+            ReadValue::TruncateEpoch(epoch) => Ok(epoch),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected truncate epoch".into(),
+            )),
+        }
+    }
+
     /// WP-186: load durable pending permissions for a session.
     pub fn pending_permissions_blocking(
         &self,

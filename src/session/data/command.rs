@@ -434,6 +434,9 @@ pub enum SessionRead {
     SeqCursor {
         session_id: String,
     },
+    TruncateEpoch {
+        session_id: String,
+    },
     ContextMeter {
         session_id: String,
     },
@@ -559,6 +562,7 @@ pub enum ReadValue {
         last_seq: i64,
         next_seq: u64,
     },
+    TruncateEpoch(u64),
     Meter(SessionContextMeter),
     List(Vec<SessionListRow>),
     Ids(Vec<String>),

@@ -99,6 +99,12 @@ pub struct Projection {
     /// No persisted/cold request shape is available, so context fields must be
     /// omitted from every outgoing snapshot instead of publishing a fake meter.
     pub(crate) context_unknown: bool,
+    /// Fold of the log behind `context_meter`. `None` means the next refresh
+    /// rebuilds it; a `false` from `WorkingView::extend` does the same.
+    pub(crate) view: Option<crate::session::view::WorkingView>,
+    /// Whether the last meter refresh extended the fold instead of re-reading
+    /// the log. Observability only; never read for control flow.
+    pub(crate) last_estimate_incremental: bool,
     /// Last-known provider usage (persisted session meter); feeds snapshot ring hydrate.
     pub last_turn_token_stats: Option<crate::client_protocol::protocol::TurnTokenStats>,
     /// Session-total provider usage (Σ per-request); feeds whole-session hit rate.
@@ -207,21 +213,67 @@ impl Projection {
         .ok()
     }
 
+    /// Whether the last `refresh_context_estimate` extended the held fold
+    /// instead of re-reading the whole session log.
+    pub fn last_estimate_incremental(&self) -> bool {
+        self.last_estimate_incremental
+    }
+
     fn refresh_context_estimate(&mut self) {
-        let Some(model) = self.request_model.as_ref() else {
+        let Some(model) = self.request_model.clone() else {
             return;
         };
         let envelope = self
             .context_envelope
             .clone()
             .with_output_reserve(self.context_envelope.output_reserve);
+        let sessions = Arc::clone(&self.sessions);
+        let data_root = sessions.data_root_path();
+        let session_id = self.session_id.clone();
+
+        // Rows for the meter come from the fold this projection already holds,
+        // extended with whatever the log gained. Any doubt rebuilds it from the
+        // log — the same read this replaced, so the worst case is the old cost.
+        let max_seq = sessions.entry_wire_seq_cursor(&session_id).0;
+        let epoch = sessions.entry_truncate_epoch(&session_id);
+        let mut extended = None;
+        if let Some(view) = self.view.as_mut()
+            && view.extend(epoch, max_seq, |from, to| {
+                sessions.entry_load_events_range(&session_id, from, to)
+            })
+        {
+            extended = view.rows().ok();
+        }
+        self.last_estimate_incremental = extended.is_some();
+        let rows = match extended {
+            Some(rows) => rows,
+            None => {
+                // Drop the stale fold before any fallible step: a failed rebuild
+                // must leave nothing behind that a later extend could accept.
+                self.view = None;
+                let Ok(events) = sessions.data().events_blocking(&session_id) else {
+                    return;
+                };
+                let Ok(mut view) = crate::session::view::WorkingView::from_events(&events) else {
+                    return;
+                };
+                view.set_epoch(epoch);
+                let Ok(rows) = view.rows() else {
+                    return;
+                };
+                self.view = Some(view);
+                rows
+            }
+        };
+
         let Ok((meter, breakdown)) =
-            crate::context_pipeline::measure_persisted_context_with_breakdown(
-                &self.sessions,
-                &self.session_id,
+            crate::context_pipeline::measure_working_rows_with_breakdown(
+                &sessions,
+                &session_id,
                 &envelope,
-                model,
-                &self.sessions.data_root_path(),
+                &model,
+                &data_root,
+                &rows,
             )
         else {
             return;
@@ -358,6 +410,8 @@ impl Projection {
             request_model,
             context_token_breakdown,
             context_unknown: false,
+            view: None,
+            last_estimate_incremental: false,
             last_turn_token_stats,
             cumulative_token_stats,
             provider_billed_tokens,

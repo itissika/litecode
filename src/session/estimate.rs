@@ -55,8 +55,56 @@ impl ItemTokenBreakdown {
     }
 }
 
+/// Bytes of decoded text kept in the shared token memo. Token counts are a pure
+/// function of the text, so the memo only trades memory for time.
+const TEXT_TOKEN_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
+/// Texts larger than this are counted without being remembered.
+const TEXT_TOKEN_CACHE_MAX_ENTRY: usize = 64 * 1024;
+
+#[derive(Default)]
+struct TextTokenCache {
+    entries: HashMap<String, usize>,
+    bytes: usize,
+}
+
+static TEXT_TOKEN_CACHE: std::sync::OnceLock<std::sync::Mutex<TextTokenCache>> =
+    std::sync::OnceLock::new();
+
 /// Count tokens for a UTF-8 string with cl100k_base (OpenAI gpt-4 / 3.5 family encoding).
+///
+/// Memoised by text: the encoder is the most expensive pure function on the
+/// request path, and the same history is counted again on every step.
 pub fn count_text_tokens(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    let cache = TEXT_TOKEN_CACHE.get_or_init(|| std::sync::Mutex::new(TextTokenCache::default()));
+    if let Ok(guard) = cache.lock()
+        && let Some(count) = guard.entries.get(text).copied()
+    {
+        return count;
+    }
+
+    // Encoded outside the lock: a duplicate miss costs a repeat, a held lock
+    // would cost every other thread the whole encode.
+    let count = count_text_tokens_uncached(text);
+    if text.len() <= TEXT_TOKEN_CACHE_MAX_ENTRY
+        && let Ok(mut guard) = cache.lock()
+    {
+        if guard.bytes + text.len() > TEXT_TOKEN_CACHE_MAX_BYTES {
+            guard.entries.clear();
+            guard.bytes = 0;
+        }
+        if guard.entries.insert(text.to_string(), count).is_none() {
+            guard.bytes += text.len();
+        }
+    }
+    count
+}
+
+/// The encoder itself, without the memo. Exposed so tests can prove the memo
+/// never changes an answer.
+pub fn count_text_tokens_uncached(text: &str) -> usize {
     let bpe = tiktoken_rs::cl100k_base_singleton();
     bpe.encode_with_special_tokens(text).len()
 }
@@ -240,4 +288,25 @@ pub fn autocompact_threshold(context_window: usize) -> usize {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_token_memo_never_changes_an_answer() {
+        let long = "word ".repeat(500);
+        let corpus = ["", "hello", "你好，世界", long.as_str(), "fn main() {}"];
+        for text in corpus {
+            let direct = count_text_tokens_uncached(text);
+            assert_eq!(
+                direct,
+                count_text_tokens(text),
+                "first call must match the encoder for {text:?}"
+            );
+            assert_eq!(
+                direct,
+                count_text_tokens(text),
+                "the memo must return the same count for {text:?}"
+            );
+        }
+    }
+}

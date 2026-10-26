@@ -809,6 +809,10 @@ impl SessionManager {
         self.entry_buffer_len(session_id)
     }
 
+    pub fn entry_truncate_epoch(&self, session_id: &str) -> u64 {
+        self.data.truncate_epoch_blocking(session_id).unwrap_or(0)
+    }
+
     pub fn entry_wire_seq_cursor(&self, session_id: &str) -> (i64, u64) {
         match self.data.seq_cursor_blocking(session_id) {
             Ok(cursor) => cursor,

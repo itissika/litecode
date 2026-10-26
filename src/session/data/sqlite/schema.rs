@@ -159,6 +159,7 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             kept_from_seq     INTEGER NOT NULL DEFAULT 0,
             compacted_seq     INTEGER,
             surface_rewrite_seq INTEGER NOT NULL DEFAULT 0,
+            truncate_epoch    INTEGER NOT NULL DEFAULT 0,
             spine_from        INTEGER NOT NULL DEFAULT 0,
             subagent_depth    INTEGER NOT NULL DEFAULT 0,
             todos_json        TEXT NOT NULL DEFAULT '[]',
@@ -423,6 +424,15 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
         if !cols.iter().any(|c| c == "surface_rewrite_seq") {
             conn.execute(
                 "ALTER TABLE sessions ADD COLUMN surface_rewrite_seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+        // Bumped by every tail truncate (revert). A fold holding rows above the
+        // surviving tail cannot detect the deletion from seq continuity alone:
+        // seqs are never reused, so the next append looks continuous.
+        if !cols.iter().any(|c| c == "truncate_epoch") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN truncate_epoch INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }

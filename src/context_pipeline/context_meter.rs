@@ -367,10 +367,23 @@ pub fn measure_persisted_context_with_breakdown(
     model: &ResolvedModel,
     data_root: &Path,
 ) -> Result<(ContextMeter, ItemTokenBreakdown)> {
-    let bill = persisted_occupancy_bill(sessions, session_id)?;
     let rows = sessions.data().working_set_blocking(session_id)?;
+    measure_working_rows_with_breakdown(sessions, session_id, envelope, model, data_root, &rows)
+}
+
+/// The same measurement over rows the caller already holds — one derivation,
+/// two ways to obtain it (cold read or an extended view).
+pub fn measure_working_rows_with_breakdown(
+    sessions: &SessionManager,
+    session_id: &str,
+    envelope: &ContextEnvelope,
+    model: &ResolvedModel,
+    data_root: &Path,
+    rows: &[crate::session::working::WorkingRow],
+) -> Result<(ContextMeter, ItemTokenBreakdown)> {
+    let bill = persisted_occupancy_bill(sessions, session_id)?;
     let (_turn_view, projection) =
-        crate::context_pipeline::project_working_rows(&rows, model, data_root);
+        crate::context_pipeline::project_working_rows(rows, model, data_root);
     let mode = session_context_mode(sessions, session_id);
     let context_window = crate::platform_knobs::effective_context_window(model, mode);
     let meter = ContextMeter::measure(

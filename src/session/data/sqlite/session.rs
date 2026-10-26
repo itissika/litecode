@@ -2479,6 +2479,21 @@ impl Session {
         Ok(())
     }
 
+    /// How many times this session's tail has been truncated. A fold built
+    /// against a different value is stale even when its seq range still looks
+    /// contiguous.
+    pub fn load_truncate_epoch_on(conn: &Connection, session_id: &str) -> Result<u64> {
+        match conn.query_row(
+            "SELECT truncate_epoch FROM sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get::<_, i64>(0),
+        ) {
+            Ok(epoch) => Ok(epoch.max(0) as u64),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+            Err(err) => Err(err.into()),
+        }
+    }
+
     fn truncate_unlocked(&self, anchor_seq: i64) -> Result<i64> {
         let tx = self.conn();
         require_user_anchor(tx, &self.id, anchor_seq)?;
@@ -2525,7 +2540,8 @@ impl Session {
             "UPDATE sessions
              SET updated_at = ?1,
                  last_message = ?2,
-                 last_assistant = ?3
+                 last_assistant = ?3,
+                 truncate_epoch = truncate_epoch + 1
              WHERE id = ?4",
             rusqlite::params![now, preview, assistant, self.id],
         )?;

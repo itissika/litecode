@@ -22,6 +22,7 @@ pub mod store;
 pub mod surface;
 pub mod task_state;
 pub mod transcript_file;
+pub mod view;
 pub mod working;
 pub mod workspace_lock;
 

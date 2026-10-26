@@ -3,10 +3,9 @@
 
 use rusqlite::Connection;
 
-use crate::session::event::{SessionEvent, item_from_event, spine_working_payload};
-use crate::session::media::item_has_media;
+use crate::session::event::SessionEvent;
 use crate::session::model::SessionMeta;
-use crate::session::surface::{fold_surface, project_working_payloads};
+use crate::session::surface::fold_surface;
 use crate::session::transcript_file::SearchableRow;
 use crate::session::working::WorkingRow;
 use crate::types::{LitecodeError, Result};
@@ -54,6 +53,9 @@ pub fn execute(
             let (last_seq, next_seq) = session::load_wire_seq_cursor_on(conn, &session_id)?;
             Ok(ReadValue::SeqCursor { last_seq, next_seq })
         }
+        SessionRead::TruncateEpoch { session_id } => Ok(ReadValue::TruncateEpoch(
+            session::Session::load_truncate_epoch_on(conn, &session_id)?,
+        )),
         SessionRead::ContextMeter { session_id } => Ok(ReadValue::Meter(
             session::load_context_meter_on(conn, &session_id)?,
         )),
@@ -494,45 +496,9 @@ fn load_working_set(
     data_root: &std::path::Path,
 ) -> Result<Vec<WorkingRow>> {
     let events = load_events(conn, session_id, data_root)?;
-    let surface = fold_surface(&events)?;
-    let events_by_seq: std::collections::HashMap<_, _> =
-        events.iter().map(|event| (event.seq, event)).collect();
-    let replacement_media: std::collections::HashSet<_> = surface
-        .nodes
-        .iter()
-        .filter_map(|seq| events_by_seq.get(seq).copied())
-        .filter(|event| {
-            matches!(
-                event.surface_op,
-                Some(crate::session::SurfaceOp::Replace { .. })
-            )
-        })
-        .filter(|event| {
-            event.source_seqs.as_ref().is_some_and(|sources| {
-                sources.iter().any(|seq| {
-                    events_by_seq
-                        .get(seq)
-                        .and_then(|source| item_from_event(source).ok())
-                        .is_some_and(|item| item_has_media(&item))
-                })
-            })
-        })
-        .map(|event| event.seq)
-        .collect();
-    let pairs = project_working_payloads(&surface, |seq| {
-        events_by_seq
-            .get(&seq)
-            .ok_or_else(|| LitecodeError::InvalidSessionEvent(format!("surface seq {seq} missing")))
-            .and_then(|event| spine_working_payload(event))
-    })?;
-    Ok(pairs
-        .into_iter()
-        .map(|(seq, payload)| WorkingRow {
-            log_seq: Some(seq),
-            payload,
-            replacement_media: replacement_media.contains(&seq),
-        })
-        .collect())
+    let mut view = crate::session::view::WorkingView::from_events(&events)?;
+    view.set_epoch(session::Session::load_truncate_epoch_on(conn, session_id)?);
+    view.rows()
 }
 
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
