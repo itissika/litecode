@@ -697,6 +697,52 @@ export interface ContextMeter {
   compact_eligible: boolean;
 }
 
+/**
+ * One provider bill, in transcript order (`session/usage`).
+ *
+ * `request` bills live on the turn's `request/header` row; `compaction` bills
+ * live on the `compacted` checkpoint row the summarizer request produced.
+ */
+export interface UsageSample {
+  seq: number;
+  turn_id: string;
+  at_ms: number;
+  /** prompt = hit + miss, both provider counts. */
+  prompt: number;
+  completion: number;
+  hit: number;
+  miss: number;
+  kind: UsageKind;
+  model?: string;
+}
+
+/** Which call paid a bill: a turn request or the summarizer's own request. */
+export type UsageKind = "request" | "compaction";
+
+/** A `compacted` checkpoint row. The chart draws it as a vertical mark. */
+export interface UsageMark {
+  seq: number;
+  at_ms: number;
+}
+
+/**
+ * Bills for one session: a bounded tail plus whole-session totals.
+ * `truncated` says the tail is not the whole history.
+ */
+export interface SessionUsageSeries {
+  session_id: string;
+  samples: UsageSample[];
+  compactions: UsageMark[];
+  truncated: boolean;
+  totals: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
+  };
+  requests: number;
+}
+
 export interface TurnFinished {
   turn_id: string;
   reason: TurnEndReason;
@@ -892,4 +938,47 @@ export interface TurnMeta {
     approved: boolean;
     always: boolean;
   } | null;
+}
+
+/** One natural (server-local) day of authoritative workspace spend. */
+export interface WorkspaceUsageDay {
+  day: string;
+  requests: number;
+  prompt: number;
+  completion: number;
+  hit: number;
+  miss: number;
+}
+
+/** One hour of today (server-local), for the `日` view. */
+export interface WorkspaceUsageHour {
+  /** 0–23, server-local. */
+  hour: number;
+  requests: number;
+  prompt: number;
+  completion: number;
+  hit: number;
+  miss: number;
+}
+
+/**
+ * Workspace-wide bills (`workspace/usage`) — authoritative rows only.
+ *
+ * A session from before usage was recorded is absent, never estimated.
+ */
+export interface WorkspaceUsageReport {
+  days: WorkspaceUsageDay[];
+  /** Today only: a single day column cannot answer a within-day question. */
+  hours: WorkspaceUsageHour[];
+  /** Server-local `YYYY-MM-DD`; the anchor for "this week / this month". */
+  today: string;
+  totals: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    cache_hit_tokens: number;
+    cache_miss_tokens: number;
+  };
+  requests: number;
+  /** Sessions that paid at least one bill. */
+  session_count: number;
 }

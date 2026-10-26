@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { Info } from "@phosphor-icons/react";
+
 import { useConnectionStore } from "../stores/connectionStore";
 import { useSessionStore } from "../stores/sessionStore";
 import { SessionItem } from "./SessionItem";
+import { Popover } from "./ui/Popover";
+import { WorkspaceUsage } from "./WorkspaceUsage";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 
 export function SessionList() {
@@ -116,9 +120,26 @@ export function SessionList() {
               title={connecting ? "Connecting…" : "Loading sessions"}
             />
           )}
-          <span className="min-w-0 truncate text-[10px] text-(--_dk-text-disabled)">
-            {roots.length} session{roots.length !== 1 ? "s" : ""}
-          </span>
+          {/* Workspace spend sits at the far right, where a quiet read-out
+              belongs. Same popover shell as the per-session ctx ring, so the two
+              usage surfaces read as one idea. Reads only on open. */}
+          <Popover
+            width={240}
+            trigger={({ open, toggle }) => (
+              <button
+                type="button"
+                onClick={toggle}
+                aria-expanded={open}
+                aria-label="工作区用量"
+                title="工作区用量"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover)"
+              >
+                <Info size={13} />
+              </button>
+            )}
+          >
+            <WorkspaceUsage />
+          </Popover>
         </div>
       </div>
 

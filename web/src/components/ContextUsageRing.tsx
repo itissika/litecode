@@ -2,22 +2,12 @@ import type { CSSProperties } from "react";
 import { ArrowsInSimple, CircleNotch } from "@phosphor-icons/react";
 import { useTurnStore } from "../stores/turnStore";
 import { useConnectionStore } from "../stores/connectionStore";
-import type {
-  ContextMeterSource,
-  ItemTokenBreakdown,
-} from "../api/types";
+import type { ItemTokenBreakdown } from "../api/types";
+import { formatToken } from "../lib/tokens";
 import { FoldCard } from "./FoldCard";
 import { Popover } from "./ui/Popover";
-
-function formatToken(n: number): string {
-  // K/M abbreviation keeps the 240px popover readable: 12.3K, 123K, 1.2M.
-  // Sub-1000 stays exact (cheap, and loses nothing at small magnitudes).
-  if (n < 1000) return n.toLocaleString();
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}K`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}K`;
-  if (n < 10_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  return `${Math.round(n / 1_000_000)}M`;
-}
+import { useSessionUsage } from "../api/usage";
+import { UsageBars } from "./UsageBars";
 
 function cacheHitRate(hit: number, miss: number): number | null {
   const total = hit + miss;
@@ -56,7 +46,7 @@ const RING_STOPS: { color: string; at: number }[] = [
 
 // Exported for Remotion compositions (c-switch ring replica) so the hit-rate →
 // hue mapping stays single-sourced with the product component.
-function ringColorForHitRate(rate: number): string {
+export function ringColorForHitRate(rate: number): string {
   const clamped = Math.max(0, Math.min(1, rate));
   let lo = RING_STOPS[0];
   let hi = RING_STOPS[RING_STOPS.length - 1];
@@ -152,17 +142,6 @@ function occupancyMix(
   return { tiers, tools };
 }
 
-function contextMeterSourceLabel(source: ContextMeterSource): string {
-  switch (source) {
-    case "provider":
-      return "provider usage";
-    case "provider_plus_suffix":
-      return "provider usage + local suffix";
-    case "local_envelope":
-      return "local request envelope";
-  }
-}
-
 export function ContextUsageRing({
   sessionId,
   readOnly = false,
@@ -221,6 +200,16 @@ export function ContextUsageRing({
   const sessionBilledTokens = useTurnStore(
     (s) => s.byId.get(sessionId)?.sessionBilledTokens ?? null,
   );
+  // One read feeds both the chart and the totals under it, so a bill can never
+  // be in one place and missing from the other. The key ticks once per completed
+  // request (billed tokens), at every compaction edge, and on turn-state change.
+  const usage = useSessionUsage(
+    sessionId,
+    `${runState}:${compacting ? 1 : 0}:${sessionBilledTokens ?? 0}`,
+  );
+  const billedTokens = usage.series
+    ? usage.series.totals.prompt_tokens + usage.series.totals.completion_tokens
+    : null;
 
   const hasOccupancy = used !== null && used > 0;
   const hasProviderTruth = providerPrompt > 0;
@@ -257,6 +246,13 @@ export function ContextUsageRing({
   // the cache-hit green→red hue so the two metrics are never confused.
   const occupancyBarWidth = hasOccupancy && total > 0 ? `${pct * 100}%` : "0%";
   const mix = hasOccupancy ? occupancyMix(used, breakdown) : null;
+  // Compaction point on the occupancy bar, as a share of the selected window.
+  // compact_at is server-owned (min(80% window, prompt limit)); the bar is
+  // scaled to context_window, so the ratio maps straight onto the track.
+  const compactMarkPct =
+    meter && total > 0 && meter.compact_at > 0
+      ? Math.min(meter.compact_at / total, 1) * 100
+      : null;
   const segments = mix?.tiers ?? [];
   const toolRows = mix?.tools ?? [];
   const hasMix = segments.length > 0;
@@ -344,29 +340,42 @@ export function ContextUsageRing({
                   )}
                 </span>
               </div>
-              <div className="h-1.5 w-full overflow-hidden rounded-full bg-(--_dk-line)">
-                {hasMix ? (
+              <div className="relative h-1.5 w-full">
+                <div className="h-full w-full overflow-hidden rounded-full bg-(--_dk-line)">
+                  {hasMix ? (
+                    <div
+                      className="flex h-full"
+                      style={{ width: occupancyBarWidth }}
+                    >
+                      {segments.map((seg) => (
+                        <div
+                          key={seg.key}
+                          className="h-full min-w-px"
+                          style={{
+                            width: `${(seg.tokens / (used ?? 1)) * 100}%`,
+                            backgroundColor: seg.color,
+                          }}
+                          title={`${seg.label} ${formatToken(seg.tokens)}`}
+                        />
+                      ))}
+                    </div>
+                  ) : (
+                    <div
+                      className="h-full rounded-full bg-(--_dk-text-muted)"
+                      style={{ width: occupancyBarWidth }}
+                    />
+                  )}
+                </div>
+                {compactMarkPct !== null && (
+                  // Decorative compaction point: a slider thumb where auto
+                  // compaction fires. Position only, no numbers.
                   <div
-                    className="flex h-full"
-                    style={{ width: occupancyBarWidth }}
+                    aria-hidden
+                    className="pointer-events-none absolute inset-y-0"
+                    style={{ left: `${compactMarkPct}%` }}
                   >
-                    {segments.map((seg) => (
-                      <div
-                        key={seg.key}
-                        className="h-full min-w-px"
-                        style={{
-                          width: `${(seg.tokens / (used ?? 1)) * 100}%`,
-                          backgroundColor: seg.color,
-                        }}
-                        title={`${seg.label} ${formatToken(seg.tokens)}`}
-                      />
-                    ))}
+                    <span className="absolute -top-[3px] left-0 h-3 w-[3px] -translate-x-1/2 rounded-[2px] bg-(--_dk-text-secondary) shadow-[0_0_0_1px_var(--_dk-overlay)]" />
                   </div>
-                ) : (
-                  <div
-                    className="h-full rounded-full bg-(--_dk-text-muted)"
-                    style={{ width: occupancyBarWidth }}
-                  />
                 )}
               </div>
               {hasMix && (
@@ -433,17 +442,6 @@ export function ContextUsageRing({
                   No context window configured
                 </span>
               )}
-              <span className="text-(--_dk-text-disabled)">
-                {meter
-                  ? `Source: ${contextMeterSourceLabel(meter.source)}`
-                  : "No server meter (legacy display fallback)"}
-              </span>
-              {meter && (
-                <span className="font-mono text-(--_dk-text-disabled)">
-                  prompt limit {formatToken(meter.prompt_limit)} · auto at{" "}
-                  {formatToken(meter.compact_at)}
-                </span>
-              )}
             </div>
             {!readOnly && (
               <button
@@ -470,54 +468,57 @@ export function ContextUsageRing({
             )}
           </div>
 
-          {/* Cache hit rate — session-total aggregate + last request; dot colors
-              follow the same ring hue logic */}
-          <div className="flex flex-col gap-1 border-t border-(--_dk-line) pt-2.5">
-            <span className="text-(--_dk-text-muted)">Cache hit</span>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
-                <span
-                  className="h-1 w-1 rounded-full"
-                  style={{ backgroundColor: sessionColor }}
-                />
-                Total
-              </span>
-              <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                {sessionHitRate !== null
-                  ? `${(sessionHitRate * 100).toFixed(1)}%`
-                  : "--"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
-                <span
-                  className="h-1 w-1 rounded-full"
-                  style={
-                    {
-                      backgroundColor: color,
-                      ["--_dk-cache-pulse-color" as string]: color,
-                      animation:
-                        hitRate !== null
-                          ? "dk-cache-pulse 1.8s ease-in-out infinite"
-                          : "none",
-                    } as CSSProperties
-                  }
-                />
-                Current
-              </span>
-              <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                {hitRate !== null ? `${(hitRate * 100).toFixed(1)}%` : "--"}
-              </span>
-            </div>
-          </div>
+          {/* Usage: one section, shape first then totals. The chart and the two
+              rows below describe the same provider bills, so they are never
+              separated — a reader should see the curve before the aggregate. */}
+          <div className="flex flex-col gap-2 border-t border-(--_dk-line) pt-2.5">
+            <UsageBars series={usage.series} failed={usage.failed} />
 
-          <div className="flex flex-col gap-1 border-t border-(--_dk-line) pt-2.5 text-(--_dk-text-secondary)">
-            <div className="flex items-center justify-between gap-2">
+            {/* Cache hit rate — session-total aggregate + last request; dot
+                colors follow the same ring hue logic */}
+            <div className="flex flex-col gap-1">
+              <span className="text-(--_dk-text-muted)">Cache hit</span>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
+                  <span
+                    className="h-1 w-1 rounded-full"
+                    style={{ backgroundColor: sessionColor }}
+                  />
+                  Total
+                </span>
+                <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+                  {sessionHitRate !== null
+                    ? `${(sessionHitRate * 100).toFixed(1)}%`
+                    : "--"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
+                  <span
+                    className="h-1 w-1 rounded-full"
+                    style={
+                      {
+                        backgroundColor: color,
+                        ["--_dk-cache-pulse-color" as string]: color,
+                        animation:
+                          hitRate !== null
+                            ? "dk-cache-pulse 1.8s ease-in-out infinite"
+                            : "none",
+                      } as CSSProperties
+                    }
+                  />
+                  Current
+                </span>
+                <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+                  {hitRate !== null ? `${(hitRate * 100).toFixed(1)}%` : "--"}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 text-(--_dk-text-secondary)">
               <span>Billed</span>
               <span className="font-mono tabular-nums">
-                {sessionBilledTokens != null
-                  ? formatToken(sessionBilledTokens)
-                  : "-"}
+                {billedTokens != null ? formatToken(billedTokens) : "-"}
               </span>
             </div>
           </div>
