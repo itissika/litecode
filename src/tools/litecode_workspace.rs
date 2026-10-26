@@ -24,7 +24,7 @@ use crate::runtime::RuntimeHandle;
 use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
 use crate::tool::Tool;
-use crate::tool::availability::{agent_tool_enabled, is_available};
+use crate::tool::availability::agent_tool_enabled;
 use crate::tool::project::project_tools;
 use crate::tool::registry::builtin_code_surface_tools;
 use crate::tool::trait_::ToolExecutionContext;
@@ -146,15 +146,9 @@ fn call_surface_label(surface: CallSurface) -> &'static str {
     }
 }
 
-fn code_binding_id(tool_name: &str) -> &str {
-    if crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&tool_name) {
-        return crate::tools::lsp::LSP_CARD_ID;
-    }
-    match tool_name {
-        "wait" | "kill" => "run",
-        "apply_edits" => "edit",
-        _ => tool_name,
-    }
+fn code_binding_id(resolved: &crate::config::resolved::ResolvedConfig, tool_name: &str) -> String {
+    crate::tool::capability::member_owner(resolved, tool_name)
+        .unwrap_or_else(|| tool_name.to_string())
 }
 
 fn code_composition_error(
@@ -169,9 +163,8 @@ fn code_composition_error(
     let mut candidates: Vec<Arc<dyn Tool>> = builtin_code_surface_tools()
         .into_iter()
         .filter(|tool| {
-            let binding = code_binding_id(tool.name());
-            agent_tool_enabled(resolved, agent_id, binding)
-                && (binding != crate::tools::lsp::LSP_CARD_ID || is_available(resolved, binding))
+            let binding = code_binding_id(resolved, tool.name());
+            agent_tool_enabled(resolved, agent_id, &binding)
         })
         .collect();
     for existing in resolved.custom_tools() {

@@ -109,7 +109,7 @@ fn wait_lsp_warm_blocking(engines: &WorkspaceEngines) {
 }
 
 #[test]
-fn engines_json_off_no_lsp_tool() {
+fn engines_json_off_keeps_lsp_tools() {
     let _guard = LSP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     clear_mock_ls_env();
     let dir = TempDir::new().unwrap();
@@ -162,8 +162,13 @@ fn engines_json_off_no_lsp_tool() {
             String::new(),
         )),
         None,
-    ));
-    assert!(!tools.iter().any(|t| t.name() == "lsp"));
+    ))
+    .expect("build tool list");
+    assert!(
+        tools.iter().any(|t| t.name() == "go_to_definition"),
+        "D2: LSP card is bound and listed even when the engine is off"
+    );
+    assert!(tools.iter().any(|t| t.name() == "hover"));
 }
 
 #[tokio::test(flavor = "current_thread")]

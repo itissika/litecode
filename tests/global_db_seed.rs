@@ -101,6 +101,14 @@ fn config_global_db_migration_and_seed() {
     let default_tools = &settings.agents.get("default").unwrap().tools;
     assert!(default_tools.contains_key("read"));
     assert!(
+        default_tools.contains_key("subagent_tools"),
+        "default seed must bind one subagent capability"
+    );
+    assert!(
+        !default_tools.contains_key("subagent_launch"),
+        "subagent members are not separate bindings"
+    );
+    assert!(
         default_tools.contains_key("run"),
         "default seed must bind run"
     );

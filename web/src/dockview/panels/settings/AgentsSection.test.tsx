@@ -196,35 +196,18 @@ const mcpDemoTool: AvailableTool = {
   permission_surface: "fixed",
 };
 
-describe("AgentsSection series bind cards", () => {
+describe("AgentsSection capability bind cards", () => {
   beforeEach(() => {
     useSettingsStore.setState({
       llm: llmDoc,
       availableTools: [
         readTool,
         {
-          id: "subagent_launch",
+          id: "subagent_tools",
           kind: "core",
           origin: "builtin",
           permission_surface: "fixed",
-          series_id: "subagent",
-          series_label: "Subagent",
-        },
-        {
-          id: "subagent_wait",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "fixed",
-          series_id: "subagent",
-          series_label: "Subagent",
-        },
-        {
-          id: "subagent_stop",
-          kind: "core",
-          origin: "builtin",
-          permission_surface: "fixed",
-          series_id: "subagent",
-          series_label: "Subagent",
+          scope: "primary_root_only",
         },
       ],
       mcpDefs: { global: [], workspace: [] },
@@ -244,17 +227,24 @@ describe("AgentsSection series bind cards", () => {
     cleanup();
   });
 
-  it("keeps a series tool set on one line", () => {
+  it("shows engine status without hiding the binding card", () => {
+    useSettingsStore.setState({
+      availableTools: [{ ...lspTool, status: "failed" }],
+    });
     render(<AgentsSection />);
-    const subagent = screen.getByText(
-      "core · subagent_launch, subagent_stop, subagent_wait",
-    );
-    expect(subagent.className).toContain("truncate");
     expect(
-      screen.getAllByRole("button", { name: /subagent_launch tool binding/i }),
+      screen.getByRole("button", { name: /lsp tool binding, disabled/i }),
+    ).toBeTruthy();
+    expect(screen.getByText("failed")).toBeTruthy();
+  });
+
+  it("renders the subagent capability as one card", () => {
+    render(<AgentsSection />);
+    expect(
+      screen.getAllByRole("button", { name: /subagent_tools tool binding/i }),
     ).toHaveLength(1);
     expect(
-      screen.queryByRole("button", { name: /subagent_wait tool binding/i }),
+      screen.queryByRole("button", { name: /subagent_launch tool binding/i }),
     ).toBeNull();
   });
 });
@@ -299,8 +289,6 @@ describe("AgentsSection code-mode badge", () => {
           origin: "builtin",
           permission_surface: "preset",
           surface: "direct",
-          series_id: "bash",
-          series_label: "Bash",
         },
         {
           id: "demo",
@@ -372,7 +360,18 @@ describe("AgentsSection subagent tool cards", () => {
     saveAgent.mockClear();
     useSettingsStore.setState({
       llm: llmDoc,
-      availableTools: [readTool, lspTool, mcpDemoTool],
+      availableTools: [
+        readTool,
+        lspTool,
+        mcpDemoTool,
+        {
+          id: "plan",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "fixed",
+          scope: "primary_root_only",
+        },
+      ],
       mcpDefs: { global: [], workspace: [] },
       mcpRuntime: { global: {}, workspace: {} },
       agentIds: ["helper"],
@@ -389,6 +388,33 @@ describe("AgentsSection subagent tool cards", () => {
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+  });
+
+  it("hides primary-root-only cards from a subagent", () => {
+    render(<AgentsSection />);
+    expect(
+      screen.getByRole("button", { name: /read tool binding/i }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: /plan tool binding/i }),
+    ).toBeNull();
+  });
+
+  it("renders a suite label instead of its internal id", () => {
+    useSettingsStore.setState({
+      availableTools: [
+        {
+          id: "suite:deck",
+          kind: "custom",
+          origin: "global",
+          permission_surface: "preset",
+          label: "Deck",
+        },
+      ],
+    });
+    render(<AgentsSection />);
+    expect(screen.getByText("Deck")).toBeTruthy();
+    expect(screen.queryByText("suite:deck")).toBeNull();
   });
 
   it("renders per-tool preset cards with a deny-semantics note, not checkboxes", () => {

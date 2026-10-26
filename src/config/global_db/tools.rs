@@ -23,12 +23,7 @@ pub fn core_none_tools() -> &'static [&'static str] {
         "todo",
         "ask_user",
         "knowledge",
-        "subagent_launch",
-        "subagent_wait",
-        "subagent_stop",
-        "subagent_list",
-        "subagent_send",
-        "subagent_delete",
+        crate::config::schema::SUBAGENT_CAPABILITY_ID,
     ]
 }
 
@@ -45,6 +40,8 @@ pub fn is_core_tool(id: &str) -> bool {
     core_configurable_tools().contains(&id)
         || core_none_tools().contains(&id)
         || network_core_tools().contains(&id)
+        // Members are no longer cards, but their model names stay reserved.
+        || crate::config::schema::SUBAGENT_MEMBER_TOOL_IDS.contains(&id)
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {

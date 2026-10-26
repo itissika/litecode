@@ -315,7 +315,18 @@ impl SettingsWriter {
     }
 
     pub fn load_settings(&self) -> Result<GlobalSettings> {
-        self.load()
+        let mut settings = self.load()?;
+        let defs = settings.custom_tools.clone();
+        for profile in settings.agents.values_mut() {
+            let notes = super::suite_bindings::collapse_custom_suite_bindings(
+                &mut profile.tools,
+                &defs,
+            );
+            for note in notes {
+                tracing::warn!("{note}");
+            }
+        }
+        Ok(settings)
     }
 
     fn commit_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -621,11 +632,18 @@ impl SettingsWriter {
         workspace: &super::resolved::WorkspaceState,
     ) -> Result<CommitAck> {
         validate_agent_id(id)?;
-        let safe = merged_custom_rules(
-            &self.load()?.custom_tools,
-            &workspace.workspace_custom_tools,
-        );
+        let loaded = self.load()?;
+        let safe = merged_custom_rules(&loaded.custom_tools, &workspace.workspace_custom_tools);
         expand_binding_presets(&mut profile.tools, &safe);
+        let mut defs = loaded.custom_tools.clone();
+        for (name, definition) in &workspace.workspace_custom_tools {
+            defs.retain(|tool| &tool.name != name);
+            defs.push(definition.clone());
+        }
+        for note in super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs)
+        {
+            tracing::warn!("{note}");
+        }
         normalize_agent_profile(&mut profile);
         let id = id.to_string();
         self.commit_partial(&[DocId::Agents], |settings| {
@@ -680,6 +698,11 @@ impl SettingsWriter {
             )));
         }
         let safe = merged_custom_rules(&loaded.custom_tools, &workspace.workspace_custom_tools);
+        let mut defs = loaded.custom_tools.clone();
+        for (name, definition) in &workspace.workspace_custom_tools {
+            defs.retain(|tool| &tool.name != name);
+            defs.push(definition.clone());
+        }
         let id = agent_id.to_string();
         self.commit_partial(&[DocId::Agents], move |settings| {
             let profile = settings
@@ -688,6 +711,12 @@ impl SettingsWriter {
                 .expect("agent exists after load check");
             for (tool_id, binding) in profile.tools.iter_mut() {
                 apply_forced_preset(tool_id, binding, preset, &safe);
+            }
+            for note in super::suite_bindings::collapse_custom_suite_bindings(
+                &mut profile.tools,
+                &defs,
+            ) {
+                tracing::warn!("{note}");
             }
             Ok(false)
         })
@@ -730,6 +759,11 @@ impl SettingsWriter {
             vec![DocId::CustomToolsGlobal, DocId::Agents]
         };
         self.commit_partial(&docs, |settings| {
+            let removed_suite = settings
+                .custom_tools
+                .iter()
+                .find(|tool| tool.name == id)
+                .and_then(|tool| tool.suite.clone());
             let before = settings.custom_tools.len();
             settings.custom_tools.retain(|t| t.name != id);
             if settings.custom_tools.len() == before {
@@ -739,7 +773,26 @@ impl SettingsWriter {
             }
             if !keep_binding {
                 for profile in settings.agents.values_mut() {
-                    profile.tools.remove(id);
+                    match removed_suite.as_deref() {
+                        Some(suite) => {
+                            let still_declared = settings
+                                .custom_tools
+                                .iter()
+                                .any(|tool| tool.suite.as_deref() == Some(suite))
+                                || workspace
+                                    .workspace_custom_tools
+                                    .values()
+                                    .any(|tool| tool.suite.as_deref() == Some(suite));
+                            if !still_declared {
+                                profile
+                                    .tools
+                                    .remove(&super::suite_bindings::suite_id(suite));
+                            }
+                        }
+                        None => {
+                            profile.tools.remove(id);
+                        }
+                    }
                 }
             }
             Ok(false)
@@ -838,7 +891,9 @@ impl SettingsWriter {
                 "custom tool not found: {id}"
             )));
         }
-        let keep_binding = self.load()?.custom_tools.iter().any(|t| t.name == id);
+        let loaded = self.load()?;
+        let keep_binding = loaded.custom_tools.iter().any(|t| t.name == id);
+        let removed_suite = file.tools.get(id).and_then(|tool| tool.suite.clone());
         let root = workspace_root.to_path_buf();
         let id_owned = id.to_string();
         if keep_binding {
@@ -847,6 +902,17 @@ impl SettingsWriter {
             });
         }
         let strip_id = id.to_string();
+        let suite_still_declared = removed_suite.as_deref().is_some_and(|suite| {
+            let in_workspace = file
+                .tools
+                .values()
+                .any(|tool| tool.name != id && tool.suite.as_deref() == Some(suite));
+            let in_global = loaded
+                .custom_tools
+                .iter()
+                .any(|tool| tool.suite.as_deref() == Some(suite));
+            in_workspace || in_global
+        });
         let file_path = workspace::workspace_custom_tools_path(&root);
         self.commit_mixed(
             &[DocId::CustomToolsWorkspace, DocId::Agents],
@@ -854,7 +920,17 @@ impl SettingsWriter {
             move || workspace::delete_workspace_custom_tool(&root, &id_owned).map(|_| ()),
             move |settings| {
                 for profile in settings.agents.values_mut() {
-                    profile.tools.remove(&strip_id);
+                    match removed_suite.as_deref() {
+                        Some(suite) if !suite_still_declared => {
+                            profile
+                                .tools
+                                .remove(&super::suite_bindings::suite_id(suite));
+                        }
+                        Some(_) => {}
+                        None => {
+                            profile.tools.remove(&strip_id);
+                        }
+                    }
                 }
                 Ok(false)
             },
@@ -1033,17 +1109,35 @@ fn merged_custom_rules(
     global: &[CustomToolDefinition],
     workspace: &HashMap<String, CustomToolDefinition>,
 ) -> HashMap<String, Vec<crate::permission::PolicyRule>> {
-    let mut rules = HashMap::new();
+    let mut effective: HashMap<String, (Option<String>, Vec<crate::permission::PolicyRule>)> =
+        HashMap::new();
     for tool in global {
-        if !tool.rules.is_empty() {
-            rules.insert(tool.name.clone(), tool.rules.clone());
-        }
+        effective.insert(
+            tool.name.clone(),
+            (tool.suite.clone(), tool.rules.clone()),
+        );
     }
     for (name, tool) in workspace {
-        if tool.rules.is_empty() {
-            rules.remove(name);
-        } else {
-            rules.insert(name.clone(), tool.rules.clone());
+        effective.insert(name.clone(), (tool.suite.clone(), tool.rules.clone()));
+    }
+
+    let mut rules = HashMap::new();
+    let mut suites: std::collections::BTreeMap<String, Vec<crate::permission::PolicyRule>> =
+        std::collections::BTreeMap::new();
+    for (name, (suite, declared)) in effective {
+        if !declared.is_empty() {
+            rules.insert(name, declared.clone());
+        }
+        if let Some(suite) = suite.filter(|suite| !suite.trim().is_empty()) {
+            suites.entry(suite).or_default().extend(declared);
+        }
+    }
+    for (suite, declared) in suites {
+        if !declared.is_empty() {
+            rules.insert(
+                crate::config::suite_bindings::suite_id(&suite),
+                declared,
+            );
         }
     }
     rules
@@ -1214,7 +1308,10 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
     {
         return Err(LitecodeError::Config(reason.to_string()));
     }
-    if tools::is_core_tool(id) || tools::is_optional_builtin(id) {
+    if tools::is_core_tool(id)
+        || tools::is_optional_builtin(id)
+        || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
+    {
         return Err(LitecodeError::Config(format!(
             "custom tool id '{id}' conflicts with a builtin tool"
         )));
@@ -1409,6 +1506,14 @@ max_output = 1024
     }
 
     #[test]
+    fn custom_tool_cannot_shadow_an_lsp_member() {
+        let mut def = custom_def("hover", Vec::new());
+        let error = validate_custom_definition("hover", &mut def)
+            .expect_err("lsp member names are reserved");
+        assert!(error.to_string().contains("builtin tool"), "{error}");
+    }
+
+    #[test]
     fn workspace_custom_tool_surface_roundtrips_through_json() {
         let ws = TempDir::new().unwrap();
         let root = ws.path().to_path_buf();
@@ -1422,6 +1527,19 @@ max_output = 1024
             loaded.tools["code_probe"].surface,
             crate::config::schema::CallSurface::Code
         );
+    }
+
+    #[test]
+    fn merged_rules_include_the_suite_union() {
+        let mut declared = custom_def("suite_a", declared_rules());
+        declared.suite = Some("deck".into());
+        let mut plain = custom_def("suite_b", Vec::new());
+        plain.suite = Some("deck".into());
+        let safe = super::merged_custom_rules(&[declared, plain], &std::collections::HashMap::new());
+        let suite = safe
+            .get(&super::super::suite_bindings::suite_id("deck"))
+            .expect("suite rules");
+        assert_eq!(suite.len(), 1);
     }
 
     #[test]

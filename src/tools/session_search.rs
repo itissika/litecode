@@ -26,18 +26,6 @@ impl SessionSearchTool {
         session_id: Option<&str>,
         active_session_id: Option<&str>,
     ) -> ToolCallResult {
-        // Defensive: LLM table hides when desired=false or not Warm (no sleep).
-        if !crate::config::workspace::workspace_engine_desired(workspace_root, "code_search") {
-            return ToolCallResult::error(
-                "session_search is not enabled. Enable retrieval in Settings → Engines.",
-            );
-        }
-        if !self.engines.is_warmed("code_search") {
-            return ToolCallResult::warning(
-                "session_search is unavailable while code_search is Warming. It is hidden from the tool list until Warm.",
-            );
-        }
-
         let include_session = match session_id {
             Some(refer) if !refer.trim().is_empty() => {
                 match session_search::resolve_session_ref(reader, refer.trim()) {
@@ -278,6 +266,21 @@ mod tests {
         let engines = WorkspaceEngines::new();
         engines.set_state_for_test("code_search", crate::engines::EngineState::Warm);
         SessionSearchTool::new(engines)
+    }
+
+    #[test]
+    fn cold_semantic_engine_still_returns_lexical_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        seed_session(root, "COLD_LEXICAL_ONLY_TOKEN");
+        let tool = SessionSearchTool::new(WorkspaceEngines::new());
+        let out = call_ok(
+            &tool,
+            root,
+            serde_json::json!({ "query": "COLD_LEXICAL_ONLY_TOKEN" }),
+            "",
+        );
+        assert!(out.contains("COLD_LEXICAL_ONLY_TOKEN"), "{out}");
     }
 
     #[test]

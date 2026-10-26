@@ -204,7 +204,8 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         )),
         None,
     )
-    .await;
+    .await
+    .expect("build tool list");
     let names: Vec<String> = tools.iter().map(|t| t.name().to_string()).collect();
     assert!(
         names.contains(&"mcp_mock_echo".to_string()),

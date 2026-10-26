@@ -12,8 +12,7 @@ use litecode::engines::code_search::{
     resolve_index_view, warmup_index, write_meta,
 };
 use litecode::engines::{EngineState, WorkspaceEngines};
-use litecode::optional::EngineManager;
-use litecode::tool::catalog::should_include_in_llm_list;
+use litecode::tool::capability::capability_catalog;
 use tempfile::TempDir;
 
 mod common;
@@ -27,6 +26,13 @@ fn ensure_hash_embedder_for_worker() {
     HASH_EMBEDDER_ENV.call_once(|| unsafe {
         std::env::set_var("LITECODE_CODE_SEARCH_USE_HASH", "1");
     });
+}
+
+fn selected(resolved: &litecode::config::resolved::ResolvedConfig, id: &str) -> bool {
+    capability_catalog(resolved)
+        .selected_for_agent(resolved, "default", 0)
+        .iter()
+        .any(|capability| capability.id == id)
 }
 
 fn workspace_with_code_search(
@@ -109,20 +115,13 @@ async fn catalog_lists_tool_while_warming_and_after_warm() {
     std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
 
     let resolved = workspace_with_code_search(root);
-    let global_engines = EngineManager::new();
     let engines = WorkspaceEngines::new();
 
     // start() sets Warming synchronously; warmup runs on a background thread.
     engines.reconcile(&resolved);
     if engines.state("code_search") == Some(EngineState::Warming) {
         assert!(
-            should_include_in_llm_list(
-                &resolved,
-                "default",
-                "code_search",
-                &global_engines,
-                &engines
-            ),
+            selected(&resolved, "code_search"),
             "code_search must stay listed while Warming"
         );
     }
@@ -131,13 +130,7 @@ async fn catalog_lists_tool_while_warming_and_after_warm() {
             .wait_until_warmed("code_search", Duration::from_secs(30))
             .await
     );
-    assert!(should_include_in_llm_list(
-        &resolved,
-        "default",
-        "code_search",
-        &global_engines,
-        &engines
-    ));
+    assert!(selected(&resolved, "code_search"));
     assert!(index_dir(root).join("vectors.usearch").is_file());
 }
 

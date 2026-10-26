@@ -392,10 +392,24 @@ pub fn resolve_without_catalog(
 
 /// Assemble `ResolvedConfig` from disjoint global, workspace and catalog inputs.
 pub fn resolve(
-    global: GlobalSettings,
+    mut global: GlobalSettings,
     workspace: WorkspaceState,
     catalog: Arc<ProviderCatalog>,
 ) -> ResolvedConfig {
+    let mut defs = global.custom_tools.clone();
+    for (name, definition) in &workspace.workspace_custom_tools {
+        defs.retain(|tool| &tool.name != name);
+        defs.push(definition.clone());
+    }
+    for (agent_id, profile) in &mut global.agents {
+        let notes = super::suite_bindings::collapse_custom_suite_bindings(
+            &mut profile.tools,
+            &defs,
+        );
+        for note in notes {
+            tracing::warn!(agent = %agent_id, "{note}");
+        }
+    }
     ResolvedConfig::new(global, workspace, catalog)
 }
 

@@ -1,7 +1,8 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::config::binding_scope::scope_of;
 use crate::config::schema::{
-    AgentRole, PRIMARY_ONLY_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS, ToolPreset,
+    AgentRole, SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS, ToolPreset,
 };
 use crate::types::Result;
 
@@ -13,7 +14,10 @@ use super::tools::{
     core_configurable_tools, core_none_tools, default_bound_optional_builtins, network_core_tools,
 };
 
-pub const SEED_REVISION: &str = "17";
+pub const SEED_REVISION: &str = "18";
+
+/// One-time marker for the six `subagent_*` bindings → one `subagent_tools` row.
+pub const SUBAGENT_CAPABILITY_MARKER: &str = "subagent_capability_v1";
 
 pub fn seed(conn: &Connection) -> Result<()> {
     let _ = conn.execute("DELETE FROM agent_tools WHERE tool_id = 'bash_output'", []);
@@ -29,6 +33,7 @@ pub fn seed(conn: &Connection) -> Result<()> {
     seed_orchestrator_agent_bindings(conn)?;
     seed_general_agent_bindings(conn)?;
     seed_explore_agent_bindings(conn)?;
+    migrate_subagent_capability_v1(conn)?;
     // Seeded bindings must satisfy the role rules on their own (a subagent never
     // binds primary-only tools); this also repairs drift in older DBs.
     reconcile_role_rules(conn)?;
@@ -186,20 +191,21 @@ fn seed_general_agent_bindings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Configurable tools a subagent role may bind (no [`PRIMARY_ONLY_TOOL_IDS`]).
+/// Configurable tools a subagent role may bind (scope table, not a copied list).
 fn subagent_configurable_tools() -> impl Iterator<Item = &'static str> {
     core_configurable_tools()
         .iter()
         .copied()
-        .filter(|tool| !PRIMARY_ONLY_TOOL_IDS.contains(tool))
+        .filter(|tool| scope_of(tool).allows_role(AgentRole::Subagent))
 }
 
 /// Fixed-behavior tools a subagent may bind (`knowledge`).
-/// Plan, todo, and the subagent series stay off this set.
+/// Plan, todo, and the subagent capability stay off this set.
 fn subagent_none_tools() -> impl Iterator<Item = &'static str> {
-    core_none_tools().iter().copied().filter(|tool| {
-        !PRIMARY_ONLY_TOOL_IDS.contains(tool) && !SUBAGENT_SERIES_TOOL_IDS.contains(tool)
-    })
+    core_none_tools()
+        .iter()
+        .copied()
+        .filter(|tool| scope_of(tool).allows_role(AgentRole::Subagent))
 }
 
 fn bind_configurable(conn: &Connection, agent_id: &str, preset: ToolPreset) -> Result<()> {
@@ -360,17 +366,18 @@ pub fn reconcile_role_rules(conn: &Connection) -> Result<()> {
                 params![agent_id],
             )?;
         } else if subagent {
-            for tool_id in PRIMARY_ONLY_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
-                removed += conn.execute(
-                    "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
-                    params![agent_id, *tool_id],
-                )?;
+            let mut stmt = conn.prepare("SELECT tool_id FROM agent_tools WHERE agent_id = ?1")?;
+            let tool_ids = stmt
+                .query_map(params![agent_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for tool_id in tool_ids {
+                if !scope_of(&tool_id).allows_role(AgentRole::Subagent) {
+                    removed += conn.execute(
+                        "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                        params![agent_id, tool_id],
+                    )?;
+                }
             }
-            // Imported/legacy ids outside the seeded series still count as series.
-            removed += conn.execute(
-                "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id GLOB 'subagent_*'",
-                params![agent_id],
-            )?;
         }
         if removed > 0 {
             notes.push(format!("{agent_id}: pruned {removed} binding(s)"));
@@ -414,6 +421,115 @@ pub fn needs_seed(conn: &Connection) -> Result<bool> {
     Ok(count == 0)
 }
 
+/// Merge legacy per-member subagent rows into one capability binding.
+/// Runs in a transaction; the marker is written only after the merge commits.
+fn migrate_subagent_capability_v1(conn: &Connection) -> Result<()> {
+    if conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE key = ?1",
+            [SUBAGENT_CAPABILITY_MARKER],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    backup_before_subagent_migration(conn)?;
+    let tx = conn.unchecked_transaction()?;
+    let agent_ids: Vec<String> = {
+        let mut stmt = tx.prepare("SELECT id FROM agents")?;
+        stmt.query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    for agent_id in agent_ids {
+        let mut any_enabled = false;
+        let mut found = false;
+        {
+            let mut stmt =
+                tx.prepare("SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2")?;
+            for member in SUBAGENT_MEMBER_TOOL_IDS {
+                if let Some(enabled) = stmt
+                    .query_row(params![agent_id, member], |row| row.get::<_, i64>(0))
+                    .optional()?
+                {
+                    found = true;
+                    any_enabled |= enabled != 0;
+                }
+            }
+        }
+        if !found {
+            continue;
+        }
+
+        let existing = tx
+            .query_row(
+                "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                params![agent_id, SUBAGENT_CAPABILITY_ID],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some_and(|enabled| enabled != 0);
+        let mut binding = binding_seeded(SUBAGENT_CAPABILITY_ID, ToolPreset::All);
+        binding.enabled = any_enabled || existing;
+        binding.last_applied_preset = None;
+        store::upsert_agent_tool(&tx, &agent_id, SUBAGENT_CAPABILITY_ID, &binding)?;
+        for member in SUBAGENT_MEMBER_TOOL_IDS {
+            tx.execute(
+                "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                params![agent_id, member],
+            )?;
+        }
+    }
+
+    store::upsert_meta(&tx, SUBAGENT_CAPABILITY_MARKER, Some("1"))?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Snapshot the file DB once before the destructive 6 → 1 merge. In-memory
+/// test DBs have no main file and skip this.
+fn backup_before_subagent_migration(conn: &Connection) -> Result<()> {
+    let mut has_legacy = false;
+    for member in SUBAGENT_MEMBER_TOOL_IDS {
+        if conn
+            .query_row(
+                "SELECT 1 FROM agent_tools WHERE tool_id = ?1 LIMIT 1",
+                [member],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some()
+        {
+            has_legacy = true;
+            break;
+        }
+    }
+    if !has_legacy {
+        return Ok(());
+    }
+
+    let main_file: Option<String> = conn
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(main_file) = main_file.filter(|path| !path.is_empty()) else {
+        return Ok(());
+    };
+    let backup = format!("{main_file}.bak-subagent-v1");
+    if std::path::Path::new(&backup).exists() {
+        return Ok(());
+    }
+    conn.execute("VACUUM INTO ?1", [&backup])?;
+    tracing::info!(backup = %backup, "backed up global DB before subagent capability migration");
+    Ok(())
+}
+
 /// Repair partial DB: keep existing disables; plant missing seed agents/bindings.
 /// Runs last so the repaired document always satisfies the role rules
 /// (see [`reconcile_role_rules`]).
@@ -426,6 +542,10 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     );
     // Retired shell names are gone. Drop leftover rows for every agent.
     strip_direct_shell_bindings(conn)?;
+    // Run the intent-preserving merge before ensure_* plants missing rows:
+    // `subagent_tools` is a core-none tool, so planting it first would turn a
+    // user-disabled legacy series back on.
+    migrate_subagent_capability_v1(conn)?;
     ensure_default_core_bindings(conn)?;
     ensure_orchestrator_agent(conn)?;
     ensure_general_agent(conn)?;
@@ -820,14 +940,34 @@ mod tests {
             assert_eq!(workspace, 1, "{agent} should bind litecode_workspace");
         }
 
-        let general_launch: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'general' AND tool_id = 'subagent_launch'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(general_launch, 0);
+        for agent in ["default", "orchestrator"] {
+            let capability: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(capability, 1, "{agent} should bind one subagent capability");
+        }
+        for agent in ["explore", "general"] {
+            let launch: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = 'subagent_launch'",
+                    [agent],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let capability: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(launch, 0);
+            assert_eq!(capability, 0);
+        }
 
         // WP-197: general/default/orchestrator 默认无旧 shell；有 run。
         for agent in ["general", "default", "orchestrator"] {
@@ -857,6 +997,124 @@ mod tests {
                 .unwrap();
             assert_eq!(run_n, 1, "{agent} should bind run");
         }
+    }
+
+    #[test]
+    fn migrates_six_subagent_rows_to_one_capability() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [SUBAGENT_CAPABILITY_MARKER],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
+            [SUBAGENT_CAPABILITY_ID],
+        )
+        .unwrap();
+        for (index, member) in SUBAGENT_MEMBER_TOOL_IDS.iter().enumerate() {
+            let mut binding = binding_seeded(member, ToolPreset::All);
+            binding.enabled = index == 1;
+            store::upsert_agent_tool(&conn, "default", member, &binding).unwrap();
+        }
+
+        migrate_subagent_capability_v1(&conn).unwrap();
+
+        let (count, enabled): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(enabled), 0) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
+                [SUBAGENT_CAPABILITY_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(enabled, 1);
+        for member in SUBAGENT_MEMBER_TOOL_IDS {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
+                    [member],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "legacy row {member} must be deleted");
+        }
+
+        migrate_subagent_capability_v1(&conn).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
+                [SUBAGENT_CAPABILITY_ID],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "migration must be idempotent");
+    }
+
+    #[test]
+    fn ensure_core_bindings_keeps_disabled_subagent_capability_disabled() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [SUBAGENT_CAPABILITY_MARKER],
+        )
+        .unwrap();
+        for agent in ["default", "orchestrator"] {
+            conn.execute(
+                "DELETE FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
+            )
+            .unwrap();
+            for member in SUBAGENT_MEMBER_TOOL_IDS {
+                let mut binding = binding_seeded(member, ToolPreset::All);
+                binding.enabled = false;
+                store::upsert_agent_tool(&conn, agent, member, &binding).unwrap();
+            }
+        }
+
+        ensure_core_bindings(&conn).unwrap();
+
+        for agent in ["default", "orchestrator"] {
+            let enabled: i64 = conn
+                .query_row(
+                    "SELECT enabled FROM agent_tools WHERE agent_id = ?1 AND tool_id = ?2",
+                    rusqlite::params![agent, SUBAGENT_CAPABILITY_ID],
+                    |row| row.get(0),
+                )
+                .unwrap_or(-1);
+            assert_eq!(enabled, 0, "{agent} must stay disabled after upgrade");
+        }
+    }
+
+    #[test]
+    fn migration_backs_up_file_db_before_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("litecode.db");
+        let conn = Connection::open(&path).unwrap();
+        migrate::migrate(&conn).unwrap();
+        seed(&conn).unwrap();
+        conn.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [SUBAGENT_CAPABILITY_MARKER],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM agent_tools WHERE agent_id = 'default' AND tool_id = ?1",
+            [SUBAGENT_CAPABILITY_ID],
+        )
+        .unwrap();
+        bind_none(&conn, "default", SUBAGENT_MEMBER_TOOL_IDS[0]).unwrap();
+
+        migrate_subagent_capability_v1(&conn).unwrap();
+
+        let backup = format!("{}.bak-subagent-v1", path.display());
+        assert!(std::path::Path::new(&backup).is_file());
     }
 
     #[test]

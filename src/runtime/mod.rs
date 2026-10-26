@@ -910,12 +910,12 @@ impl AgentRuntime {
     ///
     /// Public so a standalone compaction call can freeze the session's main
     /// request shape without copying the lazy tool-build path.
-    pub async fn ensure_tooling_initialized(&mut self) {
+    pub async fn ensure_tooling_initialized(&mut self) -> Result<()> {
         if self.tool_pipeline.is_some() {
-            return;
+            return Ok(());
         }
         let Some(params) = self.build_tool_params.take() else {
-            return;
+            return Ok(());
         };
         let permission = PermissionEngine::resolver(
             params.runtime.resolved.clone(),
@@ -969,7 +969,7 @@ impl AgentRuntime {
             Arc::clone(&params.sessions),
             code_host,
         )
-        .await;
+        .await?;
         tools_lap.done();
 
         let tool_names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
@@ -999,6 +999,7 @@ impl AgentRuntime {
         tool_pipeline.set_plan_touch(plan_touch);
         self.runtime_ctx = Some(runtime_ctx);
         self.tool_pipeline = Some(tool_pipeline);
+        Ok(())
     }
 
     /// Snapshot the exact main request shape for a compaction call mode.
@@ -1049,7 +1050,7 @@ impl AgentRuntime {
         );
         diagnostics::note_wire_pointer(&data_root_for_diag, &self.session_id);
         self.latency_turn_start = crate::telemetry::latency::now();
-        self.ensure_tooling_initialized().await;
+        self.ensure_tooling_initialized().await?;
 
         tracing::info!(
             session_id = %self.session_id,

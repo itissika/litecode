@@ -285,7 +285,7 @@ impl SessionController {
             crate::permission::deny_permission_sink(),
             Arc::new(crate::runtime::observer::NoopObserver),
         )?;
-        compaction_runtime.ensure_tooling_initialized().await;
+        compaction_runtime.ensure_tooling_initialized().await?;
         let compaction_request = compaction_runtime.compaction_request_context()?;
         if compaction_request.context_window == 0 {
             return Err(LitecodeError::Config(

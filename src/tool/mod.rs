@@ -1,6 +1,7 @@
 pub mod agent_bindings;
 pub mod authorize;
 pub mod availability;
+pub mod capability;
 pub mod catalog;
 pub mod code_manifest;
 pub mod coords;

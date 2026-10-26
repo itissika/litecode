@@ -11,7 +11,8 @@ use axum::routing::{get, post, put};
 use serde::{Deserialize, Serialize};
 
 use crate::config::schema::{
-    AgentProfile, CustomToolDefinition, LogSettings, McpServerDefinition, ToolOrigin, ToolPreset,
+    AgentProfile, AvailableStatus, CustomToolDefinition, LogSettings, McpServerDefinition,
+    ToolOrigin, ToolPreset,
 };
 use crate::config::workspace::WorkspaceEnginesFile;
 use crate::config::{CommitAck, DocId};
@@ -280,6 +281,13 @@ async fn list_agents(State(state): State<ServeState>) -> Response {
 }
 
 async fn get_agent(State(state): State<ServeState>, Path(id): Path<String>) -> Response {
+    let resolved_profile = {
+        let runtime = state.runtime.read().expect("runtime lock");
+        runtime.resolved.agents().get(&id).cloned()
+    };
+    if let Some(profile) = resolved_profile {
+        return ok_json(profile);
+    }
     match state.settings_writer.load_settings() {
         Ok(settings) => match settings.agents.get(&id) {
             Some(profile) => ok_json(profile),
@@ -371,16 +379,52 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
 }
 
 async fn get_available_tools(State(state): State<ServeState>) -> Response {
-    let runtime = state.runtime.read().expect("runtime lock");
-    let mut candidates: Vec<std::sync::Arc<dyn crate::tool::Tool>> = builtin_code_surface_tools();
-    candidates.extend(runtime.resolved.custom_tools().into_iter().map(|def| {
-        std::sync::Arc::new(CustomTool::new(
-            def,
+    let (resolved, custom_tool_hub, mcp_pool, code_status, lsp_status, server_ids) = {
+        let runtime = state.runtime.read().expect("runtime lock");
+        let server_ids: Vec<String> = runtime.resolved.mcp_servers().keys().cloned().collect();
+        (
+            runtime.resolved.clone(),
             std::sync::Arc::clone(&runtime.custom_tool_hub),
-        )) as std::sync::Arc<dyn crate::tool::Tool>
+            std::sync::Arc::clone(&runtime.mcp_pool),
+            engine_available_status(runtime.workspace_engines.state("code_search")),
+            engine_available_status(runtime.workspace_engines.state("lsp")),
+            server_ids,
+        )
+    };
+    let mut candidates: Vec<std::sync::Arc<dyn crate::tool::Tool>> = builtin_code_surface_tools();
+    candidates.extend(resolved.custom_tools().into_iter().map(|def| {
+        std::sync::Arc::new(CustomTool::new(def, std::sync::Arc::clone(&custom_tool_hub)))
+            as std::sync::Arc<dyn crate::tool::Tool>
     }));
-    let payload = available_tools_payload(&runtime.resolved, candidates);
+    let mut statuses = HashMap::from([
+        ("code_search".to_string(), code_status),
+        ("lsp".to_string(), lsp_status),
+    ]);
+    for server_id in server_ids {
+        let key = resolved.mcp_pool_key(&server_id);
+        let snapshot = mcp_pool.snapshot(&key).await;
+        statuses.insert(
+            crate::config::global_db::tools::mcp_catalog_id(&server_id),
+            match snapshot.status {
+                McpRunState::Running => AvailableStatus::Ready,
+                McpRunState::Starting => AvailableStatus::Warming,
+                McpRunState::Error => AvailableStatus::Down,
+                McpRunState::Stopped => AvailableStatus::Disabled,
+            },
+        );
+    }
+    let payload = available_tools_payload(&resolved, candidates, statuses);
     ok_json(payload)
+}
+
+fn engine_available_status(state: Option<crate::engines::EngineState>) -> AvailableStatus {
+    match state {
+        Some(crate::engines::EngineState::Warm) => AvailableStatus::Ready,
+        Some(crate::engines::EngineState::Warming) => AvailableStatus::Warming,
+        Some(crate::engines::EngineState::Failed) => AvailableStatus::Failed,
+        Some(crate::engines::EngineState::Idle) => AvailableStatus::Warming,
+        Some(crate::engines::EngineState::Stopped) | None => AvailableStatus::Disabled,
+    }
 }
 
 async fn list_custom_tools(State(state): State<ServeState>) -> Response {

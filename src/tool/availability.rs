@@ -1,326 +1,138 @@
-//! Bind-card availability: definitions present in this workspace.
+//! Settings projection of the capability catalog. This module does not
+//! decide visibility; it only maps catalog entries to the wire DTO.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::global_db::tools::{
-    core_tool_ids, is_mcp_catalog_id, is_workspace_optional, mcp_catalog_id, optional_builtin_ids,
-};
 use crate::config::resolved::ResolvedConfig;
+use crate::config::schema::{AvailableStatus, AvailableTool};
+use crate::tool::capability::{Capability, capability_catalog, member_owner};
+use crate::tool::project::{RejectedTool, project_tools};
+use crate::tool::trait_::Tool;
 use serde::Serialize;
 
-use crate::config::schema::{
-    AvailableKind, AvailableTool, CallSurface, PermissionSurface, ToolOrigin, ToolReadiness,
-};
-use crate::engines::WorkspaceEngines;
-use crate::optional::EngineManager;
-use crate::permission::permission_surface;
-use crate::tool::project::{RejectedTool, project_tools};
-use crate::tool::trait_::{Tool, ToolSurface};
-use crate::tools::lsp;
-
-/// Settings switches never list the code transport. Same name as
-/// `crate::tools::code::CODE_TOOL_NAME`.
-const CODE_TRANSPORT_ID: &str = "run_code";
-
-pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
-    if core_tool_ids().iter().any(|id| id == tool_id) {
-        return true;
-    }
-    // WP-148: code_search visibility is bind-only (engine state never gates it).
-    if tool_id == "code_search" {
-        return true;
-    }
-    if is_workspace_optional(tool_id) {
-        return resolved.workspace_tool_readiness().get(tool_id).copied()
-            == Some(ToolReadiness::Ready);
-    }
-    if let Some(server_id) = tool_id.strip_prefix("mcp_") {
-        return resolved.mcp_servers().contains_key(server_id);
-    }
-    resolved
-        .custom_tools()
-        .iter()
-        .any(|tool| tool.name == tool_id)
-}
-
-fn series_for(tool_id: &str) -> (Option<String>, Option<String>) {
-    for (series_id, series_label, members) in crate::config::schema::core_tool_enable_series() {
-        if members.contains(&tool_id) {
-            return (
-                Some((*series_id).to_string()),
-                Some((*series_label).to_string()),
-            );
-        }
-    }
-    (None, None)
-}
-
-fn tool_card(
-    id: String,
-    kind: AvailableKind,
-    origin: ToolOrigin,
-    overridden: bool,
-    surface: Option<PermissionSurface>,
-    series_id: Option<String>,
-    series_label: Option<String>,
-) -> AvailableTool {
-    let permission_surface = surface.unwrap_or_else(|| permission_surface(&id));
-    let (series_id, series_label) = if series_id.is_some() {
-        (series_id, series_label)
-    } else {
-        series_for(&id)
-    };
+fn project_capability(capability: &Capability) -> AvailableTool {
     AvailableTool {
-        id,
-        kind,
-        origin,
-        overridden,
-        permission_surface,
-        surface: CallSurface::Direct,
-        series_id,
-        series_label,
+        id: capability.id.clone(),
+        kind: capability.kind.available_kind(),
+        origin: capability.origin,
+        overridden: capability.overridden,
+        permission_surface: capability.permission_surface,
+        surface: capability.surface,
+        scope: capability.scope,
+        members: capability.member_ids().map(str::to_string).collect(),
+        label: capability.label.clone(),
+        status: None,
     }
 }
 
+/// All cards declared in this workspace. Engine state is intentionally absent:
+/// cards are definitions, not runtime readiness.
 pub fn available_tools(resolved: &ResolvedConfig) -> Vec<AvailableTool> {
-    let mut out = Vec::new();
-    for id in core_tool_ids() {
-        out.push(tool_card(
-            id,
-            AvailableKind::Core,
-            ToolOrigin::Builtin,
-            false,
-            None,
-            None,
-            None,
-        ));
-    }
-    for id in optional_builtin_ids() {
-        if *id == "code_search"
-            || resolved.workspace_tool_readiness().get(*id).copied() == Some(ToolReadiness::Ready)
-        {
-            out.push(tool_card(
-                (*id).to_string(),
-                AvailableKind::Engine,
-                ToolOrigin::Workspace,
-                false,
-                None,
-                None,
-                None,
-            ));
-        }
-    }
-    let custom = resolved.custom_tools();
-    for tool in custom {
-        let origin = resolved
-            .custom_origin(&tool.name)
-            .unwrap_or(ToolOrigin::Global);
-        let overridden = origin == ToolOrigin::Workspace
-            && resolved
-                .global_custom_tools()
-                .iter()
-                .any(|t| t.name == tool.name);
-        let surface = if tool.rules.is_empty() {
-            PermissionSurface::Fixed
-        } else {
-            PermissionSurface::Preset
-        };
-        let series_id = tool.suite.clone();
-        let series_label = tool.suite_label.clone().or_else(|| tool.suite.clone());
-        out.push(tool_card(
-            tool.name,
-            AvailableKind::Custom,
-            origin,
-            overridden,
-            Some(surface),
-            series_id,
-            series_label,
-        ));
-    }
-    let mut mcp_ids: Vec<String> = resolved.mcp_servers().keys().cloned().collect();
-    mcp_ids.sort();
-    for server_id in mcp_ids {
-        let origin = resolved
-            .mcp_origin(&server_id)
-            .unwrap_or(ToolOrigin::Global);
-        let overridden = origin == ToolOrigin::Workspace
-            && resolved.global_mcp_servers().contains_key(&server_id);
-        out.push(tool_card(
-            mcp_catalog_id(&server_id),
-            AvailableKind::Mcp,
-            origin,
-            overridden,
-            None,
-            None,
-            None,
-        ));
-    }
-    out.sort_by(|a, b| a.id.cmp(&b.id));
+    project_catalog(&capability_catalog(resolved))
+}
+
+fn project_catalog(catalog: &crate::tool::capability::CapabilityCatalog) -> Vec<AvailableTool> {
+    let mut out: Vec<AvailableTool> = catalog
+        .capabilities
+        .iter()
+        .map(project_capability)
+        .collect();
+    out.sort_by(|left, right| left.id.cmp(&right.id));
     out
 }
 
 /// Settings catalog plus code-admission failures for the same response.
-///
-/// `code_candidates` is the caller's visible code-surface set (builtins today;
-/// a non-builtin test tool is the same projection).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AvailableToolsPayload {
     pub tools: Vec<AvailableTool>,
     pub code_rejections: Vec<RejectedTool>,
+    /// Definitions rejected while building the catalog (duplicate ids/members).
+    /// Turn assembly fails on these; settings surfaces them instead of hiding rows.
+    pub catalog_errors: Vec<String>,
 }
 
 pub fn available_tools_payload(
     resolved: &ResolvedConfig,
     code_candidates: Vec<Arc<dyn Tool>>,
+    statuses: HashMap<String, AvailableStatus>,
 ) -> AvailableToolsPayload {
-    let mut tools = available_tools(resolved);
-    omit_code_transport(&mut tools);
-    stamp_declared_surfaces(&mut tools, &code_candidates);
+    let catalog = capability_catalog(resolved);
+    let mut tools = project_catalog(&catalog);
+    for tool in &mut tools {
+        tool.status = statuses.get(&tool.id).copied();
+    }
     AvailableToolsPayload {
         tools,
         code_rejections: project_tools(code_candidates).rejected,
+        catalog_errors: catalog.errors,
     }
 }
 
-fn omit_code_transport(tools: &mut Vec<AvailableTool>) {
-    tools.retain(|tool| tool.id != CODE_TRANSPORT_ID);
-}
-
-/// Concrete tool names behind a catalog card whose bind id is not itself a
-/// tool name. The LSP card is one binding for seven code-surface tools.
-fn card_member_tool_names(card_id: &str) -> &'static [&'static str] {
-    if card_id == lsp::LSP_CARD_ID {
-        lsp::LSP_CODE_TOOL_NAMES
-    } else {
-        &[]
-    }
-}
-
-/// Copy each candidate's own [`Tool::surface`] onto the matching catalog card.
-/// A card either names one tool directly or fans out to a fixed member set.
-/// A candidate that is not already in the catalog does not add a card.
-fn stamp_declared_surfaces(tools: &mut [AvailableTool], candidates: &[Arc<dyn Tool>]) {
-    for tool in tools {
-        let member_names = card_member_tool_names(&tool.id);
-        let declared: Vec<&Arc<dyn Tool>> = candidates
-            .iter()
-            .filter(|candidate| {
-                !candidate.is_code_transport()
-                    && (candidate.name() == tool.id || member_names.contains(&candidate.name()))
-            })
-            .collect();
-        if declared.is_empty() {
-            continue;
-        }
-        // A fan-out card is only labelled once its whole member set is visible;
-        // the regular single-tool card keeps its one candidate.
-        if !member_names.is_empty() && declared.len() != member_names.len() {
-            continue;
-        }
-        tool.surface = if declared
-            .iter()
-            .all(|candidate| candidate.surface() == ToolSurface::Code)
-        {
-            CallSurface::Code
-        } else {
-            CallSurface::Direct
-        };
-    }
+/// A catalog id (or a member name) exists in this workspace.
+pub fn is_available(resolved: &ResolvedConfig, tool_id: &str) -> bool {
+    let catalog = capability_catalog(resolved);
+    catalog.get(tool_id).is_some() || catalog.member_capability_id(tool_id).is_some()
 }
 
 pub fn agent_tool_enabled(resolved: &ResolvedConfig, agent_id: &str, tool_id: &str) -> bool {
+    let bind_id = member_owner(resolved, tool_id).unwrap_or_else(|| tool_id.to_string());
     resolved
         .agents()
         .get(agent_id)
-        .and_then(|profile| profile.tools.get(tool_id))
+        .and_then(|profile| profile.tools.get(&bind_id))
         .is_some_and(|binding| binding.enabled)
 }
 
-/// session_search keeps its WP-057 gate: `desired=false` or not Warm ⇒ hidden.
-/// WP-148: code_search left this bucket (bind is its sole visibility gate).
-fn is_session_search_gated(tool_id: &str) -> bool {
-    tool_id == "session_search"
-}
 
-fn session_search_visible(resolved: &ResolvedConfig, workspace_engines: &WorkspaceEngines) -> bool {
-    if !crate::config::workspace::workspace_engine_desired(resolved.workspace_root(), "code_search")
-    {
-        return false;
-    }
-    // IDE signal: Warm + call_gate Ready (silent refresh still searchable).
-    workspace_engines.is_searchable("code_search")
-}
-
-/// Full LLM-list gate: bound on this agent and currently available.
-pub fn should_include_in_llm_list(
-    resolved: &ResolvedConfig,
-    agent_id: &str,
-    tool_id: &str,
-    _engines: &EngineManager,
-    workspace_engines: &WorkspaceEngines,
-) -> bool {
-    if !is_available(resolved, tool_id) {
-        return false;
-    }
-    if !agent_tool_enabled(resolved, agent_id, tool_id) {
-        return false;
-    }
-    if is_session_search_gated(tool_id) && !session_search_visible(resolved, workspace_engines) {
-        return false;
-    }
-    if crate::config::schema::SUBAGENT_SERIES_TOOL_IDS.contains(&tool_id)
-        || tool_id.starts_with("subagent_")
-    {
-        return true;
-    }
-    true
-}
-
-pub fn is_subagent_series(tool_id: &str) -> bool {
-    crate::config::schema::SUBAGENT_SERIES_TOOL_IDS.contains(&tool_id)
-        || tool_id.starts_with("subagent_")
-}
-
-pub fn is_mcp_tool_id(tool_id: &str) -> bool {
-    is_mcp_catalog_id(tool_id)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::config::WorkspaceState;
+    use crate::config::resolved::resolve_without_catalog;
+    use crate::config::schema::GlobalSettings;
 
-    fn card(id: &str) -> AvailableTool {
-        AvailableTool {
-            id: id.to_string(),
-            kind: AvailableKind::Core,
-            origin: ToolOrigin::Builtin,
-            overridden: false,
-            permission_surface: PermissionSurface::Fixed,
-            surface: CallSurface::Direct,
-            series_id: None,
-            series_label: None,
-        }
+    fn resolved() -> ResolvedConfig {
+        resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"))
     }
 
     #[test]
-    fn lsp_card_is_stamped_from_its_seven_code_tools() {
-        let candidates = lsp::all_code_tools(WorkspaceEngines::new(), PathBuf::from("."));
-        let mut tools = vec![card(lsp::LSP_CARD_ID)];
-
-        stamp_declared_surfaces(&mut tools, &candidates);
-
-        assert_eq!(tools[0].surface, CallSurface::Code);
+    fn settings_has_one_lsp_card_with_seven_members() {
+        let tools = available_tools(&resolved());
+        let lsp = tools.iter().find(|tool| tool.id == "lsp").expect("lsp");
+        assert_eq!(lsp.members.len(), 7);
+        assert_eq!(lsp.surface, crate::config::schema::CallSurface::Code);
     }
 
     #[test]
-    fn ordinary_code_tool_card_is_stamped_directly() {
-        let candidates: Vec<Arc<dyn Tool>> =
-            vec![Arc::new(crate::tools::read::ReadTool::default())];
-        let mut tools = vec![card("read")];
+    fn code_transport_is_not_a_card() {
+        let tools = available_tools(&resolved());
+        assert!(!tools.iter().any(|tool| tool.id == "run_code"));
+    }
 
-        stamp_declared_surfaces(&mut tools, &candidates);
+    #[test]
+    fn status_is_projected_without_changing_the_card_set() {
+        let resolved = resolved();
+        let statuses = HashMap::from([("lsp".to_string(), AvailableStatus::Failed)]);
+        let payload = available_tools_payload(&resolved, Vec::new(), statuses);
+        let lsp = payload
+            .tools
+            .iter()
+            .find(|tool| tool.id == "lsp")
+            .expect("lsp card");
+        assert_eq!(lsp.status, Some(AvailableStatus::Failed));
+        assert_eq!(payload.tools.len(), available_tools(&resolved).len());
+    }
 
-        assert_eq!(tools[0].surface, CallSurface::Code);
+    #[test]
+    fn member_names_resolve_to_their_owning_card() {
+        let resolved = resolved();
+        assert!(is_available(&resolved, "wait"));
+        assert_eq!(member_owner(&resolved, "wait").as_deref(), Some("run"));
+        assert_eq!(
+            member_owner(&resolved, "apply_edits").as_deref(),
+            Some("edit")
+        );
     }
 }

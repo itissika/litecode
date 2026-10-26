@@ -2,7 +2,6 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 
 import {
   SettingsApiError,
-  SUBAGENT_SERIES_TOOL_IDS,
   isCodeSurface,
   isConfigurableTool,
   putLog,
@@ -44,10 +43,11 @@ describe("settings helpers", () => {
     expect(isConfigurableTool({ permission_surface: "preset" })).toBe(true);
     expect(isConfigurableTool({ permission_surface: "fixed" })).toBe(false);
     expect(isConfigurableTool({})).toBe(false);
-    for (const id of SUBAGENT_SERIES_TOOL_IDS) {
-      const tool = { id, permission_surface: "fixed" as const };
-      expect(isConfigurableTool(tool)).toBe(false);
-    }
+    const subagentCapability = {
+      id: "subagent_tools",
+      permission_surface: "fixed" as const,
+    };
+    expect(isConfigurableTool(subagentCapability)).toBe(false);
   });
 
   it("labels a catalog model from its label, falling back to the wire id", async () => {
@@ -77,139 +77,44 @@ describe("settings helpers", () => {
     });
   });
 
-  it("identifies subagent bindable tools excluding subagent series", async () => {
-    const { isSubagentBindableTool, SUBAGENT_SERIES_TOOL_IDS } =
-      await import("./settings");
-    const webfetch: AvailableTool = {
-      id: "webfetch",
+  it("uses backend scope and leaves the subagent capability as one row", async () => {
+    const { applyToolEnabled } = await import("./settings");
+    const subagent: AvailableTool = {
+      id: "subagent_tools",
       kind: "core",
       origin: "builtin",
+      permission_surface: "fixed",
+      scope: "primary_root_only",
+      members: ["subagent_launch", "subagent_wait"],
     };
-    const launch: AvailableTool = {
-      id: "subagent_launch",
+    const read: AvailableTool = {
+      id: "read",
       kind: "core",
       origin: "builtin",
+      scope: "all",
     };
-    const plan: AvailableTool = {
-      id: "plan",
-      kind: "core",
-      origin: "builtin",
-    };
-    expect(isSubagentBindableTool(webfetch)).toBe(true);
-    expect(isSubagentBindableTool(launch)).toBe(false);
-    expect(isSubagentBindableTool(plan)).toBe(false);
-    expect(
-      isSubagentBindableTool({ id: "knowledge", kind: "core", origin: "builtin" }),
-    ).toBe(true);
-    expect(
-      isSubagentBindableTool({
-        id: "litecode_workspace",
-        kind: "core",
-        origin: "builtin",
-      }),
-    ).toBe(true);
-    expect(
-      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(
-        "subagent_launch",
-      ),
-    ).toBe(true);
-    expect(
-      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_wait"),
-    ).toBe(true);
-    expect(
-      (SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes("subagent_stop"),
-    ).toBe(true);
+    expect(subagent.scope).toBe("primary_root_only");
+    expect(read.scope).toBe("all");
+
+    const enabled = applyToolEnabled({}, "subagent_tools", true);
+    expect(enabled.subagent_tools.enabled).toBe(true);
+    expect(Object.keys(enabled)).toEqual(["subagent_tools"]);
   });
 
-  it("links subagent launch wait stop as one enable series", async () => {
-    const {
-      SUBAGENT_SERIES_TOOL_IDS,
-      applyToolEnabled,
-      syncToolEnableSeries,
-      toolEnableSeries,
-    } = await import("./settings");
-    expect([...SUBAGENT_SERIES_TOOL_IDS]).toEqual([
-      "subagent_launch",
-      "subagent_wait",
-      "subagent_stop",
-      "subagent_list",
-      "subagent_send",
-    ]);
-    expect(toolEnableSeries("subagent_wait")).toEqual([
-      "subagent_launch",
-      "subagent_wait",
-      "subagent_stop",
-      "subagent_list",
-      "subagent_send",
-    ]);
-
-    const enabled = applyToolEnabled({}, "subagent_launch", true);
-    expect(enabled.subagent_launch.enabled).toBe(true);
-    expect(enabled.subagent_wait.enabled).toBe(true);
-    expect(enabled.subagent_stop.enabled).toBe(true);
-    expect(enabled.subagent_list.enabled).toBe(true);
-    expect(enabled.subagent_send.enabled).toBe(true);
-
-    const disabled = applyToolEnabled(enabled, "subagent_stop", false);
-    expect(disabled.subagent_launch.enabled).toBe(false);
-    expect(disabled.subagent_wait.enabled).toBe(false);
-    expect(disabled.subagent_stop.enabled).toBe(false);
-    expect(disabled.subagent_list.enabled).toBe(false);
-    expect(disabled.subagent_send.enabled).toBe(false);
-
-    const mixed = syncToolEnableSeries({
-      subagent_launch: { enabled: true, last_applied_preset: null },
-    });
-    expect(mixed.subagent_launch.enabled).toBe(true);
-    expect(mixed.subagent_wait.enabled).toBe(true);
-    expect(mixed.subagent_stop.enabled).toBe(true);
-    expect(mixed.subagent_list.enabled).toBe(true);
-  });
-
-  it("uses server-declared series_id when available-tools labels a suite", async () => {
-    const {
-      applyToolEnabled,
-      syncToolEnableSeries,
-      toolEnableSeries,
-      seriesFromAvailableTools,
-    } = await import("./settings");
-    const available = [
-      {
-        id: "suite_a",
-        kind: "custom" as const,
-        origin: "global" as const,
-        series_id: "my_suite",
-        series_label: "My Suite",
-      },
-      {
-        id: "suite_b",
-        kind: "custom" as const,
-        origin: "global" as const,
-        series_id: "my_suite",
-        series_label: "My Suite",
-      },
-      {
-        id: "solo",
-        kind: "core" as const,
-        origin: "builtin" as const,
-      },
-    ];
-    expect(seriesFromAvailableTools(available)).toEqual([["suite_a", "suite_b"]]);
-    expect(toolEnableSeries("suite_a", available)).toEqual(["suite_a", "suite_b"]);
-    expect(toolEnableSeries("solo", available)).toBeNull();
-    expect(toolEnableSeries("bash", available)).toBeNull();
-
-    const enabled = applyToolEnabled({}, "suite_b", true, new Set(), available);
-    expect(enabled.suite_a.enabled).toBe(true);
-    expect(enabled.suite_b.enabled).toBe(true);
-
-    const synced = syncToolEnableSeries(
-      { suite_a: { enabled: true, last_applied_preset: null } },
-      new Set(),
-      available,
-    );
-    expect(synced.suite_a.enabled).toBe(true);
-    expect(synced.suite_b.enabled).toBe(true);
+  it("one suite card writes one suite binding row", async () => {
+    const { applyToolEnabled } = await import("./settings");
+    const suite: AvailableTool = {
+      id: "suite:deck",
+      kind: "custom",
+      origin: "global",
+      label: "Deck",
+      members: ["suite_a", "suite_b"],
+    };
+    expect(suite.members).toEqual(["suite_a", "suite_b"]);
+    expect(suite.label).toBe("Deck");
+    const enabled = applyToolEnabled({}, "suite:deck", true);
+    expect(enabled["suite:deck"].enabled).toBe(true);
+    expect(Object.keys(enabled)).toEqual(["suite:deck"]);
   });
 
   it("identifies protected agents", async () => {

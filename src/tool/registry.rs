@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::config::global_db::tools::{
-    mcp_catalog_id, non_transport_name_rejection, reserved_command_name_rejection,
+    non_transport_name_rejection, reserved_command_name_rejection,
 };
 use crate::config::resolved::ResolvedConfig;
 use crate::engines::WorkspaceEngines;
@@ -11,7 +11,7 @@ use crate::mcp::McpToolSchema;
 use crate::optional::EngineManager;
 use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
-use crate::tool::availability::{available_tools, should_include_in_llm_list};
+use crate::tool::capability::{CapabilitySource, MemberSpec, capability_catalog};
 use crate::tool::project::project_tools;
 use crate::tool::trait_::Tool;
 use crate::tools::{
@@ -26,7 +26,7 @@ use crate::tools::{
     grep::GrepTool,
     knowledge::KnowledgeTool,
     litecode_workspace::LitecodeWorkspaceTool,
-    lsp::{self, LSP_CARD_ID},
+    lsp,
     mcp_tool::McpTool,
     plan::PlanTool,
     read::ReadTool,
@@ -34,8 +34,8 @@ use crate::tools::{
     wait::WaitTool,
     session_search::SessionSearchTool,
     subagent::{
-        SUBAGENT_MAX_DEPTH, SubagentDeleteTool, SubagentLaunchTool, SubagentListTool,
-        SubagentSendTool, SubagentStopTool, SubagentWaitTool,
+        SubagentDeleteTool, SubagentLaunchTool, SubagentListTool, SubagentSendTool,
+        SubagentStopTool, SubagentWaitTool,
     },
     todo::TodoWriteTool,
     webfetch::WebFetchTool,
@@ -66,119 +66,164 @@ fn builtin_tool(
     Some(tool)
 }
 
-fn instantiate_tool(
+fn instantiate_builtin_member(
     runtime: &RuntimeHandle,
-    resolved: &ResolvedConfig,
     agent_id: &str,
-    tool_id: &str,
+    member: &str,
     engines: &EngineManager,
     workspace_engines: &WorkspaceEngines,
     ide: Arc<IdeBaseHandle>,
     sessions: &Arc<SessionManager>,
-    mcp_schemas: &HashMap<String, Vec<McpToolSchema>>,
-    mcp_pool: Arc<crate::mcp::McpConnectionPool>,
-) -> Vec<Arc<dyn Tool>> {
-    if let Some(tool) = builtin_tool(tool_id, Arc::clone(sessions), workspace_engines, ide) {
-        return vec![tool];
+) -> Option<Arc<dyn Tool>> {
+    if let Some(tool) = builtin_tool(member, Arc::clone(sessions), workspace_engines, ide) {
+        return Some(tool);
     }
 
-    if let Some(custom) = resolved.custom_tools().iter().find(|ct| ct.name == tool_id) {
-        return vec![Arc::new(CustomTool::new(
-            custom.clone(),
-            Arc::clone(&runtime.custom_tool_hub),
-        ))];
-    }
-
-    if let Some(server_id) = tool_id.strip_prefix("mcp_")
-        && let Some(mcp) = resolved.mcp_servers().get(server_id)
-    {
-        // Handshake must have succeeded this turn (`mcp_schemas` is filled only
-        // after start). Do not advertise a dummy catalog-id tool when the
-        // process is down —the model would see it and try to call it.
-        let Some(tool_schemas) = mcp_schemas.get(server_id) else {
-            return vec![];
-        };
-        let allowed_tools = resolved
-            .agents()
-            .get(agent_id)
-            .and_then(|agent| agent.tools.get(tool_id))
-            .and_then(|binding| binding.allowed_tools.as_ref());
-        return tool_schemas
-            .iter()
-            .filter(|tool| {
-                if !mcp_inner_name_allowed(&tool.name) {
-                    tracing::warn!(
-                        tool = %tool.name,
-                        "dropping MCP tool that uses a reserved name"
-                    );
-                    return false;
-                }
-                allowed_tools.map_or(true, |allowed| allowed.contains(&tool.name))
-            })
-            .map(|tool| {
-                Arc::new(McpTool::new(
-                    server_id,
-                    if tool.description.is_empty() {
-                        format!("MCP tool {} from server '{server_id}'", tool.name)
-                    } else {
-                        tool.description.clone()
-                    },
-                    tool.input_schema.clone(),
-                    crate::tools::mcp_tool::McpServerConnection {
-                        tool_name: tool.name.clone(),
-                        server_name: resolved.mcp_pool_key(server_id),
-                        command: mcp.command.clone(),
-                        args: mcp.args.clone(),
-                        env: mcp.env.clone(),
-                        cwd: Some(resolved.workspace_root().to_path_buf()),
-                        pool: Arc::clone(&mcp_pool),
-                        timeout_secs: mcp.call_timeout_secs(),
-                    },
-                )) as Arc<dyn Tool>
-            })
-            .collect();
-    }
-
-    if tool_id == "webfetch" {
-        return vec![Arc::new(
+    let tool: Arc<dyn Tool> = match member {
+        "wait" => Arc::new(WaitTool::new(Arc::clone(&runtime.ide.terminal.jobs))),
+        "kill" => Arc::new(KillTool::new(Arc::clone(&runtime.ide.terminal.jobs))),
+        "webfetch" => Arc::new(
             WebFetchTool::new(engines.webfetch_client())
                 .with_warm_hook(engines.warm_hook("webfetch")),
-        )];
-    }
-
-    if tool_id == "websearch" {
-        return vec![Arc::new(
+        ),
+        "websearch" => Arc::new(
             WebSearchTool::new(engines.websearch_client(), engines.websearch_endpoint())
                 .with_warm_hook(engines.warm_hook("websearch")),
-        )];
-    }
-
-    if tool_id == "code_search" {
-        return vec![Arc::new(CodeSearchTool::new(workspace_engines.clone()))];
-    }
-
-    if tool_id == "session_search" {
-        return vec![Arc::new(SessionSearchTool::new(workspace_engines.clone()))];
-    }
-
-    if tool_id == "litecode_workspace" {
-        return vec![Arc::new(LitecodeWorkspaceTool::new(
+        ),
+        "code_search" => Arc::new(CodeSearchTool::new(workspace_engines.clone())),
+        "session_search" => Arc::new(SessionSearchTool::new(workspace_engines.clone())),
+        "litecode_workspace" => Arc::new(LitecodeWorkspaceTool::new(
             runtime.clone(),
             Arc::clone(sessions),
             agent_id.to_string(),
-        ))];
-    }
-
-    if tool_id == LSP_CARD_ID {
-        // One settings card → seven Code tools (Direct never sees name "lsp").
-        return lsp::all_code_tools(
-            workspace_engines.clone(),
-            resolved.workspace_root().to_path_buf(),
-        );
-    }
-
-    vec![]
+        )),
+        _ => return None,
+    };
+    Some(tool)
 }
+
+fn custom_member(resolved: &ResolvedConfig, runtime: &RuntimeHandle, member: &str) -> Option<Arc<dyn Tool>> {
+    resolved
+        .custom_tools()
+        .iter()
+        .find(|definition| definition.name == member)
+        .map(|definition| {
+            Arc::new(CustomTool::new(
+                definition.clone(),
+                Arc::clone(&runtime.custom_tool_hub),
+            )) as Arc<dyn Tool>
+        })
+}
+
+fn mcp_members(
+    runtime: &RuntimeHandle,
+    resolved: &ResolvedConfig,
+    agent_id: &str,
+    capability_id: &str,
+    server_id: &str,
+    mcp_schemas: &HashMap<String, Vec<McpToolSchema>>,
+    mcp_pool: Arc<crate::mcp::McpConnectionPool>,
+) -> crate::types::Result<Vec<Arc<dyn Tool>>> {
+    let Some(mcp) = resolved.mcp_servers().get(server_id).cloned() else {
+        return Ok(Vec::new());
+    };
+    let Some(tool_schemas) = mcp_schemas.get(server_id) else {
+        return Ok(Vec::new());
+    };
+    let allowed_tools = resolved
+        .agents()
+        .get(agent_id)
+        .and_then(|agent| agent.tools.get(capability_id))
+        .and_then(|binding| binding.allowed_tools.as_ref());
+    let _ = runtime;
+    let mut seen = std::collections::HashSet::new();
+    let mut tools = Vec::new();
+    for tool in tool_schemas {
+        if !mcp_inner_name_allowed(&tool.name) {
+            tracing::warn!(
+                tool = %tool.name,
+                "dropping MCP tool that uses a reserved name"
+            );
+            continue;
+        }
+        if !seen.insert(tool.name.clone()) {
+            tracing::warn!(
+                server = %server_id,
+                tool = %tool.name,
+                "dropping duplicate MCP tool name"
+            );
+            continue;
+        }
+        if allowed_tools.is_some_and(|allowed| !allowed.contains(&tool.name)) {
+            continue;
+        }
+        tools.push(Arc::new(McpTool::new(
+            server_id,
+            if tool.description.is_empty() {
+                format!("MCP tool {} from server '{server_id}'", tool.name)
+            } else {
+                tool.description.clone()
+            },
+            tool.input_schema.clone(),
+            crate::tools::mcp_tool::McpServerConnection {
+                tool_name: tool.name.clone(),
+                server_name: resolved.mcp_pool_key(server_id),
+                command: mcp.command.clone(),
+                args: mcp.args.clone(),
+                env: mcp.env.clone(),
+                cwd: Some(resolved.workspace_root().to_path_buf()),
+                pool: Arc::clone(&mcp_pool),
+                timeout_secs: mcp.call_timeout_secs(),
+            },
+        )) as Arc<dyn Tool>);
+    }
+    Ok(tools)
+}
+
+fn subagent_tools(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    depth: u32,
+    parent_cancel: tokio_util::sync::CancellationToken,
+    sessions: &Arc<SessionManager>,
+    parent_session_id: &str,
+    members: &[MemberSpec],
+) -> Vec<Arc<dyn Tool>> {
+    let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
+    for member in members {
+        match member.id.as_str() {
+            "subagent_launch" => tools.push(Arc::new(SubagentLaunchTool::new(
+                runtime.clone(),
+                agent_id,
+                depth,
+                parent_cancel.clone(),
+                Arc::clone(sessions),
+                parent_session_id.to_string(),
+            ))),
+            "subagent_wait" => {
+                tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(sessions))))
+            }
+            "subagent_stop" => {
+                tools.push(Arc::new(SubagentStopTool::new(Arc::clone(sessions))))
+            }
+            "subagent_send" => tools.push(Arc::new(SubagentSendTool::new(
+                runtime.clone(),
+                Arc::clone(sessions),
+                depth,
+            ))),
+            "subagent_delete" => tools.push(Arc::new(SubagentDeleteTool::new(
+                Arc::clone(sessions),
+                Arc::clone(&runtime.subagent_hub),
+            ))),
+            "subagent_list" => {
+                tools.push(Arc::new(SubagentListTool::new(Arc::clone(sessions))))
+            }
+            _ => {}
+        }
+    }
+    tools
+}
+
 
 /// Assemble LLM tool list from available cards + per-agent DB bindings.
 ///
@@ -194,19 +239,30 @@ pub async fn build_tool_list(
     parent_session_id: &str,
     sessions: Arc<SessionManager>,
     code_host: Option<Arc<CodeToolHost>>,
-) -> Vec<Arc<dyn Tool>> {
+) -> crate::types::Result<Vec<Arc<dyn Tool>>> {
     let resolved = &runtime.resolved;
     let engines = &runtime.engine_manager;
     let workspace_engines = &runtime.workspace_engines;
     let mcp_pool = &runtime.mcp_pool;
+
+    let catalog = capability_catalog(resolved);
+    // A malformed custom definition must not make every turn unusable. The
+    // catalog keeps the first owner for each member; log the diagnostics here
+    // so the turn still builds with the remaining tools.
+    for error in &catalog.errors {
+        tracing::error!(error = %error, "capability catalog rejected one definition");
+    }
+    let selected = catalog.selected_for_agent(resolved, agent_id, depth);
+
     let mut mcp_schemas: HashMap<String, Vec<McpToolSchema>> = HashMap::new();
-    let servers = resolved.mcp_servers();
-    for (server_id, mcp_def) in &servers {
-        let catalog_id = mcp_catalog_id(server_id);
-        if !should_include_in_llm_list(resolved, agent_id, &catalog_id, engines, workspace_engines)
-        {
+    let mcp_defs = resolved.mcp_servers();
+    for capability in &selected {
+        let CapabilitySource::Mcp { server_id } = &capability.source else {
             continue;
-        }
+        };
+        let Some(mcp_def) = mcp_defs.get(server_id) else {
+            continue;
+        };
         let pool_key = resolved.mcp_pool_key(server_id);
         match mcp_pool
             .start(
@@ -219,110 +275,73 @@ pub async fn build_tool_list(
             Ok(schemas) => {
                 mcp_schemas.insert(server_id.clone(), schemas);
             }
-            Err(e) => {
-                tracing::warn!("Failed to start MCP server '{}': {}", server_id, e);
+            Err(error) => {
+                tracing::warn!("Failed to start MCP server '{}': {}", server_id, error);
             }
         }
     }
-
-    let mut catalog_ids: Vec<String> = available_tools(resolved)
-        .into_iter()
-        .map(|t| t.id)
-        .collect();
-    catalog_ids.sort();
 
     let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-
-    for tool_id in catalog_ids {
-        if !should_include_in_llm_list(resolved, agent_id, &tool_id, engines, workspace_engines) {
-            continue;
-        }
-
-        // Product lock: subagent tools are primary-turn only (depth lock = 1).
-        if depth >= SUBAGENT_MAX_DEPTH && tool_id.starts_with("subagent_") {
-            continue;
-        }
-        // Tool-set gate: primary-only tools (plan / todo).
-        if depth >= SUBAGENT_MAX_DEPTH
-            && crate::config::schema::PRIMARY_ONLY_TOOL_IDS.contains(&tool_id.as_str())
-        {
-            continue;
-        }
-
-        if depth == 0 && tool_id.starts_with("subagent_") {
-            match tool_id.as_str() {
-                "subagent_launch" => {
-                    tools.push(Arc::new(SubagentLaunchTool::new(
-                        runtime.clone(),
-                        agent_id,
-                        depth,
-                        parent_cancel.clone(),
-                        Arc::clone(&sessions),
-                        parent_session_id.to_string(),
-                    )));
-                }
-                "subagent_wait" => {
-                    tools.push(Arc::new(SubagentWaitTool::new(Arc::clone(&sessions))));
-                }
-                "subagent_stop" => {
-                    tools.push(Arc::new(SubagentStopTool::new(Arc::clone(&sessions))));
-                }
-                "subagent_send" => {
-                    tools.push(Arc::new(SubagentSendTool::new(
-                        runtime.clone(),
-                        Arc::clone(&sessions),
-                        depth,
-                    )));
-                }
-                "subagent_delete" => {
-                    tools.push(Arc::new(SubagentDeleteTool::new(
-                        Arc::clone(&sessions),
-                        Arc::clone(&runtime.subagent_hub),
-                    )));
-                }
-                "subagent_list" => {
-                    tools.push(Arc::new(SubagentListTool::new(Arc::clone(&sessions))));
-                }
-                _ => {}
+    for capability in selected {
+        match &capability.source {
+            CapabilitySource::Lsp => {
+                tools.extend(lsp::all_code_tools(
+                    workspace_engines.as_ref().clone(),
+                    resolved.workspace_root().to_path_buf(),
+                ));
             }
-            continue;
+            CapabilitySource::Subagent => {
+                tools.extend(subagent_tools(
+                    runtime,
+                    agent_id,
+                    depth,
+                    parent_cancel.clone(),
+                    &sessions,
+                    parent_session_id,
+                    &capability.members,
+                ));
+            }
+            CapabilitySource::Custom => {
+                for member in capability.member_ids() {
+                    if let Some(tool) = custom_member(resolved, runtime, member) {
+                        tools.push(tool);
+                    }
+                }
+            }
+            CapabilitySource::Mcp { server_id } => {
+                tools.extend(mcp_members(
+                    runtime,
+                    resolved,
+                    agent_id,
+                    &capability.id,
+                    server_id,
+                    &mcp_schemas,
+                    Arc::clone(&runtime.mcp_pool),
+                )?);
+            }
+            CapabilitySource::Builtin => {
+                for member in capability.member_ids() {
+                    if let Some(tool) = instantiate_builtin_member(
+                        runtime,
+                        agent_id,
+                        member,
+                        engines,
+                        workspace_engines,
+                        Arc::clone(&runtime.ide),
+                        &sessions,
+                    ) {
+                        tools.push(tool);
+                    }
+                }
+            }
         }
-
-        let new_tools = instantiate_tool(
-            runtime,
-            resolved,
-            agent_id,
-            &tool_id,
-            engines,
-            workspace_engines,
-            Arc::clone(&runtime.ide),
-            &sessions,
-            &mcp_schemas,
-            Arc::clone(&runtime.mcp_pool),
-        );
-        tools.extend(new_tools);
-    }
-
-    // Code companions of run. They are not settings cards. A caller
-    // that cannot see run does not get either tool.
-    if tools.iter().any(|tool| tool.name() == "run") {
-        let jobs = Arc::clone(&runtime.ide.terminal.jobs);
-        tools.push(Arc::new(WaitTool::new(Arc::clone(&jobs))));
-        tools.push(Arc::new(KillTool::new(jobs)));
-    }
-
-    // Code companion of edit. Not a settings card; shares edit's dial via
-    // permission engine alias. Hidden when edit is unbound/disabled.
-    if tools.iter().any(|tool| tool.name() == "edit") {
-        tools.push(Arc::new(ApplyEditsTool::with_ide(Arc::clone(&runtime.ide))));
     }
 
     // One projection from this caller's visible set. A missing host cannot
-    // publish `run_code` or drop the code tools.
-    tools = assemble_projected_tools(tools, code_host);
-
-    tools
+    // publish run_code or drop the code tools.
+    Ok(assemble_projected_tools(tools, code_host))
 }
+
 
 fn assemble_projected_tools(
     tools: Vec<Arc<dyn Tool>>,
@@ -472,10 +491,18 @@ mod tests {
     }
 
     fn test_resolved(agent_tools: HashMap<String, AgentToolBinding>) -> ResolvedConfig {
+        test_resolved_role(agent_tools, Default::default())
+    }
+
+    fn test_resolved_role(
+        agent_tools: HashMap<String, AgentToolBinding>,
+        role: crate::config::schema::AgentRole,
+    ) -> ResolvedConfig {
         let mut global = GlobalSettings::default();
         global.agents.insert(
             "default".into(),
             AgentProfile {
+                role,
                 tools: agent_tools,
                 ..Default::default()
             },
@@ -525,6 +552,40 @@ mod tests {
             dummy_sessions(),
             host,
         ))
+        .expect("build tool list")
+    }
+
+    #[test]
+    fn catalog_definition_collision_does_not_block_other_tools() {
+        let mut global = GlobalSettings::default();
+        global.custom_tools.push(crate::config::schema::CustomToolDefinition {
+            name: "hover".into(),
+            description: String::new(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 30,
+            rules: Vec::new(),
+            surface: Default::default(),
+            suite: None,
+            suite_label: None,
+            data_schema: None,
+        });
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: default_bindings(),
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let tools = list_tools(&resolved, 0);
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+        assert!(names.contains(&"read"));
     }
 
     #[test]
@@ -553,16 +614,48 @@ mod tests {
         assert!(names.contains(&"subagent_wait"));
         assert!(names.contains(&"subagent_stop"));
         assert!(names.contains(&"subagent_list"));
-        // WP-057 gate (tool/availability.rs: is_session_search_gated /
-        // session_search_visible): session_search is bound but hidden until
-        // code_search is desired + Warm. This fixture's WorkspaceEngines is never
-        // warmed, so it must be absent. Visible-after-warm is covered by
-        // tool::availability::tests::retrieval_visible_when_desired_and_warm.
-        assert!(
-            !names.contains(&"session_search"),
-            "session_search must stay hidden while code_search is not Warm (WP-057)"
-        );
+        assert!(names.contains(&"subagent_delete"));
+        // D2: session_search is bound and listed even when the semantic
+        // engine is cold; the tool itself falls back to lexical search.
+        assert!(names.contains(&"session_search"));
         assert!(names.contains(&"litecode_workspace"));
+    }
+
+    #[test]
+    fn scope_table_controls_subagent_and_depth() {
+        let primary = test_resolved(default_bindings());
+        let primary_tools = list_tools(&primary, 0);
+        let primary_names: Vec<&str> = primary_tools.iter().map(|tool| tool.name()).collect();
+        assert!(primary_names.contains(&"subagent_launch"));
+        assert!(primary_names.contains(&"plan"));
+
+        let subagent = test_resolved_role(
+            default_bindings(),
+            crate::config::schema::AgentRole::Subagent,
+        );
+        let subagent_tools = list_tools(&subagent, 0);
+        let subagent_names: Vec<&str> = subagent_tools
+            .iter()
+            .map(|tool| tool.name())
+            .collect();
+        assert!(!subagent_names.contains(&"subagent_launch"));
+        assert!(!subagent_names.contains(&"plan"));
+        assert!(subagent_names.contains(&"read"));
+
+        let deep_primary_tools = list_tools(&primary, 1);
+        let deep_primary_names: Vec<&str> = deep_primary_tools
+            .iter()
+            .map(|tool| tool.name())
+            .collect();
+        assert!(!deep_primary_names.contains(&"subagent_launch"));
+        assert!(!deep_primary_names.contains(&"plan"));
+        assert!(deep_primary_names.contains(&"read"));
+
+        let hidden = test_resolved_role(
+            default_bindings(),
+            crate::config::schema::AgentRole::Hidden,
+        );
+        assert!(list_tools(&hidden, 0).is_empty());
     }
 
     #[test]
@@ -607,6 +700,58 @@ mod tests {
                 suite_label: None,
             }
         }
+    }
+
+    #[test]
+    fn custom_suite_is_one_binding_and_instantiates_all_members() {
+        use crate::config::schema::{CustomToolDefinition, ToolSchema};
+
+        fn custom(name: &str) -> CustomToolDefinition {
+            CustomToolDefinition {
+                name: name.into(),
+                description: String::new(),
+                schema: ToolSchema {
+                    schema_type: "object".into(),
+                    properties: serde_json::json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo hi".into(),
+                args: Vec::new(),
+                timeout: 30,
+                rules: Vec::new(),
+                surface: Default::default(),
+                suite: Some("deck".into()),
+                suite_label: Some("Deck".into()),
+                data_schema: None,
+            }
+        }
+
+        let mut bindings = default_bindings();
+        bindings.insert(
+            "suite:deck".into(),
+            AgentToolBinding {
+                enabled: true,
+                policy: crate::permission::ToolPolicy::allow_all(),
+                path_mode: crate::permission::BindingPathMode::default(),
+                last_applied_preset: None,
+                allowed_tools: None,
+            },
+        );
+        let mut global = GlobalSettings::default();
+        global.custom_tools = vec![custom("suite_a"), custom("suite_b")];
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: bindings,
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let suite_tools = list_tools(&resolved, 0);
+        let names: Vec<&str> = suite_tools.iter().map(|tool| tool.name()).collect();
+        assert!(names.contains(&"suite_a"));
+        assert!(names.contains(&"suite_b"));
+        assert!(!names.contains(&"suite:deck"));
     }
 
     #[test]

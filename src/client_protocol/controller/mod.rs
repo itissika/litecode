@@ -1548,7 +1548,7 @@ impl SessionController {
             crate::permission::deny_permission_sink(),
             Arc::new(crate::runtime::observer::NoopObserver),
         )?;
-        runtime.ensure_tooling_initialized().await;
+        runtime.ensure_tooling_initialized().await?;
         Ok(runtime.compaction_request_context()?)
     }
 

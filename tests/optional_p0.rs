@@ -123,7 +123,8 @@ fn settings_reload_reconciles_engine_manager() {
             String::new(),
         )),
         None,
-    ));
+    ))
+    .expect("build tool list");
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"webfetch"));
 }

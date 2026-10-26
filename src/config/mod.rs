@@ -1,3 +1,4 @@
+pub mod binding_scope;
 pub mod bridge;
 pub mod gate;
 pub mod git_install;
@@ -9,10 +10,12 @@ pub mod path;
 pub mod resolved;
 pub mod schema;
 pub mod settings_writer;
+pub mod suite_bindings;
 pub mod turn_guard;
 pub mod workspace;
 pub mod workspace_identity;
 
+pub use binding_scope::BindingScope;
 pub use bridge::{
     agent_config_for, agent_config_from_profile, primary_agent_infos, warn_unresolved_agent_models,
 };

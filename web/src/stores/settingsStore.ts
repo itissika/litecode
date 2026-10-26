@@ -31,8 +31,6 @@ import {
   restartMcpServer as requestMcpRestart,
   stopMcpServer as requestMcpStop,
   SettingsApiError,
-  presetToolIds,
-  withSyncedToolSeries,
   type AgentProfile,
   type AvailableTool,
   type CustomToolDefinition,
@@ -625,21 +623,26 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
 
     saveAgent: (id, profile) =>
       withTurnGuard(async () => {
-        const available = get().availableTools ?? [];
-        const presetIds = presetToolIds(available);
-        const synced = withSyncedToolSeries(profile, presetIds, available);
-        const { revision } = await putAgent(id, synced, presetIds, available);
+        const { revision } = await putAgent(id, profile);
+        // Read back only the saved agent so server normalization (role scope,
+        // suite collapse) lands without turning a successful write into a
+        // failed full refresh.
+        const normalized = await getAgent(id).catch(() => profile);
         set((s) => ({
           revision,
-          agents: { ...s.agents, [id]: synced },
+          agents: { ...s.agents, [id]: normalized },
           docClock: stampClock(s.docClock, ["agents"], revision),
         }));
       }),
 
     createAgent: async (id, profile) => {
       await get().saveAgent(id, profile);
-      await get().refreshAgents();
-      set({ selectedAgentId: id });
+      set((s) => ({
+        agentIds: s.agentIds.includes(id)
+          ? s.agentIds
+          : [...s.agentIds, id].sort(),
+        selectedAgentId: id,
+      }));
     },
 
     removeAgent: (id) =>
@@ -685,6 +688,8 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     saveEngines: (file) =>
       withTurnGuard(async () => {
         const saved = await putEnginesDoc(file);
+        // Status cards refresh from the settings-changed event; never make a
+        // successful engine write fail because a follow-up GET did.
         set({
           revision: saved.revision,
           engines: {

@@ -5,6 +5,8 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+
+use crate::config::binding_scope::BindingScope;
 use serde_json::Value;
 
 /// Agent role (`primary` / `subagent` / `hidden`).
@@ -81,8 +83,12 @@ impl Default for AgentProfile {
 /// Agent ids that cannot be deleted via settings API.
 pub const PROTECTED_AGENT_IDS: &[&str] = &["default"];
 
-/// Built-in subagent orchestration tools (primary-only bindings).
-pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
+/// One-card capability id for the six subagent orchestration members.
+pub const SUBAGENT_CAPABILITY_ID: &str = "subagent_tools";
+
+/// Concrete model functions behind [`SUBAGENT_CAPABILITY_ID`].
+/// These are members, not separate bindings / settings cards.
+pub const SUBAGENT_MEMBER_TOOL_IDS: &[&str] = &[
     "subagent_launch",
     "subagent_wait",
     "subagent_stop",
@@ -90,13 +96,6 @@ pub const SUBAGENT_SERIES_TOOL_IDS: &[&str] = &[
     "subagent_send",
     "subagent_delete",
 ];
-
-/// Server-declared enable series for Agents one-card binding.
-/// `(series_id, series_label, tool_ids)`.
-pub fn core_tool_enable_series() -> &'static [(&'static str, &'static str, &'static [&'static str])]
-{
-    &[("subagent", "Subagent", SUBAGENT_SERIES_TOOL_IDS)]
-}
 
 /// Task-board / human-Ask tools. Subagent role does not bind these (tool-set gate).
 /// `knowledge` and `litecode_workspace` stay on the subagent tool set.
@@ -147,6 +146,17 @@ pub enum CallSurface {
     Code,
 }
 
+/// Runtime state of a capability, kept separate from its definition/binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailableStatus {
+    Ready,
+    Warming,
+    Disabled,
+    Failed,
+    Down,
+}
+
 /// One currently bindable tool card for this workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableTool {
@@ -161,11 +171,19 @@ pub struct AvailableTool {
     /// `code` tools are reached through `run_code`. The Agents card badges this.
     #[serde(default)]
     pub surface: CallSurface,
-    /// When set, Agents shows one card for the series (like MCP server cards).
+    /// Concrete model functions behind this card. MCP members are filled after
+    /// the handshake; every other capability declares them statically here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+    /// Human label for a grouped custom suite. Other cards use their id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub series_id: Option<String>,
+    pub label: Option<String>,
+    /// Role/depth scope; the Agents UI and runtime selection consume the same table.
+    #[serde(default)]
+    pub scope: BindingScope,
+    /// Runtime status projection. Absent for definitions with no engine (builtin/custom).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub series_label: Option<String>,
+    pub status: Option<AvailableStatus>,
 }
 
 /// Workspace-engine configured intent (from engines.json).

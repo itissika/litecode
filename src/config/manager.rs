@@ -10,7 +10,8 @@ use crate::provider_catalog::{self, ProviderCatalog};
 
 use super::global_db;
 use super::resolved::{ResolvedConfig, WorkspaceState, resolve};
-use super::schema::{AgentRole, GlobalSettings, PRIMARY_ONLY_TOOL_IDS, SUBAGENT_SERIES_TOOL_IDS};
+use super::binding_scope::scope_of;
+use super::schema::{AgentRole, GlobalSettings};
 use super::workspace::{self, init_workspace, load_workspace_state};
 
 /// Single configuration entry point (L1).
@@ -77,8 +78,8 @@ impl ConfigManager {
             }
 
             if profile.role == AgentRole::Subagent {
-                for tool_id in PRIMARY_ONLY_TOOL_IDS.iter().chain(SUBAGENT_SERIES_TOOL_IDS) {
-                    if profile.tools.contains_key(*tool_id) {
+                for tool_id in profile.tools.keys() {
+                    if !scope_of(tool_id).allows_role(AgentRole::Subagent) {
                         return Err(LitecodeError::Config(format!(
                             "agent '{agent_id}' (subagent) must not bind '{tool_id}'"
                         )));
@@ -276,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_subagent_cannot_bind_subagent_series() {
+    fn validate_subagent_cannot_bind_primary_root_only() {
         let mut global = minimal_global();
         global.agents.insert(
             "worker".into(),

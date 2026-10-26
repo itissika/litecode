@@ -9,7 +9,7 @@ import type {
   EngineWarmupState,
   LlmSettings,
 } from "../../../api/settings";
-import { putAgent, syncToolEnableSeries } from "../../../api/settings";
+import { applyToolEnabled, putAgent } from "../../../api/settings";
 import { useEngineStore } from "../../../stores/engineStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { AgentsSection } from "./AgentsSection";
@@ -182,7 +182,7 @@ describe("AgentsSection code_search binding (WP-150)", () => {
   });
 });
 
-describe("putAgent / syncToolEnableSeries keep code_search (WP-150)", () => {
+describe("putAgent keeps code_search (WP-150)", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("PUT body carries full tools including code_search and out-of-catalog keys", async () => {
@@ -194,17 +194,20 @@ describe("putAgent / syncToolEnableSeries keep code_search (WP-150)", () => {
       code_search: { enabled: true, last_applied_preset: "ALL" as const },
       mcp_other_ws: { enabled: false, last_applied_preset: "ALL" as const },
     };
-    await putAgent("a", profile({ tools }), new Set(), [readTool]);
+    await putAgent("a", profile({ tools }));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string) as AgentProfile;
     expect(body.tools.code_search).toEqual(tools.code_search);
     expect(body.tools.mcp_other_ws).toEqual(tools.mcp_other_ws);
   });
 
-  it("syncToolEnableSeries never drops or adds code_search", () => {
-    const on = syncToolEnableSeries({ code_search: { enabled: true, last_applied_preset: "ALL" } }, new Set(), [codeSearchTool]);
-    expect(on.code_search).toEqual({ enabled: true, last_applied_preset: "ALL" });
-    const none = syncToolEnableSeries({}, new Set(), [codeSearchTool]);
-    expect("code_search" in none).toBe(false);
+  it("toggling code_search writes only its own row", () => {
+    const on = applyToolEnabled(
+      { code_search: { enabled: true, last_applied_preset: "ALL" } },
+      "code_search",
+      false,
+    );
+    expect(on.code_search.enabled).toBe(false);
+    expect("code_search" in applyToolEnabled({}, "code_search", true)).toBe(true);
   });
 });

@@ -14,9 +14,7 @@ import {
   presetToolIds,
   settingsToolSwitches,
   isProtectedAgent,
-  isSubagentBindableTool,
   applyToolEnabled,
-  withSyncedToolSeries,
   type AgentProfile,
   type AgentToolBinding,
   type AvailableTool,
@@ -284,44 +282,6 @@ function AgentProfileFields({
 }
 
 
-/** Collapse available tools into one card per series_id (MCP-like). */
-function bindCards(tools: AvailableTool[]): {
-  key: string;
-  title: string;
-  entry: AvailableTool;
-  members: AvailableTool[];
-}[] {
-  const seen = new Set<string>();
-  const cards: {
-    key: string;
-    title: string;
-    entry: AvailableTool;
-    members: AvailableTool[];
-  }[] = [];
-  for (const entry of tools) {
-    const sid = entry.series_id ?? null;
-    if (sid) {
-      if (seen.has(`series:${sid}`)) continue;
-      seen.add(`series:${sid}`);
-      const members = tools.filter((t) => t.series_id === sid);
-      cards.push({
-        key: `series:${sid}`,
-        title: entry.series_label || sid,
-        entry: members[0] ?? entry,
-        members,
-      });
-    } else {
-      cards.push({
-        key: entry.id,
-        title: entry.id,
-        entry,
-        members: [entry],
-      });
-    }
-  }
-  return cards;
-}
-
 function AllowedSubagentsSelect({
   draft,
   subagentIds,
@@ -335,7 +295,8 @@ function AllowedSubagentsSelect({
   saveBlocked: boolean;
   onChange: (profile: AgentProfile) => void;
 }) {
-  const launchEnabled = draft.tools.subagent_launch?.enabled === true;
+  const launchEnabled =
+    (draft.tools.subagent_tools ?? draft.tools.subagent_launch)?.enabled === true;
   const allowed = new Set(draft.allowed_subagents ?? []);
 
   const toggle = (id: string) => {
@@ -432,8 +393,7 @@ function AgentToolsGrid({
         role="list"
         aria-label="Agent tool bindings"
       >
-        {bindCards(bindableTools).map((card) => {
-          const entry = card.entry;
+        {bindableTools.map((entry) => {
           const binding = bindingFor(draft.tools, entry.id);
           const configurable = isConfigurableTool(entry);
           const enabled = binding.enabled;
@@ -450,18 +410,24 @@ function AgentToolsGrid({
             onBindingChange(entry.id, { enabled: !enabled });
           };
           const memberLine =
-            card.members.length > 1
-              ? `${entry.kind} · ${card.members.map((m) => m.id).join(", ")}`
+            entry.members && entry.members.length > 1
+              ? `${entry.kind} · ${entry.members.join(", ")}`
               : entry.kind;
           const seriesDetail = entry.overridden
             ? `${memberLine} · workspace override`
             : memberLine;
+          const status = entry.status && entry.status !== "ready" ? entry.status : null;
+          const statusTone =
+            status === "failed" || status === "down"
+              ? "tag-danger"
+              : status === "warming"
+                ? "tag-warn"
+                : "tag-neutral";
 
           return (
             <div
-              key={card.key}
+              key={entry.id}
               data-enabled={enabled ? "true" : "false"}
-              data-series-id={entry.series_id ?? undefined}
               className="tool-binding-card flex flex-col overflow-hidden"
             >
               <button
@@ -477,9 +443,9 @@ function AgentToolsGrid({
                   <div className="min-w-0">
                     <div className="flex min-w-0 items-center gap-1.5">
                       <p className="tool-binding-title truncate font-mono text-sm text-(--_dk-text-primary)">
-                        {card.title}
+                        {entry.label || entry.id}
                       </p>
-                      {card.members.some(isCodeSurface) ? (
+                      {isCodeSurface(entry) ? (
                         <span className="tag tag-neutral tag-xs tag-outline shrink-0">
                           code mode
                         </span>
@@ -492,11 +458,16 @@ function AgentToolsGrid({
                       {seriesDetail}
                     </p>
                   </div>
-                  <span
-                    className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
-                  >
-                    {enabled ? "On" : "Off"}
-                  </span>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <span
+                      className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
+                    >
+                      {enabled ? "On" : "Off"}
+                    </span>
+                    {status ? (
+                      <span className={`tag ${statusTone} tag-xs tag-outline`}>{status}</span>
+                    ) : null}
+                  </div>
                 </div>
 
                 <div className="tool-binding-foot px-3 py-2.5">
@@ -571,32 +542,20 @@ const BUILTIN_TEMPERATURE = 0.7;
 
 // Bindings for tools not in this workspace catalog stay on the profile so a PUT
 // does not wipe other-workspace MCP/custom rows. The grid only shows catalog ids.
-function agentPersistPayload(
-  draft: AgentProfile,
-  presetIds: ReadonlySet<string>,
-  available: readonly AvailableTool[] = [],
-): AgentProfile {
+function agentPersistPayload(draft: AgentProfile): AgentProfile {
   if (draft.role === "subagent") {
-    return withSyncedToolSeries(
-      {
-        ...draft,
-        tools: { ...draft.tools },
-        allowed_subagents: [],
-        temperature: BUILTIN_TEMPERATURE,
-      },
-      presetIds,
-      available,
-    );
-  }
-  return withSyncedToolSeries(
-    {
+    return {
       ...draft,
       tools: { ...draft.tools },
+      allowed_subagents: [],
       temperature: BUILTIN_TEMPERATURE,
-    },
-    presetIds,
-    available,
-  );
+    };
+  }
+  return {
+    ...draft,
+    tools: { ...draft.tools },
+    temperature: BUILTIN_TEMPERATURE,
+  };
 }
 
 export function AgentsSection() {
@@ -663,7 +622,7 @@ export function AgentsSection() {
 
   const bindableToolsSubagent = useMemo(() => {
     return switchTools
-      .filter(isSubagentBindableTool)
+      .filter((tool) => tool.scope !== "primary_root_only")
       .sort((a, b) => a.id.localeCompare(b.id));
   }, [switchTools]);
 
@@ -689,7 +648,7 @@ export function AgentsSection() {
     serialize: (d) => {
       if (!d) return { skip: "unchanged" };
       return {
-        ok: agentPersistPayload(d, presetIds, switchTools),
+        ok: agentPersistPayload(d),
       };
     },
     commit: (p) => saveAgent(selectedAgentId, p),
@@ -741,7 +700,6 @@ export function AgentsSection() {
           toolId,
           patch.enabled,
           presetIds,
-          switchTools,
         ),
       });
       return;
@@ -785,7 +743,7 @@ export function AgentsSection() {
 
   const onCreate = () => {
     if (!draft || !newAgentId.trim()) return;
-    const payload = agentPersistPayload(draft, presetIds, switchTools);
+    const payload = agentPersistPayload(draft);
     void createAgent(newAgentId.trim(), payload)
       .then(() => {
         setCreating(false);

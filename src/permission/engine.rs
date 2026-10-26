@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use serde_json::Value;
 
 use crate::config::global_db::tools::core_none_tools;
@@ -22,6 +25,9 @@ pub struct PermissionEngine {
     resolved: ResolvedConfig,
     agent_id: String,
     view: PermissionView,
+    /// Member name → capability id, built once instead of rebuilding the
+    /// catalog for every `binding()` lookup during a tool call.
+    member_owner: Arc<HashMap<String, String>>,
 }
 
 impl PermissionEngine {
@@ -37,10 +43,14 @@ impl PermissionEngine {
         } else {
             PermissionView::Primary
         };
+        let member_owner = Arc::new(
+            crate::tool::capability::capability_catalog(&resolved).member_owner,
+        );
         Self {
             resolved,
             agent_id,
             view,
+            member_owner,
         }
     }
 
@@ -57,10 +67,15 @@ impl PermissionEngine {
     }
 
     pub fn binding(&self, tool_name: &str) -> Option<&AgentToolBinding> {
+        let bind_name = self
+            .member_owner
+            .get(tool_name)
+            .map(String::as_str)
+            .unwrap_or(tool_name);
         self.resolved
             .agents()
             .get(&self.agent_id)
-            .and_then(|profile| profile.tools.get(tool_name))
+            .and_then(|profile| profile.tools.get(bind_name))
     }
 
     pub fn path_mode(&self, tool_name: &str) -> BindingPathMode {
@@ -214,6 +229,36 @@ mod tests {
         }
         let resolved = ConfigManager::resolve_without_catalog(global, workspace);
         (PermissionEngine::resolver(resolved, "default", depth), dir)
+    }
+
+    #[test]
+    fn subagent_member_uses_the_capability_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalSettings::default();
+        let mut profile = AgentProfile::default();
+        profile.tools.insert(
+            "subagent_tools".into(),
+            AgentToolBinding {
+                enabled: true,
+                policy: ToolPolicy::allow_all(),
+                path_mode: BindingPathMode::default(),
+                last_applied_preset: None,
+                allowed_tools: None,
+            },
+        );
+        global.agents.insert("default".into(), profile);
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let engine = PermissionEngine::resolver(resolved, "default", 0);
+
+        let binding = engine.binding("subagent_launch").expect("capability binding");
+        assert!(binding.enabled);
+        assert_eq!(
+            engine
+                .evaluate_tool("subagent_launch", &serde_json::json!({}), dir.path())
+                .action,
+            PermissionAction::Allow
+        );
     }
 
     #[test]

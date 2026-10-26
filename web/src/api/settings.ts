@@ -147,6 +147,9 @@ export interface AgentProfile {
 
 export type PermissionSurface = "preset" | "fixed";
 
+/** Role/depth scope supplied by the backend. */
+export type BindingScope = "all" | "primary_root_only";
+
 /** Declared call surface. `code` is reached through `run_code`, not a user mode. */
 export type CallSurface = "direct" | "code";
 
@@ -162,10 +165,17 @@ export interface AvailableTool {
   permission_surface?: PermissionSurface;
   /** Declared call surface from the available-tools payload. */
   surface?: CallSurface;
-  /** Server-declared enable series (Agents one-card). */
-  series_id?: string | null;
-  series_label?: string | null;
+  /** Concrete model functions behind this card. MCP members load after handshake. */
+  members?: string[];
+  /** Runtime projection; definitions without an engine omit it. */
+  status?: AvailableStatus;
+  /** Human label for a grouped custom suite. Other cards use their id. */
+  label?: string;
+  /** Role/depth scope. `primary_root_only` is hidden from subagent cards. */
+  scope?: BindingScope;
 }
+
+export type AvailableStatus = "ready" | "warming" | "disabled" | "failed" | "down";
 
 export function isCodeSurface(tool: { surface?: CallSurface | null }): boolean {
   return tool.surface === "code";
@@ -421,15 +431,13 @@ export async function getAgent(id: string): Promise<AgentProfile> {
 export async function putAgent(
   id: string,
   profile: AgentProfile,
-  presetIds: ReadonlySet<string> = new Set(),
-  available?: readonly AvailableTool[],
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
     `/api/settings/agents/${encodeURIComponent(id)}`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(withSyncedToolSeries(profile, presetIds, available)),
+      body: JSON.stringify(profile),
     },
   );
 }
@@ -629,15 +637,6 @@ export async function putEnginesDoc(
   });
 }
 
-/** The subagent series: one closed loop of fixed-behavior tools. */
-export const SUBAGENT_SERIES_TOOL_IDS = [
-  "subagent_launch",
-  "subagent_wait",
-  "subagent_stop",
-  "subagent_list",
-  "subagent_send",
-] as const;
-
 /** True when the backend card declares an ALL/SAFE dial. */
 export function isConfigurableTool(tool: {
   permission_surface?: PermissionSurface;
@@ -662,121 +661,18 @@ export interface AgentListItem {
 
 export const PROTECTED_AGENT_IDS = new Set(["default"]);
 
-export function isSubagentBindableTool(entry: AvailableTool): boolean {
-  if ((SUBAGENT_SERIES_TOOL_IDS as readonly string[]).includes(entry.id)) {
-    return false;
-  }
-  return entry.id !== "plan" && entry.id !== "todo" && entry.id !== "ask_user";
-}
-
-/** Fallback core series when available-tools has no series_id yet. */
-const TOOL_ENABLE_SERIES_FALLBACK: readonly (readonly string[])[] = [
-  SUBAGENT_SERIES_TOOL_IDS,
-];
-
-/** Build enable series from server-declared `series_id` on available tools. */
-export function seriesFromAvailableTools(
-  tools: readonly AvailableTool[],
-): readonly (readonly string[])[] {
-  const byId = new Map<string, string[]>();
-  for (const tool of tools) {
-    const sid = tool.series_id ?? null;
-    if (!sid) continue;
-    const list = byId.get(sid) ?? [];
-    list.push(tool.id);
-    byId.set(sid, list);
-  }
-  return [...byId.values()].map((ids) => Object.freeze([...ids].sort()) as readonly string[]);
-}
-
-export function toolEnableSeries(
-  toolId: string,
-  available?: readonly AvailableTool[],
-): readonly string[] | null {
-  if (available && available.length > 0) {
-    const seriesId = available.find((t) => t.id === toolId)?.series_id;
-    if (seriesId) {
-      const members = available
-        .filter((t) => t.series_id === seriesId)
-        .map((t) => t.id);
-      if (members.length > 0) return members;
-    }
-  }
-  for (const series of TOOL_ENABLE_SERIES_FALLBACK) {
-    if ((series as readonly string[]).includes(toolId)) return series;
-  }
-  return null;
-}
-
-function defaultSeriesBinding(
-  toolId: string,
-  presetIds: ReadonlySet<string>,
-): AgentToolBinding {
-  return {
-    enabled: false,
-    last_applied_preset: presetIds.has(toolId) ? "ALL" : null,
-  };
-}
-
-/** Toggle `toolId`; if it belongs to a series, apply `enabled` to every member. */
+/** One card writes one binding row. */
 export function applyToolEnabled(
   tools: Record<string, AgentToolBinding>,
   toolId: string,
   enabled: boolean,
   presetIds: ReadonlySet<string> = new Set(),
-  available?: readonly AvailableTool[],
 ): Record<string, AgentToolBinding> {
-  const ids = toolEnableSeries(toolId, available) ?? [toolId];
-  const next = { ...tools };
-  for (const id of ids) {
-    const current = next[id] ?? defaultSeriesBinding(id, presetIds);
-    next[id] = { ...current, enabled };
-  }
-  return next;
-}
-
-/** Declared series first; keep hardcoded fallbacks for tools the server did not label. */
-function allEnableSeries(
-  available?: readonly AvailableTool[],
-): readonly (readonly string[])[] {
-  if (!available || available.length === 0) return TOOL_ENABLE_SERIES_FALLBACK;
-  const declared = seriesFromAvailableTools(available);
-  const covered = new Set(declared.flatMap((s) => [...s]));
-  const extras = TOOL_ENABLE_SERIES_FALLBACK.filter(
-    (series) => !series.some((id) => covered.has(id)),
-  );
-  return [...declared, ...extras];
-}
-
-/** Persist-time sync: if any series member is on, all members are on (and present). */
-export function syncToolEnableSeries(
-  tools: Record<string, AgentToolBinding>,
-  presetIds: ReadonlySet<string> = new Set(),
-  available?: readonly AvailableTool[],
-): Record<string, AgentToolBinding> {
-  const next = { ...tools };
-  const seriesList = allEnableSeries(available);
-  for (const series of seriesList) {
-    const anyPresent = series.some((id) => id in next);
-    if (!anyPresent) continue;
-    const anyEnabled = series.some((id) => next[id]?.enabled === true);
-    for (const id of series) {
-      const current = next[id] ?? defaultSeriesBinding(id, presetIds);
-      next[id] = { ...current, enabled: anyEnabled };
-    }
-  }
-  return next;
-}
-
-export function withSyncedToolSeries(
-  profile: AgentProfile,
-  presetIds: ReadonlySet<string> = new Set(),
-  available?: readonly AvailableTool[],
-): AgentProfile {
-  return {
-    ...profile,
-    tools: syncToolEnableSeries(profile.tools, presetIds, available),
+  const current = tools[toolId] ?? {
+    enabled: false,
+    last_applied_preset: presetIds.has(toolId) ? "ALL" : null,
   };
+  return { ...tools, [toolId]: { ...current, enabled } };
 }
 
 export function isProtectedAgent(id: string): boolean {
