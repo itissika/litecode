@@ -200,16 +200,9 @@ export function ContextUsageRing({
   const sessionBilledTokens = useTurnStore(
     (s) => s.byId.get(sessionId)?.sessionBilledTokens ?? null,
   );
-  // One read feeds both the chart and the totals under it, so a bill can never
-  // be in one place and missing from the other. The key ticks once per completed
-  // request (billed tokens), at every compaction edge, and on turn-state change.
-  const usage = useSessionUsage(
-    sessionId,
-    `${runState}:${compacting ? 1 : 0}:${sessionBilledTokens ?? 0}`,
-  );
-  const billedTokens = usage.series
-    ? usage.series.totals.prompt_tokens + usage.series.totals.completion_tokens
-    : null;
+  // The usage read is mounted with the popover content, never with the ring:
+  // a closed ring must not pay for a chart nobody opened.
+  const usageKey = `${runState}:${compacting ? 1 : 0}:${sessionBilledTokens ?? 0}`;
 
   const hasOccupancy = used !== null && used > 0;
   const hasProviderTruth = providerPrompt > 0;
@@ -468,62 +461,92 @@ export function ContextUsageRing({
             )}
           </div>
 
-          {/* Usage: one section, shape first then totals. The chart and the two
-              rows below describe the same provider bills, so they are never
-              separated — a reader should see the curve before the aggregate. */}
-          <div className="flex flex-col gap-2 border-t border-(--_dk-line) pt-2.5">
-            <UsageBars series={usage.series} failed={usage.failed} />
-
-            {/* Cache hit rate — session-total aggregate + last request; dot
-                colors follow the same ring hue logic */}
-            <div className="flex flex-col gap-1">
-              <span className="text-(--_dk-text-muted)">Cache hit</span>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
-                  <span
-                    className="h-1 w-1 rounded-full"
-                    style={{ backgroundColor: sessionColor }}
-                  />
-                  Total
-                </span>
-                <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                  {sessionHitRate !== null
-                    ? `${(sessionHitRate * 100).toFixed(1)}%`
-                    : "--"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
-                  <span
-                    className="h-1 w-1 rounded-full"
-                    style={
-                      {
-                        backgroundColor: color,
-                        ["--_dk-cache-pulse-color" as string]: color,
-                        animation:
-                          hitRate !== null
-                            ? "dk-cache-pulse 1.8s ease-in-out infinite"
-                            : "none",
-                      } as CSSProperties
-                    }
-                  />
-                  Current
-                </span>
-                <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
-                  {hitRate !== null ? `${(hitRate * 100).toFixed(1)}%` : "--"}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-2 text-(--_dk-text-secondary)">
-              <span>Billed</span>
-              <span className="font-mono tabular-nums">
-                {billedTokens != null ? formatToken(billedTokens) : "-"}
-              </span>
-            </div>
-          </div>
+          <UsageSection
+            sessionId={sessionId}
+            usageKey={usageKey}
+            sessionHitRate={sessionHitRate}
+            sessionColor={sessionColor}
+            hitRate={hitRate}
+            color={color}
+          />
         </div>
       )}
     </Popover>
   );
 }
+
+function UsageSection({
+  sessionId,
+  usageKey,
+  sessionHitRate,
+  sessionColor,
+  hitRate,
+  color,
+}: {
+  sessionId: string;
+  usageKey: string;
+  sessionHitRate: number | null;
+  sessionColor: string;
+  hitRate: number | null;
+  color: string;
+}) {
+  const usage = useSessionUsage(sessionId, usageKey);
+  const billedTokens = usage.series
+    ? usage.series.totals.prompt_tokens + usage.series.totals.completion_tokens
+    : null;
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-(--_dk-line) pt-2.5">
+      <UsageBars series={usage.series} failed={usage.failed} />
+
+      {/* Cache hit rate — session-total aggregate + last request; dot colors
+          follow the same ring hue logic. */}
+      <div className="flex flex-col gap-1">
+        <span className="text-(--_dk-text-muted)">Cache hit</span>
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
+            <span
+              className="h-1 w-1 rounded-full"
+              style={{ backgroundColor: sessionColor }}
+            />
+            Total
+          </span>
+          <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+            {sessionHitRate !== null
+              ? `${(sessionHitRate * 100).toFixed(1)}%`
+              : "--"}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-(--_dk-text-secondary)">
+            <span
+              className="h-1 w-1 rounded-full"
+              style={
+                {
+                  backgroundColor: color,
+                  ["--_dk-cache-pulse-color" as string]: color,
+                  animation:
+                    hitRate !== null
+                      ? "dk-cache-pulse 1.8s ease-in-out infinite"
+                      : "none",
+                } as CSSProperties
+              }
+            />
+            Current
+          </span>
+          <span className="font-mono tabular-nums text-(--_dk-text-secondary)">
+            {hitRate !== null ? `${(hitRate * 100).toFixed(1)}%` : "--"}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-2 text-(--_dk-text-secondary)">
+        <span>Billed</span>
+        <span className="font-mono tabular-nums">
+          {billedTokens != null ? formatToken(billedTokens) : "-"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
