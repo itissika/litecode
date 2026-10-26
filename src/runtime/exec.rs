@@ -654,6 +654,7 @@ impl AgentRuntime {
         token_count: usize,
         health: &LlmRequestHealth,
         context_meter: &ContextMeter,
+        context_envelope: &ContextEnvelope,
     ) {
         // `token_estimate` is local budget telemetry only — never meter/ring truth.
         self.emit_internal(InternalEvent::LlmRequestBuilt {
@@ -663,7 +664,7 @@ impl AgentRuntime {
             tools_count: request.tools.len(),
             context_window: self.turn_llm.context_window,
             token_breakdown: request_token_breakdown(request),
-            context_envelope: ContextEnvelope::from_request(request),
+            context_envelope: context_envelope.clone(),
             context_meter: context_meter.clone(),
             sticky_model_id: health.sticky_model_id.clone(),
             turn_model_ref: health.turn_model_ref.clone(),
@@ -805,7 +806,13 @@ impl AgentRuntime {
             session_id: Some(self.session_id.clone()),
             purpose: crate::llm::RequestPurpose::Main,
         };
-        self.emit_llm_request_built(&request, token_count, &health, &context_meter);
+        self.emit_llm_request_built(
+            &request,
+            token_count,
+            &health,
+            &context_meter,
+            &context_envelope,
+        );
         Ok((request, origin_seq))
     }
 

@@ -643,11 +643,13 @@ impl AgentRuntime {
         if let Some(ref mut pipeline) = self.tool_pipeline
             && let Some(ref mut rctx) = self.runtime_ctx
         {
+            let ctx = Context {
+                cwd,
+                ..rctx.ctx.clone()
+            };
             let new_ctx = Arc::new(RuntimeContext {
-                ctx: Context {
-                    cwd,
-                    ..rctx.ctx.clone()
-                },
+                defs: RuntimeContext::derive_defs(&rctx.tools, &ctx),
+                ctx,
                 ..(**rctx).clone()
             });
             *rctx = Arc::clone(&new_ctx);

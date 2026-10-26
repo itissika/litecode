@@ -432,7 +432,9 @@ pub fn tool_schema_tokens(tool: &ToolDef) -> usize {
 }
 
 /// Shared request breakdown used by `LlmRequestBuilt`; fixed request buckets are
-/// filled by the same [`ContextEnvelope`] the pressure meter measures.
+/// filled from the request itself, plus the one protocol constant the envelope
+/// carries. Deriving a [`ContextEnvelope`] here would only re-tokenize the same
+/// instructions and tool schemas `apply_prompt_overhead` already measured.
 pub fn request_token_breakdown(request: &ModelRequest) -> ItemTokenBreakdown {
     let mut breakdown = compute_token_breakdown(&request.input);
     let schemas: Vec<(String, usize)> = request
@@ -441,7 +443,7 @@ pub fn request_token_breakdown(request: &ModelRequest) -> ItemTokenBreakdown {
         .map(|tool| (tool.name.clone(), tool_schema_tokens(tool)))
         .collect();
     apply_prompt_overhead(&mut breakdown, &request.instructions, &schemas);
-    ContextEnvelope::from_request(request).apply_to_breakdown(&mut breakdown);
+    breakdown.prompt_overhead = REQUEST_PROMPT_OVERHEAD_TOKENS;
     breakdown
 }
 

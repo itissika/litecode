@@ -14,6 +14,10 @@ use crate::tool::write_lock::WorkspaceWriteLock;
 #[derive(Clone)]
 pub struct RuntimeContext {
     pub tools: Vec<Arc<dyn Tool>>,
+    /// Tool schemas derived from `tools` + `ctx`. Rebuild whenever `ctx` changes
+    /// (see [`RuntimeContext::derive_defs`]); the per-step request path reuses it
+    /// instead of re-deriving descriptions and JSON schemas on every call.
+    pub defs: Vec<ToolDef>,
     pub permission: PermissionEngine,
     pub ctx: Context,
     pub agent_name: String,
@@ -41,7 +45,9 @@ impl RuntimeContext {
         write_lock: Arc<WorkspaceWriteLock>,
         session: Option<crate::session::SessionDataReader>,
     ) -> Self {
+        let defs = Self::derive_defs(&tools, &ctx);
         Self {
+            defs,
             tools,
             permission,
             ctx,
@@ -89,11 +95,16 @@ impl RuntimeContext {
     }
 
     pub fn tool_defs(&self) -> Vec<ToolDef> {
-        self.tools
+        self.defs.clone()
+    }
+
+    /// The single derivation of tool schemas from a tool list and its context.
+    pub(crate) fn derive_defs(tools: &[Arc<dyn Tool>], ctx: &Context) -> Vec<ToolDef> {
+        tools
             .iter()
             .map(|t| ToolDef {
                 name: t.name().to_string(),
-                description: t.description(&self.ctx),
+                description: t.description(ctx),
                 input_schema: t.schema(),
             })
             .collect()

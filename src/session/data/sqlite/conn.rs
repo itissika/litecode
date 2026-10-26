@@ -90,3 +90,42 @@ pub fn open_readonly(path: &Path) -> Result<Connection> {
         .map_err(|e| LitecodeError::SessionStorage(format!("query_only: {e}")))?;
     Ok(conn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{SharedDb, open_readonly};
+
+    /// A reused read connection must see commits made after it was opened.
+    ///
+    /// The read pool opens one connection per query today. Reusing them is only
+    /// equivalent if a connection is not stuck on the snapshot it was opened in;
+    /// this pins that assumption instead of trusting it.
+    #[test]
+    fn a_reused_read_connection_sees_later_commits() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("sessions.db");
+        let writer = SharedDb::open_rw(&path).expect("open rw");
+        writer
+            .conn()
+            .execute_batch("CREATE TABLE probe (x INTEGER NOT NULL);")
+            .expect("create probe");
+
+        let reader = open_readonly(&path).expect("open ro");
+        let count = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM probe", [], |row| row.get(0))
+                .expect("count")
+        };
+        assert_eq!(count(&reader), 0);
+
+        writer
+            .conn()
+            .execute_batch("INSERT INTO probe VALUES (1);")
+            .expect("insert");
+
+        assert_eq!(
+            count(&reader),
+            1,
+            "the same read connection must observe a later commit"
+        );
+    }
+}
