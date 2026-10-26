@@ -1002,7 +1002,8 @@ function PlanHeader({
 /** Plan panel body: the active plan file's markdown, read from the workspace.
  *  The row naming that file is the panel's chrome (PlanHeader); a
  *  missing/unreadable file collapses to a "lost" state instead of dead
- *  content. */
+ *  content. Rendered as a file preview so a plan's [@ file="…"] citations
+ *  become chips, the same as the plan opened in the editor. */
 type PlanDoc =
   | { status: "loading" }
   | { status: "ok"; md: string }
@@ -1073,7 +1074,7 @@ function PlanPanel({
       )}
       {doc.status === "ok" && (
         <div className="text-dk-base">
-          <AgentMarkdown text={doc.md} />
+          <AgentMarkdown text={doc.md} preview={{ basePath: path }} />
         </div>
       )}
     </div>
