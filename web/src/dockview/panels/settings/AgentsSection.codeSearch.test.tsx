@@ -92,7 +92,7 @@ describe("AgentsSection code_search binding (WP-150)", () => {
   for (const state of ["stopped", "warming"] as const) {
     it(`shows stored On while engine is ${state}, not greyed, togglable`, async () => {
       setEngine(state);
-      seed(profile({ tools: { code_search: { enabled: true, last_applied_preset: "ALL" } } }));
+      seed(profile({ tools: { code_search: { enabled: true, preset: "ALL" } } }));
       vi.useFakeTimers();
       render(<AgentsSection />);
       const btn = card("enabled");
@@ -110,8 +110,8 @@ describe("AgentsSection code_search binding (WP-150)", () => {
       setEngine(state);
       seed(profile({
         tools: {
-          code_search: { enabled: true, last_applied_preset: "ALL" },
-          mcp_other_ws: { enabled: true, last_applied_preset: "ALL" },
+          code_search: { enabled: true, preset: "ALL" },
+          mcp_other_ws: { enabled: true, preset: "ALL" },
         },
       }), [readTool, codeSearchTool]);
       vi.useFakeTimers();
@@ -119,8 +119,8 @@ describe("AgentsSection code_search binding (WP-150)", () => {
       fireEvent.click(screen.getByRole("button", { name: /^read tool binding/i }));
       await vi.advanceTimersByTimeAsync(400);
       const saved = saveAgent.mock.calls.at(-1)![1];
-      expect(saved.tools.code_search).toEqual({ enabled: true, last_applied_preset: "ALL" });
-      expect(saved.tools.mcp_other_ws).toEqual({ enabled: true, last_applied_preset: "ALL" });
+      expect(saved.tools.code_search).toEqual({ enabled: true, preset: "ALL" });
+      expect(saved.tools.mcp_other_ws).toEqual({ enabled: true, preset: "ALL" });
     });
   }
 
@@ -129,8 +129,8 @@ describe("AgentsSection code_search binding (WP-150)", () => {
       setEngine(state);
       seed(profile({
         tools: {
-          code_search: { enabled: true, last_applied_preset: "ALL" },
-          session_search: { enabled: true, last_applied_preset: "ALL" },
+          code_search: { enabled: true, preset: "ALL" },
+          session_search: { enabled: true, preset: "ALL" },
         },
       }));
       render(<AgentsSection />);
@@ -138,7 +138,7 @@ describe("AgentsSection code_search binding (WP-150)", () => {
       expect(ss.getAttribute("aria-pressed")).toBe("true");
       expect((ss as HTMLButtonElement).disabled).toBe(false);
       cleanup();
-      seed(profile({ tools: { session_search: { enabled: false, last_applied_preset: "ALL" } } }));
+      seed(profile({ tools: { session_search: { enabled: false, preset: "ALL" } } }));
       render(<AgentsSection />);
       const off = screen.getByRole("button", { name: /^session_search tool binding, disabled/i });
       expect(off.getAttribute("aria-pressed")).toBe("false");
@@ -159,7 +159,7 @@ describe("AgentsSection code_search binding (WP-150)", () => {
   });
 
   it("subagent grid shows stored On", () => {
-    seed(profile({ role: "subagent", tools: { code_search: { enabled: true, last_applied_preset: "ALL" } } }));
+    seed(profile({ role: "subagent", tools: { code_search: { enabled: true, preset: "ALL" } } }));
     render(<AgentsSection />);
     expect(card("enabled")).toBeTruthy();
   });
@@ -191,8 +191,8 @@ describe("putAgent keeps code_search (WP-150)", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     const tools = {
-      code_search: { enabled: true, last_applied_preset: "ALL" as const },
-      mcp_other_ws: { enabled: false, last_applied_preset: "ALL" as const },
+      code_search: { enabled: true, preset: "ALL" as const },
+      mcp_other_ws: { enabled: false, preset: "ALL" as const },
     };
     await putAgent("a", profile({ tools }));
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -203,7 +203,7 @@ describe("putAgent keeps code_search (WP-150)", () => {
 
   it("toggling code_search writes only its own row", () => {
     const on = applyToolEnabled(
-      { code_search: { enabled: true, last_applied_preset: "ALL" } },
+      { code_search: { enabled: true, preset: "ALL" } },
       "code_search",
       false,
     );

@@ -33,15 +33,18 @@ function openNew(scope: "Global" | "Workspace") {
 describe("CustomToolsSection persist UX", () => {
   const saveCustomTool = vi.fn(async () => undefined);
   const removeCustomTool = vi.fn(async () => undefined);
+  const saveCustomSuite = vi.fn(async () => undefined);
 
   beforeEach(() => {
     saveCustomTool.mockClear();
     removeCustomTool.mockClear();
+    saveCustomSuite.mockClear();
     useSettingsStore.setState({
-      customTools: { global: [], workspace: [] },
+      customTools: { global: [], workspace: [], suites: { global: {}, workspace: {} }, diagnostics: [], code_rejections: [] },
       persistByDoc: {},
       saveCustomTool,
       removeCustomTool,
+      saveCustomSuite,
     });
   });
 
@@ -89,12 +92,45 @@ describe("CustomToolsSection persist UX", () => {
 
   it("deletes an existing tool", async () => {
     useSettingsStore.setState({
-      customTools: { global: [echoTool], workspace: [] },
+      customTools: { global: [echoTool], workspace: [], suites: { global: {}, workspace: {} }, diagnostics: [], code_rejections: [] },
     });
     render(<CustomToolsSection />);
     fireEvent.click(screen.getByRole("button", { name: "Delete echo_py" }));
     await waitFor(() => {
       expect(removeCustomTool).toHaveBeenCalledWith("echo_py", "global");
+    });
+  });
+
+  it("shows code admission warnings instead of hiding rejected tools", () => {
+    useSettingsStore.setState({
+      customTools: {
+        global: [echoTool],
+        workspace: [],
+        suites: { global: {}, workspace: {} },
+        diagnostics: [],
+        code_rejections: [
+          { name: "deck.slide", reason: "tool 'deck.slide' has no data schema" },
+        ],
+      },
+    });
+    render(<CustomToolsSection />);
+    expect(screen.getByText("Code admission warnings")).toBeTruthy();
+    expect(screen.getByText(/has no data schema/)).toBeTruthy();
+  });
+
+  it("creates a suite as one group definition", async () => {
+    render(<CustomToolsSection />);
+    fireEvent.click(screen.getByRole("button", { name: "New global" }));
+    fireEvent.change(screen.getByPlaceholderText("suite_id"), {
+      target: { value: "deck" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save suite" }));
+    await waitFor(() => {
+      expect(saveCustomSuite).toHaveBeenCalledWith(
+        "deck",
+        { surface: "code", label: "Deck", rules: [] },
+        "global",
+      );
     });
   });
 });

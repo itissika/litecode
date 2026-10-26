@@ -1,7 +1,7 @@
 //! Capability catalog: the single description of what can be bound and which
 //! concrete model functions sit behind each card.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::config::binding_scope::{scope_of, BindingScope};
 use crate::config::global_db::tools::{
@@ -214,25 +214,19 @@ fn push_custom(
     let overridden = members
         .iter()
         .any(|tool| custom_overridden(resolved, &tool.name));
-    let surface = if members
-        .iter()
-        .all(|tool| tool.surface == CallSurface::Code)
-    {
-        CallSurface::Code
-    } else {
-        CallSurface::Direct
-    };
+    let surface = members
+        .first()
+        .map(CustomToolDefinition::effective_surface)
+        .unwrap_or(CallSurface::Direct);
     let scope = scope_of(&id);
+    let member_ids: Vec<String> = members.iter().map(|tool| tool.name.clone()).collect();
     push_capability(
         catalog,
         Capability {
-            id,
+            id: id.clone(),
             kind: CapabilityKind::Custom,
             source: CapabilitySource::Custom,
-            members: members
-                .iter()
-                .map(|tool| member(&tool.name))
-                .collect(),
+            members: member_ids.iter().map(|name| member(name)).collect(),
             scope,
             origin,
             overridden,
@@ -241,6 +235,15 @@ fn push_custom(
             label,
         },
     );
+    if surface == CallSurface::Code
+        && let Some(suite) = id.strip_prefix("suite:")
+    {
+        for member in member_ids {
+            catalog
+                .member_owner
+                .insert(format!("{suite}.{member}"), id.clone());
+        }
+    }
 }
 
 fn push_mcp(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig, server_id: &str) {
@@ -272,7 +275,27 @@ fn push_mcp(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig, server_i
 }
 
 fn push_custom_suites(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig) {
-    let mut suites: BTreeMap<String, Vec<CustomToolDefinition>> = BTreeMap::new();
+    let suites = resolved.custom_suites();
+    let standalone_names: HashSet<String> = resolved
+        .custom_tools()
+        .into_iter()
+        .filter(|tool| {
+            tool.suite
+                .as_deref()
+                .map(str::trim)
+                .filter(|suite| !suite.is_empty())
+                .is_none()
+        })
+        .map(|tool| tool.name)
+        .collect();
+    for suite in suites.keys() {
+        if standalone_names.contains(suite) {
+            catalog.errors.push(format!(
+                "custom suite '{suite}' collides with a custom tool name"
+            ));
+        }
+    }
+    let mut grouped: BTreeMap<String, Vec<CustomToolDefinition>> = BTreeMap::new();
     for tool in resolved.custom_tools() {
         match tool
             .suite
@@ -280,14 +303,24 @@ fn push_custom_suites(catalog: &mut CapabilityCatalog, resolved: &ResolvedConfig
             .map(str::trim)
             .filter(|suite| !suite.is_empty())
         {
-            Some(suite) => suites.entry(suite.to_string()).or_default().push(tool),
+            Some(suite) => {
+                if suites.contains_key(suite) {
+                    grouped.entry(suite.to_string()).or_default().push(tool);
+                } else {
+                    catalog.errors.push(format!(
+                        "custom tool '{}' references missing suite '{suite}'",
+                        tool.name
+                    ));
+                }
+            }
             None => push_custom(catalog, resolved, tool.name.clone(), vec![tool], None),
         }
     }
-    for (suite, members) in suites {
-        let label = members
-            .iter()
-            .find_map(|tool| tool.suite_label.clone())
+    for (suite, members) in grouped {
+        let label = suites
+            .get(&suite)
+            .map(|suite| suite.label.clone())
+            .filter(|label| !label.trim().is_empty())
             .or_else(|| Some(suite.clone()));
         push_custom(catalog, resolved, format!("suite:{suite}"), members, label);
     }
@@ -441,7 +474,7 @@ mod tests {
         resolve_without_catalog(GlobalSettings::default(), WorkspaceState::new("/tmp"))
     }
 
-    fn custom(name: &str, suite: Option<&str>, label: Option<&str>) -> CustomToolDefinition {
+    fn custom(name: &str, suite: Option<&str>, _label: Option<&str>) -> CustomToolDefinition {
         CustomToolDefinition {
             name: name.into(),
             description: String::new(),
@@ -454,10 +487,9 @@ mod tests {
             args: Vec::new(),
             timeout: 30,
             rules: Vec::new(),
-            surface: CallSurface::Direct,
+            surface: Some(CallSurface::Direct),
             suite: suite.map(str::to_string),
-            suite_label: label.map(str::to_string),
-            data_schema: None,
+            output_schema: None,
         }
     }
 
@@ -503,6 +535,14 @@ mod tests {
     #[test]
     fn custom_suite_is_one_capability_and_single_tool_is_one_member() {
         let mut global = GlobalSettings::default();
+        global.custom_suites.insert(
+            "deck".into(),
+            crate::config::schema::CustomSuiteDefinition {
+                surface: CallSurface::Direct,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        );
         global.custom_tools.push(custom("suite_a", Some("deck"), Some("Deck")));
         global.custom_tools.push(custom("suite_b", Some("deck"), None));
         global.custom_tools.push(custom("single", None, None));
@@ -515,6 +555,32 @@ mod tests {
         assert_eq!(deck.member_ids().collect::<Vec<_>>(), ["suite_a", "suite_b"]);
         assert!(catalog.get("single").is_some());
         assert_eq!(catalog.member_capability_id("suite_a"), Some("suite:deck"));
+    }
+
+    #[test]
+    fn suite_and_standalone_tool_names_cannot_collide_across_layers() {
+        let mut global = GlobalSettings::default();
+        global.custom_suites.insert(
+            "demo".into(),
+            crate::config::schema::CustomSuiteDefinition {
+                surface: CallSurface::Direct,
+                label: "Demo".into(),
+                rules: Vec::new(),
+            },
+        );
+        let mut workspace = WorkspaceState::new("/tmp");
+        workspace
+            .workspace_custom_tools
+            .insert("demo".into(), custom("demo", None, None));
+        let catalog = capability_catalog(&resolve_without_catalog(global, workspace));
+        assert!(
+            catalog
+                .errors
+                .iter()
+                .any(|error| error.contains("collides")),
+            "{:?}",
+            catalog.errors
+        );
     }
 
     #[test]
@@ -566,9 +632,7 @@ mod tests {
                 id.clone(),
                 AgentToolBinding {
                     enabled: true,
-                    policy: crate::permission::ToolPolicy::allow_all(),
-                    path_mode: crate::permission::BindingPathMode::default(),
-                    last_applied_preset: None,
+                    preset: None,
                     allowed_tools: None,
                 },
             );
@@ -610,9 +674,7 @@ mod tests {
             "session_search".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: crate::permission::ToolPolicy::allow_all(),
-                path_mode: crate::permission::BindingPathMode::default(),
-                last_applied_preset: None,
+                preset: None,
                 allowed_tools: None,
             },
         );

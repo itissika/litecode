@@ -158,9 +158,7 @@ async fn catalog_and_bind_exposes_echo_and_round_trips() {
         "mcp_mock".into(),
         AgentToolBinding {
             enabled: true,
-            policy: litecode::permission::ToolPolicy::allow_all(),
-            path_mode: litecode::permission::BindingPathMode::default(),
-            last_applied_preset: None,
+            preset: None,
             allowed_tools: Some(vec!["echo".into()]),
         },
     );

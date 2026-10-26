@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use litecode::config::ConfigManager;
 use litecode::config::global_db;
 use litecode::config::schema::AgentToolBinding;
-use litecode::permission::{BindingPathMode, ToolPolicy};
+
 use rusqlite::Connection;
 
 fn fresh_db() -> (tempfile::TempDir, PathBuf) {
@@ -21,9 +21,7 @@ fn legacy_role_rule_rows_are_repaired_on_load() {
 
     let binding = AgentToolBinding {
         enabled: false,
-        policy: ToolPolicy::allow_all(),
-        path_mode: BindingPathMode::default(),
-        last_applied_preset: None,
+        preset: None,
         allowed_tools: None,
     };
     let explore = settings.agents.get_mut("explore").expect("explore agent");

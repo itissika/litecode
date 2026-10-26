@@ -35,11 +35,16 @@ CREATE TABLE IF NOT EXISTS agent_tools (
     agent_id              TEXT NOT NULL,
     tool_id               TEXT NOT NULL,
     enabled               INTEGER NOT NULL,
-    policy_json           TEXT NOT NULL DEFAULT '{}',
-    path_mode             TEXT NOT NULL DEFAULT 'unrestricted',
-    last_applied_preset   TEXT,
+    preset                TEXT,
     allowed_tools_json    TEXT,
     PRIMARY KEY (agent_id, tool_id)
+);
+
+CREATE TABLE IF NOT EXISTS custom_suites (
+    id              TEXT PRIMARY KEY,
+    surface         TEXT NOT NULL,
+    label           TEXT NOT NULL DEFAULT '',
+    rules_json      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS custom_tools (
@@ -50,8 +55,11 @@ CREATE TABLE IF NOT EXISTS custom_tools (
     timeout         INTEGER NOT NULL DEFAULT 120,
     description     TEXT NOT NULL DEFAULT '',
     rules_json      TEXT,
-    surface         TEXT NOT NULL DEFAULT 'direct',
-    data_schema_json TEXT
+    surface         TEXT,
+    suite_id        TEXT,
+    output_schema_json TEXT,
+    data_schema_json TEXT,
+    definition_version INTEGER NOT NULL DEFAULT 2
 );
 
 CREATE TABLE IF NOT EXISTS mcp_servers (

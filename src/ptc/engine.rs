@@ -801,18 +801,64 @@ fn install_namespace(
 ) -> Result<(), Failure> {
     let object = Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
     for binding in &namespace.functions {
-        let function = bind_host(
-            ctx,
-            binding.function.clone(),
-            shared,
-            namespace.name.clone(),
-            binding.name.clone(),
-        )?;
-        object
-            .set(&binding.name, function)
-            .map_err(|error| Failure::internal(error.to_string()))?;
+        install_binding(ctx, &object, namespace, binding, shared)?;
     }
     define_const(ctx, &namespace.name, object)
+}
+
+/// A dotted binding name nests under the namespace: `suite.member` becomes
+/// `tools.suite.member`. Code suites always use that shape, even for a single
+/// member, so a suite never collapses into a bare `tools.member`.
+fn install_binding<'js>(
+    ctx: &Ctx<'js>,
+    root: &Object<'js>,
+    namespace: &super::Namespace,
+    binding: &super::HostBinding,
+    shared: &Shared,
+) -> Result<(), Failure> {
+    let mut target = root.clone();
+    let mut parts = binding.name.split('.').peekable();
+    while let Some(part) = parts.next() {
+        if part.is_empty() {
+            return Err(Failure::internal(format!(
+                "invalid tool binding '{}'",
+                binding.name
+            )));
+        }
+        if parts.peek().is_none() {
+            let function = bind_host(
+                ctx,
+                binding.function.clone(),
+                shared,
+                namespace.name.clone(),
+                binding.name.clone(),
+            )?;
+            target
+                .set(part, function)
+                .map_err(|error| Failure::internal(error.to_string()))?;
+            return Ok(());
+        }
+        let existing = target
+            .get::<_, Value<'_>>(part)
+            .map_err(|error| Failure::internal(error.to_string()))?;
+        let next = if existing.is_undefined() {
+            let object =
+                Object::new(ctx.clone()).map_err(|error| Failure::internal(error.to_string()))?;
+            target
+                .set(part, object.clone())
+                .map_err(|error| Failure::internal(error.to_string()))?;
+            object
+        } else if let Some(object) = existing.as_object() {
+            object.clone()
+        } else {
+            return Err(Failure::internal(format!(
+                "tool binding '{}' conflicts with an existing member '{}'",
+                binding.name, part
+            )));
+        };
+        target = next;
+    }
+    Ok(())
 }
 
 fn bind_host<'js>(
@@ -828,7 +874,10 @@ fn bind_host<'js>(
     let user = shared.user.clone();
     let flags = Arc::clone(&shared.flags);
     let faults = Arc::clone(&shared.faults);
-    let label = name.clone();
+    let js_name = name
+        .rsplit_once('.')
+        .map_or(name.as_str(), |(_, member)| member)
+        .to_string();
     Function::new(
         ctx.clone(),
         Async(move |ctx: Ctx<'js>, args: Rest<Value<'js>>| {
@@ -847,7 +896,7 @@ fn bind_host<'js>(
             )
         }),
     )
-    .and_then(|function| function.with_name(label.as_str()))
+    .and_then(|function| function.with_name(js_name.as_str()))
     .map_err(|error| Failure::internal(error.to_string()))
 }
 

@@ -6,17 +6,15 @@
 //! CodeTool description.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use serde_json::{Map, Value};
 
-use crate::context_pipeline::Context;
-use crate::tool::trait_::Tool;
+use crate::tool::spec::CodeFunctionSpec;
 
 const PRELUDE: &str = r#"Open `run_code` when one program can finish the work: explore with reads/searches, make the minimal edits, then verify with the real check. A short program is fine; do not wrap a single peek or edit in a long ritual.
 Explore first; write only after the target is known. `await` when a later call needs an earlier value. Use `Promise.all` only when every call must succeed; use `Promise.allSettled` when one failure must not stop the batch.
 `return` a short result: what changed, what ran, and the few facts that matter, not raw dumps. The run header and logs are diagnostics; `result` is your output. Oversized result text is truncated with a note at the start.
-`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)` or `tools["name"](args)`, one argument object each. Other LiteCode tools may remain directly callable outside this SDK.
+`code` is plain JavaScript. The TypeScript declarations below are documentation only; do not paste type annotations into `code`. Call bundled tools only through `tools.name(args)`; a code suite keeps its namespace even with one member: `tools.suite.member(args)`. One argument object each. Other LiteCode tools may remain directly callable outside this SDK.
 Every resolved call has boolean `ok`: `false` is a domain failure with `reason`/`message`, so one bad item need not end a batch. Unknown tools and extra JavaScript arguments throw `TypeError`; invalid tool arguments resolve `ok: false` `invalid_args`, and unknown fields are never silently dropped. Cancellation, the `run_code` budget, and hard limits end the program and cannot be caught.
 `libs` are deterministic pure-JS helpers (no filesystem, network, or process). `fs.ls` / `fs.stat` / `fs.exists` are synchronous, read-only workspace probes; mutate files only through declared tools. The sandbox has no `setTimeout` / `setInterval`.
 Unhandled Promise rejections do not end the program; a `[warn]` notes them after settle.
@@ -97,42 +95,30 @@ type ToolFailure = {
 
 "#;
 
-/// Context used only to ask a tool for its description. Code-surface text must
-/// not pick up the caller's cwd, permission, or depth.
-fn description_context() -> Context {
-    Context {
-        cwd: std::path::PathBuf::new(),
-        workspace_paths: crate::config::WorkspacePaths::for_legacy_root(std::path::Path::new(".")),
-        agents_md: None,
-        claude_md: None,
-    }
-}
-
 /// SDK type prefix for `name`. Collisions of this prefix are admission failures.
 pub(crate) fn code_type_base(name: &str) -> String {
     pascal_case(name)
 }
 
-/// One code tool's contract can be rendered. Returns the SDK type prefix.
-pub fn validate_code_contract(tool: &dyn Tool) -> Result<String, String> {
-    let name = tool.name();
-    if name.is_empty() || name.chars().any(|ch| ch.is_control()) {
+/// One code contract can be rendered. Returns the SDK type prefix.
+pub fn validate_code_contract(spec: &CodeFunctionSpec) -> Result<String, String> {
+    let name = spec.name.as_str();
+    if name.is_empty()
+        || name.chars().any(|ch| ch.is_control())
+        || name.split('.').any(str::is_empty)
+    {
         return Err(format!("tool '{name}' has an unsafe name"));
     }
-    let description = tool.description(&description_context());
-    if description.trim().is_empty() {
+    if spec.description.trim().is_empty() {
         return Err(format!("tool '{name}' has an empty description"));
     }
-    let input_schema = tool.schema();
-    if !input_schema_complete(&input_schema) {
+    if !input_schema_complete(&spec.input_schema) {
         return Err(format!(
             "tool '{name}' input schema must be a complete object schema"
         ));
     }
-    let data_schema = tool
-        .data_schema()
-        .ok_or_else(|| format!("tool '{name}' has no data schema"))?;
-    if !data_schema
+    if !spec
+        .output_schema
         .as_object()
         .is_some_and(|schema| !schema.is_empty())
     {
@@ -140,9 +126,30 @@ pub fn validate_code_contract(tool: &dyn Tool) -> Result<String, String> {
             "tool '{name}' data schema must be a non-empty object"
         ));
     }
-    parse_schema(&input_schema, &format!("{name}.input"))?;
-    parse_schema(&data_schema, &format!("{name}.data"))?;
+    parse_schema(&spec.input_schema, &format!("{name}.input"))?;
+    parse_schema(&spec.output_schema, &format!("{name}.data"))?;
     Ok(code_type_base(name))
+}
+
+/// A dotted code name opens a namespace. A function with the same full name as
+/// that namespace cannot also exist, because a property cannot be both a
+/// function and an object.
+pub(crate) fn nested_name_collision<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+) -> Option<String> {
+    let mut names: Vec<&str> = names.into_iter().collect();
+    names.sort_unstable();
+    for name in &names {
+        if let Some(other) = names
+            .iter()
+            .find(|other| name.starts_with(&format!("{other}.")))
+        {
+            return Some(format!(
+                "tool '{name}' nests under '{other}', but both are callable; rename one of them"
+            ));
+        }
+    }
+    None
 }
 
 fn input_schema_complete(schema: &Value) -> bool {
@@ -171,26 +178,28 @@ fn input_schema_complete(schema: &Value) -> bool {
 ///
 /// Tools are sorted by name so both the generated text and prompt cache remain
 /// deterministic. The text is a pure function of the tools' own contracts.
-pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, String> {
-    let ctx = description_context();
-    let mut ordered: Vec<&Arc<dyn Tool>> = tools.iter().collect();
-    ordered.sort_by(|left, right| left.name().cmp(right.name()));
+pub fn render_code_tool_description(specs: &[CodeFunctionSpec]) -> Result<String, String> {
+    let mut ordered: Vec<&CodeFunctionSpec> = specs.iter().collect();
+    ordered.sort_by(|left, right| left.name.cmp(&right.name));
+    if let Some(reason) =
+        nested_name_collision(ordered.iter().map(|spec| spec.name.as_str()))
+    {
+        return Err(reason);
+    }
 
     let mut seen_names = HashSet::new();
     let mut seen_types = HashSet::new();
     let mut declarations = Vec::with_capacity(ordered.len());
 
-    for tool in ordered {
-        let name = tool.name();
+    for spec in &ordered {
+        let name = spec.name.as_str();
         if !seen_names.insert(name.to_string()) {
             return Err(format!("duplicate tool name '{name}' in code bundle"));
         }
-        validate_code_contract(tool.as_ref())?;
-        let description = tool.description(&ctx);
-        let data_schema = tool
-            .data_schema()
-            .ok_or_else(|| format!("tool '{name}' has no data schema"))?;
-        let input_schema = tool.schema();
+        validate_code_contract(spec)?;
+        let description = spec.description.clone();
+        let data_schema = &spec.output_schema;
+        let input_schema = &spec.input_schema;
 
         let type_base = code_type_base(name);
         let input_type = format!("{type_base}Input");
@@ -251,18 +260,50 @@ pub fn render_code_tool_description(tools: &[Arc<dyn Tool>]) -> Result<String, S
     }
 
     out.push_str("declare const tools: {\n");
+    let mut rendered_suites = HashSet::new();
     for declaration in &declarations {
-        out.push_str(&render_comment(&declaration.description, 2));
-        let key = serde_json::to_string(&declaration.name)
-            .map_err(|error| format!("serialize tool name: {error}"))?;
-        out.push_str(&format!(
-            "  readonly [{key}]: (args: {}) => Promise<{} | ToolFailure>;\n",
-            declaration.input_type, declaration.data_type
-        ));
+        let Some((suite, _)) = declaration.name.split_once('.') else {
+            render_binding(declaration, 2, &mut out)?;
+            continue;
+        };
+        if !rendered_suites.insert(suite.to_string()) {
+            continue;
+        }
+        let key = serde_json::to_string(suite)
+            .map_err(|error| format!("serialize suite name: {error}"))?;
+        out.push_str(&format!("  readonly [{key}]: {{\n"));
+        for member_declaration in declarations
+            .iter()
+            .filter(|candidate| candidate.name.starts_with(&format!("{suite}.")))
+        {
+            render_binding(member_declaration, 4, &mut out)?;
+        }
+        out.push_str("  };\n");
     }
     out.push_str("};\n```\n");
 
     Ok(out)
+}
+
+fn render_binding(
+    declaration: &ToolDeclaration,
+    indent: usize,
+    out: &mut String,
+) -> Result<(), String> {
+    let member = declaration
+        .name
+        .rsplit_once('.')
+        .map_or(declaration.name.as_str(), |(_, member)| member);
+    out.push_str(&render_comment(&declaration.description, indent));
+    let key =
+        serde_json::to_string(member).map_err(|error| format!("serialize tool name: {error}"))?;
+    out.push_str(&format!(
+        "{}readonly [{key}]: (args: {}) => Promise<{} | ToolFailure>;\n",
+        " ".repeat(indent),
+        declaration.input_type,
+        declaration.data_type
+    ));
+    Ok(())
 }
 
 /// The host adds a leading `ok: true` to every resolved object that does not
@@ -659,15 +700,24 @@ fn pascal_case(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+    use std::sync::Arc;
+
     use serde_json::json;
 
+    use crate::context_pipeline::Context;
+    use crate::tool::FunctionSpec;
+    use crate::tool::project::project_tools;
+    use crate::tool::trait_::Tool;
 
     struct NoDataTool;
 
     impl Tool for NoDataTool {
         fn name(&self) -> &str {
             "no_data"
+        }
+
+        fn surface(&self) -> crate::tool::ToolSurface {
+            crate::tool::ToolSurface::Code
         }
 
         fn schema(&self) -> Value {
@@ -681,9 +731,40 @@ mod tests {
 
 
 
+    fn spec(name: &str) -> CodeFunctionSpec {
+        CodeFunctionSpec {
+            name: name.to_string(),
+            description: format!("{name} probe"),
+            input_schema: json!({ "type": "object", "properties": {} }),
+            output_schema: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    #[test]
+    fn code_suite_members_render_under_a_suite_object() {
+        let text = render_code_tool_description(&[
+            spec("deck.only"),
+            spec("deck.other"),
+            spec("alpha"),
+        ])
+        .expect("renders");
+        assert!(text.contains("readonly [\"alpha\"]:"), "{text}");
+        assert!(text.contains("readonly [\"deck\"]: {"), "{text}");
+        assert!(text.contains("readonly [\"only\"]:"), "{text}");
+        assert!(text.contains("readonly [\"other\"]:"), "{text}");
+        assert!(!text.contains("[\"deck.only\"]"), "{text}");
+    }
+
+    #[test]
+    fn a_tool_name_cannot_also_be_a_code_suite_namespace() {
+        let error = render_code_tool_description(&[spec("deck"), spec("deck.only")])
+            .expect_err("nested namespace collision");
+        assert!(error.contains("nests under 'deck'"), "{error}");
+    }
+
     #[test]
     fn rejects_tools_without_a_data_contract() {
-        let error = render_code_tool_description(&[Arc::new(NoDataTool)]).unwrap_err();
+        let error = FunctionSpec::from_tool(&NoDataTool).unwrap_err();
         assert_eq!(error, "tool 'no_data' has no data schema");
     }
 
@@ -704,8 +785,12 @@ mod tests {
             !tools.is_empty(),
             "fixture must keep non-LSP code-surface tools"
         );
-        let text = render_code_tool_description(&tools).expect("renders without LSP tools");
-        let projected = crate::tool::project::project_tools(tools);
+        let specs: Vec<CodeFunctionSpec> = tools
+            .iter()
+            .filter_map(|tool| FunctionSpec::from_tool(tool.as_ref()).ok()?.into_code())
+            .collect();
+        let text = render_code_tool_description(&specs).expect("renders without LSP tools");
+        let projected = project_tools(tools);
         for name in crate::tools::lsp::LSP_CODE_TOOL_NAMES {
             // Match bindings / types, not the English word "diagnostics" in PRELUDE.
             let binding = format!("[\"{name}\"]");

@@ -12,8 +12,8 @@ use std::sync::Arc;
 use crate::provider_catalog::ProviderCatalog;
 
 use super::schema::{
-    AgentProfile, CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition,
-    ToolOrigin, ToolReadiness, WebSearchSettings,
+    AgentProfile, CustomSuiteDefinition, CustomToolDefinition, GlobalSettings, LogSettings,
+    McpServerDefinition, ToolOrigin, ToolReadiness, WebSearchSettings,
 };
 
 /// Workspace runtime paths: session/plan/logs under `<workspace>/.litecode/`;
@@ -67,6 +67,8 @@ pub struct WorkspaceState {
     pub workspace_mcp_servers: HashMap<String, McpServerDefinition>,
     #[serde(default)]
     pub workspace_custom_tools: HashMap<String, CustomToolDefinition>,
+    #[serde(default)]
+    pub workspace_custom_suites: HashMap<String, CustomSuiteDefinition>,
 }
 
 impl WorkspaceState {
@@ -80,6 +82,7 @@ impl WorkspaceState {
         "workspace_tool_readiness",
         "workspace_mcp_servers",
         "workspace_custom_tools",
+        "workspace_custom_suites",
     ];
 
     /// Ephemeral / test constructor: path-derived id, no disk identity write.
@@ -95,6 +98,7 @@ impl WorkspaceState {
             workspace_tool_readiness: HashMap::new(),
             workspace_mcp_servers: HashMap::new(),
             workspace_custom_tools: HashMap::new(),
+            workspace_custom_suites: HashMap::new(),
         }
     }
 
@@ -110,6 +114,7 @@ impl WorkspaceState {
             workspace_tool_readiness: HashMap::new(),
             workspace_mcp_servers: HashMap::new(),
             workspace_custom_tools: HashMap::new(),
+            workspace_custom_suites: HashMap::new(),
         }
     }
 }
@@ -139,6 +144,7 @@ impl ResolvedConfig {
         "disabled_models",
         "agents",
         "custom_tools",
+        "custom_suites",
         "mcp_servers",
         "auth",
         "log",
@@ -151,6 +157,7 @@ impl ResolvedConfig {
         "workspace_tool_readiness",
         "workspace_mcp_servers",
         "workspace_custom_tools",
+        "workspace_custom_suites",
     ];
 
     pub fn new(
@@ -268,14 +275,52 @@ impl ResolvedConfig {
         &self.workspace.workspace_custom_tools
     }
 
-    /// Merged custom tools (workspace wins on name).
+    pub fn global_custom_suites(&self) -> &HashMap<String, CustomSuiteDefinition> {
+        &self.global.custom_suites
+    }
+
+    pub fn workspace_custom_suites(&self) -> &HashMap<String, CustomSuiteDefinition> {
+        &self.workspace.workspace_custom_suites
+    }
+
+    /// Merged suites (workspace wins on name).
+    pub fn custom_suites(&self) -> HashMap<String, CustomSuiteDefinition> {
+        let mut map = self.global.custom_suites.clone();
+        for (name, suite) in &self.workspace.workspace_custom_suites {
+            map.insert(name.clone(), suite.clone());
+        }
+        map
+    }
+
+    /// Merged custom tools with suite surface/rules folded in.
+    ///
+    /// A workspace suite shadows the whole global suite group: global members
+    /// of that suite are not part of this workspace. This keeps one suite to one
+    /// rules surface and one binding.
     pub fn custom_tools(&self) -> Vec<CustomToolDefinition> {
         let mut map: HashMap<String, CustomToolDefinition> = HashMap::new();
         for tool in &self.global.custom_tools {
-            map.insert(tool.name.clone(), tool.clone());
+            let shadowed = tool
+                .suite
+                .as_deref()
+                .is_some_and(|suite| self.workspace.workspace_custom_suites.contains_key(suite));
+            if !shadowed {
+                map.insert(tool.name.clone(), tool.clone());
+            }
         }
         for (name, tool) in &self.workspace.workspace_custom_tools {
             map.insert(name.clone(), tool.clone());
+        }
+        let suites = self.custom_suites();
+        for tool in map.values_mut() {
+            if let Some(suite) = tool
+                .suite
+                .as_deref()
+                .and_then(|name| suites.get(name))
+            {
+                tool.surface = Some(suite.surface);
+                tool.rules = suite.rules.clone();
+            }
         }
         let mut out: Vec<_> = map.into_values().collect();
         out.sort_by(|a, b| a.name.cmp(&b.name));

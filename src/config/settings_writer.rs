@@ -14,8 +14,9 @@ use super::global_db::{self, store, tools};
 use super::log_filter;
 use super::manager::ConfigManager;
 use super::schema::{
-    AgentProfile, AgentToolBinding, CustomToolDefinition, GlobalSettings, LogSettings,
-    McpServerDefinition, McpTransport, PROTECTED_AGENT_IDS, ToolPreset, WebSearchSettings,
+    AgentProfile, AgentToolBinding, CustomSuiteDefinition, CustomToolDefinition, GlobalSettings,
+    LogSettings, McpServerDefinition, McpTransport, PROTECTED_AGENT_IDS, ToolPreset,
+    WebSearchSettings,
 };
 use super::turn_guard::TurnGuard;
 use super::workspace;
@@ -625,21 +626,10 @@ impl SettingsWriter {
         })
     }
 
-    pub fn write_agent(
-        &self,
-        id: &str,
-        mut profile: AgentProfile,
-        workspace: &super::resolved::WorkspaceState,
-    ) -> Result<CommitAck> {
+    pub fn write_agent(&self, id: &str, mut profile: AgentProfile) -> Result<CommitAck> {
         validate_agent_id(id)?;
         let loaded = self.load()?;
-        let safe = merged_custom_rules(&loaded.custom_tools, &workspace.workspace_custom_tools);
-        expand_binding_presets(&mut profile.tools, &safe);
-        let mut defs = loaded.custom_tools.clone();
-        for (name, definition) in &workspace.workspace_custom_tools {
-            defs.retain(|tool| &tool.name != name);
-            defs.push(definition.clone());
-        }
+        let defs = loaded.custom_tools.clone();
         for note in super::suite_bindings::collapse_custom_suite_bindings(&mut profile.tools, &defs)
         {
             tracing::warn!("{note}");
@@ -697,7 +687,12 @@ impl SettingsWriter {
                 "agent not found: {agent_id}"
             )));
         }
-        let safe = merged_custom_rules(&loaded.custom_tools, &workspace.workspace_custom_tools);
+        let safe = merged_custom_rules(
+            &loaded.custom_tools,
+            &workspace.workspace_custom_tools,
+            &loaded.custom_suites,
+            &workspace.workspace_custom_suites,
+        );
         let mut defs = loaded.custom_tools.clone();
         for (name, definition) in &workspace.workspace_custom_tools {
             defs.retain(|tool| &tool.name != name);
@@ -735,7 +730,8 @@ impl SettingsWriter {
     }
 
     pub fn write_custom_tool(&self, id: &str, mut def: CustomToolDefinition) -> Result<CommitAck> {
-        validate_custom_definition(id, &mut def)?;
+        let suites = self.load()?.custom_suites;
+        validate_custom_definition_with_suites(id, &mut def, &suites)?;
 
         self.commit_partial(&[DocId::CustomToolsGlobal], |settings| {
             if let Some(existing) = settings.custom_tools.iter_mut().find(|t| t.name == id) {
@@ -796,6 +792,130 @@ impl SettingsWriter {
                 }
             }
             Ok(false)
+        })
+    }
+
+    pub fn list_custom_suites(&self) -> Result<Vec<(String, CustomSuiteDefinition)>> {
+        let settings = self.load()?;
+        let mut suites: Vec<_> = settings.custom_suites.into_iter().collect();
+        suites.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(suites)
+    }
+
+    pub fn get_custom_suite(&self, id: &str) -> Result<Option<CustomSuiteDefinition>> {
+        Ok(self.load()?.custom_suites.get(id).cloned())
+    }
+
+    pub fn write_custom_suite(
+        &self,
+        id: &str,
+        mut def: CustomSuiteDefinition,
+    ) -> Result<CommitAck> {
+        let settings = self.load()?;
+        validate_custom_suite(id, &mut def)?;
+        if settings.custom_tools.iter().any(|tool| tool.name == id) {
+            return Err(LitecodeError::Config(format!(
+                "custom suite id '{id}' collides with a custom tool name"
+            )));
+        }
+        self.commit_partial(&[DocId::CustomToolsGlobal], move |settings| {
+            settings.custom_suites.insert(id.to_string(), def.clone());
+            Ok(false)
+        })
+    }
+
+    pub fn delete_custom_suite(
+        &self,
+        id: &str,
+        _workspace: &super::resolved::WorkspaceState,
+    ) -> Result<CommitAck> {
+        let members = self
+            .load()?
+            .custom_tools
+            .iter()
+            .filter(|tool| tool.suite.as_deref() == Some(id))
+            .count();
+        if members > 0 {
+            return Err(LitecodeError::Config(format!(
+                "custom suite '{id}' still has {members} member(s); move or delete them first"
+            )));
+        }
+        self.commit_partial(&[DocId::CustomToolsGlobal, DocId::Agents], |settings| {
+            if settings.custom_suites.remove(id).is_none() {
+                return Err(LitecodeError::Config(format!(
+                    "custom suite not found: {id}"
+                )));
+            }
+            for profile in settings.agents.values_mut() {
+                profile
+                    .tools
+                    .remove(&super::suite_bindings::suite_id(id));
+            }
+            Ok(false)
+        })
+    }
+
+    pub fn list_workspace_custom_suites(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<Vec<(String, CustomSuiteDefinition)>> {
+        let mut suites: Vec<_> = workspace::read_workspace_custom_tools(workspace_root)?
+            .suites
+            .into_iter()
+            .collect();
+        suites.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(suites)
+    }
+
+    pub fn get_workspace_custom_suite(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<Option<CustomSuiteDefinition>> {
+        Ok(workspace::read_workspace_custom_tools(workspace_root)?
+            .suites
+            .get(id)
+            .cloned())
+    }
+
+    pub fn write_workspace_custom_suite(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+        mut def: CustomSuiteDefinition,
+    ) -> Result<CommitAck> {
+        let file = workspace::read_workspace_custom_tools(workspace_root)?;
+        validate_custom_suite(id, &mut def)?;
+        if file.tools.values().any(|tool| tool.name == id) {
+            return Err(LitecodeError::Config(format!(
+                "custom suite id '{id}' collides with a custom tool name"
+            )));
+        }
+        let root = workspace_root.to_path_buf();
+        self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
+            workspace::upsert_workspace_custom_suite(&root, id, def)
+        })
+    }
+
+    pub fn delete_workspace_custom_suite(
+        &self,
+        workspace_root: &Path,
+        id: &str,
+    ) -> Result<CommitAck> {
+        let file = workspace::read_workspace_custom_tools(workspace_root)?;
+        let members = file
+            .tools
+            .values()
+            .filter(|tool| tool.suite.as_deref() == Some(id))
+            .count();
+        if members > 0 {
+            return Err(LitecodeError::Config(format!(
+                "custom suite '{id}' still has {members} member(s); move or delete them first"
+            )));
+        }
+        let root = workspace_root.to_path_buf();
+        self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
+            workspace::delete_workspace_custom_suite(&root, id).map(|_| ())
         })
     }
 
@@ -873,7 +993,8 @@ impl SettingsWriter {
         id: &str,
         mut def: CustomToolDefinition,
     ) -> Result<CommitAck> {
-        validate_custom_definition(id, &mut def)?;
+        let suites = workspace::read_workspace_custom_tools(workspace_root)?.suites;
+        validate_custom_definition_with_suites(id, &mut def, &suites)?;
         let root = workspace_root.to_path_buf();
         self.commit_workspace_file(DocId::CustomToolsWorkspace, move || {
             workspace::upsert_workspace_custom_tool(&root, def)
@@ -1103,11 +1224,15 @@ fn validate_agent_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Non-empty rule lists from merged custom tools. Workspace replaces the global
-/// entry; a workspace tool with no rules removes the ALL/SAFE switch.
+/// Non-empty rule lists keyed by the binding that owns them. Workspace custom
+/// tools and suites replace global entries. Suite members route to one
+/// `suite:<name>` binding, so only the suite's own rules make that binding
+/// dialable.
 fn merged_custom_rules(
     global: &[CustomToolDefinition],
     workspace: &HashMap<String, CustomToolDefinition>,
+    global_suites: &HashMap<String, CustomSuiteDefinition>,
+    workspace_suites: &HashMap<String, CustomSuiteDefinition>,
 ) -> HashMap<String, Vec<crate::permission::PolicyRule>> {
     let mut effective: HashMap<String, (Option<String>, Vec<crate::permission::PolicyRule>)> =
         HashMap::new();
@@ -1121,61 +1246,34 @@ fn merged_custom_rules(
         effective.insert(name.clone(), (tool.suite.clone(), tool.rules.clone()));
     }
 
-    let mut rules = HashMap::new();
-    let mut suites: std::collections::BTreeMap<String, Vec<crate::permission::PolicyRule>> =
-        std::collections::BTreeMap::new();
-    for (name, (suite, declared)) in effective {
-        if !declared.is_empty() {
-            rules.insert(name, declared.clone());
-        }
-        if let Some(suite) = suite.filter(|suite| !suite.trim().is_empty()) {
-            suites.entry(suite).or_default().extend(declared);
-        }
+    let mut suites: HashMap<String, Vec<crate::permission::PolicyRule>> = HashMap::new();
+    for (name, suite) in global_suites {
+        suites.insert(name.clone(), suite.rules.clone());
     }
-    for (suite, declared) in suites {
-        if !declared.is_empty() {
-            rules.insert(
-                crate::config::suite_bindings::suite_id(&suite),
-                declared,
-            );
+    for (name, suite) in workspace_suites {
+        suites.insert(name.clone(), suite.rules.clone());
+    }
+
+    let mut rules = HashMap::new();
+    for (name, (suite, declared)) in effective {
+        if let Some(suite) = suite.filter(|suite| !suite.trim().is_empty()) {
+            if let Some(suite_rules) = suites.get(&suite)
+                && !suite_rules.is_empty()
+            {
+                rules.insert(
+                    crate::config::suite_bindings::suite_id(&suite),
+                    suite_rules.clone(),
+                );
+            }
+        } else if !declared.is_empty() {
+            rules.insert(name, declared);
         }
     }
     rules
 }
 
-/// Expand `last_applied_preset` into policy/path_mode for tools that have a dial.
-/// Fixed tools (bind only, including MCP allowlists and undeclared custom tools)
-/// are stored as allow-all.
-fn expand_binding_presets(
-    tools: &mut HashMap<String, AgentToolBinding>,
-    custom_rules: &HashMap<String, Vec<crate::permission::PolicyRule>>,
-) {
-    for (tool_id, binding) in tools.iter_mut() {
-        let mcp = tools::is_mcp_catalog_id(tool_id);
-        if !mcp {
-            binding.allowed_tools = None;
-        }
-        if crate::permission::has_permission_preset(tool_id) {
-            if let Some(preset) = binding.last_applied_preset {
-                apply_preset_to_binding(tool_id, binding, preset);
-            }
-            continue;
-        }
-        if let Some(declared) = custom_rules.get(tool_id) {
-            if let Some(preset) = binding.last_applied_preset {
-                apply_custom_declared_preset(binding, preset, declared);
-            } else {
-                // No dial was declared for this row. Evaluation allows the call;
-                // store that, instead of whatever policy was last written.
-                clear_fixed_preset(binding, mcp);
-            }
-            continue;
-        }
-        clear_fixed_preset(binding, mcp);
-    }
-}
-
-/// Bulk dial: force `preset` onto builtin preset tools and custom tools that have rules.
+/// Bulk dial: write only the intent. Fixed rows keep `preset = None`; custom
+/// rows get a dial only when their current definition declares rules.
 fn apply_forced_preset(
     tool_id: &str,
     binding: &mut AgentToolBinding,
@@ -1186,49 +1284,11 @@ fn apply_forced_preset(
     if !mcp {
         binding.allowed_tools = None;
     }
-    if crate::permission::has_permission_preset(tool_id) {
-        apply_preset_to_binding(tool_id, binding, preset);
-        return;
-    }
-    if let Some(declared) = custom_rules.get(tool_id) {
-        apply_custom_declared_preset(binding, preset, declared);
-        return;
-    }
-    clear_fixed_preset(binding, mcp);
-}
-
-fn clear_fixed_preset(binding: &mut AgentToolBinding, keep_allowed_tools: bool) {
-    binding.last_applied_preset = None;
-    binding.policy = crate::permission::ToolPolicy::allow_all();
-    binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
-    if !keep_allowed_tools {
-        binding.allowed_tools = None;
-    }
-}
-
-fn apply_preset_to_binding(tool_id: &str, binding: &mut AgentToolBinding, preset: ToolPreset) {
-    let (policy, path_mode) = crate::permission::presets::binding_for_tool(tool_id, preset);
-    binding.policy = policy;
-    binding.path_mode = path_mode;
-    binding.last_applied_preset = Some(preset);
-}
-
-fn apply_custom_declared_preset(
-    binding: &mut AgentToolBinding,
-    preset: ToolPreset,
-    rules: &[crate::permission::PolicyRule],
-) {
-    match preset {
-        ToolPreset::All => {
-            binding.policy = crate::permission::ToolPolicy::allow_all();
-            binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
-        }
-        ToolPreset::Safe => {
-            binding.policy = crate::permission::ToolPolicy::from_rules(rules.to_vec());
-            binding.path_mode = crate::permission::BindingPathMode::Unrestricted;
-        }
-    }
-    binding.last_applied_preset = Some(preset);
+    let dialable = crate::permission::has_permission_preset(tool_id)
+        || custom_rules
+            .get(tool_id)
+            .is_some_and(|rules| !rules.is_empty());
+    binding.preset = dialable.then_some(preset);
 }
 
 pub(crate) fn validate_mcp_definition(id: &str, def: &mut McpServerDefinition) -> Result<()> {
@@ -1302,6 +1362,37 @@ fn restore_workspace_file(path: &Path, previous: Option<&[u8]>) -> Result<()> {
 /// Normalizes the body in place (empty name → id, empty schema type → object,
 /// `timeout: 0` → 120) and rejects ids the runtime could not bind.
 pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinition) -> Result<()> {
+    validate_custom_definition_with_suites(id, def, &HashMap::new())
+}
+
+pub(crate) fn normalize_custom_definition(id: &str, def: &mut CustomToolDefinition) {
+    if def.name.is_empty() {
+        def.name = id.to_string();
+    }
+    if def.schema.schema_type.trim().is_empty() {
+        def.schema.schema_type = "object".into();
+    }
+    if def.timeout == 0 {
+        def.timeout = 120;
+    }
+    for rule in &mut def.rules {
+        rule.id = rule.id.trim().to_string();
+    }
+}
+
+pub(crate) fn validate_custom_definition_with_suites(
+    id: &str,
+    def: &mut CustomToolDefinition,
+    suites: &HashMap<String, CustomSuiteDefinition>,
+) -> Result<()> {
+    normalize_custom_definition(id, def);
+    if let Some(diagnostic) = custom_definition_diagnostic(id, def, suites, "settings", None) {
+        return Err(LitecodeError::Config(diagnostic.message));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_custom_suite(id: &str, def: &mut CustomSuiteDefinition) -> Result<()> {
     validate_tool_id(id)?;
     if let Some(reason) = tools::non_transport_name_rejection(id)
         .or_else(|| tools::reserved_command_name_rejection(id))
@@ -1313,58 +1404,267 @@ pub(crate) fn validate_custom_definition(id: &str, def: &mut CustomToolDefinitio
         || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
     {
         return Err(LitecodeError::Config(format!(
-            "custom tool id '{id}' conflicts with a builtin tool"
+            "custom suite id '{id}' conflicts with a builtin tool"
         )));
     }
-    if def.name != id {
-        if def.name.is_empty() {
-            def.name = id.to_string();
-        } else {
-            return Err(LitecodeError::Config(format!(
-                "custom tool body name '{}' must match path id '{id}'",
-                def.name
-            )));
+    if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
+        return Err(LitecodeError::Config(format!(
+            "custom suite '{id}' has invalid rules: {error}"
+        )));
+    }
+    if def.label.trim().is_empty() {
+        def.label = id.to_string();
+    }
+    Ok(())
+}
+
+/// One first diagnostic for a custom definition. Validation, settings projection
+/// and refresh all consume this so the field and fix stay identical.
+pub(crate) fn custom_definition_diagnostic(
+    id: &str,
+    def: &CustomToolDefinition,
+    suites: &HashMap<String, CustomSuiteDefinition>,
+    source: &str,
+    file: Option<String>,
+) -> Option<crate::config::schema::CustomToolDiagnostic> {
+    use crate::config::schema::{CallSurface, CustomToolDiagnostic};
+
+    let tool = if def.name.trim().is_empty() {
+        id.to_string()
+    } else {
+        def.name.clone()
+    };
+    let suite = def
+        .suite
+        .as_deref()
+        .map(str::trim)
+        .filter(|suite| !suite.is_empty())
+        .map(str::to_string);
+    let diag = |field: &str,
+                actual: Option<String>,
+                expected: &str,
+                fix: &str| {
+        let mut message = format!(
+            "{source}: custom tool `{tool}` field `{field}`: expected {expected}"
+        );
+        if let Some(actual) = actual.as_deref() {
+            message.push_str(&format!("; actual `{actual}`"));
         }
-    }
-    if let Some(reason) = tools::non_transport_name_rejection(&def.name)
-        .or_else(|| tools::reserved_command_name_rejection(&def.name))
-    {
-        return Err(LitecodeError::Config(reason.to_string()));
-    }
-    if def.command.trim().is_empty() {
-        return Err(LitecodeError::Config(
-            "custom tool command must not be empty".into(),
+        message.push_str(&format!("; fix: {fix}"));
+        CustomToolDiagnostic {
+            source: source.to_string(),
+            file: file.clone(),
+            tool: Some(tool.clone()),
+            suite: suite.clone(),
+            field: field.to_string(),
+            actual,
+            expected: expected.to_string(),
+            fix: fix.to_string(),
+            message,
+        }
+    };
+
+    if validate_tool_id(id).is_err() {
+        return Some(diag(
+            "name",
+            Some(id.to_string()),
+            "[a-z][a-z0-9_]*",
+            "rename the tool id; this is the binding key",
         ));
     }
-    if def.schema.schema_type.trim().is_empty() {
-        def.schema.schema_type = "object".into();
+    if let Some(reason) = tools::non_transport_name_rejection(id)
+        .or_else(|| tools::reserved_command_name_rejection(id))
+    {
+        return Some(diag(
+            "name",
+            Some(id.to_string()),
+            "a non-reserved tool name",
+            &reason,
+        ));
     }
-    if def.timeout == 0 {
-        def.timeout = 120;
+    if let Some(prefix) = ["mcp_", "lsp_", "subagent_"]
+        .into_iter()
+        .find(|prefix| id.starts_with(prefix))
+    {
+        return Some(diag(
+            "name",
+            Some(id.to_string()),
+            "a name outside the mcp_ / lsp_ / subagent_ namespaces",
+            &format!("rename the tool without the '{prefix}' prefix"),
+        ));
     }
-    for rule in &mut def.rules {
-        rule.id = rule.id.trim().to_string();
+    if tools::is_core_tool(id)
+        || tools::is_optional_builtin(id)
+        || crate::tools::lsp::LSP_CODE_TOOL_NAMES.contains(&id)
+    {
+        return Some(diag(
+            "name",
+            Some(id.to_string()),
+            "a name that is not a builtin tool",
+            "choose a different custom tool id",
+        ));
     }
-    if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
-        return Err(LitecodeError::Config(error));
+    if def.name != id {
+        return Some(diag(
+            "name",
+            Some(def.name.clone()),
+            &format!("`{id}` (the map/path key)"),
+            "set name to the same value as the key",
+        ));
     }
+    if suites.contains_key(id) {
+        return Some(diag(
+            "name",
+            Some(id.to_string()),
+            "a name not used by a custom suite",
+            "rename the tool; suite names and tool names share one namespace",
+        ));
+    }
+    if def.command.trim().is_empty() {
+        return Some(diag(
+            "command",
+            Some(def.command.clone()),
+            "a non-empty executable command",
+            "set command to the program to run",
+        ));
+    }
+    if def.schema.schema_type != "object" {
+        return Some(diag(
+            "schema.type",
+            Some(def.schema.schema_type.clone()),
+            "object",
+            "make the input schema an object schema",
+        ));
+    }
+
+    let surface = match suite.as_deref() {
+        Some(suite_name) => {
+            if def.surface.is_some() {
+                return Some(diag(
+                    "surface",
+                    serde_json::to_string(&def.surface).ok(),
+                    "omitted on a suite member",
+                    "remove surface; the suite owns it",
+                ));
+            }
+            if !def.rules.is_empty() {
+                return Some(diag(
+                    "rules",
+                    Some(format!("{} rule(s)", def.rules.len())),
+                    "empty on a suite member",
+                    &format!("move rules to suites.{suite_name}.rules"),
+                ));
+            }
+            if validate_tool_id(suite_name).is_err() {
+                return Some(diag(
+                    "suite",
+                    Some(suite_name.to_string()),
+                    "[a-z][a-z0-9_]*",
+                    "rename the suite",
+                ));
+            }
+            let Some(suite_def) = suites.get(suite_name) else {
+                return Some(diag(
+                    "suite",
+                    Some(suite_name.to_string()),
+                    "an existing suites entry",
+                    &format!(
+                        "add suites.{suite_name} with surface, label and rules, or remove suite from the tool"
+                    ),
+                ));
+            };
+            if let Some(error) = crate::permission::policy::custom_rule_ids_error(&suite_def.rules) {
+                return Some(diag(
+                    &format!("suites.{suite_name}.rules"),
+                    Some(error),
+                    "rules with unique non-empty ids",
+                    "fix the suite rule ids",
+                ));
+            }
+            suite_def.surface
+        }
+        None => {
+            let Some(surface) = def.surface else {
+                return Some(diag(
+                    "surface",
+                    None,
+                    "`direct` or `code` (standalone), or a suite reference",
+                    "add surface: \"direct\" for model-facing tools, or suite: \"<name>\" for members",
+                ));
+            };
+            if let Some(error) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
+                return Some(diag(
+                    "rules",
+                    Some(error),
+                    "rules with unique non-empty ids",
+                    "fix the rule ids",
+                ));
+            }
+            surface
+        }
+    };
+
+    match surface {
+        CallSurface::Direct => {
+            if def.output_schema.is_some() {
+                return Some(diag(
+                    "output_schema",
+                    Some("present".into()),
+                    "omitted on a direct tool",
+                    "remove output_schema; direct tools return text or an envelope",
+                ));
+            }
+        }
+        CallSurface::Code => {
+            let Some(schema) = def.output_schema.as_ref() else {
+                return Some(diag(
+                    "output_schema",
+                    None,
+                    "an object schema",
+                    "add output_schema: { \"type\": \"object\", \"properties\": {}, \"required\": [] }",
+                ));
+            };
+            if schema.get("type").and_then(serde_json::Value::as_str) != Some("object") {
+                return Some(diag(
+                    "output_schema",
+                    Some("not an object schema".into()),
+                    "type: object",
+                    "make output_schema an object schema",
+                ));
+            }
+        }
+    }
+
     if def
         .schema
         .properties
         .as_object()
         .is_some_and(|properties| properties.contains_key("run_in_background"))
     {
-        return Err(LitecodeError::Config(
-            "schema property `run_in_background` is reserved by Litecode; remove it from the custom tool schema".into(),
+        return Some(diag(
+            "schema.properties.run_in_background",
+            Some("present".into()),
+            "absent",
+            "remove run_in_background; Litecode adds it for direct tools",
         ));
     }
-    if let Err(error) = crate::tools::custom::validate_custom_code_contract(def) {
-        return Err(LitecodeError::Config(format!(
-            "custom tool '{}' is not code-mode ready: {error}",
-            def.name
-        )));
+
+    let mut effective = def.clone();
+    effective.surface = Some(surface);
+    if let Some(suite_name) = suite.as_deref() {
+        if let Some(suite_def) = suites.get(suite_name) {
+            effective.rules = suite_def.rules.clone();
+        }
     }
-    Ok(())
+    if let Err(error) = crate::tools::custom::validate_custom_code_contract(&effective, surface) {
+        return Some(diag(
+            "schema",
+            Some(error.clone()),
+            "a code-admissible object schema",
+            "use a simple object schema with no unresolved $ref, or declare surface \"direct\"",
+        ));
+    }
+    None
 }
 
 pub(crate) fn validate_tool_id(id: &str) -> Result<()> {
@@ -1461,7 +1761,10 @@ max_output = 1024
     #[test]
     fn code_surface_custom_tool_rejects_unrenderable_schema_with_field_reason() {
         let mut def = custom_def("code_probe", Vec::new());
-        def.surface = crate::config::schema::CallSurface::Code;
+        def.surface = Some(crate::config::schema::CallSurface::Code);
+        def.output_schema = Some(serde_json::json!({
+            "type": "object", "properties": {}, "required": []
+        }));
         validate_custom_definition("code_probe", &mut def).expect("simple schema is admissible");
 
         def.schema.properties = serde_json::json!({
@@ -1478,7 +1781,7 @@ max_output = 1024
         use crate::config::schema::ToolSchema;
         CustomToolDefinition {
             name: name.into(),
-            data_schema: None,
+            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1489,19 +1792,180 @@ max_output = 1024
             args: Vec::new(),
             timeout: 120,
             rules,
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
-            suite_label: None,
         }
     }
 
     fn dial_binding(preset: Option<super::ToolPreset>) -> AgentToolBinding {
         AgentToolBinding {
             enabled: true,
-            policy: crate::permission::ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::Unrestricted,
-            last_applied_preset: preset,
+            preset: preset,
             allowed_tools: None,
+        }
+    }
+
+    fn diagnostic(
+        surface: Option<crate::config::schema::CallSurface>,
+        suite: Option<&str>,
+        rules: Vec<crate::permission::PolicyRule>,
+        output_schema: Option<serde_json::Value>,
+    ) -> crate::config::schema::CustomToolDiagnostic {
+        let def = CustomToolDefinition {
+            name: "probe".into(),
+            description: String::new(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules,
+            surface,
+            suite: suite.map(str::to_string),
+            output_schema,
+        };
+        custom_definition_diagnostic("probe", &def, &HashMap::new(), "test", None)
+            .expect("probe must be invalid")
+    }
+
+    #[test]
+    fn custom_definition_diagnostics_name_the_field_and_fix() {
+        let missing = diagnostic(None, None, Vec::new(), None);
+        assert_eq!(missing.field, "surface");
+        assert!(missing.fix.contains("direct"), "{}", missing.fix);
+
+        let direct_output = diagnostic(
+            Some(crate::config::schema::CallSurface::Direct),
+            None,
+            Vec::new(),
+            Some(serde_json::json!({"type": "object"})),
+        );
+        assert_eq!(direct_output.field, "output_schema");
+
+        let code_missing = diagnostic(
+            Some(crate::config::schema::CallSurface::Code),
+            None,
+            Vec::new(),
+            None,
+        );
+        assert_eq!(code_missing.field, "output_schema");
+        assert!(code_missing.fix.contains("output_schema"));
+
+        let member_surface = diagnostic(
+            Some(crate::config::schema::CallSurface::Code),
+            Some("deck"),
+            Vec::new(),
+            Some(serde_json::json!({"type": "object"})),
+        );
+        assert_eq!(member_surface.field, "surface");
+
+        let member_rules = diagnostic(
+            None,
+            Some("deck"),
+            declared_rules(),
+            Some(serde_json::json!({"type": "object"})),
+        );
+        assert_eq!(member_rules.field, "rules");
+    }
+
+    #[test]
+    fn one_bad_definition_keeps_the_same_field_and_fix_across_sources() {
+        let mut def = custom_def("probe", Vec::new());
+        def.surface = None;
+        let suites = HashMap::new();
+        let settings = crate::config::settings_writer::custom_definition_diagnostic(
+            "probe", &def, &suites, "settings", None,
+        )
+        .expect("missing surface");
+        let refresh = crate::config::settings_writer::custom_definition_diagnostic(
+            "probe",
+            &def,
+            &suites,
+            "refresh",
+            Some(".litecode/custom_tools.json".into()),
+        )
+        .expect("missing surface");
+        let validate = crate::config::settings_writer::custom_definition_diagnostic(
+            "probe",
+            &def,
+            &suites,
+            "validate_custom",
+            None,
+        )
+        .expect("missing surface");
+        for other in [&refresh, &validate] {
+            assert_eq!(settings.field, other.field);
+            assert_eq!(settings.expected, other.expected);
+            assert_eq!(settings.fix, other.fix);
+            assert_eq!(settings.actual, other.actual);
+        }
+    }
+
+    #[test]
+    fn suite_member_inherits_surface_and_output_contract() {
+        let mut suites = HashMap::new();
+        suites.insert(
+            "deck".into(),
+            CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Code,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        );
+        let mut def = CustomToolDefinition {
+            name: "probe".into(),
+            description: String::new(),
+            schema: crate::config::schema::ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            surface: None,
+            suite: Some("deck".into()),
+            output_schema: Some(serde_json::json!({
+                "type": "object", "properties": {}, "required": []
+            })),
+        };
+        validate_custom_definition_with_suites("probe", &mut def, &suites)
+            .expect("suite member inherits a code surface");
+
+        def.output_schema = None;
+        let error = validate_custom_definition_with_suites("probe", &mut def, &suites)
+            .unwrap_err();
+        assert!(error.to_string().contains("output_schema"), "{error}");
+    }
+
+    #[test]
+    fn custom_tool_name_cannot_equal_a_suite_name() {
+        let mut suites = HashMap::new();
+        suites.insert(
+            "deck".into(),
+            CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Direct,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        );
+        let mut def = custom_def("deck", Vec::new());
+        let error = validate_custom_definition_with_suites("deck", &mut def, &suites)
+            .expect_err("suite and tool names share one namespace");
+        assert!(error.to_string().contains("custom suite"), "{error}");
+    }
+
+    #[test]
+    fn custom_tool_cannot_claim_a_reserved_namespace() {
+        for name in ["mcp_probe", "lsp_probe", "subagent_probe"] {
+            let mut def = custom_def(name, Vec::new());
+            let error = validate_custom_definition(name, &mut def)
+                .expect_err("reserved namespace must be rejected");
+            assert!(error.to_string().contains("namespaces"), "{error}");
         }
     }
 
@@ -1518,28 +1982,80 @@ max_output = 1024
         let ws = TempDir::new().unwrap();
         let root = ws.path().to_path_buf();
         let mut def = custom_def("code_probe", Vec::new());
-        def.surface = crate::config::schema::CallSurface::Code;
+        def.surface = Some(crate::config::schema::CallSurface::Code);
+        def.output_schema = Some(serde_json::json!({
+            "type": "object", "properties": {}, "required": []
+        }));
         validate_custom_definition("code_probe", &mut def).expect("valid code contract");
         workspace::upsert_workspace_custom_tool(&root, def).unwrap();
 
         let loaded = workspace::read_workspace_custom_tools(&root).unwrap();
         assert_eq!(
             loaded.tools["code_probe"].surface,
-            crate::config::schema::CallSurface::Code
+            Some(crate::config::schema::CallSurface::Code)
         );
     }
 
     #[test]
-    fn merged_rules_include_the_suite_union() {
-        let mut declared = custom_def("suite_a", declared_rules());
-        declared.suite = Some("deck".into());
-        let mut plain = custom_def("suite_b", Vec::new());
-        plain.suite = Some("deck".into());
-        let safe = super::merged_custom_rules(&[declared, plain], &std::collections::HashMap::new());
+    fn merged_rules_come_from_the_suite_definition() {
+        let mut members = custom_def("suite_a", Vec::new());
+        members.suite = Some("deck".into());
+        let mut suites = HashMap::new();
+        suites.insert(
+            "deck".into(),
+            CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Direct,
+                label: "Deck".into(),
+                rules: declared_rules(),
+            },
+        );
+        let safe = super::merged_custom_rules(
+            &[members],
+            &std::collections::HashMap::new(),
+            &suites,
+            &std::collections::HashMap::new(),
+        );
         let suite = safe
             .get(&super::super::suite_bindings::suite_id("deck"))
             .expect("suite rules");
         assert_eq!(suite.len(), 1);
+
+        let mut binding = AgentToolBinding {
+            enabled: true,
+            preset: None,
+            allowed_tools: None,
+        };
+        super::apply_forced_preset("suite:deck", &mut binding, ToolPreset::Safe, &safe);
+        assert_eq!(binding.preset, Some(ToolPreset::Safe));
+    }
+
+    #[test]
+    fn workspace_suite_rules_replace_global_suite_rules() {
+        let global = [(
+            "deck".to_string(),
+            CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Direct,
+                label: "Deck".into(),
+                rules: declared_rules(),
+            },
+        )];
+        let workspace = [(
+            "deck".to_string(),
+            CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Direct,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        )];
+        let mut members = custom_def("suite_a", Vec::new());
+        members.suite = Some("deck".into());
+        let safe = super::merged_custom_rules(
+            &[members],
+            &std::collections::HashMap::new(),
+            &global.into_iter().collect(),
+            &workspace.into_iter().collect(),
+        );
+        assert!(safe.is_empty(), "workspace suite rules replace global rules");
     }
 
     #[test]
@@ -1548,7 +2064,12 @@ max_output = 1024
         let global = vec![custom_def("demo", declared)];
         let mut workspace = std::collections::HashMap::new();
         workspace.insert("demo".into(), custom_def("demo", Vec::new()));
-        let safe = super::merged_custom_rules(&global, &workspace);
+        let safe = super::merged_custom_rules(
+            &global,
+            &workspace,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        );
         assert!(safe.is_empty());
     }
 
@@ -1644,21 +2165,56 @@ max_output = 1024
     }
 
     #[test]
+    fn write_agent_roundtrips_intent_without_a_workspace() {
+        let (_dir, db, writer) = writer_with_catalog();
+        let mut profile = AgentProfile {
+            role: crate::config::schema::AgentRole::Subagent,
+            ..Default::default()
+        };
+        profile.tools.insert(
+            "read".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: Some(super::ToolPreset::Safe),
+                allowed_tools: None,
+            },
+        );
+        profile.tools.insert(
+            "mcp_probe".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: Some(super::ToolPreset::All),
+                allowed_tools: Some(vec!["search".into()]),
+            },
+        );
+        writer.write_agent("ab_agent", profile).unwrap();
+
+        // A second writer has no workspace input; the stored intent is complete.
+        let reopened = SettingsWriter::with_path(&db, Arc::new(TurnGuard::new()));
+        let loaded = reopened.load_settings().unwrap();
+        let saved = &loaded.agents["ab_agent"].tools;
+        assert_eq!(saved["read"].preset, Some(super::ToolPreset::Safe));
+        assert_eq!(saved["mcp_probe"].preset, Some(super::ToolPreset::All));
+        assert_eq!(
+            saved["mcp_probe"].allowed_tools.as_deref(),
+            Some(&["search".to_string()][..])
+        );
+    }
+
+    #[test]
     fn write_agent_new_primary_missing_code_search_binds_true() {
         let (_dir, _db, writer) = writer_with_catalog();
-        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-a");
         let profile = AgentProfile {
             role: crate::config::schema::AgentRole::Primary,
             ..Default::default()
         };
-        writer.write_agent("wp149_new", profile, &ws).unwrap();
+        writer.write_agent("wp149_new", profile).unwrap();
         assert_eq!(cs_binding(&writer, "wp149_new"), Some(true));
     }
 
     #[test]
     fn write_agent_new_primary_explicit_false_stays_false() {
         let (_dir, _db, writer) = writer_with_catalog();
-        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-b");
         let mut off = crate::config::global_db::default_optional_binding("code_search");
         off.enabled = false;
         let mut profile = AgentProfile {
@@ -1666,25 +2222,24 @@ max_output = 1024
             ..Default::default()
         };
         profile.tools.insert("code_search".into(), off);
-        writer.write_agent("wp149_off", profile, &ws).unwrap();
+        writer.write_agent("wp149_off", profile).unwrap();
         assert_eq!(cs_binding(&writer, "wp149_off"), Some(false));
     }
 
     #[test]
     fn write_agent_existing_agent_switched_to_primary_not_auto_bound() {
         let (_dir, _db, writer) = writer_with_catalog();
-        let ws = super::super::resolved::WorkspaceState::new("/tmp/wp149-c");
         let sub = AgentProfile {
             role: crate::config::schema::AgentRole::Subagent,
             ..Default::default()
         };
-        writer.write_agent("wp149_sw", sub, &ws).unwrap();
+        writer.write_agent("wp149_sw", sub).unwrap();
         assert_eq!(cs_binding(&writer, "wp149_sw"), None);
         let prim = AgentProfile {
             role: crate::config::schema::AgentRole::Primary,
             ..Default::default()
         };
-        writer.write_agent("wp149_sw", prim, &ws).unwrap();
+        writer.write_agent("wp149_sw", prim).unwrap();
         assert_eq!(cs_binding(&writer, "wp149_sw"), None);
     }
 }

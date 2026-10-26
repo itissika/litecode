@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::global_db::tools::is_workspace_optional;
 use super::resolved::{WorkspacePaths, WorkspaceState};
-use super::schema::{CustomToolDefinition, McpServerDefinition, ToolReadiness};
+use super::schema::{CustomSuiteDefinition, CustomToolDefinition, McpServerDefinition, ToolReadiness};
 
 const CLAUDE_MD_SHELL: &str =
     "# Litecode workspace contract\n\n<!-- Add project instructions here -->\n";
@@ -83,6 +83,7 @@ pub fn write_workspace_engines(workspace_root: &Path, file: &WorkspaceEnginesFil
 }
 
 const WORKSPACE_DEFS_VERSION: u32 = 1;
+const WORKSPACE_CUSTOM_TOOLS_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceMcpFile {
@@ -105,13 +106,16 @@ pub struct WorkspaceCustomToolsFile {
     pub version: u32,
     #[serde(default)]
     pub tools: std::collections::HashMap<String, CustomToolDefinition>,
+    #[serde(default)]
+    pub suites: std::collections::HashMap<String, CustomSuiteDefinition>,
 }
 
 impl Default for WorkspaceCustomToolsFile {
     fn default() -> Self {
         Self {
-            version: WORKSPACE_DEFS_VERSION,
+            version: WORKSPACE_CUSTOM_TOOLS_VERSION,
             tools: std::collections::HashMap::new(),
+            suites: std::collections::HashMap::new(),
         }
     }
 }
@@ -176,9 +180,15 @@ pub fn write_workspace_mcp(workspace_root: &Path, file: &WorkspaceMcpFile) -> Re
 }
 
 pub fn read_workspace_custom_tools(workspace_root: &Path) -> Result<WorkspaceCustomToolsFile> {
-    let mut file: WorkspaceCustomToolsFile =
+    let file: WorkspaceCustomToolsFile =
         read_json_file(&workspace_custom_tools_path(workspace_root))?;
-    file.version = WORKSPACE_DEFS_VERSION;
+    if file.version != WORKSPACE_CUSTOM_TOOLS_VERSION {
+        return Err(LitecodeError::Config(format!(
+            "custom_tools.json: unsupported version {}; this build requires version {}. \
+             Rewrite the file in the direct/code + suites format (see the custom_tools guide).",
+            file.version, WORKSPACE_CUSTOM_TOOLS_VERSION
+        )));
+    }
     Ok(file)
 }
 
@@ -187,7 +197,7 @@ pub fn write_workspace_custom_tools(
     file: &WorkspaceCustomToolsFile,
 ) -> Result<()> {
     let mut file = file.clone();
-    file.version = WORKSPACE_DEFS_VERSION;
+    file.version = WORKSPACE_CUSTOM_TOOLS_VERSION;
     write_json_file(&workspace_custom_tools_path(workspace_root), &file)
 }
 
@@ -228,15 +238,37 @@ pub fn delete_workspace_custom_tool(workspace_root: &Path, id: &str) -> Result<b
     Ok(removed)
 }
 
+pub(crate) fn upsert_workspace_custom_suite(
+    workspace_root: &Path,
+    id: &str,
+    def: CustomSuiteDefinition,
+) -> Result<()> {
+    let mut file = read_workspace_custom_tools(workspace_root)?;
+    file.suites.insert(id.to_string(), def);
+    write_workspace_custom_tools(workspace_root, &file)
+}
+
+pub fn delete_workspace_custom_suite(workspace_root: &Path, id: &str) -> Result<bool> {
+    let mut file = read_workspace_custom_tools(workspace_root)?;
+    let removed = file.suites.remove(id).is_some();
+    if removed {
+        write_workspace_custom_tools(workspace_root, &file)?;
+    }
+    Ok(removed)
+}
+
 pub fn load_workspace_defs(
     workspace_root: &Path,
 ) -> Result<(
     std::collections::HashMap<String, McpServerDefinition>,
     std::collections::HashMap<String, CustomToolDefinition>,
+    std::collections::HashMap<String, CustomSuiteDefinition>,
 )> {
+    let file = read_workspace_custom_tools(workspace_root)?;
     Ok((
         read_workspace_mcp(workspace_root)?.servers,
-        accepted_workspace_custom_tools(read_workspace_custom_tools(workspace_root)?.tools),
+        accepted_workspace_custom_tools(file.tools, &file.suites),
+        file.suites,
     ))
 }
 
@@ -246,10 +278,11 @@ pub fn load_workspace_defs(
 /// settings write path normalizes it to 120.
 fn accepted_workspace_custom_tools(
     tools: std::collections::HashMap<String, CustomToolDefinition>,
+    suites: &std::collections::HashMap<String, CustomSuiteDefinition>,
 ) -> std::collections::HashMap<String, CustomToolDefinition> {
     let mut out = std::collections::HashMap::new();
     for (key, def) in tools {
-        if let Some(reason) = reject_loaded_custom_tool(&key, &def) {
+        if let Some(reason) = reject_loaded_custom_tool(&key, &def, suites) {
             tracing::warn!(
                 tool = %key,
                 %reason,
@@ -262,7 +295,11 @@ fn accepted_workspace_custom_tools(
     out
 }
 
-fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<String> {
+fn reject_loaded_custom_tool(
+    key: &str,
+    def: &CustomToolDefinition,
+    suites: &std::collections::HashMap<String, CustomSuiteDefinition>,
+) -> Option<String> {
     use super::global_db::tools::{
         is_custom_tool_identity, is_reserved_builtin, non_transport_name_rejection,
         reserved_command_name_rejection,
@@ -288,10 +325,10 @@ fn reject_loaded_custom_tool(key: &str, def: &CustomToolDefinition) -> Option<St
     if def.command.trim().is_empty() {
         return Some("custom tool command must not be empty".into());
     }
-    if let Some(reason) = crate::permission::policy::custom_rule_ids_error(&def.rules) {
-        return Some(reason);
-    }
-    crate::tools::custom::validate_custom_code_contract(def).err()
+    let mut checked = def.clone();
+    crate::config::settings_writer::validate_custom_definition_with_suites(key, &mut checked, suites)
+        .err()
+        .map(|error| error.to_string())
 }
 
 pub fn workspace_engine_desired(workspace_root: &Path, id: &str) -> bool {
@@ -386,9 +423,10 @@ pub fn workspace_with_disk_readiness(workspace: &WorkspaceState) -> WorkspaceSta
     let mut workspace = workspace.clone();
     workspace.workspace_tool_readiness =
         workspace_readiness_from_engines(&workspace.workspace_root);
-    if let Ok((mcp, custom)) = load_workspace_defs(&workspace.workspace_root) {
+    if let Ok((mcp, custom, suites)) = load_workspace_defs(&workspace.workspace_root) {
         workspace.workspace_mcp_servers = mcp;
         workspace.workspace_custom_tools = custom;
+        workspace.workspace_custom_suites = suites;
     }
     workspace
 }
@@ -538,7 +576,7 @@ pub fn load_workspace_state_with(
     std::fs::create_dir_all(&paths.snapshots_dir)
         .map_err(|e| LitecodeError::Config(format!("create snapshots dir: {e}")))?;
     let workspace_tool_readiness = workspace_readiness_from_engines(&workspace_root);
-    let (workspace_mcp_servers, workspace_custom_tools) =
+    let (workspace_mcp_servers, workspace_custom_tools, workspace_custom_suites) =
         load_workspace_defs(&workspace_root).unwrap_or_default();
     let state = WorkspaceState {
         workspace_root: workspace_root.clone(),
@@ -549,6 +587,7 @@ pub fn load_workspace_state_with(
         workspace_tool_readiness,
         workspace_mcp_servers,
         workspace_custom_tools,
+        workspace_custom_suites,
     };
     if warm == WarmSnapshot::Now
         && let Err(e) = snapshot::warm_snapshot_repo(&workspace_root, &paths.snapshots_dir)
@@ -630,6 +669,76 @@ mod tests {
                 .sessions_db
                 .ends_with(std::path::Path::new(".litecode").join("sessions.db"))
         );
+    }
+
+    #[test]
+    fn custom_tools_version_1_is_rejected_with_rewrite_instructions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = workspace_custom_tools_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"version":1,"tools":{}}"#).unwrap();
+        let error = read_workspace_custom_tools(dir.path())
+            .expect_err("version 1 must not load")
+            .to_string();
+        assert!(error.contains("version 2"), "{error}");
+        assert!(error.contains("Rewrite"), "{error}");
+    }
+
+    #[test]
+    fn custom_tools_old_fields_are_rejected_not_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = workspace_custom_tools_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 2,
+              "tools": {
+                "probe": {
+                  "name": "probe",
+                  "surface": "code",
+                  "command": "echo",
+                  "data_schema": { "type": "object" },
+                  "schema": { "type": "object", "properties": {}, "required": [] }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let error = read_workspace_custom_tools(dir.path())
+            .expect_err("old data_schema must not load")
+            .to_string();
+        assert!(error.contains("output_schema"), "{error}");
+    }
+
+    #[test]
+    fn custom_tools_version_2_reads_suites_and_members() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = workspace_custom_tools_path(dir.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{
+              "version": 2,
+              "suites": {
+                "deck": { "surface": "code", "label": "Deck", "rules": [] }
+              },
+              "tools": {
+                "stats": {
+                  "name": "stats",
+                  "suite": "deck",
+                  "command": "echo",
+                  "schema": { "type": "object", "properties": {}, "required": [] },
+                  "output_schema": { "type": "object", "properties": {}, "required": [] }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let file = read_workspace_custom_tools(dir.path()).unwrap();
+        assert_eq!(file.suites["deck"].label, "Deck");
+        assert_eq!(file.tools["stats"].suite.as_deref(), Some("deck"));
+        assert!(file.tools["stats"].surface.is_none());
     }
 
     /// WP-166 T2-5: serve's deferred load does not touch the shadow repo; the

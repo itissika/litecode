@@ -518,8 +518,16 @@ impl CodeTool {
     }
 
     pub fn new(bundle: Vec<Arc<dyn Tool>>, host: Arc<CodeToolHost>) -> Self {
+        let specs = bundle
+            .iter()
+            .filter_map(|tool| {
+                crate::tool::spec::FunctionSpec::from_tool(tool.as_ref())
+                    .ok()?
+                    .into_code()
+            })
+            .collect::<Vec<_>>();
         let sdk =
-            crate::tool::code_manifest::render_code_tool_description(&bundle).unwrap_or_default();
+            crate::tool::code_manifest::render_code_tool_description(&specs).unwrap_or_default();
         let mut whitelist: Vec<String> =
             bundle.iter().map(|tool| tool.name().to_string()).collect();
         whitelist.sort();

@@ -164,16 +164,14 @@ fn ensure_code_search_default_v1(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     for tool in default_bound_optional_builtins() {
         let binding = default_optional_binding(tool);
-        let policy_json = serde_json::to_string(&binding.policy)?;
-        let path_mode = store::path_mode_to_str(binding.path_mode);
-        let preset = binding.last_applied_preset.map(store::preset_to_str);
+        let preset = binding.preset.map(store::preset_to_str);
         tx.execute(
-            "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json)
-             SELECT a.id, ?1, 1, ?2, ?3, ?4, NULL FROM agents a
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
+             SELECT a.id, ?1, 1, ?2, NULL FROM agents a
              WHERE a.role = 'primary'
                AND NOT EXISTS (SELECT 1 FROM agent_tools t WHERE t.agent_id = a.id AND t.tool_id = ?1)
              ON CONFLICT(agent_id, tool_id) DO NOTHING",
-            params![tool, policy_json, path_mode, preset],
+            params![tool, preset],
         )?;
     }
     mark_code_search_default_done(&tx)?;
@@ -236,23 +234,11 @@ fn bind_tools<'a>(
 /// Preset tools keep the requested dial. Fixed tools are enabled with allow-all and no dial.
 fn binding_seeded(tool: &str, preset: ToolPreset) -> crate::config::schema::AgentToolBinding {
     use crate::config::schema::AgentToolBinding;
-    use crate::permission::presets::{binding_for_tool, has_permission_preset};
+    use crate::permission::presets::has_permission_preset;
 
-    if !has_permission_preset(tool) {
-        return AgentToolBinding {
-            enabled: true,
-            policy: crate::permission::ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::default(),
-            last_applied_preset: None,
-            allowed_tools: None,
-        };
-    }
-    let (policy, path_mode) = binding_for_tool(tool, preset);
     AgentToolBinding {
         enabled: true,
-        policy,
-        path_mode,
-        last_applied_preset: Some(preset),
+        preset: has_permission_preset(tool).then_some(preset),
         allowed_tools: None,
     }
 }
@@ -266,18 +252,13 @@ fn bind_none(conn: &Connection, agent_id: &str, tool: &str) -> Result<()> {
         tool,
         &AgentToolBinding {
             enabled: true,
-            policy: crate::permission::ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::default(),
-            last_applied_preset: None,
+            preset: None,
             allowed_tools: None,
         },
     )
 }
 
 fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
-    use crate::config::schema::AgentToolBinding;
-    use crate::permission::presets::binding_for_tool;
-
     for tool in ["read", "grep", "glob", "session_search"] {
         store::upsert_agent_tool(
             conn,
@@ -288,18 +269,11 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
     }
 
     // WP-197: Code shell 三动作；仅绑 `run`（wait/kill 由 registry 注入）。
-    let (run_policy, run_path) = binding_for_tool("run", ToolPreset::Safe);
     store::upsert_agent_tool(
         conn,
         "explore",
         "run",
-        &AgentToolBinding {
-            enabled: true,
-            policy: run_policy,
-            path_mode: run_path,
-            last_applied_preset: Some(ToolPreset::Safe),
-            allowed_tools: None,
-        },
+        &binding_seeded("run", ToolPreset::Safe),
     )?;
 
     for tool in network_core_tools() {
@@ -310,19 +284,11 @@ fn seed_explore_agent_bindings(conn: &Connection) -> Result<()> {
             &binding_seeded(tool, ToolPreset::All),
         )?;
     }
-    let (workspace_policy, workspace_path) =
-        binding_for_tool("litecode_workspace", ToolPreset::All);
     store::upsert_agent_tool(
         conn,
         "explore",
         "litecode_workspace",
-        &AgentToolBinding {
-            enabled: true,
-            policy: workspace_policy,
-            path_mode: workspace_path,
-            last_applied_preset: Some(ToolPreset::All),
-            allowed_tools: None,
-        },
+        &binding_seeded("litecode_workspace", ToolPreset::All),
     )?;
     for tool in subagent_none_tools() {
         bind_none(conn, "explore", tool)?;
@@ -474,7 +440,7 @@ fn migrate_subagent_capability_v1(conn: &Connection) -> Result<()> {
             .is_some_and(|enabled| enabled != 0);
         let mut binding = binding_seeded(SUBAGENT_CAPABILITY_ID, ToolPreset::All);
         binding.enabled = any_enabled || existing;
-        binding.last_applied_preset = None;
+        binding.preset = None;
         store::upsert_agent_tool(&tx, &agent_id, SUBAGENT_CAPABILITY_ID, &binding)?;
         for member in SUBAGENT_MEMBER_TOOL_IDS {
             tx.execute(
@@ -557,13 +523,12 @@ pub fn ensure_core_bindings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Tools that used to carry ALL/SAFE but are now bind-only. Rewrite stored rows
-/// so an old SAFE=Ask does not linger until the next settings save.
+/// Tools that used to carry ALL/SAFE but are now bind-only. Clear the stored
+/// intent so an old SAFE does not linger until the next settings save.
 /// Coding presets and `litecode_workspace` are left as stored.
 fn normalize_fixed_builtin_bindings(conn: &Connection) -> Result<()> {
     use crate::permission::has_permission_preset;
 
-    let policy_json = serde_json::to_string(&crate::permission::ToolPolicy::allow_all())?;
     let mut ids: Vec<String> = super::tools::core_tool_ids();
     ids.extend(
         super::tools::optional_builtin_ids()
@@ -575,10 +540,8 @@ fn normalize_fixed_builtin_bindings(conn: &Connection) -> Result<()> {
             continue;
         }
         conn.execute(
-            "UPDATE agent_tools
-             SET policy_json = ?1, path_mode = 'unrestricted', last_applied_preset = NULL
-             WHERE tool_id = ?2",
-            rusqlite::params![policy_json, id],
+            "UPDATE agent_tools SET preset = NULL WHERE tool_id = ?1",
+            [id],
         )?;
     }
     Ok(())
@@ -867,7 +830,7 @@ mod tests {
 
         let run_preset: Option<String> = conn
             .query_row(
-                "SELECT last_applied_preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
+                "SELECT preset FROM agent_tools WHERE agent_id = 'explore' AND tool_id = 'run'",
                 [],
                 |r| r.get(0),
             )
@@ -1270,7 +1233,7 @@ mod tests {
     fn cs_rows(conn: &Connection) -> Vec<(String, i64, String)> {
         let mut stmt = conn
             .prepare(
-                "SELECT agent_id, enabled, policy_json FROM agent_tools
+                "SELECT agent_id, enabled, COALESCE(preset, '') FROM agent_tools
                  WHERE tool_id = 'code_search' ORDER BY agent_id",
             )
             .unwrap();

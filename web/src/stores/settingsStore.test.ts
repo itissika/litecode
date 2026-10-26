@@ -145,7 +145,7 @@ beforeEach(() => {
   mockedAgentIds.mockReset().mockResolvedValue(["default"]);
   mockedMcp.mockReset().mockResolvedValue({ global: [], workspace: [] });
   mockedTools.mockReset().mockResolvedValue([]);
-  mockedCustom.mockReset().mockResolvedValue({ global: [], workspace: [] });
+  mockedCustom.mockReset().mockResolvedValue({ global: [], workspace: [], suites: { global: {}, workspace: {} }, diagnostics: [], code_rejections: [] });
   mockedExcludes.mockReset().mockResolvedValue(emptyExcludes);
   mockedEngines.mockReset().mockResolvedValue({
     version: 1,
@@ -283,7 +283,7 @@ describe("reopen settings rereads gate docs", () => {
       open: false,
       revision: 1,
       llm: llmDoc,
-      customTools: { global: [], workspace: [] },
+      customTools: { global: [], workspace: [], suites: { global: {}, workspace: {} }, diagnostics: [], code_rejections: [] },
       docClock: { llm: 1, customTools: 1, summary: 1 },
     });
     mockedCustom.mockResolvedValue({
@@ -296,6 +296,8 @@ describe("reopen settings rereads gate docs", () => {
           command: "echo",
         },
       ],
+      suites: { global: {}, workspace: {} },
+      diagnostics: [], code_rejections: [],
     });
     useSettingsStore.getState().openSettings("connection");
     await waitFor(() => {
@@ -359,11 +361,39 @@ describe("workspace excludes clock", () => {
     expect(useSettingsStore.getState().mcpDefs?.workspace).toEqual([]);
   });
 
+  it("refreshes available tools when custom_tools.json changes on Agents", async () => {
+    useSettingsStore.setState({
+      open: true,
+      section: "agents",
+      availableTools: [],
+      docClock: { availableTools: 1 },
+    });
+    mockedTools.mockResolvedValue([
+      {
+        id: "disk_tool",
+        kind: "custom",
+        origin: "workspace",
+        permission_surface: "fixed",
+      },
+    ]);
+
+    useSettingsStore
+      .getState()
+      .handleWorkspaceChange([".litecode/custom_tools.json"], "modified");
+
+    await waitFor(() => {
+      expect(mockedTools).toHaveBeenCalled();
+      expect(useSettingsStore.getState().availableTools).toEqual([
+        expect.objectContaining({ id: "disk_tool" }),
+      ]);
+    });
+  });
+
   it("does not hydrate custom tools from watcher events", async () => {
     useSettingsStore.setState({
       open: true,
       section: "custom-tools",
-      customTools: { global: [], workspace: [] },
+      customTools: { global: [], workspace: [], suites: { global: {}, workspace: {} }, diagnostics: [], code_rejections: [] },
       docClock: { customTools: 1 },
     });
     mockedCustom.mockClear();

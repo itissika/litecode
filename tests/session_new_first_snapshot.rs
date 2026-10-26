@@ -46,6 +46,7 @@ fn test_state(
             workspace_tool_readiness: Default::default(),
             workspace_mcp_servers: Default::default(),
             workspace_custom_tools: Default::default(),
+            workspace_custom_suites: Default::default(),
         };
         litecode::config::workspace::workspace_with_disk_readiness(&ws)
     };

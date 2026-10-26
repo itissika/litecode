@@ -5,8 +5,9 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::schema::{
-    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomToolDefinition, GlobalSettings,
-    LogSettings, McpServerDefinition, McpTransport, ToolPreset, WebSearchSettings,
+    AgentProfile, AgentRole, AgentToolBinding, AuthSettings, CustomSuiteDefinition,
+    CustomToolDefinition, GlobalSettings, LogSettings, McpServerDefinition, McpTransport,
+    ToolPreset, WebSearchSettings,
 };
 use crate::types::{LitecodeError, Result};
 
@@ -86,6 +87,9 @@ pub fn open(path: &Path) -> Result<Connection> {
         if old != 0 && !migrate::can_migrate_in_place(old) {
             rebuild_incompatible_db(path, old)?;
         }
+        if old != 0 && old != migrate::CURRENT_USER_VERSION && old > 0 {
+            backup_before_epoch_migration(path, old)?;
+        }
     }
 
     let conn = Connection::open(path)?;
@@ -136,6 +140,26 @@ where
 fn peek_user_version(path: &Path) -> Result<i32> {
     let conn = Connection::open(path)?;
     Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+}
+
+/// Epoch migrations are one-way (including the Phase 4 column drop). Keep a
+/// consistent snapshot before the in-place migration so rollback never depends
+/// on reading the new schema.
+fn backup_before_epoch_migration(path: &Path, old_version: i32) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let bak = parent.join(format!("litecode.db.bak-v{old_version}-{stamp}"));
+    let conn = Connection::open(path)?;
+    conn.execute("VACUUM INTO ?1", [bak.to_string_lossy().as_ref()])?;
+    tracing::info!(
+        from = %path.display(),
+        backup = %bak.display(),
+        "backed up global DB before agent preset migration"
+    );
+    Ok(())
 }
 
 /// Delete-and-rebuild: archive the incompatible file, drop SQLite sidecars, leave path empty.
@@ -281,6 +305,7 @@ pub mod store {
             disabled_models: disabled_models(conn)?,
             agents: load_agents(conn)?,
             custom_tools: load_custom_tools(conn)?,
+            custom_suites: load_custom_suites(conn)?,
             mcp_servers: load_mcp_servers(conn)?,
             auth: load_auth(conn)?,
             log: load_log(conn)?,
@@ -293,6 +318,7 @@ pub mod store {
         tx.execute("DELETE FROM agent_tools", [])?;
         tx.execute("DELETE FROM agents", [])?;
         tx.execute("DELETE FROM custom_tools", [])?;
+        tx.execute("DELETE FROM custom_suites", [])?;
         tx.execute("DELETE FROM mcp_servers", [])?;
         tx.execute("DELETE FROM provider_credentials", [])?;
         tx.execute("DELETE FROM disabled_models", [])?;
@@ -321,6 +347,9 @@ pub mod store {
             for (tool_id, binding) in &profile.tools {
                 upsert_agent_tool(&tx, id, tool_id, binding)?;
             }
+        }
+        for (id, suite) in &settings.custom_suites {
+            upsert_custom_suite(&tx, id, suite)?;
         }
         for custom in &settings.custom_tools {
             upsert_custom_tool(&tx, custom)?;
@@ -428,19 +457,14 @@ pub mod store {
         agent_id: &str,
     ) -> Result<HashMap<String, AgentToolBinding>> {
         let mut stmt = conn.prepare(
-            "SELECT tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json FROM agent_tools WHERE agent_id = ?1",
+            "SELECT tool_id, enabled, preset, allowed_tools_json FROM agent_tools WHERE agent_id = ?1",
         )?;
         let mut rows = stmt.query([agent_id])?;
         let mut map = HashMap::new();
         while let Some(row) = rows.next()? {
             let tool_id: String = row.get(0)?;
-            let policy_json: String = row.get(2)?;
-            let path_mode_str: String = row.get(3)?;
-            let last_preset: Option<String> = row.get(4)?;
-            let allowed_tools_json: Option<String> = row.get(5)?;
-            let policy = serde_json::from_str(&policy_json).map_err(|e| {
-                LitecodeError::Config(format!("invalid policy_json for {tool_id}: {e}"))
-            })?;
+            let preset: Option<String> = row.get(2)?;
+            let allowed_tools_json: Option<String> = row.get(3)?;
             let allowed_tools = allowed_tools_json
                 .as_deref()
                 .map(serde_json::from_str)
@@ -450,9 +474,7 @@ pub mod store {
                 })?;
             let binding = AgentToolBinding {
                 enabled: row.get::<_, i64>(1)? != 0,
-                policy,
-                path_mode: parse_path_mode(&path_mode_str)?,
-                last_applied_preset: last_preset.as_deref().map(parse_preset).transpose()?,
+                preset: preset.as_deref().map(parse_preset).transpose()?,
                 allowed_tools,
             };
             map.insert(tool_id, binding);
@@ -503,33 +525,24 @@ pub mod store {
         tool_id: &str,
         binding: &AgentToolBinding,
     ) -> Result<()> {
-        let policy_json = serde_json::to_string(&binding.policy)?;
-        let path_mode = path_mode_to_str(binding.path_mode);
-        let last_preset = binding
-            .last_applied_preset
-            .map(preset_to_str)
-            .map(String::from);
+        let preset = binding.preset.map(preset_to_str);
         let allowed_tools_json = binding
             .allowed_tools
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
         conn.execute(
-            "INSERT INTO agent_tools (agent_id, tool_id, enabled, policy_json, path_mode, last_applied_preset, allowed_tools_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "INSERT INTO agent_tools (agent_id, tool_id, enabled, preset, allowed_tools_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(agent_id, tool_id) DO UPDATE SET
                enabled = excluded.enabled,
-               policy_json = excluded.policy_json,
-               path_mode = excluded.path_mode,
-               last_applied_preset = excluded.last_applied_preset,
+               preset = excluded.preset,
                allowed_tools_json = excluded.allowed_tools_json",
             params![
                 agent_id,
                 tool_id,
                 binding.enabled as i64,
-                policy_json,
-                path_mode,
-                last_preset,
+                preset,
                 allowed_tools_json,
             ],
         )?;
@@ -538,7 +551,7 @@ pub mod store {
 
     fn load_custom_tools(conn: &Connection) -> Result<Vec<CustomToolDefinition>> {
         let mut stmt = conn.prepare(
-            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface, data_schema_json FROM custom_tools",
+            "SELECT id, schema_json, command, args_json, timeout, description, rules_json, surface, suite_id, output_schema_json, definition_version FROM custom_tools",
         )?;
         let rows = stmt.query_map([], |row| {
             let schema_json: String = row.get(1)?;
@@ -554,7 +567,8 @@ pub mod store {
                 })?,
                 None => Vec::new(),
             };
-            Ok(CustomToolDefinition {
+            let version: i64 = row.get(10)?;
+            Ok((CustomToolDefinition {
                 name: row.get(0)?,
                 schema: serde_json::from_str(&schema_json).map_err(|e| {
                     rusqlite::Error::FromSqlConversionFailure(
@@ -574,27 +588,38 @@ pub mod store {
                 timeout: row.get::<_, u64>(4)?,
                 description: row.get(5)?,
                 rules,
-                surface: match row.get::<_, String>(7)?.as_str() {
-                    "code" => crate::config::schema::CallSurface::Code,
-                    _ => crate::config::schema::CallSurface::Direct,
+                suite: row.get::<_, Option<String>>(8)?,
+                surface: if row.get::<_, Option<String>>(8)?.is_some() {
+                    None
+                } else {
+                    Some(match row.get::<_, Option<String>>(7)?.as_deref() {
+                        Some("code") => crate::config::schema::CallSurface::Code,
+                        _ => crate::config::schema::CallSurface::Direct,
+                    })
                 },
-                suite: None,
-                suite_label: None,
-                data_schema: match row.get::<_, Option<String>>(8)? {
+                output_schema: match row.get::<_, Option<String>>(9)? {
                     Some(json) => Some(serde_json::from_str(&json).map_err(|e| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            8,
+                            9,
                             rusqlite::types::Type::Text,
                             Box::new(e),
                         )
                     })?),
                     None => None,
                 },
-            })
+            }, version))
         })?;
         let mut tools = Vec::new();
         for row in rows {
-            let tool = row?;
+            let (tool, version) = row?;
+            if version != 2 {
+                tracing::warn!(
+                    tool = %tool.name,
+                    version,
+                    "skipping legacy global custom tool; rewrite it in the direct/code + suites format"
+                );
+                continue;
+            }
             if let Some(reason) = super::tools::non_transport_name_rejection(&tool.name)
                 .or_else(|| super::tools::reserved_command_name_rejection(&tool.name))
             {
@@ -618,18 +643,19 @@ pub mod store {
         } else {
             Some(serde_json::to_string(&custom.rules)?)
         };
-        let data_schema_json = custom
-            .data_schema
+        let output_schema_json = custom
+            .output_schema
             .as_ref()
             .map(serde_json::to_string)
             .transpose()?;
-        let surface = match custom.surface {
+        // The column is NOT NULL on old DBs; suite members ignore it on load.
+        let surface = match custom.surface.unwrap_or(crate::config::schema::CallSurface::Direct) {
             crate::config::schema::CallSurface::Code => "code",
             crate::config::schema::CallSurface::Direct => "direct",
         };
         conn.execute(
-            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface, data_schema_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO custom_tools (id, schema_json, command, args_json, timeout, description, rules_json, surface, suite_id, output_schema_json, data_schema_json, definition_version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, NULL, 2)
              ON CONFLICT(id) DO UPDATE SET
                schema_json = excluded.schema_json,
                command = excluded.command,
@@ -638,7 +664,10 @@ pub mod store {
                description = excluded.description,
                rules_json = excluded.rules_json,
                surface = excluded.surface,
-               data_schema_json = excluded.data_schema_json",
+               suite_id = excluded.suite_id,
+               output_schema_json = excluded.output_schema_json,
+               data_schema_json = NULL,
+               definition_version = 2",
             params![
                 custom.name,
                 schema_json,
@@ -648,8 +677,68 @@ pub mod store {
                 custom.description,
                 rules_json,
                 surface,
-                data_schema_json
+                custom.suite,
+                output_schema_json
             ],
+        )?;
+        Ok(())
+    }
+
+    fn load_custom_suites(conn: &Connection) -> Result<HashMap<String, CustomSuiteDefinition>> {
+        let mut stmt = conn.prepare("SELECT id, surface, label, rules_json FROM custom_suites")?;
+        let rows = stmt.query_map([], |row| {
+            let surface = match row.get::<_, String>(1)?.as_str() {
+                "code" => crate::config::schema::CallSurface::Code,
+                _ => crate::config::schema::CallSurface::Direct,
+            };
+            let rules = match row.get::<_, Option<String>>(3)? {
+                Some(json) => serde_json::from_str(&json).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        3,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
+                None => Vec::new(),
+            };
+            Ok((
+                row.get::<_, String>(0)?,
+                CustomSuiteDefinition {
+                    surface,
+                    label: row.get(2)?,
+                    rules,
+                },
+            ))
+        })?;
+        let mut suites = HashMap::new();
+        for row in rows {
+            let (id, suite) = row?;
+            suites.insert(id, suite);
+        }
+        Ok(suites)
+    }
+
+    pub fn upsert_custom_suite(
+        conn: &Connection,
+        id: &str,
+        suite: &CustomSuiteDefinition,
+    ) -> Result<()> {
+        let rules_json = if suite.rules.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&suite.rules)?)
+        };
+        let surface = match suite.surface {
+            crate::config::schema::CallSurface::Code => "code",
+            crate::config::schema::CallSurface::Direct => "direct",
+        };
+        conn.execute(
+            "INSERT INTO custom_suites (id, surface, label, rules_json) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+               surface = excluded.surface,
+               label = excluded.label,
+               rules_json = excluded.rules_json",
+            params![id, surface, suite.label, rules_json],
         )?;
         Ok(())
     }
@@ -811,21 +900,6 @@ pub mod store {
         }
     }
 
-    pub(crate) fn path_mode_to_str(mode: crate::permission::BindingPathMode) -> &'static str {
-        match mode {
-            crate::permission::BindingPathMode::WorkspaceOnly => "workspace_only",
-            crate::permission::BindingPathMode::Unrestricted => "unrestricted",
-        }
-    }
-
-    fn parse_path_mode(s: &str) -> Result<crate::permission::BindingPathMode> {
-        match s {
-            "workspace_only" => Ok(crate::permission::BindingPathMode::WorkspaceOnly),
-            "unrestricted" => Ok(crate::permission::BindingPathMode::Unrestricted),
-            _ => Err(LitecodeError::Config(format!("unknown path_mode: {s}"))),
-        }
-    }
-
     pub(crate) fn preset_to_str(preset: ToolPreset) -> &'static str {
         match preset {
             ToolPreset::All => "ALL",
@@ -848,6 +922,54 @@ mod open_tests {
     use crate::config::schema::{CallSurface, ToolSchema};
 
     #[test]
+    fn every_migratable_epoch_is_backed_up_once_before_upgrading() {
+        for old_version in crate::config::global_db::migrate::MIGRATABLE_FROM {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("litecode.db");
+            {
+                let conn = open(&path).unwrap();
+                seed::seed(&conn).unwrap();
+                conn.execute_batch(&format!("PRAGMA user_version = {old_version};"))
+                    .unwrap();
+            }
+            {
+                let conn = open(&path).unwrap();
+                let version: i32 = conn
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    version,
+                    crate::config::global_db::migrate::CURRENT_USER_VERSION
+                );
+            }
+            let backups: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(&format!("litecode.db.bak-v{old_version}-"))
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "v{old_version} must be backed up once");
+
+            let _ = open(&path).unwrap();
+            let backups: Vec<_> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("litecode.db.bak-v")
+                })
+                .collect();
+            assert_eq!(backups.len(), 1, "a current DB must not be backed up again");
+        }
+    }
+
+    #[test]
     fn custom_tool_surface_roundtrips_through_global_db() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("litecode.db");
@@ -856,7 +978,7 @@ mod open_tests {
 
         let def = CustomToolDefinition {
             name: "code_probe".into(),
-            data_schema: None,
+            output_schema: None,
             description: "code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -867,9 +989,8 @@ mod open_tests {
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         store::upsert_custom_tool(&conn, &def).unwrap();
 
@@ -879,6 +1000,6 @@ mod open_tests {
             .iter()
             .find(|tool| tool.name == "code_probe")
             .expect("custom tool loaded");
-        assert_eq!(custom.surface, CallSurface::Code);
+        assert_eq!(custom.surface, Some(CallSurface::Code));
     }
 }

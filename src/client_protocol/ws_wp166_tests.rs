@@ -46,6 +46,7 @@ async fn env() -> Env {
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
+        workspace_custom_suites: Default::default(),
     };
     let settings = ConfigManager::load_global_from(&global_db).expect("global");
     let resolved = ConfigManager::resolve(

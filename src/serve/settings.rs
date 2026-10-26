@@ -19,8 +19,7 @@ use crate::config::{CommitAck, DocId};
 use crate::mcp::{McpConnectionPool, McpRunState, McpServerSnapshot, McpToolSchema};
 use crate::serve::state::ServeState;
 use crate::tool::availability::available_tools_payload;
-use crate::tool::registry::builtin_code_surface_tools;
-use crate::tools::custom::CustomTool;
+use crate::tool::registry::builtin_code_specs;
 use crate::types::LitecodeError;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, WorkspaceExcludesLists, WorkspaceExcludesView,
@@ -107,6 +106,13 @@ pub fn router() -> Router<ServeState> {
         )
         .route("/available-tools", get(get_available_tools))
         .route("/custom-tools", get(list_custom_tools))
+        .route("/custom-suites", get(list_custom_suites))
+        .route(
+            "/custom-suites/{id}",
+            get(get_custom_suite)
+                .put(put_custom_suite)
+                .delete(delete_custom_suite),
+        )
         .route(
             "/custom-tools/{id}",
             get(get_custom_tool)
@@ -309,10 +315,7 @@ async fn put_agent(
     Path(id): Path<String>,
     Json(body): Json<AgentBody>,
 ) -> Response {
-    let (workspace, resolved) = {
-        let runtime = state.runtime.read().expect("runtime lock");
-        (runtime.workspace.clone(), runtime.resolved.clone())
-    };
+    let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
     // An agent must point at a model that exists and whose provider has a key.
     // This is the strict half of the rule: a turn would hard-fail anyway, so the
     // write fails first with an actionable message.
@@ -325,7 +328,7 @@ async fn put_agent(
     }
     match state
         .settings_writer
-        .write_agent(&id, body.profile, &workspace)
+        .write_agent(&id, body.profile)
     {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "agent write");
@@ -379,22 +382,26 @@ async fn delete_agent(State(state): State<ServeState>, Path(id): Path<String>) -
 }
 
 async fn get_available_tools(State(state): State<ServeState>) -> Response {
-    let (resolved, custom_tool_hub, mcp_pool, code_status, lsp_status, server_ids) = {
-        let runtime = state.runtime.read().expect("runtime lock");
+    let (resolved, mcp_pool, code_status, lsp_status, server_ids) = {
+        let mut runtime = state.runtime.write().expect("runtime lock");
+        // Workspace `.litecode` files can change outside the Settings writer
+        // (human edit / another process). Refresh before projecting so the
+        // Agents page never needs a no-op custom-tool save to discover a card.
+        runtime.sync_workspace_tool_readiness();
         let server_ids: Vec<String> = runtime.resolved.mcp_servers().keys().cloned().collect();
         (
             runtime.resolved.clone(),
-            std::sync::Arc::clone(&runtime.custom_tool_hub),
             std::sync::Arc::clone(&runtime.mcp_pool),
             engine_available_status(runtime.workspace_engines.state("code_search")),
             engine_available_status(runtime.workspace_engines.state("lsp")),
             server_ids,
         )
     };
-    let mut candidates: Vec<std::sync::Arc<dyn crate::tool::Tool>> = builtin_code_surface_tools();
-    candidates.extend(resolved.custom_tools().into_iter().map(|def| {
-        std::sync::Arc::new(CustomTool::new(def, std::sync::Arc::clone(&custom_tool_hub)))
-            as std::sync::Arc<dyn crate::tool::Tool>
+    let mut candidates = builtin_code_specs();
+    candidates.extend(resolved.custom_tools().iter().filter_map(|def| {
+        crate::tool::spec::FunctionSpec::from_custom_definition(def)
+            .ok()?
+            .into_code()
     }));
     let mut statuses = HashMap::from([
         ("code_search".to_string(), code_status),
@@ -429,15 +436,26 @@ fn engine_available_status(state: Option<crate::engines::EngineState>) -> Availa
 
 async fn list_custom_tools(State(state): State<ServeState>) -> Response {
     let root = workspace_root(&state);
+    let resolved = state.runtime.read().expect("runtime lock").resolved.clone();
     match (
         state.settings_writer.list_custom_tools(),
         state.settings_writer.list_workspace_custom_tools(&root),
+        state.settings_writer.list_custom_suites(),
+        state.settings_writer.list_workspace_custom_suites(&root),
     ) {
-        (Ok(global), Ok(workspace)) => ok_json(serde_json::json!({
+        (Ok(global), Ok(workspace), Ok(global_suites), Ok(workspace_suites)) => ok_json(serde_json::json!({
             "global": global,
             "workspace": workspace,
+            "suites": {
+                "global": global_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+                "workspace": workspace_suites.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+            },
+            "diagnostics": crate::tool::availability::custom_tool_diagnostics(&resolved),
+            "code_rejections": crate::tool::availability::code_rejections_for(&resolved),
         })),
-        (Err(e), _) | (_, Err(e)) => settings_error(e),
+        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
+            settings_error(e)
+        }
     }
 }
 
@@ -479,8 +497,16 @@ async fn put_custom_tool(
     State(state): State<ServeState>,
     Path(id): Path<String>,
     Query(query): Query<ScopeQuery>,
-    Json(body): Json<CustomToolDefinition>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
+    let body: CustomToolDefinition = match serde_json::from_value(body) {
+        Ok(body) => body,
+        Err(error) => {
+            return settings_write_error(LitecodeError::Config(format!(
+                "invalid custom tool body: {error}"
+            )));
+        }
+    };
     let workspace = state
         .runtime
         .read()
@@ -524,6 +550,104 @@ async fn delete_custom_tool(
     match result {
         Ok(ack) => {
             reload_runtime_after_settings_write(&state, &ack, "custom tool delete");
+            ok_json(revision_body(ack))
+        }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+async fn list_custom_suites(State(state): State<ServeState>) -> Response {
+    let root = workspace_root(&state);
+    match (
+        state.settings_writer.list_custom_suites(),
+        state.settings_writer.list_workspace_custom_suites(&root),
+    ) {
+        (Ok(global), Ok(workspace)) => ok_json(serde_json::json!({
+            "global": global.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+            "workspace": workspace.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+        })),
+        (Err(e), _) | (_, Err(e)) => settings_error(e),
+    }
+}
+
+async fn get_custom_suite(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let result = if workspace_scope(&query) {
+        state
+            .settings_writer
+            .get_workspace_custom_suite(&workspace_root(&state), &id)
+    } else {
+        state.settings_writer.get_custom_suite(&id)
+    };
+    match result {
+        Ok(Some(suite)) => ok_json(suite),
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiErr {
+                ok: false,
+                error: format!("custom suite not found: {id}"),
+            }),
+        )
+            .into_response(),
+        Err(e) => settings_error(e),
+    }
+}
+
+async fn put_custom_suite(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+    Json(body): Json<serde_json::Value>,
+) -> Response {
+    let body: crate::config::schema::CustomSuiteDefinition = match serde_json::from_value(body) {
+        Ok(body) => body,
+        Err(error) => {
+            return settings_write_error(LitecodeError::Config(format!(
+                "invalid custom suite body: {error}"
+            )));
+        }
+    };
+    let root = workspace_root(&state);
+    let result = if workspace_scope(&query) {
+        state
+            .settings_writer
+            .write_workspace_custom_suite(&root, &id, body)
+    } else {
+        state.settings_writer.write_custom_suite(&id, body)
+    };
+    match result {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "custom suite write");
+            ok_json(revision_body(ack))
+        }
+        Err(e) => settings_write_error(e),
+    }
+}
+
+async fn delete_custom_suite(
+    State(state): State<ServeState>,
+    Path(id): Path<String>,
+    Query(query): Query<ScopeQuery>,
+) -> Response {
+    let workspace = state
+        .runtime
+        .read()
+        .expect("runtime lock")
+        .workspace
+        .clone();
+    let result = if workspace_scope(&query) {
+        state
+            .settings_writer
+            .delete_workspace_custom_suite(&workspace.workspace_root, &id)
+    } else {
+        state.settings_writer.delete_custom_suite(&id, &workspace)
+    };
+    match result {
+        Ok(ack) => {
+            reload_runtime_after_settings_write(&state, &ack, "custom suite delete");
             ok_json(revision_body(ack))
         }
         Err(e) => settings_write_error(e),

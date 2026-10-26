@@ -33,12 +33,11 @@ pub enum ToolPreset {
 #[serde(deny_unknown_fields)]
 pub struct AgentToolBinding {
     pub enabled: bool,
+    /// Permission intent for tools with a dial. Fixed tools (MCP, bind-only
+    /// builtins, custom tools without rules) keep `None`; policy and path mode
+    /// are derived at execution time, never stored.
     #[serde(default)]
-    pub policy: crate::permission::ToolPolicy,
-    #[serde(default)]
-    pub path_mode: crate::permission::BindingPathMode,
-    #[serde(default)]
-    pub last_applied_preset: Option<ToolPreset>,
+    pub preset: Option<ToolPreset>,
     /// Static MCP server tool allowlist. `None` preserves the server's full catalog.
     #[serde(default)]
     pub allowed_tools: Option<Vec<String>>,
@@ -205,8 +204,21 @@ pub struct ToolSchema {
     pub required: Vec<String>,
 }
 
-/// Custom tool definition (global layer).
+/// A first-class custom-tool suite. Members reference it by name and inherit
+/// its surface and permission rules; the suite owns exactly one binding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomSuiteDefinition {
+    pub surface: CallSurface,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<crate::permission::PolicyRule>,
+}
+
+/// One custom tool. A standalone tool writes `surface`; a suite member writes
+/// `suite` and inherits the suite surface/rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CustomToolDefinition {
     pub name: String,
     #[serde(default)]
@@ -217,26 +229,91 @@ pub struct CustomToolDefinition {
     pub args: Vec<String>,
     #[serde(default = "default_timeout")]
     pub timeout: u64,
-    /// Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order.
+    /// Non-empty on a standalone tool: Agents can switch ALL/SAFE. Suite members
+    /// must leave this empty; the suite owns the rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::permission::PolicyRule>,
-    /// Declared call surface. `direct` is the model-facing function call;
-    /// `code` is reachable only through `run_code`. Defaults to Direct.
-    #[serde(default)]
-    pub surface: CallSurface,
-    /// Optional Agents one-card suite id (shared across custom tools in the suite).
+    /// Standalone call surface. Exactly one of `surface` / `suite` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<CallSurface>,
+    /// Suite reference. When present, surface and rules are inherited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suite: Option<String>,
-    /// Human label for the suite card; defaults to `suite` when omitted.
+    /// Code-surface result schema. Required on code, forbidden on direct.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suite_label: Option<String>,
-    /// Code-surface result schema. Ignored on the direct surface.
-    ///
-    /// When set, the tool's stdout must be a JSON object; it becomes the
-    /// program-visible `data`. Without it the code surface keeps the opaque
-    /// `{ text }` shape.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CustomToolDefinitionWire {
+    name: String,
+    #[serde(default)]
+    description: String,
+    schema: ToolSchema,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default = "default_timeout")]
+    timeout: u64,
+    #[serde(default)]
+    rules: Vec<crate::permission::PolicyRule>,
+    #[serde(default)]
+    surface: Option<CallSurface>,
+    #[serde(default)]
+    suite: Option<String>,
+    #[serde(default)]
+    output_schema: Option<Value>,
+    /// Legacy fields are parsed only to produce an actionable rewrite error.
+    #[serde(default)]
+    data_schema: Option<Value>,
+    #[serde(default)]
+    suite_label: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for CustomToolDefinition {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = CustomToolDefinitionWire::deserialize(deserializer)?;
+        if wire.data_schema.is_some() {
+            return Err(serde::de::Error::custom(
+                "`data_schema` was removed; code tools use `output_schema` (object schema, required on code)",
+            ));
+        }
+        if wire.suite_label.is_some() {
+            return Err(serde::de::Error::custom(
+                "`suite_label` was removed; declare the label once in the suite (`suites.<name>.label`)",
+            ));
+        }
+        let has_suite = wire.suite.as_deref().is_some_and(|suite| !suite.trim().is_empty());
+        match (wire.surface.is_some(), has_suite) {
+            (false, false) => {
+                return Err(serde::de::Error::custom(
+                    "custom tool needs exactly one of `surface` (standalone) or `suite` (member)",
+                ));
+            }
+            (true, true) => {
+                return Err(serde::de::Error::custom(
+                    "custom tool cannot set both `surface` and `suite`; suite members inherit surface",
+                ));
+            }
+            _ => {}
+        }
+        Ok(Self {
+            name: wire.name,
+            description: wire.description,
+            schema: wire.schema,
+            command: wire.command,
+            args: wire.args,
+            timeout: wire.timeout,
+            rules: wire.rules,
+            surface: wire.surface,
+            suite: wire.suite.filter(|suite| !suite.trim().is_empty()),
+            output_schema: wire.output_schema,
+        })
+    }
 }
 
 fn default_timeout() -> u64 {
@@ -244,6 +321,22 @@ fn default_timeout() -> u64 {
 }
 
 impl CustomToolDefinition {
+    /// Raw standalone surface; suite members return `None` until resolved.
+    pub fn declared_surface(&self) -> Option<CallSurface> {
+        self.surface
+    }
+
+    /// Surface used by runtime/schema code. Suite members are normally resolved
+    /// before they reach this point; `None` falls back to direct for legacy
+    /// in-memory callers/tests.
+    pub fn effective_surface(&self) -> CallSurface {
+        self.surface.unwrap_or(CallSurface::Direct)
+    }
+
+    pub fn is_suite_member(&self) -> bool {
+        self.suite.as_deref().is_some_and(|suite| !suite.trim().is_empty())
+    }
+
     pub fn to_json_schema(&self) -> Value {
         serde_json::json!({
             "type": self.schema.schema_type,
@@ -251,6 +344,26 @@ impl CustomToolDefinition {
             "required": self.schema.required,
         })
     }
+}
+
+/// One actionable validation problem. The settings API and refresh/validate
+/// paths share this shape so the same bad definition does not produce four
+/// different messages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CustomToolDiagnostic {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suite: Option<String>,
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
+    pub expected: String,
+    pub fix: String,
+    pub message: String,
 }
 
 #[cfg(test)]
@@ -270,13 +383,60 @@ mod custom_tool_definition_tests {
     }
 
     #[test]
-    fn custom_tool_surface_is_direct_by_default_and_accepts_code() {
-        let direct: CustomToolDefinition = serde_json::from_value(body(None)).unwrap();
-        assert_eq!(direct.surface, CallSurface::Direct);
+    fn suite_member_omits_surface_and_old_fields_are_rejected() {
+        let member: CustomToolDefinition = serde_json::from_value(serde_json::json!({
+            "name": "deck_a",
+            "suite": "deck",
+            "command": "echo",
+            "schema": { "type": "object", "properties": {}, "required": [] }
+        }))
+        .expect("suite member");
+        assert_eq!(member.surface, None);
+        assert_eq!(member.suite.as_deref(), Some("deck"));
+
+        let both = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
+            "name": "deck_a",
+            "surface": "code",
+            "suite": "deck",
+            "command": "echo",
+            "schema": { "type": "object", "properties": {}, "required": [] }
+        }))
+        .unwrap_err();
+        assert!(both.to_string().contains("both"), "{both}");
+
+        let old = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
+            "name": "old",
+            "surface": "code",
+            "data_schema": { "type": "object" },
+            "command": "echo",
+            "schema": { "type": "object", "properties": {}, "required": [] }
+        }))
+        .unwrap_err();
+        assert!(old.to_string().contains("output_schema"), "{old}");
+
+        let labelled = serde_json::from_value::<CustomToolDefinition>(serde_json::json!({
+            "name": "old",
+            "surface": "direct",
+            "suite_label": "Deck",
+            "command": "echo",
+            "schema": { "type": "object", "properties": {}, "required": [] }
+        }))
+        .unwrap_err();
+        assert!(labelled.to_string().contains("suites"), "{labelled}");
+    }
+
+    #[test]
+    fn custom_tool_surface_is_explicit_and_accepts_code() {
+        let missing: Result<CustomToolDefinition, _> = serde_json::from_value(body(None));
+        assert!(missing.is_err(), "surface must be explicit on a standalone tool");
+
+        let direct: CustomToolDefinition =
+            serde_json::from_value(body(Some("direct"))).unwrap();
+        assert_eq!(direct.surface, Some(CallSurface::Direct));
 
         let code: CustomToolDefinition =
             serde_json::from_value(body(Some("code"))).unwrap();
-        assert_eq!(code.surface, CallSurface::Code);
+        assert_eq!(code.surface, Some(CallSurface::Code));
     }
 }
 
@@ -395,6 +555,8 @@ pub struct GlobalSettings {
     #[serde(default)]
     pub custom_tools: Vec<CustomToolDefinition>,
     #[serde(default)]
+    pub custom_suites: HashMap<String, CustomSuiteDefinition>,
+    #[serde(default)]
     pub mcp_servers: HashMap<String, McpServerDefinition>,
     #[serde(default)]
     pub auth: AuthSettings,
@@ -411,6 +573,7 @@ impl GlobalSettings {
         "disabled_models",
         "agents",
         "custom_tools",
+        "custom_suites",
         "mcp_servers",
         "auth",
         "log",

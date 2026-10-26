@@ -79,14 +79,7 @@ impl PermissionEngine {
     }
 
     pub fn path_mode(&self, tool_name: &str) -> BindingPathMode {
-        let name = if tool_name == "apply_edits" {
-            "edit"
-        } else {
-            tool_name
-        };
-        self.binding(name)
-            .map(|b| b.path_mode)
-            .unwrap_or_default()
+        self.effective_policy(tool_name).1
     }
 
     pub fn evaluate_tool(
@@ -130,40 +123,69 @@ impl PermissionEngine {
     /// A catalog key owns these rules only when it is that tool's body name and
     /// not a builtin. Reserved names (`run`, `write`, …) always keep the binding.
     fn custom_tool_rules(&self, tool_name: &str) -> Option<Vec<crate::permission::PolicyRule>> {
-        if let Some(tool) = self.resolved.workspace_custom_tools().get(tool_name)
-            && crate::config::global_db::tools::is_custom_tool_identity(tool_name, &tool.name)
+        // Code suites are called as `suite.member`; the actual Tool identity
+        // (and the binding) stays the member name.
+        let member = tool_name
+            .rsplit_once('.')
+            .map(|(_, member)| member)
+            .unwrap_or(tool_name);
+        let (definition, suites) = if let Some(tool) = self.resolved.workspace_custom_tools().get(member)
+            && crate::config::global_db::tools::is_custom_tool_identity(member, &tool.name)
         {
-            return Some(tool.rules.clone());
-        }
-        self.resolved
+            (tool, self.resolved.workspace_custom_suites())
+        } else if let Some(tool) = self
+            .resolved
             .global_custom_tools()
             .iter()
             .find(|tool| {
-                crate::config::global_db::tools::is_custom_tool_identity(tool_name, &tool.name)
+                crate::config::global_db::tools::is_custom_tool_identity(member, &tool.name)
             })
-            .map(|tool| tool.rules.clone())
+        {
+            (tool, self.resolved.global_custom_suites())
+        } else {
+            return None;
+        };
+        match definition
+            .suite
+            .as_deref()
+            .map(str::trim)
+            .filter(|suite| !suite.is_empty())
+        {
+            Some(suite) => suites.get(suite).map(|suite| suite.rules.clone()),
+            None => Some(definition.rules.clone()),
+        }
     }
 
+    fn policy_name(tool_name: &str) -> &str {
+        if tool_name == "apply_edits" {
+            "edit"
+        } else {
+            tool_name
+        }
+    }
+
+    /// Derive the effective policy from the binding intent and the current
+    /// definition. Fixed tools derive allow-all; preset tools derive from their
+    /// preset; custom tools/suites derive from their current rules.
+    ///
     /// SAFE walks the current rules and allows when none match. ALL, or a tool
-    /// whose rules were removed, allows the call. Other tools keep the stored binding.
+    /// whose rules were removed, allows the call.
     fn effective_policy(&self, tool_name: &str) -> (ToolPolicy, BindingPathMode) {
         if let Some(rules) = self.custom_tool_rules(tool_name) {
-            let preset = self.binding(tool_name).and_then(|b| b.last_applied_preset);
+            let preset = self.binding(tool_name).and_then(|b| b.preset);
             if preset == Some(ToolPreset::Safe) && !rules.is_empty() {
                 return (ToolPolicy::from_rules(rules), BindingPathMode::Unrestricted);
             }
             return (ToolPolicy::allow_all(), BindingPathMode::Unrestricted);
         }
-        let bind_name = if tool_name == "apply_edits" {
-            "edit"
-        } else {
-            tool_name
-        };
-        let policy = self
-            .binding(bind_name)
-            .map(|b| b.policy.clone())
-            .unwrap_or_default();
-        (policy, self.path_mode(tool_name))
+        let bind_name = Self::policy_name(tool_name);
+        if crate::permission::has_permission_preset(bind_name) {
+            let preset = self.binding(bind_name).and_then(|b| b.preset);
+            if preset == Some(ToolPreset::Safe) {
+                return crate::permission::presets::binding_for_tool(bind_name, preset.unwrap());
+            }
+        }
+        (ToolPolicy::allow_all(), BindingPathMode::Unrestricted)
     }
 }
 
@@ -182,7 +204,7 @@ mod tests {
     fn tool(rules: Vec<PolicyRule>) -> CustomToolDefinition {
         CustomToolDefinition {
             name: "demo".into(),
-            data_schema: None,
+            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -193,9 +215,8 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules,
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
-            suite_label: None,
         }
     }
 
@@ -203,7 +224,7 @@ mod tests {
         rules: Vec<PolicyRule>,
         workspace_tool: Option<CustomToolDefinition>,
         preset: Option<ToolPreset>,
-        stored: ToolPolicy,
+        _stored: ToolPolicy,
         depth: u32,
     ) -> (PermissionEngine, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
@@ -213,9 +234,7 @@ mod tests {
             "demo".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: stored,
-                path_mode: BindingPathMode::Unrestricted,
-                last_applied_preset: preset,
+                preset: preset,
                 allowed_tools: None,
             },
         );
@@ -232,6 +251,60 @@ mod tests {
     }
 
     #[test]
+    fn code_suite_members_share_one_permission_face_and_binding() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut global = GlobalSettings::default();
+        let mut profile = AgentProfile::default();
+        profile.tools.insert(
+            "suite:deck".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: Some(ToolPreset::Safe),
+                allowed_tools: None,
+            },
+        );
+        global.agents.insert("default".into(), profile);
+        global.custom_suites.insert(
+            "deck".into(),
+            crate::config::schema::CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Code,
+                label: "Deck".into(),
+                rules: vec![PolicyRule {
+                    id: "deny_all".into(),
+                    when: ArgMatcher::Any,
+                    action: PermissionAction::Deny,
+                }],
+            },
+        );
+        for name in ["first", "second"] {
+            let mut def = tool(Vec::new());
+            def.name = name.into();
+            def.command = "echo".into();
+            def.surface = None;
+            def.suite = Some("deck".into());
+            def.output_schema = Some(serde_json::json!({
+                "type": "object", "properties": {}, "required": []
+            }));
+            global.custom_tools.push(def);
+        }
+        let resolved =
+            ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
+        let engine = PermissionEngine::resolver(resolved, "default", 0);
+
+        for name in ["first", "second", "deck.first", "deck.second"] {
+            assert_eq!(
+                engine
+                    .evaluate_tool(name, &serde_json::json!({}), dir.path())
+                    .action,
+                PermissionAction::Deny,
+                "{name}"
+            );
+        }
+        assert!(engine.binding("deck.first").is_some());
+        assert!(engine.binding("deck.second").is_some());
+    }
+
+    #[test]
     fn subagent_member_uses_the_capability_binding() {
         let dir = tempfile::tempdir().unwrap();
         let mut global = GlobalSettings::default();
@@ -240,9 +313,7 @@ mod tests {
             "subagent_tools".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: ToolPolicy::allow_all(),
-                path_mode: BindingPathMode::default(),
-                last_applied_preset: None,
+                preset: None,
                 allowed_tools: None,
             },
         );
@@ -256,6 +327,47 @@ mod tests {
         assert_eq!(
             engine
                 .evaluate_tool("subagent_launch", &serde_json::json!({}), dir.path())
+                .action,
+            PermissionAction::Allow
+        );
+    }
+
+    #[test]
+    fn custom_rules_are_read_from_the_current_definition() {
+        let deny = PolicyRule {
+            id: "deny".into(),
+            when: ArgMatcher::Any,
+            action: PermissionAction::Deny,
+        };
+        let allow = PolicyRule {
+            id: "allow".into(),
+            when: ArgMatcher::Any,
+            action: PermissionAction::Allow,
+        };
+        let (denied, dir) = engine(
+            vec![deny],
+            None,
+            Some(ToolPreset::Safe),
+            ToolPolicy::allow_all(),
+            0,
+        );
+        assert_eq!(
+            denied
+                .evaluate_tool("demo", &serde_json::json!({}), dir.path())
+                .action,
+            PermissionAction::Deny
+        );
+
+        let (allowed, dir) = engine(
+            vec![allow],
+            None,
+            Some(ToolPreset::Safe),
+            ToolPolicy::allow_all(),
+            0,
+        );
+        assert_eq!(
+            allowed
+                .evaluate_tool("demo", &serde_json::json!({}), dir.path())
                 .action,
             PermissionAction::Allow
         );
@@ -298,15 +410,11 @@ mod tests {
         let mut global = GlobalSettings::default();
         let mut profile = AgentProfile::default();
         for id in ["run", "write"] {
-            let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(id, ToolPreset::Safe);
             profile.tools.insert(
                 id.into(),
                 AgentToolBinding {
                     enabled: true,
-                    policy,
-                    path_mode,
-                    last_applied_preset: Some(ToolPreset::Safe),
+                    preset: Some(ToolPreset::Safe),
                     allowed_tools: None,
                 },
             );
@@ -378,9 +486,7 @@ mod tests {
             "run_code".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: ToolPolicy::allow_all(),
-                path_mode: BindingPathMode::Unrestricted,
-                last_applied_preset: Some(ToolPreset::Safe),
+                preset: Some(ToolPreset::Safe),
                 allowed_tools: None,
             },
         );

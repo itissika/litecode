@@ -24,6 +24,8 @@ import {
   getCustomTools,
   putCustomTool,
   deleteCustomTool,
+  putCustomSuite,
+  deleteCustomSuite,
   getMcpServers,
   putMcpServer,
   deleteMcpServer,
@@ -33,7 +35,9 @@ import {
   SettingsApiError,
   type AgentProfile,
   type AvailableTool,
+  type CustomSuiteDefinition,
   type CustomToolDefinition,
+  type CustomToolsView,
   type LayeredList,
   type LlmSettings,
   type McpProbeResult,
@@ -95,7 +99,7 @@ interface SettingsStoreState {
   llm: LlmSettings | null;
   websearch: WebSearchView | null;
   availableTools: AvailableTool[] | null;
-  customTools: LayeredList<CustomToolDefinition> | null;
+  customTools: CustomToolsView | null;
   mcpDefs: LayeredList<McpDefItem> | null;
   mcpRuntime: LayeredMcpRuntime | null;
   agentIds: string[];
@@ -138,6 +142,12 @@ interface SettingsStore extends SettingsStoreState {
     scope?: ToolScope,
   ) => Promise<void>;
   removeCustomTool: (id: string, scope?: ToolScope) => Promise<void>;
+  saveCustomSuite: (
+    id: string,
+    def: CustomSuiteDefinition,
+    scope?: ToolScope,
+  ) => Promise<void>;
+  removeCustomSuite: (id: string, scope?: ToolScope) => Promise<void>;
   saveMcpServer: (
     id: string,
     def: McpServerDefinition,
@@ -412,8 +422,31 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       });
     },
 
-    handleWorkspaceChange: (_paths) => {
+    handleWorkspaceChange: (paths) => {
       // Settings drafts hydrate only from gate commits (`settings/changed`).
+      // The capability catalog is different: `.litecode` can change outside
+      // the writer, so invalidate/refetch it without touching any draft.
+      const catalogChanged = paths.some((path) => {
+        const normalized = path.replaceAll("\\", "/");
+        return (
+          normalized.endsWith(".litecode/custom_tools.json") ||
+          normalized.endsWith(".litecode/mcp.json")
+        );
+      });
+      if (!catalogChanged) return;
+      set((s) => {
+        const docClock = { ...s.docClock };
+        delete docClock.availableTools;
+        return { docClock };
+      });
+      if (get().open && get().section === "agents") {
+        void loadDocuments(["availableTools"], {
+          forceRevisioned: true,
+          forceExcludes: false,
+        }).catch(() => {
+          // The stale clock stays invalid; the next section load retries.
+        });
+      }
     },
 
     noteWorkspaceReady: async () => {
@@ -545,6 +578,45 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
     removeCustomTool: (id, scope = "global") =>
       withTurnGuard(async () => {
         const { revision } = await deleteCustomTool(id, scope);
+        const [customTools, availableTools] = await Promise.all([
+          getCustomTools(),
+          getAvailableTools(),
+        ]);
+        await get().refreshAgents();
+        set({
+          revision,
+          customTools,
+          availableTools,
+          docClock: stampClock(
+            get().docClock,
+            ["customTools", "availableTools"],
+            revision,
+          ),
+        });
+      }),
+
+    saveCustomSuite: (id, def, scope = "global") =>
+      withTurnGuard(async () => {
+        const { revision } = await putCustomSuite(id, def, scope);
+        const [customTools, availableTools] = await Promise.all([
+          getCustomTools(),
+          getAvailableTools(),
+        ]);
+        set({
+          revision,
+          customTools,
+          availableTools,
+          docClock: stampClock(
+            get().docClock,
+            ["customTools", "availableTools"],
+            revision,
+          ),
+        });
+      }),
+
+    removeCustomSuite: (id, scope = "global") =>
+      withTurnGuard(async () => {
+        const { revision } = await deleteCustomSuite(id, scope);
         const [customTools, availableTools] = await Promise.all([
           getCustomTools(),
           getAvailableTools(),

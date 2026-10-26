@@ -32,6 +32,7 @@ fn build_state(project: std::path::PathBuf, global_db_path: std::path::PathBuf) 
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
+        workspace_custom_suites: Default::default(),
     };
     let settings = ConfigManager::load_global_from(&global_db_path).expect("load global");
     let resolved = ConfigManager::resolve(

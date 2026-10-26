@@ -102,9 +102,8 @@ export interface WebSearchView {
 
 export interface AgentToolBinding {
   enabled: boolean;
-  policy?: ToolPolicy;
-  path_mode?: BindingPathMode;
-  last_applied_preset?: ToolPreset | null;
+  /** Permission intent; policy/path are derived by the backend at call time. */
+  preset?: ToolPreset | null;
   /** Static MCP tool allowlist; null/undefined exposes the server's full catalog. */
   allowed_tools?: string[] | null;
 }
@@ -205,19 +204,52 @@ export interface ToolPermissionRule {
 export interface CustomToolDefinition {
   name: string;
   description?: string;
-  /** direct (default) or code-only through run_code. */
+  /** Standalone tools only; suite members omit it and inherit from the suite. */
   surface?: CallSurface;
   schema: ToolSchema;
-  /** Code-surface result schema; when set, stdout must be a JSON object. */
-  data_schema?: Record<string, unknown>;
+  /** Code-surface result schema; required on code, forbidden on direct. */
+  output_schema?: Record<string, unknown>;
   command: string;
   args?: string[];
   timeout?: number;
-  /** Non-empty: Agents can switch ALL/SAFE. SAFE walks these rules in order. */
+  /** Standalone only: Agents can switch ALL/SAFE. Suite members leave it empty. */
   rules?: ToolPermissionRule[];
-  /** Optional Agents one-card suite id. */
+  /** Suite member reference; the suite owns surface and rules. */
   suite?: string | null;
-  suite_label?: string | null;
+}
+
+export interface CustomSuiteDefinition {
+  surface: CallSurface;
+  label?: string;
+  rules?: ToolPermissionRule[];
+}
+
+export interface CustomToolDiagnostic {
+  source: string;
+  file?: string | null;
+  tool?: string | null;
+  suite?: string | null;
+  field: string;
+  actual?: string | null;
+  expected: string;
+  fix: string;
+  message: string;
+}
+
+export interface ToolRejection {
+  name: string;
+  reason: string;
+}
+
+export interface CustomToolsView {
+  global: CustomToolDefinition[];
+  workspace: CustomToolDefinition[];
+  suites: {
+    global: Record<string, CustomSuiteDefinition>;
+    workspace: Record<string, CustomSuiteDefinition>;
+  };
+  diagnostics: CustomToolDiagnostic[];
+  code_rejections: ToolRejection[];
 }
 
 export type McpTransport =
@@ -472,18 +504,28 @@ export interface LayeredList<T> {
   workspace: T[];
 }
 
-export async function getCustomTools(): Promise<
-  LayeredList<CustomToolDefinition>
-> {
+export async function getCustomTools(): Promise<CustomToolsView> {
   const data = await requestJson<{
     global?: CustomToolDefinition[];
     workspace?: CustomToolDefinition[];
     custom_tools?: CustomToolDefinition[];
+    suites?: {
+      global?: Record<string, CustomSuiteDefinition>;
+      workspace?: Record<string, CustomSuiteDefinition>;
+    };
+    diagnostics?: CustomToolDiagnostic[];
+    code_rejections?: ToolRejection[];
   }>("/api/settings/custom-tools");
-  if (data.global || data.workspace) {
-    return { global: data.global ?? [], workspace: data.workspace ?? [] };
-  }
-  return { global: data.custom_tools ?? [], workspace: [] };
+  return {
+    global: data.global ?? data.custom_tools ?? [],
+    workspace: data.workspace ?? [],
+    suites: {
+      global: data.suites?.global ?? {},
+      workspace: data.suites?.workspace ?? {},
+    },
+    diagnostics: data.diagnostics ?? [],
+    code_rejections: data.code_rejections ?? [],
+  };
 }
 
 export async function putCustomTool(
@@ -507,6 +549,31 @@ export async function deleteCustomTool(
 ): Promise<RevisionResponse> {
   return requestJson<RevisionResponse>(
     `/api/settings/custom-tools/${encodeURIComponent(id)}${scopeQuery(scope)}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function putCustomSuite(
+  id: string,
+  def: CustomSuiteDefinition,
+  scope: ToolScope = "global",
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/custom-suites/${encodeURIComponent(id)}${scopeQuery(scope)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(def),
+    },
+  );
+}
+
+export async function deleteCustomSuite(
+  id: string,
+  scope: ToolScope = "global",
+): Promise<RevisionResponse> {
+  return requestJson<RevisionResponse>(
+    `/api/settings/custom-suites/${encodeURIComponent(id)}${scopeQuery(scope)}`,
     { method: "DELETE" },
   );
 }
@@ -670,7 +737,7 @@ export function applyToolEnabled(
 ): Record<string, AgentToolBinding> {
   const current = tools[toolId] ?? {
     enabled: false,
-    last_applied_preset: presetIds.has(toolId) ? "ALL" : null,
+    preset: presetIds.has(toolId) ? "ALL" : null,
   };
   return { ...tools, [toolId]: { ...current, enabled } };
 }

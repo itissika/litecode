@@ -187,6 +187,9 @@ impl fmt::Debug for HostFn {
 }
 
 /// One function inside a binding namespace.
+///
+/// A dotted name nests: `deck.only` is exposed as `tools.deck.only`.
+/// Empty segments are rejected at install time.
 #[derive(Debug, Clone)]
 pub struct HostBinding {
     pub name: String,
@@ -196,6 +199,7 @@ pub struct HostBinding {
 /// A global object whose properties are async host functions.
 ///
 /// `libs` and `console` are reserved. Names must be JavaScript identifiers.
+/// Dotted binding names create nested objects with async functions on the leaf.
 #[derive(Debug, Clone)]
 pub struct Namespace {
     pub name: String,
@@ -525,7 +529,8 @@ fn validate(request: &ExecuteRequest) -> Result<(), String> {
         }
         let mut functions = std::collections::HashSet::new();
         for binding in &namespace.functions {
-            if !is_ident(&binding.name) {
+            let path_is_valid = binding.name.split('.').all(is_ident);
+            if !path_is_valid {
                 return Err(format!(
                     "invalid function '{}.{}'",
                     namespace.name, binding.name
@@ -535,6 +540,17 @@ fn validate(request: &ExecuteRequest) -> Result<(), String> {
                 return Err(format!(
                     "duplicate function '{}.{}'",
                     namespace.name, binding.name
+                ));
+            }
+        }
+        for name in &functions {
+            if functions
+                .iter()
+                .any(|other| name.starts_with(&format!("{other}.")))
+            {
+                return Err(format!(
+                    "function '{}.{name}' nests under another function",
+                    namespace.name
                 ));
             }
         }

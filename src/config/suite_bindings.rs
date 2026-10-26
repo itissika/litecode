@@ -53,28 +53,12 @@ pub fn collapse_custom_suite_bindings(
             || legacy.iter().any(|(_, binding)| binding.enabled);
         let preset = existing
             .as_ref()
-            .and_then(|binding| binding.last_applied_preset)
+            .and_then(|binding| binding.preset)
             .or_else(|| {
                 legacy
                     .iter()
-                    .filter_map(|(_, binding)| binding.last_applied_preset)
+                    .filter_map(|(_, binding)| binding.preset)
                     .max_by_key(|preset| preset_rank(*preset))
-            });
-        let (policy, path_mode) = existing
-            .as_ref()
-            .map(|binding| (binding.policy.clone(), binding.path_mode))
-            .or_else(|| {
-                legacy
-                    .iter()
-                    .next()
-                    .map(|(_, binding)| (binding.policy.clone(), binding.path_mode))
-            })
-            .unwrap_or_else(|| {
-                preset
-                    .map(|preset| crate::permission::binding_for_tool(&id, preset))
-                    .unwrap_or_else(|| {
-                        (crate::permission::ToolPolicy::default(), Default::default())
-                    })
             });
         let allowed_tools = existing
             .as_ref()
@@ -90,24 +74,11 @@ pub fn collapse_custom_suite_bindings(
                 legacy.len()
             ));
         }
-        if legacy.len() > 1 {
-            let first_policy = legacy.first().map(|(_, binding)| &binding.policy);
-            if legacy.iter().any(|(_, binding)| &binding.policy != first_policy.unwrap()) {
-                notes.push(format!(
-                    "custom suite '{suite}' had conflicting legacy policies; kept the first row"
-                ));
-            }
-        }
-        // Keep the first legacy row as the permission template. The suite id
-        // has no rule entry, so `binding_for_tool` would replace a real member
-        // policy with the generic Ask default.
         tools.insert(
             id,
             AgentToolBinding {
                 enabled,
-                policy,
-                path_mode,
-                last_applied_preset: preset,
+                preset,
                 allowed_tools,
             },
         );
@@ -132,19 +103,16 @@ mod tests {
             args: Vec::new(),
             timeout: 30,
             rules: Vec::new(),
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: suite.map(str::to_string),
-            suite_label: None,
-            data_schema: None,
+            output_schema: None,
         }
     }
 
     fn binding(enabled: bool, preset: Option<ToolPreset>) -> AgentToolBinding {
         AgentToolBinding {
             enabled,
-            policy: crate::permission::ToolPolicy::default(),
-            path_mode: Default::default(),
-            last_applied_preset: preset,
+            preset,
             allowed_tools: None,
         }
     }
@@ -162,29 +130,21 @@ mod tests {
         assert!(!tools.contains_key("b"));
         let suite = tools.get("suite:deck").expect("suite row");
         assert!(suite.enabled);
-        assert_eq!(suite.last_applied_preset, Some(ToolPreset::Safe));
+        assert_eq!(suite.preset, Some(ToolPreset::Safe));
     }
 
     #[test]
-    fn legacy_preset_keeps_the_member_policy_template() {
+    fn legacy_preset_keeps_the_strongest_intent() {
         let defs = vec![custom("a", Some("deck")), custom("b", Some("deck"))];
-        let mut first = binding(true, Some(ToolPreset::Safe));
-        first.policy = crate::permission::ToolPolicy::allow_all();
-        first.path_mode = crate::permission::BindingPathMode::Unrestricted;
         let mut tools = HashMap::from([
-            ("a".into(), first),
+            ("a".into(), binding(true, Some(ToolPreset::Safe))),
             ("b".into(), binding(false, Some(ToolPreset::All))),
         ]);
 
         collapse_custom_suite_bindings(&mut tools, &defs);
 
         let suite = tools.get("suite:deck").expect("suite row");
-        assert_eq!(suite.last_applied_preset, Some(ToolPreset::Safe));
-        assert_eq!(suite.policy, crate::permission::ToolPolicy::allow_all());
-        assert_eq!(
-            suite.path_mode,
-            crate::permission::BindingPathMode::Unrestricted
-        );
+        assert_eq!(suite.preset, Some(ToolPreset::Safe));
     }
 
     #[test]

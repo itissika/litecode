@@ -11,15 +11,9 @@ use crate::session::store::Session;
 use crate::tool::write_lock::ResourceKey;
 use crate::types::ToolCallResult;
 
-/// Where a tool may be called. The declaration lives on the tool.
-///
-/// `Direct` is the model-facing function call. `Code` is reachable only as
-/// `tools["name"]` inside `run_code`. A tool has exactly one surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolSurface {
-    Direct,
-    Code,
-}
+/// Where a tool may be called. The declaration lives on the tool and is the
+/// same enum the settings/catalog layers persist as `CallSurface`.
+pub use crate::config::schema::CallSurface as ToolSurface;
 
 /// Cross-cutting execution facts prepared once by the executor. These values
 /// are deliberately separate from model-controlled tool JSON.

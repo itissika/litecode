@@ -45,6 +45,7 @@ fn test_state(
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
+        workspace_custom_suites: Default::default(),
     };
     let agent = test_agent(vec![], "default", 50);
     let resolved = test_resolved("default", &agent.tools);

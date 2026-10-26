@@ -41,6 +41,7 @@ fn light_workspace(dir: &std::path::Path) -> WorkspaceState {
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
+        workspace_custom_suites: Default::default(),
     }
 }
 

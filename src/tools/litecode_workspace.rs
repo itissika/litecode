@@ -15,7 +15,7 @@ use serde_json::Value;
 use crate::config::global_db::tools::mcp_catalog_id;
 use crate::config::guides::{self, GuideTopic};
 use crate::config::schema::{CallSurface, CustomToolDefinition, McpServerDefinition, ToolOrigin};
-use crate::config::settings_writer::{validate_custom_definition, validate_mcp_definition};
+use crate::config::settings_writer::validate_mcp_definition;
 use crate::config::workspace::{read_workspace_custom_tools, read_workspace_mcp};
 use crate::context_pipeline::Context;
 use crate::engines::session_search::short_session_ref;
@@ -25,10 +25,11 @@ use crate::session::SessionDataReader;
 use crate::session::manager::{SessionActivityRow, SessionManager, SessionStatus};
 use crate::tool::Tool;
 use crate::tool::availability::agent_tool_enabled;
-use crate::tool::project::project_tools;
-use crate::tool::registry::builtin_code_surface_tools;
+use crate::tool::project::project_code_specs;
+use crate::tool::registry::builtin_code_specs;
+use crate::tool::spec::FunctionSpec;
 use crate::tool::trait_::ToolExecutionContext;
-use crate::tools::custom::{CustomTool, validate_custom_tool_run};
+use crate::tools::custom::validate_custom_tool_run;
 use crate::types::ToolCallResult;
 use crate::workspace::filter::{
     WorkspaceExcludesFile, active_workspace_excludes, read_workspace_excludes,
@@ -151,38 +152,55 @@ fn code_binding_id(resolved: &crate::config::resolved::ResolvedConfig, tool_name
         .unwrap_or_else(|| tool_name.to_string())
 }
 
+fn effective_custom_definition(
+    def: &CustomToolDefinition,
+    suites: &std::collections::HashMap<String, crate::config::schema::CustomSuiteDefinition>,
+) -> CustomToolDefinition {
+    let mut effective = def.clone();
+    if let Some(suite) = def
+        .suite
+        .as_deref()
+        .and_then(|suite| suites.get(suite))
+    {
+        effective.surface = Some(suite.surface);
+        effective.rules = suite.rules.clone();
+    }
+    effective
+}
+
 fn code_composition_error(
     resolved: &crate::config::resolved::ResolvedConfig,
     agent_id: &str,
-    hub: Arc<crate::tools::custom_hub::CustomToolHub>,
     def: &CustomToolDefinition,
 ) -> Option<String> {
-    if def.surface != CallSurface::Code {
+    if def.effective_surface() != CallSurface::Code {
         return None;
     }
-    let mut candidates: Vec<Arc<dyn Tool>> = builtin_code_surface_tools()
+    let mut specs = builtin_code_specs()
         .into_iter()
-        .filter(|tool| {
-            let binding = code_binding_id(resolved, tool.name());
+        .filter(|spec| {
+            let binding = code_binding_id(resolved, &spec.name);
             agent_tool_enabled(resolved, agent_id, &binding)
         })
-        .collect();
+        .collect::<Vec<_>>();
     for existing in resolved.custom_tools() {
-        if existing.surface == CallSurface::Code
+        if existing.effective_surface() == CallSurface::Code
             && existing.name != def.name
             && agent_tool_enabled(resolved, agent_id, &existing.name)
+            && let Ok(spec) = FunctionSpec::from_custom_definition(&existing)
+            && let Some(spec) = spec.into_code()
         {
-            candidates.push(Arc::new(CustomTool::new(
-                existing,
-                Arc::clone(&hub),
-            )) as Arc<dyn Tool>);
+            specs.push(spec);
         }
     }
-    candidates.push(Arc::new(CustomTool::new(def.clone(), hub)) as Arc<dyn Tool>);
-    project_tools(candidates)
-        .rejected
+    let target = FunctionSpec::from_custom_definition(def)
+        .ok()?
+        .into_code()?;
+    let name = target.name.clone();
+    specs.push(target);
+    project_code_specs(specs)
         .into_iter()
-        .find(|rejected| rejected.name == def.name)
+        .find(|rejected| rejected.name == name)
         .map(|rejected| rejected.reason)
 }
 
@@ -340,16 +358,12 @@ impl LitecodeWorkspaceTool {
         }
     }
 
-    /// Check SDK type-name collisions against the Code tools this agent can
-    /// currently enable. Single-tool admission cannot see this: it is a
-    /// composition failure discovered only when the bundle is projected.
+    /// Check SDK type-name and nested-namespace collisions against the Code
+    /// tools this agent can currently enable. Single-tool admission cannot see
+    /// this: it is a composition failure discovered only when the bundle is
+    /// projected.
     fn code_composition_error(&self, def: &CustomToolDefinition) -> Option<String> {
-        code_composition_error(
-            &self.runtime.resolved,
-            &self.agent_id,
-            Arc::clone(&self.runtime.custom_tool_hub),
-            def,
-        )
+        code_composition_error(&self.runtime.resolved, &self.agent_id, def)
     }
 
     fn run(&self, input: &Value, execution: &ToolExecutionContext) -> ToolCallResult {
@@ -359,22 +373,41 @@ impl LitecodeWorkspaceTool {
                 Err(message) => ToolCallResult::error(message),
                 Ok((mut def, sample_input)) => {
                     let id = def.name.clone();
-                    let surface = def.surface;
-                    if let Err(error) = validate_custom_definition(&id, &mut def) {
+                    let suites = self.runtime.resolved.custom_suites();
+                    crate::config::settings_writer::normalize_custom_definition(&id, &mut def);
+                    if let Some(diagnostic) =
+                        crate::config::settings_writer::custom_definition_diagnostic(
+                            &id,
+                            &def,
+                            &suites,
+                            "validate_custom",
+                            None,
+                        )
+                    {
                         return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- definition: FAIL\n- detail: {error}\n- next: fix the definition; do not register or enable it until validate_custom passes\n",
+                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- source: validate_custom\n- suite: {}\n- field: `{}`\n- expected: {}\n- actual: {}\n- fix: {}\n- detail: {}\n- next: fix the definition; do not register or enable it until validate_custom passes\n",
+                            diagnostic.suite.as_deref().unwrap_or("none"),
+                            diagnostic.field,
+                            diagnostic.expected,
+                            diagnostic.actual.as_deref().unwrap_or("missing"),
+                            diagnostic.fix,
+                            diagnostic.message
+                        ));
+                    }
+                    let effective = effective_custom_definition(&def, &suites);
+                    let surface = effective.effective_surface();
+                    if let Some(reason) = self.code_composition_error(&effective) {
+                        return ToolCallResult::error(format!(
+                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- composition: FAIL\n- detail: {reason}\n- next: rename the tool or one of its schema type fields, remove a standalone/suite name collision, or disable the colliding Code tool; do not enable both together\n",
                             call_surface_label(surface)
                         ));
                     }
-                    if let Some(reason) = self.code_composition_error(&def) {
-                        return ToolCallResult::error(format!(
-                            "# validate_custom — FAIL\n\n- tool: `{id}`\n- {}\n- code admission: PASS\n- composition: FAIL\n- detail: {reason}\n- next: rename the tool or one of its schema type fields, or disable the colliding Code tool; do not enable both together\n",
-                            call_surface_label(surface)
-                        ));
-                    }
-                    let mut result =
-                        validate_custom_tool_run(&def, &sample_input, self.runtime.workspace_root());
-                    if def.surface == CallSurface::Code && result.error.is_none() {
+                    let mut result = validate_custom_tool_run(
+                        &effective,
+                        &sample_input,
+                        self.runtime.workspace_root(),
+                    );
+                    if surface == CallSurface::Code && result.error.is_none() {
                         result.content = result.content.replacen(
                             "- code admission: PASS\n",
                             "- code admission: PASS\n- composition: PASS (current enabled and available Code tools)\n",
@@ -530,7 +563,7 @@ impl LitecodeWorkspaceTool {
             out.push_str(&format!(
                 "- `{}` · {} · `{}` · {} · {} · {}\n",
                 tool.name,
-                call_surface_label(tool.surface),
+                call_surface_label(tool.effective_surface()),
                 command_line_parts(&tool.command, &tool.args),
                 timeout_label(tool.timeout),
                 gate_label(on),
@@ -788,9 +821,9 @@ impl LitecodeWorkspaceTool {
         let mut warnings: Vec<String> = Vec::new();
         let file = match read_workspace_custom_tools(root) {
             Ok(file) => file,
-            Err(_error) => {
+            Err(error) => {
                 out.push_str(&format!(
-                    "- file: `.litecode/custom_tools.json`\n- {FILE_BROKEN}\n"
+                    "- file: `.litecode/custom_tools.json`\n- {FILE_BROKEN}\n- error: {error}\n- next: rewrite the file in the direct/code + suites format, then run `refresh custom_tools` again\n"
                 ));
                 warnings.push("custom_tools.json is broken".into());
                 return (out, warnings);
@@ -812,15 +845,30 @@ impl LitecodeWorkspaceTool {
         for id in &ids {
             let original = file.tools[id].clone();
             let mut checked = original.clone();
-            match validate_custom_definition(id, &mut checked) {
-                Ok(()) => {
+            crate::config::settings_writer::normalize_custom_definition(id, &mut checked);
+            let diagnostic = crate::config::settings_writer::custom_definition_diagnostic(
+                id,
+                &checked,
+                &file.suites,
+                "refresh",
+                Some(".litecode/custom_tools.json".into()),
+            );
+            match diagnostic {
+                None => {
+                    let effective = effective_custom_definition(&checked, &file.suites);
+                    let surface = effective.effective_surface();
                     out.push_str(&format!(
                         "- `{id}`: ok — {} · `{}` · {}\n",
-                        call_surface_label(original.surface),
+                        call_surface_label(surface),
                         command_line_parts(&original.command, &original.args),
                         timeout_label(original.timeout)
                     ));
-                    if original.surface == CallSurface::Code {
+                    if let Some(suite) = effective.suite.as_deref() {
+                        out.push_str(&format!(
+                            "  suite `{suite}`: surface and rules inherited; one binding for the whole suite.\n"
+                        ));
+                    }
+                    if surface == CallSurface::Code {
                         out.push_str(
                             "  code result: `{ ok: true, text: <stdout/content> }`; `run_in_background` is unavailable.\n",
                         );
@@ -833,9 +881,16 @@ impl LitecodeWorkspaceTool {
                     }
                     valid.insert(id.clone(), original);
                 }
-                Err(error) => {
+                Some(diagnostic) => {
                     rejected += 1;
-                    out.push_str(&format!("- `{id}`: rejected — {}\n", reason(&error)));
+                    out.push_str(&format!(
+                        "- `{id}`: rejected — {}\n  field: `{}` · expected: {} · actual: {}\n  fix: {}\n",
+                        diagnostic.message,
+                        diagnostic.field,
+                        diagnostic.expected,
+                        diagnostic.actual.as_deref().unwrap_or("missing"),
+                        diagnostic.fix
+                    ));
                 }
             }
         }
@@ -1197,13 +1252,13 @@ mod tests {
         AgentProfile, AgentToolBinding, GlobalSettings, ToolSchema,
     };
     use crate::config::{ConfigManager, WorkspaceState};
-    use crate::permission::ToolPolicy;
-    use crate::tools::custom_hub::CustomToolHub;
 
     fn def(name: &str) -> CustomToolDefinition {
         CustomToolDefinition {
             name: name.into(),
-            data_schema: None,
+            output_schema: Some(serde_json::json!({
+                "type": "object", "properties": {}, "required": []
+            })),
             description: "composition probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1214,18 +1269,15 @@ mod tests {
             args: Vec::new(),
             timeout: 120,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         }
     }
 
     fn binding() -> AgentToolBinding {
         AgentToolBinding {
             enabled: true,
-            policy: ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::default(),
-            last_applied_preset: None,
+            preset: None,
             allowed_tools: None,
         }
     }
@@ -1243,12 +1295,7 @@ mod tests {
             global,
             WorkspaceState::new(dir.path()),
         );
-        let reason = code_composition_error(
-            &resolved,
-            "default",
-            Arc::new(CustomToolHub::new()),
-            &def("foo_bar"),
-        )
+        let reason = code_composition_error(&resolved, "default", &def("foo_bar"))
         .expect("same PascalCase type must collide");
         assert!(reason.contains("collides"), "{reason}");
     }
@@ -1257,19 +1304,13 @@ mod tests {
     fn composition_check_ignores_direct_tools() {
         let dir = tempfile::tempdir().unwrap();
         let mut def = def("direct_probe");
-        def.surface = CallSurface::Direct;
+        def.surface = Some(CallSurface::Direct);
         let resolved = ConfigManager::resolve_without_catalog(
             GlobalSettings::default(),
             WorkspaceState::new(dir.path()),
         );
         assert!(
-            code_composition_error(
-                &resolved,
-                "default",
-                Arc::new(CustomToolHub::new()),
-                &def,
-            )
-            .is_none()
+            code_composition_error(&resolved, "default", &def).is_none()
         );
     }
 }

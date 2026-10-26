@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::config::global_db::tools::{
     non_transport_name_rejection, reserved_command_name_rejection,
@@ -13,6 +13,7 @@ use crate::runtime::RuntimeHandle;
 use crate::session::manager::SessionManager;
 use crate::tool::capability::{CapabilitySource, MemberSpec, capability_catalog};
 use crate::tool::project::project_tools;
+use crate::tool::spec::{CodeFunctionSpec, FunctionSpec};
 use crate::tool::trait_::Tool;
 use crate::tools::{
     ask_user::AskUserTool,
@@ -100,6 +101,140 @@ fn instantiate_builtin_member(
         _ => return None,
     };
     Some(tool)
+}
+
+/// Code-suite members keep their Tool identity for bindings/permissions, but
+/// the code surface exposes them as `suite.member`. The wrapper changes only
+/// the model-facing name; execution and all cross-cutting facts delegate.
+struct ExposedCodeTool {
+    inner: Arc<dyn Tool>,
+    name: String,
+}
+
+impl ExposedCodeTool {
+    fn new(inner: Arc<dyn Tool>, name: String) -> Self {
+        Self { inner, name }
+    }
+}
+
+impl Tool for ExposedCodeTool {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn surface(&self) -> crate::tool::trait_::ToolSurface {
+        self.inner.surface()
+    }
+
+    fn code_bindings(&self) -> Option<Arc<[String]>> {
+        self.inner.code_bindings()
+    }
+
+    fn is_code_transport(&self) -> bool {
+        self.inner.is_code_transport()
+    }
+
+    fn schema(&self) -> serde_json::Value {
+        self.inner.schema()
+    }
+
+    fn prepare_input(&self, input: &mut serde_json::Value) {
+        self.inner.prepare_input(input);
+    }
+
+    fn schema_arguments<'a>(&self, input: &'a serde_json::Value) -> std::borrow::Cow<'a, serde_json::Value> {
+        self.inner.schema_arguments(input)
+    }
+
+    fn data_schema(&self) -> Option<serde_json::Value> {
+        self.inner.data_schema()
+    }
+
+    fn call(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
+        self.inner.call(input)
+    }
+
+    fn call_inner(&self, input: serde_json::Value) -> crate::types::ToolCallResult {
+        self.inner.call_inner(input)
+    }
+
+    fn call_async(
+        &self,
+        input: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>> {
+        self.inner.call_async(input)
+    }
+
+    fn execute(
+        &self,
+        input: serde_json::Value,
+        execution: crate::tool::trait_::ToolExecutionContext,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::types::ToolCallResult> + Send + '_>> {
+        self.inner.execute(input, execution)
+    }
+
+    fn description(&self, ctx: &crate::context_pipeline::Context) -> String {
+        self.inner.description(ctx)
+    }
+
+    fn timeout(&self) -> Option<std::time::Duration> {
+        self.inner.timeout()
+    }
+
+    fn effects(
+        &self,
+        input: &serde_json::Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> crate::tool::resource_gate::ToolEffects {
+        self.inner.effects(input, path_mode, workspace_root)
+    }
+
+    fn is_concurrency_safe(&self, input: &serde_json::Value) -> bool {
+        self.inner.is_concurrency_safe(input)
+    }
+
+    fn resource_keys(
+        &self,
+        input: &serde_json::Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> Vec<crate::tool::write_lock::ResourceKey> {
+        self.inner.resource_keys(input, path_mode, workspace_root)
+    }
+
+    fn is_cancellable(&self) -> bool {
+        self.inner.is_cancellable()
+    }
+
+    fn releases_lock_after_spawn(&self) -> bool {
+        self.inner.releases_lock_after_spawn()
+    }
+
+    fn max_result_size(&self) -> usize {
+        self.inner.max_result_size()
+    }
+
+    fn validate_input(&self, input: &serde_json::Value) -> std::result::Result<(), String> {
+        self.inner.validate_input(input)
+    }
+
+    fn is_destructive(
+        &self,
+        input: &serde_json::Value,
+        path_mode: crate::workspace::ToolPathMode,
+        workspace_root: &std::path::Path,
+    ) -> bool {
+        self.inner.is_destructive(input, path_mode, workspace_root)
+    }
+
+    fn set_active_session(&self, session_id: String) {
+        self.inner.set_active_session(session_id);
+    }
+
+    fn set_permission_sink(&self, sink: Arc<dyn crate::permission::PermissionSink>) {
+        self.inner.set_permission_sink(sink);
+    }
 }
 
 fn custom_member(resolved: &ResolvedConfig, runtime: &RuntimeHandle, member: &str) -> Option<Arc<dyn Tool>> {
@@ -302,9 +437,19 @@ pub async fn build_tool_list(
                 ));
             }
             CapabilitySource::Custom => {
+                let code_suite = (capability.surface == crate::config::schema::CallSurface::Code)
+                    .then(|| capability.id.strip_prefix("suite:"))
+                    .flatten();
                 for member in capability.member_ids() {
                     if let Some(tool) = custom_member(resolved, runtime, member) {
-                        tools.push(tool);
+                        if let Some(suite) = code_suite {
+                            tools.push(Arc::new(ExposedCodeTool::new(
+                                tool,
+                                format!("{suite}.{member}"),
+                            )));
+                        } else {
+                            tools.push(tool);
+                        }
                     }
                 }
             }
@@ -404,6 +549,18 @@ fn strip_reserved_transport_names(tools: Vec<Arc<dyn Tool>>) -> Vec<Arc<dyn Tool
 
 /// Builtins that currently declare a code surface. Admission for the settings
 /// catalog runs on this set; each tool's own `surface` is still the decision.
+pub fn builtin_code_specs() -> Vec<CodeFunctionSpec> {
+    static SPECS: OnceLock<Vec<CodeFunctionSpec>> = OnceLock::new();
+    SPECS
+        .get_or_init(|| {
+            builtin_code_surface_tools()
+                .into_iter()
+                .filter_map(|tool| FunctionSpec::from_tool(tool.as_ref()).ok()?.into_code())
+                .collect()
+        })
+        .clone()
+}
+
 pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
     let mut tools: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ReadTool::default()),
@@ -462,15 +619,11 @@ mod tests {
     fn default_bindings() -> HashMap<String, AgentToolBinding> {
         let mut tools = HashMap::new();
         for id in core_configurable_tools() {
-            let (policy, path_mode) =
-                crate::permission::presets::binding_for_tool(*id, ToolPreset::All);
             tools.insert(
                 (*id).to_string(),
                 AgentToolBinding {
                     enabled: true,
-                    policy,
-                    path_mode,
-                    last_applied_preset: Some(ToolPreset::All),
+                    preset: Some(ToolPreset::All),
                     allowed_tools: None,
                 },
             );
@@ -480,9 +633,7 @@ mod tests {
                 (*id).to_string(),
                 AgentToolBinding {
                     enabled: true,
-                    policy: crate::permission::ToolPolicy::allow_all(),
-                    path_mode: crate::permission::BindingPathMode::default(),
-                    last_applied_preset: None,
+                    preset: None,
                     allowed_tools: None,
                 },
             );
@@ -570,10 +721,9 @@ mod tests {
             args: Vec::new(),
             timeout: 30,
             rules: Vec::new(),
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
-            suite_label: None,
-            data_schema: None,
+            output_schema: None,
         });
         global.agents.insert(
             "default".into(),
@@ -684,7 +834,7 @@ mod tests {
         fn custom_def(name: &str) -> CustomToolDefinition {
             CustomToolDefinition {
                 name: name.into(),
-                data_schema: None,
+                output_schema: None,
                 description: String::new(),
                 schema: ToolSchema {
                     schema_type: "object".into(),
@@ -695,9 +845,8 @@ mod tests {
                 args: Vec::new(),
                 timeout: 30,
                 rules: Vec::new(),
-                surface: Default::default(),
+                surface: Some(crate::config::schema::CallSurface::Direct),
                 suite: None,
-                suite_label: None,
             }
         }
     }
@@ -719,10 +868,9 @@ mod tests {
                 args: Vec::new(),
                 timeout: 30,
                 rules: Vec::new(),
-                surface: Default::default(),
+                surface: Some(crate::config::schema::CallSurface::Direct),
                 suite: Some("deck".into()),
-                suite_label: Some("Deck".into()),
-                data_schema: None,
+                output_schema: None,
             }
         }
 
@@ -731,13 +879,19 @@ mod tests {
             "suite:deck".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: crate::permission::ToolPolicy::allow_all(),
-                path_mode: crate::permission::BindingPathMode::default(),
-                last_applied_preset: None,
+                preset: None,
                 allowed_tools: None,
             },
         );
         let mut global = GlobalSettings::default();
+        global.custom_suites.insert(
+            "deck".into(),
+            crate::config::schema::CustomSuiteDefinition {
+                surface: crate::config::schema::CallSurface::Direct,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        );
         global.custom_tools = vec![custom("suite_a"), custom("suite_b")];
         global.agents.insert(
             "default".into(),
@@ -752,6 +906,66 @@ mod tests {
         assert!(names.contains(&"suite_a"));
         assert!(names.contains(&"suite_b"));
         assert!(!names.contains(&"suite:deck"));
+    }
+
+    #[test]
+    fn code_suite_exposes_namespaced_members_even_with_one_member() {
+        use crate::config::schema::{CallSurface, CustomSuiteDefinition, CustomToolDefinition, ToolSchema};
+
+        let mut bindings = default_bindings();
+        bindings.insert(
+            "suite:deck".into(),
+            AgentToolBinding {
+                enabled: true,
+                preset: None,
+                allowed_tools: None,
+            },
+        );
+        let mut global = GlobalSettings::default();
+        global.custom_suites.insert(
+            "deck".into(),
+            CustomSuiteDefinition {
+                surface: CallSurface::Code,
+                label: "Deck".into(),
+                rules: Vec::new(),
+            },
+        );
+        global.custom_tools.push(CustomToolDefinition {
+            name: "only".into(),
+            description: String::new(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 30,
+            rules: Vec::new(),
+            surface: None,
+            suite: Some("deck".into()),
+            output_schema: Some(serde_json::json!({
+                "type": "object", "properties": {}, "required": []
+            })),
+        });
+        global.agents.insert(
+            "default".into(),
+            AgentProfile {
+                tools: bindings,
+                ..Default::default()
+            },
+        );
+        let resolved = resolve_without_catalog(global, WorkspaceState::new("/tmp"));
+        let names: Vec<String> = list_tools(&resolved, 0)
+            .iter()
+            .map(|tool| tool.name().to_string())
+            .collect();
+        assert!(
+            names.contains(&"deck.only".to_string()),
+            "names: {names:?}"
+        );
+        assert!(!names.contains(&"only".to_string()), "names: {names:?}");
+        assert!(!names.contains(&"deck".to_string()), "names: {names:?}");
     }
 
     #[test]
@@ -779,9 +993,7 @@ mod tests {
             "mcp_dead".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: crate::permission::ToolPolicy::allow_all(),
-                path_mode: crate::permission::BindingPathMode::default(),
-                last_applied_preset: None,
+                preset: None,
                 allowed_tools: None,
             },
         );
@@ -917,7 +1129,6 @@ mod tests {
         assert!(narrow_sdk.contains("[\"apply_edits\"]"));
     }
 
-    #[test]
     #[test]
     fn webfetch_websearch_project_to_code_not_direct() {
         use crate::permission::{PermissionEngine, deny_permission_sink};

@@ -1140,9 +1140,7 @@ mod tests {
                     "slow".to_string(),
                     crate::config::schema::AgentToolBinding {
                         enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
+                        preset: None,
                         allowed_tools: None,
                     },
                 )]),
@@ -1241,9 +1239,7 @@ mod tests {
                     "commit".to_string(),
                     crate::config::schema::AgentToolBinding {
                         enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
+                        preset: None,
                         allowed_tools: None,
                     },
                 )]),
@@ -1345,9 +1341,7 @@ mod tests {
                     name.clone(),
                     crate::config::schema::AgentToolBinding {
                         enabled: true,
-                        policy: crate::permission::ToolPolicy::allow_all(),
-                        path_mode: crate::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
+                        preset: None,
                         allowed_tools: None,
                     },
                 )]),

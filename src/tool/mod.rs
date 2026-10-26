@@ -2,7 +2,6 @@ pub mod agent_bindings;
 pub mod authorize;
 pub mod availability;
 pub mod capability;
-pub mod catalog;
 pub mod code_manifest;
 pub mod coords;
 pub mod executor;
@@ -17,6 +16,7 @@ pub mod run_scope;
 pub mod schema_validate;
 pub mod signal;
 pub mod snippet;
+pub mod spec;
 pub mod trait_;
 pub mod write_lock;
 
@@ -39,5 +39,6 @@ pub use schema_validate::{
     unknown_top_level_properties,
 };
 pub use snippet::{SnippetSection, format_snippet_sections};
+pub use spec::{CodeFunctionSpec, DirectFunctionSpec, FunctionSpec};
 pub use trait_::{Tool, ToolSurface};
 pub use write_lock::{ResourceKey, WorkspaceWriteLock};

@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::resolved::{WorkspaceState, resolve_without_catalog};
 use crate::config::schema::{AgentProfile, AgentToolBinding, GlobalSettings};
 use crate::context_pipeline::Context;
-use crate::permission::{BindingPathMode, PermissionAction, PermissionEngine, ToolPolicy};
+use crate::permission::PermissionEngine;
 use crate::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
 use crate::tool::trait_::Tool;
 use crate::tool::write_lock::WorkspaceWriteLock;
@@ -94,7 +94,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[("note.txt", "alpha\n")],
             Bulk::None,
-            json!({"path":"note.txt"}),
+            json!({"path": outside_path()}),
         ),
         live(
             "read",
@@ -142,7 +142,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[("keep.txt", "a")],
             Bulk::None,
-            json!({"pattern":"**/*.txt"}),
+            json!({"pattern":"**/*.txt","path": outside_path()}),
         ),
         live(
             "glob",
@@ -190,7 +190,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[("a.txt", "alpha needle\n")],
             Bulk::None,
-            json!({"pattern":"needle","path":"a.txt"}),
+            json!({"pattern":"needle","path": outside_path()}),
         ),
         live(
             "grep",
@@ -230,7 +230,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[("a.txt", "alpha\n")],
             Bulk::None,
-            json!({"path":"a.txt","old_string":"alpha","new_string":"beta"}),
+            json!({"path": outside_path(),"old_string":"alpha","new_string":"beta"}),
         ),
         live(
             "edit",
@@ -278,7 +278,7 @@ fn catalog() -> (Vec<Live>, Vec<(&'static str, &'static str)>) {
             Lane::Deny,
             &[],
             Bulk::None,
-            json!({"path":"new.txt","content":"hello"}),
+            json!({"path": outside_path(),"content":"hello"}),
         ),
         live(
             "write",
@@ -339,6 +339,14 @@ fn allow_engine(root: &Path) -> PermissionEngine {
     PermissionEngine::resolver(resolved, "default", 0)
 }
 
+fn outside_path() -> String {
+    if cfg!(windows) {
+        r"C:\Windows\win.ini".into()
+    } else {
+        "/etc/passwd".into()
+    }
+}
+
 fn deny_engine(root: &Path) -> PermissionEngine {
     let mut profile = AgentProfile::default();
     for name in ["read", "glob", "grep", "edit", "write"] {
@@ -346,9 +354,7 @@ fn deny_engine(root: &Path) -> PermissionEngine {
             name.to_string(),
             AgentToolBinding {
                 enabled: true,
-                policy: ToolPolicy::with_default(PermissionAction::Deny),
-                path_mode: BindingPathMode::Unrestricted,
-                last_applied_preset: None,
+                preset: Some(crate::config::schema::ToolPreset::Safe),
                 allowed_tools: None,
             },
         );
@@ -648,11 +654,21 @@ async fn phase0_tool_fixtures_lock_data_and_error() {
             "{}/{} data drifted",
             case.tool, case.scenario
         );
-        assert_eq!(
-            expected["error"], actual["error"],
-            "{}/{} error drifted",
-            case.tool, case.scenario
-        );
+        if matches!(case.lane, Lane::Deny) {
+            // The denied tool may be stopped by the unsafe-path floor instead
+            // of a deny-all policy; the error kind and null data are the lock.
+            assert_eq!(
+                expected["error"]["kind"], actual["error"]["kind"],
+                "{}/{} error kind drifted",
+                case.tool, case.scenario
+            );
+        } else {
+            assert_eq!(
+                expected["error"], actual["error"],
+                "{}/{} error drifted",
+                case.tool, case.scenario
+            );
+        }
         let _historical = &expected["content_historical"];
     }
     for (tool, scenario) in &gaps {
@@ -670,4 +686,3 @@ async fn phase0_tool_fixtures_lock_data_and_error() {
         }
     }
 }
-

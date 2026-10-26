@@ -232,16 +232,15 @@ pub fn build_global_with_custom_tool(
     let mut settings = default_test_global();
     let def = CustomToolDefinition {
         name: name.into(),
-        data_schema: None,
+        output_schema: None,
         description: String::new(),
         schema,
         command: command.into(),
         args,
         timeout: 120,
         rules: Vec::new(),
-        surface: Default::default(),
+        surface: Some(litecode::config::schema::CallSurface::Direct),
         suite: None,
-        suite_label: None,
     };
     settings.custom_tools.push(def);
     if let Some(agent) = settings.agents.get_mut("default") {

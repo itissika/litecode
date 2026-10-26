@@ -211,6 +211,19 @@ fn validate_log_level(log: &super::schema::LogSettings) -> Result<()> {
 fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
     use super::global_db::tools;
     let mut names = std::collections::HashSet::new();
+    for (suite_name, suite) in &global.custom_suites {
+        crate::config::settings_writer::validate_tool_id(suite_name)?;
+        if tools::is_core_tool(suite_name) || tools::is_optional_builtin(suite_name) {
+            return Err(LitecodeError::Config(format!(
+                "custom suite '{suite_name}' conflicts with a builtin tool"
+            )));
+        }
+        if let Some(error) = crate::permission::policy::custom_rule_ids_error(&suite.rules) {
+            return Err(LitecodeError::Config(format!(
+                "custom suite '{suite_name}' has invalid rules: {error}"
+            )));
+        }
+    }
     for tool in &global.custom_tools {
         if !names.insert(tool.name.as_str()) {
             return Err(LitecodeError::Config(format!(
@@ -218,23 +231,12 @@ fn validate_custom_tools(global: &GlobalSettings) -> Result<()> {
                 tool.name
             )));
         }
-        if let Some(reason) = tools::non_transport_name_rejection(&tool.name)
-            .or_else(|| tools::reserved_command_name_rejection(&tool.name))
-        {
-            return Err(LitecodeError::Config(reason.to_string()));
-        }
-        if tools::is_core_tool(&tool.name) || tools::is_optional_builtin(&tool.name) {
-            return Err(LitecodeError::Config(format!(
-                "custom tool '{}' conflicts with a builtin tool",
-                tool.name
-            )));
-        }
-        if tool.command.trim().is_empty() {
-            return Err(LitecodeError::Config(format!(
-                "custom tool '{}' command must not be empty",
-                tool.name
-            )));
-        }
+        let mut checked = tool.clone();
+        crate::config::settings_writer::validate_custom_definition_with_suites(
+            &tool.name,
+            &mut checked,
+            &global.custom_suites,
+        )?;
     }
     Ok(())
 }
@@ -269,9 +271,7 @@ mod tests {
     fn binding() -> AgentToolBinding {
         AgentToolBinding {
             enabled: true,
-            policy: crate::permission::ToolPolicy::allow_all(),
-            path_mode: crate::permission::BindingPathMode::default(),
-            last_applied_preset: None,
+            preset: None,
             allowed_tools: None,
         }
     }

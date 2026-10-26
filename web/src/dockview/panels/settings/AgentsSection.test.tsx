@@ -459,7 +459,7 @@ describe("AgentsSection subagent tool cards", () => {
     expect(saveAgent).toHaveBeenCalledTimes(1);
     const payload = saveAgent.mock.calls[0][1] as AgentProfile;
     expect(payload.tools.read).toEqual(
-      expect.objectContaining({ enabled: true, last_applied_preset: "SAFE" }),
+      expect.objectContaining({ enabled: true, preset: "SAFE" }),
     );
   });
 });
@@ -523,8 +523,7 @@ describe("AgentsSection LSP bind persist loop", () => {
             lsp: {
               ...saved.tools.lsp,
               enabled: true,
-              last_applied_preset: "ALL",
-              policy: { default: "allow", default_id: "default", rules: [] },
+              preset: "ALL",
             },
           },
         },
@@ -542,7 +541,7 @@ describe("AgentsSection LSP bind persist loop", () => {
     let lspListed = true;
     let lastLsp: AgentToolBinding = {
       enabled: true,
-      last_applied_preset: "ALL",
+      preset: "ALL",
     };
     saveAgent.mockImplementation(async (id: string, next: AgentProfile) => {
       if (next.tools.lsp) lastLsp = next.tools.lsp;
@@ -578,8 +577,8 @@ describe("AgentsSection LSP bind persist loop", () => {
       agents: {
         default: profile({
           tools: {
-            lsp: { enabled: true, last_applied_preset: "ALL" },
-            mcp_other_ws: { enabled: true, last_applied_preset: null },
+            lsp: { enabled: true, preset: "ALL" },
+            mcp_other_ws: { enabled: true, preset: null },
           },
         }),
       },
@@ -597,7 +596,7 @@ describe("AgentsSection LSP bind persist loop", () => {
       agents: {
         default: profile({
           tools: {
-            mcp_other_ws: { enabled: true, last_applied_preset: null },
+            mcp_other_ws: { enabled: true, preset: null },
           },
         }),
       },
@@ -609,13 +608,7 @@ describe("AgentsSection LSP bind persist loop", () => {
         const binding = next.tools[key];
         tools[key] = {
           ...binding,
-          policy: binding.policy ?? {
-            default: "allow",
-            default_id: "default",
-            rules: [],
-          },
-          path_mode: binding.path_mode ?? "unrestricted",
-          last_applied_preset: binding.last_applied_preset ?? null,
+          preset: binding.preset ?? null,
           allowed_tools: binding.allowed_tools ?? null,
         };
       }
@@ -634,7 +627,7 @@ describe("AgentsSection LSP bind persist loop", () => {
     expect(saveAgent).toHaveBeenCalledTimes(1);
     expect(saveAgent.mock.calls[0][1].tools.mcp_other_ws).toEqual({
       enabled: true,
-      last_applied_preset: null,
+      preset: null,
     });
     for (let i = 0; i < 6; i++) {
       await vi.advanceTimersByTimeAsync(400);

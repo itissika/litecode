@@ -30,9 +30,7 @@ mod tests {
     fn binding() -> AgentToolBinding {
         AgentToolBinding {
             enabled: true,
-            policy: Default::default(),
-            path_mode: Default::default(),
-            last_applied_preset: None,
+            preset: None,
             allowed_tools: None,
         }
     }

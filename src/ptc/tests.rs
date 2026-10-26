@@ -88,6 +88,17 @@ fn failure_kind(outcome: &Outcome) -> FailureKind {
 }
 
 #[tokio::test]
+async fn dotted_binding_installs_a_nested_namespace() {
+    let echo = HostFn::new(|_, _, _, _| async move { Ok(json!({ "nested": true })) });
+    let outcome = run(
+        "return await tools.deck.only({ n: 1 });",
+        tools(vec![("deck.only", echo)]),
+    )
+    .await;
+    assert_eq!(value_of(&outcome), &json!({ "nested": true }));
+}
+
+#[tokio::test]
 async fn budget_interrupts_infinite_loop() {
     let started = Instant::now();
     let outcome = run_with(

@@ -24,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::schema::{CallSurface, CustomToolDefinition};
 use crate::context_pipeline::Context;
+use crate::tool::spec::{FunctionSpec, custom_description, custom_input_schema};
 use crate::tool::trait_::ToolExecutionContext;
 use crate::tool::{Tool, ToolSurface};
 use crate::tools::custom_hub::{CustomToolExitNotice, CustomToolHub, CustomToolOutcome};
@@ -55,55 +56,6 @@ impl CustomTool {
     }
 }
 
-/// The only result shape a custom tool can expose inside `run_code` in v1.
-///
-/// Custom tools are user-owned CLI processes; giving each one its own output
-/// schema would turn this into a second public API. For Code calls the stdout
-/// text stays opaque. Programs that want JSON can `JSON.parse(result.text)`
-/// themselves.
-fn custom_code_data_schema() -> Value {
-    serde_json::json!({
-        "type": "object",
-        "properties": {
-            "text": { "type": "string" }
-        },
-        "required": ["text"]
-    })
-}
-
-fn custom_description(config: &CustomToolDefinition) -> String {
-    let trimmed = config.description.trim();
-    if trimmed.is_empty() {
-        format!("External tool: {}", config.name)
-    } else {
-        trimmed.to_string()
-    }
-}
-
-/// One schema for both the direct and code projections. The background knob is
-/// a direct-only affordance: inside `run_code` a job id is not an awaited result.
-fn custom_tool_schema(config: &CustomToolDefinition) -> Value {
-    let mut schema = config.to_json_schema();
-    if config.surface == CallSurface::Direct
-        && let Some(obj) = schema.as_object_mut()
-    {
-        let props = obj
-            .entry("properties")
-            .or_insert_with(|| serde_json::json!({}))
-            .as_object_mut();
-        if let Some(props) = props {
-            props.insert(
-                "run_in_background".into(),
-                serde_json::json!({
-                    "type": "boolean",
-                    "description": "When true, start as a background job and return job_id immediately; result is delivered later via CustomToolSettled mailbox (default false)."
-                }),
-            );
-        }
-    }
-    schema
-}
-
 fn code_result(mut result: ToolCallResult, typed: bool, name: &str) -> ToolCallResult {
     let success = result.error.is_none()
         && matches!(result.level, ToolSignalLevel::Ok | ToolSignalLevel::Warning);
@@ -119,14 +71,14 @@ fn code_result(mut result: ToolCallResult, typed: bool, name: &str) -> ToolCallR
             Ok(_) => ToolCallResult::error_with_kind(
                 ToolErrorKind::InvalidOutput,
                 format!(
-                    "custom tool '{name}' declares data_schema, so stdout must be a JSON object"
+                    "custom tool '{name}' declares output_schema, so stdout must be a JSON object"
                 ),
                 false,
             ),
             Err(error) => ToolCallResult::error_with_kind(
                 ToolErrorKind::InvalidOutput,
                 format!(
-                    "custom tool '{name}' declares data_schema, so stdout must be JSON: {error}"
+                    "custom tool '{name}' declares output_schema, so stdout must be JSON: {error}"
                 ),
                 false,
             ),
@@ -144,7 +96,7 @@ fn structured_failure(
     stdout: &str,
     stderr: &str,
 ) -> Option<ToolCallResult> {
-    if config.surface != CallSurface::Code {
+    if config.effective_surface() != CallSurface::Code {
         return None;
     }
     let Value::Object(envelope) = serde_json::from_str::<Value>(stdout).ok()? else {
@@ -174,46 +126,21 @@ fn structured_failure(
     Some(result)
 }
 
-struct CustomCodeProbe<'a> {
-    config: &'a CustomToolDefinition,
-}
-
-impl Tool for CustomCodeProbe<'_> {
-    fn name(&self) -> &str {
-        &self.config.name
-    }
-
-    fn surface(&self) -> ToolSurface {
-        ToolSurface::Code
-    }
-
-    fn schema(&self) -> Value {
-        custom_tool_schema(self.config)
-    }
-
-    fn data_schema(&self) -> Option<Value> {
-        (self.config.surface == CallSurface::Code).then(|| {
-            self.config
-                .data_schema
-                .clone()
-                .unwrap_or_else(custom_code_data_schema)
-        })
-    }
-
-    fn description(&self, _ctx: &Context) -> String {
-        custom_description(self.config)
-    }
-}
-
 /// Validate the Code-facing contract without registering or running the tool.
 /// The error is deliberately suitable for settings UI and `validate_custom`.
 pub fn validate_custom_code_contract(
     def: &CustomToolDefinition,
+    surface: CallSurface,
 ) -> std::result::Result<(), String> {
-    if def.surface != CallSurface::Code {
+    if surface != CallSurface::Code {
         return Ok(());
     }
-    crate::tool::code_manifest::validate_code_contract(&CustomCodeProbe { config: def })
+    let spec = FunctionSpec::from_custom_definition(def)
+        .map_err(|reason| format!("surface 'code' custom tool cannot be admitted: {reason}"))?;
+    let Some(spec) = spec.into_code() else {
+        return Ok(());
+    };
+    crate::tool::code_manifest::validate_code_contract(&spec)
         .map(|_| ())
         .map_err(|reason| {
             format!(
@@ -228,23 +155,17 @@ impl Tool for CustomTool {
     }
 
     fn surface(&self) -> ToolSurface {
-        match self.config.surface {
-            CallSurface::Direct => ToolSurface::Direct,
-            CallSurface::Code => ToolSurface::Code,
-        }
+        self.config.effective_surface()
     }
 
     fn schema(&self) -> Value {
-        custom_tool_schema(&self.config)
+        custom_input_schema(&self.config)
     }
 
     fn data_schema(&self) -> Option<Value> {
-        (self.config.surface == CallSurface::Code).then(|| {
-            self.config
-                .data_schema
-                .clone()
-                .unwrap_or_else(custom_code_data_schema)
-        })
+        (self.config.effective_surface() == CallSurface::Code)
+            .then(|| self.config.output_schema.clone())
+            .flatten()
     }
 
     fn execute(
@@ -255,7 +176,7 @@ impl Tool for CustomTool {
         let hub = Arc::clone(&self.hub);
         let config = self.config.clone();
         Box::pin(async move {
-            let code_surface = config.surface == CallSurface::Code;
+            let code_surface = config.effective_surface() == CallSurface::Code;
             let background = input
                 .get("run_in_background")
                 .and_then(Value::as_bool)
@@ -286,7 +207,7 @@ impl Tool for CustomTool {
                 Err(e) => ToolCallResult::error(format!("custom tool task join failed: {e}")),
             };
             if code_surface {
-                code_result(result, config.data_schema.is_some(), &config.name)
+                code_result(result, config.output_schema.is_some(), &config.name)
             } else {
                 result
             }
@@ -330,7 +251,7 @@ pub fn validate_custom_tool_run(
     sample_input: &Value,
     workspace_root: &Path,
 ) -> ToolCallResult {
-    if let Err(error) = validate_custom_code_contract(def) {
+    if let Err(error) = validate_custom_code_contract(def, def.effective_surface()) {
         return ToolCallResult::error(format!(
             "# validate_custom — FAIL\n\n- tool: `{}`\n- surface: `code`\n- code admission: FAIL\n- detail: {error}\n",
             def.name
@@ -361,14 +282,15 @@ pub fn validate_custom_tool_run(
             def.rules.len()
         )
     };
-    let typed = def.surface == CallSurface::Code && def.data_schema.is_some();
-    let surface_note = match def.surface {
+    let surface = def.effective_surface();
+    let typed = surface == CallSurface::Code && def.output_schema.is_some();
+    let surface_note = match surface {
         CallSurface::Direct => {
             "- surface: `direct`\n- program result: n/a (direct tools are called outside run_code)\n- background: available\n".to_string()
         }
         CallSurface::Code => {
             let shape = if typed {
-                "- program result: `{ ok: true, <data_schema fields> }` from the stdout JSON object\n"
+                "- program result: `{ ok: true, <output_schema fields> }` from the stdout JSON object\n"
             } else {
                 "- program result: `{ ok: true, text: <stdout/content> }`; parse text yourself if it is JSON\n"
             };
@@ -383,7 +305,7 @@ pub fn validate_custom_tool_run(
         && !matches!(serde_json::from_str::<Value>(&result.content), Ok(Value::Object(_)))
     {
         return ToolCallResult::error(format!(
-            "# validate_custom — FAIL\n\n- tool: `{}`\n- command: `{}`\n- surface: `code`\n- detail: data_schema is declared, so stdout must be a JSON object; got:\n\n{}",
+            "# validate_custom — FAIL\n\n- tool: `{}`\n- command: `{}`\n- surface: `code`\n- detail: output_schema is declared, so stdout must be a JSON object; got:\n\n{}",
             def.name, def.command, result.content
         ));
     }
@@ -393,7 +315,7 @@ pub fn validate_custom_tool_run(
             def.name, def.command, result.content
         )),
         _ => {
-            let preview = if def.surface == CallSurface::Code {
+            let preview = if surface == CallSurface::Code {
                 let value = if typed {
                     match serde_json::from_str::<Value>(&result.content) {
                         Ok(Value::Object(mut map)) => {
@@ -582,7 +504,7 @@ fn run_sync_with_lifecycle(
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
             match output.status.code() {
-                Some(0) if config.surface == CallSurface::Code && config.data_schema.is_some() => {
+                Some(0) if config.effective_surface() == CallSurface::Code && config.output_schema.is_some() => {
                     ToolCallResult::ok(stdout.into_owned())
                 }
                 Some(0) => result_from_stdout(stdout.into_owned()),
@@ -936,7 +858,7 @@ mod tests {
         use crate::tool::trait_::ToolExecutionContext;
         let def = CustomToolDefinition {
             name: "no_stdin".into(),
-            data_schema: None,
+            output_schema: None,
             description: "ignores stdin".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -947,9 +869,8 @@ mod tests {
             args: vec!["-c".into(), "exec 0<&-; echo no-stdin-marker".into()],
             timeout: 15,
             rules: Vec::new(),
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
-            suite_label: None,
         };
         let big = "x".repeat(1 << 20);
         let exec = ToolExecutionContext {
@@ -977,7 +898,7 @@ mod tests {
     fn sh_def(name: &str, script: &str, timeout: u64) -> CustomToolDefinition {
         CustomToolDefinition {
             name: name.into(),
-            data_schema: None,
+            output_schema: None,
             description: name.into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -988,9 +909,8 @@ mod tests {
             args: vec!["-c".into(), script.into()],
             timeout,
             rules: Vec::new(),
-            surface: Default::default(),
+            surface: Some(crate::config::schema::CallSurface::Direct),
             suite: None,
-            suite_label: None,
         }
     }
 
@@ -1060,9 +980,14 @@ mod tests {
     }
 
     #[test]
-    fn code_surface_has_opaque_data_and_no_background_knob() {
+    fn code_surface_uses_output_schema_and_no_background_knob() {
         let mut def = sh_def("code_echo", "echo code-marker", 10);
-        def.surface = CallSurface::Code;
+        def.surface = Some(CallSurface::Code);
+        def.output_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "text": { "type": "string" } },
+            "required": ["text"]
+        }));
         let tool = CustomTool::new(def.clone(), Arc::new(CustomToolHub::new()));
         assert_eq!(tool.surface(), ToolSurface::Code);
         assert!(tool.schema().get("properties").is_some());
@@ -1074,7 +999,8 @@ mod tests {
         );
         let data_schema = tool.data_schema().expect("code data schema");
         assert_eq!(data_schema["properties"]["text"]["type"], "string");
-        validate_custom_code_contract(&def).expect("simple object schema is code-admissible");
+        validate_custom_code_contract(&def, CallSurface::Code)
+        .expect("simple object schema is code-admissible");
 
         let projected = crate::tool::project_tools(vec![Arc::new(CustomTool::new(
             def,
@@ -1089,11 +1015,15 @@ mod tests {
     #[test]
     fn code_surface_rejects_unrenderable_schema_with_actionable_reason() {
         let mut def = sh_def("bad_shape", "echo nope", 10);
-        def.surface = CallSurface::Code;
+        def.surface = Some(CallSurface::Code);
+        def.output_schema = Some(serde_json::json!({
+            "type": "object", "properties": {}, "required": []
+        }));
         def.schema.properties = serde_json::json!({
             "item": { "$ref": "#/Item" }
         });
-        let error = validate_custom_code_contract(&def).expect_err("ref must fail admission");
+        let error = validate_custom_code_contract(&def, CallSurface::Code)
+        .expect_err("ref must fail admission");
         assert!(error.contains("surface 'code'"), "{error}");
         assert!(error.contains("direct"), "{error}");
     }
@@ -1101,7 +1031,7 @@ mod tests {
     #[tokio::test]
     async fn code_surface_rejects_background_before_spawning() {
         let mut def = sh_def("bg_code", "echo should-not-run", 10);
-        def.surface = CallSurface::Code;
+        def.surface = Some(CallSurface::Code);
         let tool = CustomTool::new(def, Arc::new(CustomToolHub::new()));
         let result = tool
             .execute(
@@ -1118,43 +1048,17 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn code_surface_wraps_success_as_opaque_text_data() {
-        let marker = "code-surface-marker";
-        #[cfg(windows)]
-        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
-        #[cfg(unix)]
-        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
-
-        let def = CustomToolDefinition {
-            name: "code_echo".into(),
-            data_schema: None,
-            description: "echo marker".into(),
-            schema: crate::config::schema::ToolSchema {
-                schema_type: "object".into(),
-                properties: serde_json::json!({}),
-                required: vec![],
-            },
-            command: command.into(),
-            args,
-            timeout: 10,
-            rules: Vec::new(),
-            surface: CallSurface::Code,
-            suite: None,
-            suite_label: None,
-        };
-        let tool = CustomTool::new(def, Arc::new(CustomToolHub::new()));
-        let result = tool
-            .execute(serde_json::json!({}), test_exec(CancellationToken::new()))
-            .await;
-        assert!(result.error.is_none(), "{}", result.content);
-        let data = result.data.expect("code success must carry data");
-        let text = data["text"].as_str().expect("text field");
-        assert!(text.contains(marker), "{text}");
+    #[test]
+    fn code_surface_without_output_schema_is_not_admitted() {
+        let mut def = sh_def("code_echo", "echo code-surface-marker", 10);
+        def.surface = Some(CallSurface::Code);
+        let error = validate_custom_code_contract(&def, CallSurface::Code)
+            .expect_err("code custom tools must declare output_schema");
+        assert!(error.contains("output_schema"), "{error}");
     }
 
     #[tokio::test]
-    async fn code_surface_data_schema_turns_stdout_into_data() {
+    async fn code_surface_output_schema_turns_stdout_into_data() {
         let json = r#"{"files":3,"lines":120,"level":"high"}"#;
         let script = std::env::temp_dir().join(format!(
             "lc-typed-{}.{}",
@@ -1179,7 +1083,7 @@ mod tests {
         });
         let def = CustomToolDefinition {
             name: "typed_echo".into(),
-            data_schema: Some(data_schema),
+            output_schema: Some(data_schema),
             description: "typed echo".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -1190,9 +1094,8 @@ mod tests {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let tool = CustomTool::new(def.clone(), Arc::new(CustomToolHub::new()));
         let result = tool
@@ -1214,14 +1117,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn code_surface_data_schema_rejects_non_object_stdout() {
+    async fn code_surface_output_schema_rejects_non_object_stdout() {
         #[cfg(windows)]
         let (command, args) = ("cmd", vec!["/C".into(), "echo not-json".into()]);
         #[cfg(unix)]
         let (command, args) = ("sh", vec!["-c".into(), "echo not-json".into()]);
         let def = CustomToolDefinition {
             name: "typed_bad".into(),
-            data_schema: Some(serde_json::json!({
+            output_schema: Some(serde_json::json!({
                 "type": "object",
                 "properties": { "a": { "type": "string" } }
             })),
@@ -1235,22 +1138,21 @@ mod tests {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let result = CustomTool::new(def, Arc::new(CustomToolHub::new()))
             .execute(serde_json::json!({}), test_exec(CancellationToken::new()))
             .await;
         let error = result.error.expect("non-object must fail");
         assert_eq!(error.kind, ToolErrorKind::InvalidOutput);
-        assert!(error.message.contains("data_schema"), "{}", error.message);
+        assert!(error.message.contains("output_schema"), "{}", error.message);
     }
 
     #[test]
     fn code_failure_envelope_sets_code_details_and_soft_reason() {
         let mut def = sh_def("structured", "true", 5);
-        def.surface = CallSurface::Code;
+        def.surface = Some(CallSurface::Code);
         let envelope = r#"{"error":{"code":"not_found","message":"missing","details":{"id":42},"retryable":true}}"#;
         let result = structured_failure(&def, envelope, "stderr").expect("envelope");
         assert_eq!(result.error_code.as_deref(), Some("not_found"));
@@ -1263,20 +1165,20 @@ mod tests {
         assert_eq!(program["ok"], false);
         assert_eq!(program["reason"], "not_found");
 
-        def.surface = CallSurface::Direct;
+        def.surface = Some(CallSurface::Direct);
         assert!(structured_failure(&def, envelope, "stderr").is_none());
         assert!(structured_failure(&def, "not json", "stderr").is_none());
     }
 
     #[test]
-    fn validate_custom_fails_when_data_schema_output_is_not_json() {
+    fn validate_custom_fails_when_output_schema_stdout_is_not_json() {
         #[cfg(windows)]
         let (command, args) = ("cmd", vec!["/C".into(), "echo not-json".into()]);
         #[cfg(unix)]
         let (command, args) = ("sh", vec!["-c".into(), "echo not-json".into()]);
         let def = CustomToolDefinition {
             name: "validate_typed".into(),
-            data_schema: Some(serde_json::json!({
+            output_schema: Some(serde_json::json!({
                 "type": "object",
                 "properties": { "a": { "type": "string" } }
             })),
@@ -1290,25 +1192,26 @@ mod tests {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let result = validate_custom_tool_run(&def, &serde_json::json!({}), &std::env::temp_dir());
         let error = result.error.expect("typed output must fail validation");
-        assert!(error.message.contains("data_schema"), "{}", error.message);
+        assert!(error.message.contains("output_schema"), "{}", error.message);
     }
 
     #[test]
     fn validate_custom_reports_code_admission_and_program_preview() {
-        let marker = "validate-code-marker";
+        let output = "{}";
         #[cfg(windows)]
-        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
+        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {output}")]);
         #[cfg(unix)]
-        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
+        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{output}'")]);
         let def = CustomToolDefinition {
             name: "validate_code".into(),
-            data_schema: None,
+            output_schema: Some(serde_json::json!({
+                "type": "object", "properties": {}, "required": []
+            })),
             description: "validation probe".into(),
             schema: crate::config::schema::ToolSchema {
                 schema_type: "object".into(),
@@ -1319,9 +1222,8 @@ mod tests {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let result = validate_custom_tool_run(&def, &serde_json::json!({}), &std::env::temp_dir());
         assert!(result.error.is_none(), "{}", result.content);
@@ -1340,10 +1242,11 @@ mod tests {
             "{}",
             result.content
         );
-        assert!(result.content.contains(marker), "{}", result.content);
+        assert!(result.content.contains("code preview:"), "{}", result.content);
+        assert!(result.content.contains("{\"ok\":true}"), "{}", result.content);
     }
     #[test]
-    fn direct_surface_keeps_background_and_has_no_code_data_schema() {
+    fn direct_surface_keeps_background_and_has_no_code_output_schema() {
         let def = sh_def("direct_echo", "echo direct-marker", 10);
         let tool = CustomTool::new(def, Arc::new(CustomToolHub::new()));
         assert_eq!(tool.surface(), ToolSurface::Direct);

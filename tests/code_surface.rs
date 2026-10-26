@@ -9,7 +9,8 @@ mod projection {
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
     use litecode::permission::{
-        PermissionAction, PermissionEngine, RecordingPermissionSink, ToolPolicy,
+        ArgMatcher, PermissionAction, PermissionEngine, PolicyRule, RecordingPermissionSink,
+        ToolPolicy,
     };
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::write_lock::process_write_lock;
@@ -31,6 +32,33 @@ mod projection {
 
     fn engine(root: &std::path::Path, tool: &str, policy: ToolPolicy) -> PermissionEngine {
         let mut global = GlobalSettings::default();
+        let preset = if policy.default == PermissionAction::Allow {
+            None
+        } else {
+            Some(litecode::config::schema::ToolPreset::Safe)
+        };
+        if policy.default != PermissionAction::Allow {
+            global.custom_tools.push(litecode::config::schema::CustomToolDefinition {
+                name: tool.into(),
+                description: String::new(),
+                schema: litecode::config::schema::ToolSchema {
+                    schema_type: "object".into(),
+                    properties: json!({}),
+                    required: Vec::new(),
+                },
+                command: "echo".into(),
+                args: Vec::new(),
+                timeout: 120,
+                rules: vec![PolicyRule {
+                    id: "test".into(),
+                    when: ArgMatcher::Any,
+                    action: policy.default,
+                }],
+                surface: Some(litecode::config::schema::CallSurface::Direct),
+                suite: None,
+                output_schema: None,
+            });
+        }
         global.agents.insert(
             "default".into(),
             litecode::config::schema::AgentProfile {
@@ -38,9 +66,7 @@ mod projection {
                     tool.to_string(),
                     litecode::config::schema::AgentToolBinding {
                         enabled: true,
-                        policy,
-                        path_mode: litecode::permission::BindingPathMode::default(),
-                        last_applied_preset: None,
+                        preset,
                         allowed_tools: None,
                     },
                 )]
@@ -383,16 +409,14 @@ mod projection {
             "run_code".into(),
             AgentToolBinding {
                 enabled: true,
-                policy: ToolPolicy::allow_all(),
-                path_mode: litecode::permission::BindingPathMode::Unrestricted,
-                last_applied_preset: Some(ToolPreset::Safe),
+                preset: Some(ToolPreset::Safe),
                 allowed_tools: None,
             },
         );
         global.agents.insert("default".into(), profile);
         global.custom_tools.push(CustomToolDefinition {
             name: "run_code".into(),
-            data_schema: None,
+            output_schema: None,
             description: String::new(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -409,7 +433,6 @@ mod projection {
             }],
             surface: Default::default(),
             suite: None,
-            suite_label: None,
         });
         let resolved =
             ConfigManager::resolve_without_catalog(global, WorkspaceState::new(dir.path()));
@@ -468,19 +491,31 @@ mod projection {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn custom_tool_on_code_surface_uses_the_shared_pipeline_and_opaque_text() {
+    async fn custom_tool_on_code_surface_uses_the_shared_pipeline_and_output_schema() {
         use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
         use litecode::tools::custom::CustomTool;
         use litecode::tools::custom_hub::CustomToolHub;
 
         let marker = "custom-code-marker";
+        let output = std::env::temp_dir().join(format!("lc-custom-{}.json", ulid::Ulid::new()));
+        std::fs::write(&output, format!("{{\"text\":\"{marker}\"}}")).unwrap();
         #[cfg(windows)]
-        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
+        let (command, args) = (
+            "cmd",
+            vec![
+                "/C".into(),
+                format!("type {}", output.display()),
+            ],
+        );
         #[cfg(unix)]
-        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
+        let (command, args) = ("cat", vec![output.display().to_string()]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
-            data_schema: None,
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            })),
             description: "custom code probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -491,9 +526,8 @@ mod projection {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let tool: Arc<dyn Tool> = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
         let dir = tempfile::tempdir().unwrap();
@@ -530,7 +564,7 @@ mod projection {
             .data
             .as_ref()
             .and_then(|data| data["text"].as_str())
-            .expect("opaque text data");
+            .expect("output_schema data");
         assert!(text.contains(marker), "{text}");
     }
 }
@@ -547,7 +581,7 @@ mod run_code_only {
     use litecode::context_pipeline::Context;
     use litecode::permission::{
         AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
-        RecordingPermissionSink, ToolPolicy,
+        RecordingPermissionSink,
     };
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
     use litecode::tool::trait_::ToolExecutionContext;
@@ -557,6 +591,7 @@ mod run_code_only {
     use litecode::tools::glob::GlobTool;
     use litecode::tools::grep::GrepTool;
     use litecode::tools::read::ReadTool;
+    use litecode::tools::write::WriteTool;
     use litecode::types::{FunctionToolCall, ToolCallResult, ToolErrorKind};
     use serde_json::{Value, json};
 
@@ -584,9 +619,11 @@ mod run_code_only {
         let mut global = GlobalSettings::default();
         let binding = AgentToolBinding {
             enabled: true,
-            policy: ToolPolicy::with_default(policy),
-            path_mode: litecode::permission::BindingPathMode::default(),
-            last_applied_preset: None,
+            preset: Some(if policy == PermissionAction::Allow {
+                litecode::config::schema::ToolPreset::All
+            } else {
+                litecode::config::schema::ToolPreset::Safe
+            }),
             allowed_tools: None,
         };
         let mut tools = std::collections::HashMap::new();
@@ -594,6 +631,7 @@ mod run_code_only {
             "read",
             "glob",
             "grep",
+            "write",
             "block",
             "fast",
             "hold",
@@ -855,6 +893,7 @@ mod run_code_only {
                 Arc::new(ReadTool::default()),
                 Arc::new(GlobTool),
                 Arc::new(GrepTool),
+                Arc::new(WriteTool::new()),
             ],
             PermissionAction::Ask,
             Arc::new(sink),
@@ -894,10 +933,12 @@ mod run_code_only {
     const read = await tools.read({ path: "probe.txt" });
     const glob = await tools.glob({ pattern: "probe.txt" });
     const grep = await tools.grep({ pattern: "zz", path: "probe.txt" });
+    const write = await tools.write({ path: "nested.txt", content: "ok" });
     return {
       read: read.path && Array.isArray(read.lines) ? "ok" : "missing",
       glob: Array.isArray(glob.paths) ? "ok" : "missing",
-      grep: Array.isArray(grep.hits) ? "ok" : "missing"
+      grep: Array.isArray(grep.hits) ? "ok" : "missing",
+      write: write.ok ? "ok" : "missing"
     };
     "#;
         let result = execute(
@@ -917,8 +958,9 @@ mod run_code_only {
         assert_eq!(value["read"], "ok", "{}", result.content);
         assert_eq!(value["glob"], "ok", "{}", result.content);
         assert_eq!(value["grep"], "ok", "{}", result.content);
+        assert_eq!(value["write"], "ok", "{}", result.content);
         assert!(
-            result.content.contains("tool calls: 3 ok / 0 failed"),
+            result.content.contains("tool calls: 4 ok / 0 failed"),
             "{}",
             result.content
         );
@@ -1099,6 +1141,41 @@ mod run_code_only {
         );
     }
     #[tokio::test(flavor = "current_thread")]
+    async fn code_suite_member_is_called_through_tools_suite_member() {
+        let root = tempfile::tempdir().unwrap();
+        let sink = litecode::permission::deny_permission_sink();
+        let hosted = hosted(
+            root.path(),
+            vec![Arc::new(GateTool::fast("deck.only"))],
+            PermissionAction::Allow,
+            sink.clone(),
+        );
+        assert!(
+            hosted
+                .code_names
+                .iter()
+                .any(|name| name == "deck.only"),
+            "{:?}",
+            hosted.code_names
+        );
+        let description = hosted.tools[0].description(&hosted.ctx);
+        assert!(description.contains("readonly [\"deck\"]: {"), "{description}");
+        assert!(description.contains("readonly [\"only\"]:"), "{description}");
+
+        let result = execute(
+            &hosted,
+            "run_code",
+            json!({ "code": "return await tools.deck.only({});" }),
+            sink.as_ref(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert!(result.error.is_none(), "{}", result.content);
+        let value = run_code_result(&result.content);
+        assert_eq!(value["ok"], true, "{value}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn custom_tool_code_surface_round_trips_through_run_code_sdk() {
         use litecode::config::schema::{
             CallSurface, CustomToolDefinition, ToolSchema,
@@ -1107,13 +1184,25 @@ mod run_code_only {
         use litecode::tools::custom_hub::CustomToolHub;
 
         let marker = "custom-sdk-marker";
+        let output = std::env::temp_dir().join(format!("lc-custom-{}.json", ulid::Ulid::new()));
+        std::fs::write(&output, format!("{{\"text\":\"{marker}\"}}")).unwrap();
         #[cfg(windows)]
-        let (command, args) = ("cmd", vec!["/C".into(), format!("echo {marker}")]);
+        let (command, args) = (
+            "cmd",
+            vec![
+                "/C".into(),
+                format!("type {}", output.display()),
+            ],
+        );
         #[cfg(unix)]
-        let (command, args) = ("sh", vec!["-c".into(), format!("printf '%s' '{marker}'")]);
+        let (command, args) = ("cat", vec![output.display().to_string()]);
         let def = CustomToolDefinition {
             name: "custom_code".into(),
-            data_schema: None,
+            output_schema: Some(json!({
+                "type": "object",
+                "properties": { "text": { "type": "string" } },
+                "required": ["text"]
+            })),
             description: "custom code sdk probe".into(),
             schema: ToolSchema {
                 schema_type: "object".into(),
@@ -1124,9 +1213,8 @@ mod run_code_only {
             args,
             timeout: 10,
             rules: Vec::new(),
-            surface: CallSurface::Code,
+            surface: Some(CallSurface::Code),
             suite: None,
-            suite_label: None,
         };
         let custom = Arc::new(CustomTool::new(def, Arc::new(CustomToolHub::new())));
         let root = tempfile::tempdir().unwrap();
@@ -1160,8 +1248,8 @@ mod edit_write {
     use litecode::config::{ConfigManager, GlobalSettings, WorkspacePaths, WorkspaceState};
     use litecode::context_pipeline::Context;
     use litecode::permission::{
-        AskOutcome, AskPrompt, AskReply, BindingPathMode, PermissionAction, PermissionEngine,
-        PermissionSink, RecordingPermissionSink, ToolPolicy,
+        AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
+        RecordingPermissionSink,
     };
 
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
@@ -1194,20 +1282,14 @@ mod edit_write {
     }
 
     fn engine(root: &Path, policy: PermissionAction) -> PermissionEngine {
-        engine_with_mode(root, policy, BindingPathMode::default())
-    }
-
-    fn engine_with_mode(
-        root: &Path,
-        policy: PermissionAction,
-        path_mode: BindingPathMode,
-    ) -> PermissionEngine {
         let mut global = GlobalSettings::default();
         let binding = AgentToolBinding {
             enabled: true,
-            policy: ToolPolicy::with_default(policy),
-            path_mode,
-            last_applied_preset: None,
+            preset: Some(if policy == PermissionAction::Allow {
+                litecode::config::schema::ToolPreset::All
+            } else {
+                litecode::config::schema::ToolPreset::Safe
+            }),
             allowed_tools: None,
         };
         let mut tools = std::collections::HashMap::new();
@@ -1594,8 +1676,7 @@ mod edit_write {
     }
 
     fn hosted_unrestricted(root: &Path, sink: Arc<dyn PermissionSink>) -> Hosted {
-        let permission =
-            engine_with_mode(root, PermissionAction::Ask, BindingPathMode::Unrestricted);
+        let permission = engine(root, PermissionAction::Ask);
         let ctx = ctx(root);
         let data_root = root.join(".litecode");
         std::fs::create_dir_all(&data_root).unwrap();
@@ -1973,7 +2054,6 @@ mod approval_locks {
     use litecode::context_pipeline::Context;
     use litecode::permission::{
         AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
-        ToolPolicy,
     };
     use litecode::tool::Tool;
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
@@ -2006,9 +2086,11 @@ mod approval_locks {
         let mut global = GlobalSettings::default();
         let binding = AgentToolBinding {
             enabled: true,
-            policy: ToolPolicy::with_default(policy),
-            path_mode: Default::default(),
-            last_applied_preset: None,
+            preset: Some(if policy == PermissionAction::Allow {
+                litecode::config::schema::ToolPreset::All
+            } else {
+                litecode::config::schema::ToolPreset::Safe
+            }),
             allowed_tools: None,
         };
         let mut tools = std::collections::HashMap::new();
@@ -2376,7 +2458,6 @@ mod approval_concurrency {
     use litecode::context_pipeline::Context;
     use litecode::permission::{
         AskOutcome, AskPrompt, AskReply, PermissionAction, PermissionEngine, PermissionSink,
-        ToolPolicy,
     };
     use litecode::tool::Tool;
     use litecode::tool::executor::{ToolCallOrigin, ToolCaller, execute_tool_call};
@@ -2412,9 +2493,11 @@ mod approval_concurrency {
         let mut global = GlobalSettings::default();
         let binding = AgentToolBinding {
             enabled: true,
-            policy: ToolPolicy::with_default(policy),
-            path_mode: Default::default(),
-            last_applied_preset: None,
+            preset: Some(if policy == PermissionAction::Allow {
+                litecode::config::schema::ToolPreset::All
+            } else {
+                litecode::config::schema::ToolPreset::Safe
+            }),
             allowed_tools: None,
         };
         let mut tools = std::collections::HashMap::new();

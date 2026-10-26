@@ -55,6 +55,7 @@ fn test_state(
             workspace_tool_readiness: Default::default(),
             workspace_mcp_servers: Default::default(),
             workspace_custom_tools: Default::default(),
+            workspace_custom_suites: Default::default(),
         };
         litecode::config::workspace::workspace_with_disk_readiness(&workspace)
     };
@@ -270,6 +271,7 @@ async fn set_session_model_persists_selectable_catalog_ref() {
         workspace_tool_readiness: Default::default(),
         workspace_mcp_servers: Default::default(),
         workspace_custom_tools: Default::default(),
+        workspace_custom_suites: Default::default(),
     };
     let resolved = ConfigManager::resolve(settings, workspace.clone(), common::catalog_for_db(&db));
     let workspace_engines = Arc::new(WorkspaceEngines::new());
@@ -503,7 +505,9 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
             "code_probe",
             CustomToolDefinition {
                 name: "code_probe".into(),
-                data_schema: None,
+                output_schema: Some(serde_json::json!({
+                    "type": "object", "properties": {}, "required": []
+                })),
                 description: "code probe".into(),
                 schema: ToolSchema {
                     schema_type: "object".into(),
@@ -514,9 +518,8 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
                 args: Vec::new(),
                 timeout: 120,
                 rules: Vec::new(),
-                surface: CallSurface::Code,
+                surface: Some(CallSurface::Code),
                 suite: None,
-                suite_label: None,
             },
         )
         .expect("write custom code tool");
@@ -545,5 +548,185 @@ async fn available_tools_stamps_a_code_surface_custom_tool() {
             .as_array()
             .is_some_and(Vec::is_empty),
         "a valid code custom tool must not be rejected: {payload}"
+    );
+}
+
+#[tokio::test]
+async fn custom_tools_payload_exposes_code_sdk_collisions() {
+    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+    let writer = SettingsWriter::with_path(&db_path, Arc::new(TurnGuard::new()));
+    for name in ["foo_bar", "foo__bar"] {
+        writer
+            .write_custom_tool(
+                name,
+                CustomToolDefinition {
+                    name: name.into(),
+                    output_schema: Some(serde_json::json!({
+                        "type": "object", "properties": {}, "required": []
+                    })),
+                    description: "collision probe".into(),
+                    schema: ToolSchema {
+                        schema_type: "object".into(),
+                        properties: serde_json::json!({}),
+                        required: Vec::new(),
+                    },
+                    command: "echo".into(),
+                    args: Vec::new(),
+                    timeout: 120,
+                    rules: Vec::new(),
+                    surface: Some(CallSurface::Code),
+                    suite: None,
+                },
+            )
+            .expect("write code custom tool");
+    }
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let payload: Value = test_http_client()
+        .get(format!("http://{addr}/api/settings/custom-tools"))
+        .send()
+        .await
+        .expect("custom tools")
+        .json()
+        .await
+        .expect("custom tools json");
+    let rejected = payload["code_rejections"]
+        .as_array()
+        .expect("code rejections array");
+    assert_eq!(rejected.len(), 2, "{payload}");
+    assert!(
+        rejected.iter().all(|item| item["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("collides"))),
+        "{payload}"
+    );
+}
+
+#[tokio::test]
+async fn available_tools_lists_a_custom_tool_saved_through_settings_http() {
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let definition = serde_json::json!({
+        "name": "http_probe",
+        "description": "saved through settings",
+        "command": "echo",
+        "args": [],
+        "timeout": 120,
+        "rules": [],
+        "surface": "direct",
+        "schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    });
+
+    let response = client
+        .put(format!(
+            "http://{addr}/api/settings/custom-tools/http_probe"
+        ))
+        .json(&definition)
+        .send()
+        .await
+        .expect("put custom tool");
+    assert!(
+        response.status().is_success(),
+        "custom tool write failed: {}",
+        response.status()
+    );
+
+    let payload: Value = client
+        .get(format!("http://{addr}/api/settings/available-tools"))
+        .send()
+        .await
+        .expect("available tools")
+        .json()
+        .await
+        .expect("available tools json");
+    assert!(
+        payload["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["id"] == "http_probe")),
+        "saved custom tool must appear immediately: {payload}"
+    );
+}
+
+#[tokio::test]
+async fn available_tools_reads_an_external_workspace_definition_without_a_settings_write() {
+    use litecode::config::schema::{CallSurface, CustomToolDefinition, ToolSchema};
+    use litecode::config::workspace::{WorkspaceCustomToolsFile, write_workspace_custom_tools};
+
+    let ws = TempDir::new().expect("ws");
+    let db_dir = TempDir::new().expect("db");
+    let db_path = db_dir.path().join("litecode.db");
+    seed_global_db(&db_path);
+
+    let (state, web_dist) = test_state(ws.path().to_path_buf(), db_path);
+    let addr = spawn_server(state, web_dist).await;
+    let client = test_http_client();
+    let url = format!("http://{addr}/api/settings/available-tools");
+
+    let before: Value = client
+        .get(&url)
+        .send()
+        .await
+        .expect("available tools before")
+        .json()
+        .await
+        .expect("available tools json");
+    assert!(
+        !before["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["id"] == "disk_probe")),
+        "fixture must start without disk_probe: {before}"
+    );
+
+    let mut file = WorkspaceCustomToolsFile::default();
+    file.tools.insert(
+        "disk_probe".into(),
+        CustomToolDefinition {
+            name: "disk_probe".into(),
+            output_schema: None,
+            description: "external definition".into(),
+            schema: ToolSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: Vec::new(),
+            },
+            command: "echo".into(),
+            args: Vec::new(),
+            timeout: 120,
+            rules: Vec::new(),
+            surface: Some(CallSurface::Direct),
+            suite: None,
+        },
+    );
+    write_workspace_custom_tools(ws.path(), &file).expect("external custom tool write");
+
+    let after: Value = client
+        .get(&url)
+        .send()
+        .await
+        .expect("available tools after")
+        .json()
+        .await
+        .expect("available tools json");
+    assert!(
+        after["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["id"] == "disk_probe")),
+        "external definition must appear without a settings write: {after}"
     );
 }

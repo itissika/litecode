@@ -59,7 +59,7 @@ function bindingFor(
   tools: Record<string, AgentToolBinding>,
   toolId: string,
 ): AgentToolBinding {
-  return tools[toolId] ?? { enabled: false, last_applied_preset: "ALL" };
+  return tools[toolId] ?? { enabled: false, preset: "ALL" };
 }
 
 function McpToolVisibilityControl({
@@ -397,7 +397,7 @@ function AgentToolsGrid({
           const binding = bindingFor(draft.tools, entry.id);
           const configurable = isConfigurableTool(entry);
           const enabled = binding.enabled;
-          const preset = binding.last_applied_preset ?? "ALL";
+          const preset = binding.preset ?? "ALL";
           const serverId = entry.id.slice("mcp_".length);
           const mcpTools =
             entry.kind === "mcp"
@@ -486,7 +486,7 @@ function AgentToolsGrid({
                           onClick={(event) => {
                             event.stopPropagation();
                             onBindingChange(entry.id, {
-                              last_applied_preset: value,
+                              preset: value,
                             });
                           }}
                           className={[
