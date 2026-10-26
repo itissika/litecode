@@ -982,6 +982,86 @@ pub async fn handle_jsonrpc(
             );
         }
 
+        methods::WORKSPACE_USAGE => {
+            match session.sessions.workspace_usage() {
+                Ok(usage) => {
+                    let payload = crate::client_protocol::protocol::WorkspaceUsageReport {
+                        days: usage.days,
+                        hours: usage.hours,
+                        today: usage.today,
+                        totals: usage.totals,
+                        requests: usage.requests,
+                        session_count: usage.session_count,
+                    };
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::to_value(payload).unwrap_or_default(),
+                        ))
+                        .unwrap(),
+                    );
+                }
+                Err(err) => emit(
+                    sink,
+                    serde_json::to_value(err_response(id, -32000, err.to_string())).unwrap(),
+                ),
+            }
+        }
+
+        methods::SESSION_USAGE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                #[serde(default)]
+                session_id: String,
+                #[serde(default)]
+                limit: Option<i64>,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(err) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("bad session/usage params: {err}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            let sid = resolve_sid(session, &params.session_id);
+            let limit = params.limit.unwrap_or(200);
+            match session.sessions.provider_usage_series(&sid, limit) {
+                Ok(series) => {
+                    let payload = crate::client_protocol::protocol::SessionUsageSeries {
+                        session_id: sid,
+                        samples: series.samples,
+                        compactions: series.compactions,
+                        truncated: series.truncated,
+                        totals: series.totals,
+                        requests: series.requests,
+                    };
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::to_value(payload).unwrap_or_default(),
+                        ))
+                        .unwrap(),
+                    );
+                }
+                Err(err) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, err.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
         methods::SESSION_COMPACT => {
             #[derive(serde::Deserialize)]
             struct Params {

@@ -4,7 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::session::data::sqlite::session::{
-    ProviderUsageRollup, SessionApply, SessionContextMeter,
+    ProviderUsageRollup, ProviderUsageSeries, SessionApply, SessionContextMeter,
 };
 use crate::session::event::{EventDraft, Seq};
 use crate::session::task_state::TaskReminders;
@@ -215,6 +215,9 @@ pub enum SessionMutation {
         token_estimate: i64,
         kept_from: Option<Seq>,
         expected_prefix: Option<usize>,
+        /// Bill for the summarizer request that produced `summary`. Stored on the
+        /// checkpoint row itself, so the call is never silently free.
+        usage: Option<crate::session::store::ProviderUsage>,
     },
     /// One atomic batch of mechanical-prune surface replacements. Every
     /// replacement is a new log event; the original rows are never deleted.
@@ -505,6 +508,14 @@ pub enum SessionRead {
     ProviderUsageRollup {
         session_id: String,
     },
+    /// Last `limit` bills for the usage chart, plus whole-session totals.
+    ProviderUsageSeries {
+        session_id: String,
+        limit: i64,
+    },
+    /// Authoritative workspace spend: per natural day, per session, plus totals.
+    /// No session filter — this is the one read that spans the whole workspace.
+    WorkspaceUsage,
     /// Diff/Restore baseline for the reminder engine, folded from the live spine.
     SpineReminderView {
         session_id: String,
@@ -568,6 +579,8 @@ pub enum ReadValue {
     /// belongs to the endpoint being called.
     RequestOrigins(Vec<(i64, serde_json::Value)>),
     ProviderUsageRollup(ProviderUsageRollup),
+    ProviderUsageSeries(ProviderUsageSeries),
+    WorkspaceUsage(crate::session::store::WorkspaceUsage),
     SpineReminders(crate::reminder::SpineReminderView),
     DirtySessions(Vec<DirtySession>),
     /// WP-186 durable pending user-gate asks.

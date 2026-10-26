@@ -26,7 +26,11 @@ pub mod methods {
     pub const SESSION_DELETE: &str = "session/delete";
     pub const SESSION_LIST: &str = "session/list";
     pub const SESSION_COMPACT: &str = "session/compact";
+    /// Per-request provider bills for the usage chart (read-only).
+    pub const SESSION_USAGE: &str = "session/usage";
     pub const SESSION_COMPACT_LIFECYCLE: &str = "session/compact_lifecycle";
+    /// Whole-workspace authoritative spend (per day, per session, totals).
+    pub const WORKSPACE_USAGE: &str = "workspace/usage";
     /// Queue a user message for the live turn (memory-only; consumed at the
     /// next request seam). Full authority list is echoed via
     /// `session/pending_messages`.
@@ -489,6 +493,42 @@ pub struct SessionBindingProjection {
     pub max_output_tokens: u32,
     pub thinking_tier: String,
     pub context_mode: String,
+}
+
+/// Per-request provider bills for one session (`session/usage`).
+///
+/// `samples` is a bounded tail; `totals` always covers every bill. Both come
+/// from the same rows, so the chart and the totals can never disagree.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionUsageSeries {
+    pub session_id: String,
+    pub samples: Vec<crate::session::store::ProviderUsageSample>,
+    /// `compacted` checkpoints, ascending. The chart draws them as marks.
+    pub compactions: Vec<crate::session::store::ProviderUsageMark>,
+    pub truncated: bool,
+    pub totals: crate::session::store::ProviderUsage,
+    pub requests: u64,
+}
+
+
+/// Whole-workspace authoritative spend (`workspace/usage`).
+///
+/// Every number is folded from rows that carry a readable provider bill. No
+/// estimate, no filled-in history: a session from before usage was recorded is
+/// absent rather than guessed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceUsageReport {
+    /// Natural (server-local) days, ascending.
+    pub days: Vec<crate::session::store::WorkspaceUsageDay>,
+    /// Today only (server-local), for the `日` view.
+    pub hours: Vec<crate::session::store::WorkspaceUsageHour>,
+    /// Server-local `YYYY-MM-DD`, so the client buckets calendar periods on the
+    /// same clock the server aggregated with.
+    pub today: String,
+    pub totals: crate::session::store::ProviderUsage,
+    pub requests: u64,
+    /// Sessions that paid at least one bill.
+    pub session_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

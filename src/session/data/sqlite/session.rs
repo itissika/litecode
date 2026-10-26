@@ -70,7 +70,7 @@ impl SessionContextMeter {
 ///
 /// The item body is not this record. Cache hit and miss split `prompt_tokens`;
 /// they are not added again when summing cost.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderUsage {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
@@ -117,6 +117,101 @@ impl ProviderUsageRollup {
         }
         rollup
     }
+}
+
+/// What kind of provider call paid a bill.
+///
+/// A summarizer request is billed exactly like a turn request; it just has no
+/// turn and no `request/header` row, so its bill rides on the `compacted` row it
+/// produced.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderUsageKind {
+    #[default]
+    Request,
+    Compaction,
+}
+
+/// One `request/header` bill in transcript order, for the usage chart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderUsageSample {
+    pub seq: i64,
+    #[serde(default)]
+    pub turn_id: String,
+    /// Row `created_at` (ms since epoch) — the request header's timestamp.
+    pub at_ms: i64,
+    pub prompt: u64,
+    pub completion: u64,
+    pub hit: u64,
+    pub miss: u64,
+    /// Which call paid this bill: a turn request or a summarizer.
+    #[serde(default)]
+    pub kind: ProviderUsageKind,
+    /// Model recorded on the request header body, when readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// One `compacted` checkpoint row: the chart draws it as a vertical mark.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderUsageMark {
+    pub seq: i64,
+    pub at_ms: i64,
+}
+
+/// Per-request bills for one session: a bounded sample window plus whole-session
+/// totals. `truncated` says the window is not the whole history, so a caller
+/// never mistakes a tail for the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderUsageSeries {
+    pub samples: Vec<ProviderUsageSample>,
+    pub compactions: Vec<ProviderUsageMark>,
+    pub truncated: bool,
+    pub totals: ProviderUsage,
+    pub requests: u64,
+}
+
+
+
+/// One hour of today (server-local), for the `日` view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceUsageHour {
+    /// 0..23, server-local.
+    pub hour: u32,
+    pub requests: u64,
+    pub prompt: u64,
+    pub completion: u64,
+    pub hit: u64,
+    pub miss: u64,
+}
+
+/// One natural day (server-local) of authoritative workspace spend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceUsageDay {
+    /// `YYYY-MM-DD`, server-local — the bucket a person reads as "today".
+    pub day: String,
+    pub requests: u64,
+    pub prompt: u64,
+    pub completion: u64,
+    pub hit: u64,
+    pub miss: u64,
+}
+
+/// Whole-workspace bills, read straight off `transcript_items`.
+///
+/// Only rows that carry a readable provider bill are counted. A session from
+/// before usage was recorded is simply absent — never estimated, never padded.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkspaceUsage {
+    pub days: Vec<WorkspaceUsageDay>,
+    /// Today only, one entry per hour that carries a bill — the `日` view.
+    pub hours: Vec<WorkspaceUsageHour>,
+    /// Server-local `YYYY-MM-DD`; the anchor for "this week / this month".
+    pub today: String,
+    pub totals: ProviderUsage,
+    pub requests: u64,
+    /// Sessions that paid at least one bill.
+    pub session_count: u64,
 }
 
 /// Prompt the occupancy ring may show.
@@ -2659,9 +2754,10 @@ impl Session {
             match &mut item {
                 Item::Message(MessageItem::Output(m)) => m.status = OutputStatus::Incomplete,
                 Item::FunctionCall(fc) => {
-                    // WP-186: permission-class waits must become Final so
-                    // seal_tail can run, but must NOT be stamped Incomplete
-                    // (they are intentional unsealed tails, not crash orphans).
+                    // B: a live ask (sidecar row) keeps its status; the bridge
+                    // writes the answer. At process start the sidecar is already
+                    // cleared, so an abandoned ask takes the normal
+                    // Incomplete path below.
                     let permission_class = super::pending::should_skip_seal_for_call(
                         self.conn(),
                         &self.id,
@@ -2989,6 +3085,9 @@ impl Session {
     /// themselves are not rewritten. A session that still has an `in_progress`
     /// row is left untouched — startup seals those first, and a session that
     /// could not be sealed is retried on the next open. Returns the new seqs.
+    ///
+    /// B: permission-class tails are sealed here too. At process start there is
+    /// no live ask, so leaving one open only produces an unanswerable card.
     pub(crate) fn seal_tail_unanswered_calls(&self) -> Result<Vec<Seq>> {
         let in_flight: i64 = self.conn().query_row(
             "SELECT COUNT(*) FROM transcript_items
@@ -3039,46 +3138,10 @@ impl Session {
                 .iter()
                 .filter_map(|&index| match &items[index] {
                     Some(Item::FunctionCall(call)) => {
-                        // WP-186: permission-class tails stay unsealed (restore waiting).
-                        let skip = super::pending::should_skip_seal_for_call(
-                            self.conn(),
-                            &self.id,
-                            &call.call_id,
-                            &call.name,
-                        )
-                        .unwrap_or_else(|e| {
-                            tracing::warn!(
-                                error = %e,
-                                call_id = %call.call_id,
-                                "pending seal-skip lookup failed; sealing as interrupt"
-                            );
-                            false
-                        });
-                        if skip {
-                            tracing::info!(
-                                session_id = %self.id,
-                                call_id = %call.call_id,
-                                tool = %call.name,
-                                "skip seal_tail for permission-class unanswered call"
-                            );
-                            // R4: name-fallback synthesize sidecar when absent.
-                            if let Err(e) = super::pending::ensure_name_fallback_pending(
-                                self.conn(),
-                                &self.id,
-                                &turn_id,
-                                &call.call_id,
-                                &call.name,
-                            ) {
-                                tracing::warn!(
-                                    error = %e,
-                                    call_id = %call.call_id,
-                                    "failed to synthesize pending_permissions fallback"
-                                );
-                            }
-                            None
-                        } else {
-                            Some(Self::unanswered_call_output(&call.call_id, &call.name))
-                        }
+                        // B: process start has no live turn, so a permission-class
+                        // tail is interrupted like any other unanswered call. A
+                        // card left behind here would have no one to answer it.
+                        Some(Self::unanswered_call_output(&call.call_id, &call.name))
                     }
                     _ => None,
                 })
@@ -3349,7 +3412,7 @@ impl Session {
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &str, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
-        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None)
+        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None)
     }
 
     /// Pi-style keep-recent compact:
@@ -3368,7 +3431,7 @@ impl Session {
         kept_from_seq: Option<i64>,
         token_estimate: i64,
     ) -> Result<i64> {
-        self.apply_compact_checkpoint_checked(summary, kept_from_seq, token_estimate, None)
+        self.apply_compact_checkpoint_checked(summary, kept_from_seq, token_estimate, None, None)
     }
 
     /// Like `apply_compact_checkpoint_from`, but abort if the turn view length
@@ -3379,6 +3442,7 @@ impl Session {
         kept_from_seq: Option<i64>,
         token_estimate: i64,
         expected_view_len: Option<usize>,
+        usage: Option<&ProviderUsage>,
     ) -> Result<i64> {
         let _gate = self.lock_write();
         let now = chrono::Utc::now().timestamp_millis();
@@ -3419,6 +3483,15 @@ impl Session {
             token_estimate,
             &mut projection,
         )?;
+        // The summarizer call is a billed provider request like any other. This
+        // checkpoint row is its only durable home, so the chart and the session
+        // totals read the cost from the row it produced.
+        if let Some(usage) = usage {
+            tx.execute(
+                "UPDATE transcript_items SET provider_usage = ?1 WHERE session_id = ?2 AND seq = ?3",
+                rusqlite::params![serde_json::to_string(usage)?, self.id, seq as i64],
+            )?;
+        }
         if projection.surface.nodes.contains(&seq) {
             projection.payloads_by_seq.insert(
                 seq,
@@ -3920,6 +3993,65 @@ mod tests {
         assert!(writer[0].1.contains("sum"));
         assert_eq!(writer[0].1.matches("<compacted-summary>").count(), 1);
         assert!(writer.iter().any(|(seq, text)| *seq == 1 && text == "b"));
+    }
+
+    /// The summarizer call is real provider spend. It has no `request/header`
+    /// row, so its bill rides on the checkpoint row it produced — and both the
+    /// series and the totals must see it.
+    #[test]
+    fn provider_usage_series_counts_the_summarizer_bill() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b")])
+            .unwrap();
+        let usage = ProviderUsage {
+            prompt_tokens: 120_000,
+            completion_tokens: 1_800,
+            cache_hit_tokens: 100_000,
+            cache_miss_tokens: 20_000,
+        };
+        let checkpoint = session
+            .apply_compact_checkpoint_checked(
+                "[Conversation summary]\nprior",
+                Some(1),
+                42,
+                None,
+                Some(&usage),
+            )
+            .unwrap();
+
+        let series = super::super::read::provider_usage_series(session.conn(), &session.id, 10)
+            .expect("series reads");
+        assert_eq!(series.samples.len(), 1, "the summarizer bill is a sample");
+        assert_eq!(series.samples[0].seq, checkpoint);
+        assert_eq!(series.samples[0].kind, ProviderUsageKind::Compaction);
+        assert_eq!(series.samples[0].prompt, 120_000);
+        assert_eq!(series.samples[0].miss, 20_000, "hit + miss is the prompt");
+        assert_eq!(series.samples[0].model, None, "a summary body carries no model");
+        assert_eq!(series.requests, 1);
+        assert_eq!(series.totals.prompt_tokens, 120_000);
+        assert_eq!(series.totals.completion_tokens, 1_800);
+        assert_eq!(series.compactions.len(), 1, "the mark and the bill are one row");
+    }
+
+    #[test]
+    fn provider_usage_series_reports_compaction_marks() {
+        let session = Session::ephemeral("/tmp/proj", "default", Some("model")).unwrap();
+        session
+            .insert_detail_rows(&[user_text("a"), user_text("b")])
+            .unwrap();
+        let checkpoint = session
+            .apply_compact_checkpoint_from("[Conversation summary]\nprior", Some(1), 42)
+            .unwrap();
+        let series = super::super::read::provider_usage_series(session.conn(), &session.id, 10)
+            .expect("series reads");
+        assert!(series.samples.is_empty(), "no request bills were recorded");
+        assert_eq!(series.compactions.len(), 1, "one compaction mark");
+        assert_eq!(
+            series.compactions[0].seq, checkpoint,
+            "the mark is the checkpoint row itself, not an inferred gap"
+        );
+        assert!(!series.truncated);
     }
 
     #[test]

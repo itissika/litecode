@@ -142,6 +142,10 @@ pub fn execute(
         SessionRead::ProviderUsageRollup { session_id } => Ok(ReadValue::ProviderUsageRollup(
             provider_usage_rollup(conn, &session_id)?,
         )),
+        SessionRead::ProviderUsageSeries { session_id, limit } => Ok(
+            ReadValue::ProviderUsageSeries(provider_usage_series(conn, &session_id, limit)?),
+        ),
+        SessionRead::WorkspaceUsage => Ok(ReadValue::WorkspaceUsage(workspace_usage(conn)?)),
         SessionRead::LatestChangeId => Ok(ReadValue::Count(latest_change_id(conn)?)),
     }
 }
@@ -207,6 +211,250 @@ fn provider_usage_rollup(
         parsed.push((seq, usage));
     }
     Ok(session::ProviderUsageRollup::from_rows(parsed))
+}
+
+/// One session's provider bills in transcript order, for the usage chart.
+///
+/// `limit` bounds only the returned sample window; `totals` always covers every
+/// bill — turn requests and summarizer requests alike — so a truncated window
+/// can never be read as the whole session, and no paid call is invisible.
+pub(super) fn provider_usage_series(
+    conn: &Connection,
+    session_id: &str,
+    limit: i64,
+) -> Result<session::ProviderUsageSeries> {
+    let limit = limit.clamp(1, 400) as usize;
+    // Bills live on two row kinds: the `request/header` of a turn request, and
+    // the `compacted` checkpoint a summarizer request produced. Both are real
+    // provider spend, so both belong in the series and in the totals.
+    let mut stmt = conn.prepare(
+        "SELECT seq, turn_id, created_at, body, event_type, provider_usage
+         FROM transcript_items
+         WHERE session_id = ?1
+           AND event_type IN ('request/header', 'compacted')
+           AND provider_usage IS NOT NULL
+         ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+
+    let mut bills = Vec::new();
+    let mut totals = session::ProviderUsage {
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        cache_hit_tokens: 0,
+        cache_miss_tokens: 0,
+    };
+    for row in rows {
+        let (seq, turn_id, at_ms, body, event_type, raw) = row?;
+        let Ok(usage) = serde_json::from_str::<session::ProviderUsage>(&raw) else {
+            continue;
+        };
+        totals.prompt_tokens = totals.prompt_tokens.saturating_add(usage.prompt_tokens);
+        totals.completion_tokens = totals
+            .completion_tokens
+            .saturating_add(usage.completion_tokens);
+        totals.cache_hit_tokens = totals
+            .cache_hit_tokens
+            .saturating_add(usage.cache_hit_tokens);
+        totals.cache_miss_tokens = totals
+            .cache_miss_tokens
+            .saturating_add(usage.cache_miss_tokens);
+        let kind = if event_type == "compacted" {
+            session::ProviderUsageKind::Compaction
+        } else {
+            session::ProviderUsageKind::Request
+        };
+        bills.push((seq, turn_id.unwrap_or_default(), at_ms, body, kind, usage));
+    }
+
+    let requests = bills.len() as u64;
+    let truncated = bills.len() > limit;
+    if truncated {
+        bills.drain(0..bills.len() - limit);
+    }
+    let samples = bills
+        .into_iter()
+        .map(|(seq, turn_id, at_ms, body, kind, usage)| session::ProviderUsageSample {
+            seq,
+            turn_id,
+            at_ms,
+            prompt: usage.prompt_tokens,
+            completion: usage.completion_tokens,
+            hit: usage.cache_hit_tokens,
+            miss: usage.cache_miss_tokens,
+            kind,
+            // A checkpoint body is a summary, not a request header: no model.
+            model: match kind {
+                session::ProviderUsageKind::Request => body.as_deref().and_then(request_model),
+                session::ProviderUsageKind::Compaction => None,
+            },
+        })
+        .collect();
+
+    let mut stmt = conn.prepare(
+        "SELECT seq, created_at FROM transcript_items
+         WHERE session_id = ?1 AND event_type = 'compacted'
+         ORDER BY seq ASC",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+        Ok(session::ProviderUsageMark {
+            seq: row.get(0)?,
+            at_ms: row.get(1)?,
+        })
+    })?;
+    let mut compactions = Vec::new();
+    for row in rows {
+        compactions.push(row?);
+    }
+
+    Ok(session::ProviderUsageSeries {
+        samples,
+        compactions,
+        truncated,
+        totals,
+        requests,
+    })
+}
+
+
+/// Whole-workspace spend, from authoritative bills only.
+///
+/// Days are server-local calendar days so a bucket matches what a person calls
+/// "today". The `json_valid` filter is part of the truth claim: a bill that
+/// cannot be parsed is not a number we can add, and treating it as zero would
+/// assert the request cost nothing.
+///
+/// Totals are folded from the same filtered rows as the buckets, so the header
+/// numbers can never disagree with the chart under them.
+pub(super) fn workspace_usage(conn: &Connection) -> Result<session::WorkspaceUsage> {
+    const BILL: &str = "provider_usage IS NOT NULL AND json_valid(provider_usage)";
+
+    let mut stmt = conn.prepare(&format!(
+        "SELECT strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', 'localtime') AS day,
+                count(*),
+                COALESCE(SUM(json_extract(provider_usage, '$.prompt_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.completion_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_hit_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_miss_tokens')), 0)
+         FROM transcript_items
+         WHERE {BILL}
+         GROUP BY day
+         ORDER BY day ASC"
+    ))?;
+    let days = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut totals = session::ProviderUsage::default();
+    let mut requests = 0u64;
+    let mut buckets = Vec::with_capacity(days.len());
+    for (day, count, prompt, completion, hit, miss) in days {
+        let count = count.max(0) as u64;
+        let prompt = prompt.max(0) as u64;
+        let completion = completion.max(0) as u64;
+        let hit = hit.max(0) as u64;
+        let miss = miss.max(0) as u64;
+        requests = requests.saturating_add(count);
+        totals.prompt_tokens = totals.prompt_tokens.saturating_add(prompt);
+        totals.completion_tokens = totals.completion_tokens.saturating_add(completion);
+        totals.cache_hit_tokens = totals.cache_hit_tokens.saturating_add(hit);
+        totals.cache_miss_tokens = totals.cache_miss_tokens.saturating_add(miss);
+        buckets.push(session::WorkspaceUsageDay {
+            day: day.unwrap_or_default(),
+            requests: count,
+            prompt,
+            completion,
+            hit,
+            miss,
+        });
+    }
+
+    // Today by hour: the `日` view is a within-day question, and a single day
+    // column cannot answer it. Same filter, same arithmetic as the days above.
+    let now = chrono::Local::now();
+    let today = now.format("%Y-%m-%d").to_string();
+    let today_start_ms = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .and_then(|naive| {
+            use chrono::TimeZone;
+            chrono::Local
+                .from_local_datetime(&naive)
+                .earliest()
+        })
+        .map(|at| at.timestamp_millis())
+        .unwrap_or(0);
+    let mut hour_stmt = conn.prepare(&format!(
+        "SELECT CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+                count(*),
+                COALESCE(SUM(json_extract(provider_usage, '$.prompt_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.completion_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_hit_tokens')), 0),
+                COALESCE(SUM(json_extract(provider_usage, '$.cache_miss_tokens')), 0)
+         FROM transcript_items
+         WHERE {BILL} AND created_at >= ?1
+         GROUP BY hour
+         ORDER BY hour ASC",
+        BILL = BILL
+    ))?;
+    let hours = hour_stmt
+        .query_map(rusqlite::params![today_start_ms], |row| {
+            Ok(session::WorkspaceUsageHour {
+                hour: row.get::<_, i64>(0)?.clamp(0, 23) as u32,
+                requests: row.get::<_, i64>(1)?.max(0) as u64,
+                prompt: row.get::<_, i64>(2)?.max(0) as u64,
+                completion: row.get::<_, i64>(3)?.max(0) as u64,
+                hit: row.get::<_, i64>(4)?.max(0) as u64,
+                miss: row.get::<_, i64>(5)?.max(0) as u64,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // One integer for the header. The overview does not rank sessions, and a
+    // per-session breakdown is a different question from workspace spend.
+    let session_count = conn.query_row(
+        &format!(
+            "SELECT COUNT(DISTINCT session_id) FROM transcript_items WHERE {BILL}"
+        ),
+        [],
+        |row| row.get::<_, i64>(0),
+    )?.max(0) as u64;
+
+    Ok(session::WorkspaceUsage {
+        days: buckets,
+        hours,
+        today,
+        totals,
+        requests,
+        session_count,
+    })
+}
+
+/// Model id recorded on a request header body, when present.
+fn request_model(body: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(|model| model.to_string())
 }
 
 fn request_origins(conn: &Connection, session_id: &str) -> Result<Vec<(i64, serde_json::Value)>> {

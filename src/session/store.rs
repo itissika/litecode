@@ -1,8 +1,11 @@
 //! Compatibility re-exports. Session persistence lives in `data::sqlite`.
 
 pub use crate::session::data::sqlite::session::{
-    ApplyOutcome, CommitDeltaOutcome, ProviderUsage, ProviderUsageRollup, SQL_CHECKPOINT_SEQ,
+    ApplyOutcome, CommitDeltaOutcome, ProviderUsage, ProviderUsageKind, ProviderUsageMark,
+    ProviderUsageRollup,
+    ProviderUsageSample, ProviderUsageSeries, SQL_CHECKPOINT_SEQ,
     SQL_KEPT_FROM_SEQ, SQL_LOAD_HISTORY_TRANSCRIPT, SQL_LOAD_TURN_TRANSCRIPT,
     SQL_USER_DETAIL_COUNT, Session, SessionApply, SessionContextMeter, TranscriptRow,
+    WorkspaceUsage, WorkspaceUsageDay, WorkspaceUsageHour,
     occupancy_usage,
 };

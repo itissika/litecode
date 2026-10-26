@@ -459,6 +459,7 @@ impl SessionData {
             token_estimate,
             kept_from: kept_from.map(|s| s as crate::session::event::Seq),
             expected_prefix: None,
+            usage: None,
         })?;
         Ok(())
     }

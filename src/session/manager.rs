@@ -17,7 +17,8 @@ use crate::session::data::{SessionData, SessionDataReader};
 use crate::session::event::{EventDraft, EventType};
 use crate::session::live::{LifecycleEvent, TurnProgress};
 use crate::session::store::{
-    ProviderUsage, ProviderUsageRollup, Session, SessionApply, SessionContextMeter,
+    ProviderUsage, ProviderUsageRollup, ProviderUsageSeries, Session, SessionApply,
+    SessionContextMeter, WorkspaceUsage,
 };
 use crate::session::task_state::{TaskReminders, prune_stale_active_plan};
 use crate::types::{LitecodeError, Result};
@@ -3147,6 +3148,41 @@ impl SessionManager {
         }
     }
 
+    /// Bills for the usage chart: the last `limit` requests plus totals over
+    /// every bill. Same rows as `provider_usage_rollup`, so chart and totals
+    /// cannot disagree.
+    pub fn provider_usage_series(
+        &self,
+        session_id: &str,
+        limit: i64,
+    ) -> Result<ProviderUsageSeries> {
+        match self
+            .data
+            .read_blocking(SessionRead::ProviderUsageSeries {
+                session_id: session_id.to_string(),
+                limit,
+            })? {
+            ReadValue::ProviderUsageSeries(series) => Ok(series),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected provider usage series".into(),
+            )),
+        }
+    }
+
+    /// Authoritative workspace spend: per natural day, per session, plus totals.
+    ///
+    /// The only usage read that is not scoped to one session — it answers "what
+    /// did this whole workspace pay for", from the same rows the per-session
+    /// chart reads.
+    pub fn workspace_usage(&self) -> Result<WorkspaceUsage> {
+        match self.data.read_blocking(SessionRead::WorkspaceUsage)? {
+            ReadValue::WorkspaceUsage(usage) => Ok(usage),
+            _ => Err(LitecodeError::SessionStorage(
+                "unexpected workspace usage read".into(),
+            )),
+        }
+    }
+
     /// Persist a consumed queue as one ordinary user message.
     ///
     /// The only durable artifact of the memory-only pending queue: it must be
@@ -4409,6 +4445,124 @@ mod child_session_tests {
             .try_begin_operation(&parent, SessionOperationKind::Delete)
             .expect("idle descendant must permit parent delete");
         drop(lease);
+    }
+}
+
+#[cfg(test)]
+mod usage_series_tests {
+    use super::*;
+
+    fn usage(prompt: u64, hit: u64, completion: u64) -> ProviderUsage {
+        ProviderUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            cache_hit_tokens: hit,
+            cache_miss_tokens: prompt - hit,
+        }
+    }
+
+    fn seeded() -> (SessionManager, String) {
+        let manager = SessionManager::ephemeral_registry();
+        let session_id = manager
+            .open_session_sync("", "default", None)
+            .expect("session opens");
+        for step in 0..5u64 {
+            let header = manager
+                .append_request_origin(
+                    &session_id,
+                    &serde_json::json!({ "schema": 1, "step": step, "model": "test/model" }),
+                )
+                .expect("header row");
+            manager
+                .record_provider_usage(&session_id, header, &usage(1_000 + step, 900, 10))
+                .expect("bill");
+        }
+        (manager, session_id)
+    }
+
+    /// The tail is a window; totals and the request count are not. Same rows
+    /// feed both, so a truncated chart can never be read as the whole session.
+    #[test]
+    fn series_returns_tail_with_whole_session_totals() {
+        let (manager, session_id) = seeded();
+
+        let all = manager
+            .provider_usage_series(&session_id, 10)
+            .expect("series");
+        assert_eq!(all.samples.len(), 5);
+        assert_eq!(all.requests, 5);
+        assert!(!all.truncated);
+        assert_eq!(all.samples[0].prompt, 1_000);
+        assert_eq!(all.samples[4].prompt, 1_004);
+        assert_eq!(all.samples[4].hit, 900);
+        assert_eq!(all.samples[4].miss, 104, "hit + miss is the prompt");
+        assert_eq!(all.totals.prompt_tokens, 5_010);
+        assert_eq!(all.totals.completion_tokens, 50);
+        assert_eq!(all.totals.cache_hit_tokens, 4_500);
+        assert_eq!(all.totals.cache_miss_tokens, 510);
+
+        let tail = manager
+            .provider_usage_series(&session_id, 2)
+            .expect("tail");
+        assert!(tail.truncated, "the window hides older bills");
+        assert_eq!(tail.samples.len(), 2);
+        assert_eq!(tail.requests, 5, "requests stay whole-session");
+        assert_eq!(tail.totals.prompt_tokens, all.totals.prompt_tokens);
+        assert_eq!(tail.samples[1].prompt, 1_004, "newest bill is last");
+    }
+
+    /// Workspace spend is the same rows without the session filter: two sessions,
+    /// one day bucket, and totals that cover both.
+    #[test]
+    fn workspace_usage_sums_every_session() {
+        let manager = SessionManager::ephemeral_registry();
+        let small = manager.open_session_sync("", "default", None).unwrap();
+        let large = manager.open_session_sync("", "default", None).unwrap();
+        assert_ne!(small, large);
+        for (session_id, prompt) in [(&small, 1_000u64), (&large, 3_000)] {
+            let header = manager
+                .append_request_origin(
+                    session_id,
+                    &serde_json::json!({ "schema": 1, "model": "test/model" }),
+                )
+                .expect("header row");
+            manager
+                .record_provider_usage(session_id, header, &usage(prompt, 900, 10))
+                .expect("bill");
+        }
+
+        let workspace = manager.workspace_usage().expect("workspace usage");
+        assert_eq!(workspace.requests, 2);
+        assert_eq!(workspace.totals.prompt_tokens, 4_000);
+        assert_eq!(workspace.totals.completion_tokens, 20);
+        assert_eq!(workspace.days.len(), 1, "both bills share today's bucket");
+        assert_eq!(workspace.days[0].prompt, 4_000);
+        assert_eq!(workspace.days[0].requests, 2);
+        assert_eq!(workspace.session_count, 2, "both sessions paid a bill");
+        // Same rows, second resolution: today's hours add up to the same money.
+        assert_eq!(
+            workspace.hours.iter().map(|hour| hour.prompt).sum::<u64>(),
+            4_000
+        );
+        assert_eq!(
+            workspace.hours.iter().map(|hour| hour.requests).sum::<u64>(),
+            2
+        );
+        assert_eq!(workspace.today.len(), 10, "a YYYY-MM-DD anchor");
+    }
+
+    /// The header body carries the model; a missing model must not fail the row.
+    #[test]
+    fn series_labels_the_request_model_from_the_header_body() {
+        let (manager, session_id) = seeded();
+        let series = manager
+            .provider_usage_series(&session_id, 10)
+            .expect("series");
+        assert_eq!(
+            series.samples[0].model.as_deref(),
+            Some("test/model"),
+            "model comes off the request header body"
+        );
     }
 }
 

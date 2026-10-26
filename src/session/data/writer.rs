@@ -910,6 +910,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             token_estimate,
             kept_from,
             expected_prefix,
+            usage,
         } => {
             let seq = {
                 let session = ensure_live(state, &session_id)?;
@@ -918,6 +919,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     kept_from.map(|s| s as i64),
                     token_estimate,
                     expected_prefix,
+                    usage.as_ref(),
                 )?
             };
             bump_receipt(

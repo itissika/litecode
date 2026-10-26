@@ -1227,6 +1227,9 @@ impl CompactPolicy {
                 token_estimate: final_count as i64,
                 kept_from: Some(kept_from_seq),
                 expected_prefix: Some(prefix_len),
+                // Already captured off the response stream; persisting it is what
+                // stops the summarizer call from being an unrecorded cost.
+                usage: artifact.usage.clone(),
             },
         ) {
             Ok(receipt) => receipt,
