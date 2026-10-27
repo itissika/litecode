@@ -35,6 +35,9 @@ pub enum CompactionStage {
     Started,
     Succeeded,
     Failed,
+    /// The branch ended without a checkpoint because its frozen plan no longer
+    /// matched the surface. No user action is required.
+    Abandoned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

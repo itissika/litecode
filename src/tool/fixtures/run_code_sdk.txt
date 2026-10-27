@@ -112,10 +112,111 @@ type ApplyEditsData = {
   }>;
 };
 
-type DiagnosticsInput = {
+type BrowserClickInput = {
+  // An element ref from the latest browser_read.
+  ref: string;
+  // Optional page id. Omit for the active visible tab.
+  page_id?: string;
+};
+
+type BrowserClickData = {
+  ok: true;
+  page_id: string;
+  ref: string;
+  tag: string;
+  text: string;
+  title: string;
+  url: string;
+};
+
+type BrowserCloseInput = {
+  // A browser page id returned by browser_open or browser_list.
+  page_id: string;
+};
+
+type BrowserCloseData = {
+  ok: true;
+  closed: boolean;
+  id: string;
+  fallback?: boolean;
+};
+
+type BrowserListInput = {};
+
+type BrowserListData = {
+  ok: true;
+  active_id: string;
+  pages: Array<{
+    active: boolean;
+    agentOwned: boolean;
+    id: string;
+    title: string;
+    url: string;
+    visible: boolean;
+  }>;
+};
+
+type BrowserOpenInput = {
+  // http(s) URL to open in a visible browser tab.
+  url: string;
+};
+
+type BrowserOpenData = {
+  ok: true;
+  active: boolean;
+  agentOwned: boolean;
+  id: string;
+  title: string;
+  url: string;
+  visible: boolean;
+};
+
+type BrowserReadInput = {
+  // Maximum body text characters. Default 12000.
+  max_chars?: Integer;
+  // Optional page id. Omit for the active visible tab.
+  page_id?: string;
+};
+
+type BrowserReadData = {
+  ok: true;
+  elements: Array<{
+    ref: string;
+    tag: string;
+    text: string;
+    href?: string;
+    type?: string;
+  }>;
+  page_id: string;
+  text: string;
+  title: string;
+  truncated: boolean;
+  url: string;
+};
+
+type BrowserTypeInput = {
+  // An input ref from the latest browser_read.
+  ref: string;
+  // Text to set on the focused input.
+  text: string;
+  // Optional page id. Omit for the active visible tab.
+  page_id?: string;
+};
+
+type BrowserTypeData = {
+  ok: true;
+  page_id: string;
+  ref: string;
+  tag: string;
+  title: string;
+  url: string;
+};
+
+type PathInput = {
   // Source file under the workspace (workspace-relative preferred).
   path: string;
 };
+type DiagnosticsInput = PathInput;
 
 type DiagnosticsData = {
   ok: true;
@@ -129,12 +230,9 @@ type DiagnosticsData = {
   message: string;
 };
 
-type DocumentSymbolInput = {
-  // Source file under the workspace (workspace-relative preferred).
-  path: string;
-};
+type DocumentSymbolInput = PathInput;
 
-type DocumentSymbolData = {
+type SymbolsData = {
   ok: true;
   message: string;
   symbols: Array<{
@@ -147,6 +245,7 @@ type DocumentSymbolData = {
     path?: string;
   }>;
 };
+type DocumentSymbolData = SymbolsData;
 
 type EditInput = {
   // Replacement text. Use an empty string to delete old_string.
@@ -164,7 +263,7 @@ type EditData = {
   reason?: "not_found" | "no_match" | "invalid_args" | "empty" | "permission" | "io";
 };
 
-type FindReferencesInput = {
+type RangeInput = {
   // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
   character: Integer;
   // 1-based line number.
@@ -172,8 +271,9 @@ type FindReferencesInput = {
   // Source file under the workspace (workspace-relative preferred).
   path: string;
 };
+type FindReferencesInput = RangeInput;
 
-type FindReferencesData = {
+type LocationsData = {
   ok: true;
   locations: Array<{
     character: Integer;
@@ -184,6 +284,7 @@ type FindReferencesData = {
   }>;
   message: string;
 };
+type FindReferencesData = LocationsData;
 
 type GlobInput = {
   // Glob relative to path (or workspace root if path omitted). Example: '**/*.rs'. The pattern is used as given; a repeated path prefix is not removed. If path is 'src', use '**/*.rs', not 'src/**/*.rs'.
@@ -201,47 +302,13 @@ type GlobData = {
   paths: Array<string>;
 };
 
-type GoToDefinitionInput = {
-  // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
-  character: Integer;
-  // 1-based line number.
-  line: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  path: string;
-};
+type GoToDefinitionInput = RangeInput;
 
-type GoToDefinitionData = {
-  ok: true;
-  locations: Array<{
-    character: Integer;
-    line: Integer;
-    path: string;
-    end_character?: Integer;
-    end_line?: Integer;
-  }>;
-  message: string;
-};
+type GoToDefinitionData = LocationsData;
 
-type GoToImplementationInput = {
-  // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
-  character: Integer;
-  // 1-based line number.
-  line: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  path: string;
-};
+type GoToImplementationInput = RangeInput;
 
-type GoToImplementationData = {
-  ok: true;
-  locations: Array<{
-    character: Integer;
-    line: Integer;
-    path: string;
-    end_character?: Integer;
-    end_line?: Integer;
-  }>;
-  message: string;
-};
+type GoToImplementationData = LocationsData;
 
 type GrepInput = {
   // Regular expression over file contents, unless literal is true.
@@ -268,14 +335,7 @@ type GrepData = {
   message: string;
 };
 
-type HoverInput = {
-  // 1-based UTF-16 column on that line (editor column, not Unicode scalar index).
-  character: Integer;
-  // 1-based line number.
-  line: Integer;
-  // Source file under the workspace (workspace-relative preferred).
-  path: string;
-};
+type HoverInput = RangeInput;
 
 type HoverData = {
   ok: true;
@@ -288,7 +348,7 @@ type KillInput = {
   id: string;
 };
 
-type KillData = {
+type CommandData = {
   // Process exit code when finished; null when still running or no code is available.
   exit_code: Integer | null;
   // Handle for later wait / kill in the same session.
@@ -308,6 +368,7 @@ type KillData = {
   // Present with ok:false; unreaped kill uses still_alive.
   reason?: string;
 };
+type KillData = CommandData;
 
 type ReadInput = {
   // Prefer a workspace-relative path; absolute paths outside the workspace are allowed only under All permission. On Windows use C:\...; Unix-style /paths map under Git for Windows when installed. Past session transcripts are readable at `.litecode/sessions/<session_id>.md`.
@@ -332,26 +393,7 @@ type RunInput = {
   command: string;
 };
 
-type RunData = {
-  // Process exit code when finished; null when still running or no code is available.
-  exit_code: Integer | null;
-  // Handle for later wait / kill in the same session.
-  id: string;
-  // Stdout (decoded to UTF-8) plus any stdout truncation note, on-disk spill path, or status line. Always present (may be empty).
-  output: string;
-  // Shell that ran the command, e.g. `bash (MINGW64)` on Windows with Git Bash, `powershell`, or `bash`/`sh`.
-  shell: string;
-  // Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written.
-  stderr: string;
-  // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
-  killed?: boolean;
-  // Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean.
-  message?: string;
-  // False on soft failures (unreaped kill). Absent on ordinary success.
-  ok?: boolean;
-  // Present with ok:false; unreaped kill uses still_alive.
-  reason?: string;
-};
+type RunData = CommandData;
 
 type WaitInput = {
   // Command.id from tools.run in this session.
@@ -360,26 +402,7 @@ type WaitInput = {
   sec: Integer;
 };
 
-type WaitData = {
-  // Process exit code when finished; null when still running or no code is available.
-  exit_code: Integer | null;
-  // Handle for later wait / kill in the same session.
-  id: string;
-  // Stdout (decoded to UTF-8) plus any stdout truncation note, on-disk spill path, or status line. Always present (may be empty).
-  output: string;
-  // Shell that ran the command, e.g. `bash (MINGW64)` on Windows with Git Bash, `powershell`, or `bash`/`sh`.
-  shell: string;
-  // Stderr (decoded to UTF-8) plus any stderr truncation note. Empty when nothing was written.
-  stderr: string;
-  // True when wait observes a kill (tools.kill or UI). Absent on natural exit.
-  killed?: boolean;
-  // Warning about the command itself, e.g. a Git Bash path-conversion hint. Absent when clean.
-  message?: string;
-  // False on soft failures (unreaped kill). Absent on ordinary success.
-  ok?: boolean;
-  // Present with ok:false; unreaped kill uses still_alive.
-  reason?: string;
-};
+type WaitData = CommandData;
 
 type WebfetchInput = {
   // The URL to fetch content from
@@ -424,19 +447,7 @@ type WorkspaceSymbolInput = {
   query: string;
 };
 
-type WorkspaceSymbolData = {
-  ok: true;
-  message: string;
-  symbols: Array<{
-    kind: string;
-    character: Integer;
-    line: Integer;
-    name: string;
-    end_character?: Integer;
-    end_line?: Integer;
-    path?: string;
-  }>;
-};
+type WorkspaceSymbolData = SymbolsData;
 
 type WriteInput = {
   // Content to write to the file
@@ -478,6 +489,40 @@ declare const tools: {
   // if (batch.results.some((r) => !r.ok)) return { ok: false, results: batch.results };
   // return { ok: true, results: batch.results };
   readonly ["apply_edits"]: (args: ApplyEditsInput) => Promise<ApplyEditsData | ToolFailure>;
+  // Click one interactive element on the current visible browser page.
+  //
+  // Pass a ref from the latest browser_read. The page must still be visible and the element must still exist, otherwise the call fails with stale. Re-read before retrying. While the click runs the page is dimmed with an "Agent is working" overlay and human keyboard, mouse, and wheel input is paused; input is restored when the call returns.
+  //
+  // This is a normal page click, not a native OS click. If the action navigates, read the new page before the next click.
+  readonly ["browser_click"]: (args: BrowserClickInput) => Promise<BrowserClickData | ToolFailure>;
+  // Close a browser tab opened by the agent.
+  //
+  // Only tabs the agent opened can be closed. A tab opened by the human is refused with permission_denied. The tool does not close the workbench window or any unrelated page.
+  //
+  // The tab id comes from browser_open or browser_list.
+  readonly ["browser_close"]: (args: BrowserCloseInput) => Promise<BrowserCloseData | ToolFailure>;
+  // List the browser tabs open in the workbench.
+  //
+  // Each page has an id, url, title, active flag, visible flag, and agentOwned flag. active_id is the page the renderer currently considers active; it is empty when no tab is active. Use a page id with browser_read for content or browser_close for agent-owned tabs.
+  readonly ["browser_list"]: (args: BrowserListInput) => Promise<BrowserListData | ToolFailure>;
+  // Open a visible browser tab in the workbench and load an http(s) URL.
+  //
+  // The tab is created in the shared LiteCode browser, not in a hidden browser. The user can see and use it immediately. Returns the page id and current page metadata.
+  //
+  // Returns once the page has started loading; a tab that never loads is closed again and reported as a timeout. Only http and https URLs are accepted. Use browser_list to see tabs, browser_read to read the active page, and browser_close to close a tab opened by the agent. Do not use this tool for authentication, payments, or file downloads.
+  readonly ["browser_open"]: (args: BrowserOpenInput) => Promise<BrowserOpenData | ToolFailure>;
+  // Read the current visible browser page.
+  //
+  // Returns the page URL, title, body text, and up to 100 interactive elements with short-lived refs. Every call reassigns the refs, so use only the refs from the latest read. The page_id argument is optional; omitted means the active tab. A hidden or background tab is refused so the agent and human keep looking at the same page.
+  //
+  // Read is non-destructive and does not block human input. The text may be truncated; max_chars controls the limit. If the page shows no useful text (for example a canvas app), use browser_list to confirm the tab and tell the user rather than guessing.
+  readonly ["browser_read"]: (args: BrowserReadInput) => Promise<BrowserReadData | ToolFailure>;
+  // Type text into one input, textarea, contenteditable, or select element on the current visible browser page.
+  //
+  // Pass a ref from the latest browser_read and the text to set. The tool focuses the element, sets its value, and dispatches input/change events so normal web apps notice the edit. The page must be visible and the element must still exist.
+  //
+  // While the edit runs the page is dimmed with an "Agent is working" overlay and human keyboard, mouse, and wheel input is paused. This tool does not submit forms; click the submit button with browser_click when needed.
+  readonly ["browser_type"]: (args: BrowserTypeInput) => Promise<BrowserTypeData | ToolFailure>;
   // List diagnostics for one source file. Pass `{ path }`. Resolves `{ items, message }`—each item `{ severity, path, line, character, message }` (string severity, 1-based). Clean file → empty `items`. Cap 100; truncation noted in `message`. Engine-not-ready rejects `ToolError`.
   // Example:
   // const diags = await tools.diagnostics({ path: "src/a.rs" });
@@ -529,7 +574,7 @@ declare const tools: {
   // const info = await tools.hover({ path: "src/main.rs", line: 10, character: 5 });
   // return { markdown: info.markdown, message: info.message };
   readonly ["hover"]: (args: HoverInput) => Promise<HoverData | ToolFailure>;
-  // Stop a `tools.run` job in this session. Pass `id`. Kills the process group (Windows: `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. If still alive after the reap wait -> `ok: false` `still_alive`. Unknown id -> `not_found`. The job record remains observable through `wait`.
+  // Stop a `tools.run` job in this session. Pass `id`. Terminates the whole process tree, including descendants that outlived the shell (Windows: a per-job Job Object, falling back to `taskkill /T`). Only after the process is confirmed dead is `ok` true—`output` includes `[process was killed]`. A job that had already exited is reported with its exit code and `job had already exited`; when only its leftover descendants were stopped, the note says so. If still alive after the reap wait -> `ok: false` `still_alive`, and its later natural exit is still reported by `wait`. Unknown id -> `not_found`. The job record remains observable through `wait`.
   // Example:
   // const job = await tools.run({ command: "npm test" });
   // if (job.exit_code === null) {
@@ -543,13 +588,13 @@ declare const tools: {
   // const page = await tools.read({ path: "src/a.rs", start_line: 1 });
   // return { lines: page.lines.length, message: page.message };
   readonly ["read"]: (args: ReadInput) => Promise<ReadData | ToolFailure>;
-  // Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout plus truncation/status notes), `stderr` (stderr plus notes), `shell`, and optional `message`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. cwd is workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, MSYS may rewrite POSIX-looking args like `/c`; use `//c` or `MSYS_NO_PATHCONV=1`. A path-conversion hint is reported in `message` and does not change `exit_code`.
+  // Run one shell command. Resolves `id`, `exit_code` (int or `null` if still running), `output` (stdout plus truncation/status notes), `stderr` (stderr plus notes), `shell`, and optional `message`. Foreground ~30s then backgrounds with `exit_code: null`—continue with `tools.wait` / `tools.kill`. The exit code belongs to the shell process, not to its output: if a backgrounded descendant keeps the pipe open, the call returns at the exit and `output` says `still draining` with the full log path. cwd is workspace root; chain with `&&` when needed. Non-zero `exit_code` still resolves—branch in-program. Parallel `run` via `Promise.all` is truly concurrent. Under Git Bash, MSYS may rewrite POSIX-looking args like `/c`; use `//c` or `MSYS_NO_PATHCONV=1`. A path-conversion hint is reported in `message` and does not change `exit_code`.
   // Example:
   // const test = await tools.run({ command: "cargo test -q --lib a" });
   // const done = test.exit_code === null ? await tools.wait({ id: test.id, sec: 60 }) : test;
   // return { exit_code: done.exit_code, output: done.output };
   readonly ["run"]: (args: RunInput) => Promise<RunData | ToolFailure>;
-  // Wait on a `tools.run` job in this session. Pass `id` and required `sec` (clamped to 300). Resolves the same `Command` shape as `run`. Natural exit sets `exit_code`; a kill sets `killed: true` and a `[process was killed]` note. Budget elapsed with job still running → `exit_code: null` (job kept). Unknown id → `ok: false` `not_found`.
+  // Wait on a `tools.run` job in this session. Pass `id` and required `sec` (clamped to 300). Resolves the same `Command` shape as `run`. Natural exit sets `exit_code`; a kill sets `killed: true` and a `[process was killed]` note. A job returns as soon as its process exits: a descendant that still holds the pipe only keeps `output` growing in the log, so `output` may be a snapshot and names the full log file. Budget elapsed with job still running → `exit_code: null` (job kept). Unknown id → `ok: false` `not_found`.
   // Example:
   // const job = await tools.run({ command: "npm test" });
   // if (job.exit_code !== null) return { exit_code: job.exit_code, output: job.output };

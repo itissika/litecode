@@ -1485,6 +1485,60 @@ pub(crate) fn load_events_on(
     load_events_range_on(conn, session_id, 0, i64::MAX, data_root)
 }
 
+/// Where a cold read may start: the newest checkpoint row and the seq below
+/// which it already replaced every surface node. `None` when the session never
+/// compacted.
+///
+/// The boundary is `compacted.body.to`, not `kept_from_seq`: the body states
+/// exactly what the summary covers, while `kept_from_seq` is the first surviving
+/// *detail* row, which can sit above `to` when the prefix it skipped held only
+/// non-surface rows. Anchoring on the body keeps the fold's invariant exact
+/// ("this checkpoint ends where the fold starts") instead of approximate.
+///
+/// Both rows are primary-key lookups, so this costs two point reads regardless
+/// of how long the session is.
+pub(crate) fn load_compact_anchor_on(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<crate::session::surface::FoldAnchor>> {
+    let checkpoint: Option<i64> = conn
+        .query_row(
+            "SELECT checkpoint_seq FROM sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let checkpoint = checkpoint.unwrap_or(0);
+    if checkpoint <= 0 {
+        return Ok(None);
+    }
+    let checkpoint = Seq::try_from(checkpoint).map_err(|_| {
+        LitecodeError::InvalidSessionEvent(format!("negative checkpoint_seq {checkpoint}"))
+    })?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT body FROM transcript_items WHERE session_id = ?1 AND seq = ?2",
+            rusqlite::params![session_id, checkpoint as i64],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let raw = raw.ok_or_else(|| {
+        LitecodeError::InvalidSessionEvent(format!(
+            "checkpoint row {checkpoint} has no body to anchor the fold on"
+        ))
+    })?;
+    let body: crate::session::model::CompactedBody = serde_json::from_str(&raw).map_err(|e| {
+        LitecodeError::InvalidSessionEvent(format!(
+            "checkpoint row {checkpoint} is not a compacted body: {e}"
+        ))
+    })?;
+    Ok(Some(crate::session::surface::FoldAnchor {
+        start: body.to,
+        checkpoint,
+    }))
+}
+
 /// `(last_seq, next_seq)` for the client buffer cursor. The two are independent:
 ///
 /// * `last_seq` is the **active** `MAX(seq)` of the live log (`-1` when empty).

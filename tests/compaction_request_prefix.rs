@@ -636,6 +636,8 @@ modalities = ["text"]
         CompactionTrigger::Auto,
         None,
         &sessions.data_root_path(),
+        None,
+        2,
     )
     .await
     .expect("auto compaction");

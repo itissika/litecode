@@ -14,6 +14,7 @@ use crate::config::schema::{
     SUBAGENT_CAPABILITY_ID, SUBAGENT_MEMBER_TOOL_IDS,
 };
 use crate::permission::has_permission_preset;
+use crate::tools::browser::{BROWSER_CARD_ID, BROWSER_CODE_TOOL_NAMES};
 use crate::tools::lsp::{LSP_CARD_ID, LSP_CODE_TOOL_NAMES};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +124,7 @@ fn member(id: &str) -> MemberSpec {
 fn builtin_surface(id: &str) -> CallSurface {
     match id {
         "read" | "grep" | "glob" | "write" | "edit" | "apply_edits" | "run" | "wait" | "kill"
-        | "webfetch" | "websearch" => CallSurface::Code,
+        | "webfetch" | "websearch" | BROWSER_CARD_ID => CallSurface::Code,
         _ => CallSurface::Direct,
     }
 }
@@ -422,6 +423,24 @@ pub fn capability_catalog(resolved: &ResolvedConfig) -> CapabilityCatalog {
                     label: None,
                 },
             ),
+            BROWSER_CARD_ID => push_capability(
+                &mut catalog,
+                Capability {
+                    id: BROWSER_CARD_ID.to_string(),
+                    kind: CapabilityKind::Engine,
+                    source: CapabilitySource::Builtin,
+                    members: BROWSER_CODE_TOOL_NAMES
+                        .iter()
+                        .map(|member_id| member(member_id))
+                        .collect(),
+                    scope: scope_of(BROWSER_CARD_ID),
+                    origin: ToolOrigin::Workspace,
+                    overridden: false,
+                    permission_surface: PermissionSurface::Fixed,
+                    surface: CallSurface::Code,
+                    label: None,
+                },
+            ),
             _ => push_builtin(
                 &mut catalog,
                 resolved,
@@ -503,6 +522,7 @@ mod tests {
             "subagent_tools",
             "lsp",
             "code_search",
+            "browser",
             "session_search",
         ] {
             assert!(catalog.get(id).is_some(), "missing {id}");
@@ -514,6 +534,7 @@ mod tests {
         );
         assert_eq!(catalog.member_capability_id("wait"), Some("run"));
         assert_eq!(catalog.member_capability_id("apply_edits"), Some("edit"));
+        assert_eq!(catalog.member_capability_id("browser_open"), Some("browser"));
         assert_eq!(
             catalog.member_capability_id("subagent_launch"),
             Some("subagent_tools")

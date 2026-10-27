@@ -253,15 +253,7 @@ mod tests {
 
     fn finish_user_killed(hub: &TerminalHub, root: &std::path::Path, sid: &str) {
         hub.jobs
-            .insert_finished_pipe_job(
-                "bg_ec000002",
-                sid,
-                "",
-                "sleep 20",
-                root,
-                Some(1),
-                true,
-            )
+            .insert_finished_pipe_job("bg_ec000002", sid, "", "sleep 20", root, Some(1), true)
             .expect("user-killed pipe job");
     }
 

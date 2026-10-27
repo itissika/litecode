@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use litecode::config::TurnGuard;
-use litecode::config::resolved::WorkspaceState;
 use litecode::config::schema::AgentProfile;
 use litecode::session::manager::SessionManager;
 use tempfile::TempDir;
@@ -32,11 +31,9 @@ fn concurrent_commit_partial_does_not_lose_updates() {
     // commit_partial process mutex (REV-6) the read-modify-write races would
     // drop all but one. (Provider definitions moved to the catalog, so the
     // per-id settings document is now the agent map.)
-    let workspace = WorkspaceState::new("/tmp/f2-lock-scope");
     let mut handles = Vec::new();
     for i in 0..8u32 {
         let w = Arc::clone(&writer);
-        let workspace = workspace.clone();
         handles.push(std::thread::spawn(move || {
             w.write_agent(
                 &format!("agent_{i}"),
@@ -44,7 +41,6 @@ fn concurrent_commit_partial_does_not_lose_updates() {
                     description: format!("concurrent {i}"),
                     ..Default::default()
                 },
-                &workspace,
             )
             .expect("write agent");
         }));

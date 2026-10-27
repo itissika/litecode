@@ -30,6 +30,16 @@ export type BrowserState = {
   loading: boolean;
 };
 
+/** One open page as the agent sees it. */
+export type BrowserPageInfo = {
+  id: string;
+  url: string;
+  title: string;
+  active: boolean;
+  visible: boolean;
+  agentOwned: boolean;
+};
+
 export interface BrowserPage {
   loadURL(url: string): Promise<void>;
   getURL(): string;
@@ -40,6 +50,10 @@ export interface BrowserPage {
   stop(): void;
   canGoBack(): boolean;
   canGoForward(): boolean;
+  /** Run page-context JavaScript. Rejects when the page is gone. */
+  executeJavaScript(code: string): Promise<unknown>;
+  /** Block page keyboard/mouse input without hiding the page. */
+  setInputBlocked(blocked: boolean): void;
   close(): void;
   isDestroyed(): boolean;
   onNavigate(listener: () => void): void;
@@ -69,6 +83,8 @@ export interface BrowserHostOptions {
    * False means the move did not happen.
    */
   moveView?: (view: BrowserViewHandle, popoutId: string | null) => boolean;
+  /** Title used while a page has no title of its own. */
+  fallbackTitle?: string;
 }
 
 type Entry = {
@@ -122,6 +138,8 @@ function isZeroArea(value: unknown): boolean {
 
 export class BrowserHost {
   private readonly pages = new Map<string, Entry>();
+  private readonly agentOwned = new Set<string>();
+  private activePanelId: string | null = null;
   private obscured = false;
 
   constructor(private readonly options: BrowserHostOptions) {}
@@ -146,6 +164,92 @@ export class BrowserHost {
     this.bind(panelId, entry);
     view.attach();
     return this.snapshot(panelId, entry);
+  }
+
+  /** The renderer tells us which visible panel is active. */
+  setActive(id: unknown, active: boolean): void {
+    const panelId = this.readId(id);
+    if (!panelId) return;
+    if (active) {
+      if (this.pages.has(panelId)) this.activePanelId = panelId;
+      return;
+    }
+    if (this.activePanelId === panelId) this.activePanelId = null;
+  }
+
+  activeId(): string | null {
+    if (!this.activePanelId) return null;
+    const entry = this.pages.get(this.activePanelId);
+    if (!entry || entry.view.webContents.isDestroyed()) {
+      this.activePanelId = null;
+      return null;
+    }
+    return this.activePanelId;
+  }
+
+  /** Main marks an id before the renderer has created its panel. */
+  markAgentOwned(id: unknown): void {
+    const panelId = this.readId(id);
+    if (panelId) this.agentOwned.add(panelId);
+  }
+
+  isAgentOwned(id: unknown): boolean {
+    const panelId = this.readId(id);
+    return panelId !== null && this.agentOwned.has(panelId);
+  }
+
+  /** Drop ownership for an open request that never became a page. */
+  clearAgentOwned(id: unknown): void {
+    const panelId = this.readId(id);
+    if (!panelId) return;
+    this.agentOwned.delete(panelId);
+    if (this.activePanelId === panelId && !this.pages.has(panelId)) this.activePanelId = null;
+  }
+
+  list(): BrowserPageInfo[] {
+    return [...this.pages.keys()]
+      .map((id) => this.pageInfo(id))
+      .filter((page): page is BrowserPageInfo => page !== null);
+  }
+
+  pageInfo(id: unknown): BrowserPageInfo | null {
+    const panelId = this.readId(id);
+    if (!panelId) return null;
+    const entry = this.pages.get(panelId);
+    if (!entry) return null;
+    const page = entry.view.webContents;
+    if (page.isDestroyed()) return null;
+    const state = this.snapshot(panelId, entry);
+    return {
+      id: panelId,
+      url: state.url,
+      title: state.title,
+      active: this.activeId() === panelId,
+      visible: entry.shown,
+      agentOwned: this.agentOwned.has(panelId),
+    };
+  }
+
+  isShown(id: unknown): boolean {
+    return this.pageInfo(id)?.visible === true;
+  }
+
+  executeJavaScript(id: unknown, code: string): Promise<unknown> {
+    const panelId = this.readId(id);
+    if (!panelId) return Promise.reject(new Error("Invalid browser panel id"));
+    const entry = this.pages.get(panelId);
+    if (!entry || entry.view.webContents.isDestroyed()) {
+      return Promise.reject(new Error("Browser page is not open"));
+    }
+    return entry.view.webContents.executeJavaScript(code);
+  }
+
+  setInputBlocked(id: unknown, blocked: boolean): void {
+    const panelId = this.readId(id);
+    if (!panelId) return;
+    const entry = this.pages.get(panelId);
+    if (!entry || entry.view.webContents.isDestroyed()) return;
+    entry.view.webContents.setInputBlocked(blocked);
   }
 
   navigate(id: string, url: unknown): BrowserState {
@@ -261,7 +365,10 @@ export class BrowserHost {
     const entry = this.pages.get(panelId);
     if (!entry) return;
     this.pages.delete(panelId);
+    this.agentOwned.delete(panelId);
+    if (this.activePanelId === panelId) this.activePanelId = null;
     entry.shown = false;
+    entry.view.webContents.setInputBlocked(false);
     entry.view.detach();
     entry.view.webContents.close();
   }
@@ -366,7 +473,7 @@ export class BrowserHost {
     return {
       id,
       url: destroyed ? "" : page.getURL(),
-      title: title || "Browser",
+      title: title || this.options.fallbackTitle || "Browser",
       canGoBack: !destroyed && page.canGoBack(),
       canGoForward: !destroyed && page.canGoForward(),
       loading: entry.loading,

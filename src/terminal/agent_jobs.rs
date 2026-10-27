@@ -104,13 +104,85 @@ pub struct RunningJob {
     pub output_path: PathBuf,
 }
 
+/// Kill scope for one job's whole process tree.
+///
+/// Windows keeps a per-job Job Object created with
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so a descendant that outlived the
+/// shell can still be terminated and a runtime crash still reaps the tree.
+/// Elsewhere the tree is the process group rooted at `pid`.
+struct JobTree {
+    pid: u32,
+    #[cfg(windows)]
+    job: Option<usize>,
+}
+
+impl JobTree {
+    fn kill_tree(&self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.filter(|job| *job != 0) {
+            use windows_sys::Win32::Foundation::HANDLE;
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: the handle is owned by this struct and still open.
+            unsafe {
+                if TerminateJobObject(job as HANDLE, 1) != 0 {
+                    return;
+                }
+            }
+        }
+        kill_process_tree(self.pid);
+    }
+
+    /// Stop killing the tree when this handle closes. Used once a job finished
+    /// normally so a daemon it started is not reaped by our own cleanup.
+    fn release_on_close(&self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.filter(|job| *job != 0) {
+            use windows_sys::Win32::Foundation::HANDLE;
+            use windows_sys::Win32::System::JobObjects::{
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+                SetInformationJobObject,
+            };
+            // SAFETY: plain Win32 call on a handle this struct owns.
+            unsafe {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = 0;
+                let _ = SetInformationJobObject(
+                    job as HANDLE,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+            }
+        }
+    }
+}
+
+impl Drop for JobTree {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.filter(|job| *job != 0) {
+            use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+            // SAFETY: this struct owns the handle and closes it exactly once.
+            unsafe {
+                CloseHandle(job as HANDLE);
+            }
+        }
+    }
+}
+
 pub struct AgentJobRecord {
     pub session_id: String,
     pub call_id: String,
     pub command_preview: String,
     pub output_path: PathBuf,
     pub tee: Arc<Mutex<BoundedTee>>,
+    /// The process has not been reaped yet. Flipped only where the supervisor
+    /// observes the child exit; it never tracks the pipe readers.
     pub alive: bool,
+    /// Both pipe readers hit EOF. A shell that exited while a descendant still
+    /// holds the pipe is `!alive && !reader_eof`: draining, still owning its
+    /// log, but no longer running.
+    pub reader_eof: bool,
     pub exit_code: Option<u32>,
     pub started_at_ms: i64,
     pub user_killed: bool,
@@ -120,6 +192,9 @@ pub struct AgentJobRecord {
     stderr_path: PathBuf,
     stderr_tee: Arc<Mutex<BoundedTee>>,
     pid: Option<u32>,
+    /// Kill scope for the tree. Set by the supervisor right after spawn on
+    /// Windows; fixtures and Unix jobs fall back to `pid`.
+    tree: Option<Arc<JobTree>>,
     /// Set only by [`supervise_pipe`] when it chooses the background or promoted
     /// oneshot. Fixture inserts may be born already detached; nothing else flips it.
     detached: bool,
@@ -183,6 +258,8 @@ pub struct BashTailView {
     pub text: String,
     pub truncated_on_disk: bool,
     pub alive: bool,
+    /// The process exited but a pipe is still open, so the tail can still grow.
+    pub draining: bool,
     pub exit_code: Option<u32>,
 }
 
@@ -190,6 +267,9 @@ pub struct BashTailView {
 pub struct KilledJob {
     pub id: String,
     pub alive: bool,
+    /// Readers already hit EOF. `!alive && reader_eof` means the job was
+    /// already sealed when the kill arrived.
+    pub reader_eof: bool,
     pub exit_code: Option<u32>,
     pub output_path: Option<PathBuf>,
 }
@@ -293,16 +373,27 @@ impl AgentJobRegistry {
         Some((stdout, stderr, stdout_path, stderr_path))
     }
 
-    /// Remove a job that never detached. A cancelled call must not leave a row
-    /// or a mailbox notice. Returns false when the id is missing or already detached.
+    /// Remove a job that never detached, once its readers are done. A finished
+    /// call must not leave a row or a mailbox notice. Returns false while the
+    /// id is missing, already detached, or still draining.
     pub fn discard_attached(&self, id: &str) -> bool {
+        self.discard_inner(id, true)
+    }
+
+    /// Supervisor cancel path: the child is reaped and the readers are already
+    /// joined, so the row can go even if the EOF flag lagged behind.
+    pub fn discard_cancelled(&self, id: &str) -> bool {
+        self.discard_inner(id, false)
+    }
+
+    fn discard_inner(&self, id: &str, require_sealed: bool) -> bool {
         let session_id = {
             let mut g = self.inner.lock().expect("jobs lock");
-            let detached = match g.jobs.get(id) {
-                Some(rec) => rec.detached,
+            let (detached, reader_eof) = match g.jobs.get(id) {
+                Some(rec) => (rec.detached, rec.reader_eof),
                 None => return false,
             };
-            if detached {
+            if detached || (require_sealed && !reader_eof) {
                 return false;
             }
             let Some(rec) = g.jobs.remove(id) else {
@@ -354,6 +445,7 @@ impl AgentJobRegistry {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn job_pid(&self, id: &str) -> Option<u32> {
         let g = self.inner.lock().expect("jobs lock");
         g.jobs.get(id).and_then(|rec| rec.pid)
@@ -377,6 +469,77 @@ impl AgentJobRegistry {
 
     pub fn finish_user_killed(&self, id: &str, exit_code: Option<u32>) {
         self.finish_inner(id, exit_code, true);
+    }
+
+    /// Supervisor only: both pipe readers hit EOF. This is not a second exit
+    /// event. The notice and the exit handler already ran in [`Self::finish`];
+    /// this only records that the log stopped growing and releases the
+    /// kill-on-close job of an attached job that ended normally.
+    pub fn finish_readers(&self, id: &str) {
+        let session_id = {
+            let mut g = self.inner.lock().expect("jobs lock");
+            let Some(rec) = g.jobs.get_mut(id) else {
+                return;
+            };
+            if rec.reader_eof {
+                return;
+            }
+            rec.reader_eof = true;
+            if !rec.detached
+                && let Some(tree) = &rec.tree
+            {
+                tree.release_on_close();
+            }
+            let session_id = rec.session_id.clone();
+            g.generation += 1;
+            session_id
+        };
+        self.wake();
+        self.emit_jobs_changed(&session_id);
+    }
+
+    /// True when the job is unknown or has no pipe reader left.
+    pub fn readers_eof(&self, id: &str) -> bool {
+        let g = self.inner.lock().expect("jobs lock");
+        g.jobs.get(id).is_none_or(|rec| rec.reader_eof)
+    }
+
+    /// True while at least one pipe reader is still draining.
+    pub fn readers_open(&self, id: &str) -> bool {
+        let g = self.inner.lock().expect("jobs lock");
+        g.jobs.get(id).is_some_and(|rec| !rec.reader_eof)
+    }
+
+    /// Wait until both readers hit EOF. `timeout` bounds the wait and the
+    /// return value is the state at the end.
+    pub async fn wait_readers(&self, id: &str, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            if self.readers_eof(id) {
+                return true;
+            }
+            notified.as_mut().enable();
+            if self.readers_eof(id) {
+                return true;
+            }
+            tokio::select! {
+                _ = &mut notified => {}
+                _ = tokio::time::sleep_until(deadline) => return self.readers_eof(id),
+            }
+        }
+    }
+
+    /// Undo the `tool_killed` latch after a kill that did not land, so a later
+    /// natural exit is not reported as killed.
+    pub fn clear_tool_kill_if_alive(&self, id: &str) {
+        let mut g = self.inner.lock().expect("jobs lock");
+        if let Some(rec) = g.jobs.get_mut(id)
+            && rec.alive
+        {
+            rec.tool_killed = false;
+        }
     }
 
     /// Latch UI Kill before the process is signalled so a racing reaper still
@@ -579,6 +742,7 @@ impl AgentJobRegistry {
             text,
             truncated_on_disk: cap.truncated_on_disk,
             alive: rec.alive,
+            draining: !rec.alive && !rec.reader_eof,
             exit_code: rec.exit_code,
         })
     }
@@ -696,36 +860,53 @@ impl AgentJobRegistry {
         None
     }
 
-    /// Kill a pipe job by pid and seal it. Human PTY ids are not in this
-    /// registry and return `None`. When `user_killed` is set, a detached job's
-    /// mailbox notice stays for `reminder/bash_exit`.
+    /// Signal a pipe job's whole tree. Signalling never seals the record: the
+    /// supervisor still owns the exit, so exactly one notice is written and
+    /// `wait` cannot see `killed` before the process is actually gone.
+    ///
+    /// - running: latch the kill flags, then terminate the tree.
+    /// - draining: the shell already exited; terminate whatever is left so the
+    ///   pipe closes and the readers can finish.
+    /// - sealed: nothing left to signal.
+    ///
+    /// Human PTY ids are not in this registry and return `None`.
     pub fn kill_registered(&self, id: &str, user_killed: bool) -> Option<KilledJob> {
-        let (pid, output_path) = {
+        let (alive, reader_eof, tree, pid, output_path) = {
             let g = self.inner.lock().expect("jobs lock");
             let rec = g.jobs.get(id)?;
-            (rec.pid, rec.output_path.clone())
+            (
+                rec.alive,
+                rec.reader_eof,
+                rec.tree.clone(),
+                rec.pid,
+                rec.output_path.clone(),
+            )
         };
-        if user_killed {
-            self.mark_user_kill(id);
-        } else {
-            self.mark_tool_kill(id);
+        if alive {
+            if user_killed {
+                self.mark_user_kill(id);
+            } else {
+                self.mark_tool_kill(id);
+            }
         }
-        if let Some(pid) = pid {
-            kill_process_tree(pid);
-        }
-        let exit_code = self.get(id).and_then(|(_, code, _, _)| code);
-        if user_killed {
-            self.finish_user_killed(id, exit_code);
-        } else {
-            self.finish(id, exit_code);
+        if alive || !reader_eof {
+            match &tree {
+                Some(tree) => tree.kill_tree(),
+                None => {
+                    if let Some(pid) = pid {
+                        kill_process_tree(pid);
+                    }
+                }
+            }
         }
         let (alive, exit_code) = self
             .get(id)
             .map(|(alive, code, _, _)| (alive, code))
-            .unwrap_or((false, exit_code));
+            .unwrap_or((false, None));
         Some(KilledJob {
             id: id.to_string(),
             alive,
+            reader_eof: self.readers_eof(id),
             exit_code,
             output_path: Some(output_path),
         })
@@ -757,6 +938,8 @@ impl AgentJobRegistry {
                 output_path: stdout_path.clone(),
                 tee: Arc::new(Mutex::new(stdout)),
                 alive: true,
+                // No supervisor owns readers for a fixture insert.
+                reader_eof: true,
                 exit_code: None,
                 started_at_ms: now_unix_ms(),
                 user_killed: false,
@@ -765,6 +948,7 @@ impl AgentJobRegistry {
                 stderr_path,
                 stderr_tee: Arc::new(Mutex::new(stderr)),
                 pid: None,
+                tree: None,
                 detached: true,
             },
         );
@@ -905,6 +1089,14 @@ async fn run_pipe_supervisor(
     {
         cmd.process_group(0);
     }
+    // Windows: start suspended so the per-job Job Object can be attached before
+    // the shell runs a single instruction. That closes the window where the
+    // shell could fork a child that escapes the job.
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::CREATE_SUSPENDED;
+        cmd.creation_flags(CREATE_SUSPENDED);
+    }
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -920,16 +1112,51 @@ async fn run_pipe_supervisor(
         let _ = spawned.send(());
     }
     let pid = child.id().filter(|pid| *pid != 0);
-    crate::proc_lifetime::bind_child_to_parent(pid.unwrap_or(0));
+    // Kill scope for the whole tree. Windows attaches a per-job Job Object to
+    // the suspended shell; when that is unavailable the child still resumes and
+    // tree kill falls back to `taskkill /T /F`.
+    #[cfg(windows)]
+    let tree = {
+        use windows_sys::Win32::Foundation::HANDLE;
+        let job = child
+            .raw_handle()
+            .and_then(|raw| win_job::attach(raw as HANDLE));
+        if job.is_none() {
+            tracing::warn!(
+                pid,
+                "per-job Job Object unavailable; tree kill falls back to taskkill"
+            );
+        }
+        if !win_job::resume_main_thread(pid.unwrap_or(0)).await {
+            if let Some(job) = job {
+                win_job::terminate(job);
+            }
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            let _ = tx.send(PipeDecision::Failed {
+                message: "failed to resume the suspended shell".into(),
+            });
+            return;
+        }
+        job.map(|job| {
+            Arc::new(JobTree {
+                pid: pid.unwrap_or(0),
+                job: Some(job),
+            })
+        })
+    };
+    #[cfg(not(windows))]
+    let tree: Option<Arc<JobTree>> = None;
+
+    if tree.is_none() {
+        crate::proc_lifetime::bind_child_to_parent(pid.unwrap_or(0));
+    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
     let (stdout_path, stderr_path) = pipe_log_paths(&request.workspace_root, &id);
     if let Err(e) = std::fs::create_dir_all(pipe_log_dir(&request.workspace_root)) {
-        if let Some(pid) = pid {
-            kill_process_tree(pid);
-        }
-        let _ = child.start_kill();
+        abandon_pipe_child(&mut child, tree.as_ref(), pid).await;
         let _ = tx.send(PipeDecision::Failed {
             message: format!("failed to create output dir: {e}"),
         });
@@ -938,10 +1165,7 @@ async fn run_pipe_supervisor(
     let stdout_tee = match BoundedTee::create(stdout_path.clone()) {
         Ok(tee) => Arc::new(Mutex::new(tee)),
         Err(e) => {
-            if let Some(pid) = pid {
-                kill_process_tree(pid);
-            }
-            let _ = child.start_kill();
+            abandon_pipe_child(&mut child, tree.as_ref(), pid).await;
             let _ = tx.send(PipeDecision::Failed {
                 message: format!("failed to create stdout log: {e}"),
             });
@@ -951,10 +1175,7 @@ async fn run_pipe_supervisor(
     let stderr_tee = match BoundedTee::create(stderr_path.clone()) {
         Ok(tee) => Arc::new(Mutex::new(tee)),
         Err(e) => {
-            if let Some(pid) = pid {
-                kill_process_tree(pid);
-            }
-            let _ = child.start_kill();
+            abandon_pipe_child(&mut child, tree.as_ref(), pid).await;
             let _ = tx.send(PipeDecision::Failed {
                 message: format!("failed to create stderr log: {e}"),
             });
@@ -976,6 +1197,7 @@ async fn run_pipe_supervisor(
             output_path: stdout_path,
             tee: Arc::clone(&stdout_tee),
             alive: true,
+            reader_eof: false,
             exit_code: None,
             started_at_ms: now_unix_ms(),
             user_killed: false,
@@ -984,6 +1206,7 @@ async fn run_pipe_supervisor(
             stderr_path,
             stderr_tee: Arc::clone(&stderr_tee),
             pid,
+            tree,
             detached: false,
         },
     );
@@ -1011,8 +1234,9 @@ async fn run_pipe_supervisor(
             biased;
             status = child.wait() => {
                 let code = status.ok().and_then(|s| s.code());
-                join_reader(&mut stdout_task).await;
-                join_reader(&mut stderr_task).await;
+                // Process exit is the lifecycle fact. Readers may still be
+                // draining a pipe a descendant kept open, so they finish after
+                // the exit is recorded and the tool is released.
                 jobs.finish(&id, code.map(|c| c as u32));
                 if !detached {
                     send_decision(
@@ -1023,6 +1247,9 @@ async fn run_pipe_supervisor(
                         },
                     );
                 }
+                join_reader(&mut stdout_task).await;
+                join_reader(&mut stderr_task).await;
+                jobs.finish_readers(&id);
                 break;
             }
             _ = async {
@@ -1037,9 +1264,10 @@ async fn run_pipe_supervisor(
                 let _ = child.start_kill();
                 let status = child.wait().await.ok();
                 let code = status.and_then(|s| s.code());
+                jobs.finish(&id, code.map(|c| c as u32));
                 join_reader(&mut stdout_task).await;
                 join_reader(&mut stderr_task).await;
-                jobs.finish(&id, code.map(|c| c as u32));
+                jobs.finish_readers(&id);
                 send_decision(
                     &mut decision,
                     PipeDecision::Cancelled { job_id: id.clone() },
@@ -1104,8 +1332,6 @@ async fn settle_detach_or_exit(
     match child.try_wait() {
         Ok(Some(status)) => {
             let code = status.code();
-            join_reader(stdout_task).await;
-            join_reader(stderr_task).await;
             jobs.finish(id, code.map(|c| c as u32));
             send_decision(
                 decision,
@@ -1114,11 +1340,12 @@ async fn settle_detach_or_exit(
                     exit_code: code,
                 },
             );
+            join_reader(stdout_task).await;
+            join_reader(stderr_task).await;
+            jobs.finish_readers(id);
             true
         }
         Err(e) => {
-            join_reader(stdout_task).await;
-            join_reader(stderr_task).await;
             jobs.finish(id, None);
             send_decision(
                 decision,
@@ -1126,6 +1353,9 @@ async fn settle_detach_or_exit(
                     message: format!("failed to poll child: {e}"),
                 },
             );
+            join_reader(stdout_task).await;
+            join_reader(stderr_task).await;
+            jobs.finish_readers(id);
             true
         }
         Ok(None) => {
@@ -1145,6 +1375,24 @@ fn send_decision(
     if let Some(tx) = slot.take() {
         let _ = tx.send(decision);
     }
+}
+
+/// Kill a child that failed before its readers were spawned.
+async fn abandon_pipe_child(
+    child: &mut tokio::process::Child,
+    tree: Option<&Arc<JobTree>>,
+    pid: Option<u32>,
+) {
+    match tree {
+        Some(tree) => tree.kill_tree(),
+        None => {
+            if let Some(pid) = pid {
+                kill_process_tree(pid);
+            }
+        }
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 async fn join_reader(task: &mut Option<tokio::task::JoinHandle<()>>) {
@@ -1187,6 +1435,117 @@ fn spawn_pipe_reader(
     })
 }
 
+/// Windows per-job Job Object support.
+///
+/// A job created with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` gives one kill scope
+/// per command: `TerminateJobObject` reaches every descendant even after the
+/// shell itself exited, and a runtime crash still reaps the tree when the last
+/// handle closes. The shell is spawned suspended, assigned to the job, and only
+/// then resumed, so no descendant can be created before the assignment.
+#[cfg(windows)]
+mod win_job {
+    use std::time::Duration;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    /// Create a kill-on-close job and assign `process` to it. Returns the raw
+    /// handle as `usize` (a HANDLE is not `Sync`) or `None` when the OS
+    /// refuses, e.g. this process already sits in a job that forbids nesting.
+    pub(super) fn attach(process: HANDLE) -> Option<usize> {
+        if process.is_null() {
+            return None;
+        }
+        // SAFETY: plain Win32 calls; the job handle is closed on every failure.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let sized = std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const core::ffi::c_void,
+                sized,
+            );
+            if set == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            if AssignProcessToJobObject(job, process) == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            Some(job as usize)
+        }
+    }
+
+    /// Resume the only thread of a process spawned with `CREATE_SUSPENDED`. The
+    /// thread is in the snapshot immediately; the short retry only covers
+    /// snapshot raciness.
+    pub(super) async fn resume_main_thread(pid: u32) -> bool {
+        if pid == 0 {
+            return false;
+        }
+        for _ in 0..100 {
+            if let Some(tid) = main_thread_id(pid) {
+                // SAFETY: the thread id was observed for this pid a moment ago.
+                unsafe {
+                    let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, tid);
+                    if !thread.is_null() {
+                        let _ = ResumeThread(thread);
+                        CloseHandle(thread);
+                        return true;
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        false
+    }
+
+    pub(super) fn terminate(job: usize) {
+        // SAFETY: the caller owns the handle for as long as the job lives.
+        unsafe {
+            TerminateJobObject(job as HANDLE, 1);
+        }
+    }
+
+    fn main_thread_id(pid: u32) -> Option<u32> {
+        // SAFETY: the snapshot handle is closed below; the entry is sized first.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snapshot == INVALID_HANDLE_VALUE || snapshot.is_null() {
+                return None;
+            }
+            let mut entry: THREADENTRY32 = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            let mut found = None;
+            let mut more = Thread32First(snapshot, &mut entry);
+            while more != 0 {
+                if entry.th32OwnerProcessID == pid {
+                    found = Some(entry.th32ThreadID);
+                    break;
+                }
+                more = Thread32Next(snapshot, &mut entry);
+            }
+            CloseHandle(snapshot);
+            found
+        }
+    }
+}
+
 pub fn command_preview(command: &str) -> String {
     let collapsed: String = command.split_whitespace().collect::<Vec<_>>().join(" ");
     const MAX: usize = 80;
@@ -1220,6 +1579,7 @@ mod tests {
             output_path: path,
             tee: Arc::new(Mutex::new(tee)),
             alive: true,
+            reader_eof: true,
             exit_code: None,
             started_at_ms: now_unix_ms(),
             user_killed: false,
@@ -1228,6 +1588,7 @@ mod tests {
             stderr_path,
             stderr_tee: Arc::new(Mutex::new(stderr)),
             pid: None,
+            tree: None,
             detached: false,
         }
     }
@@ -1481,6 +1842,12 @@ mod tests {
             jobs.mailbox_pending("s1"),
             "readers must keep draining after nested cancel"
         );
+        // The notice now fires at process exit, before EOF: the log is only
+        // complete once the readers are done.
+        while !jobs.readers_eof(&job_id) && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(jobs.readers_eof(&job_id), "readers must reach EOF");
         let late = std::fs::read(&path).unwrap_or_default();
         assert!(
             late.len() > 200_000,
@@ -1511,18 +1878,99 @@ mod tests {
             panic!("expected background, got {decision:?}");
         };
         let pid = jobs.job_pid(&job_id).expect("pid");
-        assert!(pid_alive(pid));
-        let killed = jobs.kill_registered(&job_id, true).expect("registered job");
-        assert!(!killed.alive);
+        assert!(pid_alive(pid), "the job must be running before the signal");
+        // Signalling does not seal the record: the supervisor still owns the
+        // exit, so the notice cannot say "killed" before the process is gone.
+        // The registry state, not a recycled pid, is the oracle for that.
+        let _killed = jobs.kill_registered(&job_id, true).expect("registered job");
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while pid_alive(pid) && std::time::Instant::now() < deadline {
+        while jobs.get(&job_id).is_some_and(|(alive, ..)| alive)
+            && std::time::Instant::now() < deadline
+        {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        assert!(!pid_alive(pid), "bash/kill must kill the process tree");
+        assert!(
+            !jobs.get(&job_id).expect("record").0,
+            "the supervisor must reap the killed job"
+        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !jobs.mailbox_pending("s1") && std::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(
+            jobs.mailbox_pending("s1"),
+            "a killed detached job must still reach the mailbox"
+        );
+        assert!(
+            !jobs.get(&job_id).expect("record").0,
+            "the supervisor must record the exit"
+        );
         let mail = jobs.take_mailbox("s1");
         assert_eq!(mail.len(), 1);
         assert!(mail[0].user_killed);
         assert_eq!(mail[0].bash_id, job_id);
         assert!(jobs.kill_registered("term_not-a-pipe-job", true).is_none());
+    }
+
+    #[tokio::test]
+    async fn process_exit_is_not_reader_eof() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        let mut record = rec("s1", "call_a", dir.path(), path, tee);
+        // A live supervisor owns the readers: they have not hit EOF yet.
+        record.reader_eof = false;
+        reg.insert("bg_drain1".into(), record);
+
+        assert_eq!(reg.running("s1").len(), 1);
+        reg.finish("bg_drain1", Some(0));
+
+        assert!(
+            reg.running("s1").is_empty(),
+            "an exited job must leave the running list at once"
+        );
+        assert!(reg.readers_open("bg_drain1"), "the pipe is still draining");
+        assert!(
+            !reg.discard_attached("bg_drain1"),
+            "a draining job keeps its record and logs"
+        );
+        assert!(!reg.mailbox_pending("s1"), "attached exits are not mailed");
+
+        let cancel = CancellationToken::new();
+        match reg
+            .wait_async(
+                "s1",
+                "bg_drain1",
+                Some(Duration::from_millis(200)),
+                &cancel,
+            )
+            .await
+        {
+            WaitOutcome::Exited(notice) => assert_eq!(notice.exit_code, Some(0)),
+            other => panic!("expected an exit, got {other:?}"),
+        }
+
+        reg.finish_readers("bg_drain1");
+        assert!(reg.readers_eof("bg_drain1"));
+        assert!(reg.discard_attached("bg_drain1"));
+        assert!(!reg.mailbox_pending("s1"));
+    }
+
+    #[test]
+    fn second_finish_does_not_mail_twice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("j.output");
+        let tee = BoundedTee::create(path.clone()).unwrap();
+        let reg = AgentJobRegistry::new();
+        let mut record = rec("s1", "call_a", dir.path(), path, tee);
+        record.detached = true;
+        reg.insert("bg_twice".into(), record);
+
+        reg.finish("bg_twice", Some(3));
+        reg.finish("bg_twice", Some(3));
+        let mail = reg.take_mailbox("s1");
+        assert_eq!(mail.len(), 1, "one exit, one notice");
+        assert_eq!(mail[0].exit_code, Some(3));
     }
 }

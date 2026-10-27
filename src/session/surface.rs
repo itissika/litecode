@@ -86,6 +86,17 @@ pub struct Surface {
     pub replace_generation: u64,
 }
 
+/// Where an anchored fold starts.
+///
+/// Row `start` is the first row the fold reads: it is `compacted.body.to` of the
+/// checkpoint row `checkpoint`, which states that every surface node below
+/// `start` was already replaced by that summary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FoldAnchor {
+    pub start: Seq,
+    pub checkpoint: Seq,
+}
+
 /// Validated surface transition that has not mutated fold state yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfacePlan {
@@ -152,6 +163,74 @@ pub fn shadowed_half_open(surface: &Surface, from: Seq, to: Seq) -> Result<Vec<S
 
 /// Validate one event against the current surface and return its fold transition.
 pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<SurfacePlan>> {
+    plan_surface_anchored(surface, event, None)
+}
+
+/// A `compacted` row seen from below the fold.
+///
+/// The whole surface is a suffix of the full one, and every compaction shadows a
+/// *prefix* of the surface (`replace_op_for_keep` cuts at `surface.nodes[..k]`).
+/// That has two exact consequences:
+///
+/// * the checkpoint the anchor names replaced rows that all sit below the fold,
+///   so it prepends a node and shadows nothing the fold holds;
+/// * any *older* checkpoint still in range was already replaced by the newest
+///   one — a surface never holds two checkpoints, because a keep boundary of
+///   position 0 is refused as `NothingToCompact` — so it has no surface effect
+///   at all.
+fn anchored_compact_plan(
+    seq: Seq,
+    body: &CompactedBody,
+    anchor: FoldAnchor,
+) -> Result<Option<SurfacePlan>> {
+    if seq == anchor.checkpoint {
+        if body.to != anchor.start {
+            return Err(LitecodeError::InvalidSessionEvent(format!(
+                "checkpoint {seq} ends at {} but the fold anchor starts at {}",
+                body.to, anchor.start
+            )));
+        }
+        return Ok(Some(SurfacePlan::Replace {
+            seq,
+            start_idx: 0,
+            len: 0,
+        }));
+    }
+    if seq > anchor.checkpoint {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "compacted row {seq} is newer than the anchored checkpoint {}",
+            anchor.checkpoint
+        )));
+    }
+    if body.to > anchor.start {
+        return Err(LitecodeError::InvalidSessionEvent(format!(
+            "older checkpoint {seq} keeps rows above the fold anchor {}",
+            anchor.start
+        )));
+    }
+    Ok(None)
+}
+
+/// [`plan_surface`] for a fold that starts at `anchor` instead of seq 0.
+///
+/// Every surface row below `anchor.start` was already replaced by the summary at
+/// `anchor.checkpoint`, so a cold fold never reads them. That turns four cases
+/// into exact rules instead of guesses:
+///
+/// * the checkpoint the anchor names prepends a node and replaces nothing the
+///   fold holds;
+/// * an older checkpoint still in range was already replaced, so it is a no-op;
+/// * a `Replace` whose whole inclusive range is below `anchor.start` was already
+///   shadowed before the fold began, so it is a no-op;
+/// * a `Replace` that straddles `anchor.start` cannot be placed without the rows
+///   the fold dropped, so it is refused rather than guessed. No current writer
+///   emits one: a compact ends exactly at the anchor, and a mechanical prune
+///   shadows a single node.
+pub fn plan_surface_anchored(
+    surface: &Surface,
+    event: &SessionEvent,
+    anchor: Option<FoldAnchor>,
+) -> Result<Option<SurfacePlan>> {
     if matches!(event.event_type, EventType::Unknown(_)) && !event.ignorable {
         return Err(LitecodeError::InvalidSessionEvent(format!(
             "unknown type `{}` is not ignorable",
@@ -162,6 +241,9 @@ pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<Su
         let body: CompactedBody = serde_json::from_value(event.data.clone()).map_err(|e| {
             LitecodeError::InvalidSessionEvent(format!("invalid compacted body: {e}"))
         })?;
+        if let Some(anchor) = anchor {
+            return anchored_compact_plan(event.seq, &body, anchor);
+        }
         if surface.nodes.is_empty() || body.from == body.to {
             // A summary-only compact starts a new spine and therefore has no
             // predecessor range to replace.
@@ -176,6 +258,17 @@ pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<Su
             .iter()
             .position(|seq| *seq == body.from)
             .expect("shadowed_half_open found compact start");
+        if start_idx != 0 {
+            // Only a writer bug or a hand-edited row can put `from` mid-spine:
+            // `replace_op_for_keep` always cuts at `nodes[..keep_i]`. Folding it
+            // would punch a hole through the tail, so refuse instead of building
+            // a surface no writer ever produced.
+            return Err(LitecodeError::InvalidSessionEvent(format!(
+                "compact {} replaces from {}, which is not the spine head {}",
+                event.seq,
+                body.from, surface.nodes[0]
+            )));
+        }
         return Ok(Some(SurfacePlan::Replace {
             seq: event.seq,
             start_idx,
@@ -194,6 +287,19 @@ pub fn plan_surface(surface: &Surface, event: &SessionEvent) -> Result<Option<Su
     match op {
         SurfaceOp::Append => Ok(Some(SurfacePlan::Append { seq: event.seq })),
         SurfaceOp::Replace { start, end } => {
+            if let Some(anchor) = anchor {
+                if *end < anchor.start {
+                    // The whole replaced range is below the fold: the checkpoint
+                    // that set the anchor already shadowed this row.
+                    return Ok(None);
+                }
+                if *start < anchor.start {
+                    return Err(LitecodeError::InvalidSessionEvent(format!(
+                        "replace [{start}, {end}] straddles the fold anchor {}",
+                        anchor.start
+                    )));
+                }
+            }
             let shadowed = shadowed_nodes(surface, *start, *end)?;
             let Some(sources) = event.source_seqs.as_ref() else {
                 return Err(LitecodeError::InvalidSessionEvent(

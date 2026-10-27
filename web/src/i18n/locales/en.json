@@ -7,6 +7,13 @@
       "delete": "Delete agent",
       "toolBindings": "Tool bindings",
       "agentToolBindings": "Agent tool bindings",
+      "toolGroup": {
+        "core": "Core tools",
+        "engine": "Engine tools",
+        "custom": "Custom tools",
+        "mcp": "MCP servers"
+      },
+      "toolGroupCount": "{{enabled}}/{{total}} on",
       "visibleToModel": "Visible to the model next turn",
       "noToolsListed": "No tools listed. Start this MCP server from the MCP settings page.",
       "systemPrompt": "System prompt",
@@ -118,24 +125,20 @@
     },
     "customTools": {
       "title": "Custom Tools",
-      "new": "New custom tool",
-      "bindHint": "Definitions only. Bind on Agents. Workspace overrides global.",
-      "suites": "Suites",
-      "newGlobal": "New global",
-      "newWorkspace": "New workspace",
+      "newTool": "New tool",
+      "newSuite": "New suite",
+      "newGlobalTool": "New global tool",
+      "newWorkspaceTool": "New workspace tool",
+      "newGlobalSuite": "New global suite",
+      "newWorkspaceSuite": "New workspace suite",
+      "suiteTag": "suite",
+      "memberOf": "suite {{suite}}",
       "saveSuite": "Save suite",
-      "deleteSuite": "Delete suite",
       "codeWarnings": "Code admission warnings",
       "definitionErrors": "Definition errors",
-      "definitionGuide": "Standalone: set surface: \"direct\" (background and media allowed) or surface: \"code\" and an object output_schema. Suite member: omit surface, set suite, and leave rules empty; the suite owns both. Code suite members are called as tools.<suite>.<member>.",
-      "suitesHint": "One suite is one card, one binding, and one permission face. A workspace suite replaces the global suite and all of its members.",
-      "invalidStay": "Invalid definitions stay visible below and never enter the catalog. Old formats are not migrated: rewrite them in the direct/code + suites format shown in the guide.",
-      "codeWarningsHint": "These tools cannot enter run_code; direct definitions are not affected.",
-      "noLabel": "no label",
       "rulesCount": "{{count}} rule(s)",
       "suiteIdPlaceholder": "suite_id",
       "saveFailed": "Save failed",
-      "deleteFailed": "Delete failed",
       "invalidSuiteJson": "Invalid suite JSON",
       "suiteIdInvalid": "Suite id must match [a-z][a-z0-9_]*",
       "jsonRequired": "Valid JSON with name, command, and schema is required",
@@ -476,6 +479,24 @@
   "editor": {
     "waitingReconnect": "Waiting to reconnect…",
     "loading": "Loading…"
+  },
+  "browser": {
+    "title": "Browser",
+    "unavailable": "Browser is available in the desktop app.",
+    "back": "Back",
+    "forward": "Forward",
+    "address": "Address",
+    "addressPlaceholder": "Enter a URL",
+    "stop": "Stop",
+    "reload": "Reload",
+    "agentBusy": "Agent is working on this page…",
+    "error": {
+      "open": "Could not open the page",
+      "history": "Could not move through history",
+      "stop": "Could not stop the page",
+      "reload": "Could not reload the page",
+      "address": "Enter an http(s) address"
+    }
   },
   "desktop": {
     "error": {

@@ -53,6 +53,72 @@ fn phase0_run_code_sdk_snapshot() {
     );
 }
 
+/// Bodies of every object type the SDK declares, with the type name dropped so
+/// two declarations of the same shape compare equal. Alias lines have no body
+/// and are skipped.
+fn object_type_bodies(sdk: &str) -> Vec<String> {
+    let mut bodies = Vec::new();
+    let mut offset = 0;
+    while let Some(found) = sdk[offset..].find("\ntype ") {
+        let start = offset + found + 1;
+        let rest = &sdk[start..];
+        let Some(open) = rest.find('{') else { break };
+        if let Some(semi) = rest.find(';')
+            && semi < open
+        {
+            offset = start + semi;
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut end = None;
+        for (index, ch) in rest[open..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(open + index + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { break };
+        bodies.push(rest[open..end].to_string());
+        offset = start + end;
+    }
+    bodies
+}
+
+#[test]
+fn sdk_declares_each_shared_type_body_once() {
+    let sdk = sdk_text();
+    let bodies = object_type_bodies(&sdk);
+    assert!(bodies.len() > 20, "expected object type bodies, found {}", bodies.len());
+    let mut seen: Vec<&String> = Vec::new();
+    for body in &bodies {
+        assert!(
+            !seen.contains(&body),
+            "the SDK prints the same type body twice; alias the second one instead:\n{body}"
+        );
+        seen.push(body);
+    }
+    // The bodies several tools share are declared under a canonical name.
+    for alias in [
+        "type KillData = CommandData;",
+        "type RunData = CommandData;",
+        "type WaitData = CommandData;",
+        "type FindReferencesData = LocationsData;",
+        "type GoToDefinitionData = LocationsData;",
+        "type WorkspaceSymbolData = SymbolsData;",
+        "type DocumentSymbolInput = PathInput;",
+        "type HoverInput = RangeInput;",
+    ] {
+        assert!(sdk.contains(alias), "missing shared type alias: {alias}");
+    }
+}
+
 #[test]
 fn sdk_hash_is_stable_for_the_same_tool_set_under_different_cwd_and_permission() {
     use crate::config::ConfigManager;

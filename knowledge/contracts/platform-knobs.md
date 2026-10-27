@@ -1,19 +1,19 @@
 ```node
 node : platform-knobs
 status : pending
-summary : 平台旋钮：ThinkingSpec / ContextMode 是产品意图；厂商字面量只在目录 tiers 映射。
+summary : 用户选的是「想多久、上下文多大」，不是厂商参数；压缩请求复用同一个供应商、同一段前缀，为的是缓存全命中。
 x : 5094
 y : 1728
 domain : harness-core
 ```
 
-**准入：** A7。UI/session 持久化平台枚举，不把厂商 thinking 字符串写进产品路径；codec 按目录 `reasoning.tiers` 映射，压缩路径强制 `ThinkingSpec::Off`。第二套厂商字符串会绕过目录契约并污染回放。
+**准入：** A7。产品只暴露两个意图：思考强度、上下文模式；厂商写法只在模型目录里对应，不进产品路径。压缩请求的首要目标是省钱：它必须复用同一个供应商、同一段前缀，让缓存全部命中，不为摘要再付一遍 miss。模型、指令、工具、思考强度都跟着主对话走，就是为了不把这个前缀弄断——第二套厂商字符串会绕过目录契约，第二套思考设置会让前缀对不上，缓存直接失效。
 
-依据：[@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]、[@ file="src/types/death_list_gate.rs"]。
+依据：[@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]、[@ file="src/llm/request.rs" symbol="struct CompactionRequestContext"]、[@ file="src/runtime/llm_resolve.rs" symbol="impl TurnLlmBinding › fn compaction_context"]、[@ file="src/types/death_list_gate.rs"]。
 上层：[@ key="agent-harness-philosophy"]。相关：[@ key="provider-catalog"]。
-基线：075308b
+基线：666540c
 
-**核实结论：一致，无漂移。**（基线 075308b）
-- ThinkingSpec / ContextMode 为平台意图 —— [@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]。
-- 压缩路径强制 ThinkingSpec::Off —— [@ file="src/llm/request.rs" symbol="impl ModelRequest › fn compact"]（`src/context_pipeline/compact.rs` 单测 `compact_request_disables_thinking_and_uses_caller_cap` 断言同点；cfg(test) 未入符号索引）。
-- 厂商字面量只在目录 tiers —— [@ file="src/types/death_list_gate.rs"]；产品路径未见绕过 catalog 的厂商 thinking 字符串（DRAFT-HC-R1 关闭）。
+**核实结论：按实现订正。**（基线 666540c）
+- 两个平台意图不变 —— [@ file="src/platform_knobs.rs" symbol="enum ThinkingSpec"]、[@ file="src/platform_knobs.rs" symbol="enum ContextMode"]。
+- 压缩复用主请求：provider、model、指令、工具、thinking 全部复制 —— [@ file="src/llm/request.rs" symbol="struct CompactionRequestContext"]、[@ file="src/runtime/llm_resolve.rs" symbol="impl TurnLlmBinding › fn compaction_context"]；原「压缩强制 Off」不成立，`ModelRequest::compact` 这个入口已删。
+- 厂商字面量只在目录 tiers —— [@ file="src/types/death_list_gate.rs"]。

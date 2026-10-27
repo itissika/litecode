@@ -11,6 +11,7 @@ import {
   type BrowserBounds,
   type BrowserPanelState,
 } from "../../lib/browserPanel";
+import i18n from "../../i18n";
 import { dockIdFromLocation } from "../popout/location";
 
 const ZERO_BOUNDS: BrowserBounds = { x: 0, y: 0, width: 0, height: 0 };
@@ -35,7 +36,7 @@ function editorBackground(): string {
 function BrowserUnavailable() {
   return (
     <div className="flex h-full items-center justify-center px-6 text-xs text-(--_dk-text-muted)">
-      Browser is available in the desktop app.
+      {i18n.t("browser.unavailable")}
     </div>
   );
 }
@@ -47,6 +48,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
   const [canGoForward, setCanGoForward] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hasPage, setHasPage] = useState(false);
+  const [agentBusy, setAgentBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const placeRef = useRef(MAIN_BROWSER_PLACE);
@@ -67,7 +69,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
     setHasPage(shown.length > 0);
     if (!focusedRef.current) setAddress(shown);
     const panel = apiRef.current;
-    const title = state.title.trim() || "Browser";
+    const title = state.title.trim() || i18n.t("browser.title");
     if (panel.title !== title) panel.setTitle(title);
     const current = panel.getParameters<{ url?: string }>();
     const currentUrl = typeof current?.url === "string" ? current.url : "";
@@ -118,6 +120,27 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
   }, [applyState]);
 
   useEffect(() => {
+    const unsub = window.litecode?.onBrowserAgentActivity?.((event) => {
+      if (event.id === apiRef.current.id) setAgentBusy(event.busy === true);
+    });
+    return () => unsub?.();
+  }, []);
+
+  useEffect(() => {
+    const panel = apiRef.current;
+    if (typeof panel.onDidActiveChange !== "function") return;
+    const report = (active: boolean) => {
+      window.litecode?.browserSetActive?.({ id: panel.id, active });
+    };
+    report(panel.isActive === true);
+    const sub = panel.onDidActiveChange((event) => report(event.isActive));
+    return () => {
+      sub.dispose();
+      report(false);
+    };
+  }, [api.id]);
+
+  useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
     const observer = new ResizeObserver(() => publishBounds());
@@ -151,11 +174,14 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Could not open the page");
+          setError(err instanceof Error ? err.message : i18n.t("browser.error.open"));
         }
       }
       if (cancelled) return;
       bridge.browserSetVisible?.({ id: panel.id, visible: panel.isVisible });
+      if (panel.isActive === true) {
+        bridge.browserSetActive?.({ id: panel.id, active: true });
+      }
       publishBounds();
     })();
     return () => {
@@ -242,7 +268,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
       direction === "back" ? bridge?.browserGoBack : bridge?.browserGoForward;
     if (!run) return;
     void run(api.id).then(applyState).catch((err: unknown) => {
-      setError(err instanceof Error ? err.message : "Could not move through history");
+      setError(err instanceof Error ? err.message : i18n.t("browser.error.history"));
     });
   };
 
@@ -258,9 +284,10 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
 
   const onSubmit = (event: FormEvent) => {
     event.preventDefault();
+    if (agentBusy) return;
     const url = normalizeBrowserUrl(address);
     if (!url) {
-      setError("Enter an http(s) address");
+      setError(i18n.t("browser.error.address"));
       return;
     }
     setError(null);
@@ -268,7 +295,7 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
       ?.browserNavigate?.({ id: api.id, url })
       .then(applyState)
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Could not open the page");
+        setError(err instanceof Error ? err.message : i18n.t("browser.error.open"));
       });
   };
 
@@ -281,9 +308,9 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
         <button
           type="button"
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) disabled:pointer-events-none disabled:opacity-40"
-          aria-label="Back"
-          title="Back"
-          disabled={!canGoBack}
+          aria-label={i18n.t("browser.back")}
+          title={i18n.t("browser.back")}
+          disabled={agentBusy || !canGoBack}
           onClick={() => go("back")}
         >
           <ArrowLeft size={14} />
@@ -291,20 +318,21 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
         <button
           type="button"
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) disabled:pointer-events-none disabled:opacity-40"
-          aria-label="Forward"
-          title="Forward"
-          disabled={!canGoForward}
+          aria-label={i18n.t("browser.forward")}
+          title={i18n.t("browser.forward")}
+          disabled={agentBusy || !canGoForward}
           onClick={() => go("forward")}
         >
           <ArrowRight size={14} />
         </button>
         <input
-          aria-label="Address"
+          aria-label={i18n.t("browser.address")}
           aria-busy={loading}
           spellCheck={false}
           className="h-6 min-w-0 flex-1 rounded border border-(--_dk-border-visible) bg-(--_dk-root) px-2 text-xs text-(--_dk-text-secondary) outline-none focus:border-(--_dk-text-muted)"
           value={address}
-          placeholder="Enter a URL"
+          placeholder={i18n.t("browser.addressPlaceholder")}
+          disabled={agentBusy}
           onChange={(event) => setAddress(event.target.value)}
           onFocus={() => {
             focusedRef.current = true;
@@ -317,18 +345,23 @@ function BrowserSurface({ api, params }: IDockviewPanelProps<{ url?: string }>) 
         <button
           type="button"
           className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-(--_dk-text-muted) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) disabled:pointer-events-none disabled:opacity-40"
-          aria-label={loading ? "Stop" : "Reload"}
-          title={loading ? "Stop" : "Reload"}
-          disabled={!loading && !hasPage}
+          aria-label={loading ? i18n.t("browser.stop") : i18n.t("browser.reload")}
+          title={loading ? i18n.t("browser.stop") : i18n.t("browser.reload")}
+          disabled={agentBusy || (!loading && !hasPage)}
           onClick={() =>
             loading
-              ? pageAction(window.litecode?.browserStop, "Could not stop the page")
-              : pageAction(window.litecode?.browserReload, "Could not reload the page")
+              ? pageAction(window.litecode?.browserStop, i18n.t("browser.error.stop"))
+              : pageAction(window.litecode?.browserReload, i18n.t("browser.error.reload"))
           }
         >
           {loading ? <X size={14} /> : <ArrowClockwise size={14} />}
         </button>
       </form>
+      {agentBusy ? (
+        <p className="shrink-0 px-2 py-1 text-xs text-(--_dk-text-muted)">
+          {i18n.t("browser.agentBusy")}
+        </p>
+      ) : null}
       {error ? (
         <p className="shrink-0 px-2 py-1 text-xs text-(--_dk-amber-500)">{error}</p>
       ) : null}

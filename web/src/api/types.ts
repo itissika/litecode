@@ -611,6 +611,8 @@ export interface BashTailResult {
   text: string;
   truncated_on_disk: boolean;
   alive: boolean;
+  /** The process exited but a pipe is still open, so the tail can still grow. */
+  draining?: boolean;
   exit_code: number | null;
 }
 
@@ -787,7 +789,7 @@ export interface CompactionTelemetry {
 export interface CompactLifecycle {
   session_id: string;
   trigger: "manual" | "auto" | "overflow";
-  stage: "started" | "succeeded" | "failed";
+  stage: "started" | "succeeded" | "failed" | "abandoned";
   operation_id?: string | null;
   error?: StructuredError | null;
   telemetry?: CompactionTelemetry;

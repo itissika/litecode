@@ -12,6 +12,7 @@ import {
   type BrowserPage,
   type BrowserViewHandle,
 } from "./browser-host";
+import { t } from "./i18n";
 import { isAllowedLoadUrl } from "./url-policy";
 
 let guestSessionReady = false;
@@ -39,6 +40,13 @@ function guardGuestNavigation(wc: WebContents): void {
 }
 
 function wrapPage(wc: WebContents): BrowserPage {
+  let inputBlocked = false;
+  wc.on("before-input-event", (event) => {
+    if (inputBlocked) event.preventDefault();
+  });
+  wc.on("before-mouse-event", (event) => {
+    if (inputBlocked) event.preventDefault();
+  });
   return {
     loadURL: (url) => wc.loadURL(url),
     getURL: () => (wc.isDestroyed() ? "" : wc.getURL()),
@@ -61,6 +69,10 @@ function wrapPage(wc: WebContents): BrowserPage {
     },
     canGoBack: () => !wc.isDestroyed() && wc.navigationHistory.canGoBack(),
     canGoForward: () => !wc.isDestroyed() && wc.navigationHistory.canGoForward(),
+    executeJavaScript: (code) => wc.executeJavaScript(code, true),
+    setInputBlocked: (blocked) => {
+      inputBlocked = blocked;
+    },
     close: () => {
       if (!wc.isDestroyed()) wc.close();
     },
@@ -167,6 +179,7 @@ export function createBrowserHost(
       win.webContents.send(BROWSER_STATE_CHANNEL, state);
     },
     createView: () => mountGuest(win),
+    fallbackTitle: t("browser.title"),
     moveView: (view, popoutId) => {
       if (popoutId === null) return view.reparent(win);
       const target = popoutWindow(popoutId);

@@ -17,6 +17,7 @@ use crate::tool::spec::{CodeFunctionSpec, FunctionSpec};
 use crate::tool::trait_::Tool;
 use crate::tools::{
     ask_user::AskUserTool,
+    browser,
     code::{CodeTool, CodeToolHost},
     code_search::CodeSearchTool,
     kill::KillTool,
@@ -77,6 +78,10 @@ fn instantiate_builtin_member(
     sessions: &Arc<SessionManager>,
 ) -> Option<Arc<dyn Tool>> {
     if let Some(tool) = builtin_tool(member, Arc::clone(sessions), workspace_engines, ide) {
+        return Some(tool);
+    }
+
+    if let Some(tool) = browser::BrowserTool::tool_for_name(member) {
         return Some(tool);
     }
 
@@ -591,6 +596,9 @@ pub fn builtin_code_surface_tools() -> Vec<Arc<dyn Tool>> {
         crate::engines::WorkspaceEngines::new(),
         std::path::PathBuf::from("."),
     ));
+    // Browser tools are code-surface only; the client reads the loopback bridge
+    // from the sidecar environment when a call is actually made.
+    tools.extend(browser::all_code_tools());
     tools
 }
 

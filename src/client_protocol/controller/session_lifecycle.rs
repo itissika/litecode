@@ -324,13 +324,14 @@ impl SessionController {
             return Err(LitecodeError::NothingToCompact);
         }
         if !CompactPolicy::can_compact(&budget, &transcript) {
-            // A manual trigger may still be able to relieve pressure with
-            // deterministic pruning even when the whole prefix fits inside the
-            // keep-recent window and there is no summary cut. Admit that path;
-            // `compact_now` still runs prune before deciding whether to invoke
-            // the summarizer.
+            // A manual trigger may still prune when there is no summary cut.
+            // `can_prune` enforces the fixed protected line; `compact_now`
+            // still runs prune before deciding whether to invoke the summarizer.
             let rows = self.sessions.data().working_set_blocking(session_id)?;
-            if !CompactPolicy::can_prune(&rows, compaction_request.context_window) {
+            let protected = crate::context_pipeline::protected_conversation_tokens_for_request(
+                &compaction_request,
+            );
+            if !CompactPolicy::can_prune(&rows, protected) {
                 return Err(LitecodeError::NothingToCompact);
             }
         }

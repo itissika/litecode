@@ -1,18 +1,19 @@
 ```node
 node : context-budget
 status : pending
-summary : 上次请求的 provider prompt_tokens 是预算权威前缀；其后本地估算后缀；超阈触发 compact，硬顶拒绝越界。
+summary : 该压的时候压、不该压的时候别打扰：已发送的那段用真实用量定价，只有新内容才本地估；80% 准备压缩，100% 不再发送。
 x : 5094
 y : 720
 domain : harness-core
 ```
 
-**准入：** A1。预算真源不能跨请求累加本地估算：有 baseline 时以 provider 计数覆盖已发送前缀，只对新增 Item 做本地估算；无 baseline 才整段估算。坏了会出现误触发 compact 或漏拦硬顶，污染准备视图与提交节奏。
+**准入：** A1。用户只关心两件事：别在快满的时候突然发不出去，也别在没满的时候被反复压缩打断。所以量的时候要用真账——上一轮实际消耗覆盖已发送的那段，只有之后新写的才本地估；没有账单才整段估。判的时候只有一处：80% 是准备线，100% 是硬线（这一步就不会发出去）。历史被就地改短之后旧账单作废，必须按新内容重算；否则等于拿旧价格给新前缀定价，会在阈值附近来回抖，或者漏掉最后一道线。
 
-依据：[@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn occupancy_token_count"]、[@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn should_compact"]、[@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]。
+依据：[@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn measure"]、[@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn should_compact"]、[@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn must_compact_before_send"]、[@ file="src/context_pipeline/budget.rs" symbol="impl ProviderPromptBaseline › fn invalidate"]、[@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]。
 父节点：[@ key="context-view"]。
-基线：075308b
+基线：666540c
 
-**核实结论：一致，无漂移。**（基线 075308b；锚点于 7286012 随 seq 化改名，语义未变）
-- provider 前缀权威 + 后缀本地估：`occupancy_token_count`（原 `token_count_with_baseline`，覆盖判定由 item 数改为 row seq）—— [@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn occupancy_token_count"]；测试见 [@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]、[@ file="src/context_pipeline/budget.rs"]。
-- 超阈 compact / 硬顶拒绝：`should_compact`；`enforce_token_count`（原 `enforce_hard_limit_with_baseline`，改收已算好的计数）—— [@ file="src/context_pipeline/budget.rs" symbol="impl BudgetPolicy › fn should_compact"]；[@ file="src/context_pipeline/compact.rs" symbol="impl CompactPolicy › fn compact_if_needed"]。
+**核实结论：按实现订正。**（基线 666540c）
+- 量：账单覆盖已发送前缀、只估后缀 —— [@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn measure"]；同名测试仍在 [@ file="src/context_pipeline/budget.rs" symbol="mod tests › fn provider_bill_covers_its_prefix_and_estimates_only_the_suffix"]。
+- 判：两条线同源 —— [@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn should_compact"]、[@ file="src/context_pipeline/context_meter.rs" symbol="impl ContextMeter › fn must_compact_before_send"]；`BudgetPolicy` 只剩保留窗口与摘要输出上限，不再参与压力判断。
+- 作废：裁剪改写 surface 后旧账单失效 —— [@ file="src/context_pipeline/budget.rs" symbol="impl ProviderPromptBaseline › fn invalidate"]。

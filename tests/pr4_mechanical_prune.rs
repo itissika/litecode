@@ -7,7 +7,6 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::SessionDataFixture;
 use common::recording_provider::RecordingProvider;
@@ -22,7 +21,8 @@ use litecode::context_pipeline::{
     BudgetPolicy, CompactPolicy, Context, ContextEnvelope, ContextPipeline, MechanicalPruneConfig,
     MechanicalPrunePlan, ProviderPromptBaseline, TOOL_RESULT_PRUNE_HEAD_CHARS,
     TOOL_RESULT_PRUNE_MARKER, TOOL_RESULT_PRUNE_TAIL_CHARS, TOOL_RESULT_PRUNE_THRESHOLD_CHARS,
-    measure_request_context, prune_min_saved_tokens,
+    measure_request_context, protected_conversation_tokens,
+    protected_conversation_tokens_for_request, prune_is_worthwhile, prune_min_saved_tokens,
 };
 use litecode::engines::WorkspaceEngines;
 use litecode::llm::LlmProvider;
@@ -126,13 +126,18 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
     let sessions = Arc::new(fixture.manager());
 
     let mut seed = vec![user_text("start")];
-    for index in 0..6 {
-        let call_id = format!("call-{index}");
+    // Five 7.5k-char results sit below the 8,192-char prune threshold. They
+    // build a prefix past the protected 60% line without becoming candidates.
+    for index in 0..5 {
+        let call_id = format!("call-pad-{index}");
         seed.push(call(&call_id));
-        // ~12k chars / ~2.4k cl100k tokens each: six results comfortably clear
-        // the 4,096-token prune floor and the small-window pressure line.
-        seed.push(output(&call_id, "word ".repeat(2_400)));
+        seed.push(output(&call_id, "word ".repeat(1_500)));
     }
+    // The one oversized result starts after the protected line, so it is the
+    // only eligible row. Its tail savings alone must clear the floor and the
+    // rewritten-suffix share.
+    seed.push(call("call-huge"));
+    seed.push(output("call-huge", "word ".repeat(20_000)));
     sessions.insert_detail_rows(&sid, &seed).expect("seed");
 
     let before_rows = sessions
@@ -143,6 +148,7 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
     let mut request =
         common::test_compaction_request(provider.clone(), "main instructions", vec![], &sid);
     common::set_compaction_request_capacity(&mut request, 12_000, 1_024);
+    let protected = protected_conversation_tokens_for_request(&request);
 
     let envelope = ContextEnvelope::from_compaction_request(&request);
     let baseline = ProviderPromptBaseline::default();
@@ -159,10 +165,9 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
         before_meter.should_compact(),
         "fixture must trigger pressure before pruning: {before_meter:?}"
     );
-    let plan = MechanicalPrunePlan::build(&before_rows, MechanicalPruneConfig::default());
     assert!(
-        plan.meets_min_savings(request.context_window),
-        "fixture must clear the prune savings floor: {plan:?}"
+        prune_is_worthwhile(&before_rows, protected),
+        "fixture must clear the position, floor, and suffix gates"
     );
 
     let budget = BudgetPolicy::new(12_000).with_keep_recent_tokens(1);
@@ -200,8 +205,23 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
         .collect();
     assert_eq!(
         replacement_events.len(),
-        6,
-        "one replacement per tool result"
+        1,
+        "only the single eligible oversized result is rewritten"
+    );
+    let huge_seq = before_rows
+        .iter()
+        .find(|row| {
+            row.item().is_some_and(|item| {
+                matches!(item, Item::FunctionCallOutput(_))
+                    && output_text(item).chars().count() == 100_000
+            })
+        })
+        .and_then(|row| row.log_seq)
+        .expect("huge output row");
+    assert_eq!(
+        replacement_events[0].source_seqs.as_deref(),
+        Some([huge_seq].as_slice()),
+        "the fixed line must protect every padding result before the huge one"
     );
     for event in &replacement_events {
         assert_eq!(event.event_type.as_str(), "item/tool_result");
@@ -220,7 +240,7 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
             serde_json::from_value(original.data.clone()).expect("original item");
         assert_eq!(
             output_text(&original_item).chars().count(),
-            12_000,
+            100_000,
             "the original full tool result remains in the log"
         );
         let replacement_item: Item =
@@ -275,7 +295,7 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
         history.iter().any(|item| matches!(
             item,
             Item::FunctionCallOutput(output)
-                if matches!(&output.output, FunctionCallOutput::Text(text) if text.chars().count() == 12_000)
+                if matches!(&output.output, FunctionCallOutput::Text(text) if text.chars().count() == 100_000)
         )),
         "the original full result must remain visible in the append-only history"
     );
@@ -288,15 +308,26 @@ async fn prune_relieves_pressure_skips_summary_and_replays_from_source_seq() {
         })
         .collect();
     assert_eq!(replayed_outputs.len(), 6);
+    let mut pruned = 0;
     for output in replayed_outputs {
         let FunctionCallOutput::Text(text) = &output.output else {
-            panic!("replayed output must be pruned text");
+            panic!("replayed output must stay text");
         };
-        assert!(text.contains(TOOL_RESULT_PRUNE_MARKER));
-        assert!(text.chars().count() <= TOOL_RESULT_PRUNE_THRESHOLD_CHARS);
+        if text.contains(TOOL_RESULT_PRUNE_MARKER) {
+            pruned += 1;
+            assert!(text.chars().count() <= TOOL_RESULT_PRUNE_THRESHOLD_CHARS);
+        } else {
+            assert_eq!(
+                text.chars().count(),
+                7_500,
+                "padding results before the protected line stay intact"
+            );
+        }
     }
+    assert_eq!(pruned, 1, "only the eligible huge result is pruned");
 
-    let second = MechanicalPrunePlan::build(&after_rows, MechanicalPruneConfig::default());
+    let second =
+        MechanicalPrunePlan::build(&after_rows, MechanicalPruneConfig::default(), protected);
     assert!(
         second.is_empty(),
         "a second prune pass over the durable replacement must be a no-op: {second:?}"
@@ -345,13 +376,6 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
         .data()
         .working_set_blocking(&sid)
         .expect("before working set");
-    let plan = MechanicalPrunePlan::build(&before_rows, MechanicalPruneConfig::default());
-    assert_eq!(plan.replacements.len(), 4);
-    assert!(
-        plan.estimated_saved_tokens < prune_min_saved_tokens(7_000),
-        "fixture must stay below the savings floor: {plan:?}"
-    );
-
     let provider = Arc::new(RecordingProvider::new_legacy_accepting_compaction_summary(
         vec![vec![common::assistant_text_item(
             "## summary\nlow-yield fixture",
@@ -361,6 +385,18 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
     let captured = Arc::clone(&provider);
     let mut request = common::test_compaction_request(provider, "main instructions", vec![], &sid);
     common::set_compaction_request_capacity(&mut request, 7_000, 512);
+    let protected = protected_conversation_tokens_for_request(&request);
+    let plan =
+        MechanicalPrunePlan::build(&before_rows, MechanicalPruneConfig::default(), protected);
+    assert!(!plan.is_empty(), "some late results are eligible");
+    assert!(
+        plan.replacements.len() < 4,
+        "the protected line keeps the early results out of the plan: {plan:?}"
+    );
+    assert!(
+        plan.estimated_saved_tokens < prune_min_saved_tokens(),
+        "fixture must stay below the savings floor: {plan:?}"
+    );
 
     let envelope = ContextEnvelope::from_compaction_request(&request);
     let baseline = ProviderPromptBaseline::default();
@@ -392,6 +428,9 @@ async fn low_savings_prune_writes_no_surface_and_summary_still_runs() {
             1,
             &CancellationToken::new(),
             &sessions.data_root_path(),
+            None,
+            2,
+            false,
         )
         .await
         .expect("auto compaction path");
@@ -493,11 +532,13 @@ async fn stale_provider_bill_cannot_hide_prune_savings_after_cold_restart() {
             .expect("create session");
 
         let mut seed = vec![user_text("start")];
-        for index in 0..6 {
-            let call_id = format!("bill-call-{index}");
+        for index in 0..5 {
+            let call_id = format!("bill-pad-{index}");
             seed.push(call(&call_id));
-            seed.push(output(&call_id, "word ".repeat(2_400)));
+            seed.push(output(&call_id, "word ".repeat(1_500)));
         }
+        seed.push(call("bill-huge"));
+        seed.push(output("bill-huge", "word ".repeat(20_000)));
         sessions.insert_detail_rows(&sid, &seed).expect("seed");
         let header = sessions
             .append_request_origin(&sid, &serde_json::json!({"schema": 1, "turn": "bill"}))
@@ -654,20 +695,22 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
         .map(|index| format!("litecode-media:old-{index}.png"))
         .collect();
     let media_user = user_message("look at these", &urls);
-    let mut seed = vec![
-        media_user,
-        signed_reasoning(),
-        assistant_text("done"),
-        user_text("next"),
-    ];
-    // Historical media alone is already stripped by the ephemeral show-once
-    // projection, so pair it with worthwhile tool-result text to exercise the
-    // durable media replacement inside a real prune batch.
-    for index in 0..4 {
-        let call_id = format!("media-batch-{index}");
+    let mut seed = vec![user_text("start")];
+    // Padding below the 8,192-char threshold moves the media row past the
+    // protected 60% line without creating text-prune candidates of its own.
+    for index in 0..5 {
+        let call_id = format!("media-pad-{index}");
         seed.push(call(&call_id));
-        seed.push(output(&call_id, "word ".repeat(2_400)));
+        seed.push(output(&call_id, "word ".repeat(1_500)));
     }
+    seed.push(media_user);
+    seed.push(signed_reasoning());
+    seed.push(assistant_text("done"));
+    seed.push(user_text("next"));
+    // The huge result pays for the batch; the media row is eligible because it
+    // also starts after the line.
+    seed.push(call("media-huge"));
+    seed.push(output("media-huge", "word ".repeat(20_000)));
     sessions
         .insert_detail_rows(&sid, &seed)
         .expect("seed media history");
@@ -675,7 +718,8 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
         .data()
         .working_set_blocking(&sid)
         .expect("working set")
-        .first()
+        .into_iter()
+        .find(|row| row.item().is_some_and(|item| media_count(item) == 6))
         .and_then(|row| row.log_seq)
         .expect("media user seq");
 
@@ -769,15 +813,13 @@ async fn historical_user_media_is_replaced_by_stable_text_in_the_surface() {
         prepared.rebased
     );
     assert!(
-        MechanicalPrunePlan::build(&after_rows, MechanicalPruneConfig::default()).is_empty(),
+        MechanicalPrunePlan::build(&after_rows, MechanicalPruneConfig::default(), 0).is_empty(),
         "media placeholders must not be rewritten again"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_controller_admits_prune_without_keep_recent_cut() {
-    use litecode::runtime::observer::{CompactionStage, CompactionTrigger, InternalEvent};
-
+async fn manual_controller_rejects_prune_when_no_tail_is_eligible() {
     let fixture = SessionDataFixture::new();
     let sid = fixture.create("/proj", "default", Some(common::TEST_PRIMARY_MODEL_REF));
     let sessions = Arc::new(fixture.manager());
@@ -786,7 +828,9 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
     for index in 0..4 {
         let call_id = format!("controller-call-{index}");
         seed.push(call(&call_id));
-        seed.push(output(&call_id, "word ".repeat(2_400)));
+        // ~24k chars / ~4.8k tokens each. Four of these stay inside the default
+        // 20k keep-recent window but still save >60% of the conversation prefix.
+        seed.push(output(&call_id, "word ".repeat(4_800)));
     }
     sessions.insert_detail_rows(&sid, &seed).expect("seed");
 
@@ -800,14 +844,13 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
         !CompactPolicy::can_compact(&budget, &transcript),
         "fixture must have no keep-recent summary cut"
     );
-    let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default());
+    let protected = protected_conversation_tokens(100_000, 0);
     assert!(
-        plan.meets_min_savings(100_000),
-        "fixture prune must clear the manual fallback floor: {plan:?}"
+        !prune_is_worthwhile(&rows, protected),
+        "the whole conversation sits below the protected 60% line"
     );
 
     let provider = Arc::new(RecordingProvider::new(vec![]));
-    let captured = Arc::clone(&provider);
     let mut ctrl = controller_with_system_prompt(
         Arc::clone(&sessions),
         fixture.dir.path(),
@@ -827,73 +870,12 @@ async fn manual_controller_admits_prune_without_keep_recent_cut() {
         "manual eligibility must stay the shared product gate"
     );
 
-    let mut rx = sessions
-        .subscribe(&sid)
-        .expect("subscribe compaction lifecycle");
-    let operation_id = ctrl
+    let err = ctrl
         .start_manual_compact(&sid)
         .await
-        .expect("controller must admit prune-only manual compaction");
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    let mut started_telemetry = None;
-    let mut succeeded_telemetry = None;
-    while std::time::Instant::now() < deadline && succeeded_telemetry.is_none() {
-        if let Ok(envelope) = rx.try_recv()
-            && let InternalEvent::CompactionLifecycle {
-                trigger: CompactionTrigger::Manual,
-                stage,
-                operation_id: event_operation,
-                telemetry,
-                ..
-            } = envelope.event
-        {
-            if event_operation.as_deref() != Some(operation_id.as_str()) {
-                continue;
-            }
-            match stage {
-                CompactionStage::Succeeded => succeeded_telemetry = Some(telemetry),
-                CompactionStage::Failed => panic!("manual prune-only compaction failed"),
-                CompactionStage::Started => started_telemetry = Some(telemetry),
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let started = started_telemetry.expect("manual prune-only Started lifecycle");
-    let succeeded = succeeded_telemetry.expect("manual prune-only Succeeded lifecycle");
-    for (stage, telemetry) in [("Started", started), ("Succeeded", succeeded)] {
-        assert!(
-            telemetry.tokens_before.is_some()
-                && telemetry.tokens_pruned.is_some()
-                && telemetry.tokens_after.is_some(),
-            "prune-only {stage} must carry measured token fields: {telemetry:?}"
-        );
-        assert_eq!(
-            telemetry.summary_attempts,
-            Some(0),
-            "prune-only {stage} must report zero summary attempts"
-        );
-        assert_eq!(
-            telemetry.overflow_retry,
-            Some(0),
-            "prune-only {stage} must report zero overflow retries"
-        );
-    }
-
-    let events = sessions.data().events_blocking(&sid).expect("events");
-    let replacements = events
-        .iter()
-        .filter(|event| matches!(event.surface_op, Some(SurfaceOp::Replace { .. })))
-        .count();
-    assert_eq!(replacements, 4, "manual path must commit the prune batch");
+        .expect_err("no eligible tail means no manual prune");
     assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event.event_type, litecode::session::EventType::Compacted)),
-        "prune-only manual path must skip summary checkpoint"
-    );
-    assert!(
-        captured.captured().is_empty(),
-        "prune-only manual path must not call the summarizer"
+        matches!(err, litecode::types::LitecodeError::NothingToCompact),
+        "manual compaction must reject a conversation below the protected line: {err:?}"
     );
 }

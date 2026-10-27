@@ -21,13 +21,12 @@ const echoTool: CustomToolDefinition = {
   schema: { type: "object", properties: {}, required: [] },
 };
 
-function openNew(scope: "Global" | "Workspace") {
-  fireEvent.click(screen.getByRole("button", { name: "New custom tool" }));
+function startNew(scope: "Global" | "Workspace", kind: "tool" | "suite") {
+  fireEvent.click(screen.getByRole("button", { name: "New" }));
   const panel = document.querySelector("[data-dropdown-panel]");
   expect(panel).toBeTruthy();
-  fireEvent.click(
-    within(panel as HTMLElement).getByRole("button", { name: scope }),
-  );
+  const name = `New ${scope.toLowerCase()} ${kind}`;
+  fireEvent.click(within(panel as HTMLElement).getByRole("button", { name }));
 }
 
 describe("CustomToolsSection persist UX", () => {
@@ -54,19 +53,18 @@ describe("CustomToolsSection persist UX", () => {
   });
 
   it("does not auto-save or show Fix fields to save when adding a tool", async () => {
-    vi.useFakeTimers();
     render(<CustomToolsSection />);
-    openNew("Global");
-    await vi.advanceTimersByTimeAsync(400);
-    expect(screen.getByRole("button", { name: "Create" })).toBeTruthy();
+    startNew("Global", "tool");
+    expect(await screen.findByRole("button", { name: "Create" })).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 450));
     expect(screen.queryByText("Fix fields to save")).toBeNull();
     expect(saveCustomTool).not.toHaveBeenCalled();
   });
 
   it("creates from the template JSON without auto-PUT while drafting", async () => {
     render(<CustomToolsSection />);
-    openNew("Workspace");
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    startNew("Workspace", "tool");
+    fireEvent.click(await screen.findByRole("button", { name: "Create" }));
     await waitFor(() => {
       expect(saveCustomTool).toHaveBeenCalledWith(
         "echo_py",
@@ -78,8 +76,9 @@ describe("CustomToolsSection persist UX", () => {
 
   it("shows a form error instead of saving incomplete JSON", async () => {
     render(<CustomToolsSection />);
-    openNew("Global");
-    fireEvent.change(screen.getByRole("textbox"), { target: { value: "{}" } });
+    startNew("Global", "tool");
+    const textarea = await screen.findByRole("textbox");
+    fireEvent.change(textarea, { target: { value: "{}" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     expect(
       await screen.findByText(
@@ -118,10 +117,19 @@ describe("CustomToolsSection persist UX", () => {
     expect(screen.getByText(/has no data schema/)).toBeTruthy();
   });
 
+  it("keeps creation in the header, leaving the body to the two scope cards", () => {
+    render(<CustomToolsSection />);
+    expect(screen.getAllByRole("button", { name: "New" })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "New global" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "New workspace" })).toBeNull();
+    expect(screen.getByText("Global")).toBeTruthy();
+    expect(screen.getByText("Workspace")).toBeTruthy();
+  });
+
   it("creates a suite as one group definition", async () => {
     render(<CustomToolsSection />);
-    fireEvent.click(screen.getByRole("button", { name: "New global" }));
-    fireEvent.change(screen.getByPlaceholderText("suite_id"), {
+    startNew("Global", "suite");
+    fireEvent.change(await screen.findByPlaceholderText("suite_id"), {
       target: { value: "deck" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save suite" }));

@@ -549,7 +549,4 @@ pub fn log_turn_error_wire(session_id: &str, turn_id: &str, message: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    
-
-}
+mod tests {}

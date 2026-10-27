@@ -942,6 +942,12 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         }
         return;
       }
+      if (life.stage === "abandoned") {
+        // The frozen branch no longer matched the surface. A fresh sync path
+        // may still compact; never leave the wave spinner stuck.
+        patch(sessionId, { compacting: false });
+        return;
+      }
       patch(sessionId, { compacting: false });
       if (life.trigger !== "manual") {
         useToastStore

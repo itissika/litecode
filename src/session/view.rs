@@ -5,15 +5,21 @@
 //! across steps only has to feed the rows it has not folded yet; a caller starting
 //! cold replays everything. There is one set of rules for order, payload identity,
 //! and `replacement_media` — not one per caller.
+//!
+//! A cold load may start at a checkpoint instead of seq 0
+//! ([`WorkingView::from_events_anchored`]). That is still the same rule set: the
+//! anchor only removes rows the compaction already replaced, so the folded result
+//! is row-for-row identical to the full fold. A view refuses to build when it
+//! cannot prove that, and the caller falls back to the full log.
 
 use std::collections::{HashMap, HashSet};
 
 use crate::session::SurfaceOp;
-use crate::session::event::{SessionEvent, Seq, spine_working_payload};
+use crate::session::event::{EventType, SessionEvent, Seq, spine_working_payload};
 use crate::session::media::item_has_media;
 use crate::session::model::LogState;
 use crate::session::surface::{
-    Surface, SurfacePlan, apply_plan, plan_surface, project_working_payloads,
+    FoldAnchor, Surface, SurfacePlan, apply_plan, plan_surface_anchored, project_working_payloads,
 };
 use crate::session::working::{WorkingPayload, WorkingRow};
 use crate::types::{LitecodeError, Result};
@@ -35,14 +41,64 @@ pub struct WorkingView {
     /// Truncate epoch this fold was built against. A revert deletes rows and
     /// appends nothing, so seq continuity cannot see it; the epoch can.
     epoch: u64,
+    /// Where this fold started instead of seq 0; `None` means the whole log.
+    /// Rows below `anchor.start` were replaced by the checkpoint.
+    anchor: Option<FoldAnchor>,
 }
 
 impl WorkingView {
     /// The full fold: an empty view with every event applied in order.
     pub fn from_events(events: &[SessionEvent]) -> Result<Self> {
-        let mut view = Self::default();
+        Self::from_events_anchored(events, None)
+    }
+
+    /// Fold the log from `anchor` (`compacted.body.to` of the newest
+    /// checkpoint). Rows below it were summarised away and are never read.
+    ///
+    /// Refuses any log it cannot fold exactly — a row below the anchor, a missing
+    /// checkpoint, a checkpoint newer than the named one, or a fold that does not
+    /// begin with the checkpoint — so the caller falls back to
+    /// [`Self::from_events`] instead of guessing.
+    pub fn from_events_anchored(events: &[SessionEvent], anchor: Option<FoldAnchor>) -> Result<Self> {
+        let mut view = Self {
+            anchor,
+            ..Self::default()
+        };
+        // A full fold legitimately replays every compaction the session ever
+        // made, so it checks nothing here; only an anchored fold has an expected
+        // first node.
+        let mut saw_checkpoint = false;
         for event in events {
+            if let Some(anchor) = anchor {
+                if event.seq < anchor.start {
+                    // The caller handed in rows the anchor says are gone. Folding
+                    // them would add rows no full fold has, so refuse loudly.
+                    return Err(LitecodeError::InvalidSessionEvent(format!(
+                        "anchored fold at {} was given row {} below the anchor",
+                        anchor.start, event.seq
+                    )));
+                }
+                if matches!(event.event_type, EventType::Compacted)
+                    && event.seq == anchor.checkpoint
+                {
+                    saw_checkpoint = true;
+                }
+            }
             view.apply(event)?;
+        }
+        if let Some(anchor) = anchor {
+            if !saw_checkpoint {
+                return Err(LitecodeError::InvalidSessionEvent(format!(
+                    "no row at the anchored checkpoint {} (fold starts at {})",
+                    anchor.checkpoint, anchor.start
+                )));
+            }
+            if view.surface.nodes.first() != Some(&anchor.checkpoint) {
+                return Err(LitecodeError::InvalidSessionEvent(format!(
+                    "anchored fold at {} did not begin with checkpoint {}",
+                    anchor.start, anchor.checkpoint
+                )));
+            }
         }
         Ok(view)
     }
@@ -60,7 +116,7 @@ impl WorkingView {
     /// Fold one event. Applying events in log order is the only supported order;
     /// a caller that feeds a suffix must have folded the prefix already.
     pub fn apply(&mut self, event: &SessionEvent) -> Result<()> {
-        if let Some(plan) = plan_surface(&self.surface, event)? {
+        if let Some(plan) = plan_surface_anchored(&self.surface, event, self.anchor)? {
             let shadowed: Vec<Seq> = match &plan {
                 SurfacePlan::Replace { start_idx, len, .. } => {
                     self.surface.nodes[*start_idx..*start_idx + *len].to_vec()
@@ -244,5 +300,236 @@ impl WorkingView {
     /// exactly these seqs before trusting the fold.
     pub fn in_progress_seqs(&self) -> &HashSet<Seq> {
         &self.in_progress
+    }
+}
+
+#[cfg(test)]
+mod anchored_fold_tests {
+    use super::*;
+    use crate::session::model::CompactedBody;
+    use crate::session::{EventDraft, EventLog};
+    use crate::types::user_text;
+
+    fn item_log(texts: &[&str]) -> EventLog {
+        let mut log = EventLog::new();
+        for text in texts {
+            log.append(
+                EventDraft::surface_item(EventType::ItemUser, &user_text(*text), SurfaceOp::Append)
+                    .expect("draft"),
+            )
+            .expect("append");
+        }
+        log
+    }
+
+    /// The checkpoint the writer appends for a keep-recent compact.
+    fn append_compact(log: &mut EventLog, summary: &str, shadowed: Vec<Seq>, to: Seq) {
+        let from = shadowed.first().copied().unwrap_or(to);
+        log.append(EventDraft {
+            time: 0,
+            event_type: EventType::Compacted,
+            data: serde_json::to_value(CompactedBody {
+                summary: summary.to_string(),
+                from,
+                to,
+            })
+            .expect("body"),
+            surface_op: None,
+            source_seqs: Some(shadowed),
+            ignorable: false,
+            state: LogState::Final,
+        })
+        .expect("compact");
+    }
+
+    /// What the loader feeds in: the whole log, or only rows at or above the
+    /// anchor. EventLog seqs are dense, so the anchor is also the slice index.
+    fn rows(log: &EventLog, anchor: Option<FoldAnchor>) -> Vec<WorkingRow> {
+        let events = log.events();
+        let fed = match anchor {
+            Some(anchor) => &events[anchor.start as usize..],
+            None => events,
+        };
+        WorkingView::from_events_anchored(fed, anchor)
+            .expect("fold")
+            .rows()
+            .expect("rows")
+    }
+
+    fn assert_anchor_matches_full(log: &EventLog, start: Seq, checkpoint: Seq) {
+        let anchor = FoldAnchor { start, checkpoint };
+        assert_eq!(
+            rows(log, Some(anchor)),
+            rows(log, None),
+            "anchored fold at {anchor:?} must be row-for-row identical to the full fold"
+        );
+    }
+
+    /// a,b,c then a compact keeping b onward. One compaction.
+    #[test]
+    fn one_compaction_anchored_matches_full() {
+        let mut log = item_log(&["a", "b", "c"]);
+        append_compact(&mut log, "sum", vec![0], 1);
+        assert_anchor_matches_full(&log, 1, 3);
+    }
+
+    /// Two compactions: the second keeps a row that predates the first
+    /// checkpoint, so its kept boundary (`to`) sits *below* that checkpoint's
+    /// seq. The old checkpoint is inside the read range and must be dropped, not
+    /// folded — a surface never holds two checkpoints.
+    #[test]
+    fn two_compactions_anchored_matches_full() {
+        let mut log = item_log(&["a", "b", "c"]);
+        append_compact(&mut log, "first", vec![0], 1);
+        append_compact(&mut log, "second", vec![3, 1], 2);
+        assert_anchor_matches_full(&log, 2, 4);
+    }
+
+    /// Three compactions keep the same shape: only the newest checkpoint is a
+    /// surface node, every older one in range is noise.
+    #[test]
+    fn three_compactions_anchored_matches_full() {
+        let mut log = item_log(&["a", "b", "c", "d"]);
+        append_compact(&mut log, "first", vec![0], 1);
+        append_compact(&mut log, "second", vec![4, 1], 2);
+        append_compact(&mut log, "third", vec![5, 2], 3);
+        assert_anchor_matches_full(&log, 3, 6);
+    }
+
+    /// A mechanical prune below the current anchor is a no-op for an anchored
+    /// fold: the checkpoint that set the anchor already shadowed it.
+    #[test]
+    fn replace_below_the_anchor_is_a_no_op() {
+        let mut log = item_log(&["a", "b", "c"]);
+        log.append(EventDraft {
+            time: 0,
+            event_type: EventType::ItemUser,
+            data: serde_json::to_value(user_text("pruned")).expect("item"),
+            surface_op: Some(SurfaceOp::Replace { start: 1, end: 1 }),
+            source_seqs: Some(vec![1]),
+            ignorable: false,
+            state: LogState::Final,
+        })
+        .expect("prune");
+        append_compact(&mut log, "sum", vec![0, 3], 2);
+        assert_anchor_matches_full(&log, 2, 4);
+    }
+
+    /// A compact always replaces a prefix of the spine (`nodes[..keep_i]`), so
+    /// `from` is the head. A row claiming to start mid-spine would punch a hole
+    /// through the tail: no writer produces it, and the fold refuses it instead
+    /// of building a surface that never existed.
+    #[test]
+    fn full_fold_refuses_a_compact_that_is_not_the_spine_head() {
+        let log = item_log(&["a", "b", "c"]);
+        // The log itself refuses to admit this draft, so build the row by hand:
+        // this is the shape a hand-edited store would produce.
+        let mut events = log.events().to_vec();
+        events.push(crate::session::SessionEvent {
+            seq: 3,
+            time: 0,
+            event_type: EventType::Compacted,
+            data: serde_json::to_value(CompactedBody {
+                summary: "bad".into(),
+                from: 1,
+                to: 3,
+            })
+            .expect("body"),
+            result_data: None,
+            surface_op: None,
+            source_seqs: Some(vec![1, 2]),
+            state: LogState::Final,
+            ignorable: false,
+        });
+        let err = WorkingView::from_events(&events).unwrap_err();
+        assert!(
+            err.to_string().contains("not the spine head"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The write side refuses the same shape before it can reach the log.
+    #[test]
+    fn the_log_refuses_a_compact_that_is_not_the_spine_head() {
+        let mut log = item_log(&["a", "b", "c"]);
+        let err = log
+            .append(EventDraft {
+                time: 0,
+                event_type: EventType::Compacted,
+                data: serde_json::to_value(CompactedBody {
+                    summary: "bad".into(),
+                    from: 1,
+                    to: 3,
+                })
+                .expect("body"),
+                surface_op: None,
+                source_seqs: Some(vec![1, 2]),
+                ignorable: false,
+                state: LogState::Final,
+            })
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not the spine head"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A full fold legitimately replays every compaction.
+    #[test]
+    fn full_fold_accepts_many_compactions() {
+        let mut log = item_log(&["a", "b", "c"]);
+        append_compact(&mut log, "first", vec![0], 1);
+        append_compact(&mut log, "second", vec![3, 1], 2);
+        assert!(WorkingView::from_events(log.events()).is_ok());
+    }
+
+    #[test]
+    fn anchored_refuses_a_missing_checkpoint() {
+        let log = item_log(&["a", "b"]);
+        let anchor = FoldAnchor {
+            start: 1,
+            checkpoint: 99,
+        };
+        // EventLog seqs are dense, so `start` is also the slice index.
+        let err =
+            WorkingView::from_events_anchored(&log.events()[1..], Some(anchor)).unwrap_err();
+        assert!(
+            err.to_string().contains("anchored checkpoint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn anchored_refuses_an_anchor_the_checkpoint_does_not_end_at() {
+        let mut log = item_log(&["a", "b", "c"]);
+        append_compact(&mut log, "sum", vec![0], 1);
+        // The checkpoint ends at 1; claiming the fold starts at 2 is a caller
+        // bug and must not silently produce a shorter surface.
+        let anchor = FoldAnchor {
+            start: 2,
+            checkpoint: 3,
+        };
+        let err = WorkingView::from_events_anchored(&log.events()[2..], Some(anchor)).unwrap_err();
+        assert!(
+            err.to_string().contains("fold anchor"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn anchored_refuses_rows_below_the_anchor() {
+        let mut log = item_log(&["a", "b", "c"]);
+        append_compact(&mut log, "sum", vec![0], 1);
+        let anchor = FoldAnchor {
+            start: 1,
+            checkpoint: 3,
+        };
+        // Handing in the whole log instead of the suffix would add a row no full
+        // fold has, so it must fail rather than quietly grow the surface.
+        let err = WorkingView::from_events_anchored(log.events(), Some(anchor)).unwrap_err();
+        assert!(
+            err.to_string().contains("below the anchor"),
+            "unexpected error: {err}"
+        );
     }
 }

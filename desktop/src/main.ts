@@ -75,6 +75,8 @@ import {
 } from "./bundle-paths";
 import { sidecarRoot } from "./paths";
 import {
+  BROWSER_AGENT_ACTIVITY_CHANNEL,
+  BROWSER_CLOSE_CHANNEL,
   COMPONENT_PROGRESS_CHANNEL,
   REMOTE_DISCONNECTED_CHANNEL,
   REMOTE_PROGRESS_CHANNEL,
@@ -107,6 +109,12 @@ import { isAllowedLoadUrl } from "./url-policy";
 import { senderOwnedWindow } from "./window-guard";
 import { BrowserHost } from "./browser-host";
 import { createBrowserHost } from "./browser-view";
+import { createBrowserAutomation } from "./browser-automation";
+import {
+  BrowserBridgeError,
+  startBrowserBridge,
+  type BrowserBridge,
+} from "./browser-bridge";
 
 type SessionMode = "local" | "remote";
 
@@ -117,6 +125,7 @@ const DESKTOP_APP_ID = "app.litecode.desktop";
 const liveTurnToasts: Notification[] = [];
 const MAX_LIVE_TOASTS = 5;
 let browserHost: BrowserHost | null = null;
+let browserBridge: BrowserBridge | null = null;
 /**
  * OS handles for popout windows, keyed by the dock id in `/popout.html?dock=`.
  * The renderer keeps the matching DOM windows. A handle may exist before
@@ -201,6 +210,53 @@ function ensureBrowserHost(): BrowserHost | null {
     browserHost.setObscured(browserObscured);
   }
   return browserHost;
+}
+
+function sendToWorkbench(channel: string, payload: unknown): void {
+  if (
+    channel === BROWSER_AGENT_ACTIVITY_CHANNEL ||
+    channel === BROWSER_CLOSE_CHANNEL
+  ) {
+    // A browser panel can live in a popout; every workbench window must see
+    // takeover state and close requests for its own dockview.
+    for (const win of [mainWindow, ...popoutWindows.values()]) {
+      if (!win || win.isDestroyed() || win.webContents.isDestroyed()) continue;
+      win.webContents.send(channel, payload);
+    }
+    return;
+  }
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || win.webContents.isDestroyed()) {
+    throw new BrowserBridgeError(
+      "unavailable",
+      "The workbench window is not ready",
+      503,
+    );
+  }
+  win.webContents.send(channel, payload);
+}
+
+/**
+ * Start the loopback bridge before booting the sidecar. The sidecar inherits
+ * these variables from process.env, which is the only place they belong.
+ */
+async function startBrowserAutomationBridge(): Promise<void> {
+  if (browserBridge) return;
+  try {
+    browserBridge = await startBrowserBridge(
+      createBrowserAutomation({
+        getHost: () => ensureBrowserHost(),
+        send: sendToWorkbench,
+        busyLabel: () => t("browser.agentBusy"),
+      }),
+    );
+    process.env.LITECODE_BROWSER_BRIDGE_URL = browserBridge.url;
+    process.env.LITECODE_BROWSER_BRIDGE_TOKEN = browserBridge.token;
+  } catch (error) {
+    delete process.env.LITECODE_BROWSER_BRIDGE_URL;
+    delete process.env.LITECODE_BROWSER_BRIDGE_TOKEN;
+    console.error("Could not start the local browser bridge", error);
+  }
 }
 
 function displayWorkAreas(): PopoutBounds[] {
@@ -1580,6 +1636,11 @@ function registerBrowserIpc(): void {
     browserHost?.setVisible(body.id, body.visible === true);
   });
 
+  onTrusted("litecode:browser-set-active", "workbench", (_event, payload: unknown) => {
+    const body = asRecord(payload);
+    browserHost?.setActive(body.id, body.active === true);
+  });
+
   onTrusted("litecode:browser-destroy", "workbench", (_event, id: unknown) => {
     browserHost?.destroy(id);
   });
@@ -1915,6 +1976,7 @@ app.whenReady().then(async () => {
   app.setAppUserModelId(DESKTOP_APP_ID);
   initDesktopI18n(resolveLocale(app.getLocale()));
   registerIpc();
+  await startBrowserAutomationBridge();
   recents = new RecentWorkspaces(path.join(app.getPath("userData"), "recent-workspaces.json"));
   remoteTargets = new RemoteTargets(path.join(app.getPath("userData"), "remote-targets.json"));
   sshTargets = new SshTargets(path.join(app.getPath("userData"), "ssh-targets.json"));
@@ -1955,6 +2017,8 @@ app.on("before-quit", (e) => {
       /* ignore */
     }
     registry?.stop();
+    await browserBridge?.close().catch(() => undefined);
+    browserBridge = null;
     // WP-169: skeleton closed while the sidecar was still starting.
     await bootAbortCleanup?.catch(() => undefined);
     await sidecarLifecycle.run(async () => {

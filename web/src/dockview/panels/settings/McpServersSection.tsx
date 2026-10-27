@@ -273,7 +273,7 @@ export function McpServersSection() {
     <ScopedDefinitionEditor
       title={t("settings.mcp.title")}
       newLabel={t("settings.mcp.newServer")}
-      hint={<ScopeHint bindName="mcp_<id>" />}
+      hint={<ScopeHint />}
       global={globalServers}
       workspace={workspaceServers}
       itemId={(server) => server.id}

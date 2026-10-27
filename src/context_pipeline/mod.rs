@@ -25,15 +25,17 @@ use crate::types::{Item, LitecodeError, Result, ToolResultData};
 pub use budget::{BudgetPolicy, OccupancyBill, ProviderPromptBaseline, occupancy_bill_from};
 pub use compact::{
     CompactPolicy, CompactionOutcome, CompactionPlan, MechanicalPruneConfig, MechanicalPrunePlan,
-    PRUNE_MIN_SAVED_TOKENS_FLOOR, PruneReplacement, SummaryArtifact, SummaryFailure, SummaryFinish,
-    SummaryReview, SummaryUsage, TOOL_RESULT_PRUNE_HEAD_CHARS, TOOL_RESULT_PRUNE_MARKER,
-    TOOL_RESULT_PRUNE_TAIL_CHARS, TOOL_RESULT_PRUNE_THRESHOLD_CHARS, prune_min_saved_tokens,
+    PRUNE_MIN_SAVED_SUFFIX_PERCENT, PRUNE_MIN_SAVED_TOKENS_FLOOR, PRUNE_PROTECTED_WINDOW_PERCENT,
+    PruneReplacement, SummaryArtifact, SummaryFailure, SummaryFinish, SummaryReview, SummaryUsage,
+    TOOL_RESULT_PRUNE_HEAD_CHARS, TOOL_RESULT_PRUNE_MARKER, TOOL_RESULT_PRUNE_TAIL_CHARS,
+    TOOL_RESULT_PRUNE_THRESHOLD_CHARS, protected_conversation_tokens,
+    protected_conversation_tokens_for_request, prune_is_worthwhile, prune_min_saved_tokens,
 };
 pub use context_meter::{
     ContextEnvelope, ContextMeter, ContextMeterSource, latest_persisted_envelope,
     measure_persisted_context, measure_persisted_context_with_breakdown, measure_request_context,
-    measure_working_rows_with_breakdown,
-    request_token_breakdown, request_token_breakdown_for_rows, tool_schema_tokens,
+    measure_working_rows_with_breakdown, request_token_breakdown, request_token_breakdown_for_rows,
+    tool_schema_tokens,
 };
 pub use env::{Context, build_context};
 pub use limits::{COMPACT_MAX_OUTPUT_TOKENS, KEEP_RECENT_CAP, MAX_PROMPT_RESERVE_TOKENS};
@@ -341,6 +343,37 @@ impl ContextPipeline {
         &self.data_root
     }
 
+    /// Clone of the retention policy for a background compaction task.
+    pub fn budget_policy(&self) -> BudgetPolicy {
+        self.budget.clone()
+    }
+
+    /// Runtime decision snapshot: sync the fold, freeze the current request
+    /// envelope, and return both the meter and the rows it measured.
+    pub fn measure_working_set(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+        compaction_request: &crate::llm::CompactionRequestContext,
+        prompt_baseline: &ProviderPromptBaseline,
+    ) -> (ContextMeter, Vec<WorkingRow>) {
+        self.sync_turn_working(sessions, session_id);
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.envelope = ContextEnvelope::from_compaction_request(compaction_request);
+        }
+        let rows = self.working_set();
+        let meter = CompactPolicy::measure_meter(
+            sessions,
+            session_id,
+            compaction_request,
+            prompt_baseline,
+            &rows,
+            &self.data_root,
+        );
+        (meter, rows)
+    }
+
     pub fn sync_context(&self, _ctx: &Context) {}
 
     /// Freeze the fixed request envelope without running compaction. Production
@@ -531,6 +564,37 @@ impl ContextPipeline {
         step: u64,
         cancel: &CancellationToken,
     ) -> Result<bool> {
+        self.compact_step_with(
+            sessions,
+            session_id,
+            compaction_request,
+            compact_max_tokens,
+            prompt_baseline,
+            step,
+            cancel,
+            None,
+            crate::context_pipeline::compact::MAX_SUMMARY_ATTEMPTS,
+            false,
+        )
+        .await
+    }
+
+    /// Compaction with an optional background summary and an attempt budget.
+    /// The synchronous wrapper above keeps the flag-off behavior byte-for-byte.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn compact_step_with(
+        &self,
+        sessions: &SessionManager,
+        session_id: &str,
+        compaction_request: &crate::llm::CompactionRequestContext,
+        compact_max_tokens: u32,
+        prompt_baseline: &ProviderPromptBaseline,
+        step: u64,
+        cancel: &CancellationToken,
+        prepared: Option<crate::context_pipeline::compact::PreparedCompaction>,
+        max_attempts: u8,
+        force: bool,
+    ) -> Result<bool> {
         // Returns whether a full compaction ran — single source of truth for
         // the caller's phase/compaction events (no duplicate budget math).
         if cancel.is_cancelled() {
@@ -556,6 +620,9 @@ impl ContextPipeline {
                 step,
                 cancel,
                 &self.data_root,
+                prepared,
+                max_attempts,
+                force,
             )
             .await?;
 
@@ -602,6 +669,8 @@ impl ContextPipeline {
             crate::runtime::observer::CompactionTrigger::Overflow,
             None,
             &self.data_root,
+            None,
+            2,
         )
         .await;
         if matches!(result, Err(LitecodeError::Canceled)) {

@@ -53,6 +53,7 @@ fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
             token_estimate: 10,
             kept_from: None,
             expected_prefix: None,
+            usage: None,
         })
         .unwrap();
 }

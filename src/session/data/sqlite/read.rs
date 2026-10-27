@@ -490,16 +490,208 @@ fn load_transcript(
     )?))
 }
 
+/// Cold load of the model-visible working set.
+///
+/// Starts at the newest checkpoint when the session has one, so the read costs
+/// the kept window instead of the whole history. The anchored fold is only used
+/// when it *proves* it rebuilt the same surface; any doubt falls back to the full
+/// log below. The fallback is a correctness net, never a correctness shortcut:
+/// what it prevents is exactly a silently different working set.
 fn load_working_set(
     conn: &Connection,
     session_id: &str,
     data_root: &std::path::Path,
 ) -> Result<Vec<WorkingRow>> {
+    if let Some(rows) = load_working_set_anchored(conn, session_id, data_root)? {
+        return Ok(rows);
+    }
     let events = load_events(conn, session_id, data_root)?;
     let mut view = crate::session::view::WorkingView::from_events(&events)?;
     view.set_epoch(session::Session::load_truncate_epoch_on(conn, session_id)?);
     view.rows()
 }
+
+/// [`load_working_set`] starting at the checkpoint instead of seq 0.
+///
+/// `None` means "no checkpoint, or the anchored fold refused" — the caller then
+/// takes the full log. A refusal is logged: it is a store shape this code does not
+/// understand, not a normal path.
+fn load_working_set_anchored(
+    conn: &Connection,
+    session_id: &str,
+    data_root: &std::path::Path,
+) -> Result<Option<Vec<WorkingRow>>> {
+    let Some(anchor) = session::load_compact_anchor_on(conn, session_id)? else {
+        return Ok(None);
+    };
+    let anchored = (|| -> Result<Vec<WorkingRow>> {
+        let start = i64::try_from(anchor.start).map_err(|_| {
+            LitecodeError::InvalidSessionEvent(format!(
+                "fold anchor {} exceeds the seq range",
+                anchor.start
+            ))
+        })?;
+        let events = load_events_range(conn, session_id, start, i64::MAX, data_root)?;
+        let mut view =
+            crate::session::view::WorkingView::from_events_anchored(&events, Some(anchor))?;
+        view.set_epoch(session::Session::load_truncate_epoch_on(conn, session_id)?);
+        let rows = view.rows()?;
+        // The fold must begin at the checkpoint the pointer names. Anything else
+        // means this read saw a different log than the one that wrote the pointer.
+        if rows.first().and_then(|row| row.log_seq) != Some(anchor.checkpoint) {
+            return Err(LitecodeError::InvalidSessionEvent(format!(
+                "anchored fold at {} did not begin with checkpoint {}",
+                anchor.start, anchor.checkpoint
+            )));
+        }
+        Ok(rows)
+    })();
+    match anchored {
+        Ok(rows) => Ok(Some(rows)),
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                checkpoint = anchor.checkpoint,
+                anchor = anchor.start,
+                %error,
+                "anchored working-set fold refused; reading the full log instead"
+            );
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(test)]
+mod anchored_load_tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+
+    use super::{load_working_set, load_working_set_anchored};
+    use crate::session::data::sqlite::conn::open_readonly;
+    use crate::session::{SessionData, WorkspaceWriteLease};
+    use crate::types::user_text;
+
+    struct Fixture {
+        dir: TempDir,
+        _lease: WorkspaceWriteLease,
+        data: Arc<SessionData>,
+        sid: String,
+    }
+
+    fn fixture(texts: &[&str]) -> Fixture {
+        let dir = TempDir::new().expect("tempdir");
+        let lease = WorkspaceWriteLease::acquire(dir.path()).expect("lease");
+        let data = SessionData::open(&lease, &dir.path().join("sessions.db")).expect("open");
+        let sid = data.create_session("/p", "default", None).expect("create");
+        let items: Vec<_> = texts.iter().map(|t| user_text(*t)).collect();
+        data.insert_items(&sid, &items).expect("items");
+        Fixture {
+            dir,
+            _lease: lease,
+            data,
+            sid,
+        }
+    }
+
+    impl Fixture {
+        fn compact(&self, summary: &str, kept_from: Option<i64>) {
+            self.data
+                .compact_from(&self.sid, summary, kept_from, 10)
+                .expect("compact");
+        }
+
+        fn append(&self, text: &str) {
+            self.data
+                .insert_items(&self.sid, &[user_text(text)])
+                .expect("append");
+        }
+    }
+
+    fn read(fx: &Fixture) -> Vec<crate::session::WorkingRow> {
+        let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
+        load_working_set(&conn, &fx.sid, fx.dir.path()).expect("working set")
+    }
+
+    /// The whole point of the change: a compacted session loads from the
+    /// checkpoint, and that shortcut must produce the full fold's rows exactly.
+    #[test]
+    fn anchored_load_is_used_and_matches_the_full_fold() {
+        let fx = fixture(&["a", "b", "c"]);
+        fx.compact("first", Some(1));
+        fx.append("d");
+        fx.compact("second", Some(2));
+        let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
+        let anchored = load_working_set_anchored(&conn, &fx.sid, fx.dir.path())
+            .expect("anchored")
+            .expect("a compacted session must anchor, not fall back");
+        let full = load_working_set(&conn, &fx.sid, fx.dir.path()).expect("full");
+        assert_eq!(anchored, full);
+        assert_eq!(full.len(), 3, "checkpoint + the two kept rows");
+    }
+
+    /// A row below the anchor is never read. Poisoning one with an unparseable
+    /// body proves the read really started at the checkpoint: a full read of the
+    /// same log fails outright, so a passing read cannot have touched seq 0.
+    #[test]
+    fn rows_below_the_anchor_are_never_read() {
+        let fx = fixture(&["a", "b", "c"]);
+        fx.compact("sum", Some(1));
+        rusqlite::Connection::open(fx.dir.path().join("sessions.db"))
+            .expect("rw")
+            .execute(
+                "UPDATE transcript_items SET body = '' WHERE session_id = ?1 AND seq = 0",
+                rusqlite::params![fx.sid],
+            )
+            .expect("poison");
+        let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
+        assert!(
+            super::super::session::load_events_on(&conn, &fx.sid, fx.dir.path()).is_err(),
+            "the poison must be fatal for a full read, otherwise this proves nothing"
+        );
+        let rows = read(&fx);
+        assert_eq!(
+            rows.iter().filter_map(|row| row.log_seq).collect::<Vec<_>>(),
+            vec![3, 1, 2],
+            "checkpoint first, then the kept rows"
+        );
+    }
+
+    /// An empty keep leaves only the summary; the anchor is the checkpoint's own
+    /// seq, so the read is a single row.
+    #[test]
+    fn empty_keep_anchors_on_the_checkpoint_itself() {
+        let fx = fixture(&["a", "b"]);
+        fx.compact("sum", None);
+        fx.append("c");
+        let rows = read(&fx);
+        assert_eq!(
+            rows.iter().filter_map(|row| row.log_seq).collect::<Vec<_>>(),
+            vec![2, 3],
+            "the summary, then the row appended after it"
+        );
+    }
+
+    /// A pointer that does not name a checkpoint is a broken store, not a reason
+    /// to quietly fall back to a summary-free surface.
+    #[test]
+    fn a_pointed_row_that_is_not_a_checkpoint_is_an_error() {
+        let fx = fixture(&["a", "b", "c"]);
+        fx.compact("sum", Some(1));
+        rusqlite::Connection::open(fx.dir.path().join("sessions.db"))
+            .expect("rw")
+            .execute(
+                "UPDATE sessions SET checkpoint_seq = 1 WHERE id = ?1",
+                rusqlite::params![fx.sid],
+            )
+            .expect("break pointer");
+        let conn = open_readonly(&fx.dir.path().join("sessions.db")).expect("ro");
+        let error = load_working_set(&conn, &fx.sid, fx.dir.path())
+            .expect_err("a pointer at a non-checkpoint row must not read as a summary");
+        assert!(error.to_string().contains("checkpoint"), "unexpected: {error}");
+    }
+}
+
 
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
     let mut roots = query_session_list(

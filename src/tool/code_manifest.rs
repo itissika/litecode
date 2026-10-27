@@ -5,7 +5,7 @@
 //! module only renders those facts into TypeScript declarations embedded in the
 //! CodeTool description.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
@@ -242,21 +242,39 @@ pub fn render_code_tool_description(specs: &[CodeFunctionSpec]) -> Result<String
     );
     out.push_str(LIBS_SDK);
 
+    // One body per distinct type shape. Several tools share a schema (run, wait
+    // and kill all return the command data; the LSP operations share their path,
+    // range and location shapes), while a type is named after its tool, so the
+    // same body used to be printed once per tool. Emit it once and alias the
+    // rest: same fields, same docs, fewer tokens.
+    let mut bodies: Vec<String> = Vec::with_capacity(declarations.len() * 2);
     for declaration in &declarations {
-        render_type_alias(
-            &declaration.input_type,
-            &declaration.input,
-            declaration.input_doc.as_deref(),
-            &mut out,
-        );
-        out.push('\n');
-        render_type_alias(
-            &declaration.data_type,
-            &declaration.data,
-            declaration.data_doc.as_deref(),
-            &mut out,
-        );
-        out.push('\n');
+        bodies.push(render_type_body(&declaration.input));
+        bodies.push(render_type_body(&declaration.data));
+    }
+    let mut body_counts: HashMap<&str, usize> = HashMap::new();
+    for body in &bodies {
+        *body_counts.entry(body.as_str()).or_default() += 1;
+    }
+    let mut canonical_by_body: HashMap<String, String> = HashMap::new();
+    for (index, declaration) in declarations.iter().enumerate() {
+        let pairs = [
+            (
+                declaration.input_type.as_str(),
+                bodies[index * 2].as_str(),
+                declaration.input_doc.as_deref(),
+            ),
+            (
+                declaration.data_type.as_str(),
+                bodies[index * 2 + 1].as_str(),
+                declaration.data_doc.as_deref(),
+            ),
+        ];
+        for (name, body, doc) in pairs {
+            let shared = body_counts.get(body).copied().unwrap_or(0) > 1;
+            render_type_declaration(name, body, doc, shared, &mut canonical_by_body, &mut out);
+            out.push('\n');
+        }
     }
 
     out.push_str("declare const tools: {\n");
@@ -536,28 +554,93 @@ fn json_literal(value: &Value, path: &str) -> Result<String, String> {
     }
 }
 
-fn render_type_alias(name: &str, ty: &TsType, doc: Option<&str>, out: &mut String) {
+/// Canonical name for a body several tools share, so an alias reads
+/// `type WaitData = CommandData;` instead of pointing at whichever tool
+/// happened to render first.
+const SHARED_TYPE_NAMES: &[(&str, &str)] = &[
+    ("DiagnosticsInput", "PathInput"),
+    ("DocumentSymbolInput", "PathInput"),
+    ("DocumentSymbolData", "SymbolsData"),
+    ("WorkspaceSymbolData", "SymbolsData"),
+    ("FindReferencesInput", "RangeInput"),
+    ("GoToDefinitionInput", "RangeInput"),
+    ("GoToImplementationInput", "RangeInput"),
+    ("HoverInput", "RangeInput"),
+    ("FindReferencesData", "LocationsData"),
+    ("GoToDefinitionData", "LocationsData"),
+    ("GoToImplementationData", "LocationsData"),
+    ("KillData", "CommandData"),
+    ("RunData", "CommandData"),
+    ("WaitData", "CommandData"),
+];
+
+fn shared_type_name(name: &str) -> Option<&'static str> {
+    SHARED_TYPE_NAMES
+        .iter()
+        .find(|(tool_name, _)| *tool_name == name)
+        .map(|(_, canonical)| *canonical)
+}
+
+fn render_doc(doc: Option<&str>, out: &mut String) {
     if let Some(doc) = doc.filter(|doc| !doc.trim().is_empty()) {
         out.push_str(&render_comment(doc, 0));
     }
+}
+
+/// Body of a rendered alias: everything after `type Name =`, newline included.
+/// Two tools that share one schema produce the same string here, which is what
+/// the dedupe compares.
+fn render_type_body(ty: &TsType) -> String {
+    let mut body = String::new();
     if matches!(ty, TsType::Union(_)) && !is_flat(ty) {
-        out.push_str(&format!("type {name} =\n"));
+        body.push('\n');
         let TsType::Union(items) = ty else {
             unreachable!();
         };
         for (index, item) in items.iter().enumerate() {
-            out.push_str("  | ");
-            out.push_str(&render_type(item, 4));
-            out.push_str(if index + 1 == items.len() {
+            body.push_str("  | ");
+            body.push_str(&render_type(item, 4));
+            body.push_str(if index + 1 == items.len() {
                 ";\n"
             } else {
                 "\n"
             });
         }
     } else {
-        out.push_str(&format!("type {name} = "));
-        out.push_str(&render_type(ty, 0));
-        out.push_str(";\n");
+        body.push(' ');
+        body.push_str(&render_type(ty, 0));
+        body.push_str(";\n");
+    }
+    body
+}
+
+/// Emit one type: the body under its canonical name, then an alias for this
+/// tool's own name when the canonical name differs.
+fn render_type_declaration(
+    name: &str,
+    body: &str,
+    doc: Option<&str>,
+    shared: bool,
+    canonical_by_body: &mut HashMap<String, String>,
+    out: &mut String,
+) {
+    if let Some(canonical) = canonical_by_body.get(body) {
+        if canonical != name {
+            render_doc(doc, out);
+            out.push_str(&format!("type {name} = {canonical};\n"));
+        }
+        return;
+    }
+    let canonical = if shared {
+        shared_type_name(name).unwrap_or(name)
+    } else {
+        name
+    };
+    canonical_by_body.insert(body.to_string(), canonical.to_string());
+    render_doc(doc, out);
+    out.push_str(&format!("type {canonical} ={body}"));
+    if canonical != name {
+        out.push_str(&format!("type {name} = {canonical};\n"));
     }
 }
 

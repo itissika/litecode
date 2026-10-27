@@ -131,15 +131,163 @@ pub struct CompactionPlan {
     pub summary_cap: u32,
 }
 
+/// Read-only plan material for one compaction. The sync path commits this
+/// snapshot directly; a background summary reuses the identities and lets the
+/// commit re-anchor them on the current surface.
+struct CompactionPlanBuild {
+    plan: CompactionPlan,
+    snapshot: Vec<WorkingRow>,
+    tail: Vec<WorkingRow>,
+    kept: Vec<Item>,
+    expected_revision: u64,
+}
+
+/// A summary produced away from the main loop, with its cut frozen.
+/// The branch owns both this value and the one compaction commit it feeds.
+#[derive(Debug, Clone)]
+pub struct PreparedCompaction {
+    plan: CompactionPlan,
+    artifact: SummaryArtifact,
+    review: SummaryReview,
+    summary_attempts: u8,
+    /// The branch already emitted `Started` before the summary call.
+    started: bool,
+}
+
+impl PreparedCompaction {
+    /// The first row the frozen plan keeps; the commit must land the same cut.
+    pub fn kept_from_seq(&self) -> u64 {
+        self.plan.kept_from_seq
+    }
+}
+
+/// One resolved commit candidate. Both the synchronous and prepared paths
+/// converge here; only this value feeds the single Compact mutation.
+struct CompactionCommit {
+    snapshot: Vec<WorkingRow>,
+    prefix_len: usize,
+    tail: Vec<WorkingRow>,
+    kept: Vec<Item>,
+    expected_revision: u64,
+    plan: CompactionPlan,
+    artifact: SummaryArtifact,
+    review: SummaryReview,
+    summary_attempts: u8,
+    tokens_before: usize,
+    tokens_pruned: usize,
+    tokens_after_prune: usize,
+    prune_plan: Option<MechanicalPrunePlan>,
+    started: bool,
+}
+
+/// Build the seq-aware cut without touching the durable surface.
+#[allow(clippy::too_many_arguments)]
+fn build_compaction_plan(
+    budget: &BudgetPolicy,
+    sessions: &SessionManager,
+    session_id: &str,
+    request: &CompactionRequestContext,
+    max_tokens: u32,
+    rows: &[WorkingRow],
+    trigger: CompactionTrigger,
+) -> Result<Option<CompactionPlanBuild>> {
+    let snapshot = rows.to_vec();
+    // Capture revision with the snapshot so the optimistic lock covers
+    // snapshot→persist (ISSUE-035). Fail closed — never unwrap_or(0).
+    let expected_revision = sessions.data().revision_blocking(session_id)?;
+    let prefix_len = persisted_prefix_len(rows);
+    let mut persisted = rows.to_vec();
+    let tail = persisted.split_off(prefix_len);
+    let transcript = project_items(&persisted);
+
+    let Some(raw_cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
+        tracing::debug!(
+            keep_recent_tokens = budget.keep_recent_tokens,
+            prefix_len,
+            "keep-recent: entire persisted prefix within keep window, skipping compact"
+        );
+        return Ok(None);
+    };
+
+    // Checkpoint identity, not summary text, decides the leading boundary.
+    // A leading checkpoint is item zero; when keep-recent can compact, the
+    // discarded range must include it, so cut is at least one.
+    let prior_checkpoint_seq = persisted
+        .first()
+        .and_then(|row| row.checkpoint().and(row.log_seq));
+    let cut = if prior_checkpoint_seq.is_some() {
+        raw_cut.max(1)
+    } else {
+        raw_cut
+    };
+    debug_assert!(prior_checkpoint_seq.is_none() || cut > 0);
+
+    let kept_from_seq = match persisted.get(cut).and_then(|row| row.log_seq) {
+        Some(seq) => seq,
+        None => {
+            return Err(LitecodeError::ToolExecution(format!(
+                "compact cut {cut} has no log seq (persisted prefix len={prefix_len})"
+            )));
+        }
+    };
+
+    let summary_max_tokens = budget
+        .compact_output_tokens(max_tokens)
+        .min(request.max_output_tokens);
+    let plan = CompactionPlan {
+        trigger,
+        prefix_len,
+        cut,
+        kept_from_seq,
+        prior_checkpoint_seq,
+        summary_cap: summary_max_tokens,
+    };
+    Ok(Some(CompactionPlanBuild {
+        plan,
+        snapshot,
+        tail,
+        kept: transcript[cut..].to_vec(),
+        expected_revision,
+    }))
+}
+
 /// First-version mechanical-prune budgets. All values live here; the pruner
 /// itself contains no scattered literals.
 pub const TOOL_RESULT_PRUNE_THRESHOLD_CHARS: usize = 8_192;
 pub const TOOL_RESULT_PRUNE_HEAD_CHARS: usize = 4_096;
 pub const TOOL_RESULT_PRUNE_TAIL_CHARS: usize = 1_024;
 pub const TOOL_RESULT_PRUNE_MARKER: &str = "[... tool result middle pruned ...]";
-/// Floor for the minimum useful prune. The effective line is
-/// `max(4_096, context_window / 50)`.
-pub const PRUNE_MIN_SAVED_TOKENS_FLOOR: usize = 4_096;
+/// The first share of the effective context window whose request prefix is
+/// never rewritten by mechanical pruning. A replacement may start only at or
+/// after this token position, so the provider's cached prefix survives.
+pub const PRUNE_PROTECTED_WINDOW_PERCENT: usize = 60;
+/// Absolute floor for one useful prune. The relative gate is separate: a batch
+/// must remove at least [`PRUNE_MIN_SAVED_SUFFIX_PERCENT`] of the suffix it
+/// actually rewrites, because that suffix pays one full-price cache miss.
+pub const PRUNE_MIN_SAVED_TOKENS_FLOOR: usize = 12_288;
+/// Minimum share of the rewritten suffix (from the first replacement to the
+/// end of the persisted prefix), in percent.
+pub const PRUNE_MIN_SAVED_SUFFIX_PERCENT: usize = 60;
+
+/// Token position inside the persisted conversation that mechanical pruning
+/// must not touch. The first [`PRUNE_PROTECTED_WINDOW_PERCENT`] of the
+/// model-visible request stays cache-stable; the fixed request envelope is
+/// subtracted because it is never pruned and always precedes the conversation.
+pub fn protected_conversation_tokens(context_window: usize, envelope_fixed_tokens: usize) -> usize {
+    context_window
+        .saturating_mul(PRUNE_PROTECTED_WINDOW_PERCENT)
+        .saturating_div(100)
+        .saturating_sub(envelope_fixed_tokens)
+}
+
+/// The same protected position for a compaction request: the effective window
+/// and fixed envelope are exactly the ones the pressure meter uses.
+pub fn protected_conversation_tokens_for_request(request: &CompactionRequestContext) -> usize {
+    protected_conversation_tokens(
+        request.context_window,
+        ContextEnvelope::from_compaction_request(request).fixed_prompt_tokens(),
+    )
+}
 
 /// Mechanical-prune character budgets. Characters are Unicode code points so a
 /// retained boundary never splits a surrogate pair.
@@ -160,9 +308,11 @@ impl Default for MechanicalPruneConfig {
     }
 }
 
-/// The cache-busting edit gates on this amount of estimated token savings.
-pub fn prune_min_saved_tokens(context_window: usize) -> usize {
-    PRUNE_MIN_SAVED_TOKENS_FLOOR.max(context_window / 50)
+/// Absolute cache-bust floor. The rewritten-suffix share gate is separate and
+/// usually dominates at normal session sizes: see
+/// [`MechanicalPrunePlan::is_worthwhile`].
+pub fn prune_min_saved_tokens() -> usize {
+    PRUNE_MIN_SAVED_TOKENS_FLOOR
 }
 
 /// One durable surface replacement. `seq` is the shadowed node; the appended
@@ -178,9 +328,26 @@ pub struct PruneReplacement {
     pub estimated_saved_tokens: usize,
 }
 
+/// Cumulative token starts for the persisted rows: `starts[i]` is the token
+/// offset at which row `i` begins, and `starts[persisted_len]` is the total.
+/// One pass over the projected items, so the positional filter stays cheap.
+fn row_start_tokens(rows: &[WorkingRow], persisted_len: usize) -> Vec<usize> {
+    let items = project_items(&rows[..persisted_len]);
+    debug_assert_eq!(items.len(), persisted_len, "projection is one item per row");
+    let mut starts = Vec::with_capacity(items.len() + 1);
+    let mut total: usize = 0;
+    starts.push(0);
+    for item in &items {
+        total = total.saturating_add(crate::session::estimate::item_token_estimate(item));
+        starts.push(total);
+    }
+    starts
+}
+
 /// Deterministic, model-free first stage of compaction. Building a plan never
-/// mutates the session; only a plan that clears the configured savings floor is
-/// committed as one batch (one prefix rewrite / one cache bust).
+/// mutates the session; only a plan that clears the protected line, the savings
+/// floor, the rewritten-suffix share, and the relief preflight is committed as
+/// one batch (one suffix rewrite / one cache bust).
 ///
 /// `estimated_saved_tokens` is measured against the item the model would
 /// actually receive. Historical media is already replaced by the ephemeral
@@ -191,13 +358,39 @@ pub struct PruneReplacement {
 pub struct MechanicalPrunePlan {
     pub replacements: Vec<PruneReplacement>,
     pub estimated_saved_tokens: usize,
+    /// Conversation-token position below which no replacement may land.
+    pub protected_tokens: usize,
+    /// Tokens from the first replacement's row start to the end of the
+    /// persisted prefix: the exact suffix whose KV cache this plan rewrites.
+    pub rewritten_suffix_tokens: usize,
 }
 
 impl MechanicalPrunePlan {
     /// Build a prune plan from the current durable working set. Pending rows do
-    /// not have a seq and cannot be replaced. Only historical (stale) media is
-    /// touched; fresh media from the current model/tool batch stays intact.
-    pub fn build(rows: &[WorkingRow], config: MechanicalPruneConfig) -> Self {
+    /// not have a seq and cannot be replaced. No replacement may start before
+    /// `protected_tokens`; a row that straddles that line stays protected.
+    /// Only historical (stale) media is touched; fresh media from the current
+    /// model/tool batch stays intact.
+    pub fn build(
+        rows: &[WorkingRow],
+        config: MechanicalPruneConfig,
+        protected_tokens: usize,
+    ) -> Self {
+        let persisted_len = persisted_prefix_len(rows);
+        let starts = row_start_tokens(rows, persisted_len);
+        let total_tokens = starts.last().copied().unwrap_or(0);
+        let Some(eligible_start) = starts
+            .iter()
+            .position(|&start| start >= protected_tokens)
+            .filter(|&index| index < persisted_len)
+        else {
+            return Self {
+                replacements: Vec::new(),
+                estimated_saved_tokens: 0,
+                protected_tokens,
+                rewritten_suffix_tokens: 0,
+            };
+        };
         // The projection already decides which media is stale. Probe a clone so
         // the durable rows are never rewritten by the ephemeral view path.
         let projected = project_items(rows);
@@ -205,7 +398,13 @@ impl MechanicalPrunePlan {
         let _ = crate::context_pipeline::media_budget::drop_stale_media(&mut media_probe);
 
         let mut replacements = Vec::new();
-        for (index, row) in rows.iter().enumerate() {
+        let mut first_replacement_index = None;
+        for (index, row) in rows
+            .iter()
+            .enumerate()
+            .take(persisted_len)
+            .skip(eligible_start)
+        {
             let Some(seq) = row.log_seq else {
                 continue;
             };
@@ -239,6 +438,9 @@ impl MechanicalPrunePlan {
             if saved_tokens == 0 && !media_rewrite {
                 continue;
             }
+            if first_replacement_index.is_none() {
+                first_replacement_index = Some(index);
+            }
             replacements.push(PruneReplacement {
                 seq,
                 source_seqs: vec![seq],
@@ -252,9 +454,13 @@ impl MechanicalPrunePlan {
             .iter()
             .map(|replacement| replacement.estimated_saved_tokens)
             .sum();
+        let rewritten_suffix_tokens =
+            first_replacement_index.map_or(0, |index| total_tokens.saturating_sub(starts[index]));
         Self {
             replacements,
             estimated_saved_tokens,
+            protected_tokens,
+            rewritten_suffix_tokens,
         }
     }
 
@@ -262,10 +468,28 @@ impl MechanicalPrunePlan {
         self.replacements.is_empty()
     }
 
-    /// The plan is only worth a prefix rewrite when it clears
-    /// `max(4_096, W / 50)`. Equality counts as clearing the floor.
-    pub fn meets_min_savings(&self, context_window: usize) -> bool {
-        !self.is_empty() && self.estimated_saved_tokens >= prune_min_saved_tokens(context_window)
+    /// The absolute floor. Equality counts as clearing it.
+    pub fn meets_min_savings(&self) -> bool {
+        !self.is_empty() && self.estimated_saved_tokens >= prune_min_saved_tokens()
+    }
+
+    /// The plan must also remove at least
+    /// [`PRUNE_MIN_SAVED_SUFFIX_PERCENT`] of the suffix it actually rewrites
+    /// (from the first replacement's row start to the end of the persisted
+    /// prefix). Equality counts as clearing the share.
+    pub fn meets_rewritten_share(&self) -> bool {
+        !self.is_empty()
+            && self.rewritten_suffix_tokens > 0
+            && self.estimated_saved_tokens.saturating_mul(100)
+                >= self
+                    .rewritten_suffix_tokens
+                    .saturating_mul(PRUNE_MIN_SAVED_SUFFIX_PERCENT)
+    }
+
+    /// Both dimensions: the absolute savings floor and the rewritten-suffix
+    /// share. Clearing only one still pays a cache miss for too little.
+    pub fn is_worthwhile(&self) -> bool {
+        self.meets_min_savings() && self.meets_rewritten_share()
     }
 }
 
@@ -612,8 +836,16 @@ fn context_meter_for_rows_local(
     )
 }
 
+/// Whether the deterministic prune can pay for its own suffix rewrite:
+/// position protection, absolute savings floor, and the rewritten-suffix share.
+pub fn prune_is_worthwhile(rows: &[WorkingRow], protected_tokens: usize) -> bool {
+    MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default(), protected_tokens)
+        .is_worthwhile()
+}
+
 /// Build, gate, and commit one mechanical prune pass. Returns `None` when the
-/// plan is empty or below the savings floor; in that case no event is written.
+/// plan is empty, misses the protected line or either savings gate, or would
+/// not relieve pressure; in those cases no event is written.
 fn apply_mechanical_prune_if_worthwhile(
     sessions: &SessionManager,
     session_id: &str,
@@ -622,18 +854,42 @@ fn apply_mechanical_prune_if_worthwhile(
     rows: &mut Vec<WorkingRow>,
     data_root: &std::path::Path,
 ) -> Result<Option<MechanicalPruneRun>> {
-    let plan = MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default());
-    if plan.is_empty() {
-        return Ok(None);
-    }
-    let min_saved = prune_min_saved_tokens(request.context_window);
-    if plan.estimated_saved_tokens < min_saved {
+    let protected_tokens = protected_conversation_tokens_for_request(request);
+    let plan = MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default(), protected_tokens);
+    if !plan.is_worthwhile() {
         tracing::debug!(
             estimated_saved_tokens = plan.estimated_saved_tokens,
-            min_saved,
-            context_window = request.context_window,
+            protected_tokens,
+            rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
+            min_saved = prune_min_saved_tokens(),
+            min_suffix_percent = PRUNE_MIN_SAVED_SUFFIX_PERCENT,
             replacements = plan.replacements.len(),
-            "mechanical prune skipped: below savings floor"
+            "mechanical prune skipped: no eligible tail, below savings floor, or below suffix share"
+        );
+        return Ok(None);
+    }
+
+    // Preflight the relief gate before writing: a prune that still leaves the
+    // surface over the pressure line only buys a cache miss that the summary
+    // rewrite would pay again.
+    let mut candidate = rows.clone();
+    for replacement in &plan.replacements {
+        if let Some(row) = candidate
+            .iter_mut()
+            .find(|row| row.log_seq == Some(replacement.seq))
+        {
+            row.replace_item(replacement.item.clone());
+        }
+    }
+    let meter_after = context_meter_for_rows_local(request, &candidate, data_root);
+    if meter_after.should_compact() {
+        tracing::debug!(
+            estimated_saved_tokens = plan.estimated_saved_tokens,
+            protected_tokens,
+            rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
+            used_after = meter_after.used_tokens,
+            compact_at = meter_after.compact_at,
+            "mechanical prune skipped: would not relieve pressure"
         );
         return Ok(None);
     }
@@ -689,7 +945,10 @@ fn apply_mechanical_prune_if_worthwhile(
         estimated_saved_tokens = plan.estimated_saved_tokens,
         tokens_before,
         tokens_after = meter_after.used_tokens,
-        min_saved,
+        protected_tokens,
+        rewritten_suffix_tokens = plan.rewritten_suffix_tokens,
+        min_saved = prune_min_saved_tokens(),
+        min_suffix_percent = PRUNE_MIN_SAVED_SUFFIX_PERCENT,
         relieved,
         "mechanical prune committed as one surface replacement batch"
     );
@@ -710,12 +969,228 @@ impl CompactPolicy {
     }
 
     /// Manual admission fallback when keep-recent has no cut but a mechanical
-    /// prune would clear its cache-bust savings floor. This is deliberately only
-    /// a discovery predicate: the summary path still runs prune first and may
-    /// skip the LLM entirely when the pruned surface is already below pressure.
-    pub fn can_prune(rows: &[WorkingRow], context_window: usize) -> bool {
-        MechanicalPrunePlan::build(rows, MechanicalPruneConfig::default())
-            .meets_min_savings(context_window)
+    /// prune would clear the fixed protected line and both savings gates. This
+    /// is deliberately only a discovery predicate: the summary path still runs
+    /// prune first and may skip the LLM entirely when the pruned surface is
+    /// already below pressure.
+    pub fn can_prune(rows: &[WorkingRow], protected_tokens: usize) -> bool {
+        prune_is_worthwhile(rows, protected_tokens)
+    }
+
+    /// One mechanical-prune decision for one compaction episode. A prune is
+    /// all-or-nothing: it writes only when it alone relieves pressure. If it
+    /// does not, the summary path sees the untouched surface; the decision is
+    /// never reopened by rows that arrive later.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prune_once(
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        prompt_baseline: &ProviderPromptBaseline,
+        rows: &mut Vec<WorkingRow>,
+        data_root: &std::path::Path,
+    ) -> Result<bool> {
+        let Some(run) = apply_mechanical_prune_if_worthwhile(
+            sessions,
+            session_id,
+            request,
+            prompt_baseline,
+            rows,
+            data_root,
+        )?
+        else {
+            return Ok(false);
+        };
+        let tokens_after = run.meter_after.used_tokens;
+        let telemetry = compaction_telemetry(
+            CompactionTrigger::Auto,
+            run.tokens_before,
+            run.tokens_before.saturating_sub(tokens_after),
+            tokens_after,
+            Some(0),
+        );
+        tracing::info!(
+            tokens_before = run.tokens_before,
+            tokens_after,
+            replacements = run.plan.replacements.len(),
+            relieved = run.relieved,
+            "mechanical prune committed at the compaction trigger"
+        );
+        emit_compact_lifecycle_with_telemetry(
+            sessions,
+            session_id,
+            CompactionTrigger::Auto,
+            CompactionStage::Started,
+            None,
+            None,
+            None,
+            telemetry.clone(),
+        );
+        emit_compact_lifecycle_with_telemetry(
+            sessions,
+            session_id,
+            CompactionTrigger::Auto,
+            CompactionStage::Succeeded,
+            None,
+            None,
+            None,
+            telemetry,
+        );
+        Ok(true)
+    }
+
+    /// The meter used by the auto trigger and the hard send gate. Keeping this
+    /// on the policy means the runtime and the pipeline never re-derive it.
+    pub fn measure_meter(
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        prompt_baseline: &ProviderPromptBaseline,
+        rows: &[WorkingRow],
+        data_root: &std::path::Path,
+    ) -> ContextMeter {
+        context_meter_for_rows(
+            sessions,
+            session_id,
+            request,
+            prompt_baseline,
+            rows,
+            data_root,
+        )
+    }
+
+    /// Shadow mode: choose the same cut the synchronous path would use, but
+    /// never call the provider and never write. The caller logs the decision.
+    pub fn plan_preview(
+        budget: &BudgetPolicy,
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        max_tokens: u32,
+        rows: &[WorkingRow],
+    ) -> Result<Option<CompactionPlan>> {
+        Ok(build_compaction_plan(
+            budget,
+            sessions,
+            session_id,
+            request,
+            max_tokens,
+            rows,
+            CompactionTrigger::Auto,
+        )?
+        .map(|build| build.plan))
+    }
+
+    /// Prepare half of compaction: choose the cut and ask the model for a
+    /// summary without writing the session. The branch owns the follow-up
+    /// commit; a synchronous caller may use the value as its frozen plan.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_compaction(
+        budget: &BudgetPolicy,
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        max_tokens: u32,
+        rows: &[WorkingRow],
+        cancel: &CancellationToken,
+        _data_root: &std::path::Path,
+    ) -> Result<Option<PreparedCompaction>> {
+        Self::prepare_compaction_with_attempts(
+            budget, sessions, session_id, request, max_tokens, rows, cancel, _data_root, 1, false,
+        )
+        .await
+    }
+
+    /// Prepare a summary from one frozen plan. The whole attempt budget uses
+    /// the same request/prefix/cut; no retry may re-plan.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn prepare_compaction_with_attempts(
+        budget: &BudgetPolicy,
+        sessions: &SessionManager,
+        session_id: &str,
+        request: &CompactionRequestContext,
+        max_tokens: u32,
+        rows: &[WorkingRow],
+        cancel: &CancellationToken,
+        data_root: &std::path::Path,
+        max_attempts: u8,
+        emit_started: bool,
+    ) -> Result<Option<PreparedCompaction>> {
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
+        let Some(build) = build_compaction_plan(
+            budget,
+            sessions,
+            session_id,
+            request,
+            max_tokens,
+            rows,
+            CompactionTrigger::Auto,
+        )?
+        else {
+            return Ok(None);
+        };
+        let tokens_before = context_meter_for_rows_local(request, rows, data_root).used_tokens;
+        if emit_started {
+            emit_compact_lifecycle_with_telemetry(
+                sessions,
+                session_id,
+                CompactionTrigger::Auto,
+                CompactionStage::Started,
+                None,
+                None,
+                None,
+                compaction_telemetry(
+                    CompactionTrigger::Auto,
+                    tokens_before,
+                    0,
+                    tokens_before,
+                    None,
+                ),
+            );
+        }
+        let (artifact, review, summary_attempts) = Self::first_pass_compaction(
+            request,
+            build.plan.summary_cap,
+            build.plan.cut,
+            &build.snapshot,
+            sessions,
+            cancel,
+            max_attempts,
+        )
+        .await
+        .map_err(|failure| {
+            if emit_started {
+                if matches!(&failure.error, LitecodeError::Canceled) {
+                    emit_compaction_abandoned(sessions, session_id);
+                } else {
+                    emit_compact_failed_with_telemetry(
+                        sessions,
+                        session_id,
+                        CompactionTrigger::Auto,
+                        None,
+                        &failure.error,
+                        compaction_telemetry(
+                            CompactionTrigger::Auto,
+                            tokens_before,
+                            0,
+                            tokens_before,
+                            Some(failure.attempts),
+                        ),
+                    );
+                }
+            }
+            failure.error
+        })?;
+        debug_assert!(review.accepted);
+        Ok(Some(PreparedCompaction {
+            plan: build.plan,
+            artifact,
+            review,
+            summary_attempts,
+            started: emit_started,
+        }))
     }
 
     /// One-shot user-triggered compaction.
@@ -750,6 +1225,8 @@ impl CompactPolicy {
             CompactionTrigger::Manual,
             operation_id,
             data_root,
+            None,
+            MAX_SUMMARY_ATTEMPTS,
         )
         .await?;
         let Some(artifact) = outcome else {
@@ -815,6 +1292,9 @@ impl CompactPolicy {
         step: u64,
         cancel: &CancellationToken,
         data_root: &std::path::Path,
+        prepared: Option<PreparedCompaction>,
+        max_attempts: u8,
+        force: bool,
     ) -> Result<bool> {
         // Returns `true` when this compaction stage changed the durable surface:
         // a checkpoint was written, or a worthwhile mechanical prune relieved
@@ -834,7 +1314,7 @@ impl CompactPolicy {
         );
         meter.log_iteration(step);
 
-        if meter.should_compact() {
+        if force || meter.should_compact() {
             if cancel.is_cancelled() {
                 return Ok(false);
             }
@@ -863,6 +1343,8 @@ impl CompactPolicy {
                 CompactionTrigger::Auto,
                 None,
                 data_root,
+                prepared,
+                max_attempts,
             )
             .await?;
             let did_compact = outcome.is_some();
@@ -928,53 +1410,192 @@ impl CompactPolicy {
         trigger: CompactionTrigger,
         operation_id: Option<&str>,
         data_root: &std::path::Path,
+        prepared: Option<PreparedCompaction>,
+        max_attempts: u8,
     ) -> Result<Option<SummaryArtifact>> {
         if cancel.is_cancelled() {
             return Ok(None);
         }
 
-        // Stage one of every compaction trigger: deterministic mechanical
-        // pruning. It runs here, never in `build_view`, so ordinary turns keep
-        // their cached prefix. A below-floor plan writes no surface event.
-        let prune_run = apply_mechanical_prune_if_worthwhile(
-            sessions,
-            session_id,
-            request,
-            prompt_baseline,
-            rows,
-            data_root,
-        )?;
-        if cancel.is_cancelled() {
-            return Ok(None);
-        }
-        let prune_plan = prune_run.as_ref().map(|run| run.plan.clone());
-        if prune_run.as_ref().is_some_and(|run| run.relieved) {
-            let tokens_after = prune_run
+        // A prepared summary is a frozen plan. The prune decision was made
+        // when the plan was created; rows written afterwards are appended after
+        // the cut and must not re-open that decision.
+        let commit = if let Some(prepared) = prepared {
+            // The background summary was computed against an earlier snapshot.
+            // Re-anchor it on the current surface: keep the same first kept
+            // row, validate the leading checkpoint, and let any rows written
+            // since prepare stay verbatim after the cut.
+            let snapshot = rows.clone();
+            let prefix_len = persisted_prefix_len(&snapshot);
+            let mut persisted = snapshot.clone();
+            let tail = persisted.split_off(prefix_len);
+            let prior_checkpoint_seq = persisted
+                .first()
+                .and_then(|row| row.checkpoint().and(row.log_seq));
+            if prior_checkpoint_seq != prepared.plan.prior_checkpoint_seq {
+                tracing::info!(
+                    expected = ?prepared.plan.prior_checkpoint_seq,
+                    actual = ?prior_checkpoint_seq,
+                    "prefetched compaction rejected: leading checkpoint changed"
+                );
+                return Ok(None);
+            }
+            let Some(cut) = persisted
+                .iter()
+                .position(|row| row.log_seq == Some(prepared.plan.kept_from_seq))
+            else {
+                tracing::info!(
+                    kept_from_seq = prepared.plan.kept_from_seq,
+                    "prefetched compaction rejected: kept_from_seq left the surface"
+                );
+                return Ok(None);
+            };
+            let transcript = project_items(&persisted);
+            let kept = transcript[cut..].to_vec();
+            let tokens_before = context_meter_for_rows(
+                sessions,
+                session_id,
+                request,
+                prompt_baseline,
+                &snapshot,
+                data_root,
+            )
+            .used_tokens;
+            let mut plan = prepared.plan;
+            plan.prefix_len = prefix_len;
+            plan.cut = cut;
+            plan.prior_checkpoint_seq = prior_checkpoint_seq;
+            CompactionCommit {
+                snapshot,
+                prefix_len,
+                tail,
+                kept,
+                expected_revision: sessions.data().revision_blocking(session_id)?,
+                plan,
+                artifact: prepared.artifact,
+                review: prepared.review,
+                summary_attempts: prepared.summary_attempts,
+                tokens_before,
+                tokens_pruned: 0,
+                tokens_after_prune: tokens_before,
+                prune_plan: None,
+                started: prepared.started,
+            }
+        } else {
+            // Stage one of every compaction trigger: deterministic mechanical
+            // pruning. It runs here, never in build_view, so ordinary turns keep
+            // their cached prefix. A below-floor plan writes no surface event.
+            let prune_run = apply_mechanical_prune_if_worthwhile(
+                sessions,
+                session_id,
+                request,
+                prompt_baseline,
+                rows,
+                data_root,
+            )?;
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
+            let prune_plan = prune_run.as_ref().map(|run| run.plan.clone());
+            if prune_run.as_ref().is_some_and(|run| run.relieved) {
+                let tokens_after = prune_run
+                    .as_ref()
+                    .map(|run| run.meter_after.used_tokens)
+                    .unwrap_or_else(|| {
+                        context_meter_for_rows_local(request, rows, data_root).used_tokens
+                    });
+                tracing::info!(
+                    tokens_after,
+                    replacements = prune_plan
+                        .as_ref()
+                        .map_or(0, |plan| plan.replacements.len()),
+                    "mechanical prune alone relieved context pressure; skipping summary"
+                );
+                let telemetry = prune_run.as_ref().map_or_else(
+                    || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0)),
+                    |run| {
+                        compaction_telemetry(
+                            trigger,
+                            run.tokens_before,
+                            run.tokens_before
+                                .saturating_sub(run.meter_after.used_tokens),
+                            run.meter_after.used_tokens,
+                            Some(0),
+                        )
+                    },
+                );
+                emit_compact_lifecycle_with_telemetry(
+                    sessions,
+                    session_id,
+                    trigger,
+                    CompactionStage::Started,
+                    operation_id,
+                    None,
+                    None,
+                    telemetry.clone(),
+                );
+                emit_compact_lifecycle_with_telemetry(
+                    sessions,
+                    session_id,
+                    trigger,
+                    CompactionStage::Succeeded,
+                    operation_id,
+                    None,
+                    None,
+                    telemetry,
+                );
+                return Ok(None);
+            }
+
+            let tokens_before = prune_run
+                .as_ref()
+                .map(|run| run.tokens_before)
+                .unwrap_or_else(|| {
+                    context_meter_for_rows(
+                        sessions,
+                        session_id,
+                        request,
+                        prompt_baseline,
+                        rows,
+                        data_root,
+                    )
+                    .used_tokens
+                });
+            let tokens_pruned = prune_run
+                .as_ref()
+                .map(|run| {
+                    run.tokens_before
+                        .saturating_sub(run.meter_after.used_tokens)
+                })
+                .unwrap_or(0);
+            let tokens_after_prune = prune_run
                 .as_ref()
                 .map(|run| run.meter_after.used_tokens)
-                .unwrap_or_else(|| {
-                    context_meter_for_rows_local(request, rows, data_root).used_tokens
-                });
-            tracing::info!(
-                tokens_after,
-                replacements = prune_plan
-                    .as_ref()
-                    .map_or(0, |plan| plan.replacements.len()),
-                "mechanical prune alone relieved context pressure; skipping summary"
+                .unwrap_or(tokens_before);
+            let base_telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                tokens_pruned,
+                tokens_after_prune,
+                None,
             );
-            let telemetry = prune_run.as_ref().map_or_else(
-                || compaction_telemetry(trigger, tokens_after, 0, tokens_after, Some(0)),
-                |run| {
-                    compaction_telemetry(
+            let build = match build_compaction_plan(
+                budget, sessions, session_id, request, max_tokens, rows, trigger,
+            ) {
+                Ok(Some(build)) => build,
+                Ok(None) => return Ok(None),
+                Err(error) => {
+                    emit_compact_failed_with_telemetry(
+                        sessions,
+                        session_id,
                         trigger,
-                        run.tokens_before,
-                        run.tokens_before
-                            .saturating_sub(run.meter_after.used_tokens),
-                        run.meter_after.used_tokens,
-                        Some(0),
-                    )
-                },
-            );
+                        operation_id,
+                        &error,
+                        base_telemetry,
+                    );
+                    return Err(error);
+                }
+            };
             emit_compact_lifecycle_with_telemetry(
                 sessions,
                 session_id,
@@ -983,187 +1604,104 @@ impl CompactPolicy {
                 operation_id,
                 None,
                 None,
-                telemetry.clone(),
+                base_telemetry.clone(),
             );
-            emit_compact_lifecycle_with_telemetry(
+
+            let (artifact, review, summary_attempts) = match Self::first_pass_compaction(
+                request,
+                build.plan.summary_cap,
+                build.plan.cut,
+                &build.snapshot,
                 sessions,
-                session_id,
-                trigger,
-                CompactionStage::Succeeded,
-                operation_id,
-                None,
-                None,
-                telemetry,
-            );
-            return Ok(None);
-        }
+                cancel,
+                max_attempts,
+            )
+            .await
+            {
+                Ok(accepted) => accepted,
+                Err(failure) => {
+                    let telemetry = compaction_telemetry(
+                        trigger,
+                        tokens_before,
+                        tokens_pruned,
+                        tokens_after_prune,
+                        Some(failure.attempts),
+                    );
+                    emit_compact_failed_with_telemetry(
+                        sessions,
+                        session_id,
+                        trigger,
+                        operation_id,
+                        &failure.error,
+                        telemetry,
+                    );
+                    return Err(failure.error);
+                }
+            };
+            debug_assert!(review.accepted);
 
-        let snapshot = rows.clone();
-        // Capture revision with the snapshot so the optimistic lock covers
-        // snapshot→persist (ISSUE-035). Fail closed — never unwrap_or(0).
-        let tokens_before = prune_run
-            .as_ref()
-            .map(|run| run.tokens_before)
-            .unwrap_or_else(|| {
-                context_meter_for_rows(
-                    sessions,
-                    session_id,
-                    request,
-                    prompt_baseline,
-                    &snapshot,
-                    data_root,
-                )
-                .used_tokens
-            });
-        let tokens_pruned = prune_run
-            .as_ref()
-            .map(|run| {
-                run.tokens_before
-                    .saturating_sub(run.meter_after.used_tokens)
-            })
-            .unwrap_or(0);
-        let tokens_after_prune = prune_run
-            .as_ref()
-            .map(|run| run.meter_after.used_tokens)
-            .unwrap_or(tokens_before);
-        let base_telemetry = compaction_telemetry(
-            trigger,
-            tokens_before,
-            tokens_pruned,
-            tokens_after_prune,
-            None,
-        );
-        let expected_revision = sessions.data().revision_blocking(session_id)?;
-        let prefix_len = persisted_prefix_len(rows);
-        let tail = rows.split_off(prefix_len);
-        let transcript = project_items(rows);
-
-        let Some(raw_cut) = find_keep_recent_cut(&transcript, budget.keep_recent_tokens) else {
-            tracing::debug!(
-                keep_recent_tokens = budget.keep_recent_tokens,
-                prefix_len,
-                "keep-recent: entire persisted prefix within keep window, skipping compact"
-            );
-            *rows = snapshot;
-            return Ok(None);
-        };
-
-        // Checkpoint identity, not summary text, decides the leading boundary.
-        // A leading checkpoint is item zero; when keep-recent can compact, the
-        // discarded range must include it, so cut is at least one.
-        let prior_checkpoint_seq = rows
-            .first()
-            .and_then(|row| row.checkpoint().and(row.log_seq));
-        let cut = if prior_checkpoint_seq.is_some() {
-            raw_cut.max(1)
-        } else {
-            raw_cut
-        };
-        debug_assert!(prior_checkpoint_seq.is_none() || cut > 0);
-
-        let kept_from_seq = match rows.get(cut).and_then(|row| row.log_seq) {
-            Some(seq) => seq,
-            None => {
-                *rows = snapshot;
-                let err = LitecodeError::ToolExecution(format!(
-                    "compact cut {cut} has no log seq (persisted prefix len={prefix_len})"
-                ));
+            if cancel.is_cancelled() {
+                let err = LitecodeError::Canceled;
+                let telemetry = compaction_telemetry(
+                    trigger,
+                    tokens_before,
+                    tokens_pruned,
+                    tokens_after_prune,
+                    Some(summary_attempts),
+                );
                 emit_compact_failed_with_telemetry(
                     sessions,
                     session_id,
                     trigger,
                     operation_id,
                     &err,
-                    base_telemetry,
+                    telemetry,
                 );
                 return Err(err);
             }
-        };
 
-        let summary_max_tokens = budget
-            .compact_output_tokens(max_tokens)
-            .min(request.max_output_tokens);
-        let plan = CompactionPlan {
-            trigger,
-            prefix_len,
-            cut,
-            kept_from_seq,
-            prior_checkpoint_seq,
-            summary_cap: summary_max_tokens,
-        };
-        emit_compact_lifecycle_with_telemetry(
-            sessions,
-            session_id,
-            trigger,
-            CompactionStage::Started,
-            operation_id,
-            None,
-            None,
-            base_telemetry.clone(),
-        );
-
-        let (artifact, review, summary_attempts) = match Self::first_pass_compaction(
-            request,
-            summary_max_tokens,
-            cut,
-            &snapshot,
-            sessions,
-            cancel,
-        )
-        .await
-        {
-            Ok(accepted) => accepted,
-            Err(failure) => {
-                *rows = snapshot;
-                let telemetry = compaction_telemetry(
-                    trigger,
-                    tokens_before,
-                    tokens_pruned,
-                    tokens_after_prune,
-                    Some(failure.attempts),
-                );
-                emit_compact_failed_with_telemetry(
-                    sessions,
-                    session_id,
-                    trigger,
-                    operation_id,
-                    &failure.error,
-                    telemetry,
-                );
-                return Err(failure.error);
-            }
-        };
-        debug_assert!(review.accepted);
-
-        if cancel.is_cancelled() {
-            *rows = snapshot;
-            let err = LitecodeError::Canceled;
-            let telemetry = compaction_telemetry(
-                trigger,
+            CompactionCommit {
+                snapshot: build.snapshot,
+                prefix_len: build.plan.prefix_len,
+                tail: build.tail,
+                kept: build.kept,
+                expected_revision: build.expected_revision,
+                plan: build.plan,
+                artifact,
+                review,
+                summary_attempts,
                 tokens_before,
                 tokens_pruned,
                 tokens_after_prune,
-                Some(summary_attempts),
-            );
-            emit_compact_failed_with_telemetry(
-                sessions,
-                session_id,
-                trigger,
-                operation_id,
-                &err,
-                telemetry,
-            );
-            return Err(err);
-        }
+                prune_plan,
+                started: true,
+            }
+        };
 
-        let kept = transcript[cut..].to_vec();
+        let CompactionCommit {
+            snapshot,
+            prefix_len,
+            tail,
+            kept,
+            expected_revision,
+            plan,
+            artifact,
+            review,
+            summary_attempts,
+            tokens_before,
+            tokens_pruned,
+            tokens_after_prune,
+            prune_plan,
+            started,
+        } = commit;
+        let cut = plan.cut;
         let checkpoint = CompactionCheckpoint {
             summary: artifact.text.clone(),
             from: snapshot
                 .first()
                 .and_then(|row| row.log_seq)
-                .unwrap_or(kept_from_seq),
-            to: kept_from_seq,
+                .unwrap_or(plan.kept_from_seq),
+            to: plan.kept_from_seq,
         };
         let envelope = ContextEnvelope::from_compaction_request(request);
         let final_meter = {
@@ -1190,6 +1728,25 @@ impl CompactPolicy {
             )
         };
         let final_count = final_meter.used_tokens;
+        if !started {
+            let telemetry = compaction_telemetry(
+                trigger,
+                tokens_before,
+                tokens_pruned,
+                tokens_after_prune,
+                None,
+            );
+            emit_compact_lifecycle_with_telemetry(
+                sessions,
+                session_id,
+                trigger,
+                CompactionStage::Started,
+                operation_id,
+                None,
+                None,
+                telemetry,
+            );
+        }
         if final_meter.is_over_prompt_limit() {
             *rows = snapshot;
             tracing::error!(
@@ -1225,7 +1782,7 @@ impl CompactPolicy {
                 operation_id: crate::session::data::command::MutationId::new(),
                 summary: artifact.text.clone(),
                 token_estimate: final_count as i64,
-                kept_from: Some(kept_from_seq),
+                kept_from: Some(plan.kept_from_seq),
                 expected_prefix: Some(prefix_len),
                 // Already captured off the response stream; persisting it is what
                 // stops the summarizer call from being an unrecorded cost.
@@ -1392,7 +1949,9 @@ impl CompactPolicy {
         rows: &[WorkingRow],
         sessions: &SessionManager,
         cancel: &CancellationToken,
+        max_attempts: u8,
     ) -> std::result::Result<(SummaryArtifact, SummaryReview, u8), SummaryPassFailure> {
+        let max_attempts = max_attempts.max(1);
         if cancel.is_cancelled() {
             return Err(SummaryPassFailure {
                 error: LitecodeError::Canceled,
@@ -1411,7 +1970,7 @@ impl CompactPolicy {
         };
         let mut last_review: Option<SummaryReview> = None;
 
-        for attempt in 1..=MAX_SUMMARY_ATTEMPTS {
+        for attempt in 1..=max_attempts {
             let artifact = match Self::call_llm_compact_once_with_timeout(
                 request,
                 prefix.clone(),
@@ -1483,11 +2042,11 @@ impl CompactPolicy {
             error: LitecodeError::CompactionFailure {
                 kind,
                 detail: format!(
-                    "summary rejected after {MAX_SUMMARY_ATTEMPTS} attempts: {:?}",
+                    "summary rejected after {max_attempts} attempts: {:?}",
                     review.failures
                 ),
             },
-            attempts: MAX_SUMMARY_ATTEMPTS,
+            attempts: max_attempts,
         })
     }
 
@@ -1751,6 +2310,19 @@ fn emit_compact_lifecycle_with_telemetry(
             error,
             telemetry,
         },
+    );
+}
+
+pub(crate) fn emit_compaction_abandoned(sessions: &SessionManager, session_id: &str) {
+    emit_compact_lifecycle_with_telemetry(
+        sessions,
+        session_id,
+        CompactionTrigger::Auto,
+        CompactionStage::Abandoned,
+        None,
+        None,
+        None,
+        CompactionTelemetry::default(),
     );
 }
 
@@ -2449,6 +3021,8 @@ max_output = 8192
             CompactionTrigger::Manual,
             Some("wp039-reload-err"),
             &sessions.data_root_path(),
+            None,
+            MAX_SUMMARY_ATTEMPTS,
         )
         .await
         .expect("persist ok + reload err must return Ok");
@@ -2618,6 +3192,9 @@ max_output = 8192
                 1,
                 &CancellationToken::new(),
                 &sessions.data_root_path(),
+                None,
+                MAX_SUMMARY_ATTEMPTS,
+                false,
             )
             .await
             .unwrap();
@@ -2644,6 +3221,8 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("summary-retry"),
             &sessions.data_root_path(),
+            None,
+            MAX_SUMMARY_ATTEMPTS,
         )
         .await
         .expect("second summary attempt is accepted")
@@ -2698,6 +3277,8 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("summary-rejection"),
             &sessions.data_root_path(),
+            None,
+            MAX_SUMMARY_ATTEMPTS,
         )
         .await
         .expect_err("rejected summary must fail the compaction");
@@ -2753,7 +3334,7 @@ max_output = 8192
     }
 
     #[tokio::test]
-    async fn committed_mechanical_prune_survives_summary_failure() {
+    async fn non_relieving_mechanical_prune_is_not_committed_before_summary_failure() {
         let dir = tempfile::tempdir().expect("tempdir");
         let sessions = Arc::new(SessionManager::new_for_test(
             Arc::new(TurnGuard::new()),
@@ -2790,9 +3371,11 @@ max_output = 8192
             CompactionTrigger::Auto,
             Some("prune-survives-summary-failure"),
             &sessions.data_root_path(),
+            None,
+            MAX_SUMMARY_ATTEMPTS,
         )
         .await
-        .expect_err("invalid summary must fail after the committed prune");
+        .expect_err("invalid summary must still fail when no prune can relieve");
         assert_eq!(
             error.compaction_failure_kind(),
             Some(crate::types::CompactionFailureKind::SummaryFinish)
@@ -2809,16 +3392,17 @@ max_output = 8192
         assert!(
             tool_outputs
                 .iter()
-                .any(|text| text.contains(TOOL_RESULT_PRUNE_MARKER)),
-            "the committed prune must remain in the durable surface: {tool_outputs:?}"
+                .all(|text| !text.contains(TOOL_RESULT_PRUNE_MARKER)),
+            "a prune that cannot relieve pressure must not rewrite the surface: {tool_outputs:?}"
         );
         assert!(
             !durable.iter().any(|row| row.checkpoint().is_some()),
             "a failed summary must not write a checkpoint"
         );
-        assert!(
-            sessions.data().revision_blocking(&sid).unwrap() > before_revision,
-            "the prune surface replacement must advance the revision"
+        assert_eq!(
+            sessions.data().revision_blocking(&sid).unwrap(),
+            before_revision,
+            "a skipped prune must not advance the revision"
         );
         assert!(
             !sessions
@@ -2995,6 +3579,9 @@ max_output = 8192
                 1,
                 &CancellationToken::new(),
                 &sessions.data_root_path(),
+                None,
+                MAX_SUMMARY_ATTEMPTS,
+                false,
             )
             .await
             .unwrap();
@@ -3044,6 +3631,9 @@ max_output = 8192
                 2,
                 &CancellationToken::new(),
                 &sessions.data_root_path(),
+                None,
+                MAX_SUMMARY_ATTEMPTS,
+                false,
             )
             .await
             .unwrap();
@@ -3194,9 +3784,9 @@ max_output = 8192
             WorkingRow::persisted(3, prune_tool_text("call-1", "word ".repeat(2_400))),
             WorkingRow::persisted(4, assistant_text("done")),
         ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default());
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
         assert_eq!(
-            MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default()),
+            MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0),
             plan,
             "the same input must produce the same plan"
         );
@@ -3212,7 +3802,7 @@ max_output = 8192
         assert_eq!(output.status, Some(OutputStatus::Completed));
 
         let applied = replace_output_in_rows(&rows, replacement);
-        let second = MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default());
+        let second = MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default(), 0);
         assert!(
             second.is_empty(),
             "replaying the pruned surface must not create another replacement"
@@ -3242,7 +3832,7 @@ max_output = 8192
                 prune_tool_image("call-new", "https://example.com/new.png"),
             ),
         ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default());
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
         assert_eq!(
             plan.replacements.len(),
             2,
@@ -3290,25 +3880,87 @@ max_output = 8192
                 WorkingRow::persisted(replacement.seq + 10_000, replacement.item.clone());
         }
         assert!(
-            MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default()).is_empty(),
+            MechanicalPrunePlan::build(&applied, MechanicalPruneConfig::default(), 0).is_empty(),
             "durable media placeholders must be stable on a second pass"
         );
     }
 
     #[test]
-    fn mechanical_prune_gate_uses_max_of_floor_and_window_ratio() {
-        assert_eq!(prune_min_saved_tokens(128_000), 4_096);
-        assert_eq!(prune_min_saved_tokens(400_000), 8_000);
+    fn mechanical_prune_gate_requires_floor_and_suffix_share() {
+        assert_eq!(prune_min_saved_tokens(), PRUNE_MIN_SAVED_TOKENS_FLOOR);
+        assert_eq!(PRUNE_MIN_SAVED_SUFFIX_PERCENT, 60);
+        assert_eq!(PRUNE_PROTECTED_WINDOW_PERCENT, 60);
+        assert_eq!(protected_conversation_tokens(128_000, 1_000), 75_800);
+        assert_eq!(protected_conversation_tokens(1_000, 2_000), 0);
         let rows = vec![
             WorkingRow::persisted(1, prune_call("call-small")),
             WorkingRow::persisted(2, prune_tool_text("call-small", "x".repeat(8_300))),
         ];
-        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default());
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), 0);
         assert_eq!(plan.replacements.len(), 1);
         assert!(
-            plan.estimated_saved_tokens < 4_096,
+            plan.estimated_saved_tokens < PRUNE_MIN_SAVED_TOKENS_FLOOR,
             "a single small text result is below the cache-bust floor: {plan:?}"
         );
-        assert!(!plan.meets_min_savings(128_000));
+        assert!(!plan.meets_min_savings());
+        assert!(!plan.is_worthwhile());
+        assert!(!prune_is_worthwhile(&rows, 0));
+    }
+
+    #[test]
+    fn mechanical_prune_never_touches_rows_before_the_protected_line() {
+        let rows = vec![
+            WorkingRow::persisted(1, user_text("go")),
+            WorkingRow::persisted(2, prune_call("call-early")),
+            WorkingRow::persisted(3, prune_tool_text("call-early", "word ".repeat(3_600))),
+            WorkingRow::persisted(4, assistant_text("middle")),
+            WorkingRow::persisted(5, prune_call("call-late")),
+            WorkingRow::persisted(6, prune_tool_text("call-late", "word ".repeat(3_600))),
+            WorkingRow::persisted(7, assistant_text("done")),
+        ];
+        let starts = row_start_tokens(&rows, rows.len());
+        let late_start = starts[5];
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), late_start);
+        assert_eq!(plan.protected_tokens, late_start);
+        assert!(
+            plan.replacements
+                .iter()
+                .all(|replacement| replacement.seq >= 5),
+            "no replacement may land before the protected line: {plan:?}"
+        );
+        assert_eq!(plan.replacements.len(), 1);
+        assert_eq!(plan.replacements[0].seq, 6);
+
+        // A line that falls inside the early result protects that whole row,
+        // even though the row ends after the line.
+        let straddle = row_start_tokens(&rows, rows.len())[2] + 1;
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), straddle);
+        assert!(
+            plan.replacements
+                .iter()
+                .all(|replacement| replacement.seq >= 5),
+            "a straddling row must stay protected: {plan:?}"
+        );
+    }
+
+    #[test]
+    fn mechanical_prune_suffix_share_uses_only_the_rewritten_tail() {
+        let rows = vec![
+            WorkingRow::persisted(1, user_text("go")),
+            WorkingRow::persisted(2, prune_call("call-early")),
+            WorkingRow::persisted(3, prune_tool_text("call-early", "word ".repeat(3_600))),
+            WorkingRow::persisted(4, prune_call("call-late")),
+            WorkingRow::persisted(5, prune_tool_text("call-late", "word ".repeat(3_600))),
+        ];
+        let starts = row_start_tokens(&rows, rows.len());
+        let late_start = starts[4];
+        let plan = MechanicalPrunePlan::build(&rows, MechanicalPruneConfig::default(), late_start);
+        assert_eq!(plan.replacements.len(), 1);
+        assert_eq!(plan.replacements[0].seq, 5);
+        assert_eq!(plan.rewritten_suffix_tokens, starts[5] - late_start);
+        assert!(
+            plan.meets_rewritten_share(),
+            "the denominator is the rewritten suffix, not the whole prefix: {plan:?}"
+        );
     }
 }

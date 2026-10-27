@@ -1,207 +1,206 @@
-﻿### `custom_tools.json`
+# custom_tools.json — agent runbook
 
-**干什么。** 本工作区自定义工具（一条命令 + JSON Schema；可覆盖同名的全局项）。工具名和 suite 名不能和内置工具撞名，也不能互相撞名。子进程 cwd 为工作区根；环境会注入 `LITECODE_WORKSPACE` / `LITECODE_CALL_ID` / `LITECODE_SESSION_ID` / `LITECODE_TOOL_NAME`（后台任务还有 `LITECODE_JOB_ID`）。**只有这些**——定义里没有自定义 `env` 字段，也不会注入 `PYTHONIOENCODING` 等。
+目标：写出一个能被 `validate_custom` / `refresh custom_tools` 接受、能被 Agents 启用、能被模型或 `run_code` 正确调用的自定义工具。文件：`.litecode/custom_tools.json`，`version` 必须为 2。
 
-**先选调用面（`surface`）。** 一个 custom tool 只有一个调用面，standalone 必须显式写，suite 成员从 suite 继承（成员不要再写 surface）。不要按工具重要不重要选，按它将来怎么被调用选：
+## 0. 模型
 
-| `surface` | 在哪里调用 | 适合 | 限制 |
+一个工具 = 一条命令 + stdin JSON 契约 + stdout 契约。`surface` 决定调用入口；standalone / suite / member 决定权限和绑定。
+
+| 形态 | 写在哪 | 必填 | surface / rules | 调用名 | Agents |
+|---|---|---|---|---|---|
+| standalone | `tools.<name>` | `name` `command` `schema` + 恰好一个 `surface`；code 还要 `output_schema` | 自己拥有 | direct `<name>` / code `tools.<name>` | 单独一张卡 |
+| suite member | `tools.<name>` | `name` `command` `schema` + 恰好一个 `suite`；code 还要 `output_schema` | 继承 suite；禁止 `surface`/`rules` | direct `<name>` / code `tools.<suite>.<member>` | 跟随 suite |
+| suite | `suites.<id>` | `surface`；`label`/`rules` 可选 | 拥有 surface/rules | 不是工具 | 一张卡、一行 binding、一个权限面 |
+
+- `tools.<name>.name` 必须等于 map key；suite id 就是 `suites` 的 key。同一层内工具名和 suite 名共享命名空间，不能互撞，也不能撞内置/保留名。
+- 跨层同名是覆盖，不是错误：workspace 同名工具条目（standalone/member）整份覆盖 global 的同名工具；同名 suite 整组覆盖 global suite 及成员。不要为了“全局唯一”改名。
+- `direct` suite 的成员调用名是平的（`<member>`）；`code` suite 永远是 `tools.<suite>.<member>`，即使只有一个成员。standalone code 是 `tools.<name>`。平铺只指调用名；Agents 里 suite 仍是一张卡。
+
+## 1. 选 surface
+
+| surface | 调用位置 | 适合 | 硬限制 |
 |---|---|---|---|
-| `direct` | 模型/人直接调用，和其他 Direct 工具并列 | 一次性命令、人工交互、长任务、需要 media/后台 | 不能写进 `run_code` 程序 |
-| `code` | 只能在 `run_code` 程序里调用：standalone 是 `await tools.<name>(args)`；suite 成员是 `await tools.<suite>.<member>(args)` | 要被循环、分支、批量、聚合，或与 Code 工具组合 | 同步返回；必须声明 `output_schema`，结果是 `{ ok: true, ...data }`；`run_in_background` 不可用；media 不进入程序可见结果 |
+| `direct` | 模型/人直接调用，和其他 Direct 工具并列 | 一次性命令、人工交互、长任务、media、后台 | 不进 `run_code` SDK |
+| `code` | 只在 `run_code` 程序里 | 循环/分支/批量/聚合，和 Code 工具组合 | 同步；必须 `output_schema`；无后台；media 不进程序结果 |
 
-不确定就选 `direct`。如果这个工具只需要模型单独叫一次，选 `code` 只会把它隐藏进程序，不会增加能力。
+不确定选 `direct`。只需要模型单独调一次的工具选 `code` 不会增加能力，只会把它藏进程序。
 
-**怎么改。** 设置页增删改；或按格式改 JSON。名字必须是 `[a-z][a-z0-9_]*`，且必须和 map 的键相同。
+## 2. 模板
 
-**格式。** `version` 为 `2`。standalone 写 `surface`；suite 成员写 `suite`，不要写 `surface`/`rules`。`timeout` 单位秒，省略则为 120。不要写 `timeout: 0`（手写文件会立刻超时；设置页会改成 120）。Schema 类型字段是 `"type"`。
-
-**suite。** `suites` 是独立 map：一个 suite 拥有 `surface`、`label`、`rules`，成员只写 `name`/`suite`/命令/输入 schema。一个 suite 在 Agents 里只有一张卡、一行 binding、一个权限面；direct suite 的成员平铺，code suite 的调用路径永远是 `tools.<suite>.<member>`（即使只有一个成员）；standalone code 是 `tools.<name>`，不会凭空多一层。suite 名不能等于任何工具名，所有成员名也必须全局唯一。工作区定义同名 suite 时整组覆盖全局 suite 及其成员，不能只覆盖一个成员。
-
-`surface: "code"` 的输入 schema 必须能被 Code SDK 渲染：顶层必须是 `object`，`properties` 是对象，不要使用未解析的 `$ref` 或递归 schema。`validate_custom` 和设置保存会先做准入检查；失败时不要登记或让用户启用。
-
-`output_schema` 必填且只对 `surface: "code"` 生效；direct 写了会被拒绝。code 的 stdout 必须是 JSON 对象，平台把这一层对象直接作为程序里的 `data`。平台不校验对象字段是否和 schema 一致，只保证类型声明和实际形状一致（非对象直接失败）。写了 `output_schema` 就不要再套 `media`/`level` envelope——stdout 本身就是数据。
-
-旧字段 `data_schema` 已删除，不会迁移；解析会直接报错并提示改用 `output_schema`。旧工具级 `suite_label` 也已删除；label 只写在 `suites.<name>.label`。旧文件 `version: 1` 同样会被拒绝：改成 `2`，给每个 standalone 补显式 `surface`，把 `data_schema` 改名为 `output_schema`，把工具级 `suite_label` 移进 `suites.<suite>.label`。错在哪就改哪，不要保留旧字段做兼容。
-
-standalone 的 `rules` 可省略，也可以写成 `[]`；suite 成员的 rules 必须为空，由 suite 统一拥有。没有 rules 的工具/suite 只有开/关，调用前允许。写了至少一条，就可以在 ALL 和 SAFE 之间切换。ALL 允许这次调用。SAFE 按顺序看规则，先匹配到的那条生效；都没匹配到，就允许。
-
-一条规则有 `id`、`action`、`when`。`action` 是 `allow`、`ask`、`deny`。`when.kind` 只能是 `any`、`arg_equals`、`arg_glob`、`path_outside_workspace`、`bash_readonly_command`、`all_of`、`any_of`。其它情况都要拒绝时，最后加一条 `"when": { "kind": "any" }`，`"action": "deny"`。
-
-**调用约定。** `run_in_background` 是平台保留参数，不要在自己的 schema 里重复定义。参数以 JSON 对象写入命令的 **stdin**（`run_in_background` 不会进 stdin；`validate_custom` 同样会剥掉），读 stdout；exit 0 成功；exit 2 表示工具拒绝执行。取消或超时会 best-effort 杀掉进程树。
-
-**stdout envelope（opt-in）。** 仅在 **exit 0** 时解析。stdout 必须是 JSON **对象**，且至少带 `media` 和/或 `level`；否则整段当纯文本。字段名以代码为准：
-
-- `content`（string，可选）— 文本正文；**不是** `text` / `message`。缺省当 `""`。
-- `level`（string，可选）— 只能是 `ok` / `warning` / `error`（大小写不敏感）。省略当 `ok`。未知值 → 硬失败（FAIL）。`error` 会让这次工具结果以 Error/FAIL 表面呈现（即使进程 exit 0）。
-- `media`（array，可选）— 附件式媒体，不是把图嵌进正文。每项必须有：
-  - `mime_type`（必填 string）— 目前只接受 `image/*`、`video/*`、`audio/*`
-  - 以及 **`url` 或 `file_path` 二选一**（非空 string）
-- `hint` **不是**本协议的一部分（LSP 专用）；写了会被忽略。
-
-**Code 面的结果。** 分两种：
-
-- `output_schema` 是 code 必填字段：stdout 必须是 JSON 对象，程序拿到 `{ ok: true, ...stdout }`，SDK 按 `output_schema` 生成类型。不是 JSON 对象 → 这次调用以 `invalid_output` 失败。
-- 需要纯文本时，仍输出一个 JSON 对象（例如 `{ "text": "..." }`），不要输出裸文本。
-
-`media` 不会进入 Code 程序可见结果；如果这个工具主要产出 media，选 `direct`。`run_in_background` 在 Code 面会返回明确的 invalid-input 错误，也不会被 SDK 暴露。
-
-**Code 面的失败。** 非 0 退出时，stdout 可以带一个结构化错误：
-
-```json
-{ "error": { "code": "not_found", "message": "order 42 does not exist", "details": { "order_id": 42 }, "retryable": false } }
-```
-
-- `code` 用 core 的领域码：`not_found`、`invalid_input`、`permission_denied`、`conflict`、`timeout`、`io`、`no_match`、`empty`、`stale`。
-- 这些码在程序里是**软失败**：解析成 `{ ok: false, reason, message }`，不会中断 `Promise.all` 里的其它调用。
-- 其它 `code`（或没写 envelope）在程序里抛 `ToolError`，带 `code` / `details` / `retryable`。
-- `retryable` 只在 `code` 是 `conflict` 或 `timeout` 时生效。
-- `message` 省略时用 stderr；`details` 原样进入 `ToolError.details`。
-- direct 面不解析这个 envelope，仍然是原来的 `exited with code N: stderr` 文案。
-
-示例：
-
-```json
-{
-  "content": "ok",
-  "level": "warning",
-  "media": [
-    { "mime_type": "image/png", "file_path": "out/chart.png" },
-    { "mime_type": "image/jpeg", "url": "https://example.com/a.jpg" }
-  ]
-}
-```
-
-**Windows 编码。** 子进程常走系统代码页（中文 Windows 多为 GBK）。脚本若按 UTF-8 写中文/非 ASCII，stdout 可能乱码或解析失败。没有自定义 `env` 可配。workaround：把解释器的 UTF-8 开关写进 `command`/`args`（例如 Python：`command`=`python`，`args` 含 `-X`、`utf8`、脚本路径）；或让脚本只输出 ASCII / 自行处理编码。不要指望平台注入 `PYTHONIOENCODING`。
-
-**后台。** 仅 Direct 可用。调用时传 `"run_in_background": true`：立刻返回 `job_id`，结果稍后以 `CustomToolSettled` 提醒进会话（不要自己发明 FunctionCallOutput）。默认同步阻塞到结束。
-
-```json
-{
-  "version": 2,
-  "tools": {
-    "<name>": {
-      "name": "<name>",
-      "surface": "direct",
-      "description": "",
-      "schema": { "type": "object", "properties": {}, "required": [] },
-      "command": "your-cmd",
-      "args": [],
-      "timeout": 120,
-      "rules": [
-        {
-          "id": "outside_workspace",
-          "when": { "kind": "path_outside_workspace", "name": "path" },
-          "action": "deny"
-        }
-      ]
-    }
-  }
-}
-```
-
-Code 面示例：
-
-```json
-{
-  "name": "collect_metrics",
-  "surface": "code",
-  "description": "Collect metrics for one repository path.",
-  "command": "python",
-  "args": ["scripts/collect_metrics.py"],
-  "timeout": 300,
-  "schema": {
-    "type": "object",
-    "properties": {
-      "path": { "type": "string", "description": "Workspace-relative path" }
-    },
-    "required": ["path"]
-  },
-  "output_schema": {
-    "type": "object",
-    "properties": {
-      "files": { "type": "integer" },
-      "lines": { "type": "integer" }
-    },
-    "required": ["files", "lines"]
-  }
-}
-```
-
-Code suite 示例（一个 suite 一张卡；成员路径是 `tools.deck.file_stats` / `tools.deck.repo_stats`）：
-
-```json
+~~~json
 {
   "version": 2,
   "suites": {
     "deck": {
       "surface": "code",
       "label": "Deck",
-      "rules": [
-        {
-          "id": "outside_workspace",
-          "when": { "kind": "path_outside_workspace", "name": "path" },
-          "action": "deny"
-        }
-      ]
+      "rules": [{ "id": "outside", "when": { "kind": "path_outside_workspace", "name": "path" }, "action": "deny" }]
     }
   },
   "tools": {
-    "file_stats": {
-      "name": "file_stats",
-      "suite": "deck",
-      "description": "Count one file's lines.",
-      "command": "python",
-      "args": ["scripts/file_stats.py"],
-      "schema": {
-        "type": "object",
-        "properties": { "path": { "type": "string" } },
-        "required": ["path"]
-      },
-      "output_schema": {
-        "type": "object",
-        "properties": { "lines": { "type": "integer" } },
-        "required": ["lines"]
-      }
+    "repo_overview": {
+      "name": "repo_overview", "surface": "direct",
+      "description": "Summarize a repository path.",
+      "command": "python", "args": ["scripts/repo_overview.py"], "timeout": 60,
+      "schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] },
+      "rules": [{ "id": "outside", "when": { "kind": "path_outside_workspace", "name": "path" }, "action": "deny" }]
     },
-    "repo_stats": {
-      "name": "repo_stats",
-      "suite": "deck",
-      "description": "Count repository files.",
-      "command": "python",
-      "args": ["scripts/repo_stats.py"],
-      "schema": { "type": "object", "properties": {}, "required": [] },
-      "output_schema": {
-        "type": "object",
-        "properties": { "files": { "type": "integer" } },
-        "required": ["files"]
-      }
+    "file_stats": {
+      "name": "file_stats", "suite": "deck",
+      "description": "Count lines in one file.",
+      "command": "python", "args": ["scripts/file_stats.py"],
+      "schema": { "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] },
+      "output_schema": { "type": "object", "properties": { "lines": { "type": "integer" } }, "required": ["lines"] }
     }
   }
 }
-```
+~~~
 
-**推荐流程（给 agent）。**
+direct standalone + code suite。改成 direct suite 时，把 `suites.<id>.surface` 改成 `direct`，并**删掉成员的 `output_schema`**（direct 禁止）；成员调用名从 `tools.deck.file_stats` 变成 `file_stats`，Agents 仍是 suite 一张卡。
 
-1. **先定 surface** — 只需要模型单独调用、需要后台/media/人工交互：`direct`。要被程序循环/分支/聚合，或与 Code 工具组合：`code`。standalone 显式写；多个相关工具用一个 suite，成员只写 `suite`。不确定选 `direct`。
-2. **写脚本** — 读 stdin JSON，写 stdout；失败写 stderr 非 0 退出。`direct` 需要 envelope 时用上面的字段名；`code` 的 stdout 必须是 JSON 对象，按 `output_schema` 直接输出数据，不要套 `text` 再让程序二次解析。
-3. **validate（不注册）** — 调用 `litecode_workspace`：`action=validate_custom`，并传 `definition`（同上面的工具体）与 `sample_input`。它会检查定义、`code` 准入、进程/stdout；看 PASS/FAIL 和具体字段，不要写文件。**PASS 不评价 `rules`**；有 rules 时响应里会提醒。
-4. **注册** — 设置页保存，或写入 `.litecode/custom_tools.json`。
-5. **refresh** — `litecode_workspace refresh custom_tools` 校验文件；输出会显示每个工具的 surface、code 准入状态和 rejected 原因。修好 broken / 撞名 / 空 command / 不支持的 code schema。
-6. **启用** — 请人在设置页 **Agents** 打开该工具（有 rules 时可切 ALL/SAFE）。不要替人打开。
-7. **使用** — 新 turn 后模型可见。standalone code 工具出现在 `run_code` 的 `tools.<name>`；code suite 成员出现在 `tools.<suite>.<member>`；`direct` 工具不会出现在 SDK 中。
+## 3. 字段
 
-**校验反馈怎么读。**
+| 字段 | 适用 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | tool | 是 | `[a-z][a-z0-9_]*`；必须等于 map key |
+| `description` | tool | 否 | 给模型看的说明；空则用 `External tool: <name>` |
+| `command` | tool | 是 | 直接执行的程序，不经过 shell；cwd 是工作区根 |
+| `args` | tool | 否 | string[]；需要管道/重定向时显式用 `bash -lc` / `cmd /C` |
+| `timeout` | tool | 否 | 秒，默认 120；必须 >= 1；不要写 0 |
+| `schema` | tool | 是 | 输入 schema；顶层必须是 object |
+| `surface` | standalone/suite | 是 | `direct` / `code`；standalone 不能和 `suite` 同时 |
+| `suite` | member | 是 | 已存在的 suite id；不能和 `surface` 同时 |
+| `rules` | standalone/suite/member | standalone/suite 否；member 必须空 | member 由 suite 统一拥有 |
+| `output_schema` | code tool | 是 | object schema；direct 写了会被拒绝 |
+| `label` | suite | 否 | 显示名；设置页空则用 id |
 
-- `validate_custom — FAIL / definition`：配置本身不合法（name、surface/suite、command、rules 或 code schema）。响应会给出 `field`、`expected`、`actual`、`fix`；按字段修正，不要重试同样定义。
-- `validate_custom — FAIL / code admission`：`detail` 含 `surface 'code' input schema cannot be admitted`。常见原因是 `$ref`、非 object、不可渲染的 schema。改 schema 或改回 `direct`。
-- `validate_custom — FAIL / code output`：code 声明了 `output_schema`，但样例运行的 stdout 不是 JSON 对象。改脚本输出，不要去掉必填的 `output_schema`。
-- `validate_custom — FAIL / composition`：单工具准入通过，但和当前 agent 已启用且可用的 Code 工具产生 SDK 类型名冲突，或工具名占用了 code suite 的命名空间（例如 standalone `deck` 与 suite `deck` 的成员）。按 `detail` 改工具名/schema 类型字段，或先禁用冲突工具；不要忽略后直接启用。
-- `validate_custom — FAIL / detail`：进程执行失败。看 stderr、退出码、超时或 envelope 字段错误。
-- `validate_custom — PASS`：定义、进程/stdout、单工具准入，以及它与当前 agent 已启用 Code 工具的组合检查都通过。仍不代表 rules 通过；之后新启用另一个 Code 工具时仍可能产生新冲突。规则只在真实调用时按 agent 的 ALL/SAFE 生效。
-- `refresh custom_tools` 中某个条目 rejected：该工具体不会进入运行时；先修报错，不要假设先注册再试。
+### schema
 
-**怎么生效。** 无进行中的 turn 时工作区文件会重载。有 `rules` 时 Agents 可切 ALL/SAFE；改规则后下次调用按新规则。工作区同名 standalone 条目整份覆盖全局；同名 suite 整组覆盖全局 suite 及全部成员。suite 没有 rules 时，不能切换 ALL/SAFE。子 agent 里 Ask 视为拒绝。
+- 所有 tool 的 `schema` 顶层必须是 `"type": "object"`；direct 也一样。
+- `schema` 只保留 `type` / `properties` / `required`；根级其他关键字会被丢弃。把限制写进 `properties` 的子 schema。
+- `properties` 必须是对象；`required` 是字符串数组。
+- direct 会自动加 `run_in_background`；不要在自己的 `schema` 里定义它，任何 surface 定义了都会被拒绝。
+- code 的 `schema` 和 `output_schema` 必须能被 Code SDK 渲染：顶层 object；不要用 `$ref`、`allOf`、`not`、`patternProperties`、`dependencies`、`if`、`unevaluatedProperties`；`additionalProperties` 只能是布尔；用简单类型/对象/数组，不确定就保持最小 schema。
+- `output_schema` 只对 code；必须是 `type: object` 的非空 schema。SDK 类型由它生成，但运行时只检查 stdout 顶层是对象，不校验字段；脚本和 schema 自行保持一致，否则 SDK 类型会骗你。
+- 不要在 `output_schema` 里定义 `ok`：平台只在缺失时补 `ok: true`，已有 `ok` 不会覆盖。业务失败用非 0 + error envelope，不要用 `ok: false`。
+- 写了 `output_schema` 就不要再套 media/level envelope；stdout 本身就是数据。
 
-**怎么验证。** `litecode_workspace refresh custom_tools` 校验 version、JSON、名字、suite 引用、撞名、`command`、surface 继承和 Code 准入；每条 rejected 都带 `field`、`expected`、`actual`、`fix`。`validate_custom` 用同一套诊断，并额外对当前 agent 已启用且可用的 Code 工具做组合期 SDK 类型冲突检查。设置页 available-tools 的 `code_rejections` 是静态目录侧的同类诊断；`custom_diagnostics` 列出未进入 catalog 的坏定义。`validate_custom` 不写盘、不绑定、不跑 rules，只剥掉 `run_in_background` 后跑一遍进程（与生产 stdin 一致）。
+## 4. 运行时
 
-**下一步。** 未打开时 status 会列成 off for you：只有这次真的需要才请人打开；否则不要提。
+### stdin / stdout / exit
+
+- 参数以 JSON 对象写入 **stdin**；从 **stdout** 输出结果；stderr 用于错误信息。
+- cwd = 工作区根；取消/超时会 best-effort 杀掉进程树。
+- exit 0 = 成功；exit 2 = 工具拒绝执行（硬错误，不是权限 Ask）；其他非 0 = 失败。
+- 环境：额外注入 `LITECODE_WORKSPACE` / `LITECODE_CALL_ID` / `LITECODE_SESSION_ID` / `LITECODE_TOOL_NAME`；后台还有 `LITECODE_JOB_ID`。其余环境继承父进程；没有自定义 `env` 字段，也不会注入 `PYTHONIOENCODING`。
+- Windows：stdin/stdout 按 UTF-8 处理；Python 用 `-X utf8`，或让脚本自己处理编码，不要依赖系统代码页。
+
+### direct stdout envelope（可选）
+
+只有 exit 0 且 stdout 是 JSON **对象**、并且至少含 `media` 或 `level` 时，才按 envelope 解析；否则整段当纯文本。
+
+| 字段 | 约束 |
+|---|---|
+| `content` | string，可选；文本正文；不是 `text`/`message`；缺省 "" |
+| `level` | `ok` / `warning` / `error`（大小写不敏感）；省略 ok；未知值硬失败；`error` 让结果以 Error 呈现（即使 exit 0） |
+| `media` | 数组；附件，不嵌正文；每项 `mime_type` 必填，且 `url` / `file_path` 至少一个；两者都有时优先 `url`；mime 只接受 image/ video/ audio/ |
+| `hint` | 不是本协议；忽略 |
+
+后台结果只回文本；media 不会随 `CustomToolSettled` 回传。后台工具主要产出 media 时，用同步调用。
+
+### code 成功
+
+- `output_schema` 必填；stdout 必须是 JSON **对象**。程序拿到 stdout 对象，并在缺失时补 `ok: true`；SDK 类型来自 `output_schema`。
+- 没有 `output_schema` 会在注册/refresh 时被拒绝；stdout 不是对象/JSON 时本次调用以 `invalid_output` 失败。
+- 需要纯文本也输出对象，例如 `{"text":"..."}`；不要输出裸文本。
+- 程序只检查顶层是对象，不校验字段；stdout 自带 `ok: false` 时程序会看到 false，不会自动改成 true。不要定义 `ok`。
+- code 不解析 direct envelope；不要写 `media`/`level`。code 无 `run_in_background`；media 不进程序可见结果。
+
+### code 失败
+
+非 0 退出时，stdout 可以带：
+
+~~~json
+{"error":{"code":"not_found","message":"order 42 does not exist","details":{"order_id":42},"retryable":false}}
+~~~
+
+- 软失败码（变成 `{ok:false, reason, message}`，不中断 `Promise.all` 的其他调用）：`not_found`、`invalid_input`/`invalid_regex`、`permission_denied`、`io`、`no_match`、`empty`、`conflict`、`stale`。reason 映射：`invalid_input`/`invalid_regex` -> `invalid_args`；`permission_denied` -> `permission`；其他同名。
+- 其他 code（包括 `timeout`、`stale_cursor`、`output_limit`）或没有 envelope：抛 `ToolError`，带 `code`/`details`/`retryable`。
+- 自定义工具里 `retryable` 实际只在硬 `timeout` 上有效；软失败不携带 `retryable`，`details` 也不进程序。
+- `message` 省略时用 stderr；`details` 只在硬失败进入 `ToolError.details`。
+- direct 不解析这个 envelope；exit 2 是 `blocked execution`，其他非 0 是 `exited with code N: stderr`。
+
+### timeout / background
+
+- `timeout` 是硬失败；会杀进程树。`timeout: 0` 不是无限：手写文件实际 1s，设置页保存会改成 120；写明确 >= 1。
+- `run_in_background` 只对 direct 可用；平台自动加进 direct 的 schema；调用时传 `true`，立即返回 `job_id`，结果稍后以 `CustomToolSettled` 提醒进会话（不要自己发明 FunctionCallOutput）。`validate_custom` 会剥掉它，只测同步路径。
+- code 传 `run_in_background` 会返回 invalid-input；SDK 不暴露它。
+
+## 5. rules
+
+standalone 或 suite 没有 `rules` 时只有开/关，调用前允许，不能切 ALL/SAFE；member 的规则看 suite。有至少一条 rules 时 Agents 可切 ALL/SAFE：ALL 允许这次调用；SAFE 按顺序匹配，第一条生效，都没匹配到就允许；要默认拒绝，最后放一条 `any` + `deny`。子 agent 里 `ask` 视为拒绝。
+
+- 规则字段：`id` / `action` (`allow`/`ask`/`deny`) / `when`。`id` 必须非空、同一列表唯一、不能是 `__default`。
+- suite 的 `rules` 由 suite 拥有；member 的 `rules` 必须为空。
+- `when.kind` 与字段：
+
+| kind | 字段 | 语义 |
+|---|---|---|
+| `any` | 无 | 总是匹配 |
+| `arg_equals` | `name`, `value` | 字符串参数精确相等；非字符串不匹配 |
+| `arg_glob` | `name`, `pattern` | 字符串参数；只支持一个 `*`（前缀/后缀）；不是正则 |
+| `path_outside_workspace` | `name` | 取该参数路径；`path`/`file_path` 可互换；在工作区外匹配 |
+| `bash_readonly_command` | 无 | 看 `command`；只读命令匹配 |
+| `all_of` | `matchers` | 全部匹配 |
+| `any_of` | `matchers` | 任一匹配 |
+
+## 6. 流程
+
+1. **定 surface**：模型单独调/后台/media -> `direct`；程序循环/分支/聚合 -> `code`。不确定 `direct`。
+2. **定形态**：单个工具 standalone；多个相关工具共享 surface/rules 用 suite + members。
+3. **写脚本**：读 stdin JSON，写 stdout；失败写 stderr + 非 0；遵守上面的成功/失败/envelope 契约。
+4. **写定义**：按模板；先过下面的 preflight。
+5. **验证**：standalone 或**已存在 suite** 的 member 用 `validate_custom`，传 `definition`（单个 tool body，不是整份文件）+ `sample_input`（object）。**新 suite** 见 6.2。
+6. **注册并 refresh**：设置页保存或写文件；`litecode_workspace refresh custom_tools`；修 rejected。
+7. **启用**：请人在设置页 Agents 打开；有 rules 时可切 ALL/SAFE。不要替人打开。
+8. **使用**：新 turn 后可见；direct 不进 SDK；code standalone `tools.<name>`；code suite `tools.<suite>.<member>`。
+
+preflight：
+
+- `version: 2`；没有 `data_schema`/`suite_label`/`version: 1`。
+- `name` 匹配正则且等于 key；standalone 恰好一个 `surface`；member 恰好一个 `suite` 且没有 `surface`/`rules`。
+- `command` 非空；`timeout` >= 1；`schema` 顶层 object；code 有 `output_schema`；direct 没有 `output_schema`。
+- member 引用的 suite 在当前层已定义；规则 id 合法。
+
+### 6.1 验证入口
+
+| 入口 | 能做什么 | 不能做什么 / 边界 |
+|---|---|---|
+| `validate_custom` | 单个 tool body；suite 已加载；跑命令；检查定义/进程/输出/code 准入/当前已启用 Code 工具组合 | 不跑 rules；不能验新 suite+成员或单独 suite；不测后台；不写配置但命令自身可能写盘 |
+| `refresh custom_tools` | 文件级 version/JSON/名字/suite 引用/撞名/command/surface 继承/code 准入 | 不跑进程；suite 自身的保留/内置名不看，rules 只在有成员引用时看；rejected tool 不进运行时 |
+
+- `validate_custom` 会剥掉 `run_in_background`，只测同步路径；`sample_input` 会被真实执行，样例要安全。
+- `validate_custom` 的 PASS 不代表 rules 通过，也不保证以后启用新 Code 工具不冲突。
+- suite 定义本身最稳用设置页保存一次（会校验 suite 名和 rules）；只靠 `refresh` 可能漏掉 suite 名与内置/保留名的冲突。
+
+### 6.2 新 suite
+
+先把 suite + members 写入文件 -> `refresh custom_tools`（结构/引用/准入）-> 等文件重载 -> 再 `validate_custom` 一个 member（进程/输出/组合）-> 启用。`refresh` 不会跑进程，也不会替代 `validate_custom`；suite 名/rules 最好让设置页保存一次再继续。
+
+## 7. 反馈
+
+| 输出 | 含义 / 处理 |
+|---|---|
+| `field:` + `expected`/`actual`/`fix` | 定义错误；按字段改，不要重试同一定义 |
+| `code admission: FAIL` | input 或 output schema 不可渲染；去 `$ref`/allOf/...，保持 object；或改 direct |
+| `detail: output_schema is declared` | code 的 stdout 不是 JSON 对象；改脚本，不要删 `output_schema` |
+| `composition: FAIL` | SDK 类型名/命名空间冲突；改名/改 schema 字段，或先禁用冲突 Code 工具 |
+| 其他 `FAIL` + `detail` | 进程失败/超时/envelope 错；看 stderr、退出码 |
+| `PASS` | rules 未评价；以后启用新 Code 工具仍可能冲突 |
+| refresh rejected | 该 tool 不进入运行时；修 reported field |
+
+## 8. 生效
+
+- 无进行中的 turn 时工作区文件重载；新 turn 后模型可见。
+- suite 没有 rules 不能切 ALL/SAFE；有 rules 才能切。子 agent 的 `ask` = 拒绝。
+- 未打开时 status 会显示 off for you；只在真正需要时请人打开，不要替人启用。

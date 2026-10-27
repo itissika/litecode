@@ -10,6 +10,7 @@ import {
 import { isAllowedLoadUrl } from "./url-policy";
 
 const PANEL_ID = "browser-11111111-1111-4111-8111-111111111111";
+const OTHER_ID = "browser-22222222-2222-4222-8222-222222222222";
 
 class FakePage implements BrowserPage {
   url = "";
@@ -21,6 +22,8 @@ class FakePage implements BrowserPage {
   closed = 0;
   reloads = 0;
   stops = 0;
+  jsCalls: string[] = [];
+  inputBlocked = false;
   private navigateListeners: Array<() => void> = [];
   private loadingListeners: Array<(loading: boolean) => void> = [];
   private openHandler: ((url: string) => void) | null = null;
@@ -66,6 +69,15 @@ class FakePage implements BrowserPage {
 
   canGoForward(): boolean {
     return this.forward;
+  }
+
+  executeJavaScript(code: string): Promise<unknown> {
+    this.jsCalls.push(code);
+    return Promise.resolve({ ok: true });
+  }
+
+  setInputBlocked(blocked: boolean): void {
+    this.inputBlocked = blocked;
   }
 
   close(): void {
@@ -321,5 +333,77 @@ describe("BrowserHost", () => {
     host.setVisible(PANEL_ID, true);
     host.setBounds(PANEL_ID, RECT, "main");
     assert.deepEqual(view.bounds, [RECT]);
+  });
+
+  it("lists pages with active, visible, and agent ownership state", () => {
+    const view = new FakeView();
+    const other = new FakeView();
+    let created = 0;
+    const host = new BrowserHost({
+      isAllowedUrl: isAllowedLoadUrl,
+      createView: () => (created++ === 0 ? view : other),
+      onState: () => undefined,
+    });
+    host.create(PANEL_ID, "#0a0a0a");
+    host.create(OTHER_ID, "#0a0a0a");
+    host.markAgentOwned(PANEL_ID);
+    host.setActive(PANEL_ID, true);
+    host.setVisible(PANEL_ID, true);
+    host.setBounds(PANEL_ID, RECT);
+    host.navigate(PANEL_ID, "https://example.com/one");
+    host.navigate(OTHER_ID, "https://example.com/two");
+
+    assert.deepEqual(
+      host.list().map((page) => [
+        page.id,
+        page.url,
+        page.active,
+        page.visible,
+        page.agentOwned,
+      ]),
+      [
+        [PANEL_ID, "https://example.com/one", true, true, true],
+        [OTHER_ID, "https://example.com/two", false, false, false],
+      ],
+    );
+    assert.equal(host.activeId(), PANEL_ID);
+    assert.equal(host.pageInfo(PANEL_ID)?.title, "Example");
+
+    host.setActive(PANEL_ID, false);
+    assert.equal(host.activeId(), null);
+    host.setActive(OTHER_ID, true);
+    assert.equal(host.activeId(), OTHER_ID);
+
+    host.destroy(PANEL_ID);
+    assert.equal(host.isAgentOwned(PANEL_ID), false);
+    assert.deepEqual(host.list().map((page) => page.id), [OTHER_ID]);
+  });
+
+  it("drops ownership for an open request that never created a page", () => {
+    const view = new FakeView();
+    const host = hostWith(view);
+    host.markAgentOwned(PANEL_ID);
+    assert.equal(host.isAgentOwned(PANEL_ID), true);
+    assert.deepEqual(host.list(), []);
+    host.clearAgentOwned(PANEL_ID);
+    assert.equal(host.isAgentOwned(PANEL_ID), false);
+  });
+
+  it("forwards page scripts and input blocking only to an open page", async () => {
+    const view = new FakeView();
+    const host = hostWith(view);
+    host.create(PANEL_ID, "#0a0a0a");
+    await host.executeJavaScript(PANEL_ID, "document.title");
+    host.setInputBlocked(PANEL_ID, true);
+    assert.deepEqual(view.webContents.jsCalls, ["document.title"]);
+    assert.equal(view.webContents.inputBlocked, true);
+    host.setInputBlocked(PANEL_ID, false);
+    assert.equal(view.webContents.inputBlocked, false);
+    host.destroy(PANEL_ID);
+    assert.equal(view.webContents.inputBlocked, false);
+    await assert.rejects(
+      host.executeJavaScript(PANEL_ID, "document.title"),
+      /not open/,
+    );
   });
 });

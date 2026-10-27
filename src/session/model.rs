@@ -132,9 +132,19 @@ pub struct SessionLogRow {
     pub ignorable: bool,
 }
 
-/// Body for `compacted`. `[from, to)` is a half-open spine interval:
-/// `from` is the first replaced surface seq; `to` is the first kept seq, or
-/// the compact row's own seq when the keep is empty.
+/// Body for `compacted`. `[from, to)` is a half-open interval **on the spine**,
+/// ordered by surface position, never by seq value:
+///
+/// * `from` is the first replaced surface seq, and a compact always replaces a
+///   prefix, so `from` is the spine head;
+/// * `to` is the first kept seq, or the compact row's own seq when the keep is
+///   empty (`from == to` means "no predecessor range").
+///
+/// Spine order is not seq order: a checkpoint is prepended with the highest seq
+/// of its moment, so a later compact that keeps a row predating that checkpoint
+/// has `from > to` (e.g. `from = 336`, `to = 200`). Resolve both through
+/// positions; never treat the pair as a numeric range or slice
+/// `seq >= from && seq < to`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompactedBody {
     pub summary: String,

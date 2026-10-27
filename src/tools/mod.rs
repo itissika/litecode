@@ -1,5 +1,6 @@
 pub mod apply_edits;
 pub mod ask_user;
+pub mod browser;
 pub mod bash_safety;
 pub mod code;
 pub mod code_search;

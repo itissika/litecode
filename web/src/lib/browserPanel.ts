@@ -1,5 +1,5 @@
 import { onPanelRemoved } from "../dockview/workbench/events";
-import { openPanel } from "../dockview/workbench/commands";
+import { closePanel, openPanel } from "../dockview/workbench/commands";
 import type { GroupRole } from "../dockview/workbench/model";
 
 // Single source: desktop/src/bridge-contract.ts (type-only).
@@ -76,6 +76,22 @@ export function addBrowserPanel(preferredGroupId?: string): void {
     params: { url: "" },
     preferredGroupId,
   });
+}
+
+/** Open a visible browser tab requested by the agent. */
+export function openAgentBrowserPanel(id: string, url: string): void {
+  openPanel({
+    id,
+    component: "browser",
+    title: "Browser",
+    tabComponent: "browser",
+    params: { url },
+  });
+}
+
+/** Close a browser tab requested by the agent. */
+export function closeBrowserPanel(id: string): void {
+  closePanel(id);
 }
 
 onPanelRemoved((event) => {

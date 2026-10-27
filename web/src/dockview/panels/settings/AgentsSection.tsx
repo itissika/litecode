@@ -43,6 +43,7 @@ import {
   useDocPersist,
   useSettingsPersist,
 } from "./persist";
+import { groupToolCards } from "./toolGroups";
 
 /** Settings catalog row → the ref the shared picker stores and compares. */
 function toSwitcherModel(model: CatalogModelDto): ModelInfo {
@@ -374,6 +375,15 @@ function AgentToolsGrid({
   note?: ReactNode;
 }) {
   const { t } = useTranslation();
+  /** Sections, each with a header row, flattened so the grid stays one map. */
+  const rows = useMemo(
+    () =>
+      groupToolCards(bindableTools).flatMap((group) => [
+        { kind: "head" as const, group },
+        ...group.tools.map((entry) => ({ kind: "card" as const, entry })),
+      ]),
+    [bindableTools],
+  );
   if (bindableTools.length === 0) {
     return (
       <div className="space-y-2">
@@ -395,10 +405,34 @@ function AgentToolsGrid({
       <div
         className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3"
         style={gridStyle}
-        role="list"
+        role="group"
         aria-label={t("settings.agents.agentToolBindings")}
       >
-        {bindableTools.map((entry) => {
+        {rows.map((row) => {
+          if (row.kind === "head") {
+            const { group } = row;
+            const on = group.tools.filter(
+              (tool) => bindingFor(draft.tools, tool.id).enabled,
+            ).length;
+            return (
+              <div
+                key={`head-${group.kind}`}
+                role="presentation"
+                className="col-span-full flex items-baseline justify-between gap-2 pt-2 first:pt-0"
+              >
+                <h4 className="text-dk-xs font-medium text-(--_dk-text-muted)">
+                  {t(`settings.agents.toolGroup.${group.kind}`)}
+                </h4>
+                <span className="settings-header-meta">
+                  {t("settings.agents.toolGroupCount", {
+                    enabled: on,
+                    total: group.tools.length,
+                  })}
+                </span>
+              </div>
+            );
+          }
+          const entry = row.entry;
           const binding = bindingFor(draft.tools, entry.id);
           const configurable = isConfigurableTool(entry);
           const enabled = binding.enabled;
@@ -612,25 +646,14 @@ export function AgentsSection() {
     [availableTools],
   );
 
-  const bindableToolsPrimary = useMemo(() => {
-    return [...switchTools].sort((a, b) => {
-      const kindOrder = (kind: AvailableTool["kind"]) => {
-        if (kind === "core") return 0;
-        if (kind === "engine") return 1;
-        if (kind === "custom") return 2;
-        if (kind === "mcp") return 3;
-        return 9;
-      };
-      const byKind = kindOrder(a.kind) - kindOrder(b.kind);
-      return byKind !== 0 ? byKind : a.id.localeCompare(b.id);
-    });
-  }, [switchTools]);
+  // Sectioning and ordering live in toolGroups: the grid groups by kind, so
+  // neither list sorts here.
+  const bindableToolsPrimary = switchTools;
 
-  const bindableToolsSubagent = useMemo(() => {
-    return switchTools
-      .filter((tool) => tool.scope !== "primary_root_only")
-      .sort((a, b) => a.id.localeCompare(b.id));
-  }, [switchTools]);
+  const bindableToolsSubagent = useMemo(
+    () => switchTools.filter((tool) => tool.scope !== "primary_root_only"),
+    [switchTools],
+  );
 
   const presetIds = useMemo(
     () => presetToolIds(switchTools),

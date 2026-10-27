@@ -67,7 +67,12 @@ impl EngineManager {
         engines.insert("webfetch".to_string(), webfetch.clone());
         engines.insert("websearch".to_string(), websearch.clone());
         for id in optional_builtin_ids() {
-            if *id == "webfetch" || *id == "websearch" || *id == "code_search" || *id == "lsp" {
+            if *id == "webfetch"
+                || *id == "websearch"
+                || *id == "code_search"
+                || *id == "lsp"
+                || *id == "browser"
+            {
                 continue;
             }
             tracing::error!(

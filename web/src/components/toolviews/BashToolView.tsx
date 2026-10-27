@@ -222,8 +222,9 @@ export function BashToolView({
   const [tail, setTail] = useState<string | null>(null);
   const [tailMeta, setTailMeta] = useState<{
     alive: boolean;
+    draining: boolean;
     exitCode: number | null;
-  }>({ alive: true, exitCode: null });
+  }>({ alive: true, draining: false, exitCode: null });
 
   useEffect(() => {
     if (!bashId) return;
@@ -233,11 +234,14 @@ export function BashToolView({
       try {
         const r = await bashTail(bashId);
         if (cancelled) return false;
-        setTailMeta({ alive: r.alive, exitCode: r.exit_code });
+        // A draining job already exited but a descendant still holds the pipe,
+        // so its tail can keep growing: poll until the log settles.
+        const draining = r.draining === true;
+        setTailMeta({ alive: r.alive, draining, exitCode: r.exit_code });
         // Exit: drop the overlay so the card settles on the sealed document
         // (which points at the full log) plus the real exit code below.
-        setTail(r.alive ? r.text : null);
-        return r.alive;
+        setTail(r.alive || draining ? r.text : null);
+        return r.alive || draining;
       } catch {
         return true;
       }
@@ -258,7 +262,7 @@ export function BashToolView({
 
   // Live overlay is bounded by the PROCESS, not by the job snapshot: `tail` is
   // null until the first sample and is cleared the moment the poll reports exit.
-  const showLive = tail !== null && tailMeta.alive;
+  const showLive = tail !== null && (tailMeta.alive || tailMeta.draining);
 
   const hasSealedOutput =
     parsed !== null &&
@@ -282,7 +286,7 @@ export function BashToolView({
       parsed.exitCode === "0"
         ? "text-(--_dk-text-muted)"
         : "text-(--_dk-amber-500)";
-  } else if (tailMeta.alive === false) {
+  } else if (tailMeta.alive === false && !tailMeta.draining) {
     footer =
       tailMeta.exitCode === null
         ? "exited"

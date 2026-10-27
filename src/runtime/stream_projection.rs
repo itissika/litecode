@@ -583,8 +583,6 @@ mod tests {
     use crate::config::TurnGuard;
     use crate::runtime::observer::NoopObserver;
     use crate::session::FaultKind;
-    
-    
 
     /// A recorded GPT-family response: twelve reasoning items (three of them with
     /// multi-part summaries), then the message — each item announced, streamed and

@@ -98,7 +98,7 @@ pub const SUBAGENT_MEMBER_TOOL_IDS: &[&str] = &[
 
 /// Task-board / human-Ask tools. Subagent role does not bind these (tool-set gate).
 /// `knowledge` and `litecode_workspace` stay on the subagent tool set.
-pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "ask_user"];
+pub const PRIMARY_ONLY_TOOL_IDS: &[&str] = &["plan", "todo", "ask_user", "browser"];
 
 fn default_temperature() -> f64 {
     0.7

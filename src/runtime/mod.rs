@@ -22,7 +22,7 @@ pub use provider_registry::ProviderRegistry;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 
 use tokio::sync::mpsc;
@@ -39,6 +39,7 @@ use crate::llm::LlmProvider;
 use crate::mcp::McpConnectionPool;
 use crate::optional::EngineManager;
 use crate::permission::{CancellingPermissionSink, PermissionEngine, PermissionSink};
+use crate::platform_knobs::CompactionPrefetchMode;
 use crate::runtime::observer::{
     ChannelObserver, InternalEnvelope, InternalEvent, RuntimeObserver, TurnEndReason,
     TurnErrorKind, TurnPhase, TurnTokenStats,
@@ -365,6 +366,9 @@ impl From<&str> for TurnInput {
 #[derive(Clone, Debug, Default)]
 pub struct TurnOptions {
     pub identity: AgentIdentity,
+    /// Test/canary override. None reads LITECODE_COMPACT_PREFETCH at runtime
+    /// construction; some callers (CLI / controller) never set it.
+    pub compaction_prefetch: Option<CompactionPrefetchMode>,
 }
 
 impl TurnOptions {
@@ -440,6 +444,9 @@ pub fn spawn_turn(
         permission_sink,
         observer,
     )?;
+    if let Some(mode) = opts.compaction_prefetch {
+        agent_loop.set_compaction_prefetch_mode(mode);
+    }
     stages.mark("build_runtime");
 
     let cancel = agent_loop.cancel_token();
@@ -465,6 +472,28 @@ pub fn spawn_turn(
         turn_id,
         step_max,
     })
+}
+
+/// Result of one independent compaction branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompactionPrefetchOutcome {
+    /// The checkpoint was written by the branch.
+    Committed,
+    /// The frozen plan no longer matches the current surface.
+    Rejected,
+    /// The plan had no keep-recent cut.
+    NoCut,
+    /// The summary or commit failed.
+    Failed,
+}
+
+/// One in-flight independent compaction branch. The branch owns its summary
+/// call and its session commit; the main loop only observes the outcome.
+struct CompactionPrefetch {
+    handle: Option<tokio::task::JoinHandle<Result<CompactionPrefetchOutcome>>>,
+    cancel: tokio_util::sync::CancellationToken,
+    started: std::time::Instant,
+    step: u64,
 }
 
 pub struct AgentRuntime {
@@ -500,6 +529,16 @@ pub struct AgentRuntime {
     /// `run_with_turn` entry, only while `litecode::latency` is enabled; the
     /// first `call_model` of the turn reports `turn_to_first_request` from it.
     pub(crate) latency_turn_start: Option<std::time::Instant>,
+    /// `LITECODE_COMPACT_PREFETCH`; On is the production default.
+    pub(crate) compaction_prefetch_mode: CompactionPrefetchMode,
+    /// At most one independent compaction branch. It owns its commit.
+    prefetch: Mutex<Option<CompactionPrefetch>>,
+    /// One compaction branch per pressure episode.
+    prefetch_attempted: AtomicBool,
+    /// A frozen plan no longer matched the surface; the sync path may replan.
+    prefetch_rejected: AtomicBool,
+    /// The branch failed; do not silently replan its content.
+    prefetch_failed: AtomicBool,
 }
 
 /// Parameters needed to call build_tool_list lazily on first turn.
@@ -606,6 +645,11 @@ impl AgentRuntime {
             build_tool_params: Some(build_tool_params),
             pending_snapshot_track: Mutex::new(None),
             latency_turn_start: None,
+            compaction_prefetch_mode: CompactionPrefetchMode::from_env(),
+            prefetch: Mutex::new(None),
+            prefetch_attempted: AtomicBool::new(false),
+            prefetch_rejected: AtomicBool::new(false),
+            prefetch_failed: AtomicBool::new(false),
         };
         Ok(runtime)
     }
@@ -631,6 +675,11 @@ impl AgentRuntime {
 
     pub fn context(&self) -> &Context {
         &self.base_ctx
+    }
+
+    /// Test/canary override for the background compaction mode.
+    pub fn set_compaction_prefetch_mode(&mut self, mode: CompactionPrefetchMode) {
+        self.compaction_prefetch_mode = mode;
     }
 
     pub fn prepared_view(&self) -> Option<crate::context_pipeline::PreparedView> {
@@ -1054,6 +1103,33 @@ impl AgentRuntime {
         self.latency_turn_start = crate::telemetry::latency::now();
         self.ensure_tooling_initialized().await?;
 
+        // A compaction branch is independent of the main turn. Keep one that
+        // is still in flight across turn boundaries; a reused runtime may
+        // consume its committed result at the next boundary. A branch that
+        // already finished belongs to the previous turn: settle it, keep any
+        // committed checkpoint durable, and start the new turn with a clean
+        // pressure episode.
+        let (has_branch, branch_finished) = {
+            let slot = self.prefetch.lock().unwrap_or_else(|e| e.into_inner());
+            let finished = slot.as_ref().is_some_and(|prefetch| {
+                prefetch
+                    .handle
+                    .as_ref()
+                    .is_some_and(|handle| handle.is_finished())
+            });
+            (slot.is_some(), finished)
+        };
+        if self.compaction_prefetch_mode != CompactionPrefetchMode::On {
+            self.abort_compaction_prefetch().await;
+            self.reset_compaction_episode();
+        } else if !has_branch || branch_finished {
+            if branch_finished {
+                self.abort_compaction_prefetch().await;
+                self.prompt_usage_baseline.clear();
+            }
+            self.reset_compaction_episode();
+        }
+
         tracing::info!(
             session_id = %self.session_id,
             input = %user_input.text,
@@ -1231,6 +1307,9 @@ impl AgentRuntime {
                 Ok(outcome) => outcome,
                 Err(error) => {
                     self.seal_rows_still_in_flight();
+                    // The final commit can fail after a tool window started a
+                    // background summary; do not leave it running past the turn.
+                    self.abort_compaction_prefetch().await;
                     return Err(error);
                 }
             };
@@ -1311,6 +1390,12 @@ impl AgentRuntime {
             total_items = self.context_pipeline.working_set().len(),
             "agent loop complete"
         );
+        // Normal turn end does not own the compaction branch. Leave it in
+        // flight; it commits independently when the summary is ready. A
+        // canceled turn still seals the provider call.
+        if self.is_cancelled() {
+            self.abort_compaction_prefetch().await;
+        }
         self.context_pipeline.end_turn();
         finalize_result
     }

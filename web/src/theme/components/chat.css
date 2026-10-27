@@ -611,6 +611,34 @@
   }
 }
 
+/* Compaction point while a background summary is in flight. The dot breathes
+   in place; the line itself is replaced by the clickable CompactCutMark when
+   the checkpoint lands. */
+.compact-wait-dot {
+  background-color: var(--_dk-text-secondary);
+  animation: compact-wait-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes compact-wait-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.5);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compact-wait-dot {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}
+
 /* Current task wave — same per-character wave as wait-shell, but one level
    brighter: sits at secondary (wait-shell's peak) with an opacity pulse,
    without jumping up to body/primary. */

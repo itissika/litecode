@@ -45,7 +45,7 @@ pub fn is_core_tool(id: &str) -> bool {
 }
 
 pub fn optional_builtin_ids() -> &'static [&'static str] {
-    &["code_search", "lsp"]
+    &["code_search", "lsp", "browser"]
 }
 
 /// Optional builtins that primary-role agents bind by default (WP-146 §B).

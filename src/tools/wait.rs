@@ -52,9 +52,13 @@ impl WaitTool {
         note: Option<&str>,
         killed: bool,
     ) -> ToolCallResult {
+        let drain = command_job::exit_drain_note(&self.jobs, job_id, &execution.workspace_root);
         let mut notes: Vec<&str> = note.into_iter().collect();
         if killed {
             notes.push("process was killed");
+        }
+        if let Some(drain) = &drain {
+            notes.push(drain);
         }
         let Some(output) = command_job::format_job_output(
             &self.jobs,
@@ -110,6 +114,11 @@ impl WaitTool {
         match outcome {
             WaitOutcome::Exited(notice) => {
                 let killed = notice.tool_killed || notice.user_killed;
+                // The process is gone; let the readers finish a fast command
+                // before the snapshot is taken.
+                self.jobs
+                    .wait_readers(&job_id, command_job::READER_GRACE)
+                    .await;
                 self.present(
                     &execution,
                     &job_id,

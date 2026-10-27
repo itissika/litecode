@@ -169,6 +169,16 @@ impl ContextMeter {
         self.pressure_enabled() && self.used_tokens > self.prompt_limit
     }
 
+    /// Hard send gate: 100% of the selected product window, capped by the
+    /// physical prompt ceiling minus the safety margin. Standard mode therefore
+    /// stops at its own window (the gauge reaches 100%); max mode stops at the
+    /// provider's prompt ceiling, which can sit below the selected window.
+    /// Deliberately later than [`Self::should_compact`] (the 0.8 prepare line).
+    pub fn must_compact_before_send(&self, margin: usize) -> bool {
+        let physical = self.prompt_limit.saturating_sub(margin);
+        self.pressure_enabled() && self.used_tokens > physical.min(self.context_window)
+    }
+
     /// Prompt occupancy plus the separate output reservation. Useful for
     /// diagnostics; pressure decisions compare `used_tokens` to `compact_at`.
     pub fn occupied_with_output(&self) -> usize {
@@ -559,6 +569,95 @@ mod tests {
         assert!(!below.should_compact());
         assert!(!at.should_compact(), "auto trigger is strict > compact_at");
         assert!(over.should_compact());
+    }
+
+    #[test]
+    fn send_gate_uses_prompt_limit_minus_margin() {
+        let below = ContextMeter::new(
+            10_000,
+            10_000,
+            1_000,
+            8_500,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let over = ContextMeter::new(
+            10_000,
+            10_000,
+            1_000,
+            8_501,
+            ContextMeterSource::LocalEnvelope,
+        );
+        assert!(!below.must_compact_before_send(500));
+        assert!(over.must_compact_before_send(500));
+        // The 0.8 line is not the send gate: 8_100 is below 8_500.
+        let prepare_only = ContextMeter::new(
+            10_000,
+            10_000,
+            1_000,
+            8_100,
+            ContextMeterSource::LocalEnvelope,
+        );
+        assert!(prepare_only.should_compact());
+        assert!(!prepare_only.must_compact_before_send(500));
+        // Unknown/short windows never force a send stop.
+        let unknown = ContextMeter::new(1, 1, 0, 1, ContextMeterSource::LocalEnvelope);
+        assert!(!unknown.must_compact_before_send(500));
+    }
+
+    #[test]
+    fn send_gate_follows_product_window_below_physical_limit() {
+        // W=256k, model max=1.05M, output=128k -> physical prompt 922k.
+        // Standard mode stops at 100% of its own 256k window.
+        let below = ContextMeter::new(
+            256_000,
+            1_050_000,
+            128_000,
+            255_999,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let at = ContextMeter::new(
+            256_000,
+            1_050_000,
+            128_000,
+            256_000,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let over = ContextMeter::new(
+            256_000,
+            1_050_000,
+            128_000,
+            256_001,
+            ContextMeterSource::LocalEnvelope,
+        );
+        assert!(!below.must_compact_before_send(5_120));
+        assert!(
+            !at.must_compact_before_send(5_120),
+            "strict > allows exactly 100%"
+        );
+        assert!(over.must_compact_before_send(5_120));
+        assert!(
+            at.should_compact(),
+            "the 0.8 prepare line is already crossed"
+        );
+
+        // Max mode: the selected window is the model max, so the physical
+        // prompt ceiling minus margin is the hard line.
+        let max_at = ContextMeter::new(
+            1_050_000,
+            1_050_000,
+            128_000,
+            901_000,
+            ContextMeterSource::LocalEnvelope,
+        );
+        let max_over = ContextMeter::new(
+            1_050_000,
+            1_050_000,
+            128_000,
+            901_001,
+            ContextMeterSource::LocalEnvelope,
+        );
+        assert!(!max_at.must_compact_before_send(21_000));
+        assert!(max_over.must_compact_before_send(21_000));
     }
 
     #[test]

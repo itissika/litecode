@@ -230,16 +230,4 @@ pub fn install_custom_auto_turn(
 }
 
 #[cfg(test)]
-mod tests {
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-
-}
+mod tests {}

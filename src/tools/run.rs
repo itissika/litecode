@@ -68,7 +68,7 @@ impl RunTool {
             .jobs
             .pipe_streams(job_id)
             .map(|(_, _, stdout, stderr)| (stdout, stderr));
-        if self.jobs.discard_attached(job_id)
+        if self.jobs.discard_cancelled(job_id)
             && let Some((stdout, stderr)) = paths
         {
             let _ = std::fs::remove_file(stdout);
@@ -145,6 +145,11 @@ impl RunTool {
         };
         match decision {
             PipeDecision::Exited { job_id, exit_code } => {
+                // The exit is already recorded; give the readers a brief grace
+                // so a fast command still returns its full output.
+                self.jobs
+                    .wait_readers(&job_id, command_job::READER_GRACE)
+                    .await;
                 self.command_result(&execution.workspace_root, &job_id, exit_code, false, message)
             }
             PipeDecision::Background { job_id } | PipeDecision::Promoted { job_id } => {
@@ -298,6 +303,7 @@ mod tests {
     
     
     use crate::tools::command_job::{StopJob, pid_alive, sleep_shell, test_execution};
+    use std::time::Instant;
 
     fn tool() -> (RunTool, Arc<AgentJobRegistry>) {
         let jobs = Arc::new(AgentJobRegistry::new());
@@ -325,7 +331,10 @@ mod tests {
         assert!(data["id"].as_str().unwrap().starts_with("bg_"));
         let output = data["output"].as_str().unwrap();
         assert!(output.contains("hello-wp197"), "{output}");
-        let _ = jobs;
+        // A small foreground exit keeps its log only until the readers finish,
+        // then the row is dropped so no stale job lingers.
+        let id = data["id"].as_str().unwrap();
+        assert!(jobs.get(id).is_none(), "sealed foreground job must be dropped");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -350,6 +359,71 @@ mod tests {
         };
         let pid = jobs.job_pid(&id).expect("pid");
         assert!(pid_alive(pid), "job should still be running");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_returns_when_the_descendant_still_holds_the_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let started = Instant::now();
+        let result = tool
+            .execute(
+                serde_json::json!({"command": "(sleep 1; echo late > late.txt) & sleep 0"}),
+                execution(dir.path()),
+            )
+            .await;
+        let elapsed = started.elapsed();
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().expect("data");
+        assert_eq!(data["exit_code"], 0, "{data}");
+        assert!(
+            elapsed < Duration::from_millis(900),
+            "run must not wait for the descendant's pipe: {elapsed:?}"
+        );
+        let id = data["id"].as_str().unwrap().to_string();
+        assert!(
+            jobs.readers_open(&id),
+            "the descendant must still hold the pipe: {data}"
+        );
+        assert!(
+            data["output"].as_str().unwrap().contains("still draining"),
+            "{data}"
+        );
+        assert!(
+            jobs.running("test-session").is_empty(),
+            "an exited shell must not stay in the running list: {data}"
+        );
+        assert!(!dir.path().join("late.txt").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wait_returns_when_the_process_exited_even_if_the_pipe_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let started = tool
+            .execute(
+                serde_json::json!({"command": "(sleep 1; echo late > late.txt) & sleep 0"}),
+                execution(dir.path()),
+            )
+            .await;
+        let data = started.data.as_ref().expect("data");
+        let id = data["id"].as_str().unwrap().to_string();
+
+        let waiter = crate::tools::wait::WaitTool::new(Arc::clone(&jobs));
+        let began = Instant::now();
+        let result = waiter
+            .execute(
+                serde_json::json!({"id": id, "sec": 5}),
+                test_execution(dir.path(), "test-session"),
+            )
+            .await;
+        assert!(
+            began.elapsed() < Duration::from_millis(900),
+            "wait must not block on a pipe the process already left"
+        );
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["exit_code"], 0, "{data}");
     }
 
     #[tokio::test(flavor = "current_thread")]

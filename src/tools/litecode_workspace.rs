@@ -870,11 +870,11 @@ impl LitecodeWorkspaceTool {
                     }
                     if surface == CallSurface::Code {
                         out.push_str(
-                            "  code result: `{ ok: true, text: <stdout/content> }`; `run_in_background` is unavailable.\n",
+                            "  code result: `{ ok: true, ...<output_schema fields> }` from the stdout object; `run_in_background` is unavailable.\n",
                         );
                     }
                     if original.timeout == 0 {
-                        out.push_str("  `timeout: 0` fails immediately.\n");
+                        out.push_str("  `timeout: 0` is not unlimited: settings save uses 120, a hand-written file runs 1s. Set timeout >= 1.\n");
                     }
                     if !agent_tool_enabled(resolved, &self.agent_id, id) {
                         off.push(id.clone());
@@ -924,7 +924,7 @@ impl Tool for LitecodeWorkspaceTool {
                 },
                 "definition": {
                     "type": "object",
-                    "description": "Custom tool body for `validate_custom` (name, command, schema, args, timeout, rules, surface). Set surface to direct (default) or code. Code validates run_code admission and returns {ok,text}; direct supports run_in_background."
+                    "description": "Custom tool body for `validate_custom` (one tool object, not a full file). Standalone must set surface direct|code; suite member must set suite (already loaded) and omit surface/rules. Required: name/command/schema; code also requires output_schema (direct forbids it). Code returns {ok:true,...stdout}; direct supports run_in_background."
                 },
                 "sample_input": {
                     "type": "object",

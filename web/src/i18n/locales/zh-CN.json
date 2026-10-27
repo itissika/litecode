@@ -7,6 +7,13 @@
       "delete": "删除智能体",
       "toolBindings": "工具绑定",
       "agentToolBindings": "智能体工具绑定",
+      "toolGroup": {
+        "core": "核心工具",
+        "engine": "引擎工具",
+        "custom": "自定义工具",
+        "mcp": "MCP 服务器"
+      },
+      "toolGroupCount": "{{enabled}}/{{total}} 已开启",
       "visibleToModel": "下一回合对模型可见",
       "noToolsListed": "暂无工具。请先在 MCP 设置页启动该服务器。",
       "systemPrompt": "系统提示",
@@ -118,24 +125,20 @@
     },
     "customTools": {
       "title": "自定义工具",
-      "new": "新建自定义工具",
-      "bindHint": "仅定义。在智能体页绑定。工作区覆盖全局。",
-      "suites": "套件",
-      "newGlobal": "新建全局",
-      "newWorkspace": "新建工作区",
+      "newTool": "新建工具",
+      "newSuite": "新建套件",
+      "newGlobalTool": "新建全局工具",
+      "newWorkspaceTool": "新建工作区工具",
+      "newGlobalSuite": "新建全局套件",
+      "newWorkspaceSuite": "新建工作区套件",
+      "suiteTag": "套件",
+      "memberOf": "套件 {{suite}}",
       "saveSuite": "保存套件",
-      "deleteSuite": "删除套件",
       "codeWarnings": "代码准入警告",
       "definitionErrors": "定义错误",
-      "definitionGuide": "独立工具：设置 surface: \"direct\"（允许后台与媒体）或 surface: \"code\" 并提供 output_schema 对象。套件成员：省略 surface，设置 suite，并将 rules 留空；由套件统一管理。代码套件成员以 tools.<suite>.<member> 调用。",
-      "suitesHint": "一个套件对应一张卡片、一次绑定、一种权限面。工作区套件会替换同名全局套件及其全部成员。",
-      "invalidStay": "无效定义会显示在下方且不会进入目录。旧格式不会自动迁移：请按指南改写为 direct/code + suites 格式。",
-      "codeWarningsHint": "这些工具无法进入 run_code；直接定义不受影响。",
-      "noLabel": "无标签",
       "rulesCount": "{{count}} 条规则",
       "suiteIdPlaceholder": "suite_id",
       "saveFailed": "保存失败",
-      "deleteFailed": "删除失败",
       "invalidSuiteJson": "套件 JSON 无效",
       "suiteIdInvalid": "套件 id 须匹配 [a-z][a-z0-9_]*",
       "jsonRequired": "需要包含 name、command 与 schema 的合法 JSON",
@@ -476,6 +479,24 @@
   "editor": {
     "waitingReconnect": "等待重新连接…",
     "loading": "加载中…"
+  },
+  "browser": {
+    "title": "浏览器",
+    "unavailable": "浏览器仅在桌面版中可用。",
+    "back": "后退",
+    "forward": "前进",
+    "address": "地址",
+    "addressPlaceholder": "输入网址",
+    "stop": "停止",
+    "reload": "刷新",
+    "agentBusy": "智能体正在操作此页面…",
+    "error": {
+      "open": "无法打开页面",
+      "history": "无法在历史记录中前进或后退",
+      "stop": "无法停止页面",
+      "reload": "无法刷新页面",
+      "address": "请输入 http(s) 地址"
+    }
   },
   "desktop": {
     "error": {

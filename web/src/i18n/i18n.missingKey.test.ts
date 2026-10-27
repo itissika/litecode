@@ -38,6 +38,24 @@ describe("i18n missing-key / skeleton keys", () => {
     await i18n.changeLanguage("en");
   });
 
+  it("has browser panel strings in both locales", async () => {
+    const keys = [
+      "browser.title",
+      "browser.unavailable",
+      "browser.agentBusy",
+      "browser.error.open",
+    ];
+    for (const key of keys) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+    await i18n.changeLanguage("zh-CN");
+    expect(i18n.t("browser.agentBusy")).toBe("智能体正在操作此页面…");
+    for (const key of keys) {
+      expect(i18n.t(key)).not.toBe(key);
+    }
+    await i18n.changeLanguage("en");
+  });
+
   it("does not throw on missing keys (returns key)", () => {
     expect(() => i18n.t("does.not.exist.ever")).not.toThrow();
     expect(i18n.t("does.not.exist.ever")).toBe("does.not.exist.ever");

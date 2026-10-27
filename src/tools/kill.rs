@@ -1,8 +1,10 @@
 //! Code-surface stop of a `run` job (`kill`).
 //!
-//! Killing uses the registry's pid tree kill (`kill_registered`, Unix process
-//! group / Windows `taskkill /T /F`) and then `take_notice`, so the exit does
-//! not become a user-stopped reminder. An unknown id or another session is
+//! Killing only signals: the registry latches `tool_killed` and terminates the
+//! process tree, while the supervisor still owns the exit. The tool then waits
+//! for that exit, consumes the mailbox notice so the stop does not become a
+//! natural-exit reminder, and reports `still_alive` only when the process
+//! really outlived the reap wait. An unknown id or another session is
 //! `not_found`.
 
 use std::sync::Arc;
@@ -31,25 +33,26 @@ impl KillTool {
         Self { jobs }
     }
 
+    /// Poll until the supervisor records the process exit. `Some(code)` means
+    /// the process is gone; `None` means it outlived the reap wait (or the call
+    /// was cancelled).
     async fn observed_exit(
         &self,
         job_id: &str,
-        seed: Option<u32>,
         cancel: &tokio_util::sync::CancellationToken,
-    ) -> Option<i32> {
-        if let Some(code) = seed {
-            return Some(code as i32);
-        }
+    ) -> Option<Option<u32>> {
         let deadline = tokio::time::Instant::now() + REAP_WAIT;
         loop {
-            if let Some((_, Some(code), _, _)) = self.jobs.get(job_id) {
-                return Some(code as i32);
+            match self.jobs.get(job_id) {
+                Some((false, code, _, _)) => return Some(code),
+                None => return None,
+                Some((true, _, _, _)) => {}
             }
             if cancel.is_cancelled() || tokio::time::Instant::now() >= deadline {
-                return self
-                    .jobs
-                    .get(job_id)
-                    .and_then(|(_, code, _, _)| command_job::code_i32(code));
+                return match self.jobs.get(job_id) {
+                    Some((false, code, _, _)) => Some(code),
+                    _ => None,
+                };
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
@@ -60,23 +63,28 @@ impl KillTool {
         execution: &ToolExecutionContext,
         job_id: &str,
         exit_code: Option<i32>,
-        confirmed_dead: bool,
+        note: Option<&str>,
+        killed: bool,
+        still_alive: bool,
     ) -> ToolCallResult {
-        let notes: &[&str] = if confirmed_dead {
-            &["process was killed"]
-        } else {
-            &["kill signal sent but process still alive after reap wait"]
-        };
+        let drain = command_job::exit_drain_note(&self.jobs, job_id, &execution.workspace_root);
+        let mut notes: Vec<&str> = note.into_iter().collect();
+        if killed {
+            notes.push("process was killed");
+        }
+        if let Some(drain) = &drain {
+            notes.push(drain);
+        }
         let Some(output) = command_job::format_job_output(
             &self.jobs,
             job_id,
             &execution.workspace_root,
             exit_code,
-            notes,
+            &notes,
         ) else {
             return coded_error("io", "kill lost the job logs");
         };
-        if confirmed_dead {
+        if !still_alive {
             present_command(job_id, exit_code, output, None)
         } else {
             command_job::present_command_full(
@@ -105,29 +113,63 @@ impl KillTool {
             return command_job::not_found(&self.jobs, &execution.session_id, &job_id);
         }
 
-        // Capture pid before seal so we can confirm death at the OS after reap.
-        let pid = self.jobs.job_pid(&job_id);
-
         // `user_killed` stays false. The human click is `kill_from_ui`, which
-        // leaves the mailbox notice. This path marks `tool_killed` and consumes
-        // the mailbox notice so no natural-exit reminder fires.
+        // leaves the mailbox notice. This path latches `tool_killed`; the notice
+        // is consumed only once the exit is confirmed, so no natural-exit
+        // reminder fires for a stop that landed.
         let Some(killed) = self.jobs.kill_registered(&job_id, false) else {
             return command_job::not_found(&self.jobs, &execution.session_id, &job_id);
         };
-        self.jobs.take_notice(&execution.session_id, &job_id);
-        let exit_code = self
-            .observed_exit(&job_id, killed.exit_code, &execution.cancel)
-            .await;
-        let confirmed_dead = exit_code.is_some()
-            || pid
-                .map(|pid| !command_job::pid_alive(pid))
-                .unwrap_or(true);
-        self.present(
-            &execution,
-            &job_id,
-            if confirmed_dead { exit_code } else { None },
-            confirmed_dead,
-        )
+        if !killed.alive && !killed.reader_eof {
+            // Draining: the shell was already gone and the tree kill closed
+            // whatever descendant still held the pipes.
+            self.jobs
+                .wait_readers(&job_id, command_job::READER_GRACE)
+                .await;
+            self.jobs.take_notice(&execution.session_id, &job_id);
+            return self.present(
+                &execution,
+                &job_id,
+                command_job::code_i32(killed.exit_code),
+                Some("process had already exited; remaining job processes were stopped"),
+                true,
+                false,
+            );
+        }
+        if !killed.alive {
+            // Sealed before the signal: report the exit that already happened.
+            self.jobs.take_notice(&execution.session_id, &job_id);
+            return self.present(
+                &execution,
+                &job_id,
+                command_job::code_i32(killed.exit_code),
+                Some("job had already exited"),
+                false,
+                false,
+            );
+        }
+        match self.observed_exit(&job_id, &execution.cancel).await {
+            Some(exit_code) => {
+                self.jobs
+                    .wait_readers(&job_id, command_job::READER_GRACE)
+                    .await;
+                self.jobs.take_notice(&execution.session_id, &job_id);
+                self.present(
+                    &execution,
+                    &job_id,
+                    command_job::code_i32(exit_code),
+                    None,
+                    true,
+                    false,
+                )
+            }
+            None => {
+                // The stop did not land. Drop the latch so a later natural exit
+                // is not reported as killed, and keep the notice for the seam.
+                self.jobs.clear_tool_kill_if_alive(&job_id);
+                self.present(&execution, &job_id, None, None, false, true)
+            }
+        }
     }
 }
 
@@ -262,6 +304,111 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(!pid_alive(pid), "pid should be dead");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_while_draining_stops_the_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-kill-drain";
+        let started = RunTool::with_window(Arc::clone(&jobs), Duration::from_millis(500))
+            .execute(
+                serde_json::json!({"command": "(sleep 2; echo late > late.txt) & sleep 0"}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(started.error.is_none(), "{started:?}");
+        let data = started.data.as_ref().expect("data");
+        let id = data["id"].as_str().unwrap().to_string();
+        assert!(
+            jobs.readers_open(&id),
+            "the descendant must still hold the pipe: {data}"
+        );
+
+        let result = tool
+            .execute(
+                serde_json::json!({"id": id}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert!(
+            data["output"]
+                .as_str()
+                .unwrap()
+                .contains("remaining job processes were stopped"),
+            "{data}"
+        );
+
+        // The marker is written at 2s; the tree kill must reach the descendant
+        // that outlived the shell long before that.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        assert!(
+            !dir.path().join("late.txt").exists(),
+            "a descendant survived the job tree kill"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_on_a_finished_job_reports_its_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-kill-sealed";
+        jobs.insert_finished_pipe_job(
+            "bg_sealed01",
+            session,
+            "call_sealed",
+            "echo hi",
+            dir.path(),
+            Some(0),
+            false,
+        )
+        .expect("seed a finished job");
+
+        let result = tool
+            .execute(
+                serde_json::json!({"id": "bg_sealed01"}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        assert!(result.error.is_none(), "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["exit_code"], 0, "{data}");
+        assert!(
+            data.get("reason").is_none() || data["reason"].is_null(),
+            "{data}"
+        );
+        assert!(
+            data["output"].as_str().unwrap().contains("job had already exited"),
+            "{data}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_without_a_signalable_process_reports_still_alive() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tool, jobs) = tool();
+        let session = "sess-kill-nopid";
+        // A registry row with no pid and no supervisor: the signal cannot land.
+        jobs.insert_live_pipe_job(
+            "bg_nopid01",
+            session,
+            "call_nopid",
+            "echo hi",
+            dir.path(),
+        )
+        .expect("seed a live job");
+
+        let result = tool
+            .execute(
+                serde_json::json!({"id": "bg_nopid01"}),
+                test_execution(dir.path(), session),
+            )
+            .await;
+        let data = result.data.as_ref().unwrap();
+        assert_eq!(data["reason"], "still_alive", "{data}");
+        assert!(data["exit_code"].is_null(), "{data}");
     }
 
     #[tokio::test(flavor = "current_thread")]

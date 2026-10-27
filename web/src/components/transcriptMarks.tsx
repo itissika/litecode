@@ -17,11 +17,13 @@ function MarkLine({
   label,
   children,
   testId,
+  dotClassName = "",
 }: {
   role: "separator" | "status";
   label: string;
   children: ReactNode;
   testId?: string;
+  dotClassName?: string;
 }) {
   return (
     <div
@@ -30,7 +32,9 @@ function MarkLine({
       data-testid={testId}
       className="flex items-center gap-1.5 py-1"
     >
-      <span className="h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled)" />
+      <span
+        className={`h-1 w-1 shrink-0 rounded-full bg-(--_dk-text-disabled) ${dotClassName}`}
+      />
       {children}
     </div>
   );
@@ -174,7 +178,12 @@ export { jobExitDetail, subagentExitDetail };
 /** Transient line while a compaction runs; replaced by CompactCutMark when the row lands. */
 export function CompactingMark() {
   return (
-    <MarkLine role="status" label="Compacting context" testId="compacting-now">
+    <MarkLine
+      role="status"
+      label="Compacting context"
+      testId="compacting-now"
+      dotClassName="compact-wait-dot"
+    >
       <WaveText text="compacting…" className="text-dk-2xs" />
     </MarkLine>
   );

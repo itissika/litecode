@@ -80,6 +80,51 @@ impl ContextMode {
     }
 }
 
+/// Whether auto compaction may summarize in the background while the agent
+/// keeps looping. Read once per runtime; a turn never changes mode mid-flight.
+///
+/// - `Off`: synchronous compaction at the 0.8 prepare line.
+/// - `Shadow`: reserved preview mode; it follows the synchronous path today.
+/// - `On`: an independent branch owns the summary and its commit. This is the
+///   production default; set `LITECODE_COMPACT_PREFETCH=off` to opt out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompactionPrefetchMode {
+    Off,
+    Shadow,
+    #[default]
+    On,
+}
+
+impl CompactionPrefetchMode {
+    pub const ENV: &'static str = "LITECODE_COMPACT_PREFETCH";
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Shadow => "shadow",
+            Self::On => "on",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Self::Off),
+            "shadow" => Some(Self::Shadow),
+            "on" => Some(Self::On),
+            _ => None,
+        }
+    }
+
+    /// Default is `On`: an unset or invalid env var uses the background branch.
+    /// `LITECODE_COMPACT_PREFETCH=off` restores synchronous compaction.
+    pub fn from_env() -> Self {
+        std::env::var(Self::ENV)
+            .ok()
+            .and_then(|raw| Self::parse(&raw))
+            .unwrap_or_default()
+    }
+}
+
 /// Context window selected by the product mode.
 ///
 /// `Standard` uses the model's standard/default budget (normally 256K, or the
@@ -93,4 +138,27 @@ pub fn effective_context_window(model: &ResolvedModel, mode: ContextMode) -> usi
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::CompactionPrefetchMode;
+
+    #[test]
+    fn compaction_prefetch_mode_parses_known_values_only() {
+        assert_eq!(
+            CompactionPrefetchMode::parse("off"),
+            Some(CompactionPrefetchMode::Off)
+        );
+        assert_eq!(
+            CompactionPrefetchMode::parse(" SHADOW "),
+            Some(CompactionPrefetchMode::Shadow)
+        );
+        assert_eq!(
+            CompactionPrefetchMode::parse("On"),
+            Some(CompactionPrefetchMode::On)
+        );
+        assert_eq!(CompactionPrefetchMode::parse("maybe"), None);
+        assert_eq!(
+            CompactionPrefetchMode::default(),
+            CompactionPrefetchMode::On
+        );
+    }
+}

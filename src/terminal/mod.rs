@@ -467,7 +467,9 @@ impl TerminalHub {
         })
     }
 
-    /// Kill a registered pipe job by pid. Human PTY ids are not in the job registry.
+    /// Signal a registered pipe job's whole tree. The supervisor still owns the
+    /// exit, so `alive` here only reports the state right after the signal.
+    /// Human PTY ids are not in the job registry.
     pub fn kill(&self, id: &str) -> TerminalResult<SessionInfo> {
         self.kill_registered_job(id, false)
     }

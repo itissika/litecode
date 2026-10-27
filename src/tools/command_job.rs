@@ -5,6 +5,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::Serialize;
 
@@ -114,6 +115,37 @@ pub(crate) fn code_i32(code: Option<u32>) -> Option<i32> {
     code.map(|code| code as i32)
 }
 
+/// How long a just-exited job may keep draining its pipes before `run` /
+/// `wait` / `kill` return. A descendant that inherited the pipe can hold it
+/// far longer; the tools then return the exit-time snapshot plus the log path.
+pub(crate) const READER_GRACE: Duration = Duration::from_millis(50);
+
+/// Note added when the process already exited but a pipe is still open.
+fn drain_note_text(stdout_file: Option<&str>) -> String {
+    match stdout_file {
+        Some(path) => format!("output still draining; full log: {path}"),
+        None => "output still draining".to_string(),
+    }
+}
+
+/// Note for a job whose process exited while a pipe is still open, or `None`
+/// once the log is complete. Used by `wait` / `kill`, which read the live
+/// stream instead of the exited-output path.
+pub(crate) fn exit_drain_note(
+    jobs: &AgentJobRegistry,
+    job_id: &str,
+    workspace_root: &Path,
+) -> Option<String> {
+    if !jobs.readers_open(job_id) {
+        return None;
+    }
+    let (_, _, stdout_path, _) = jobs.pipe_streams(job_id)?;
+    Some(drain_note_text(Some(&display_output_path(
+        &stdout_path,
+        workspace_root,
+    ))))
+}
+
 /// Build `Command.output` from pipe streams plus optional status lines.
 pub(crate) fn format_job_output(
     jobs: &AgentJobRegistry,
@@ -144,7 +176,10 @@ pub(crate) fn format_exited_output(
     extra_notes: &[&str],
 ) -> Option<JobOutput> {
     let (stdout, stderr, stdout_path, stderr_path) = jobs.pipe_streams(job_id)?;
-    let need_file = stream_needs_file(&stdout) || stream_needs_file(&stderr);
+    // A job whose shell exited while a descendant still holds the pipe is
+    // draining: its log can still grow, so keep both files and say so.
+    let draining = jobs.readers_open(job_id);
+    let need_file = draining || stream_needs_file(&stdout) || stream_needs_file(&stderr);
     let (stdout_file, stderr_file) = if need_file {
         (
             Some(display_output_path(&stdout_path, workspace_root)),
@@ -157,13 +192,19 @@ pub(crate) fn format_exited_output(
     } else {
         (None, None)
     };
+    let note = draining.then(|| drain_note_text(stdout_file.as_deref()));
+    let mut notes: Vec<&str> = Vec::with_capacity(extra_notes.len() + 1);
+    notes.extend_from_slice(extra_notes);
+    if let Some(note) = &note {
+        notes.push(note);
+    }
     Some(compose_output(
         &stdout,
         &stderr,
         stdout_file.as_deref(),
         stderr_file.as_deref(),
         exit_code,
-        extra_notes,
+        &notes,
     ))
 }
 
@@ -328,6 +369,7 @@ pub(crate) fn test_execution(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;

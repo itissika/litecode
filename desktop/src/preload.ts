@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
 import type {
+  BROWSER_AGENT_ACTIVITY_CHANNEL as BrowserAgentActivityChannel,
+  BROWSER_CLOSE_CHANNEL as BrowserCloseChannel,
+  BROWSER_OPEN_CHANNEL as BrowserOpenChannel,
   BROWSER_STATE_CHANNEL as BrowserStateChannel,
+  BrowserAgentActivityEvent,
+  BrowserCloseRequest,
+  BrowserOpenRequest,
   COMPONENT_PROGRESS_CHANNEL as ComponentProgressChannel,
   REMOTE_DISCONNECTED_CHANNEL as RemoteDisconnectedChannel,
   REMOTE_PROGRESS_CHANNEL as RemoteProgressChannel,
@@ -30,6 +36,10 @@ const REMOTE_PROGRESS_CHANNEL: typeof RemoteProgressChannel = "litecode:remote-p
 const REMOTE_DISCONNECTED_CHANNEL: typeof RemoteDisconnectedChannel = "litecode:remote-disconnected";
 const COMPONENT_PROGRESS_CHANNEL: typeof ComponentProgressChannel = "litecode:component-progress";
 const BROWSER_STATE_CHANNEL: typeof BrowserStateChannel = "litecode:browser-state";
+const BROWSER_OPEN_CHANNEL: typeof BrowserOpenChannel = "litecode:browser-open";
+const BROWSER_CLOSE_CHANNEL: typeof BrowserCloseChannel = "litecode:browser-close";
+const BROWSER_AGENT_ACTIVITY_CHANNEL: typeof BrowserAgentActivityChannel =
+  "litecode:browser-agent-activity";
 const TURN_NOTIFICATION_CLICK_CHANNEL: typeof TurnNotificationClickChannel =
   "litecode:turn-notification-click";
 
@@ -235,6 +245,9 @@ const bridge = {
   browserSetVisible: (input: { id: string; visible: boolean }): void => {
     ipcRenderer.send("litecode:browser-set-visible", input);
   },
+  browserSetActive: (input: { id: string; active: boolean }): void => {
+    ipcRenderer.send("litecode:browser-set-active", input);
+  },
   browserDestroy: (id: string): void => {
     ipcRenderer.send("litecode:browser-destroy", id);
   },
@@ -247,6 +260,32 @@ const bridge = {
     };
     ipcRenderer.on(BROWSER_STATE_CHANNEL, listener);
     return () => ipcRenderer.removeListener(BROWSER_STATE_CHANNEL, listener);
+  },
+  onBrowserOpenRequest: (handler: (event: BrowserOpenRequest) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserOpenRequest) => {
+      handler(payload);
+    };
+    ipcRenderer.on(BROWSER_OPEN_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(BROWSER_OPEN_CHANNEL, listener);
+  },
+  onBrowserCloseRequest: (handler: (event: BrowserCloseRequest) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserCloseRequest) => {
+      handler(payload);
+    };
+    ipcRenderer.on(BROWSER_CLOSE_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(BROWSER_CLOSE_CHANNEL, listener);
+  },
+  onBrowserAgentActivity: (
+    handler: (event: BrowserAgentActivityEvent) => void,
+  ): (() => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      payload: BrowserAgentActivityEvent,
+    ) => {
+      handler(payload);
+    };
+    ipcRenderer.on(BROWSER_AGENT_ACTIVITY_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(BROWSER_AGENT_ACTIVITY_CHANNEL, listener);
   },
 } satisfies LitecodeDesktopBridge;
 

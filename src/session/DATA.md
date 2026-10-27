@@ -170,13 +170,15 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `reminder/background` | Restore | 隐藏 | 同上，仍在跑的 bash 或子会话计数非空 |
 | `reminder/plan_changed` | Diff（按 revision） | 隐藏 | 磁盘 revision 与 `active_plan.revision` 不一致，且脊骨上没有同 path+revision 的这类行 |
 | `reminder/files_changed` | Event | 隐藏 | 外部改了本会话跟踪的文件。只列路径，不带内容 |
-| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run` 作业退出。`wait` 或 `kill` 已消费的通知不进这里 |
+| `reminder/bash_exit` | Event | 切痕「后台终端退出」 | 后台 `run` 作业**进程退出**（不等 stdout/stderr 读完，孙进程仍持管道时也照发）。`wait` 或 `kill` 已消费的通知不进这里 |
 | `reminder/subagent_settled` | Event | 切痕「子会话结束」 | 后台子会话回合结束 |
 | `reminder/custom_tool_settled` | Event | 切痕「后台自定义工具结束」 | 后台自定义工具任务结束。结果经 mailbox 在请求缝隙写入，不发明 FunctionCallOutput |
 | `reminder/mentions` | 附着（非 seam Restore） | 隐藏 | 人键入 user 消息后立即写：展开消息里引用的知识节点/符号快照；压缩后不自动恢复；同快照仍在活面上则不重复写 |
 | `reminder/knowledge_status` | Diff（按 class） | 隐藏 | 人键入 user 消息后附着知识库 class 提示；没有 enabled 节点不写（pending / disabled 视同空库，它们的问题也不计入）；只统计 enabled 节点上的错误与警告，否则报 enabled 数量；活面上同 class 不重复写 |
 
 隐藏行仍然下发，带 `hidden: true`，seq 游标保持连续。可见性只在 Rust 的 `ReminderKind::visibility` 声明；前端只认 `hidden`。
+
+进程退出与输出读完是两个事实：registry 的 `alive` 只表示进程未回收，`reader_eof` 表示管道读完。`bash_exit` 与 `running` 列表只认前者；日志仍可能增长的作业（`alive=false, reader_eof=false`）不再出现在 running 列表里。
 
 bash 退出、子会话结束和后台自定义工具结束不再在 auto-turn 里先写提醒再把同一段文本当用户输入。它们只做非消费的「是否有待处理」检查，然后 `TurnInput::Wake`。首个缝隙写出对应行。回合中途的 bash 退出也不再拼进 tool result，而是在下一个请求缝隙独占一个 seq。
 

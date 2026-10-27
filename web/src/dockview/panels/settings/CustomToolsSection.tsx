@@ -1,20 +1,17 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import i18n from "../../../i18n";
+import { Plus, Trash } from "@phosphor-icons/react";
 
 import {
   type CustomSuiteDefinition,
   type CustomToolDefinition,
   type ToolScope,
 } from "../../../api/settings";
+import { FoldCard } from "../../../components/FoldCard";
+import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
+import i18n from "../../../i18n";
 import { useSettingsStore } from "../../../stores/settingsStore";
-import {
-  FieldLabel,
-  TextArea,
-  useSettingsSaveBlocked,
-} from "./shared";
 import { parseCustomToolJson } from "./jsonDefinitions";
-import { ScopeHint, ScopedDefinitionEditor } from "./ScopedDefinitionEditor";
 import {
   flushRegisteredSettings,
   isPersistBusy,
@@ -22,6 +19,12 @@ import {
   useDocPersist,
   useSettingsPersist,
 } from "./persist";
+import {
+  FieldLabel,
+  SettingsPageShell,
+  TextArea,
+  useSettingsSaveBlocked,
+} from "./shared";
 
 const EMPTY_CUSTOM_JSON = `{
   "name": "echo_py",
@@ -86,6 +89,16 @@ function parseSuiteJson(text: string): CustomSuiteDefinition {
   };
 }
 
+const SCOPES: readonly ToolScope[] = ["global", "workspace"];
+
+type SuitePayload = { id: string; def: CustomSuiteDefinition };
+
+type Selection =
+  | { kind: "tool"; scope: ToolScope; id: string }
+  | { kind: "new-tool"; scope: ToolScope }
+  | { kind: "suite"; scope: ToolScope; id: string }
+  | { kind: "new-suite"; scope: ToolScope };
+
 export function CustomToolsSection() {
   const { t } = useTranslation();
   const customTools = useSettingsStore((s) => s.customTools);
@@ -95,79 +108,136 @@ export function CustomToolsSection() {
   const removeCustomTool = useSettingsStore((s) => s.removeCustomTool);
   const saveCustomSuite = useSettingsStore((s) => s.saveCustomSuite);
   const removeCustomSuite = useSettingsStore((s) => s.removeCustomSuite);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedScope, setSelectedScope] = useState<ToolScope>("global");
-  const [jsonText, setJsonText] = useState(EMPTY_CUSTOM_JSON);
-  const [formError, setFormError] = useState<string | null>(null);
-  const [isNew, setIsNew] = useState(false);
-  const [createScope, setCreateScope] = useState<ToolScope>("global");
-  const [suiteScope, setSuiteScope] = useState<ToolScope>("global");
-  const [suiteId, setSuiteId] = useState("");
-  const [suiteJson, setSuiteJson] = useState(EMPTY_SUITE_JSON);
+
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [toolDraft, setToolDraft] = useState(EMPTY_CUSTOM_JSON);
+  const [toolError, setToolError] = useState<string | null>(null);
+  const [suiteDraftId, setSuiteDraftId] = useState("");
+  const [suiteDraft, setSuiteDraft] = useState(EMPTY_SUITE_JSON);
   const [suiteError, setSuiteError] = useState<string | null>(null);
-  const [suiteIsNew, setSuiteIsNew] = useState(false);
 
   const globalTools = customTools?.global ?? [];
   const workspaceTools = customTools?.workspace ?? [];
-  const tools = selectedScope === "workspace" ? workspaceTools : globalTools;
   const suites = customTools?.suites ?? { global: {}, workspace: {} };
   const diagnostics = customTools?.diagnostics ?? [];
   const codeRejections = customTools?.code_rejections ?? [];
 
-  useEffect(() => {
-    if (isNew) return;
-    if (!shouldHydrateDraftFromStore(persistStatus)) return;
-    if (selectedId) {
-      const found = tools.find((t) => t.name === selectedId);
-      if (found) {
-        setJsonText(prettyTool(found));
-        setFormError(null);
-        return;
-      }
-    }
-    if (tools.length === 0) {
-      setSelectedId(null);
-      setJsonText(EMPTY_CUSTOM_JSON);
-    }
-  }, [tools, selectedId, isNew, persistStatus]);
+  const editingTool = selection?.kind === "tool" ? selection : null;
+  const editingToolScope = editingTool?.scope ?? null;
+  const editingToolId = editingTool?.id ?? null;
+  const newToolScope = selection?.kind === "new-tool" ? selection.scope : null;
+  const editingSuite = selection?.kind === "suite" ? selection : null;
+  const editingSuiteScope = editingSuite?.scope ?? null;
+  const editingSuiteId = editingSuite?.id ?? null;
+  const newSuiteScope = selection?.kind === "new-suite" ? selection.scope : null;
+  const actionsDisabled = saveBlocked || isPersistBusy(persistStatus);
 
-  useSettingsPersist(jsonText, {
-    enabled: !isNew && !!selectedId,
+  useEffect(() => {
+    if (!editingToolScope || !editingToolId) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
+    const list =
+      editingToolScope === "workspace" ? workspaceTools : globalTools;
+    const found = list.find((tool) => tool.name === editingToolId);
+    if (!found) return;
+    setToolDraft(prettyTool(found));
+    setToolError(null);
+  }, [
+    editingToolScope,
+    editingToolId,
+    globalTools,
+    workspaceTools,
+    persistStatus,
+  ]);
+
+  useSettingsPersist(toolDraft, {
+    enabled: editingTool !== null,
     debounceMs: 400,
     setStatus: setPersistStatus,
-    serialize: (text) => parseCustomToolJson(text, selectedId),
-    commit: (p) => saveCustomTool(p.name, p, selectedScope),
+    serialize: (text) => parseCustomToolJson(text, editingToolId),
+    commit: (payload) => {
+      if (!editingTool) return Promise.resolve();
+      return saveCustomTool(payload.name, payload, editingTool.scope);
+    },
     revert: () => {
+      if (!editingToolScope || !editingToolId) return;
       const layered = useSettingsStore.getState().customTools;
-      const found = (
-        selectedScope === "workspace" ? layered?.workspace : layered?.global
-      )?.find((t) => t.name === selectedId);
-      if (found) setJsonText(prettyTool(found));
+      const list =
+        editingToolScope === "workspace" ? layered?.workspace : layered?.global;
+      const found = list?.find((tool) => tool.name === editingToolId);
+      if (found) setToolDraft(prettyTool(found));
     },
   });
 
-  const startCreate = (scope: ToolScope) => {
-    setCreateScope(scope);
-    setSelectedScope(scope);
-    setIsNew(true);
-    setSelectedId(null);
-    setJsonText(EMPTY_CUSTOM_JSON);
-    setFormError(null);
+  useEffect(() => {
+    if (!editingSuiteScope || !editingSuiteId) return;
+    if (!shouldHydrateDraftFromStore(persistStatus)) return;
+    const suite = suites[editingSuiteScope]?.[editingSuiteId];
+    if (!suite) return;
+    setSuiteDraft(prettySuite(suite));
+  }, [editingSuiteScope, editingSuiteId, suites, persistStatus]);
+
+  useSettingsPersist<string, SuitePayload>(suiteDraft, {
+    enabled: editingSuite !== null,
+    debounceMs: 400,
+    setStatus: setPersistStatus,
+    serialize: (text) => {
+      if (!editingSuite) return { skip: "invalid" };
+      try {
+        return { ok: { id: editingSuite.id, def: parseSuiteJson(text) } };
+      } catch {
+        return { skip: "invalid" };
+      }
+    },
+    commit: (payload) => {
+      if (!editingSuite) return Promise.resolve();
+      return saveCustomSuite(payload.id, payload.def, editingSuite.scope);
+    },
+    revert: () => {
+      if (!editingSuite) return;
+      const layered = useSettingsStore.getState().customTools;
+      const suite =
+        layered?.suites?.[editingSuite.scope]?.[editingSuite.id];
+      if (suite) setSuiteDraft(prettySuite(suite));
+    },
+  });
+
+  const closeEditor = () => {
+    void flushRegisteredSettings().then(() => setSelection(null));
+  };
+
+  const openTool = (scope: ToolScope, id: string) => {
+    void flushRegisteredSettings().then(() => {
+      const layered = useSettingsStore.getState().customTools;
+      const list = scope === "workspace" ? layered?.workspace : layered?.global;
+      const found = list?.find((tool) => tool.name === id);
+      if (!found) return;
+      setSelection({ kind: "tool", scope, id });
+      setToolDraft(prettyTool(found));
+      setToolError(null);
+    });
+  };
+
+  const startNewTool = (scope: ToolScope) => {
+    void flushRegisteredSettings().then(() => {
+      setSelection({ kind: "new-tool", scope });
+      setToolDraft(EMPTY_CUSTOM_JSON);
+      setToolError(null);
+    });
   };
 
   const onCreate = () => {
-    setFormError(null);
-    const parsed = parseCustomToolJson(jsonText);
+    if (selection?.kind !== "new-tool") return;
+    const scope = selection.scope;
+    setToolError(null);
+    const parsed = parseCustomToolJson(toolDraft);
     if ("skip" in parsed) {
-      setFormError(t("settings.customTools.jsonRequired"));
+      setToolError(t("settings.customTools.jsonRequired"));
       return;
     }
     void (async () => {
       try {
-        await saveCustomTool(parsed.ok.name, parsed.ok, createScope);
-        setIsNew(false);
-        setSelectedScope(createScope);
-        setSelectedId(parsed.ok.name);
+        await saveCustomTool(parsed.ok.name, parsed.ok, scope);
+        setSelection({ kind: "tool", scope, id: parsed.ok.name });
         setPersistStatus("saved");
       } catch {
         // toast already shown
@@ -175,13 +245,18 @@ export function CustomToolsSection() {
     })();
   };
 
-  const onDelete = (name: string, scope: ToolScope) => {
-    if (!name || isNew || saveBlocked) return;
+  const deleteTool = (scope: ToolScope, id: string) => {
+    if (actionsDisabled) return;
     void (async () => {
       try {
-        await removeCustomTool(name, scope);
-        setIsNew(false);
-        setSelectedId(null);
+        await removeCustomTool(id, scope);
+        setSelection((current) =>
+          current?.kind === "tool" &&
+          current.scope === scope &&
+          current.id === id
+            ? null
+            : current,
+        );
       } catch {
         // toast already shown
       }
@@ -189,194 +264,156 @@ export function CustomToolsSection() {
   };
 
   const openSuite = (scope: ToolScope, id: string) => {
-    const suite = suites[scope][id];
-    setSuiteScope(scope);
-    setSuiteId(id);
-    setSuiteJson(suite ? prettySuite(suite) : EMPTY_SUITE_JSON);
-    setSuiteIsNew(false);
-    setSuiteError(null);
+    void flushRegisteredSettings().then(() => {
+      const layered = useSettingsStore.getState().customTools;
+      const suite = layered?.suites?.[scope]?.[id];
+      setSelection({ kind: "suite", scope, id });
+      setSuiteDraftId(id);
+      setSuiteDraft(suite ? prettySuite(suite) : EMPTY_SUITE_JSON);
+      setSuiteError(null);
+    });
   };
 
   const startNewSuite = (scope: ToolScope) => {
-    setSuiteScope(scope);
-    setSuiteId("");
-    setSuiteJson(EMPTY_SUITE_JSON);
-    setSuiteIsNew(true);
-    setSuiteError(null);
+    void flushRegisteredSettings().then(() => {
+      setSelection({ kind: "new-suite", scope });
+      setSuiteDraftId("");
+      setSuiteDraft(EMPTY_SUITE_JSON);
+      setSuiteError(null);
+    });
   };
 
   const onSaveSuite = () => {
+    if (selection?.kind !== "suite" && selection?.kind !== "new-suite") return;
+    const scope = selection.scope;
     setSuiteError(null);
-    const id = suiteId.trim();
+    const id = suiteDraftId.trim();
     if (!/^[a-z][a-z0-9_]*$/.test(id)) {
       setSuiteError(t("settings.customTools.suiteIdInvalid"));
       return;
     }
     let parsed: CustomSuiteDefinition;
     try {
-      parsed = parseSuiteJson(suiteJson);
+      parsed = parseSuiteJson(suiteDraft);
     } catch (error) {
-      setSuiteError(error instanceof Error ? error.message : t("settings.customTools.invalidSuiteJson"));
+      setSuiteError(
+        error instanceof Error
+          ? error.message
+          : t("settings.customTools.invalidSuiteJson"),
+      );
       return;
     }
     void (async () => {
       try {
-        await saveCustomSuite(id, parsed, suiteScope);
-        setSuiteIsNew(false);
-        setSuiteError(null);
+        await saveCustomSuite(id, parsed, scope);
+        setSelection({ kind: "suite", scope, id });
+        setSuiteDraftId(id);
       } catch (error) {
-        setSuiteError(error instanceof Error ? error.message : t("settings.customTools.saveFailed"));
+        setSuiteError(
+          error instanceof Error
+            ? error.message
+            : t("settings.customTools.saveFailed"),
+        );
       }
     })();
   };
 
-  const onDeleteSuite = () => {
-    if (!suiteId || suiteIsNew) return;
+  const deleteSuite = (scope: ToolScope, id: string) => {
+    if (actionsDisabled) return;
     void (async () => {
       try {
-        await removeCustomSuite(suiteId, suiteScope);
-        setSuiteId("");
-        setSuiteJson(EMPTY_SUITE_JSON);
-        setSuiteIsNew(false);
-        setSuiteError(null);
-      } catch (error) {
-        setSuiteError(error instanceof Error ? error.message : t("settings.customTools.deleteFailed"));
+        await removeCustomSuite(id, scope);
+        setSelection((current) =>
+          current?.kind === "suite" &&
+          current.scope === scope &&
+          current.id === id
+            ? null
+            : current,
+        );
+      } catch {
+        // toast already shown
       }
     })();
   };
 
-  const editorForm = (
+  const toolSummary = (tool: CustomToolDefinition) =>
+    tool.suite
+      ? `${t("settings.customTools.memberOf", { suite: tool.suite })} · ${tool.command}`
+      : `${tool.surface ?? "direct"} · ${tool.command}`;
+
+  const suiteSummary = (id: string, suite: CustomSuiteDefinition) => {
+    const parts = [t("settings.customTools.suiteTag"), suite.surface];
+    if (suite.label && suite.label !== id) parts.push(suite.label);
+    const rules = suite.rules?.length ?? 0;
+    if (rules > 0) {
+      parts.push(t("settings.customTools.rulesCount", { count: rules }));
+    }
+    return parts.join(" · ");
+  };
+
+  const toolEditor = (isNew: boolean) => (
     <div className="settings-card space-y-3 p-4">
-      <div>
-        <FieldLabel required>{t("settings.mcp.definitionJson")}</FieldLabel>
-        <p className="mb-2 text-xs text-(--_dk-text-muted)">
-          {t("settings.customTools.definitionGuide")}
-        </p>
-        <TextArea
-          rows={18}
-          value={jsonText}
-          disabled={saveBlocked}
-          onChange={(e) => setJsonText(e.target.value)}
-          className="font-mono text-xs"
-          spellCheck={false}
-        />
-      </div>
-      {formError ? (
-        <p className="text-sm text-(--_dk-red-500)">{formError}</p>
+      <TextArea
+        rows={16}
+        value={toolDraft}
+        disabled={saveBlocked}
+        onChange={(event) => setToolDraft(event.target.value)}
+        className="font-mono text-xs"
+        spellCheck={false}
+        aria-label={t("settings.mcp.definitionJson")}
+      />
+      {toolError ? (
+        <p className="text-sm text-(--_dk-red-500)">{toolError}</p>
+      ) : null}
+      {isNew ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={saveBlocked}
+            onClick={() => setSelection(null)}
+          >
+            {t("common.cancel")}
+          </button>
+        </div>
       ) : null}
     </div>
   );
 
-  const suiteScopes: ToolScope[] = ["global", "workspace"];
-  const suitesView = (
+  const suiteEditor = (isNew: boolean) => (
     <div className="settings-card space-y-3 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <FieldLabel>{t("settings.customTools.suites")}</FieldLabel>
-          <p className="text-xs text-(--_dk-text-muted)">
-            {t("settings.customTools.suitesHint")}
-          </p>
-        </div>
-        <div className="flex gap-2">
+      {isNew ? (
+        <input
+          className="settings-input max-w-56 font-mono text-xs"
+          value={suiteDraftId}
+          placeholder={t("settings.customTools.suiteIdPlaceholder")}
+          disabled={saveBlocked}
+          onChange={(event) => setSuiteDraftId(event.target.value)}
+          aria-label={t("settings.customTools.suiteIdPlaceholder")}
+        />
+      ) : null}
+      <TextArea
+        rows={10}
+        value={suiteDraft}
+        disabled={saveBlocked}
+        onChange={(event) => setSuiteDraft(event.target.value)}
+        className="font-mono text-xs"
+        spellCheck={false}
+        aria-label={t("settings.mcp.definitionJson")}
+      />
+      {suiteError ? (
+        <p className="text-sm text-(--_dk-red-500)">{suiteError}</p>
+      ) : null}
+      {isNew ? (
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            className="btn btn-sm"
+            className="btn-ghost"
             disabled={saveBlocked}
-            onClick={() => startNewSuite("global")}
+            onClick={() => setSelection(null)}
           >
-            {t("settings.customTools.newGlobal")}
+            {t("common.cancel")}
           </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={saveBlocked}
-            onClick={() => startNewSuite("workspace")}
-          >
-            {t("settings.customTools.newWorkspace")}
-          </button>
-        </div>
-      </div>
-      {suiteScopes.map((scope) => {
-        const entries = Object.entries(suites[scope]).sort(([a], [b]) =>
-          a.localeCompare(b),
-        );
-        return (
-          <div key={scope} className="space-y-1">
-            <p className="text-xs font-medium text-(--_dk-text-muted)">
-              {scope === "global" ? t("common.global") : t("common.workspace")}
-            </p>
-            {entries.length === 0 ? (
-              <p className="text-xs text-(--_dk-text-muted)">{t("common.none")}</p>
-            ) : (
-              entries.map(([id, suite]) => (
-                <button
-                  key={id}
-                  type="button"
-                  className="block w-full rounded px-2 py-1 text-left text-xs hover:bg-(--_dk-bg-hover)"
-                  onClick={() => openSuite(scope, id)}
-                >
-                  <span className="font-mono">{id}</span> · {suite.surface} ·{" "}
-                  {suite.label || t("settings.customTools.noLabel")} · {t("settings.customTools.rulesCount", { count: (suite.rules ?? []).length })}
-                </button>
-              ))
-            )}
-          </div>
-        );
-      })}
-      {suiteIsNew || suiteId ? (
-        <div className="space-y-2 border-t border-(--_dk-border) pt-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              className="input input-sm font-mono"
-              value={suiteId}
-              placeholder={t("settings.customTools.suiteIdPlaceholder")}
-              disabled={saveBlocked || !suiteIsNew}
-              onChange={(event) => setSuiteId(event.target.value)}
-            />
-            <span className="text-xs text-(--_dk-text-muted)">
-              {suiteScope === "global" ? t("common.global") : t("common.workspace")}
-            </span>
-            <button
-              type="button"
-              className="btn-primary btn-sm"
-              disabled={saveBlocked}
-              onClick={onSaveSuite}
-            >
-              {t("settings.customTools.saveSuite")}
-            </button>
-            {!suiteIsNew ? (
-              <button
-                type="button"
-                className="btn btn-sm"
-                disabled={saveBlocked}
-                onClick={onDeleteSuite}
-              >
-                {t("settings.customTools.deleteSuite")}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="btn btn-sm"
-              onClick={() => {
-                setSuiteId("");
-                setSuiteIsNew(false);
-                setSuiteError(null);
-              }}
-            >
-              {t("common.close")}
-            </button>
-          </div>
-          <TextArea
-            rows={8}
-            value={suiteJson}
-            disabled={saveBlocked}
-            onChange={(event) => setSuiteJson(event.target.value)}
-            className="font-mono text-xs"
-            spellCheck={false}
-          />
-          {suiteError ? (
-            <p className="text-sm text-(--_dk-red-500)">{suiteError}</p>
-          ) : null}
         </div>
       ) : null}
     </div>
@@ -386,15 +423,13 @@ export function CustomToolsSection() {
     codeRejections.length > 0 ? (
       <div className="settings-card space-y-1 p-4">
         <FieldLabel>{t("settings.customTools.codeWarnings")}</FieldLabel>
-        <p className="text-xs text-(--_dk-text-muted)">
-          {t("settings.customTools.codeWarningsHint")}
-        </p>
         {codeRejections.map((rejection, index) => (
           <p
             key={`code:${rejection.name}:${index}`}
             className="text-xs text-(--_dk-amber-500)"
           >
-            <span className="font-mono">{rejection.name}</span>: {rejection.reason}
+            <span className="font-mono">{rejection.name}</span>:{" "}
+            {rejection.reason}
           </p>
         ))}
       </div>
@@ -410,51 +445,257 @@ export function CustomToolsSection() {
             className="text-xs text-(--_dk-red-500)"
           >
             {diagnostic.message}
-            <span className="text-(--_dk-text-muted)"> {t("common.fix", { fix: diagnostic.fix })}</span>
+            <span className="text-(--_dk-text-muted)">
+              {" "}
+              {t("common.fix", { fix: diagnostic.fix })}
+            </span>
           </p>
         ))}
       </div>
     ) : null;
 
+  const addMenu = (
+    <Dropdown
+      variant="menu"
+      align="right"
+      panelClassName="min-w-[190px] rounded-md py-1"
+      trigger={({ open, toggle }) => (
+        <button
+          type="button"
+          className="btn btn-icon"
+          disabled={actionsDisabled}
+          aria-label={t("common.new")}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          title={t("common.new")}
+          onClick={toggle}
+        >
+          <Plus size={16} />
+        </button>
+      )}
+    >
+      <button
+        type="button"
+        className={dropdownItemClass}
+        onClick={() => startNewTool("global")}
+      >
+        {t("settings.customTools.newGlobalTool")}
+      </button>
+      <button
+        type="button"
+        className={dropdownItemClass}
+        onClick={() => startNewTool("workspace")}
+      >
+        {t("settings.customTools.newWorkspaceTool")}
+      </button>
+      <div className="my-1 border-t border-(--_dk-line)" />
+      <button
+        type="button"
+        className={dropdownItemClass}
+        onClick={() => startNewSuite("global")}
+      >
+        {t("settings.customTools.newGlobalSuite")}
+      </button>
+      <button
+        type="button"
+        className={dropdownItemClass}
+        onClick={() => startNewSuite("workspace")}
+      >
+        {t("settings.customTools.newWorkspaceSuite")}
+      </button>
+    </Dropdown>
+  );
+
   return (
-    <ScopedDefinitionEditor
+    <SettingsPageShell
       title={t("settings.customTools.title")}
-      newLabel={t("settings.customTools.new")}
-      hint={
-        <div className="space-y-3">
-          <ScopeHint bindFirst />
-          <p className="text-xs text-(--_dk-text-muted)">
-            {t("settings.customTools.invalidStay")}
-          </p>
-          {codeRejectionsView}
-          {diagnosticsView}
-          {suitesView}
-        </div>
+      actions={
+        <>
+          {selection?.kind === "new-tool" ? (
+            <button
+              type="button"
+              className="btn-primary btn-sm"
+              disabled={actionsDisabled}
+              onClick={onCreate}
+            >
+              {t("common.create")}
+            </button>
+          ) : null}
+          {selection?.kind === "new-suite" ? (
+            <button
+              type="button"
+              className="btn-primary btn-sm"
+              disabled={actionsDisabled}
+              onClick={onSaveSuite}
+            >
+              {t("settings.customTools.saveSuite")}
+            </button>
+          ) : null}
+          {addMenu}
+        </>
       }
-      global={globalTools}
-      workspace={workspaceTools}
-      itemId={(tool) => tool.name}
-      itemSummary={(tool) => `${tool.surface ?? "direct"} · ${tool.command}`}
-      actionsDisabled={saveBlocked || isPersistBusy(persistStatus)}
-      isNew={isNew}
-      createScope={createScope}
-      selectedScope={selectedScope}
-      selectedId={selectedId}
-      onCreate={onCreate}
-      onStartCreate={startCreate}
-      onCancelNew={() => setIsNew(false)}
-      onOpen={(scope, id) => {
-        void flushRegisteredSettings().then(() => {
-          setIsNew(false);
-          setSelectedScope(scope);
-          setSelectedId(id);
-        });
-      }}
-      onClose={() => {
-        void flushRegisteredSettings().then(() => setSelectedId(null));
-      }}
-      onDelete={onDelete}
-      editorForm={editorForm}
-    />
+    >
+      <div className="space-y-3">
+        {codeRejectionsView}
+        {diagnosticsView}
+        {SCOPES.map((scope) => {
+          const scopeTools = [
+            ...(scope === "workspace" ? workspaceTools : globalTools),
+          ].sort((a, b) => a.name.localeCompare(b.name));
+          const scopeSuites = Object.entries(suites[scope]).sort(([a], [b]) =>
+            a.localeCompare(b),
+          );
+          const newToolHere = newToolScope === scope;
+          const newSuiteHere = newSuiteScope === scope;
+          return (
+            <FoldCard
+              key={scope}
+              defaultOpen
+              label={
+                <span className="settings-section-title">
+                  {scope === "global"
+                    ? t("common.global")
+                    : t("common.workspace")}
+                </span>
+              }
+              className="settings-foldcard"
+            >
+              <div className="space-y-2">
+                {scopeSuites.length === 0 &&
+                scopeTools.length === 0 &&
+                !newToolHere &&
+                !newSuiteHere ? (
+                  <p className="px-2 py-1 text-xs text-(--_dk-text-muted)">
+                    {t("common.none")}
+                  </p>
+                ) : null}
+                {scopeSuites.map(([id, suite]) => {
+                  const isOpen =
+                    editingSuite?.scope === scope && editingSuite.id === id;
+                  return (
+                    <FoldCard
+                      key={`suite:${id}`}
+                      open={isOpen}
+                      onToggle={(open) => {
+                        if (open) openSuite(scope, id);
+                        else if (isOpen) closeEditor();
+                      }}
+                      label={
+                        <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                          <span className="truncate font-mono text-sm text-(--_dk-text-secondary)">
+                            {id}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-xs text-(--_dk-text-muted)">
+                              {suiteSummary(id, suite)}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn-danger btn-icon"
+                              disabled={actionsDisabled}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deleteSuite(scope, id);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              aria-label={t("common.deleteNamed", { id })}
+                              title={t("common.deleteNamed", { id })}
+                            >
+                              <Trash size={16} />
+                            </button>
+                          </span>
+                        </span>
+                      }
+                      className="settings-foldcard"
+                    >
+                      {isOpen ? suiteEditor(false) : null}
+                    </FoldCard>
+                  );
+                })}
+                {scopeTools.map((tool) => {
+                  const isOpen =
+                    editingTool?.scope === scope && editingTool.id === tool.name;
+                  return (
+                    <FoldCard
+                      key={`tool:${tool.name}`}
+                      open={isOpen}
+                      onToggle={(open) => {
+                        if (open) openTool(scope, tool.name);
+                        else if (isOpen) closeEditor();
+                      }}
+                      label={
+                        <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
+                          <span className="truncate font-mono text-sm text-(--_dk-text-secondary)">
+                            {tool.name}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-xs text-(--_dk-text-muted)">
+                              {toolSummary(tool)}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn-danger btn-icon"
+                              disabled={actionsDisabled}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                deleteTool(scope, tool.name);
+                              }}
+                              onKeyDown={(event) => event.stopPropagation()}
+                              aria-label={t("common.deleteNamed", {
+                                id: tool.name,
+                              })}
+                              title={t("common.deleteNamed", {
+                                id: tool.name,
+                              })}
+                            >
+                              <Trash size={16} />
+                            </button>
+                          </span>
+                        </span>
+                      }
+                      className="settings-foldcard"
+                    >
+                      {isOpen ? toolEditor(false) : null}
+                    </FoldCard>
+                  );
+                })}
+                {newSuiteHere ? (
+                  <FoldCard
+                    open
+                    onToggle={(open) => {
+                      if (!open) setSelection(null);
+                    }}
+                    label={
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        {t("settings.customTools.newSuite")}
+                      </span>
+                    }
+                    className="settings-foldcard"
+                  >
+                    {suiteEditor(true)}
+                  </FoldCard>
+                ) : null}
+                {newToolHere ? (
+                  <FoldCard
+                    open
+                    onToggle={(open) => {
+                      if (!open) setSelection(null);
+                    }}
+                    label={
+                      <span className="font-mono text-sm text-(--_dk-text-secondary)">
+                        {t("settings.customTools.newTool")}
+                      </span>
+                    }
+                    className="settings-foldcard"
+                  >
+                    {toolEditor(true)}
+                  </FoldCard>
+                ) : null}
+              </div>
+            </FoldCard>
+          );
+        })}
+      </div>
+    </SettingsPageShell>
   );
 }

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { IDockviewPanelProps } from "dockview-react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -43,6 +43,7 @@ function panelProps(): IDockviewPanelProps<{ url?: string }> {
     api: {
       id: PANEL_ID,
       isVisible: true,
+      isActive: true,
       title: "Browser",
       location: { type: "grid" },
       setTitle: vi.fn(),
@@ -50,6 +51,7 @@ function panelProps(): IDockviewPanelProps<{ url?: string }> {
       updateParameters: vi.fn(),
       onDidVisibilityChange: () => ({ dispose: () => {} }),
       onDidLocationChange: () => ({ dispose: () => {} }),
+      onDidActiveChange: () => ({ dispose: () => {} }),
     },
   } as unknown as IDockviewPanelProps<{ url?: string }>;
 }
@@ -77,6 +79,35 @@ describe("BrowserPanel page actions", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reload" }));
     expect(reload).toHaveBeenCalledWith(PANEL_ID);
     expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("reports the active page and disables the toolbar while the agent works", async () => {
+    let activity: ((event: { id: string; busy: boolean }) => void) | undefined;
+    const setActive = vi.fn();
+    window.litecode = stubDesktopBridge({
+      browserCreate: async () => state(),
+      browserSetActive: setActive,
+      onBrowserAgentActivity: (handler) => {
+        activity = handler;
+        return () => {
+          activity = undefined;
+        };
+      },
+    });
+
+    render(<BrowserPanel {...panelProps()} />);
+
+    expect(await screen.findByRole("button", { name: "Reload" })).toBeTruthy();
+    expect(setActive).toHaveBeenCalledWith({ id: PANEL_ID, active: true });
+    const address = screen.getByRole("textbox", { name: "Address" }) as HTMLInputElement;
+    expect(address.disabled).toBe(false);
+
+    act(() => activity?.({ id: PANEL_ID, busy: true }));
+    expect(address.disabled).toBe(true);
+    expect(screen.getByText("Agent is working on this page…")).toBeTruthy();
+
+    act(() => activity?.({ id: PANEL_ID, busy: false }));
+    expect(address.disabled).toBe(false);
   });
 
   it("keeps reload off until the page has an address", async () => {

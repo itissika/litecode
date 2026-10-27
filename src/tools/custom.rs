@@ -144,7 +144,7 @@ pub fn validate_custom_code_contract(
         .map(|_| ())
         .map_err(|reason| {
             format!(
-                "surface 'code' input schema cannot be admitted into run_code: {reason}. Use a simple object schema (no unresolved $ref) or declare surface 'direct'."
+                "surface 'code' schema cannot be admitted into run_code: {reason}. Use a simple input/output object schema with no unsupported keywords (no $ref) or declare surface 'direct'."
             )
         })
 }

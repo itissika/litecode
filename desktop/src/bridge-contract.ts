@@ -17,6 +17,12 @@
 export const REMOTE_PROGRESS_CHANNEL = "litecode:remote-progress";
 export const COMPONENT_PROGRESS_CHANNEL = "litecode:component-progress";
 export const BROWSER_STATE_CHANNEL = "litecode:browser-state";
+/** main -> renderer: open a visible browser panel. */
+export const BROWSER_OPEN_CHANNEL = "litecode:browser-open";
+/** main -> renderer: close one browser panel. */
+export const BROWSER_CLOSE_CHANNEL = "litecode:browser-close";
+/** main -> renderer: the agent is operating this page; disable human controls. */
+export const BROWSER_AGENT_ACTIVITY_CHANNEL = "litecode:browser-agent-activity";
 /** Turn-finished toast clicked. main -> renderer, one-way: `{ sessionId }`. */
 export const TURN_NOTIFICATION_CLICK_CHANNEL = "litecode:turn-notification-click";
 
@@ -121,6 +127,10 @@ export type BrowserState = {
   loading: boolean;
 };
 
+export type BrowserOpenRequest = { id: string; url: string };
+export type BrowserCloseRequest = { id: string };
+export type BrowserAgentActivityEvent = { id: string; busy: boolean };
+
 export type TurnNotificationPayload = {
   sessionId: string;
   turnId: string;
@@ -204,7 +214,13 @@ export type LitecodeDesktopBridge = {
   browserSetBounds(input: { id: string; bounds: BrowserBounds; place?: string }): void;
   browserSetHost(input: { id: string; popoutId: string | null }): boolean;
   browserSetVisible(input: { id: string; visible: boolean }): void;
+  browserSetActive(input: { id: string; active: boolean }): void;
   browserDestroy(id: string): void;
   browserSetObscured(obscured: boolean): void;
   onBrowserState(handler: (state: BrowserState) => void): Unsubscribe;
+  onBrowserOpenRequest(handler: (event: BrowserOpenRequest) => void): Unsubscribe;
+  onBrowserCloseRequest(handler: (event: BrowserCloseRequest) => void): Unsubscribe;
+  onBrowserAgentActivity(
+    handler: (event: BrowserAgentActivityEvent) => void,
+  ): Unsubscribe;
 };

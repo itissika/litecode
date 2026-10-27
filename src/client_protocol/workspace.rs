@@ -374,6 +374,7 @@ pub async fn handle_jsonrpc(
                             "text": view.text,
                             "truncated_on_disk": view.truncated_on_disk,
                             "alive": view.alive,
+                            "draining": view.draining,
                             "exit_code": view.exit_code,
                         }),
                     ))

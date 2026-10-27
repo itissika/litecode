@@ -144,6 +144,60 @@ describe("parseCustomToolJson", () => {
     ).toEqual({ skip: "invalid" });
   });
 
+  it("keeps a suite reference and omits the standalone surface", () => {
+    const result = parseCustomToolJson(`{
+      "name": "slide",
+      "suite": "deck",
+      "command": "python",
+      "schema": { "type": "object", "properties": {}, "required": [] }
+    }`);
+    expect(result).toMatchObject({ ok: { name: "slide", suite: "deck" } });
+    if (!("ok" in result)) throw new Error("expected ok");
+    expect(result.ok.surface).toBeUndefined();
+  });
+
+  it("keeps output_schema for code tools", () => {
+    const result = parseCustomToolJson(`{
+      "name": "collect",
+      "surface": "code",
+      "command": "python",
+      "schema": { "type": "object", "properties": {}, "required": [] },
+      "output_schema": {
+        "type": "object",
+        "properties": { "files": { "type": "integer" } }
+      }
+    }`);
+    expect(result).toMatchObject({
+      ok: {
+        surface: "code",
+        output_schema: {
+          type: "object",
+          properties: { files: { type: "integer" } },
+        },
+      },
+    });
+  });
+
+  it("rejects a suite member that declares its own surface or rules", () => {
+    const member = (extra: string) => `{
+      "name": "slide",
+      "suite": "deck",
+      "command": "python",
+      "schema": { "type": "object", "properties": {}, "required": [] },
+      ${extra}
+    }`;
+    expect(parseCustomToolJson(member('"surface": "direct"'))).toEqual({
+      skip: "invalid",
+    });
+    expect(
+      parseCustomToolJson(
+        member(
+          '"rules": [{ "id": "x", "action": "deny", "when": { "kind": "any" } }]',
+        ),
+      ),
+    ).toEqual({ skip: "invalid" });
+  });
+
   it("rejects name changes on an existing tool", () => {
     expect(
       parseCustomToolJson(

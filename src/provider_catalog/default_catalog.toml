@@ -974,8 +974,9 @@ modalities = ["text", "image"]
 usage_patch = "map_max_effort_to_xhigh"
 reasoning = { replay = "summary", tiers = { off = "none", low = "low", medium = "medium", high = "max" } }
 
+# Upstream id carries the point-release build suffix; the label stays product-level.
 [[models]]
-id = "deepseek-v4.1-flash"
+id = "deepseek-v4.1-flash-1017"
 provider_id = "aliyun-token"
 label = "DeepSeek V4.1 Flash"
 context_window = 256000

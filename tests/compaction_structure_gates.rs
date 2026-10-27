@@ -346,10 +346,14 @@ fn pr7_uses_provider_capacity_and_minimal_summary_acceptance() {
     assert!(compact_production.contains("pub const MAX_SUMMARY_ATTEMPTS: u8 = 2;"));
     assert_eq!(
         compact_production
-            .matches("for attempt in 1..=MAX_SUMMARY_ATTEMPTS")
+            .matches("for attempt in 1..=max_attempts")
             .count(),
         1,
-        "exactly one loop implements two attempts"
+        "exactly one loop implements the attempt budget"
+    );
+    assert!(
+        compact_production.contains("let max_attempts = max_attempts.max(1);"),
+        "the attempt budget must never degrade into a zero-trip loop"
     );
 
     let observer = read("src/runtime/observer.rs");

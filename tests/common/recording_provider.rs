@@ -98,7 +98,7 @@ impl RecordingProvider {
     }
 }
 
-fn emit_in_progress_added(
+pub fn emit_in_progress_added(
     on_event: &mut Option<Box<dyn FnMut(StreamEvents) + Send + '_>>,
     item: &Item,
     output_index: u32,

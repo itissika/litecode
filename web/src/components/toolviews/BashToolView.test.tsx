@@ -164,6 +164,89 @@ describe("BashToolView live overlay", () => {
       ".litecode/bash/bg_a.output",
     );
   });
+  it("keeps polling while an exited job still drains its pipe", async () => {
+    let calls = 0;
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method !== "bash/tail") throw new Error(`unexpected ${method}`);
+      calls += 1;
+      if (calls === 1) {
+        return {
+          text: "part-one",
+          truncated_on_disk: false,
+          alive: true,
+          draining: false,
+          exit_code: null,
+        };
+      }
+      if (calls === 2) {
+        return {
+          text: "part-one\npart-two",
+          truncated_on_disk: false,
+          alive: false,
+          draining: true,
+          exit_code: 0,
+        };
+      }
+      return {
+        text: "part-one\npart-two\nsealed",
+        truncated_on_disk: false,
+        alive: false,
+        draining: false,
+        exit_code: 0,
+      };
+    });
+    useConnectionStore.setState({ sendRpc } as never);
+    useBashStore.getState().applySnapshot("s1", {
+      jobs: [
+        {
+          id: "bg_a",
+          call_id: "call_1",
+          command_preview: "run & sleep 0",
+          output_file: ".litecode/bash/bg_a.output",
+          started_at_ms: Date.now(),
+        },
+      ],
+      waits: [],
+    });
+
+    render(
+      <BashToolView
+        name="bash"
+        status="ok"
+        input={{ command: "run & sleep 0" }}
+        output={{
+          type: "function_call_output",
+          call_id: "call_1",
+          output:
+            "status: running\nbash_id: bg_a\noutput_file: .litecode/bash/bg_a.output\n",
+        }}
+        call_id="call_1"
+        sessionId="s1"
+      />,
+    );
+
+    expect(await screen.findByText(/part-one/)).toBeTruthy();
+
+    // The shell exited but a descendant still holds the pipe: the tail keeps
+    // growing, so the overlay must stay live and no exit footer may appear.
+    await waitFor(
+      () => {
+        expect(screen.getByText(/part-two/)).toBeTruthy();
+      },
+      { timeout: 3000 },
+    );
+    expect(screen.queryByTestId("bash-footer")).toBeNull();
+
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("bash-footer").textContent).toContain(
+          "exited  exit_code: 0",
+        );
+      },
+      { timeout: 3000 },
+    );
+    expect(screen.queryByText(/sealed/)).toBeNull();
+  });
 });
 
 describe("BashToolView parses the real backend result document", () => {

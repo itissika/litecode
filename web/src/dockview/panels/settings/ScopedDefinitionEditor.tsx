@@ -7,25 +7,9 @@ import { FoldCard } from "../../../components/FoldCard";
 import { Dropdown, dropdownItemClass } from "../../../components/ui/Dropdown";
 import { SettingsPageShell } from "./shared";
 
-/** Shared scope hint for definition pages (W-C4 / W-C6). Each page keeps its
- *  original wording: `bindFirst` renders "Bind on Agents. Workspace overrides
- *  global." (Custom Tools); otherwise "Workspace overrides global. Bind
- *  <bindName> on Agents." (MCP). */
-export function ScopeHint({
-  bindFirst = false,
-}: {
-  /** Kept for call-site compat; copy now hardcodes mcp_<id> in i18n. */
-  bindName?: ReactNode;
-  bindFirst?: boolean;
-}) {
+/** Scope hint shown by definition pages (MCP). */
+export function ScopeHint() {
   const { t } = useTranslation();
-  if (bindFirst) {
-    return (
-      <p className="text-xs text-(--_dk-text-muted)">
-        {t("settings.customTools.bindHint")}
-      </p>
-    );
-  }
   return (
     <p className="text-xs text-(--_dk-text-muted)">
       {t("settings.mcp.bindHint")}
@@ -60,9 +44,9 @@ interface ScopedDefinitionEditorProps<T> {
 }
 
 /**
- * Global/workspace definition list with a JSON editor card, shared by the
- * Custom Tools and MCP settings pages. Each page owns its own form and
- * persistence; this owns the page shell, scope groups and row chrome.
+ * Global/workspace definition list with a JSON editor card. Used by the MCP
+ * settings page; each page owns its own form and persistence while this owns
+ * the page shell, scope groups and row chrome.
  */
 export function ScopedDefinitionEditor<T>({
   title,

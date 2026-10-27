@@ -249,6 +249,67 @@ describe("AgentsSection capability bind cards", () => {
   });
 });
 
+describe("AgentsSection tool binding sections", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({
+      llm: llmDoc,
+      availableTools: [
+        readTool,
+        {
+          id: "glob",
+          kind: "core",
+          origin: "builtin",
+          permission_surface: "preset",
+        },
+        lspTool,
+        {
+          id: "demo",
+          kind: "custom",
+          origin: "global",
+          permission_surface: "fixed",
+        },
+        mcpDemoTool,
+      ],
+      mcpDefs: { global: [], workspace: [] },
+      mcpRuntime: { global: {}, workspace: {} },
+      agentIds: ["default"],
+      selectedAgentId: "default",
+      agents: {
+        default: profile({
+          tools: { read: { enabled: true }, lsp: { enabled: true } },
+        }),
+      },
+      persistByDoc: {},
+      saveAgent: vi.fn(async () => undefined),
+      createAgent: vi.fn(async () => undefined),
+      removeAgent: vi.fn(async () => undefined),
+      refreshAgents: vi.fn(async () => undefined),
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("lays the cards out in kind sections with an on count", () => {
+    render(<AgentsSection />);
+
+    const headings = screen
+      .getAllByRole("heading", { level: 4 })
+      .map((node) => node.textContent);
+    expect(headings).toEqual([
+      "Core tools",
+      "Engine tools",
+      "Custom tools",
+      "MCP servers",
+    ]);
+    // Core holds read + glob, one of them on; the rest report their own counts.
+    expect(screen.getByText("1/2 on")).toBeTruthy();
+    expect(screen.getByText("1/1 on")).toBeTruthy();
+    expect(screen.getAllByText("0/1 on")).toHaveLength(2);
+  });
+});
+
 describe("AgentsSection code-mode badge", () => {
   beforeEach(() => {
     useSettingsStore.setState({

@@ -1661,7 +1661,7 @@ pub(crate) fn custom_definition_diagnostic(
             "schema",
             Some(error.clone()),
             "a code-admissible object schema",
-            "use a simple object schema with no unresolved $ref, or declare surface \"direct\"",
+            "use a simple input/output object schema with no unsupported keywords (no $ref), or declare surface \"direct\"",
         ));
     }
     None

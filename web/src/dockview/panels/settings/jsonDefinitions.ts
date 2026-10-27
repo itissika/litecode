@@ -54,6 +54,14 @@ export function parseCustomToolJson(
       typeof raw.timeout === "number" && raw.timeout > 0 ? raw.timeout : 120;
     const rules = parseRules(raw.rules);
     if (rules === "invalid") return { skip: "invalid" };
+    let suite: string | null = null;
+    if (raw.suite !== undefined && raw.suite !== null) {
+      if (typeof raw.suite !== "string") return { skip: "invalid" };
+      suite = raw.suite.trim();
+      if (!TOOL_ID_RE.test(suite)) return { skip: "invalid" };
+      // Members inherit surface and rules from the suite.
+      if (raw.surface !== undefined || rules) return { skip: "invalid" };
+    }
     const surface =
       raw.surface === undefined
         ? "direct"
@@ -61,11 +69,19 @@ export function parseCustomToolJson(
           ? raw.surface
           : null;
     if (surface === null) return { skip: "invalid" };
+    const outputSchema = raw.output_schema;
+    if (
+      outputSchema !== undefined &&
+      (outputSchema === null ||
+        typeof outputSchema !== "object" ||
+        Array.isArray(outputSchema))
+    ) {
+      return { skip: "invalid" };
+    }
     const def: CustomToolDefinition = {
       name,
       description:
         typeof raw.description === "string" ? raw.description.trim() : "",
-      surface,
       command,
       args,
       timeout,
@@ -75,6 +91,11 @@ export function parseCustomToolJson(
         required: required as string[],
       },
     };
+    if (suite) def.suite = suite;
+    else def.surface = surface;
+    if (outputSchema) {
+      def.output_schema = outputSchema as Record<string, unknown>;
+    }
     if (rules) def.rules = rules;
     return { ok: def };
   } catch {

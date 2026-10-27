@@ -296,6 +296,7 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
             token_estimate: 10,
             kept_from: Some(1),
             expected_prefix: None,
+            usage: None,
         })
         .unwrap();
     let rows = sessions.data().working_set_blocking(&sid).unwrap();

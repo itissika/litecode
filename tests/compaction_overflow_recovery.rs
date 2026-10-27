@@ -149,6 +149,9 @@ async fn provider_overflow_compacts_and_retries_the_main_request_once() {
                 CompactionStage::Started => started_telemetry = Some(telemetry),
                 CompactionStage::Succeeded => succeeded_telemetry = Some(telemetry),
                 CompactionStage::Failed => panic!("forced recovery must not fail compaction"),
+                CompactionStage::Abandoned => {
+                    panic!("forced recovery must not abandon compaction")
+                }
             }
         }
     }

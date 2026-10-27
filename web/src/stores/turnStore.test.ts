@@ -254,6 +254,30 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
 
+  it("onCompactLifecycle clears an abandoned branch without a failure toast", () => {
+    const sessionId = "s-life-abandoned";
+    useTurnStore.setState({
+      byId: new Map([[sessionId, { ...EMPTY_SLICE, runState: "running" }]]),
+    });
+    const snap = snapshot(sessionId);
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "started",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(true);
+
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "abandoned",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+  });
+
   it("onCompactLifecycle retains measured telemetry on started and failed", () => {
     const sessionId = "s-life-telemetry";
     useTurnStore.setState({
