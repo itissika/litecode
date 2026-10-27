@@ -49,14 +49,14 @@ describe("KnowledgeGraphPanel", () => {
     expect(document.querySelector(".knowledge-document")).not.toBeNull();
     expect(screen.queryByTestId("knowledge-canvas")).toBeNull();
     expect(
-      screen.getByRole("button", { name: "文档" }).getAttribute("aria-pressed"),
+      screen.getByRole("button", { name: "Document" }).getAttribute("aria-pressed"),
     ).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "画布" }));
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     expect(screen.getByTestId("knowledge-canvas")).toBeTruthy();
     expect(document.querySelector(".knowledge-document")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "文档" }));
+    fireEvent.click(screen.getByRole("button", { name: "Document" }));
     expect(document.querySelector(".knowledge-document")).not.toBeNull();
     expect(screen.queryByTestId("knowledge-canvas")).toBeNull();
   });

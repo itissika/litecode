@@ -50,11 +50,11 @@ describe("AskUserCard last-item free text (WP-082)", () => {
     }
   });
 
-  it("2. label is 其他（自己填写）", () => {
+  it("2. label is Other (type your own)", () => {
     renderCard([single]);
-    expect(OTHER_LABEL).toBe("其他（自己填写）");
-    const input = screen.getByRole("textbox", { name: "其他（自己填写）" });
-    expect(input.getAttribute("placeholder")).toBe("其他（自己填写）");
+    expect(OTHER_LABEL).toBe("Other (type your own)");
+    const input = screen.getByRole("textbox", { name: "Other (type your own)" });
+    expect(input.getAttribute("placeholder")).toBe("Other (type your own)");
   });
 
   it("3a. single: typing after a pick clears it; submit sends selected []", async () => {

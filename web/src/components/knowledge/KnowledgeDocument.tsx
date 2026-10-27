@@ -18,6 +18,7 @@ import { AgentMarkdown } from "../AgentMarkdown";
 import { CitationChip } from "../CitationChip";
 import { KnowledgeBodyEditor } from "./KnowledgeBodyEditor";
 import { SaveGlyph, type CardSaveMark } from "./KnowledgeSourceField";
+import i18n from "../../i18n";
 
 const NO_ISSUES: KnowledgeIssue[] = [];
 
@@ -245,8 +246,8 @@ export function KnowledgeDocument() {
       <div className="knowledge-document">
         <div className="knowledge-document-empty">
           <FileText size={28} weight="thin" aria-hidden />
-          <p className="text-dk-sm">还没有可阅读的知识节点</p>
-          <p className="text-dk-xs">在左侧新建节点，或切换到画布整理结构。</p>
+          <p className="text-dk-sm">{i18n.t("knowledge.emptyTitle")}</p>
+          <p className="text-dk-xs">{i18n.t("knowledge.emptyHint")}</p>
         </div>
       </div>
     );
@@ -273,8 +274,8 @@ export function KnowledgeDocument() {
               type="button"
               role="switch"
               aria-checked={enabled}
-              aria-label={enabled ? "禁用" : "启用"}
-              title={enabled ? "禁用" : "启用"}
+              aria-label={enabled ? i18n.t("common.disable") : i18n.t("common.enable")}
+              title={enabled ? i18n.t("common.disable") : i18n.t("common.enable")}
               className={enabled ? "knowledge-enable is-on" : "knowledge-enable"}
               onClick={() => void toggleStatus()}
             />
@@ -284,7 +285,7 @@ export function KnowledgeDocument() {
         <div className="knowledge-document-summary">
           <div className="knowledge-document-summary-head">
             <label htmlFor={summaryId} className="knowledge-source-label">
-              摘要
+              {i18n.t("common.summary")}
             </label>
             <SaveGlyph mark={saveMark} />
           </div>
@@ -294,7 +295,7 @@ export function KnowledgeDocument() {
             rows={2}
             spellCheck={false}
             value={summaryDraft}
-            placeholder="写一句摘要…"
+            placeholder={i18n.t("knowledge.summaryPlaceholder")}
             onChange={(event) =>
               changeSummary(event.target.value.replace(/[\r\n]+/g, " "))
             }
@@ -307,12 +308,12 @@ export function KnowledgeDocument() {
 
         <div className="knowledge-document-body">
           <div className="knowledge-document-body-bar">
-            <span className="knowledge-source-label">正文</span>
+            <span className="knowledge-source-label">{i18n.t("common.body")}</span>
             <button
               type="button"
               className="knowledge-flow-body-edit nodrag nowheel"
               aria-pressed={editing}
-              aria-label={editing ? "预览正文" : "编辑正文"}
+              aria-label={editing ? i18n.t("knowledge.previewBody") : i18n.t("knowledge.editBody")}
               onClick={() => void toggleEdit()}
             >
               {editing ? (
@@ -325,7 +326,7 @@ export function KnowledgeDocument() {
           {editing ? (
             <div className="knowledge-document-editor">
               <KnowledgeBodyEditor
-                label="正文"
+                label={i18n.t("common.body")}
                 sourceId={node.id}
                 value={draft}
                 candidates={refCandidates}
@@ -340,11 +341,11 @@ export function KnowledgeDocument() {
         </div>
 
         {outgoing.length > 0 || incoming.length > 0 ? (
-          <section className="knowledge-document-structure" aria-label="关联节点">
-            <h2 className="knowledge-document-structure-title">关联节点</h2>
+          <section className="knowledge-document-structure" aria-label={i18n.t("knowledge.relatedNodes")}>
+            <h2 className="knowledge-document-structure-title">{i18n.t("knowledge.relatedNodes")}</h2>
             {outgoing.length > 0 ? (
               <div className="knowledge-document-relation">
-                <span className="knowledge-document-relation-label">引用</span>
+                <span className="knowledge-document-relation-label">{i18n.t("knowledge.refs")}</span>
                 <div className="knowledge-document-relation-chips">
                   {outgoing.map((key) => (
                     <CitationChip
@@ -358,7 +359,7 @@ export function KnowledgeDocument() {
             ) : null}
             {incoming.length > 0 ? (
               <div className="knowledge-document-relation">
-                <span className="knowledge-document-relation-label">被引用</span>
+                <span className="knowledge-document-relation-label">{i18n.t("knowledge.referencedBy")}</span>
                 <div className="knowledge-document-relation-chips">
                   {incoming.map((candidate) => (
                     <CitationChip

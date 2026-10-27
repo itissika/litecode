@@ -34,6 +34,7 @@ import {
   SaveGlyph,
   type CardSaveMark,
 } from "./KnowledgeSourceField";
+import i18n from "../../i18n";
 
 const NO_ISSUES: KnowledgeIssue[] = [];
 
@@ -189,11 +190,11 @@ export function KnowledgeFlowCard({
   async function commitKey() {
     const result = await renameNode(node!.id, keyDraft);
     if (result === "duplicate") {
-      setKeyError("已存在");
+      setKeyError(i18n.t("knowledge.exists"));
       return;
     }
     if (result === "invalid") {
-      setKeyError("不合法");
+      setKeyError(i18n.t("knowledge.invalid"));
       return;
     }
     setKeyError(null);
@@ -356,7 +357,7 @@ export function KnowledgeFlowCard({
             type="button"
             role="switch"
             aria-checked={enabled}
-            aria-label={enabled ? "禁用" : "启用"}
+            aria-label={enabled ? i18n.t("common.disable") : i18n.t("common.enable")}
             className={
               enabled
                 ? "knowledge-enable nodrag nowheel is-on"
@@ -424,7 +425,7 @@ export function KnowledgeFlowCard({
                 : "knowledge-flow-caret nodrag nowheel"
             }
             aria-expanded={graphOpen}
-            aria-label={graphOpen ? "收起" : "展开"}
+            aria-label={graphOpen ? i18n.t("common.collapse") : i18n.t("common.expand")}
             onClick={(event) => {
               event.stopPropagation();
               toggleGraph(node.id);
@@ -436,7 +437,7 @@ export function KnowledgeFlowCard({
         {graphOpen ? (
           <div className="knowledge-flow-editors">
             <KnowledgeSourceField
-              label="摘要"
+              label={i18n.t("common.summary")}
               rows={2}
               singleLine
               value={summaryDraft}
@@ -452,12 +453,12 @@ export function KnowledgeFlowCard({
             />
             <div className="knowledge-flow-body">
               <div className="knowledge-flow-body-bar">
-                <span className="knowledge-source-label">正文</span>
+                <span className="knowledge-source-label">{i18n.t("common.body")}</span>
                 <button
                   type="button"
                   className="knowledge-flow-body-edit nodrag nowheel"
                   aria-pressed={editingBody}
-                  aria-label={editingBody ? "预览正文" : "编辑正文"}
+                  aria-label={editingBody ? i18n.t("knowledge.previewBody") : i18n.t("knowledge.editBody")}
                   onClick={(event) => {
                     event.stopPropagation();
                     toggleBodyEdit();
@@ -473,7 +474,7 @@ export function KnowledgeFlowCard({
               <div className="knowledge-flow-body-scroll nodrag nowheel">
                 {editingBody ? (
                   <KnowledgeBodyEditor
-                    label="正文"
+                    label={i18n.t("common.body")}
                     sourceId={node.id}
                     value={bodyDraft}
                     candidates={refCandidates}

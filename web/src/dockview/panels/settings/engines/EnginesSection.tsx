@@ -18,8 +18,10 @@ export const FAST_CYCLES_AFTER_REFRESH = 3;
 import { ENGINES_CHANGED_EVENT } from "./embedInstall";
 import { EnginesSkeleton } from "../../../../components/ui/Skeleton";
 import { SettingsPageShell } from "../shared";
+import { useTranslation } from "react-i18next";
 
 export function EnginesSection() {
+  const { t } = useTranslation();
   const [detail, setDetail] = useState<EnginesDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** Bumps after every fetch settles, so polling re-arms even when the payload is identical. */
@@ -85,20 +87,20 @@ export function EnginesSection() {
 
   if (error) {
     return (
-      <SettingsPageShell title="Engines">
+      <SettingsPageShell title={t("settings.engines.title")}>
         <p className="text-sm text-(--_dk-red-500)">{error}</p>
       </SettingsPageShell>
     );
   }
   if (!detail) {
     return (
-      <SettingsPageShell title="Engines">
+      <SettingsPageShell title={t("settings.engines.title")}>
         <EnginesSkeleton />
       </SettingsPageShell>
     );
   }
   return (
-    <SettingsPageShell title="Engines">
+    <SettingsPageShell title={t("settings.engines.title")}>
       <EngineView
         detail={detail}
         onChanged={refresh}

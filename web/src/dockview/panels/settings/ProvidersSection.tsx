@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { type CatalogProviderDto } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -34,6 +35,7 @@ function ProviderCard({
   saveBlocked: boolean;
   onKeyChange: (key: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div
       className="settings-provider-card"
@@ -51,12 +53,12 @@ function ProviderCard({
         onChange={(e) => onKeyChange(e.target.value)}
         placeholder={
           provider.masked_api_key
-            ? `Current: ${provider.masked_api_key}`
-            : "Empty key"
+            ? t("settings.providers.currentKey", { key: provider.masked_api_key })
+            : t("settings.providers.emptyKey")
         }
         disabled={saveBlocked}
         autoComplete="new-password"
-        aria-label={`API key for ${provider.name}`}
+        aria-label={t("settings.providers.apiKey", { name: provider.name })}
       />
     </div>
   );
@@ -69,6 +71,7 @@ function ProviderCard({
  * same document.
  */
 export function ProvidersSection() {
+  const { t } = useTranslation();
   const llm = useSettingsStore((s) => s.llm);
   const saveProviderKey = useSettingsStore((s) => s.saveProviderKey);
   const saveBlocked = useSettingsSaveBlocked();
@@ -122,9 +125,9 @@ export function ProvidersSection() {
     [providers],
   );
 
-  const renderGrid = (group: CatalogProviderDto[], label: string) => {
+  const renderGrid = (group: CatalogProviderDto[], label: string, groupKey: "plan" | "api") => {
     if (group.length === 0) return null;
-    const headingId = `providers-group-${label === "Plan" ? "plan" : "api"}`;
+    const headingId = `providers-group-${groupKey}`;
     return (
       <section
         key={label}
@@ -156,16 +159,16 @@ export function ProvidersSection() {
   };
 
   return (
-    <SettingsPageShell title="Providers">
+    <SettingsPageShell title={t("settings.providers.title")}>
       <div className="settings-content-indent flex flex-col gap-6">
         {providers.length === 0 ? (
           <p className="text-sm text-(--_dk-text-disabled)">
-            No providers in the catalog yet.
+            {t("settings.providers.empty")}
           </p>
         ) : (
           <>
-            {renderGrid(plan, "Plan")}
-            {renderGrid(api, "API")}
+            {renderGrid(plan, t("settings.providers.plan"), "plan")}
+            {renderGrid(api, t("settings.providers.api"), "api")}
           </>
         )}
       </div>

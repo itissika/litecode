@@ -3,6 +3,7 @@ import type {
   RetrievalCorpusStatus,
   RetrievalEngineDetail,
 } from "../../../../api/workspace";
+import i18n from "../../../../i18n";
 
 /**
  * WP-136: the retrieval progress bar is derived ONLY from the backend's merged
@@ -59,15 +60,16 @@ export function retrievalBar(
   return { tone: "ok", pulse: false, pct: corpusPct(t) ?? 100, indeterminate: false };
 }
 
-const REASON_TEXT: Record<RetrievalCorpusError["reason"], string> = {
-  model_missing: "模型缺失",
-  engine_unavailable: "引擎不可用",
-  engine_stopped: "引擎已停止",
-  index_failed: "索引失败",
+const REASON_KEYS: Record<RetrievalCorpusError["reason"], string> = {
+  model_missing: "engines.modelMissing",
+  engine_unavailable: "engines.engineUnavailable",
+  engine_stopped: "engines.engineStopped",
+  index_failed: "engines.indexFailed",
 };
 
 function reasonText(reason: RetrievalCorpusError["reason"]): string {
-  return REASON_TEXT[reason] ?? reason;
+  const key = REASON_KEYS[reason];
+  return key ? i18n.t(key) : reason;
 }
 
 function pctLabel(c: RetrievalCorpusStatus): string {

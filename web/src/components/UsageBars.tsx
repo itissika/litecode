@@ -3,6 +3,7 @@ import { useMemo, useState } from "react";
 import type { SessionUsageSeries, UsageMark, UsageSample } from "../api/types";
 import { formatToken } from "../lib/tokens";
 import { ChartTooltip, TooltipRow, tooltipLeft } from "./ChartTooltip";
+import i18n from "../i18n";
 
 /** Popover content width: 240px panel shell minus 2×12px padding. */
 const CHART_W = 216;
@@ -152,9 +153,9 @@ export function UsageBars({
     [series],
   );
 
-  if (failed) return <Note>用量暂不可用</Note>;
+  if (failed) return <Note>{i18n.t("usage.unavailable")}</Note>;
   if (!series) return <div style={{ height: CHART_H }} />;
-  if (bars.length === 0) return <Note>暂无请求用量</Note>;
+  if (bars.length === 0) return <Note>{i18n.t("usage.noRequestUsage")}</Note>;
 
   const maxPrompt = Math.max(1, ...bars.map((bar) => bar.prompt));
   const maxCompletion = Math.max(1, ...bars.map((bar) => bar.completion));
@@ -189,7 +190,7 @@ export function UsageBars({
         height={CHART_H}
         viewBox={`0 0 ${CHART_W} ${CHART_H}`}
         role="img"
-        aria-label="逐请求上下文 token，悬停查看单次用量"
+        aria-label={i18n.t("usage.perRequestAria")}
       >
         {bars.map((bar, index) => {
           const h = Math.max(1, Math.round((bar.prompt / maxPrompt) * BAR_H));
@@ -276,7 +277,7 @@ export function UsageBars({
               </>
             }
             value={
-              hovered.compaction ? "compaction" : hovered.count > 1 ? `${hovered.count} 次请求` : null
+              hovered.compaction ? "compaction" : hovered.count > 1 ? i18n.t("usage.requestCount", { count: hovered.count }) : null
             }
           />
           <TooltipRow label="prompt" value={formatToken(hovered.prompt)} />

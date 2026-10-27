@@ -113,13 +113,13 @@ describe("bucketDays", () => {
       "2026-10-25",
     ]);
     expect(buckets.map((bucket) => bucket.label)).toEqual([
-      "一",
-      "二",
-      "三",
-      "四",
-      "五",
-      "六",
-      "日",
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+      "Sat",
+      "Sun",
     ]);
     expect(buckets[0].prompt).toBe(100);
     expect(buckets[1].prompt).toBe(0);
@@ -184,7 +184,7 @@ describe("WorkspaceUsageView", () => {
 
   it("opens on today's 24 hours, aggregating only today's bills", () => {
     render(<WorkspaceUsageView report={afternoon} />);
-    expect(screen.getByText("工作区用量")).toBeTruthy();
+    expect(screen.getByText("Workspace usage")).toBeTruthy();
     expect(screen.getByText("Prompt")).toBeTruthy();
     expect(screen.getByText("2.0M")).toBeTruthy();
     expect(screen.getByText("92.5%")).toBeTruthy();
@@ -197,14 +197,14 @@ describe("WorkspaceUsageView", () => {
 
   it("re-scopes both the axis and the aggregates when the period changes", () => {
     render(<WorkspaceUsageView report={afternoon} />);
-    fireEvent.click(screen.getByText("周"));
-    expect(screen.getByText("三")).toBeTruthy(); // 2026-10-21 has no bill but exists
+    fireEvent.click(screen.getByText("Week"));
+    expect(screen.getByText("Wed")).toBeTruthy(); // 2026-10-21 has no bill but exists
     expect(screen.queryByText("23")).toBeNull();
     expect(screen.getByText("3.0M")).toBeTruthy();
 
-    fireEvent.click(screen.getByText("月"));
+    fireEvent.click(screen.getByText("Month"));
     expect(screen.getByText("29")).toBeTruthy();
-    expect(screen.queryByText("三")).toBeNull();
+    expect(screen.queryByText("Wed")).toBeNull();
     expect(screen.getByText("3.0M")).toBeTruthy();
     expect(screen.getByText("100K")).toBeTruthy();
   });
@@ -223,7 +223,7 @@ describe("WorkspaceUsageView", () => {
 
   it("shows the request count for the window and the workspace session count", () => {
     render(<WorkspaceUsageView report={afternoon} />);
-    expect(screen.getByText(/请求 · 共 15 会话/)).toBeTruthy();
+    expect(screen.getByText(/15 requests · 15 sessions|requests · 15 sessions/)).toBeTruthy();
   });
 
   it("explains the chart with a legend under it", () => {
@@ -231,13 +231,13 @@ describe("WorkspaceUsageView", () => {
     expect(screen.getByText("hit")).toBeTruthy();
     expect(screen.getByText("miss")).toBeTruthy();
     expect(screen.getByText("completion")).toBeTruthy();
-    expect(screen.getByRole("img", { name: /工作区 token 用量/ })).toBeTruthy();
+    expect(screen.getByRole("img", { name: /Workspace token usage/ })).toBeTruthy();
   });
 
   it("keeps the empty frame and says the window has nothing", () => {
     render(<WorkspaceUsageView report={report([day("2026-08-01", 100, 50)])} />);
     // Today is empty, but the 24 slots are still the axis.
-    expect(screen.getByText("该时段暂无记录")).toBeTruthy();
+    expect(screen.getByText("No records for this period")).toBeTruthy();
     expect(screen.getByText("00")).toBeTruthy();
   });
 

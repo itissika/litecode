@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import type { SshSession } from "./ssh-session";
+import { t } from "./i18n";
 
 /** In-flight Open remote wizard after auth+deploy, before attach. */
 export type PendingRemoteSession = {
@@ -38,7 +39,7 @@ export function setPendingRemote(session: PendingRemoteSession): void {
 
 export function getPendingRemote(id: string): PendingRemoteSession {
   const session = pending.get(id);
-  if (!session) throw new Error("Remote session expired. Start Open remote again.");
+  if (!session) throw new Error(t("desktop.error.sessionExpired"));
   return session;
 }
 

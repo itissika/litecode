@@ -25,6 +25,7 @@ import {
   type DiffHunk,
   type DiffKind,
 } from "./gitQuickDiff";
+import i18n from "../i18n";
 
 const DIFF_DEBOUNCE_MS = 300;
 
@@ -442,9 +443,9 @@ class QuickDiffPeek {
     const actions = document.createElement("span");
     actions.className = "git-quick-diff-peek-actions";
     actions.append(
-      this.button("上一处", () => this.step(-1)),
-      this.button("下一处", () => this.step(1)),
-      this.button("关闭", () => this.close()),
+      this.button(i18n.t("git.prevChange"), () => this.step(-1)),
+      this.button(i18n.t("git.nextChange"), () => this.step(1)),
+      this.button(i18n.t("git.close"), () => this.close()),
     );
     header.append(this.title, actions);
 

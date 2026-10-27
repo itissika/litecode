@@ -69,7 +69,7 @@ describe("SessionList — root filtering (P7)", () => {
     ).toHaveLength(1);
     // The header count is gone; the workspace usage read-out took its place at
     // the far right.
-    expect(screen.getByRole("button", { name: "工作区用量" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Workspace usage" })).toBeTruthy();
   });
 
   it("never lists a child that arrived on the lifecycle feed first", async () => {

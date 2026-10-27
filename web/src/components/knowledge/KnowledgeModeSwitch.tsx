@@ -3,12 +3,13 @@ import { FileText, Graph } from "@phosphor-icons/react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import { glassFill } from "../composerCard";
+import i18n from "../../i18n";
 
 export type KnowledgeSurface = "document" | "canvas";
 
 const MODES = [
-  { id: "document", label: "文档", Icon: FileText },
-  { id: "canvas", label: "画布", Icon: Graph },
+  { id: "document", labelKey: "knowledge.mode.document", Icon: FileText },
+  { id: "canvas", labelKey: "knowledge.mode.canvas", Icon: Graph },
 ] as const;
 
 /**
@@ -31,10 +32,10 @@ export function KnowledgeModeSwitch({
     <LayoutGroup id={`knowledge-mode-${id}`}>
       <div
         role="group"
-        aria-label="知识面板视图"
+        aria-label={i18n.t("knowledge.modeAria")}
         className={`absolute bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-(--_dk-line) p-0.5 shadow-(--_dk-composer-card-shadow) ${glassFill}`}
       >
-        {MODES.map(({ id: next, label, Icon }) => {
+        {MODES.map(({ id: next, labelKey, Icon }) => {
           const selected = mode === next;
           return (
             <button
@@ -62,7 +63,7 @@ export function KnowledgeModeSwitch({
                 <span className="pointer-events-none absolute inset-0 rounded-full border border-transparent group-hover:border-(--_dk-line)" />
               )}
               <Icon size={13} weight="regular" className="relative z-10" />
-              <span className="relative z-10">{label}</span>
+              <span className="relative z-10">{i18n.t(labelKey)}</span>
             </button>
           );
         })}

@@ -6,6 +6,7 @@ import path from "node:path";
 import { stat } from "node:fs/promises";
 
 import { MODEL_STAMP_FILE, hashModelDir } from "./bundle-paths";
+import { t } from "./i18n";
 
 /**
  * Connection details for system OpenSSH. Authentication is deliberately left
@@ -461,17 +462,17 @@ export class SshSession {
     const expected = options.sha256.toLowerCase();
     const target = absoluteHomePath(home, destination);
 
-    report({ stage: "verify", ratio: 0.05, message: "Checking installed server bundle…" });
+    report({ stage: "verify", ratio: 0.05, message: t("desktop.progress.checkingBundle") });
     if (await this.bundleMatchesInstalled(target, expected)) {
-      report({ stage: "ready", ratio: 1, message: "Using existing remote server bundle." });
+      report({ stage: "ready", ratio: 1, message: t("desktop.progress.usingExistingBundle") });
       return;
     }
 
     const nonce = randomBytes(12).toString("hex");
     const remoteArchive = absoluteHomePath(home, `.litecode-upload-${nonce}.tar`);
-    report({ stage: "upload", ratio: 0.1, message: "Uploading Litecode server archive…" });
+    report({ stage: "upload", ratio: 0.1, message: t("desktop.progress.uploadingArchive") });
     await run(this.config.scpCommand, buildScpUploadArgs(this.config, options.localTarPath, remoteArchive), this.config.askPassCommand);
-    report({ stage: "verify", ratio: 0.45, message: "Verifying archive checksum…" });
+    report({ stage: "verify", ratio: 0.45, message: t("desktop.progress.verifyingChecksum") });
     const script = [
       "set -eu",
       `home=${posixShellQuote(home)}`,
@@ -491,9 +492,9 @@ export class SshSession {
       'printf "%s\\n" "$expected" > "$stamp"',
     ].join("; ");
     try {
-      report({ stage: "extract", ratio: 0.7, message: "Extracting…" });
+      report({ stage: "extract", ratio: 0.7, message: t("desktop.progress.extracting") });
       await this.exec(script);
-      report({ stage: "ready", ratio: 1, message: "Remote server binary is ready." });
+      report({ stage: "ready", ratio: 1, message: t("desktop.progress.remoteBinaryReady") });
     } catch (error) {
       // Best effort cleanup; preserve the primary installation error.
       await this.exec(`rm -f -- ${posixShellQuote(remoteArchive)}`).catch(() => undefined);

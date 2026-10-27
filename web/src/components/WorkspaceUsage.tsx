@@ -9,6 +9,7 @@ import { useWorkspaceUsage } from "../api/usage";
 import { formatToken } from "../lib/tokens";
 import { ChartTooltip, TooltipRow, tooltipLeft } from "./ChartTooltip";
 import { ringColorForHitRate } from "./ContextUsageRing";
+import i18n from "../i18n";
 
 /** Popover content width: 240px panel shell minus 2×12px padding. */
 const CHART_W = 216;
@@ -47,20 +48,28 @@ export type UsageBucket = {
   days: number;
 };
 
-const LABEL: Record<Period, string> = {
-  day: "日",
-  week: "周",
-  month: "月",
-  all: "全部",
+const LABEL_KEY: Record<Period, string> = {
+  day: "usage.period.day",
+  week: "usage.period.week",
+  month: "usage.period.month",
+  all: "usage.period.all",
 };
 
+function periodLabel(period: Period): string {
+  return i18n.t(LABEL_KEY[period]);
+}
+
 /** What a column means, in the axis's own words. */
-const AXIS_TITLE: Record<Period, string> = {
-  day: "今天的 24 小时",
-  week: "本周的周一到周日",
-  month: "本月的每一天",
-  all: "每个自然日",
+const AXIS_TITLE_KEY: Record<Period, string> = {
+  day: "usage.axis.day",
+  week: "usage.axis.week",
+  month: "usage.axis.month",
+  all: "usage.axis.all",
 };
+
+function axisTitle(period: Period): string {
+  return i18n.t(AXIS_TITLE_KEY[period]);
+}
 
 /** Local `YYYY-MM-DD`. */
 function dayKey(date: Date): string {
@@ -86,7 +95,19 @@ function mondayOf(day: string): Date {
 type Slot = { key: string; label: string; title: string };
 
 /** Weekday labels are their own positions: 周一 is a place on the axis. */
-const WEEKDAYS = ["一", "二", "三", "四", "五", "六", "日"];
+const WEEKDAY_KEYS = [
+  "usage.weekday.mon",
+  "usage.weekday.tue",
+  "usage.weekday.wed",
+  "usage.weekday.thu",
+  "usage.weekday.fri",
+  "usage.weekday.sat",
+  "usage.weekday.sun",
+] as const;
+
+function weekdayLabel(index: number): string {
+  return i18n.t(WEEKDAY_KEYS[index]!);
+}
 
 /**
  * Every slot the period covers, with or without a bill.
@@ -103,11 +124,11 @@ function frameSlots(
 ): Slot[] {
   if (period === "week") {
     const monday = mondayOf(today);
-    return WEEKDAYS.map((label, index) => {
+    return WEEKDAY_KEYS.map((_, index) => {
       const date = new Date(monday);
       date.setDate(monday.getDate() + index);
       const key = dayKey(date);
-      return { key, label, title: key };
+      return { key, label: weekdayLabel(index), title: key };
     });
   }
   if (period === "month") {
@@ -345,9 +366,9 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
   return (
     <div className="flex flex-col gap-2 px-3 py-3 text-[11px]">
       <div className="flex items-baseline justify-between gap-2">
-        <span className="text-(--_dk-text-secondary)">工作区用量</span>
+        <span className="text-(--_dk-text-secondary)">{i18n.t("usage.workspaceTitle")}</span>
         <span className="text-[10px] text-(--_dk-text-disabled)">
-          {totals.requests.toLocaleString()} 请求 · 共 {report.session_count} 会话
+          {i18n.t("usage.requestsSessions", { requests: totals.requests.toLocaleString(), sessions: report.session_count })}
         </span>
       </div>
 
@@ -378,7 +399,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
       {/* Breakdown: the same rows, folded into buckets and drawn. */}
       <div className="flex flex-col gap-1.5 border-t border-(--_dk-line) pt-2.5">
         <div className="flex items-center justify-end gap-0.5">
-          {(Object.keys(LABEL) as Period[]).map((key) => (
+          {(Object.keys(LABEL_KEY) as Period[]).map((key) => (
             <button
               key={key}
               type="button"
@@ -393,7 +414,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
                   : "text-(--_dk-text-disabled) hover:text-(--_dk-text-secondary)"
               }`}
             >
-              {LABEL[key]}
+              {periodLabel(key)}
             </button>
           ))}
         </div>
@@ -404,7 +425,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
               height={CHART_H}
               viewBox={`0 0 ${CHART_W} ${CHART_H}`}
               role="img"
-              aria-label={`工作区 token 用量，横轴为${AXIS_TITLE[period]}，柱高为 prompt 合计，悬停查看单列`}
+              aria-label={i18n.t("usage.chartAria", { axis: axisTitle(period) })}
             >
             {buckets.map((bucket, index) => {
               const h =
@@ -467,7 +488,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
                 fill="var(--_dk-text-disabled)"
                 textAnchor="middle"
               >
-                该时段暂无记录
+                {i18n.t("usage.noRecordsPeriod")}
               </text>
             )}
             {axisIndices.map((index) => {
@@ -501,7 +522,7 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
               <TooltipRow
                 muted
                 label={hovered.title}
-                value={hovered.requests > 0 ? `${hovered.requests} 次请求` : null}
+                value={hovered.requests > 0 ? i18n.t("usage.requestCount", { count: hovered.requests }) : null}
               />
               <TooltipRow label="prompt" value={formatToken(hovered.prompt)} />
               <TooltipRow
@@ -550,10 +571,10 @@ export function WorkspaceUsageView({ report }: { report: WorkspaceUsageReport })
 /** Popover body: reads the workspace once per open, then renders it. */
 export function WorkspaceUsage() {
   const { report, failed } = useWorkspaceUsage();
-  if (failed) return <Note>用量暂不可用</Note>;
+  if (failed) return <Note>{i18n.t("usage.unavailable")}</Note>;
   if (!report) return <div style={{ height: 64 }} aria-hidden />;
   if (report.days.length === 0 && report.hours.length === 0) {
-    return <Note>暂无用量记录</Note>;
+    return <Note>{i18n.t("usage.noRecords")}</Note>;
   }
   return <WorkspaceUsageView report={report} />;
 }

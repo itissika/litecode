@@ -267,10 +267,22 @@ button:disabled{opacity:0.5;cursor:not-allowed}
 `.trim();
 }
 
-function hubScript(): string {
+function hubScript(i18nBag: Record<string, string>): string {
   // Inline script only (file:// hub page CSP allows script-src 'unsafe-inline').
+  // Strings are resolved in Node via t() and injected — the page has no i18next.
+  const i18nJson = JSON.stringify(i18nBag);
   return `
 (function(){
+  const I18N = ${i18nJson};
+  const tr = (key, vars) => {
+    let s = I18N[key] != null ? String(I18N[key]) : key;
+    if (vars) {
+      for (const k of Object.keys(vars)) {
+        s = s.split("{{" + k + "}}").join(String(vars[k]));
+      }
+    }
+    return s;
+  };
   const bridge = window.litecode;
   const $ = (id) => document.getElementById(id);
   const homeView = $("home-view");
@@ -285,7 +297,7 @@ function hubScript(): string {
   const tokenBox = $("token-box");
 
   if (!bridge) {
-    statusEl.textContent = "Desktop bridge unavailable. Restart Litecode.";
+    statusEl.textContent = tr("hub.status.bridgeUnavailable");
     statusEl.classList.add("error");
     return;
   }
@@ -335,15 +347,16 @@ function hubScript(): string {
   $("close").onclick = () => void bridge.windowClose?.();
   const syncMax = async () => {
     const maximized = await bridge.windowIsMaximized?.();
-    maxBtn.setAttribute("aria-label", maximized ? "Restore" : "Maximize");
-    maxBtn.title = maximized ? "Restore" : "Maximize";
+    const label = maximized ? tr("hub.chrome.restore") : tr("hub.chrome.maximize");
+    maxBtn.setAttribute("aria-label", label);
+    maxBtn.title = label;
   };
   maxBtn.onclick = async () => { await bridge.windowMaximizeToggle?.(); syncMax(); };
   void syncMax();
 
   const openLocal = async (target) => {
     try {
-      message("Opening workspace…");
+      message(tr("hub.status.openingWorkspace"));
       await bridge.openWorkspace(target);
       message("");
     } catch (error) {
@@ -389,11 +402,11 @@ function hubScript(): string {
     const authMode = $("auth-mode").value;
     const password = $("password").value;
     const identityFile = $("identity-file").value.trim();
-    if (!userAtHost) { message("Enter user@host.", true); return; }
+    if (!userAtHost) { message(tr("hub.status.enterUserAtHost"), true); return; }
     setStep("step-deploy");
     bindProgress();
     progressBar.style.width = "4%";
-    progressMsg.textContent = "Starting…";
+    progressMsg.textContent = tr("hub.status.starting");
     message("");
     try {
       const result = await bridge.startRemoteSession({
@@ -407,7 +420,7 @@ function hubScript(): string {
       selectedDir = null;
       await refreshDirs();
       setStep("step-path");
-      message("Connected.");
+      message(tr("hub.status.connected"));
     } catch (error) {
       setStep("step-auth");
       message(error instanceof Error ? error.message : String(error), true);
@@ -453,7 +466,7 @@ function hubScript(): string {
   };
 
   $("dir-open").onclick = async () => {
-    if (!selectedDir) { message("Select a folder first.", true); return; }
+    if (!selectedDir) { message(tr("hub.status.selectFolder"), true); return; }
     remotePath = remotePath === "." ? selectedDir : remotePath + "/" + selectedDir;
     selectedDir = null;
     await refreshDirs();
@@ -464,19 +477,19 @@ function hubScript(): string {
       ? (remotePath === "." ? selectedDir : remotePath + "/" + selectedDir)
       : remotePath;
     if (!workspace || workspace === ".") {
-      message("Pick a folder inside your home directory.", true);
+      message(tr("hub.status.pickFolderInHome"), true);
       return;
     }
     bindProgress();
     try {
-      message("Starting remote server…");
+      message(tr("hub.status.startingRemoteServer"));
       const done = await bridge.completeRemoteSession(sessionId, workspace);
       tokenBox.textContent = done.token;
       // A4: token is filled in automatically, so go straight into the workspace.
       // Step 4 is only the fallback when that automatic entry fails.
       if (!done.token) {
         setStep("step-token");
-        message("Session token missing. Try again or cancel.", true);
+        message(tr("hub.status.tokenMissing"), true);
         return;
       }
       try {
@@ -493,9 +506,9 @@ function hubScript(): string {
   $("token-copy").onclick = async () => {
     try {
       await navigator.clipboard.writeText(tokenBox.textContent || "");
-      message("Token copied.");
+      message(tr("hub.status.tokenCopied"));
     } catch (_) {
-      message("Could not copy token.", true);
+      message(tr("hub.status.tokenCopyFailed"), true);
     }
   };
 
@@ -521,7 +534,7 @@ function hubScript(): string {
 
     const tag = document.createElement("span");
     tag.className = "tag tag-" + kind;
-    tag.textContent = kind;
+    tag.textContent = kind === "local" ? tr("hub.tag.local") : tr("hub.tag.remote");
 
     const openButton = document.createElement("button");
     openButton.type = "button";
@@ -537,15 +550,16 @@ function hubScript(): string {
     const pinBtn = document.createElement("button");
     pinBtn.type = "button";
     pinBtn.className = "btn-ghost btn-icon btn-sm pin" + (pinned ? " pinned" : "");
-    pinBtn.title = pinned ? "Unpin" : "Pin";
-    pinBtn.setAttribute("aria-label", pinned ? "Unpin" : "Pin");
+    const pinLabel = pinned ? tr("hub.home.unpin") : tr("hub.home.pin");
+    pinBtn.title = pinLabel;
+    pinBtn.setAttribute("aria-label", pinLabel);
     pinBtn.innerHTML = pinIconSvg(pinned);
     pinBtn.onclick = onPin;
 
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "btn-danger btn-sm";
-    remove.textContent = "Remove";
+    remove.textContent = tr("hub.home.remove");
     remove.onclick = onRemove;
 
     el.append(tag, openButton, pinBtn, remove);
@@ -570,7 +584,7 @@ function hubScript(): string {
       if (!localRows.length && !remoteRows.length) {
         const empty = document.createElement("div");
         empty.className = "empty";
-        empty.textContent = "No workspaces yet.";
+        empty.textContent = tr("hub.home.empty");
         list.append(empty);
         return;
       }
@@ -603,7 +617,7 @@ function hubScript(): string {
             pinned: Boolean(row.pinned),
             onOpen: async () => {
               try {
-                message("Reconnecting to " + row.label + "…");
+                message(tr("hub.status.reconnecting", { label: row.label }));
                 bindProgress();
                 await bridge.reconnectRemote(row.id);
               } catch (error) {
@@ -636,6 +650,35 @@ function escapeHubText(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Keys the inline hub script needs (resolved with t() in Node, then injected). */
+function hubScriptI18nBag(): Record<string, string> {
+  const keys = [
+    "hub.status.bridgeUnavailable",
+    "hub.status.openingWorkspace",
+    "hub.status.enterUserAtHost",
+    "hub.status.starting",
+    "hub.status.connected",
+    "hub.status.selectFolder",
+    "hub.status.pickFolderInHome",
+    "hub.status.startingRemoteServer",
+    "hub.status.tokenMissing",
+    "hub.status.tokenCopied",
+    "hub.status.tokenCopyFailed",
+    "hub.status.reconnecting",
+    "hub.chrome.restore",
+    "hub.chrome.maximize",
+    "hub.tag.local",
+    "hub.tag.remote",
+    "hub.home.pin",
+    "hub.home.unpin",
+    "hub.home.remove",
+    "hub.home.empty",
+  ] as const;
+  const bag: Record<string, string> = {};
+  for (const key of keys) bag[key] = t(key);
+  return bag;
+}
+
 /**
  * Startup Home: Open local / Open remote + histories.
  * Styles consume web/src/theme/tokens.css — no hardcoded palette.
@@ -647,7 +690,37 @@ function escapeHubText(value: string): string {
 function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
   const locale = resolveLocale(app.getLocale());
   initDesktopI18n(locale);
-  const homeTitle = escapeHubText(t("hub.home.title"));
+  const e = escapeHubText;
+  const homeTitle = e(t("hub.home.title"));
+  const lead = e(t("hub.home.lead"));
+  const openLocal = e(t("hub.home.openLocal"));
+  const openRemote = e(t("hub.home.openRemote"));
+  const minLabel = e(t("hub.chrome.minimize"));
+  const maxLabel = e(t("hub.chrome.maximize"));
+  const closeLabel = e(t("hub.chrome.close"));
+  const remoteTitle = e(t("hub.remote.title"));
+  const stepAuth = e(t("hub.remote.stepAuth"));
+  const userAtHost = e(t("hub.remote.userAtHost"));
+  const password = e(t("hub.remote.password"));
+  const advancedAuth = e(t("hub.remote.advancedAuth"));
+  const mode = e(t("hub.remote.mode"));
+  const modePassword = e(t("hub.remote.modePassword"));
+  const modePrivateKey = e(t("hub.remote.modePrivateKey"));
+  const modeAgent = e(t("hub.remote.modeAgent"));
+  const privateKeyPath = e(t("hub.remote.privateKeyPath"));
+  const cancel = e(t("hub.remote.cancel"));
+  const connect = e(t("hub.remote.connect"));
+  const stepDeploy = e(t("hub.remote.stepDeploy"));
+  const stepPath = e(t("hub.remote.stepPath"));
+  const openSelected = e(t("hub.remote.openSelected"));
+  const useFolder = e(t("hub.remote.useFolder"));
+  const stepToken = e(t("hub.remote.stepToken"));
+  const tokenLead = e(t("hub.remote.tokenLead"));
+  const copyToken = e(t("hub.remote.copyToken"));
+  const enterWorkspace = e(t("hub.remote.enterWorkspace"));
+  const phUser = e(t("hub.remote.placeholderUserAtHost"));
+  const phKey = e(t("hub.remote.placeholderIdentityFile"));
+  const scriptI18n = hubScriptI18nBag();
   const tokens = loadThemeTokensCss();
   const dvTheme = dvThemeAttr(theme);
   const logoFontB64 = loadLogoFontBase64();
@@ -665,9 +738,9 @@ ${tokens}
 ${hubLayoutCss(logoFontSrc)}
 </style></head><body>
 <header id="titlebar"><span class="brand">${litecodeLogoHtml(13, "var(--_dk-text-secondary)")}</span><div class="chrome">
-<button type="button" class="btn-ghost" id="min" aria-label="Minimize" title="Minimize"><svg width="10" height="10" viewBox="0 0 10 10"><rect y="4" width="10" height="1.5" fill="currentColor"/></svg></button>
-<button type="button" class="btn-ghost" id="max" aria-label="Maximize" title="Maximize"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
-<button type="button" class="btn-ghost" id="close" aria-label="Close" title="Close"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5"/></svg></button>
+<button type="button" class="btn-ghost" id="min" aria-label="${minLabel}" title="${minLabel}"><svg width="10" height="10" viewBox="0 0 10 10"><rect y="4" width="10" height="1.5" fill="currentColor"/></svg></button>
+<button type="button" class="btn-ghost" id="max" aria-label="${maxLabel}" title="${maxLabel}"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" rx="0.5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+<button type="button" class="btn-ghost" id="close" aria-label="${closeLabel}" title="${closeLabel}"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1L1 9" stroke="currentColor" stroke-width="1.5"/></svg></button>
 </div></header>
 <main>
 <div id="status" role="status"></div>
@@ -675,12 +748,12 @@ ${hubLayoutCss(logoFontSrc)}
 <section id="home-view">
   <div class="home-column">
     <div class="logo-hero">${logoIconHtml}${litecodeLogoHtml(56, "var(--_dk-text-primary)")}</div>
-    <p class="lead">Open a local folder, or connect a remote machine over SSH.</p>
+    <p class="lead">${lead}</p>
     <div class="home-header">
       <h1 class="home-title">${homeTitle}</h1>
       <div class="home-actions">
-        <button type="button" class="btn-primary" id="open-local">Local</button>
-        <button type="button" class="btn" id="open-remote">Remote</button>
+        <button type="button" class="btn-primary" id="open-local">${openLocal}</button>
+        <button type="button" class="btn" id="open-remote">${openRemote}</button>
       </div>
     </div>
     <div class="home-divider"></div>
@@ -689,71 +762,71 @@ ${hubLayoutCss(logoFontSrc)}
 </section>
 
 <section id="remote-view" class="hidden">
-  <h1>Open remote</h1>
+  <h1>${remoteTitle}</h1>
   <div class="panel" id="step-auth">
-    <h2>1. Connect</h2>
-    <label class="field">user@host
-      <input id="user-at-host" type="text" placeholder="user@192.168.1.10" autocomplete="off" spellcheck="false" />
+    <h2>${stepAuth}</h2>
+    <label class="field">${userAtHost}
+      <input id="user-at-host" type="text" placeholder="${phUser}" autocomplete="off" spellcheck="false" />
     </label>
-    <label class="field" id="password-field">Password
+    <label class="field" id="password-field">${password}
       <input id="password" type="password" autocomplete="off" />
     </label>
     <details class="advanced">
-      <summary>Advanced authentication</summary>
-      <label class="field">Mode
+      <summary>${advancedAuth}</summary>
+      <label class="field">${mode}
         <select id="auth-mode">
-          <option value="password" selected>Password</option>
-          <option value="private_key">Private key file</option>
-          <option value="agent">SSH agent</option>
+          <option value="password" selected>${modePassword}</option>
+          <option value="private_key">${modePrivateKey}</option>
+          <option value="agent">${modeAgent}</option>
         </select>
       </label>
-      <label class="field hidden" id="key-field">Private key path
-        <input id="identity-file" type="text" placeholder="C:\\Users\\you\\.ssh\\id_ed25519" autocomplete="off" spellcheck="false" />
+      <label class="field hidden" id="key-field">${privateKeyPath}
+        <input id="identity-file" type="text" placeholder="${phKey}" autocomplete="off" spellcheck="false" />
       </label>
     </details>
     <div class="panel-actions">
-      <button type="button" class="btn-ghost" id="remote-back-home">Cancel</button>
-      <button type="button" class="btn-primary" id="remote-connect">Connect</button>
+      <button type="button" class="btn-ghost" id="remote-back-home">${cancel}</button>
+      <button type="button" class="btn-primary" id="remote-connect">${connect}</button>
     </div>
   </div>
 
   <div class="panel hidden" id="step-deploy">
-    <h2>2. Deploy</h2>
+    <h2>${stepDeploy}</h2>
     <div class="progress">
       <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
       <div class="progress-msg" id="progress-msg"></div>
     </div>
     <div class="panel-actions">
-      <button type="button" class="btn-ghost" id="remote-cancel">Cancel</button>
+      <button type="button" class="btn-ghost" id="remote-cancel">${cancel}</button>
     </div>
   </div>
 
   <div class="panel hidden" id="step-path">
-    <h2>3. Choose workspace</h2>
+    <h2>${stepPath}</h2>
     <div class="dir-bar">
       <span id="dir-path" class="meta"></span>
-      <button type="button" class="btn-sm btn" id="dir-open">Open selected</button>
+      <button type="button" class="btn-sm btn" id="dir-open">${openSelected}</button>
     </div>
     <div class="dir-list" id="dir-list"></div>
     <div class="panel-actions">
-      <button type="button" class="btn-ghost" id="remote-cancel-path">Cancel</button>
-      <button type="button" class="btn-primary" id="dir-use">Use this folder</button>
+      <button type="button" class="btn-ghost" id="remote-cancel-path">${cancel}</button>
+      <button type="button" class="btn-primary" id="dir-use">${useFolder}</button>
     </div>
   </div>
 
   <div class="panel hidden" id="step-token">
-    <h2>4. Session token</h2>
-    <p class="lead">Could not open the workspace automatically. Copy the token or try again.</p>
+    <h2>${stepToken}</h2>
+    <p class="lead">${tokenLead}</p>
     <div class="token-box" id="token-box"></div>
     <div class="panel-actions">
-      <button type="button" class="btn" id="token-copy">Copy token</button>
-      <button type="button" class="btn-primary" id="token-enter">Enter workspace</button>
+      <button type="button" class="btn" id="token-copy">${copyToken}</button>
+      <button type="button" class="btn-primary" id="token-enter">${enterWorkspace}</button>
     </div>
   </div>
 </section>
 </main>
 <script>
-${hubScript()}
+${hubScript(scriptI18n)}
 </script></body></html>`;
 }
 

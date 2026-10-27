@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { type McpProbeResult, type ToolScope } from "../../../api/settings";
 import { useSettingsStore } from "../../../stores/settingsStore";
@@ -44,6 +45,7 @@ function prettyServer(item: McpDefItem): string {
 }
 
 export function McpServersSection() {
+  const { t } = useTranslation();
   const mcpDefs = useSettingsStore((s) => s.mcpDefs);
   const mcpRuntime = useSettingsStore((s) => s.mcpRuntime);
   const mcpServers = useMemo(
@@ -119,7 +121,7 @@ export function McpServersSection() {
     setFormError(null);
     const parsed = parseMcpJson(jsonText);
     if ("skip" in parsed) {
-      setFormError("Valid JSON with id and stdio command is required");
+      setFormError(t("settings.mcp.jsonRequired"));
       return;
     }
     void (async () => {
@@ -156,7 +158,7 @@ export function McpServersSection() {
     if (action !== "stop") {
       const parsed = parseMcpJson(jsonText, isNew ? null : selectedId);
       if ("skip" in parsed) {
-        setFormError("Fix JSON before starting");
+        setFormError(t("settings.mcp.fixJsonStart"));
         return;
       }
     }
@@ -173,7 +175,7 @@ export function McpServersSection() {
         setProbe({
           ready: false,
           tools: [],
-          error: err instanceof Error ? err.message : "MCP action failed",
+          error: err instanceof Error ? err.message : t("settings.mcp.actionFailed"),
         });
       } finally {
         setBusy(null);
@@ -184,7 +186,7 @@ export function McpServersSection() {
   const onStart = () => {
     const parsed = parseMcpJson(jsonText, isNew ? null : selectedId);
     if ("skip" in parsed) {
-      setFormError("Fix JSON before starting");
+      setFormError(t("settings.mcp.fixJsonStart"));
       return;
     }
     runLifecycle("start", () => startMcp(parsed.ok.id, selectedScope));
@@ -193,7 +195,7 @@ export function McpServersSection() {
   const onRestart = () => {
     const parsed = parseMcpJson(jsonText, isNew ? null : selectedId);
     if ("skip" in parsed) {
-      setFormError("Fix JSON before restarting");
+      setFormError(t("settings.mcp.fixJsonRestart"));
       return;
     }
     runLifecycle("restart", () => restartMcp(parsed.ok.id, selectedScope));
@@ -207,7 +209,7 @@ export function McpServersSection() {
   const editorForm = (
     <div className="settings-card space-y-3 p-4">
       <div>
-        <FieldLabel required>Definition (JSON)</FieldLabel>
+        <FieldLabel required>{t("settings.mcp.definitionJson")}</FieldLabel>
         <TextArea
           rows={14}
           value={jsonText}
@@ -224,7 +226,7 @@ export function McpServersSection() {
           disabled={saveBlocked || busy !== null || isNew}
           onClick={onStart}
         >
-          {busy === "start" ? "Starting…" : "Start"}
+          {busy === "start" ? t("settings.mcp.starting") : t("settings.mcp.start")}
         </button>
         <button
           type="button"
@@ -232,7 +234,7 @@ export function McpServersSection() {
           disabled={saveBlocked || busy !== null || isNew || !selectedId}
           onClick={onRestart}
         >
-          {busy === "restart" ? "Restarting…" : "Restart"}
+          {busy === "restart" ? t("settings.mcp.restarting") : t("settings.mcp.restart")}
         </button>
         <button
           type="button"
@@ -240,23 +242,24 @@ export function McpServersSection() {
           disabled={saveBlocked || busy !== null || isNew || !selectedId}
           onClick={onStop}
         >
-          {busy === "stop" ? "Stopping…" : "Stop"}
+          {busy === "stop" ? t("settings.mcp.stopping") : t("settings.mcp.stop")}
         </button>
         <span className="text-xs text-(--_dk-text-muted)">
-          Save, then Start. Restart after config changes.
+          {t("settings.mcp.startHint")}
         </span>
       </div>
       {probe ? (
         probe.ready ? (
           <p className="text-xs text-(--_dk-text-secondary)">
-            Ready — tools:{" "}
-            {probe.tools.length
-              ? probe.tools.map((tool) => tool.name).join(", ")
-              : "(none listed)"}
+            {t("settings.mcp.readyTools", {
+              tools: probe.tools.length
+                ? probe.tools.map((tool) => tool.name).join(", ")
+                : t("settings.mcp.noneListed"),
+            })}
           </p>
         ) : (
           <p className="text-sm text-(--_dk-red-500)">
-            {probe.error || "Probe failed"}
+            {probe.error || t("settings.mcp.probeFailed")}
           </p>
         )
       ) : null}
@@ -268,14 +271,14 @@ export function McpServersSection() {
 
   return (
     <ScopedDefinitionEditor
-      title="MCP"
-      newLabel="New MCP server"
+      title={t("settings.mcp.title")}
+      newLabel={t("settings.mcp.newServer")}
       hint={<ScopeHint bindName="mcp_<id>" />}
       global={globalServers}
       workspace={workspaceServers}
       itemId={(server) => server.id}
       itemSummary={(server) =>
-        `${server.status ?? "stopped"}${server.command ? ` · ${server.command}` : ""}`
+        `${server.status ?? t("settings.mcp.stopped")}${server.command ? ` · ${server.command}` : ""}`
       }
       actionsDisabled={saveBlocked || isPersistBusy(persistStatus)}
       isNew={isNew}

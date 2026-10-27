@@ -24,6 +24,7 @@ import { useMessageStore } from "./messageStore";
 import { openSessionPanel } from "../lib/sessionPanelNav";
 import { deleteRejectedMessage, rpcErrorCode } from "../lib/sessionErrors";
 import { noteSessionListSettled } from "../lib/centreSettle";
+import i18n from "../i18n";
 
 let listInFlight = false;
 /** A request arrived while one was in flight → re-pull once after it settles. */
@@ -677,11 +678,11 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           if (res?.cancelled === false) {
             useToastStore
               .getState()
-              .showToast("没有在运行的回合", "info");
+              .showToast(i18n.t("session.noRunningTurn"), "info");
           }
         })
         .catch(() => {
-          useToastStore.getState().showToast("停止失败，请稍后重试", "error");
+          useToastStore.getState().showToast(i18n.t("session.stopFailed"), "error");
         });
     },
 

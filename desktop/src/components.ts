@@ -28,6 +28,7 @@ import type {
   ComponentProgressEvent,
 } from "./bridge-contract";
 import { BUNDLED_MODEL_REL, LINUX_TAR_NAME, isModelDirReady, litecodeBundlesDir } from "./bundle-paths";
+import { t } from "./i18n";
 
 export const COMPONENTS_MANIFEST_NAME = "litecode-components.json";
 const COMPONENTS_RELEASE_REPO = "itissika/litecode";
@@ -75,10 +76,11 @@ export type ComponentSource =
   | { kind: "url"; base: string; manifestUrl: string }
   | { kind: "dir"; dir: string };
 
-const COMPONENT_LABEL: Record<ComponentId, string> = {
-  "embed-model": "Embedding model",
-  "linux-server": "Linux server bundle",
-};
+function componentLabel(id: ComponentId): string {
+  return id === "embed-model"
+    ? t("desktop.component.embedModel")
+    : t("desktop.component.linuxServer");
+}
 
 /* ------------------------------------------------------------------ */
 /* Versions                                                            */
@@ -213,7 +215,7 @@ export function selectComponent(
 ): ManifestComponent {
   const candidates = manifest.components.filter((c) => c.id === id);
   if (candidates.length === 0) {
-    throw new Error(`${COMPONENT_LABEL[id]} is not listed in ${COMPONENTS_MANIFEST_NAME}.`);
+    throw new Error(`${componentLabel(id)} is not listed in ${COMPONENTS_MANIFEST_NAME}.`);
   }
   const compatible = candidates.filter((c) => versionInRange(appVersion, c.app_version_range));
   if (compatible.length === 0) {
@@ -221,7 +223,7 @@ export function selectComponent(
       .map((c) => `${c.app_version_range.min}..${c.app_version_range.max ?? "*"}`)
       .join(", ");
     throw new Error(
-      `No ${COMPONENT_LABEL[id]} compatible with Litecode ${appVersion} (manifest offers ${ranges}).`,
+      `No ${componentLabel(id)} compatible with Litecode ${appVersion} (manifest offers ${ranges}).`,
     );
   }
   return compatible.sort((a, b) => compareVersions(b.version, a.version))[0]!;
@@ -928,10 +930,10 @@ export class ComponentManager {
           phase: "error",
           status: "error",
           percent: 0,
-          message: `${COMPONENT_LABEL[id]} download failed`,
+          message: t("desktop.component.downloadFailed", { label: componentLabel(id) }),
           error: message,
         });
-        throw new Error(`${COMPONENT_LABEL[id]} download failed: ${message}`);
+        throw new Error(`${t("desktop.component.downloadFailed", { label: componentLabel(id) })}: ${message}`);
       })
       .finally(() => {
         this.inflight.delete(id);
@@ -943,11 +945,11 @@ export class ComponentManager {
 
   private async download(id: ComponentId): Promise<EnsureResult> {
     const { appVersion } = this.opts;
-    const label = COMPONENT_LABEL[id];
+    const label = componentLabel(id);
     const env = this.opts.env ?? process.env;
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     const source = resolveComponentSource(appVersion, env);
-    this.emitProgress(id, "resolving", "downloading", { message: `Looking up ${label}…` });
+    this.emitProgress(id, "resolving", "downloading", { message: t("desktop.component.lookingUp", { label }) });
     const manifest = await fetchManifest(source, fetchImpl).catch((error: unknown) => {
       const why = error instanceof Error ? error.message : String(error);
       throw new Error(`${why}\nSource: ${describeSource(source)}\nOffline? Set ${COMPONENTS_BASE_ENV} to a folder containing ${COMPONENTS_MANIFEST_NAME}.`);
@@ -967,7 +969,7 @@ export class ComponentManager {
         received: fs.existsSync(payload) ? fs.statSync(payload).size : 0,
         total: component.size,
         bytesPerSecond: 0,
-        message: `Downloading ${label} (${totalMb} MB)…`,
+        message: t("desktop.component.downloading", { label, size: totalMb }),
       });
       await transferPayload(
         location,
@@ -979,7 +981,7 @@ export class ComponentManager {
             received,
             total,
             bytesPerSecond,
-            message: `Downloading ${label} — ${(received / 1024 / 1024).toFixed(1)} / ${totalMb} MB`,
+            message: t("desktop.component.downloadingProgress", { label, received: (received / 1024 / 1024).toFixed(1), total: totalMb }),
           });
         },
         ctrl,
@@ -988,7 +990,7 @@ export class ComponentManager {
         received: component.size,
         total: component.size,
         bytesPerSecond: 0,
-        message: `Installing ${label}…`,
+        message: t("desktop.component.installing", { label }),
       });
       const nonce = randomBytes(6).toString("hex");
       const installed = id === "embed-model"
@@ -1004,7 +1006,7 @@ export class ComponentManager {
         received: component.size,
         total: component.size,
         bytesPerSecond: 0,
-        message: `${label} ready`,
+        message: t("desktop.component.ready", { label }),
       });
       return { id, path: installed, downloaded: true };
     } finally {

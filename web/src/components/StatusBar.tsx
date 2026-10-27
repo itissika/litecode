@@ -8,7 +8,8 @@ import {
   useTelemetryStore,
 } from "../stores/telemetryStore";
 import type { LogLine } from "../api/types";
-import { REMOTE_SERVE_HINT } from "../lib/uiCopy";
+import { remoteServeHint } from "../lib/uiCopy";
+import i18n from "../i18n";
 
 function formatLogTime(tsMs: number): string {
   const d = new Date(tsMs);
@@ -100,10 +101,10 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
         <div
           ref={scrollRef}
           className="status-log-panel"
-          aria-label="Server logs"
+          aria-label={i18n.t("chrome.serverLogs")}
         >
           {logLines.length === 0 ? (
-            <p className="status-log-empty">Waiting for log events…</p>
+            <p className="status-log-empty">{i18n.t("chrome.waitingLogs")}</p>
           ) : (
             logLines.map((line, i) => (
               <LogRow key={`${line.ts_ms}-${i}`} line={line} />
@@ -116,9 +117,9 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
         {sessionMode === "remote" ? (
           <span
             className="status-bar-rss"
-            title={REMOTE_SERVE_HINT}
+            title={remoteServeHint()}
           >
-            Remote
+            {i18n.t("common.remote")}
           </span>
         ) : null}
         <span className="status-bar-rss" title={rssTitle}>
@@ -133,7 +134,7 @@ export function StatusBar({ sessionMode = "local" }: StatusBarProps) {
             logsExpanded ? "Collapse server logs" : "Expand server logs"
           }
         >
-          <span>Logs</span>
+          <span>{i18n.t("common.logs")}</span>
           {logsExpanded ? (
             <CaretDown size={12} weight="bold" aria-hidden />
           ) : (

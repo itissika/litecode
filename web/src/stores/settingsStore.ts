@@ -64,6 +64,7 @@ import {
   SETTINGS_PERSIST_ERROR_CHANNEL,
   type PersistStatus,
 } from "../lib/settingsPersist";
+import i18n from "../i18n";
 import {
   documentIsFresh,
   EXCLUDES_CLOCK,
@@ -172,19 +173,19 @@ function handleSaveError(err: unknown): void {
     useToastStore
       .getState()
       .showToast(
-        "Cannot save settings while an agent turn is in progress",
+        i18n.t("settings.toasts.cannotSaveWhileTurn"),
         "error",
         5000,
         SETTINGS_PERSIST_ERROR_CHANNEL,
       );
     return;
   }
-  const message = err instanceof Error ? err.message : "Settings save failed";
+  const message = err instanceof Error ? err.message : i18n.t("settings.toasts.saveFailed");
   if (message === "turn_in_progress") {
     useToastStore
       .getState()
       .showToast(
-        "Cannot save settings while an agent turn is in progress",
+        i18n.t("settings.toasts.cannotSaveWhileTurn"),
         "error",
         5000,
         SETTINGS_PERSIST_ERROR_CHANNEL,
@@ -407,11 +408,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       if (event.summary.restart_required) {
         useToastStore
           .getState()
-          .showToast("Settings changed — restart the server to apply", "info");
+          .showToast(i18n.t("settings.toasts.restartToApply"), "info");
       } else if (event.summary.effective_next_turn && !get().open) {
         useToastStore
           .getState()
-          .showToast("Settings changed — effective next turn", "success");
+          .showToast(i18n.t("settings.toasts.effectiveNextTurn"), "success");
       }
       if (!get().open) return;
       const mapped = settingsDocsForEvent(event.docs);
@@ -487,7 +488,7 @@ export const useSettingsStore = create<SettingsStore>((set, get) => {
       } catch (err) {
         if (get().section !== requested || flight !== loadFlight) return;
         const message =
-          err instanceof Error ? err.message : "Failed to load settings";
+          err instanceof Error ? err.message : i18n.t("settings.toasts.loadFailed");
         set({ loadError: message });
         useToastStore.getState().showToast(message, "error");
       }

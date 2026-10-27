@@ -2,6 +2,7 @@ import { WarningCircle } from "@phosphor-icons/react";
 
 import { issueText } from "../../lib/knowledge/issueText";
 import type { KnowledgeIssue } from "../../lib/knowledge/types";
+import i18n from "../../i18n";
 
 /**
  * Amber exclamation after a knowledge title, for the warning-class issues the
@@ -19,7 +20,7 @@ export function KnowledgeAttentionIcon({
     <span
       className="knowledge-attention-icon"
       role="img"
-      aria-label={`${warnings.length} 个问题需要关注`}
+      aria-label={i18n.t("knowledge.attention", { count: warnings.length })}
       title={message}
     >
       <WarningCircle size={12} weight="fill" aria-hidden />

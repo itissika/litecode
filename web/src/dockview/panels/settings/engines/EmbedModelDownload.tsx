@@ -3,6 +3,8 @@ import { CloudArrowDown, WarningCircle } from "@phosphor-icons/react";
 
 import type { ComponentProgressEvent } from "../../../../api/auth";
 import { glassFill } from "../../../../components/composerCard";
+import { useTranslation } from "react-i18next";
+import i18n from "../../../../i18n";
 
 /**
  * Slim installer: the embed model is not shipped in the installer. The
@@ -23,7 +25,7 @@ const COMPONENT = "embed-model" as const;
 /** Strip Electron's `Error invoking remote method '…': Error: ` wrapper. */
 export function cleanIpcError(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  return raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, "").trim() || "Download failed";
+  return raw.replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, "").trim() || i18n.t("settings.engines.downloadFailed");
 }
 
 export function embedDownloadAvailable(): boolean {
@@ -58,7 +60,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
         return;
       }
       if (event.phase === "error") {
-        setState({ phase: "error", error: event.error || event.message || "Download failed" });
+        setState({ phase: "error", error: event.error || event.message || i18n.t("settings.engines.downloadFailed") });
         return;
       }
       setState({ phase: "running", message: event.message, percent: event.percent });
@@ -67,7 +69,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
     void bridge.getComponentStatus?.(COMPONENT).then((status) => {
       if (!mounted.current) return;
       if (status.downloading) {
-        setState((s) => (s.phase === "idle" ? { phase: "running", message: "Downloading embedding model…", percent: 0 } : s));
+        setState((s) => (s.phase === "idle" ? { phase: "running", message: i18n.t("settings.engines.downloadingEmbed"), percent: 0 } : s));
       } else if (status.error) {
         setState((s) => (s.phase === "idle" ? { phase: "error", error: status.error! } : s));
       }
@@ -78,7 +80,7 @@ export function useEmbedModelDownload(onInstalled: () => Promise<void> | void) {
   const start = useCallback(async () => {
     const bridge = window.litecode;
     if (!bridge?.ensureComponent) return;
-    setState({ phase: "running", message: "Looking up embedding model…", percent: 0 });
+    setState({ phase: "running", message: i18n.t("settings.engines.lookingUpEmbed"), percent: 0 });
     try {
       await bridge.ensureComponent(COMPONENT);
       if (!mounted.current) return;
@@ -99,6 +101,7 @@ export function EmbedModelDownloadCard({
   state: EmbedDownloadState;
   onStart: () => void;
 }) {
+  const { t } = useTranslation();
   const running = state.phase === "running";
   // Contract: percent is always present; 0 means not started or size unknown.
   const pct = running && state.percent > 0 ? state.percent : null;
@@ -106,20 +109,20 @@ export function EmbedModelDownloadCard({
     state.phase === "running"
       ? state.message
       : state.phase === "done"
-        ? "Installed — starting retrieval…"
-        : "Semantic retrieval needs a one-time download from the Litecode GitHub release (sha256-verified).";
+        ? t("settings.engines.installedStarting")
+        : t("settings.engines.embedNeeded");
   return (
     <div
       className={`embed-download-card rounded-md border border-(--_dk-line) p-3 ${glassFill}`}
       data-phase={state.phase}
       role="group"
-      aria-label="Embedding model download"
+      aria-label={t("settings.engines.embedAria")}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-2">
           <CloudArrowDown size={16} className="mt-0.5 shrink-0 text-(--_dk-accent-hover)" aria-hidden />
           <div className="min-w-0">
-            <p className="text-xs font-medium text-(--_dk-text-primary)">Embedding model not installed</p>
+            <p className="text-xs font-medium text-(--_dk-text-primary)">{t("settings.engines.embedNotInstalled")}</p>
             <p className="mt-0.5 text-dk-xs text-(--_dk-text-muted)" aria-live="polite">
               {subtitle}
             </p>
@@ -127,7 +130,7 @@ export function EmbedModelDownloadCard({
         </div>
         {state.phase === "idle" || state.phase === "error" ? (
           <button type="button" className="btn btn-sm shrink-0" onClick={onStart}>
-            {state.phase === "error" ? "Retry" : "Download"}
+            {state.phase === "error" ? t("settings.engines.retry") : t("settings.engines.download")}
           </button>
         ) : null}
       </div>

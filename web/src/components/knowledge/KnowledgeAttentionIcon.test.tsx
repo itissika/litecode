@@ -23,7 +23,7 @@ describe("KnowledgeAttentionIcon", () => {
 
   it("marks the warnings with their messages as the title", () => {
     render(<KnowledgeAttentionIcon warnings={[drift]} />);
-    const mark = screen.getByRole("img", { name: "1 个问题需要关注" });
+    const mark = screen.getByRole("img", { name: "1 issues need attention" });
     expect(mark.getAttribute("title")).toBe(drift.message);
   });
 });

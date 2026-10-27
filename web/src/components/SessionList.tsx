@@ -7,6 +7,7 @@ import { SessionItem } from "./SessionItem";
 import { Popover } from "./ui/Popover";
 import { WorkspaceUsage } from "./WorkspaceUsage";
 import { openSessionPanel } from "../lib/sessionPanelNav";
+import i18n from "../i18n";
 
 export function SessionList() {
   const sessions = useSessionStore((s) => s.sessions);
@@ -58,7 +59,7 @@ export function SessionList() {
       if (connecting && !error) {
         return (
           <p className="p-4 text-center text-xs text-(--_dk-text-disabled)">
-            Connecting…
+            {i18n.t("common.connecting")}
           </p>
         );
       }
@@ -71,14 +72,14 @@ export function SessionList() {
               onClick={() => listSessions()}
               className="btn-ghost"
             >
-              Retry
+              {i18n.t("common.retry")}
             </button>
           </div>
         );
       }
       return (
         <p className="p-4 text-center text-xs text-(--_dk-text-disabled)">
-          {loading ? "Loading sessions…" : "No saved sessions yet."}
+          {loading ? i18n.t("session.loadingSessions") : i18n.t("session.noSavedSessions")}
         </p>
       );
     }
@@ -101,7 +102,7 @@ export function SessionList() {
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-3 py-2">
         <button type="button" onClick={newSession} className="btn-ghost btn-sm">
-          New
+          {i18n.t("common.new")}
         </button>
         <div className="flex min-w-0 items-center gap-2">
           {error && connState === "connected" && (
@@ -111,13 +112,13 @@ export function SessionList() {
               className={`btn-ghost text-(--_dk-ix-danger-fg)`}
               title={error}
             >
-              Retry
+              {i18n.t("common.retry")}
             </button>
           )}
           {(loading || connecting) && (
             <span
               className="h-3 w-3 shrink-0 animate-spin rounded-full border border-(--_dk-text-muted) border-t-transparent"
-              title={connecting ? "Connecting…" : "Loading sessions"}
+              title={connecting ? i18n.t("common.connecting") : i18n.t("session.loadingSessions")}
             />
           )}
           {/* Workspace spend sits at the far right, where a quiet read-out
@@ -130,8 +131,8 @@ export function SessionList() {
                 type="button"
                 onClick={toggle}
                 aria-expanded={open}
-                aria-label="工作区用量"
-                title="工作区用量"
+                aria-label={i18n.t("session.workspaceUsage")}
+                title={i18n.t("session.workspaceUsage")}
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-(--_dk-text-secondary) transition-colors hover:bg-(--_dk-ix-bg-hover)"
               >
                 <Info size={13} />

@@ -1,4 +1,5 @@
 import type { SessionInfo, SubagentBindingState } from "../api/types";
+import i18n from "../i18n";
 import type { ToolStatus } from "../components/ToolIcon";
 
 export function inputString(input: unknown, key: string): string | undefined {
@@ -33,7 +34,12 @@ export function waitTargetCount(input: unknown): number | undefined {
   return countWaitIds(input);
 }
 
-export const DELETED_WORD = "已删除";
+export function deletedWord(): string {
+  return i18n.t("session.deleted");
+}
+
+/** @deprecated Prefer deletedWord(). */
+export const DELETED_WORD = "Deleted";
 
 /**
  * WP-086: child ids that are tombstoned — `subagent_binding_states` entries
@@ -69,7 +75,7 @@ export function childStatusWord(
   toolStatus: ToolStatus,
   deleted = false,
 ): string {
-  if (deleted) return DELETED_WORD;
+  if (deleted) return deletedWord();
   if (toolStatus === "failed") return "failed";
   if (child?.status === "stopping" || child?.turn?.phase === "cancelling") {
     return "stopping";

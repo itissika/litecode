@@ -47,11 +47,11 @@ describe("KnowledgeFlowCard body", () => {
     expect(container.querySelector(".ProseMirror")).toBeNull();
     expect(container.textContent).toContain("单调递增");
 
-    fireEvent.click(screen.getByRole("button", { name: "编辑正文" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit body" }));
     expect(container.querySelector(".ProseMirror")).not.toBeNull();
     expect(container.querySelector(".agent-markdown")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "预览正文" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview body" }));
     expect(container.querySelector(".agent-markdown")).not.toBeNull();
     expect(container.querySelector(".ProseMirror")).toBeNull();
   });

@@ -3,6 +3,7 @@ import {
   RPC_ERR_DESCENDANT_RUNNING,
   RPC_ERR_SUBAGENT_SESSION_READONLY,
 } from "../api/types";
+import i18n from "../i18n";
 
 /** `error.data.code` string the server attaches to a rejected RPC, if any. */
 export function rpcErrorCode(err: unknown): string | undefined {
@@ -21,28 +22,32 @@ function runningSessionIds(err: unknown): string[] {
     : [];
 }
 
-export const DELETE_FAILED_MESSAGE = "删除失败，请稍后重试";
-const READONLY_MESSAGE = "子会话是只读的，消息只能由父会话发送";
+export function deleteFailedMessage(): string {
+  return i18n.t("session.deleteFailed");
+}
+
+/** @deprecated Prefer deleteFailedMessage(); kept for call sites that need a string snapshot. */
+export const DELETE_FAILED_MESSAGE = "Delete failed, please try again later";
 
 /** User-facing text for a rejected `session/delete`. Unknown → generic. */
 export function deleteRejectedMessage(err: unknown): string {
   switch (rpcErrorCode(err)) {
     case RPC_ERR_AGENT_ALREADY_RUNNING:
-      return "会话正在运行，请先停止再删除";
+      return i18n.t("session.busyDelete");
     case RPC_ERR_DESCENDANT_RUNNING: {
       const n = runningSessionIds(err).length;
       return n > 0
-        ? `有 ${n} 个子会话正在运行，请先停止再删除`
-        : "有子会话正在运行，请先停止再删除";
+        ? i18n.t("session.descendantsBusy", { count: n })
+        : i18n.t("session.descendantBusy");
     }
     default:
-      return DELETE_FAILED_MESSAGE;
+      return i18n.t("session.deleteFailed");
   }
 }
 
 /** Readonly-rejection text, or undefined when `err` is another error. */
 export function readonlyRejectedMessage(err: unknown): string | undefined {
   return rpcErrorCode(err) === RPC_ERR_SUBAGENT_SESSION_READONLY
-    ? READONLY_MESSAGE
+    ? i18n.t("session.readonlyChild")
     : undefined;
 }

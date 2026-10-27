@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { useTreeStore } from "../../../stores/treeStore";
@@ -50,6 +51,7 @@ function snapshotFilesDraft(): FilesDraft {
 }
 
 export function FilesSection() {
+  const { t } = useTranslation();
   const excludes = useSettingsStore((s) => s.excludes);
   const saveBlocked = useSettingsSaveBlocked();
   const { persistStatus, setPersistStatus } = useDocPersist("excludes");
@@ -114,7 +116,7 @@ export function FilesSection() {
 
   return (
     <SettingsPageShell
-      title="Files"
+      title={t("settings.files.title")}
       actions={
         <button
           type="button"
@@ -122,18 +124,17 @@ export function FilesSection() {
           disabled={saveBlocked || !excludes}
           onClick={restoreDefaults}
         >
-          Restore defaults
+          {t("settings.files.restoreDefaults")}
         </button>
       }
     >
       <div className="space-y-3">
         <p className="text-dk-sm text-(--_dk-text-secondary)">
-          Saved in <code>.litecode/excludes.json</code>; changes apply
-          immediately. Semantic search uses the suffix list below.
+          {t("settings.files.savedHint")}
         </p>
 
         <div className="settings-card space-y-3 p-4">
-          <SectionHeader title=".gitignore" />
+          <SectionHeader title={t("settings.files.gitignore")} />
           <label className="flex cursor-pointer items-center gap-2 text-sm text-(--_dk-text-primary)">
             <input
               type="checkbox"
@@ -144,7 +145,7 @@ export function FilesSection() {
                 setDraft((d) => ({ ...d, gitIgnore: e.target.checked }))
               }
             />
-            Honor .gitignore in search and code index
+            {t("settings.files.honorGitignoreSearch")}
           </label>
           <label className="flex cursor-pointer items-center gap-2 text-sm text-(--_dk-text-primary)">
             <input
@@ -156,15 +157,15 @@ export function FilesSection() {
                 setDraft((d) => ({ ...d, explorerGitIgnore: e.target.checked }))
               }
             />
-            Honor .gitignore in the explorer
+            {t("settings.files.honorGitignoreExplorer")}
           </label>
         </div>
 
         <FoldCard
-          label={<span className="settings-section-title">Files exclude</span>}
+          label={<span className="settings-section-title">{t("settings.files.filesExclude")}</span>}
           className="settings-foldcard"
         >
-          <FieldLabel>Hidden from the explorer and from search</FieldLabel>
+          <FieldLabel>{t("settings.files.filesExcludeHint")}</FieldLabel>
           <TextArea
             rows={6}
             value={draft.filesText}
@@ -178,12 +179,10 @@ export function FilesSection() {
         </FoldCard>
 
         <FoldCard
-          label={<span className="settings-section-title">Search exclude</span>}
+          label={<span className="settings-section-title">{t("settings.files.searchExclude")}</span>}
           className="settings-foldcard"
         >
-          <FieldLabel>
-            Extra hides for search and glob.
-          </FieldLabel>
+          <FieldLabel>{t("settings.files.searchExcludeHint")}</FieldLabel>
           <TextArea
             rows={6}
             value={draft.searchText}
@@ -198,13 +197,11 @@ export function FilesSection() {
 
         <FoldCard
           label={
-            <span className="settings-section-title">Code index extensions</span>
+            <span className="settings-section-title">{t("settings.files.codeIndexExt")}</span>
           }
           className="settings-foldcard"
         >
-          <FieldLabel>
-            File suffixes to index, one per line.
-          </FieldLabel>
+          <FieldLabel>{t("settings.files.codeIndexExtHint")}</FieldLabel>
           <TextArea
             rows={6}
             value={draft.extensionsText}
@@ -219,11 +216,11 @@ export function FilesSection() {
 
         <FoldCard
           label={
-            <span className="settings-section-title">Watcher exclude</span>
+            <span className="settings-section-title">{t("settings.files.watcherExclude")}</span>
           }
           className="settings-foldcard"
         >
-          <FieldLabel>Paths skipped by the file watcher</FieldLabel>
+          <FieldLabel>{t("settings.files.watcherExcludeHint")}</FieldLabel>
           <TextArea
             rows={5}
             value={draft.watcherText}

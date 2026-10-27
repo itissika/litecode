@@ -9,6 +9,7 @@ import {
   isAwaitingPermission,
   type SessionStatus,
 } from "./SessionStatusDot";
+import i18n from "../i18n";
 
 /**
  * DEBUG: when true, every status bar ignores its real status and alternates
@@ -73,7 +74,7 @@ export const SessionItem = memo(function SessionItem({
     session.status === "running_with_subagent" || session.status === "stopping";
   const deleteBlocked = session.running || subagentBusy;
   const deleteLabel = deleteBlocked
-    ? "Cannot delete while this session chain is busy"
+    ? i18n.t("session.cannotDeleteBusy")
     : "Delete session";
   const status: SessionStatus = pending
     ? "pending"

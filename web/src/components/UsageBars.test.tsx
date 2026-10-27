@@ -113,12 +113,12 @@ describe("bucketSamples", () => {
 describe("UsageBars", () => {
   it("renders the empty state instead of an empty chart", () => {
     render(<UsageBars series={series([])} failed={false} />);
-    expect(screen.getByText("暂无请求用量")).toBeTruthy();
+    expect(screen.getByText("No request usage yet")).toBeTruthy();
   });
 
   it("degrades to a quiet line when the read fails", () => {
     render(<UsageBars series={null} failed />);
-    expect(screen.getByText("用量暂不可用")).toBeTruthy();
+    expect(screen.getByText("Usage temporarily unavailable")).toBeTruthy();
   });
 
   it("keeps the block's height while the first read is in flight", () => {
@@ -131,7 +131,7 @@ describe("UsageBars", () => {
     const { container } = render(
       <UsageBars series={series([sample(11, 2_000, 1_500), sample(12, 2_400, 1_800)], [])} failed={false} />,
     );
-    expect(screen.getByRole("img", { name: /逐请求上下文 token/ })).toBeTruthy();
+    expect(screen.getByRole("img", { name: /Per-request context tokens/ })).toBeTruthy();
     const hitAreas = container.querySelectorAll('rect[fill="transparent"]');
     expect(hitAreas).toHaveLength(2);
     fireEvent.mouseEnter(hitAreas[0]);

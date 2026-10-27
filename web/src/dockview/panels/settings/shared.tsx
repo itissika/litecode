@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 
+import i18n from "../../../i18n";
+
 import {
   useSettingsStore,
   type PersistStatus,
@@ -46,14 +48,21 @@ export function TextArea(
   );
 }
 
-const PERSIST_LABEL: Record<PersistStatus, string | null> = {
-  idle: null,
-  pending: "Saving…",
-  saving: "Saving…",
-  saved: "Saved",
-  invalid: "Fix fields to save",
-  error: "Could not save",
-};
+function persistLabel(status: PersistStatus): string | null {
+  switch (status) {
+    case "pending":
+    case "saving":
+      return i18n.t("settings.persist.saving");
+    case "saved":
+      return i18n.t("settings.persist.saved");
+    case "invalid":
+      return i18n.t("settings.persist.invalid");
+    case "error":
+      return i18n.t("settings.persist.error");
+    default:
+      return null;
+  }
+}
 
 const SECTION_PERSIST_DOCS: Record<SettingsSection, PersistDocKey[]> = {
   connection: ["llm"],
@@ -81,7 +90,7 @@ function PersistStatusLabel() {
     (d) => persistByDoc[d] ?? "idle",
   );
   const status = RANK.find((s) => statuses.includes(s)) ?? "idle";
-  const text = PERSIST_LABEL[status];
+  const text = persistLabel(status);
   if (!text) return null;
   return (
     <span

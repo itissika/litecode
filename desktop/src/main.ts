@@ -27,6 +27,7 @@ import {
 import { readWorkspaceLayout, writeWorkspaceLayout } from "./layout-file";
 import { boundsOnDisplay, popoutBoundsFromFeatures, type PopoutBounds } from "./popout-bounds";
 import { writeHubPage } from "./hub";
+import { initDesktopI18n, resolveLocale, t } from "./i18n";
 import {
   assertIpcSurface,
   exactHttpOrigin,
@@ -535,7 +536,7 @@ async function materializeSshTarget(target: SavedSshTarget): Promise<{
 }> {
   if (!target.credentialId) return { target };
   const credential = await getSecret(target.credentialId);
-  if (!credential) throw new Error("The saved SSH credential is unavailable.");
+  if (!credential) throw new Error(t("desktop.error.credentialUnavailable"));
   if (target.credentialKind === "password") {
     const materialized = materializePasswordAskPass(credential);
     return { target, ...materialized };
@@ -574,17 +575,17 @@ async function ensureSshHostTrusted(target: SavedSshTarget): Promise<string> {
   if (!existing) {
     const options: MessageBoxOptions = {
       type: "warning",
-      buttons: ["Trust and continue", "Cancel"],
+      buttons: [t("desktop.dialog.hostTrust.trust"), t("desktop.dialog.hostTrust.cancel")],
       defaultId: 1,
       cancelId: 1,
-      title: "Verify SSH host identity",
-      message: `First connection to ${key}`,
-      detail: `Verify this fingerprint with the host administrator before continuing:\n${discovered.fingerprint}`,
+      title: t("desktop.dialog.hostTrust.title"),
+      message: t("desktop.dialog.hostTrust.firstConnection", { key }),
+      detail: t("desktop.dialog.hostTrust.detail", { fingerprint: discovered.fingerprint }),
     };
     const result = mainWindow
       ? await dialog.showMessageBox(mainWindow, options)
       : await dialog.showMessageBox(options);
-    if (result.response !== 0) throw new Error("SSH host identity was not approved.");
+    if (result.response !== 0) throw new Error(t("desktop.error.hostNotApproved"));
     trusted[key] = discovered;
     fs.mkdirSync(userData, { recursive: true });
     fs.writeFileSync(recordPath, `${JSON.stringify(trusted, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
@@ -796,8 +797,8 @@ function attachSidecarWatch(handle: SidecarHandle): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         void dialog.showMessageBox(mainWindow, {
           type: "error",
-          title: "Litecode sidecar crashed",
-          message: "The local server stopped and could not restart.",
+          title: t("desktop.dialog.sidecarCrash.title"),
+          message: t("desktop.dialog.sidecarCrash.message"),
           detail: `code=${info.code ?? "null"} signal=${info.signal ?? "null"}`,
         });
       }
@@ -848,7 +849,7 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
       emitRemoteProgress({
         stage: "download",
         ratio: 0.12,
-        message: "Code search unavailable on remote (no embed model).",
+        message: t("desktop.progress.codeSearchUnavailable"),
       });
     }
   }
@@ -856,7 +857,7 @@ async function installLinuxBundle(session: SshSession): Promise<void> {
     emitRemoteProgress({
       stage: "upload",
       ratio: 0.12,
-      message: "Uploading embed model to remote server…",
+      message: t("desktop.progress.uploadingEmbedModel"),
     });
     await session.installModelDir({
       localModelDir: modelDir,
@@ -891,7 +892,7 @@ async function startRemoteServeAndTunnel(
   home: string,
   workspace: string,
 ): Promise<{ serve: RemoteServeHandle; tunnel: SshTunnelHandle; token: string; localPort: number }> {
-  emitRemoteProgress({ stage: "starting", ratio: 0.9, message: "Starting remote Litecode serve…" });
+  emitRemoteProgress({ stage: "starting", ratio: 0.9, message: t("desktop.progress.startingRemoteServe") });
   const remotePort = await unusedLoopbackPort();
   const localPort = await unusedLoopbackPort();
   const token = createToken();
@@ -928,8 +929,8 @@ function bindManagedRemote(
 
 async function connectManagedSsh(targetId: string, workspace: string): Promise<{ ok: true; mode: "remote" }> {
   const target = sshTargets?.get(targetId);
-  if (!target) throw new Error("SSH target was not found.");
-  emitRemoteProgress({ stage: "authenticating", ratio: 0.05, message: "Connecting over SSH…" });
+  if (!target) throw new Error(t("desktop.error.sshTargetNotFound"));
+  emitRemoteProgress({ stage: "authenticating", ratio: 0.05, message: t("desktop.progress.connectingSsh") });
   const knownHostsFile = await ensureSshHostTrusted(target);
   const materialized = await materializeSshTarget(target);
   const session = new SshSession({
@@ -949,7 +950,7 @@ async function connectManagedSsh(targetId: string, workspace: string): Promise<{
     // D8: bind only after connectRemote succeeds so a failed attach cannot
     // leave managedRemote pointing at a stopped tunnel/serve.
     sshTargets?.updateConnection(target.id, workspace);
-    emitRemoteProgress({ stage: "attaching", ratio: 1, message: "Opening workspace…" });
+    emitRemoteProgress({ stage: "attaching", ratio: 1, message: t("desktop.progress.openingWorkspace") });
     const result = await connectRemote(`http://127.0.0.1:${started.localPort}`, started.token);
     bindManagedRemote({
       session,
@@ -994,13 +995,13 @@ async function startRemoteSessionBody(input: StartRemoteInput): Promise<{
   const parsed = parseUserAtHost(input.userAtHost);
   const authMode = input.authMode ?? (input.password ? "password" : input.identityFile ? "private_key" : "agent");
   if (authMode === "password" && !input.password?.trim()) {
-    throw new Error("Password is required.");
+    throw new Error(t("desktop.error.passwordRequired"));
   }
   if (authMode === "private_key" && !input.identityFile?.trim()) {
-    throw new Error("Private key path is required.");
+    throw new Error(t("desktop.error.privateKeyRequired"));
   }
 
-  emitRemoteProgress({ stage: "authenticating", ratio: 0.05, message: "Verifying SSH host and credentials…" });
+  emitRemoteProgress({ stage: "authenticating", ratio: 0.05, message: t("desktop.progress.verifyingSsh") });
 
   const draft: SavedSshTarget = {
     id: createPendingId(),
@@ -1059,7 +1060,7 @@ async function startRemoteSessionBody(input: StartRemoteInput): Promise<{
       ...(credentialMaterial ? { credentialMaterial } : {}),
     };
     setPendingRemote(pending);
-    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: "Connected." });
+    emitRemoteProgress({ stage: "ready", ratio: 0.88, message: t("desktop.progress.connected") });
     // Ownership of the temp key dir now lives in the pending session (cleaned
     // on cancel/complete/stale-clear); clear it so finally does not remove it.
     keyDirectory = undefined;
@@ -1095,7 +1096,7 @@ async function completeRemoteSessionBody(
   const pending = getPendingRemote(sessionId);
   const relative = String(workspace ?? "").trim() || ".";
   if (relative === ".") {
-    throw new Error("Pick a folder inside your home directory.");
+    throw new Error(t("hub.status.pickFolderInHome"));
   }
 
   // Idempotent: a double-complete reuses the already-started serve (D4).
@@ -1127,7 +1128,7 @@ async function completeRemoteSessionBody(
     stage: "ready",
     ratio: 0.96,
     // A4: transient — the hub enters the workspace right after this.
-    message: "Session ready.",
+    message: t("desktop.progress.sessionReady"),
   });
 
   return {
@@ -1141,9 +1142,9 @@ async function completeRemoteSessionBody(
 async function enterRemoteWorkbench(sessionId: string): Promise<{ ok: true; mode: "remote" }> {
   const pending = getPendingRemote(sessionId);
   if (!pending.ready) {
-    throw new Error("Remote session is not ready. Choose a workspace first.");
+    throw new Error(t("desktop.error.sessionNotReady"));
   }
-  emitRemoteProgress({ stage: "attaching", ratio: 1, message: "Opening workspace…" });
+  emitRemoteProgress({ stage: "attaching", ratio: 1, message: t("desktop.progress.openingWorkspace") });
   let result: { ok: true; mode: "remote" };
   try {
     result = await connectRemote(pending.ready.baseUrl, pending.ready.token);
@@ -1194,7 +1195,7 @@ async function cancelRemoteSession(sessionId: string): Promise<void> {
 async function reconnectRemote(targetId: string): Promise<{ ok: true; mode: "remote" }> {
   const target = sshTargets?.get(String(targetId));
   if (!target?.lastWorkspace) {
-    throw new Error("This remote has never completed a connection.");
+    throw new Error(t("desktop.error.remoteNeverConnected"));
   }
   return connectManagedSsh(target.id, target.lastWorkspace);
 }
@@ -1751,7 +1752,7 @@ function registerIpc(): void {
 
   handleTrusted("litecode:list-ssh-directory", "hub", async (_e, opts: { targetId: string; path?: string }) => {
     const target = sshTargets?.get(String(opts?.targetId ?? ""));
-    if (!target) throw new Error("SSH target was not found.");
+    if (!target) throw new Error(t("desktop.error.sshTargetNotFound"));
     const knownHostsFile = await ensureSshHostTrusted(target);
     const materialized = await materializeSshTarget(target);
     return withMaterializedKeyDirectory(materialized.keyDirectory, async () => {
@@ -1804,9 +1805,7 @@ function registerIpc(): void {
   /** Real process restart: kill sidecar, spawn with --workspace, reload window. */
   handleTrusted("litecode:open-workspace", "hub", async (_e, workspacePath: string) => {
     if (sessionMode === "remote") {
-      throw new Error(
-        "Remote mode: one process = one workspace on the server. Use Options → Home to open a local folder, or reconnect from Remote history.",
-      );
+      throw new Error(t("desktop.error.remoteModeOneWorkspace"));
     }
     const target = normalizeWorkspace(String(workspacePath));
     if (await InstanceRegistry.tryFocusWorkspace(target)) {
@@ -1914,6 +1913,7 @@ function registerIpc(): void {
 app.whenReady().then(async () => {
   // Windows toast attribution: the installer's Start Menu shortcut carries this id.
   app.setAppUserModelId(DESKTOP_APP_ID);
+  initDesktopI18n(resolveLocale(app.getLocale()));
   registerIpc();
   recents = new RecentWorkspaces(path.join(app.getPath("userData"), "recent-workspaces.json"));
   remoteTargets = new RemoteTargets(path.join(app.getPath("userData"), "remote-targets.json"));
@@ -1929,7 +1929,7 @@ app.whenReady().then(async () => {
     await stopSidecar(sidecar).catch(() => undefined);
     sidecar = null;
     syncDevUpstream(null);
-    dialog.showErrorBox("Litecode failed to start", message);
+    dialog.showErrorBox(t("desktop.dialog.bootFailed.title"), message);
     app.exit(1);
   }
 });

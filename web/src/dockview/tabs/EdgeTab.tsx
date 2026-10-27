@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import i18n from "../../i18n";
 import type { IDockviewPanelProps } from "dockview-react";
 
 import { knowledgeRailBadge } from "../../lib/knowledge/validate";
@@ -7,8 +8,8 @@ import { getPanelIcon } from "./icons";
 
 function badgeLabel(tone: "error" | "warning", count: number): string {
   return tone === "error"
-    ? `${count} 个节点有校验错误`
-    : `${count} 个节点有过时或损坏风险`;
+    ? i18n.t("edge.validationErrors", { count })
+    : i18n.t("edge.staleRisk", { count });
 }
 
 export function EdgeTab(props: IDockviewPanelProps) {

@@ -6,7 +6,7 @@ import {
 } from "../../lib/subagentUi";
 import { useSessionStore } from "../../stores/sessionStore";
 import { useDeletedChildIds } from "../../lib/useDeletedChildIds";
-import { DELETED_WORD } from "../../lib/subagentUi";
+import { deletedWord } from "../../lib/subagentUi";
 import type { ToolViewProps } from "./registry";
 import { SubagentInlineLine } from "./SubagentInlineLine";
 
@@ -29,7 +29,7 @@ export function SubagentSendToolView({
   const raw = output ? functionCallOutputText(output) : undefined;
   const deletedIds = useDeletedChildIds(sessionId);
   const deleted = !!childId && deletedIds.has(childId);
-  const statusText = deleted ? DELETED_WORD : sendStatusWord(child, status, raw);
+  const statusText = deleted ? deletedWord() : sendStatusWord(child, status, raw);
   return (
     <SubagentInlineLine
       label={label}

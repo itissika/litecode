@@ -65,12 +65,18 @@ export function initDesktopI18n(lng: AppLocale): typeof i18n {
   return i18n;
 }
 
-/** Translate a semantic id key after `initDesktopI18n`. */
-export function t(key: string): string {
-  if (!ready) {
-    throw new Error("initDesktopI18n() must be called before t()");
-  }
-  return String(i18n.t(key));
+/**
+ * Ensure i18n is ready (defaults to `en` when callers outside the hub
+ * path — components / ssh progress — need `t()` before Electron locale is known).
+ */
+export function ensureDesktopI18n(lng: AppLocale = "en"): typeof i18n {
+  return ready ? i18n : initDesktopI18n(lng);
+}
+
+/** Translate a semantic id key. Safe to call after `ensureDesktopI18n` / hub init. */
+export function t(key: string, options?: Record<string, unknown>): string {
+  ensureDesktopI18n();
+  return String(options ? i18n.t(key, options) : i18n.t(key));
 }
 
 export { resolveLocale };

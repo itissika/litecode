@@ -47,7 +47,7 @@ describe("EdgeTab knowledge badge", () => {
     ];
     useKnowledgeStore.setState({ issues, load: async () => {} });
     render(<EdgeTab {...edgeProps("knowledge")} />);
-    const badge = screen.getByLabelText("1 个节点有校验错误");
+    const badge = screen.getByLabelText("1 nodes have validation errors");
     expect(badge.textContent).toBe("1");
     expect(badge.className).toContain("is-error");
   });

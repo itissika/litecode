@@ -1,3 +1,4 @@
+import i18n from "../i18n";
 /** Line-level git diff used by the editor gutter and the inline peek. */
 
 export const MAX_QUICK_DIFF_BYTES = 1_000_000;
@@ -195,7 +196,7 @@ export function peekHeightPx(
 }
 
 export function baselineLabel(baseline: DiffBaseline): string {
-  return baseline === "worktree" ? "工作区" : "暂存";
+  return baseline === "worktree" ? i18n.t("git.worktree") : i18n.t("git.staged");
 }
 
 export interface QuickDiffSources {

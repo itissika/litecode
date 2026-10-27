@@ -4,6 +4,7 @@ import type {
   KnowledgeIssueCode,
   KnowledgeRefState,
 } from "./types";
+import i18n from "../../i18n";
 
 /** `args.reason` of `invalid_lines` on a symbol citation written with `lines` (KR-SYM-6). */
 const SYMBOL_LINES_REASON = "lines not allowed on symbol reference";
@@ -83,7 +84,7 @@ const TEMPLATES: Record<KnowledgeIssueCode, Template> = {
   },
   unsupported_language: (a) => {
     const path = str(a, "path");
-    return path == null ? null : `该语言不支持符号解析 ("${path}").`;
+    return path == null ? null : i18n.t("knowledge.symbolUnsupported", { path });
   },
   missing_symbol: (a) => {
     const path = str(a, "path");

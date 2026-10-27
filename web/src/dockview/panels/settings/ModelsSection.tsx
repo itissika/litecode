@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 
 import {
@@ -11,7 +12,7 @@ import { FoldCard } from "../../../components/FoldCard";
 import { ModalityIcons } from "../../../components/ModalityIcons";
 import { ProviderLogo } from "../../../components/ProviderLogos";
 import { SettingsPageShell, useSettingsSaveBlocked } from "./shared";
-import { NO_MODELS_HINT } from "../../../lib/uiCopy";
+import { noModelsHint } from "../../../lib/uiCopy";
 
 /**
  * Binary On/Off picker in the same segmented style as the chat input's
@@ -37,6 +38,7 @@ function ModelToggle({
   disabled: boolean;
   onToggle: (enabled: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const reduceMotion = useReducedMotion();
   const spring = reduceMotion
     ? { duration: 0 }
@@ -45,12 +47,12 @@ function ModelToggle({
     <LayoutGroup id={`model-toggle-${id}`}>
       <div
         role="group"
-        aria-label={`Enable ${label}`}
+        aria-label={t("settings.models.enable", { label })}
         className="flex shrink-0"
       >
         {[
-          { text: "On", value: true },
-          { text: "Off", value: false },
+          { text: t("common.on"), value: true },
+          { text: t("common.off"), value: false },
         ].map(({ text, value }) => {
           const selected = enabled === value;
           return (
@@ -103,6 +105,7 @@ function ModelRow({
   saveBlocked: boolean;
   onToggle: (enabled: boolean) => void;
 }) {
+  const { t } = useTranslation();
   const label = modelRefLabel(model);
   return (
     <div
@@ -111,7 +114,7 @@ function ModelRow({
       title={
         model.tool_call
           ? undefined
-          : `${label} can't call tools — agents can't run on it`
+          : t("settings.models.noToolCall", { label })
       }
     >
       <span className="flex min-w-0 items-center gap-1.5">
@@ -140,6 +143,7 @@ function ProviderModels({
   saveBlocked: boolean;
   onToggle: (modelRef: string, enabled: boolean) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <FoldCard
       defaultOpen
@@ -156,7 +160,7 @@ function ProviderModels({
       <div
         className="settings-card overflow-hidden p-0"
         role="list"
-        aria-label={`Models for ${provider.name}`}
+        aria-label={t("settings.models.forProvider", { name: provider.name })}
       >
         {provider.models.map((model) => (
           <ModelRow
@@ -179,6 +183,7 @@ function ProviderModels({
  * paste its key on the Providers page and its models appear.
  */
 export function ModelsSection() {
+  const { t } = useTranslation();
   const llm = useSettingsStore((s) => s.llm);
   const setModelEnabled = useSettingsStore((s) => s.setModelEnabled);
   const saveBlocked = useSettingsSaveBlocked();
@@ -226,11 +231,11 @@ export function ModelsSection() {
   };
 
   return (
-    <SettingsPageShell title="Models">
+    <SettingsPageShell title={t("settings.models.title")}>
       <div className="settings-content-indent space-y-2">
         {providers.length === 0 ? (
           <p className="text-sm text-(--_dk-text-disabled)">
-            {NO_MODELS_HINT}
+            {noModelsHint()}
           </p>
         ) : (
           providers.map((provider) => (

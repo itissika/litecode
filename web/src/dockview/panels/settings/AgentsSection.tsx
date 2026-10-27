@@ -76,6 +76,7 @@ function McpToolVisibilityControl({
   disabled: boolean;
   onChange: (allowed_tools: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const selected =
     binding.allowed_tools == null
       ? new Set(tools.map((tool) => tool.name))
@@ -114,7 +115,7 @@ function McpToolVisibilityControl({
         <button
           type="button"
           disabled={disabled}
-          aria-label={`Select visible tools for MCP server ${serverId}`}
+          aria-label={t("settings.agents.mcpVisibilityAria", { serverId })}
           aria-expanded={open}
           className={[
             disabled ? "" : "tool-binding-action",
@@ -128,17 +129,17 @@ function McpToolVisibilityControl({
           }}
         >
           <ListChecks size={14} />
-          Tools
+          {t("common.tools")}
         </button>
       )}
     >
       <div className="space-y-1">
         <p className="px-1 pb-1 text-xs text-(--_dk-text-muted)">
-          Visible to the model next turn
+          {t("settings.agents.visibleToModel")}
         </p>
         {tools.length === 0 ? (
           <p className="px-1 py-2 text-xs text-(--_dk-text-disabled)">
-            No tools listed. Start this MCP server from the MCP settings page.
+            {t("settings.agents.noToolsListed")}
           </p>
         ) : (
           <div ref={setScrollEl} className="max-h-64 overflow-y-auto">
@@ -184,12 +185,12 @@ function McpToolVisibilityControl({
                           </span>
                         </label>
                       }
-                      headerAriaLabel={`Show details for MCP tool ${tool.name}`}
+                      headerAriaLabel={t("settings.agents.mcpToolDetailsAria", { name: tool.name })}
                       className="border-b border-(--_dk-line)"
                       contentClassName="px-5 pb-2 text-xs text-(--_dk-text-secondary)"
                     >
                       {tool.description ||
-                        "No description provided by this MCP server."}
+                        t("settings.agents.noMcpDescription")}
                     </FoldCard>
                   </div>
                 );
@@ -214,10 +215,11 @@ function AgentProfileFields({
   /** First-run detour: ring + hint on the row, so the user changes it themselves. */
   flashMaxSteps?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="settings-card space-y-2 p-3">
       <div>
-        <FieldLabel>Description</FieldLabel>
+        <FieldLabel>{t("common.description")}</FieldLabel>
         {draft.role === "subagent" ? (
           <TextArea
             rows={4}
@@ -238,7 +240,7 @@ function AgentProfileFields({
         )}
       </div>
       <div>
-        <FieldLabel>System prompt</FieldLabel>
+        <FieldLabel>{t("settings.agents.systemPrompt")}</FieldLabel>
         <TextArea
           rows={4}
           value={draft.system_prompt}
@@ -248,7 +250,7 @@ function AgentProfileFields({
           disabled={saveBlocked}
         />
         <p className="mt-1 text-[11px] text-(--_dk-text-muted)">
-          Replaces the built-in persona (<code>builtin:</code> keeps default).
+          {t("settings.agents.systemPromptHint")}
         </p>
       </div>
       <div
@@ -259,7 +261,7 @@ function AgentProfileFields({
             : undefined
         }
       >
-        <FieldLabel>Max steps</FieldLabel>
+        <FieldLabel>{t("settings.agents.maxSteps")}</FieldLabel>
         <TextInput
           type="number"
           min="1"
@@ -274,7 +276,7 @@ function AgentProfileFields({
         />
         {flashMaxSteps ? (
           <p className="mt-1 text-[11px] text-(--_dk-amber-500)">
-            Long tasks may need ~200.
+            {t("settings.agents.maxStepsHint")}
           </p>
         ) : null}
       </div>
@@ -296,6 +298,7 @@ function AllowedSubagentsSelect({
   saveBlocked: boolean;
   onChange: (profile: AgentProfile) => void;
 }) {
+  const { t } = useTranslation();
   const launchEnabled =
     (draft.tools.subagent_tools ?? draft.tools.subagent_launch)?.enabled === true;
   const allowed = new Set(draft.allowed_subagents ?? []);
@@ -309,15 +312,15 @@ function AllowedSubagentsSelect({
 
   return (
     <div className="space-y-2">
-      <h3 className="settings-section-title">Allowed subagents</h3>
+      <h3 className="settings-section-title">{t("settings.agents.allowedSubagents")}</h3>
       {launchEnabled && subagentIds.length > 0 && allowed.size === 0 ? (
         <p className="text-xs text-(--_dk-amber-500)">
-          Select at least one subagent, or launches will fail.
+          {t("settings.agents.selectSubagent")}
         </p>
       ) : null}
       {subagentIds.length === 0 ? (
         <p className="text-sm text-(--_dk-text-disabled)">
-          No subagent profiles defined yet.
+          {t("settings.agents.noSubagentProfiles")}
         </p>
       ) : (
         <div className="settings-card max-h-48 space-y-1 overflow-y-auto p-3">
@@ -370,15 +373,16 @@ function AgentToolsGrid({
   /** Extra guidance rendered under the section title (e.g. subagent deny semantics). */
   note?: ReactNode;
 }) {
+  const { t } = useTranslation();
   if (bindableTools.length === 0) {
     return (
       <div className="space-y-2">
-        <h3 className="settings-section-title">Tool bindings</h3>
+        <h3 className="settings-section-title">{t("settings.agents.toolBindings")}</h3>
         {note ? (
           <p className="text-xs text-(--_dk-text-muted)">{note}</p>
         ) : null}
         <p className="text-sm text-(--_dk-amber-500)">
-          No bindable tools in this workspace.
+          {t("settings.agents.noBindableTools")}
         </p>
       </div>
     );
@@ -386,13 +390,13 @@ function AgentToolsGrid({
 
   return (
     <div className="space-y-2">
-      <h3 className="settings-section-title">Tool bindings</h3>
+      <h3 className="settings-section-title">{t("settings.agents.toolBindings")}</h3>
       {note ? <p className="text-xs text-(--_dk-text-muted)">{note}</p> : null}
       <div
         className="grid grid-cols-1 gap-3 p-3 sm:grid-cols-2 xl:grid-cols-3"
         style={gridStyle}
         role="list"
-        aria-label="Agent tool bindings"
+        aria-label={t("settings.agents.agentToolBindings")}
       >
         {bindableTools.map((entry) => {
           const binding = bindingFor(draft.tools, entry.id);
@@ -415,7 +419,7 @@ function AgentToolsGrid({
               ? `${entry.kind} · ${entry.members.join(", ")}`
               : entry.kind;
           const seriesDetail = entry.overridden
-            ? `${memberLine} · workspace override`
+            ? `${memberLine} · ${t("settings.agents.workspaceOverride")}`
             : memberLine;
           const status = entry.status && entry.status !== "ready" ? entry.status : null;
           const statusTone =
@@ -435,7 +439,7 @@ function AgentToolsGrid({
                 type="button"
                 disabled={saveBlocked}
                 aria-pressed={enabled}
-                aria-label={`${entry.id} tool binding, ${enabled ? "enabled" : "disabled"}`}
+                aria-label={t("settings.agents.toolBindingAria", { id: entry.id, state: enabled ? t("settings.agents.enabled") : t("settings.agents.disabled") })}
                 className="tool-binding-toggle"
                 onClick={toggleEnabled}
               />
@@ -463,7 +467,7 @@ function AgentToolsGrid({
                     <span
                       className={`tag ${enabled ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
                     >
-                      {enabled ? "On" : "Off"}
+                      {enabled ? t("common.on") : t("common.off")}
                     </span>
                     {status ? (
                       <span className={`tag ${statusTone} tag-xs tag-outline`}>{status}</span>
@@ -476,7 +480,7 @@ function AgentToolsGrid({
                     <div
                       className="flex flex-wrap gap-1.5"
                       role="group"
-                      aria-label={`${entry.id} preset`}
+                      aria-label={t("settings.agents.presetAria", { id: entry.id })}
                     >
                       {(["ALL", "SAFE"] as const).map((value) => (
                         <button
@@ -511,8 +515,8 @@ function AgentToolsGrid({
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-xs text-(--_dk-text-disabled)">
                         {entry.kind === "mcp"
-                          ? "No preset"
-                          : "Not configurable"}
+                          ? t("settings.agents.noPreset")
+                          : t("settings.agents.notConfigurable")}
                       </p>
                       {entry.kind === "mcp" ? (
                         <McpToolVisibilityControl
@@ -758,14 +762,14 @@ export function AgentsSection() {
 
   const onDelete = () => {
     if (isProtectedAgent(selectedAgentId)) return;
-    if (!window.confirm(`Delete agent "${selectedAgentId}"?`)) return;
+    if (!window.confirm(t("settings.agents.deleteConfirm", { id: selectedAgentId }))) return;
     void removeAgent(selectedAgentId);
   };
 
   if (!draft) {
     return (
       <SettingsPageShell title={t('settings.agents.title')}>
-        <p className="text-sm text-(--_dk-text-disabled)">Loading agents…</p>
+        <p className="text-sm text-(--_dk-text-disabled)">{t("settings.agents.loading")}</p>
       </SettingsPageShell>
     );
   }
@@ -786,7 +790,7 @@ export function AgentsSection() {
               }
               className="btn-primary btn-sm"
             >
-              Create
+              {t("common.create")}
             </button>
           ) : null}
           <button
@@ -794,8 +798,8 @@ export function AgentsSection() {
             onClick={startCreate}
             disabled={saveBlocked}
             className="btn btn-icon"
-            aria-label="Add agent"
-            title="Add agent"
+            aria-label={t("settings.agents.add")}
+            title={t("settings.agents.add")}
           >
             <Plus size={16} />
           </button>
@@ -803,8 +807,8 @@ export function AgentsSection() {
             type="button"
             onClick={() => void refreshAgents()}
             className="btn btn-icon"
-            aria-label="Refresh list"
-            title="Refresh list"
+            aria-label={t("settings.agents.refresh")}
+            title={t("settings.agents.refresh")}
           >
             <ArrowClockwise size={16} />
           </button>
@@ -816,7 +820,7 @@ export function AgentsSection() {
           {creating ? (
             <div className="settings-card space-y-3 p-3">
               <div>
-                <FieldLabel required>New agent id</FieldLabel>
+                <FieldLabel required>{t("settings.agents.newId")}</FieldLabel>
                 <TextInput
                   value={newAgentId}
                   onChange={(e) => setNewAgentId(e.target.value.toLowerCase())}
@@ -825,7 +829,7 @@ export function AgentsSection() {
                   className="font-mono"
                 />
                 <p className="settings-field-hint">
-                  Lowercase letters, digits, and underscores.
+                  {t("settings.agents.idHint")}
                 </p>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -834,7 +838,7 @@ export function AgentsSection() {
                   onClick={cancelCreate}
                   className="btn-ghost"
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -842,7 +846,7 @@ export function AgentsSection() {
             <div className="settings-card space-y-3 p-3">
               <div className="flex flex-wrap items-end gap-3">
                 <div className="min-w-[160px] flex-1">
-                  <FieldLabel>Agent</FieldLabel>
+                  <FieldLabel>{t("common.agent")}</FieldLabel>
                   <Select
                     value={selectedAgentId}
                     onChange={(id) => {
@@ -860,7 +864,7 @@ export function AgentsSection() {
                             <span>{id}</span>
                             {role === "hidden" ? (
                               <span className="text-(--_dk-text-disabled)">
-                                (hidden)
+                                {t("common.hidden")}
                               </span>
                             ) : null}
                           </span>
@@ -871,7 +875,7 @@ export function AgentsSection() {
                   />
                 </div>
                 <div className="min-w-[160px] flex-1">
-                  <FieldLabel>Model</FieldLabel>
+                  <FieldLabel>{t("common.model")}</FieldLabel>
                   <ModelSwitcher
                     variant="field"
                     models={switcherModels}
@@ -881,12 +885,12 @@ export function AgentsSection() {
                   />
                   {activeModels.length === 0 ? (
                     <p className="settings-field-hint">
-                      Configure a provider API key
+                      {t("settings.agents.configureProvider")}
                     </p>
                   ) : null}
                 </div>
                 <div>
-                  <FieldLabel>Type</FieldLabel>
+                  <FieldLabel>{t("common.type")}</FieldLabel>
                   <div className="flex gap-2">
                     {(["primary", "subagent"] as const).map((role) => (
                       <button
@@ -897,7 +901,7 @@ export function AgentsSection() {
                         className={`flex items-center gap-1 ${draft.role === role ? "btn-primary btn-xs" : "btn-ghost btn-xs"}`}
                       >
                         <AgentTypeIcon role={role} />
-                        {role === "primary" ? "Primary" : "Subagent"}
+                        {role === "primary" ? t("settings.agents.primary") : t("settings.agents.subagentRole")}
                       </button>
                     ))}
                   </div>
@@ -911,7 +915,7 @@ export function AgentsSection() {
                     disabled={saveBlocked || isPersistBusy(persistStatus)}
                     className="btn-danger btn-xs"
                   >
-                    Delete
+                    {t("common.delete")}
                   </button>
                 </div>
               ) : null}
@@ -952,7 +956,7 @@ export function AgentsSection() {
             mcpServers={mcpList}
             saveBlocked={saveBlocked}
             onBindingChange={updateBinding}
-            note="Subagents can't ask for approval — a binding that would prompt the user (SAFE on write/edit, web, or custom tools) is denied at runtime instead. SAFE on read/grep/glob/bash keeps them workspace-safe; use the MCP Tools picker to expose only chosen tools of a server."
+            note={t("settings.agents.subagentsNote")}
           />
         ) : null}
       </div>

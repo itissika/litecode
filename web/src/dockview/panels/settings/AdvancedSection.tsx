@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { useSettingsStore } from "../../../stores/settingsStore";
 import { Select } from "../../../components/ui/Select";
@@ -26,6 +27,7 @@ function snapshotApiKey(): string {
 }
 
 export function AdvancedSection() {
+  const { t } = useTranslation();
   const log = useSettingsStore((s) => s.log);
   const websearch = useSettingsStore((s) => s.websearch);
   const saveBlocked = useSettingsSaveBlocked();
@@ -62,28 +64,27 @@ export function AdvancedSection() {
   });
 
   return (
-    <SettingsPageShell title="Advanced">
+    <SettingsPageShell title={t("settings.advanced.title")}>
       <div className="space-y-6">
         <div className="settings-card space-y-3 p-4">
-          <SectionHeader title="Web search" />
+          <SectionHeader title={t("settings.advanced.webSearch")} />
           <p className="text-xs text-(--_dk-text-muted)">
-            Optional Exa API key (or{" "}
-            <code className="font-mono">EXA_API_KEY</code>) for higher limits.
+            {t("settings.advanced.exaHint")}
           </p>
-          <FieldLabel>Exa API key</FieldLabel>
+          <FieldLabel>{t("settings.advanced.exaKey")}</FieldLabel>
           <TextInput
             type="password"
             autoComplete="off"
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            placeholder="optional"
+            placeholder={t("common.optional")}
             disabled={saveBlocked}
           />
         </div>
 
         <div className="settings-card space-y-3 p-4">
-          <SectionHeader title="Log level" />
-          <FieldLabel>Level</FieldLabel>
+          <SectionHeader title={t("settings.advanced.logLevel")} />
+          <FieldLabel>{t("settings.advanced.level")}</FieldLabel>
           <Select
             value={logLevel}
             onChange={setLogLevel}

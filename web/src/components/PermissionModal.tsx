@@ -4,6 +4,7 @@ import type { AskKind, AskOption, AskQuestion } from "../api/types";
 import { ASK_BUTTON, ASK_FIELD, AskCard, type Grant } from "./AskCard";
 import { AskUserCard } from "./AskUserCard";
 import { glyphFor } from "./ToolIcon";
+import i18n from "../i18n";
 
 /** The receipt of a human Ask lives with the board that shapes it; this module is
  *  where the ask cards are known from, so it stays reachable from here. */
@@ -41,9 +42,9 @@ const RISKY_BASH: RegExp[] = [
  *  worth saying out loud. Anything else (the catch-all rule, a rule written by
  *  hand) stays untranslated: no line beats a wrong one. */
 function boundaryFor(tool: string, ruleId: string, summary: string): string | null {
-  if (ruleId === "outside_workspace") return "Outside the workspace";
+  if (ruleId === "outside_workspace") return i18n.t("permission.outsideWorkspace");
   if (tool === "bash" && RISKY_BASH.some((re) => re.test(summary)))
-    return "Risky command";
+    return i18n.t("permission.riskyCommand");
   return null;
 }
 
@@ -106,21 +107,21 @@ function PermissionAsk({
             onClick={() => onGrant(true, false)}
             className={ASK_BUTTON}
           >
-            Allow once
+            {i18n.t("permission.allowOnce")}
           </button>
           <button
             type="button"
             onClick={() => onGrant(true, true)}
             className={ASK_BUTTON}
           >
-            Always allow
+            {i18n.t("permission.alwaysAllow")}
           </button>
           <button
             type="button"
             onClick={() => onGrant(false, false)}
             className={ASK_BUTTON}
           >
-            Deny
+            {i18n.t("common.deny")}
           </button>
         </>
       }
@@ -171,21 +172,21 @@ function ApprovalAsk({
             onClick={() => submit(true)}
             className={ASK_BUTTON}
           >
-            Approve
+            {i18n.t("common.approve")}
           </button>
           <button
             type="button"
             onClick={() => submit(false)}
             className={ASK_BUTTON}
           >
-            Reject
+            {i18n.t("common.reject")}
           </button>
           {freeText && (
             <input
               type="text"
               data-testid="permission-free-text"
-              aria-label="Opinion (optional)"
-              placeholder="Opinion (optional)"
+              aria-label={i18n.t("permission.opinion")}
+              placeholder={i18n.t("permission.opinion")}
               className={`${ASK_FIELD} min-w-[8rem] flex-1`}
               value={opinion}
               onChange={(e) => setOpinion(e.target.value)}

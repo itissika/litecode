@@ -130,7 +130,7 @@ describe("WP-089 T2 cancelled:false", () => {
     mockRpc(() => ({ cancelled: false }));
     useSessionStore.getState().stopSubagent(CHILD);
     await waitFor(() => expect(toasts()).toHaveLength(1));
-    expect(toasts()[0]).toMatchObject({ message: "没有在运行的回合", variant: "info" });
+    expect(toasts()[0]).toMatchObject({ message: "No turn is running", variant: "info" });
     expect(useSessionStore.getState().sessions.find((s) => s.id === CHILD)?.status).toBe("running");
   });
   it("cancelled:true 不提示", async () => {
@@ -201,7 +201,7 @@ describe("WP-089 T4 deleted 事件", () => {
     );
     const line = screen.getByTestId("subagent-launch-line");
     expect(line.tagName).toBe("DIV");
-    expect(line.textContent).toContain("已删除");
+    expect(line.textContent).toContain("Deleted");
   });
   it("级联：每个子各一条 deleted 都各自处理", () => {
     for (const id of ["c-a", "c-b"]) {
@@ -343,7 +343,7 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
     load({ call_1: { child_session_id: CHILD, deleted: true } });
     launch();
     expect(screen.getByTestId("subagent-launch-line").tagName).toBe("DIV");
-    expect(screen.getByText("已删除")).toBeTruthy();
+    expect(screen.getByText("Deleted")).toBeTruthy();
     cleanup();
     render(<SubagentRosterPanel sessionId={PARENT} />);
     expect(screen.getByText("No subagents")).toBeTruthy();
@@ -354,13 +354,13 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
       call_1: { child_session_id: CHILD, deleted: true },
     });
     launch();
-    expect(screen.getByText("已删除")).toBeTruthy();
+    expect(screen.getByText("Deleted")).toBeTruthy();
   });
   it("deleted=false → 正常可点", () => {
     load({ call_1: { child_session_id: CHILD, deleted: false } });
     launch();
     expect(screen.getByTestId("subagent-launch-line").tagName).toBe("BUTTON");
-    expect(screen.queryByText("已删除")).toBeNull();
+    expect(screen.queryByText("Deleted")).toBeNull();
   });
   it("字段缺失 / 无对应 call_id → 视为未删除", () => {
     load();
@@ -386,13 +386,13 @@ describe("WP-089 T8 墓碑 subagent_binding_states", () => {
 describe("WP-089 T9 删除被拒提示", () => {
   it("agent_already_running / descendant_running(有无 ids) / 未知 / 无码", () => {
     expect(deleteRejectedMessage(rpcError("agent_already_running"))).toBe(
-      "会话正在运行，请先停止再删除",
+      "Session is running — stop it before deleting",
     );
     expect(
       deleteRejectedMessage(rpcError("descendant_running", { running_session_ids: ["a", "b"] })),
-    ).toBe("有 2 个子会话正在运行，请先停止再删除");
+    ).toBe("2 child sessions are running — stop them before deleting");
     expect(deleteRejectedMessage(rpcError("descendant_running"))).toBe(
-      "有子会话正在运行，请先停止再删除",
+      "A child session is running — stop it before deleting",
     );
     expect(deleteRejectedMessage(rpcError("weird_code"))).toBe(DELETE_FAILED_MESSAGE);
     expect(deleteRejectedMessage(new Error("x"))).toBe(DELETE_FAILED_MESSAGE);
@@ -406,7 +406,7 @@ describe("WP-089 T9 删除被拒提示", () => {
     });
     useSessionStore.getState().deleteSession(CHILD);
     await waitFor(() => expect(toasts()).toHaveLength(1));
-    expect(toasts()[0]!.message).toBe("有 1 个子会话正在运行，请先停止再删除");
+    expect(toasts()[0]!.message).toBe("1 child sessions are running — stop them before deleting");
     await waitFor(() => expect(sendRpc).toHaveBeenCalledWith("session/list"));
   });
 });
@@ -429,7 +429,7 @@ describe("WP-089 T10 status_changed", () => {
 
 describe("WP-089 T11 readonly 码", () => {
   it("subagent_session_readonly → 只读提示；其它 undefined", () => {
-    expect(readonlyRejectedMessage(rpcError("subagent_session_readonly"))).toMatch(/只读/);
+    expect(readonlyRejectedMessage(rpcError("subagent_session_readonly"))).toMatch(/read-only|read only|readonly/i);
     expect(readonlyRejectedMessage(rpcError("agent_already_running"))).toBeUndefined();
   });
 });

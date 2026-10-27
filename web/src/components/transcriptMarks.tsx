@@ -10,6 +10,7 @@ import { jobExitDetail, subagentExitDetail } from "../lib/transcriptProjection";
 import { AgentMarkdown } from "./AgentMarkdown";
 import { WaveText } from "./WaveText";
 import { Popover } from "./ui/Popover";
+import i18n from "../i18n";
 
 function MarkLine({
   role,
@@ -123,7 +124,7 @@ export function PlanExecuteMark({ planPath }: { planPath?: string | null }) {
       testId="plan-execute-mark"
     >
       <span className="text-dk-2xs text-(--_dk-text-disabled)">
-        {planPath ? `${planPath} 开始执行` : "开始执行"}
+        {planPath ? i18n.t("session.planPathExecute", { path: planPath }) : i18n.t("session.startExecute")}
       </span>
     </MarkLine>
   );

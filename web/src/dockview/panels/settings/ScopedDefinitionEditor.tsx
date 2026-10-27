@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { Plus, Trash } from "@phosphor-icons/react";
 
 import type { ToolScope } from "../../../api/settings";
@@ -11,29 +12,23 @@ import { SettingsPageShell } from "./shared";
  *  global." (Custom Tools); otherwise "Workspace overrides global. Bind
  *  <bindName> on Agents." (MCP). */
 export function ScopeHint({
-  bindName,
   bindFirst = false,
 }: {
+  /** Kept for call-site compat; copy now hardcodes mcp_<id> in i18n. */
   bindName?: ReactNode;
   bindFirst?: boolean;
 }) {
+  const { t } = useTranslation();
   if (bindFirst) {
     return (
       <p className="text-xs text-(--_dk-text-muted)">
-        Bind on Agents. Workspace overrides global.
+        {t("settings.customTools.bindHint")}
       </p>
     );
   }
   return (
     <p className="text-xs text-(--_dk-text-muted)">
-      Workspace overrides global. Bind
-      {bindName ? (
-        <>
-          {" "}
-          <span className="font-mono">{bindName}</span>
-        </>
-      ) : null}{" "}
-      on Agents.
+      {t("settings.mcp.bindHint")}
     </p>
   );
 }
@@ -90,6 +85,7 @@ export function ScopedDefinitionEditor<T>({
   onDelete,
   editorForm,
 }: ScopedDefinitionEditorProps<T>) {
+  const { t } = useTranslation();
   return (
     <SettingsPageShell
       title={title}
@@ -102,7 +98,7 @@ export function ScopedDefinitionEditor<T>({
               disabled={actionsDisabled}
               onClick={onCreate}
             >
-              Create
+              {t("common.create")}
             </button>
           ) : null}
           <Dropdown
@@ -129,14 +125,14 @@ export function ScopedDefinitionEditor<T>({
               className={dropdownItemClass}
               onClick={() => onStartCreate("global")}
             >
-              Global
+              {t("common.global")}
             </button>
             <button
               type="button"
               className={dropdownItemClass}
               onClick={() => onStartCreate("workspace")}
             >
-              Workspace
+              {t("common.workspace")}
             </button>
           </Dropdown>
         </>
@@ -147,8 +143,8 @@ export function ScopedDefinitionEditor<T>({
         <div className="space-y-3">
           {(
             [
-              ["global", global, "Global"],
-              ["workspace", workspace, "Workspace"],
+              ["global", global, t("common.global")],
+              ["workspace", workspace, t("common.workspace")],
             ] as const
           ).map(([scope, list, groupTitle]) => (
             <FoldCard
@@ -162,7 +158,7 @@ export function ScopedDefinitionEditor<T>({
               <div className="space-y-2">
                 {list.length === 0 && !(isNew && createScope === scope) ? (
                   <p className="px-2 py-3 text-xs text-(--_dk-text-muted)">
-                    None.
+                    {t("common.none")}
                   </p>
                 ) : null}
                 {list.map((item) => {
@@ -196,8 +192,8 @@ export function ScopedDefinitionEditor<T>({
                                 onDelete(id, scope);
                               }}
                               onKeyDown={(e) => e.stopPropagation()}
-                              aria-label={`Delete ${id}`}
-                              title={`Delete ${id}`}
+                              aria-label={t("common.deleteNamed", { id })}
+                              title={t("common.deleteNamed", { id })}
                             >
                               <Trash size={16} />
                             </button>
@@ -219,7 +215,7 @@ export function ScopedDefinitionEditor<T>({
                     }}
                     label={
                       <span className="font-mono text-sm text-(--_dk-text-secondary)">
-                        (new)
+                        {t("common.newParen")}
                       </span>
                     }
                     className="settings-foldcard"

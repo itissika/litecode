@@ -1,4 +1,5 @@
 import { CaretDown, CaretUp } from "@phosphor-icons/react";
+import i18n from "../i18n";
 import {
   useCallback,
   useEffect,
@@ -28,7 +29,12 @@ import { glyphFor } from "./ToolIcon";
 const STEP_LOCK_MS = 260;
 
 /** Label of the fixed last item every question ends in. */
-export const OTHER_LABEL = "其他（自己填写）";
+export function otherLabel(): string {
+  return i18n.t("askUser.other");
+}
+
+/** @deprecated Prefer otherLabel(). */
+export const OTHER_LABEL = "Other (type your own)";
 
 /** The option's own seat in its question — a, b, c … so a list can be told apart
  *  at a glance, one square per option. Past z a list of 27+ falls back to
@@ -278,7 +284,7 @@ export function AskUserCard({
             </span>
             <button
               type="button"
-              aria-label="Previous question"
+              aria-label={i18n.t("askUser.prevQuestion")}
               disabled={index === 0}
               onClick={() => goTo(index - 1)}
               className={ASK_STEP_BUTTON}
@@ -287,7 +293,7 @@ export function AskUserCard({
             </button>
             <button
               type="button"
-              aria-label="Next question"
+              aria-label={i18n.t("askUser.nextQuestion")}
               disabled={index === questions.length - 1}
               onClick={() => goTo(index + 1)}
               className={ASK_STEP_BUTTON}
@@ -380,8 +386,8 @@ export function AskUserCard({
               <input
                 type="text"
                 data-testid={`ask-user-free-text-${active.id}`}
-                aria-label={OTHER_LABEL}
-                placeholder={OTHER_LABEL}
+                aria-label={otherLabel()}
+                placeholder={otherLabel()}
                 className={`${ASK_FIELD} w-full`}
                 value={textByQ[active.id] ?? ""}
                 onChange={(e) => typeFree(active.id, e.target.value, qMulti)}

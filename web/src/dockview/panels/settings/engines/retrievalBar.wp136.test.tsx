@@ -164,9 +164,9 @@ describe("WP-136 scanning / incremental / red priority / hover", () => {
   });
   it("5 red priority + hover names engine and reason", () => {
     const reasons = [
-      ["model_missing", "模型缺失"],
-      ["engine_unavailable", "引擎不可用"],
-      ["engine_stopped", "引擎已停止"],
+      ["model_missing", "Model missing"],
+      ["engine_unavailable", "Engine unavailable"],
+      ["engine_stopped", "Engine stopped"],
     ] as const;
     for (const [reason, text] of reasons) {
       const err = { engine: "session" as const, reason, message: "m" };

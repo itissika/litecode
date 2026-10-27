@@ -25,36 +25,37 @@ import { AdvancedSection } from "./settings/AdvancedSection";
 import { FilesSection } from "./settings/FilesSection";
 import { EnginesSection } from "./settings/engines/EnginesSection";
 import { useSettingsSaveBlocked } from "./settings/shared";
+import i18n from "../../i18n";
 
 const NAV_GROUPS: {
-  title: string;
+  titleKey: string;
   items: {
     id: SettingsSection;
-    label: string;
+    labelKey: string;
     Icon: React.FC<{ size?: number }>;
   }[];
 }[] = [
   {
-    title: "LLM",
+    titleKey: "settings.nav.llm",
     items: [
-      { id: "connection", label: "Provider", Icon: Link },
-      { id: "models", label: "Models", Icon: Cube },
+      { id: "connection", labelKey: "settings.nav.provider", Icon: Link },
+      { id: "models", labelKey: "settings.nav.models", Icon: Cube },
     ],
   },
   {
-    title: "Agent",
+    titleKey: "settings.nav.agentGroup",
     items: [
-      { id: "agents", label: "Agents", Icon: Robot },
-      { id: "custom-tools", label: "Custom Tools", Icon: Code },
-      { id: "mcp", label: "MCP", Icon: PlugsConnected },
+      { id: "agents", labelKey: "settings.agents.title", Icon: Robot },
+      { id: "custom-tools", labelKey: "settings.nav.customTools", Icon: Code },
+      { id: "mcp", labelKey: "settings.nav.mcp", Icon: PlugsConnected },
     ],
   },
   {
-    title: "System",
+    titleKey: "settings.nav.system",
     items: [
-      { id: "engines", label: "Engines", Icon: Cpu },
-      { id: "files", label: "Files", Icon: Tree },
-      { id: "advanced", label: "Advanced", Icon: GearSix },
+      { id: "engines", labelKey: "settings.nav.engines", Icon: Cpu },
+      { id: "files", labelKey: "settings.nav.files", Icon: Tree },
+      { id: "advanced", labelKey: "settings.nav.advanced", Icon: GearSix },
     ],
   },
 ];
@@ -64,7 +65,7 @@ function TurnBlockedBanner() {
   if (!blocked) return null;
   return (
     <div className="border-b border-(--_dk-amber-900\/20) bg-(--_dk-amber-900\/20) px-4 py-2 text-sm text-(--_dk-amber-500)">
-      Agent is busy — saving is paused.
+      {i18n.t("settings.dialog.busy")}
     </div>
   );
 }
@@ -104,7 +105,7 @@ export function SettingsDialog() {
   return (
     <FloatingDialog
       visible={open}
-      title={`Settings — rev ${revision}`}
+      title={i18n.t("settings.dialog.revision", { revision })}
       onClose={() => void closeSettings()}
       defaultWidth={860}
       defaultHeight={640}
@@ -115,8 +116,8 @@ export function SettingsDialog() {
         <div className="flex min-h-0 flex-1">
           <nav className="settings-nav shrink-0 bg-(--_dk-side)">
             {NAV_GROUPS.map((group) => (
-              <div key={group.title} className="settings-nav-group">
-                <div className="settings-nav-group-title">{group.title}</div>
+              <div key={group.titleKey} className="settings-nav-group">
+                <div className="settings-nav-group-title">{i18n.t(group.titleKey)}</div>
                 {group.items.map((item) => {
                   const Icon = item.Icon;
                   return (
@@ -132,7 +133,7 @@ export function SettingsDialog() {
                     >
                       <span className="settings-nav-item-content">
                         <Icon size={14} />
-                        <span>{item.label}</span>
+                        <span>{i18n.t(item.labelKey)}</span>
                       </span>
                     </button>
                   );

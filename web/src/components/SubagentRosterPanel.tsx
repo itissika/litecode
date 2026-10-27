@@ -18,6 +18,7 @@ import { sessionBusy } from "../lib/subagentUi";
 import { useDeletedChildIds } from "../lib/useDeletedChildIds";
 import { SubagentStatusIcon } from "./SubagentStatusIcon";
 import type { ToolStatus } from "./ToolIcon";
+import i18n from "../i18n";
 
 const EMPTY_ROWS: HumanRow[] = [];
 
@@ -296,8 +297,8 @@ function SubagentRosterItem({
       {busy ? (
         <button
           type="button"
-          aria-label={`停止 ${label}`}
-          title="停止"
+          aria-label={i18n.t("session.stopNamed", { label })}
+          title={i18n.t("common.stop")}
           data-testid="subagent-roster-stop"
           onClick={() => stopSubagent(entry.childId)}
           className={sessionIconButtonClass}
@@ -307,11 +308,11 @@ function SubagentRosterItem({
       ) : (
         <button
           type="button"
-          aria-label={`删除 ${label}`}
-          title="删除"
+          aria-label={i18n.t("session.deleteNamed", { label })}
+          title={i18n.t("common.delete")}
           data-testid="subagent-roster-delete"
           onClick={() => {
-            if (!window.confirm(`删除子会话「${label}」？此操作不可撤销。`)) return;
+            if (!window.confirm(i18n.t("session.deleteConfirm", { label }))) return;
             deleteSession(entry.childId);
           }}
           className={sessionIconButtonClass}

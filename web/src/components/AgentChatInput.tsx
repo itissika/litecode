@@ -35,6 +35,7 @@ import { ShapeBlur } from "./ShapeBlur";
 import { ImageThumb } from "./ImageThumb";
 import { composerCardClass, actionButtonGlass } from "./composerCard";
 import { AgentTypeIcon, agentColor } from "./agentIdentity";
+import i18n from "../i18n";
 
 const CTRL_H = "h-7";
 const CTRL_TEXT = "text-[11px]";
@@ -625,8 +626,8 @@ export function AgentChatInput({
               <button
                 type="button"
                 data-testid="subagent-stop"
-                aria-label="停止子会话"
-                title="停止"
+                aria-label={i18n.t("session.stopSubagent")}
+                title={i18n.t("common.stop")}
                 disabled={stopBlocked}
                 onClick={() => stopSubagent(sessionId)}
                 className="ml-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-(--_dk-text-muted) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-40"

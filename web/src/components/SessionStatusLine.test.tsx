@@ -1214,7 +1214,7 @@ describe("SessionStatusLine — migrated chip content", () => {
 
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
-    fireEvent.click(screen.getByRole("button", { name: "执行计划" }));
+    fireEvent.click(screen.getByRole("button", { name: "Execute plan" }));
 
     expect(sendRpc).toHaveBeenCalledWith("agent/run", {
       input: PLAN_EXECUTE_PROMPT,
@@ -1232,7 +1232,7 @@ describe("SessionStatusLine — migrated chip content", () => {
     render(<SessionStatusLine sessionId="s1" />);
     fireEvent.click(screen.getByTestId("capsule-plan"));
     const button = screen.getByRole("button", {
-      name: "执行计划",
+      name: "Execute plan",
     }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
   });
@@ -1556,7 +1556,7 @@ describe("SessionStatusLine — subagent variant", () => {
 
     expect(screen.queryByTestId("capsule-plan")).toBeNull();
     expect(screen.queryByTestId("plan-execute")).toBeNull();
-    expect(screen.queryByText("执行计划")).toBeNull();
+    expect(screen.queryByText("Execute plan")).toBeNull();
   });
 
   it("primary still offers both human-owned actions", () => {

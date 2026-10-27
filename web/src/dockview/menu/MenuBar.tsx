@@ -48,11 +48,11 @@ export function MenuBar({
               />
             ) : (
               <button
-                key={item}
+                key={item.id}
                 className={`${dropdownItemClass} text-(--_dk-text-secondary)`}
-                onClick={() => onAction?.(item)}
+                onClick={() => onAction?.(item.id)}
               >
-                {item}
+                {item.label}
               </button>
             ),
           )}

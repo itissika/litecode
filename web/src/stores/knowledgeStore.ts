@@ -39,6 +39,7 @@ import type {
 } from "../lib/knowledge/types";
 import { replaceOneRecord, reuseIssueGroups } from "../lib/knowledge/flowProjection";
 import { groupIssues } from "../lib/knowledge/validate";
+import i18n from "../i18n";
 
 /*
  * The knowledge panel consumes the backend snapshot
@@ -619,7 +620,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       try {
         await pullSnapshot(set, get);
       } catch (err) {
-        const message = err instanceof Error ? err.message : "无法读取知识库";
+        const message = err instanceof Error ? err.message : i18n.t("knowledge.readFailed");
         set({ loading: false, error: message });
       } finally {
         loadInflight = null;
@@ -665,7 +666,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       await writeKnowledgeNode(next, get().root);
     } catch (err) {
       dropPendingWrite(next.path, next);
-      const message = err instanceof Error ? err.message : "无法写入知识库";
+      const message = err instanceof Error ? err.message : i18n.t("knowledge.writeFailed");
       const state = get();
       const restored = state.nodes.map((node) => (node.id === id ? current : node));
       setLocalNodes(set, state, restored, [], message);
@@ -686,7 +687,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       await writeKnowledgeNode(next, get().root);
     } catch (err) {
       dropPendingWrite(next.path, next);
-      const message = err instanceof Error ? err.message : "无法写入知识库";
+      const message = err instanceof Error ? err.message : i18n.t("knowledge.writeFailed");
       const latest = get();
       if (latest.byId.get(id) === next) {
         const restored = replaceOneRecord(latest.nodes, latest.byId, current);
@@ -751,7 +752,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       );
     } catch (err) {
       for (const node of changed) dropPendingWrite(node.path, node);
-      const message = err instanceof Error ? err.message : "无法写入知识库";
+      const message = err instanceof Error ? err.message : i18n.t("knowledge.writeFailed");
       set({ error: message });
     }
     return "ok";
@@ -916,7 +917,7 @@ export const useKnowledgeStore = create<KnowledgeStore>((set, get) => ({
       await moveKnowledgeRoot(state.root, to);
     } catch (err) {
       set({
-        error: isConflict(err) ? "另一处已经有知识库，没有移动" : diskError(err),
+        error: isConflict(err) ? i18n.t("knowledge.moveConflict") : diskError(err),
       });
       return;
     }

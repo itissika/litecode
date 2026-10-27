@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import i18n from "../../../i18n";
 
 import {
   type CustomSuiteDefinition,
@@ -75,7 +77,7 @@ const EMPTY_SUITE_JSON = `{
 function parseSuiteJson(text: string): CustomSuiteDefinition {
   const parsed = JSON.parse(text) as Partial<CustomSuiteDefinition>;
   if (parsed.surface !== "direct" && parsed.surface !== "code") {
-    throw new Error('suite needs surface: "direct" or "code"');
+    throw new Error(i18n.t("settings.customTools.suiteSurfaceRequired"));
   }
   return {
     surface: parsed.surface,
@@ -85,6 +87,7 @@ function parseSuiteJson(text: string): CustomSuiteDefinition {
 }
 
 export function CustomToolsSection() {
+  const { t } = useTranslation();
   const customTools = useSettingsStore((s) => s.customTools);
   const saveBlocked = useSettingsSaveBlocked();
   const { persistStatus, setPersistStatus } = useDocPersist("customTools");
@@ -156,7 +159,7 @@ export function CustomToolsSection() {
     setFormError(null);
     const parsed = parseCustomToolJson(jsonText);
     if ("skip" in parsed) {
-      setFormError("Valid JSON with name, command, and schema is required");
+      setFormError(t("settings.customTools.jsonRequired"));
       return;
     }
     void (async () => {
@@ -206,14 +209,14 @@ export function CustomToolsSection() {
     setSuiteError(null);
     const id = suiteId.trim();
     if (!/^[a-z][a-z0-9_]*$/.test(id)) {
-      setSuiteError("Suite id must match [a-z][a-z0-9_]*");
+      setSuiteError(t("settings.customTools.suiteIdInvalid"));
       return;
     }
     let parsed: CustomSuiteDefinition;
     try {
       parsed = parseSuiteJson(suiteJson);
     } catch (error) {
-      setSuiteError(error instanceof Error ? error.message : "Invalid suite JSON");
+      setSuiteError(error instanceof Error ? error.message : t("settings.customTools.invalidSuiteJson"));
       return;
     }
     void (async () => {
@@ -222,7 +225,7 @@ export function CustomToolsSection() {
         setSuiteIsNew(false);
         setSuiteError(null);
       } catch (error) {
-        setSuiteError(error instanceof Error ? error.message : "Save failed");
+        setSuiteError(error instanceof Error ? error.message : t("settings.customTools.saveFailed"));
       }
     })();
   };
@@ -237,7 +240,7 @@ export function CustomToolsSection() {
         setSuiteIsNew(false);
         setSuiteError(null);
       } catch (error) {
-        setSuiteError(error instanceof Error ? error.message : "Delete failed");
+        setSuiteError(error instanceof Error ? error.message : t("settings.customTools.deleteFailed"));
       }
     })();
   };
@@ -245,13 +248,9 @@ export function CustomToolsSection() {
   const editorForm = (
     <div className="settings-card space-y-3 p-4">
       <div>
-        <FieldLabel required>Definition (JSON)</FieldLabel>
+        <FieldLabel required>{t("settings.mcp.definitionJson")}</FieldLabel>
         <p className="mb-2 text-xs text-(--_dk-text-muted)">
-          Standalone: set <code>surface: "direct"</code> (background and media
-          allowed) or <code>surface: "code"</code> and an object{" "}
-          <code>output_schema</code>. Suite member: omit <code>surface</code>, set{" "}
-          <code>suite</code>, and leave <code>rules</code> empty; the suite owns
-          both. Code suite members are called as <code>tools.&lt;suite&gt;.&lt;member&gt;</code>.
+          {t("settings.customTools.definitionGuide")}
         </p>
         <TextArea
           rows={18}
@@ -273,10 +272,9 @@ export function CustomToolsSection() {
     <div className="settings-card space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <FieldLabel>Suites</FieldLabel>
+          <FieldLabel>{t("settings.customTools.suites")}</FieldLabel>
           <p className="text-xs text-(--_dk-text-muted)">
-            One suite is one card, one binding, and one permission face. A
-            workspace suite replaces the global suite and all of its members.
+            {t("settings.customTools.suitesHint")}
           </p>
         </div>
         <div className="flex gap-2">
@@ -286,7 +284,7 @@ export function CustomToolsSection() {
             disabled={saveBlocked}
             onClick={() => startNewSuite("global")}
           >
-            New global
+            {t("settings.customTools.newGlobal")}
           </button>
           <button
             type="button"
@@ -294,7 +292,7 @@ export function CustomToolsSection() {
             disabled={saveBlocked}
             onClick={() => startNewSuite("workspace")}
           >
-            New workspace
+            {t("settings.customTools.newWorkspace")}
           </button>
         </div>
       </div>
@@ -305,10 +303,10 @@ export function CustomToolsSection() {
         return (
           <div key={scope} className="space-y-1">
             <p className="text-xs font-medium text-(--_dk-text-muted)">
-              {scope === "global" ? "Global" : "Workspace"}
+              {scope === "global" ? t("common.global") : t("common.workspace")}
             </p>
             {entries.length === 0 ? (
-              <p className="text-xs text-(--_dk-text-muted)">None.</p>
+              <p className="text-xs text-(--_dk-text-muted)">{t("common.none")}</p>
             ) : (
               entries.map(([id, suite]) => (
                 <button
@@ -318,7 +316,7 @@ export function CustomToolsSection() {
                   onClick={() => openSuite(scope, id)}
                 >
                   <span className="font-mono">{id}</span> · {suite.surface} ·{" "}
-                  {suite.label || "no label"} · {(suite.rules ?? []).length} rule(s)
+                  {suite.label || t("settings.customTools.noLabel")} · {t("settings.customTools.rulesCount", { count: (suite.rules ?? []).length })}
                 </button>
               ))
             )}
@@ -331,12 +329,12 @@ export function CustomToolsSection() {
             <input
               className="input input-sm font-mono"
               value={suiteId}
-              placeholder="suite_id"
+              placeholder={t("settings.customTools.suiteIdPlaceholder")}
               disabled={saveBlocked || !suiteIsNew}
               onChange={(event) => setSuiteId(event.target.value)}
             />
             <span className="text-xs text-(--_dk-text-muted)">
-              {suiteScope === "global" ? "global" : "workspace"}
+              {suiteScope === "global" ? t("common.global") : t("common.workspace")}
             </span>
             <button
               type="button"
@@ -344,7 +342,7 @@ export function CustomToolsSection() {
               disabled={saveBlocked}
               onClick={onSaveSuite}
             >
-              Save suite
+              {t("settings.customTools.saveSuite")}
             </button>
             {!suiteIsNew ? (
               <button
@@ -353,7 +351,7 @@ export function CustomToolsSection() {
                 disabled={saveBlocked}
                 onClick={onDeleteSuite}
               >
-                Delete suite
+                {t("settings.customTools.deleteSuite")}
               </button>
             ) : null}
             <button
@@ -365,7 +363,7 @@ export function CustomToolsSection() {
                 setSuiteError(null);
               }}
             >
-              Close
+              {t("common.close")}
             </button>
           </div>
           <TextArea
@@ -387,10 +385,9 @@ export function CustomToolsSection() {
   const codeRejectionsView =
     codeRejections.length > 0 ? (
       <div className="settings-card space-y-1 p-4">
-        <FieldLabel>Code admission warnings</FieldLabel>
+        <FieldLabel>{t("settings.customTools.codeWarnings")}</FieldLabel>
         <p className="text-xs text-(--_dk-text-muted)">
-          These tools cannot enter <code>run_code</code>; direct definitions are
-          not affected.
+          {t("settings.customTools.codeWarningsHint")}
         </p>
         {codeRejections.map((rejection, index) => (
           <p
@@ -406,14 +403,14 @@ export function CustomToolsSection() {
   const diagnosticsView =
     diagnostics.length > 0 ? (
       <div className="settings-card space-y-1 p-4">
-        <FieldLabel>Definition errors</FieldLabel>
+        <FieldLabel>{t("settings.customTools.definitionErrors")}</FieldLabel>
         {diagnostics.map((diagnostic, index) => (
           <p
             key={`${diagnostic.source}:${diagnostic.tool ?? diagnostic.suite ?? ""}:${diagnostic.field}:${index}`}
             className="text-xs text-(--_dk-red-500)"
           >
             {diagnostic.message}
-            <span className="text-(--_dk-text-muted)"> Fix: {diagnostic.fix}</span>
+            <span className="text-(--_dk-text-muted)"> {t("common.fix", { fix: diagnostic.fix })}</span>
           </p>
         ))}
       </div>
@@ -421,15 +418,13 @@ export function CustomToolsSection() {
 
   return (
     <ScopedDefinitionEditor
-      title="Custom Tools"
-      newLabel="New custom tool"
+      title={t("settings.customTools.title")}
+      newLabel={t("settings.customTools.new")}
       hint={
         <div className="space-y-3">
           <ScopeHint bindFirst />
           <p className="text-xs text-(--_dk-text-muted)">
-            Invalid definitions stay visible below and never enter the catalog.
-            Old formats are not migrated: rewrite them in the direct/code + suites
-            format shown in the guide.
+            {t("settings.customTools.invalidStay")}
           </p>
           {codeRejectionsView}
           {diagnosticsView}

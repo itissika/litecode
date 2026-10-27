@@ -24,7 +24,7 @@ import { motion, useReducedMotion } from "motion/react";
 import { glassFill } from "./composerCard";
 import { ModalityIcons } from "./ModalityIcons";
 import { ProviderLogo } from "./ProviderLogos";
-import { NO_MODELS_HINT } from "../lib/uiCopy";
+import { noModelsHint } from "../lib/uiCopy";
 
 const CTRL_H = "h-7";
 const CTRL_TEXT = "text-[11px]";
@@ -343,7 +343,7 @@ export function ModelSwitcher({
         type="button"
         disabled
         className={`${triggerBase(false)} min-w-3.5 max-w-[220px] shrink text-(--_dk-text-disabled)`}
-        title={NO_MODELS_HINT}
+        title={noModelsHint()}
       >
         Configure a provider API key
       </button>
@@ -573,7 +573,7 @@ export function ModelSwitcher({
           ) : null}
           {availableModels.length === 0 ? (
             <p className="px-3 py-2 text-[11px] text-(--_dk-text-disabled)">
-              {NO_MODELS_HINT}
+              {noModelsHint()}
             </p>
           ) : null}
         </motion.div>

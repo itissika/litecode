@@ -6,7 +6,7 @@ import {
   useServerVersionTags,
   VersionTags,
 } from "../../components/VersionTags";
-import { REMOTE_SERVE_HINT } from "../../lib/uiCopy";
+import { remoteServeHint } from "../../lib/uiCopy";
 
 interface TitleBarProps {
   onMenuAction?: (item: string) => void;
@@ -66,7 +66,7 @@ export function TitleBar({
               borderRadius: 2,
               lineHeight: "16px",
             }}
-            title={REMOTE_SERVE_HINT}
+            title={remoteServeHint()}
           >
             Remote
           </span>

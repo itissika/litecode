@@ -16,7 +16,9 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
+import { useTranslation } from "react-i18next";
 
+import i18n from "../../../../i18n";
 import {
   getInstallStatus,
   installServer,
@@ -61,13 +63,13 @@ function engineTag(usable: EngineUsable): {
 } {
   switch (usable) {
     case "ready":
-      return { label: "ready", tone: "ok" };
+      return { label: i18n.t("settings.engines.ready"), tone: "ok" };
     case "warming":
-      return { label: "warming", tone: "warn" };
+      return { label: i18n.t("settings.engines.warming"), tone: "warn" };
     case "stopped":
-      return { label: "stopped", tone: "neutral" };
+      return { label: i18n.t("settings.engines.stopped"), tone: "neutral" };
     default:
-      return { label: "unavailable", tone: "danger" };
+      return { label: i18n.t("settings.engines.unavailable"), tone: "danger" };
   }
 }
 
@@ -78,9 +80,9 @@ function intentControl(desired: boolean): {
   label: string;
 } {
   if (desired) {
-    return { icon: "stop", action: "stop", label: "Stop engine" };
+    return { icon: "stop", action: "stop", label: i18n.t("settings.engines.stopEngine") };
   }
-  return { icon: "play", action: "start", label: "Start engine" };
+  return { icon: "play", action: "start", label: i18n.t("settings.engines.startEngine") };
 }
 
 function modelDisplay(model: RetrievalEngineDetail["model"]): {
@@ -94,7 +96,7 @@ function modelDisplay(model: RetrievalEngineDetail["model"]): {
     name = parts[parts.length - 2] || name;
     if (name === "artifacts") name = parts[parts.length - 3] || name;
   }
-  return { name, path: path || "(unknown)" };
+  return { name, path: path || i18n.t("settings.engines.unknownPath") };
 }
 
 function formatRelative(iso?: string | null): string | null {
@@ -102,11 +104,11 @@ function formatRelative(iso?: string | null): string | null {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return null;
   const mins = Math.max(0, Math.floor((Date.now() - then) / 60_000));
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1) return i18n.t("settings.engines.justNow");
+  if (mins < 60) return i18n.t("settings.engines.minsAgo", { mins });
   const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+  if (hours < 24) return i18n.t("settings.engines.hoursAgo", { hours });
+  return i18n.t("settings.engines.daysAgo", { days: Math.floor(hours / 24) });
 }
 
 function IconSquareButton({
@@ -145,6 +147,7 @@ function RetrievalSection({
   onChanged: () => void;
   onRefreshRequested?: () => void;
 }) {
+  const { t } = useTranslation();
   const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
   const saveEngines = useSettingsStore((s) => s.saveEngines);
   const [busy, setBusy] = useState(false);
@@ -171,7 +174,7 @@ function RetrievalSection({
   // error line and red "not found" row on top of it.
   const tag = offerEmbedDownload && desired && detail.usable === "unavailable"
     ? {
-        label: embed.state.phase === "running" ? "downloading" : "needs model",
+        label: embed.state.phase === "running" ? t("settings.engines.downloading") : t("settings.engines.needsModel"),
         tone: "warn" as const,
       }
     : engineTag(detail.usable);
@@ -193,9 +196,9 @@ function RetrievalSection({
     const dirs = detail.policy.product_internal_dirs ?? [];
     const globs = detail.policy.exclude_globs ?? [];
     const parts: string[] = [];
-    if (dirs.length > 0) parts.push(`Internal dirs: ${dirs.join(", ")}`);
-    if (globs.length > 0) parts.push(`Exclude: ${globs.join(", ")}`);
-    return parts.length > 0 ? parts.join(" · ") : "No skip paths";
+    if (dirs.length > 0) parts.push(t("settings.engines.internalDirs", { dirs: dirs.join(", ") }));
+    if (globs.length > 0) parts.push(t("settings.engines.exclude", { globs: globs.join(", ") }));
+    return parts.length > 0 ? parts.join(" · ") : t("settings.engines.noSkipPaths");
   })();
 
   const onEngineClick = () => {
@@ -219,7 +222,7 @@ function RetrievalSection({
       <div className="settings-op-divider flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-(--_dk-text-primary)">
-            Semantic retrieval
+            {t("settings.engines.semanticRetrieval")}
           </h3>
           <span className={`tag tag-${tag.tone} tag-md`}>{tag.label}</span>
           {detail.embed_device === "cuda-ort" ? (
@@ -269,7 +272,7 @@ function RetrievalSection({
             <span className="min-w-0 break-all font-mono text-dk-xs">
               {detail.model.ready
                 ? model.name
-                : `not found: ${model.name} under ${model.path}`}
+                : t("settings.engines.notFound", { name: model.name, path: model.path })}
             </span>
           </div>
         )}
@@ -291,7 +294,7 @@ function RetrievalSection({
               />
             </div>
             <IconSquareButton
-              label="Refresh index"
+              label={t("settings.engines.refreshIndex")}
               size="xs"
               disabled={refreshDisabled}
               onClick={() => {
@@ -316,7 +319,7 @@ function RetrievalSection({
           </div>
           {relative && (
             <p className="text-dk-xs text-(--_dk-text-disabled)">
-              Updated {relative}
+              {t("settings.engines.updated", { relative })}
             </p>
           )}
         </div>
@@ -355,8 +358,9 @@ function InstallProgress({
 }: {
   progress?: { downloaded_bytes: number; total_bytes?: number | null } | null;
 }) {
+  const { t } = useTranslation();
   if (!progress)
-    return <span className="text-xs text-(--_dk-text-muted)">Installing…</span>;
+    return <span className="text-xs text-(--_dk-text-muted)">{t("settings.engines.installing")}</span>;
   const percent = progress.total_bytes
     ? Math.min(
         100,
@@ -396,6 +400,7 @@ function LspServerCard({
   onToggle: () => void;
   onInstall: () => void;
 }) {
+  const { t } = useTranslation();
   const ready = probe.status === "available";
   const summary = [
     probe.installed_version ? `v${probe.installed_version}` : null,
@@ -413,7 +418,7 @@ function LspServerCard({
         aria-pressed={checked}
         disabled={!ready && !checked}
         onClick={onToggle}
-        aria-label={`${probe.id} server, ${checked ? "enabled" : "disabled"}`}
+        aria-label={t("settings.engines.serverAria", { id: probe.id, state: checked ? t("settings.agents.enabled") : t("settings.agents.disabled") })}
         className="tool-binding-toggle"
       />
       <div className="tool-binding-content flex flex-col">
@@ -429,11 +434,11 @@ function LspServerCard({
               {probe.error || (probe.managed_path && !ready) ? (
                 <span
                   className="tool-binding-action shrink-0 cursor-help text-(--_dk-red-500)"
-                  aria-label="error details"
+                  aria-label={t("settings.engines.errorDetails")}
                   title={[
                     probe.error,
                     !ready && probe.managed_path
-                      ? `Expected: ${probe.managed_path}`
+                      ? t("settings.engines.expectedPath", { path: probe.managed_path })
                       : null,
                   ]
                     .filter(Boolean)
@@ -447,7 +452,7 @@ function LspServerCard({
           <span
             className={`tag ${checked ? "tag-ok" : "tag-neutral"} tag-sm tag-outline`}
           >
-            {checked ? "On" : "Off"}
+            {checked ? t("common.on") : t("common.off")}
           </span>
         </div>
         <div className="tool-binding-foot flex shrink-0 items-center justify-between gap-2 px-3 py-2.5">
@@ -465,8 +470,8 @@ function LspServerCard({
           {ready ? (
             <span
               className="shrink-0 text-(--_dk-emerald-500)"
-              title="ready"
-              aria-label="ready"
+              title={t("settings.engines.ready")}
+              aria-label={t("settings.engines.ready")}
             >
               <CheckCircle size={14} weight="fill" />
             </span>
@@ -474,8 +479,8 @@ function LspServerCard({
             <div className="tool-binding-action flex items-center gap-1.5">
               <span
                 className="shrink-0 text-(--_dk-red-500)"
-                title="not installed"
-                aria-label="not installed"
+                title={t("settings.engines.notInstalled")}
+                aria-label={t("settings.engines.notInstalled")}
               >
                 <XCircle size={14} weight="fill" />
               </span>
@@ -487,7 +492,7 @@ function LspServerCard({
                   rel="noreferrer"
                   onClick={(event) => event.stopPropagation()}
                 >
-                  Guide
+                  {t("settings.engines.guide")}
                 </a>
               )}
               <ActionButton
@@ -497,7 +502,7 @@ function LspServerCard({
                 }}
                 disabled={Boolean(installing)}
               >
-                Install
+                {t("settings.engines.install")}
               </ActionButton>
             </div>
           )}
@@ -514,6 +519,7 @@ function LspSection({
   detail: EnginesDetail["lsp"];
   refresh: () => void;
 }) {
+  const { t } = useTranslation();
   const engines = useSettingsStore((s) => s.engines) ?? DEFAULT_ENGINES;
   const saveEngines = useSettingsStore((s) => s.saveEngines);
   const { persistStatus, setPersistStatus } = useDocPersist("engines");
@@ -582,7 +588,7 @@ function LspSection({
           .getState()
           .showToast(
             message === "turn_in_progress"
-              ? "Cannot change engines while an agent turn is in progress"
+              ? t("settings.engines.cannotChangeWhileTurn")
               : message,
             "error",
             5000,
@@ -615,7 +621,7 @@ function LspSection({
         }));
       }
       if (current.status === "failed") {
-        setError(`${id}: ${current.error ?? "installation failed"}`);
+        setError(`${id}: ${current.error ?? t("settings.engines.installationFailed")}`);
       } else {
         setError(null);
       }
@@ -702,7 +708,7 @@ function LspSection({
       <div className="settings-op-divider flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-(--_dk-text-primary)">
-            Language servers
+            {t("settings.engines.languageServers")}
           </h3>
           <span className={`tag tag-${tag.tone} tag-md`}>{tag.label}</span>
         </div>
@@ -731,13 +737,13 @@ function LspSection({
       {(detail.servers?.length ?? 0) > 0 && (
         <div className="space-y-1 text-dk-xs text-(--_dk-text-secondary)">
           <p className="font-medium text-(--_dk-text-primary)">
-            Running instances
+            {t("settings.engines.runningInstances")}
           </p>
           <ul className="space-y-1">
             {detail.servers!.map((s) => (
               <li key={`${s.command}:${s.project_root}`}>
                 {s.command} — {s.state}
-                {s.index_settled ? "" : " (indexing)"}
+                {s.index_settled ? "" : ` ${t("settings.engines.indexing")}`}
                 {s.last_error ? `: ${s.last_error}` : ""}
               </li>
             ))}

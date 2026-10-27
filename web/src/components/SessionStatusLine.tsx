@@ -1,4 +1,5 @@
 import { useDeletedChildIds } from "../lib/useDeletedChildIds";
+import i18n from "../i18n";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
@@ -66,7 +67,12 @@ export const PANEL_MAX_H = 480;
  */
 export const BASH_CLAIM_GRACE_MS = 1500;
 /** User message the "执行计划" button sends on the human's behalf. */
-export const PLAN_EXECUTE_PROMPT = "按当前计划开始执行。";
+export function planExecutePrompt(): string {
+  return i18n.t("session.planExecutePrompt");
+}
+
+/** @deprecated Prefer planExecutePrompt(). */
+export const PLAN_EXECUTE_PROMPT = "Start executing according to the current plan.";
 
 /**
  * True when the on-disk plan has a real body (planned). A blank file and the
@@ -473,7 +479,7 @@ export function SessionStatusLine({
   // `false` return means the turn could not start (already running / socket
   // down); the button is disabled while running, so this is the offline case.
   const executePlan = () => {
-    useTurnStore.getState().start(sessionId, PLAN_EXECUTE_PROMPT, true);
+    useTurnStore.getState().start(sessionId, planExecutePrompt(), true);
   };
 
   const todoCurrent = todoItems.find((item) => item.status === "in_progress");
@@ -978,7 +984,7 @@ function PlanHeader({
             className="flex shrink-0 items-center gap-1.5 rounded border border-(--_dk-line) px-2 py-1 text-xs text-(--_dk-text-secondary) hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-primary) disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent"
           >
             <PlayIcon size={13} weight="fill" aria-hidden />
-            执行计划
+            {i18n.t("session.planExecute")}
           </button>
         )}
         <button
