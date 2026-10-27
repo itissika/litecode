@@ -48,6 +48,7 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: "jsdom",
       include: ["src/**/*.test.ts", "src/**/*.test.tsx", "devUpstream.test.ts"],
+      setupFiles: ["./src/i18n/vitest-setup.ts"],
     },
     server: {
       // Pin IPv4: `localhost` resolves to `::1` first on Windows, so Vite would

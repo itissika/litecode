@@ -1,0 +1,12 @@
+{
+  "settings": {
+    "agents": {
+      "title": "智能体"
+    }
+  },
+  "hub": {
+    "home": {
+      "title": "工作区"
+    }
+  }
+}

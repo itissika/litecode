@@ -1,0 +1,12 @@
+{
+  "settings": {
+    "agents": {
+      "title": "Agents"
+    }
+  },
+  "hub": {
+    "home": {
+      "title": "Workspace"
+    }
+  }
+}

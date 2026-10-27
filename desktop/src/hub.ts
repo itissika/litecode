@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { app } from "electron";
+
+import { initDesktopI18n, t } from "./i18n";
+import { resolveLocale } from "./resolveLocale";
 import { dvThemeAttr, readUiTheme, type UiThemeName } from "./ui-theme";
 
 /** Resolve the product's tokens.css (single source of --_dk-* definitions). */
@@ -624,6 +628,14 @@ function hubScript(): string {
 `.trim();
 }
 
+function escapeHubText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 /**
  * Startup Home: Open local / Open remote + histories.
  * Styles consume web/src/theme/tokens.css — no hardcoded palette.
@@ -633,6 +645,9 @@ function hubScript(): string {
  * pages do not reliably receive `window.litecode`.
  */
 function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
+  const locale = resolveLocale(app.getLocale());
+  initDesktopI18n(locale);
+  const homeTitle = escapeHubText(t("hub.home.title"));
   const tokens = loadThemeTokensCss();
   const dvTheme = dvThemeAttr(theme);
   const logoFontB64 = loadLogoFontBase64();
@@ -642,7 +657,7 @@ function buildHubHtml(theme: UiThemeName = readUiTheme()): string {
     ? `<img class="logo-icon" src="data:image/png;base64,${logoIconB64}" alt="" draggable="false" />`
     : "";
   return `<!doctype html>
-<html lang="en" data-dv-theme="${dvTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="${locale}" data-dv-theme="${dvTheme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; font-src data:; img-src data:">
 <title>Litecode</title>
 <style>
@@ -662,7 +677,7 @@ ${hubLayoutCss(logoFontSrc)}
     <div class="logo-hero">${logoIconHtml}${litecodeLogoHtml(56, "var(--_dk-text-primary)")}</div>
     <p class="lead">Open a local folder, or connect a remote machine over SSH.</p>
     <div class="home-header">
-      <h1 class="home-title">workspace</h1>
+      <h1 class="home-title">${homeTitle}</h1>
       <div class="home-actions">
         <button type="button" class="btn-primary" id="open-local">Local</button>
         <button type="button" class="btn" id="open-remote">Remote</button>

@@ -7,6 +7,7 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Plus, ArrowClockwise, ListChecks } from "@phosphor-icons/react";
+import { useTranslation } from "react-i18next";
 
 import {
   isConfigurableTool,
@@ -559,6 +560,7 @@ function agentPersistPayload(draft: AgentProfile): AgentProfile {
 }
 
 export function AgentsSection() {
+  const { t } = useTranslation();
   const availableTools = useSettingsStore((s) => s.availableTools);
   const llm = useSettingsStore((s) => s.llm);
   const activeModels = useMemo(() => llm?.active_models ?? [], [llm]);
@@ -762,7 +764,7 @@ export function AgentsSection() {
 
   if (!draft) {
     return (
-      <SettingsPageShell title="Agents">
+      <SettingsPageShell title={t('settings.agents.title')}>
         <p className="text-sm text-(--_dk-text-disabled)">Loading agents…</p>
       </SettingsPageShell>
     );
@@ -770,7 +772,7 @@ export function AgentsSection() {
 
   return (
     <SettingsPageShell
-      title="Agents"
+      title={t('settings.agents.title')}
       actions={
         <>
           {creating ? (

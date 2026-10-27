@@ -5,10 +5,10 @@
   "description": "Litecode Electron host (sidecar + BrowserWindow)",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs",
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node ./scripts/copy-i18n-locales.mjs",
     "dev": "npm run build && electron .",
     "start": "electron .",
-    "test": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node --test dist/*.test.js",
+    "test": "tsc -p tsconfig.json && node ./scripts/copy-theme-tokens.mjs && node ./scripts/copy-i18n-locales.mjs && node --test dist/*.test.js",
     "dist:win": "npm run build && electron-builder --win nsis --x64",
     "pack:dir": "npm run build && electron-builder --win dir --x64"
   },
@@ -56,6 +56,9 @@
       "deleteAppDataOnUninstall": false,
       "artifactName": "Litecode-Setup-${version}-${arch}.${ext}"
     }
+  },
+  "dependencies": {
+    "i18next": "^26.5.11"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",
