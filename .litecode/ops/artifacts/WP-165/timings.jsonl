@@ -1,3 +1,0 @@
-# WP-165 OPTIONAL timing results — placeholder, no data yet.
-# Only filled if timing comparison is requested after cargo is cleared; run measure_ready_vs_lsp.sh.
-# Schema: {fix, residual, run, ready_ms, first_ls_ms, orphan_count_at_start, bin, error?}
