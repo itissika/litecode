@@ -36,12 +36,11 @@ import {
 
 /** History sentinel, applied as paddingStart so it is not a virtual item. */
 export const HISTORY_LOADER_HEIGHT = 40;
-/** Trailing transient "compacting…" row (not a real buffer item). */
-const COMPACTING_PENDING_KEY = "__compacting_pending__";
-const COMPACTING_LINE_HEIGHT = 22;
 /** Virtual key of the trailing queued-batch bubble. */
 const QUEUE_BUBBLE_KEY = "__pending_queue__";
 const MARK_ESTIMATE = 28;
+/** The transient "compacting…" line: one short row, no padding. */
+const COMPACTING_ESTIMATE = 22;
 const EDITING_ESTIMATE = 240;
 
 /**
@@ -98,7 +97,6 @@ function alignInScroller(scroller: HTMLElement, el: HTMLElement): void {
 
 export function useTranscriptViewport({
   bubbles,
-  compactingRows,
   queueRows,
   queueText,
   queueImageCount = 0,
@@ -119,7 +117,6 @@ export function useTranscriptViewport({
   onGeometryRef,
 }: {
   bubbles: Bubble[];
-  compactingRows: number;
   queueRows: number;
   queueText: string | null;
   queueImageCount?: number;
@@ -137,7 +134,7 @@ export function useTranscriptViewport({
   revealSeqRef?: RefObject<RevealSeq | null>;
   onGeometryRef?: RefObject<(() => void) | null>;
 }) {
-  const count = bubbles.length + compactingRows + queueRows;
+  const count = bubbles.length + queueRows;
   const paddingStart = canLoadMore ? HISTORY_LOADER_HEIGHT : 0;
   const bubblesRef = useRef(bubbles);
   bubblesRef.current = bubbles;
@@ -148,21 +145,18 @@ export function useTranscriptViewport({
   const getItemKey = useCallback(
     (index: number) => {
       if (index < bubbles.length) return bubbles[index]!.key;
-      return index === bubbles.length + compactingRows
-        ? QUEUE_BUBBLE_KEY
-        : COMPACTING_PENDING_KEY;
+      return QUEUE_BUBBLE_KEY;
     },
-    [bubbles, compactingRows],
+    [bubbles],
   );
 
   const estimateSize = useCallback(
     (index: number) => {
       if (index >= bubbles.length) {
-        return index === bubbles.length + compactingRows
-          ? estimateUserBubbleHeight(queueText ?? "", queueImageCount)
-          : COMPACTING_LINE_HEIGHT;
+        return estimateUserBubbleHeight(queueText ?? "", queueImageCount);
       }
       const bubble = bubbles[index];
+      if (bubble?.compacting) return COMPACTING_ESTIMATE;
       if (!bubble || bubble.markOnly || !bubble.first) return MARK_ESTIMATE;
       if (bubble.isUser) {
         return editingBubbleKey === bubble.key
@@ -174,7 +168,7 @@ export function useTranscriptViewport({
       }
       return estimateAssistantBubbleHeight(bubble);
     },
-    [bubbles, compactingRows, editingBubbleKey, queueImageCount, queueText],
+    [bubbles, editingBubbleKey, queueImageCount, queueText],
   );
 
   // Human stick intent: true until the user scrolls up. The stick flag is an

@@ -312,7 +312,8 @@ export const useConnectionStore: UseBoundStore<StoreApi<ConnectionStore>> =
           }
 
           case "session/list": {
-            session?.onSessionList((params as unknown as SessionList).sessions);
+            const payload = params as unknown as SessionList;
+            session?.onSessionList(payload.sessions, payload.folders ?? []);
             noteSessionListSettled();
             return;
           }

@@ -52,6 +52,7 @@ fn apply_compact(sessions: &SessionManager, sid: &str, summary: &str) {
             summary: summary.to_string(),
             token_estimate: 10,
             kept_from: None,
+            at: None,
             expected_prefix: None,
             usage: None,
         })
@@ -129,6 +130,7 @@ fn succeeded(trigger: CompactionTrigger) -> InternalEvent {
         fail_kind: None,
         error: None,
         telemetry: Default::default(),
+        at: None,
     }
 }
 

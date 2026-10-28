@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { noteUserWindow, resetActivityForTests } from "./activity";
 import { movePanelToMain, openPanel, popoutPanel, routePopoutReturnDrop } from "./commands";
 import { bindDockview } from "./host";
 import {
@@ -9,11 +10,39 @@ import {
   resetPlacementForTests,
 } from "./placement";
 import type { GroupLike } from "./readGroup";
+import { bindWindowRegistry, resetWindowsForTests } from "./windows";
+
+const DOCK = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 
 afterEach(() => {
   bindDockview(null);
   resetPlacementForTests();
+  resetActivityForTests();
+  resetWindowsForTests();
 });
+
+function fakePopoutWindow(): Window {
+  return {
+    closed: false,
+    document: document.implementation.createHTMLDocument("popout"),
+  } as unknown as Window;
+}
+
+/** Register one popout group whose window carries the dock id. */
+function registerPopout(win: Window, pop: GroupLike): void {
+  let add: (popout: { id: string; window: Window; group: GroupLike }) => void = () => {};
+  bindWindowRegistry({
+    onDidAddPopoutGroup(cb: (popout: { id: string; window: Window; group: GroupLike }) => void) {
+      add = cb;
+      return { dispose() {} };
+    },
+    onDidRemovePopoutGroup() {
+      return { dispose() {} };
+    },
+  } as never);
+  pop.api.location = { type: "popout", popoutUrl: `/popout.html?dock=${DOCK}` };
+  add({ id: "group-1", window: win, group: pop });
+}
 
 function group(
   id: string,
@@ -121,6 +150,25 @@ describe("placementFor", () => {
       referenceGroup: "main",
     });
   });
+
+  it("hosts a new panel as a tab in the popout the user is working in", () => {
+    const pop = group("pop", "popout", { components: ["editor"] });
+    const api = { groups: [pop], activeGroup: pop, addGroup: vi.fn() };
+    const win = fakePopoutWindow();
+    registerPopout(win, pop);
+    expect(placementFor("editor", api as never, undefined, DOCK)?.position).toEqual({
+      referenceGroup: "pop",
+    });
+  });
+
+  it("falls back to the main center for a dock id it does not know", () => {
+    const pop = group("pop", "popout", { components: ["editor"] });
+    const main = group("main", "grid", { components: ["editor"] });
+    const api = { groups: [main, pop], activeGroup: pop, addGroup: vi.fn() };
+    expect(placementFor("editor", api as never, undefined, "gone")?.position).toEqual({
+      referenceGroup: "main",
+    });
+  });
 });
 
 describe("openPanel", () => {
@@ -174,6 +222,30 @@ describe("openPanel", () => {
     expect(moveTo).toHaveBeenCalledWith({ group: main });
     expect(setActive).toHaveBeenCalled();
     expect(addPanel).not.toHaveBeenCalled();
+  });
+
+  it("adds a missing panel to the popout the user last used", () => {
+    const addPanel = vi.fn();
+    const pop = group("pop", "popout", { components: ["editor"] });
+    const win = fakePopoutWindow();
+    registerPopout(win, pop);
+    noteUserWindow(win);
+    openPanel(
+      { id: "src/b.ts", component: "editor", title: "b.ts" },
+      {
+        groups: [pop],
+        activeGroup: pop,
+        addPanel,
+        addGroup: vi.fn(() => ({ id: "main" })),
+        getPanel: () => undefined,
+      } as never,
+    );
+    expect(addPanel).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "src/b.ts",
+        position: { referenceGroup: "pop" },
+      }),
+    );
   });
 
   it("adds a missing panel on the main center while a popout is in front", () => {

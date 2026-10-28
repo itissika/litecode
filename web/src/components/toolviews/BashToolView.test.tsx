@@ -321,6 +321,5 @@ describe("retired shell cards", () => {
     expect(typeof getToolView("bash")).toBe("function");
     expect(getToolView("wait_shell")).toBeUndefined();
     expect(getToolView("kill_shell")).toBeUndefined();
-    expect(getToolView("run_code")).toBeUndefined();
   });
 });

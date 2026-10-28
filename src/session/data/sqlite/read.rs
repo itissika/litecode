@@ -60,6 +60,7 @@ pub fn execute(
             session::load_context_meter_on(conn, &session_id)?,
         )),
         SessionRead::ListSessions => Ok(ReadValue::List(list_sessions(conn)?)),
+        SessionRead::ListFolders => Ok(ReadValue::Folders(super::folders::list_folders(conn)?)),
         SessionRead::ListSessionIds => Ok(ReadValue::Ids(list_session_ids(conn)?)),
         SessionRead::ListSessionsForGc => Ok(ReadValue::GcList(list_sessions_for_gc(conn)?)),
         SessionRead::ListSessionActivity { since_ms } => Ok(ReadValue::SessionActivity(
@@ -694,19 +695,31 @@ mod anchored_load_tests {
 
 
 fn list_sessions(conn: &Connection) -> Result<Vec<SessionListRow>> {
+    // Roots are capped per sidebar bucket rather than globally: a session the
+    // user explicitly filed into a folder must not disappear because 50 newer
+    // ungrouped sessions exist. Children are not capped (the roster needs them).
     let mut roots = query_session_list(
         conn,
         "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
-                parent_session_id, parent_call_id, responsibility
-         FROM sessions
-         WHERE parent_session_id IS NULL
-         ORDER BY updated_at DESC LIMIT 50",
+                parent_session_id, parent_call_id, responsibility, title, folder_id
+         FROM (
+             SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
+                    parent_session_id, parent_call_id, responsibility, title, folder_id,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY COALESCE(folder_id, '')
+                        ORDER BY updated_at DESC, id DESC
+                    ) AS rn
+             FROM sessions
+             WHERE parent_session_id IS NULL
+         )
+         WHERE rn <= 50
+         ORDER BY updated_at DESC, id DESC",
         [],
     )?;
     let mut children = query_session_list(
         conn,
         "SELECT id, project, updated_at, last_message, last_assistant, agent_id, model_id,
-                parent_session_id, parent_call_id, responsibility
+                parent_session_id, parent_call_id, responsibility, title, folder_id
          FROM sessions
          WHERE parent_session_id IS NOT NULL
          ORDER BY updated_at DESC",
@@ -734,6 +747,8 @@ fn query_session_list(
             parent_session_id: nonempty_id(row.get(7)?),
             parent_call_id: nonempty_id(row.get(8)?),
             responsibility: row.get(9)?,
+            title: nonempty_id(row.get(10)?),
+            folder_id: nonempty_id(row.get(11)?),
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()

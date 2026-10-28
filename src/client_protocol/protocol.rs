@@ -25,6 +25,12 @@ pub mod methods {
     pub const SESSION_NEW: &str = "session/new";
     pub const SESSION_DELETE: &str = "session/delete";
     pub const SESSION_LIST: &str = "session/list";
+    /// Display-only sidebar layout. These never touch the transcript.
+    pub const SESSION_RENAME: &str = "session/rename";
+    pub const SESSION_MOVE: &str = "session/move";
+    pub const SESSION_FOLDER_CREATE: &str = "session/folder/create";
+    pub const SESSION_FOLDER_RENAME: &str = "session/folder/rename";
+    pub const SESSION_FOLDER_DELETE: &str = "session/folder/delete";
     pub const SESSION_COMPACT: &str = "session/compact";
     /// Per-request provider bills for the usage chart (read-only).
     pub const SESSION_USAGE: &str = "session/usage";
@@ -198,6 +204,12 @@ pub struct SessionInfo {
     pub project: String,
     pub updated_at: i64,
     pub preview: String,
+    /// User title override; absent means "use `preview`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Sidebar folder placement; absent means ungrouped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
     /// Latest completed assistant text for the session list. Empty when none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub assistant_preview: String,
@@ -231,9 +243,19 @@ pub struct SessionInfo {
     pub last_turn_cancelled_by: Option<String>,
 }
 
+/// Element of SessionList.folders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionFolder {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionList {
     pub sessions: Vec<SessionInfo>,
+    #[serde(default)]
+    pub folders: Vec<SessionFolder>,
 }
 
 /// Workspace file change notification payload.

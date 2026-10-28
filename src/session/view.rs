@@ -332,6 +332,7 @@ mod anchored_fold_tests {
                 summary: summary.to_string(),
                 from,
                 to,
+                at: None,
             })
             .expect("body"),
             surface_op: None,
@@ -433,6 +434,7 @@ mod anchored_fold_tests {
                 summary: "bad".into(),
                 from: 1,
                 to: 3,
+                at: None,
             })
             .expect("body"),
             result_data: None,
@@ -460,6 +462,7 @@ mod anchored_fold_tests {
                     summary: "bad".into(),
                     from: 1,
                     to: 3,
+                    at: None,
                 })
                 .expect("body"),
                 surface_op: None,

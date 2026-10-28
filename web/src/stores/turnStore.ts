@@ -103,6 +103,8 @@ export interface TurnSlice {
   /** Server manual-compaction decision. Never recomputed in the UI. */
   compactEligible: boolean;
   compacting: boolean;
+  /** Tail seq the running compaction froze at; null on synchronous paths. */
+  compactingAt: number | null;
   /** Latest measured compaction lifecycle telemetry, projected from the wire. */
   lastCompactionTelemetry: CompactionTelemetry | null;
   /** Provider last-request prompt_tokens (truth). 0 = absent. */
@@ -172,6 +174,7 @@ export const EMPTY_SLICE: TurnSlice = {
   contextEnvelope: null,
   compactEligible: false,
   compacting: false,
+  compactingAt: null,
   lastCompactionTelemetry: null,
   lastTurnPromptTokens: 0,
   lastTurnCompletionTokens: 0,
@@ -929,6 +932,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.stage === "started") {
         patch(sessionId, {
           compacting: true,
+          compactingAt: typeof life.at === "number" ? life.at : null,
           ...(life.trigger !== "manual"
             ? { turnPhase: "compacting" as const }
             : {}),
@@ -936,7 +940,7 @@ export const useTurnStore = create<TurnStore>((set, get) => {
         return;
       }
       if (life.stage === "succeeded") {
-        patch(sessionId, { compacting: false });
+        patch(sessionId, { compacting: false, compactingAt: null });
         if (life.trigger !== "manual") {
           useNotificationStore.getState().add(sessionId, "Context compacted");
         }
@@ -945,10 +949,10 @@ export const useTurnStore = create<TurnStore>((set, get) => {
       if (life.stage === "abandoned") {
         // The frozen branch no longer matched the surface. A fresh sync path
         // may still compact; never leave the wave spinner stuck.
-        patch(sessionId, { compacting: false });
+        patch(sessionId, { compacting: false, compactingAt: null });
         return;
       }
-      patch(sessionId, { compacting: false });
+      patch(sessionId, { compacting: false, compactingAt: null });
       if (life.trigger !== "manual") {
         useToastStore
           .getState()
@@ -1050,6 +1054,9 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           snap.compact_eligible ??
           false,
         compacting: snap.compacting ?? false,
+        // A snapshot never carries the anchor; keep the live one while a
+        // compaction is still running, otherwise the dot would jump to the tail.
+        compactingAt: snap.compacting ? (current.compactingAt ?? null) : null,
         activePlanPath: snap.active_plan_path ?? null,
         llmReconnect: reconnectAfterFinish(
           retryable,
@@ -1155,6 +1162,11 @@ export const useTurnStore = create<TurnStore>((set, get) => {
           snap.compact_eligible ??
           false,
         compacting: snap.compacting ?? false,
+        // A meter-only snapshot never carries the anchor; keep the live one
+        // while a compaction is still running, or the dot would jump to the tail.
+        compactingAt: snap.compacting
+          ? (getSlice(get().byId, sessionId).compactingAt ?? null)
+          : null,
         lastTurnPromptTokens: tts?.prompt_tokens ?? 0,
         lastTurnCompletionTokens: tts?.completion_tokens ?? 0,
         lastTurnCacheHitTokens: tts?.cache_hit_tokens ?? 0,

@@ -241,7 +241,12 @@ interface ItemLogRow extends LogRowEnvelope {
 
 interface CompactedLogRow extends LogRowEnvelope {
   kind: "compacted";
-  body: { summary: string; from: number; to: number };
+  /**
+   * `at`: tail seq when the cut froze. Readers draw the checkpoint there so the
+   * rows written while the summary ran stay below it. Legacy rows omit it and
+   * are drawn at their own seq.
+   */
+  body: { summary: string; from: number; to: number; at?: number };
 }
 
 interface BashExitEntry {
@@ -414,6 +419,10 @@ export interface SessionInfo {
   project: string;
   updated_at: number;
   preview: string;
+  /** User title override; absent means "use preview". */
+  title?: string | null;
+  /** Sidebar folder; absent means ungrouped. */
+  folder_id?: string | null;
   /** Latest completed assistant text. Omitted by the server when empty. */
   assistant_preview?: string;
   running: boolean;
@@ -436,8 +445,16 @@ export interface SessionInfo {
   step_kinds?: TurnStepKind[];
 }
 
+export interface SessionFolder {
+  id: string;
+  name: string;
+  sort_order: number;
+}
+
 export interface SessionList {
   sessions: SessionInfo[];
+  /** Absent on older backends; treat as no folders. */
+  folders?: SessionFolder[];
 }
 
 type SessionLifecycleEvent =
@@ -793,6 +810,8 @@ export interface CompactLifecycle {
   operation_id?: string | null;
   error?: StructuredError | null;
   telemetry?: CompactionTelemetry;
+  /** Trigger-time tail seq, present on the branch that splits the turn. */
+  at?: number | null;
   snapshot: SessionSnapshot;
 }
 

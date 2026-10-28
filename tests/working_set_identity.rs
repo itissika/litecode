@@ -103,6 +103,7 @@ fn keep_recent_compact_reader_matches_fold_checkpoint_then_kept() {
             summary: "sum".into(),
             token_estimate: 10,
             kept_from: Some(1),
+            at: None,
             expected_prefix: None,
             usage: None,
         })
@@ -261,6 +262,7 @@ fn compact(sessions: &SessionManager, sid: &str, summary: &str, kept_from: Optio
             summary: summary.into(),
             token_estimate: 10,
             kept_from,
+            at: None,
             expected_prefix: None,
             usage: None,
         })

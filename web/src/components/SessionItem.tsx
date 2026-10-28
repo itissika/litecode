@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Trash } from "@phosphor-icons/react";
 import type { SessionInfo } from "../api/types";
 import { isWaitingForUserPhase } from "../api/types";
@@ -40,12 +40,23 @@ function formatRelative(updatedAt: number, now: number): string {
   return `${yr}y`;
 }
 
+/** MIME used for dragging a session row onto a folder header. */
+export const SESSION_DRAG_MIME = "application/x-litecode-session-id";
+
 interface SessionItemProps {
   session: SessionInfo;
   /** Shared wall-clock tick (ms) from the parent's 1s timer. */
   now: number;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  onContextMenu?: (event: React.MouseEvent) => void;
+  /** Inline title editor is open for this row. */
+  renaming?: boolean;
+  /** Open the inline title editor (double-click on the title). */
+  onStartRename?: () => void;
+  /** Commit the draft; `null` clears the override and restores the preview. */
+  onRename?: (title: string | null) => void;
+  onRenameCancel?: () => void;
 }
 
 /**
@@ -62,6 +73,11 @@ export const SessionItem = memo(function SessionItem({
   now,
   onOpen,
   onDelete,
+  onContextMenu,
+  renaming = false,
+  onStartRename,
+  onRename,
+  onRenameCancel,
 }: SessionItemProps) {
   // WP-184 Phase B: phase object OR bool / local queue derivation.
   const pendingCount = useTurnStore(
@@ -96,14 +112,46 @@ export const SessionItem = memo(function SessionItem({
       : "pending"
     : status;
 
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const renameDoneRef = useRef(false);
+  useEffect(() => {
+    if (!renaming) return;
+    renameDoneRef.current = false;
+    setDraft(session.title ?? "");
+    const raf = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [renaming, session.title]);
+  const finishRename = (value: string) => {
+    if (renameDoneRef.current) return;
+    renameDoneRef.current = true;
+    const title = value.trim();
+    onRename?.(title || null);
+  };
+
   const preview = session.preview?.trim();
+  const title = session.title?.trim();
+  const label = title || preview;
   const relative = formatRelative(session.updated_at, now);
 
   return (
     <div className="group relative h-9">
       <div
         className="flex h-9 cursor-pointer items-center gap-2 pl-3 pr-12 text-(--_dk-ix-fg) transition-colors hover:bg-(--_dk-ix-bg-hover) hover:text-(--_dk-text-secondary) active:bg-(--_dk-ix-bg-pressed) focus-visible:shadow-[0_0_0_2px_var(--_dk-ix-ring)]"
-        onClick={() => onOpen(session.id)}
+        draggable={!renaming}
+        onDragStart={(event) => {
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData(SESSION_DRAG_MIME, session.id);
+          event.dataTransfer.setData("text/plain", session.id);
+        }}
+        onContextMenu={onContextMenu}
+        onClick={(event) => {
+          // A double-click starts renaming; do not re-open on its second click.
+          if (!renaming && event.detail < 2) onOpen(session.id);
+        }}
       >
         {/* Middle group: status bar + glow (rendered by SessionStatusDot, anchored
             to this content) followed by the conversation preview and the live
@@ -112,16 +160,48 @@ export const SessionItem = memo(function SessionItem({
         <SessionStatusDot status={shown}>
           {/* Conversation summary — adapts to content width, capped + truncated.
               `min-w-0` lets it shrink below content as the row narrows. */}
-          <span
-            className="max-w-32 min-w-0 text-(--_dk-text-secondary)"
-            title={preview || undefined}
-          >
-            <span className="block truncate text-[11px]">
-              {preview || (
-                <span className="text-(--_dk-text-disabled)">No preview</span>
-              )}
+          {renaming ? (
+            <input
+              ref={inputRef}
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onClick={(event) => event.stopPropagation()}
+              onMouseDown={(event) => event.stopPropagation()}
+              onKeyDown={(event) => {
+                // Keep Enter/Escape inside the editor; global shortcuts must
+                // not fire while the user is naming a session.
+                event.stopPropagation();
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  finishRename(draft);
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  renameDoneRef.current = true;
+                  onRenameCancel?.();
+                }
+              }}
+              onBlur={() => finishRename(draft)}
+              aria-label={i18n.t("session.sessionTitle")}
+              maxLength={200}
+              className="w-28 min-w-0 rounded border border-(--_dk-ix-ring) bg-(--_dk-editor) px-1 py-0.5 text-[11px] text-(--_dk-text-secondary) outline-none"
+            />
+          ) : (
+            <span
+              className="max-w-32 min-w-0 text-(--_dk-text-secondary)"
+              title={preview || title || undefined}
+              onDoubleClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onStartRename?.();
+              }}
+            >
+              <span className="block truncate text-[11px]">
+                {label || (
+                  <span className="text-(--_dk-text-disabled)">No preview</span>
+                )}
+              </span>
             </span>
-          </span>
+          )}
           {/* Live summary — real-time step label when active, else a triggered emoji. */}
           <LivePreview
             stepKinds={session.step_kinds ?? []}

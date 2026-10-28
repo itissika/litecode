@@ -1,4 +1,4 @@
-import { hostResizeObserver } from "../../lib/domView";
+import { observeHostSize, subscribeHostDocument } from "../../lib/hostDocument";
 
 type Rebindable = {
   scrollElement: HTMLElement | null;
@@ -26,36 +26,7 @@ export function followScrollerWindow(
   scroller: HTMLElement,
   onMove: () => void,
 ): () => void {
-  let observer: MutationObserver | null = null;
-  let stopped = false;
-
-  const arm = (doc: Document) => {
-    observer?.disconnect();
-    const Ctor = doc.defaultView?.MutationObserver ?? MutationObserver;
-    observer = new Ctor(() => {
-      if (stopped) return;
-      if (scroller.isConnected && scroller.ownerDocument === doc) return;
-      if (!scroller.isConnected) return;
-      const next = scroller.ownerDocument;
-      const view = next.defaultView;
-      const run = () => {
-        if (stopped || !scroller.isConnected) return;
-        onMove();
-        arm(next);
-      };
-      if (view) view.requestAnimationFrame(run);
-      else run();
-    });
-    const root = doc.documentElement;
-    if (root) observer.observe(root, { childList: true, subtree: true });
-  };
-
-  onMove();
-  arm(scroller.ownerDocument);
-  return () => {
-    stopped = true;
-    observer?.disconnect();
-  };
+  return subscribeHostDocument(scroller, onMove);
 }
 
 /** Keep one virtual row equal to `item`'s border box, using that item's window. */
@@ -63,11 +34,5 @@ export function observeRowHeight(
   item: HTMLElement,
   onHeight: (height: number) => void,
 ): () => void {
-  const report = () => onHeight(item.offsetHeight);
-  report();
-  const Observer = hostResizeObserver(item);
-  if (!Observer) return () => {};
-  const observer = new Observer(report);
-  observer.observe(item);
-  return () => observer.disconnect();
+  return observeHostSize(item, () => onHeight(item.offsetHeight));
 }

@@ -16,8 +16,9 @@ use crate::types::{LitecodeError, Result};
 
 pub use blob::{gc_unreferenced, put_bytes, put_text, read_bytes};
 pub use command::{
-    CommitKind, CommitReceipt, DirtySession, MutationId, ReadValue, SessionListPreview,
-    SessionListRow, SessionMutation, SessionRead, SessionRevision, SurfaceReplacement,
+    CommitKind, CommitReceipt, DirtySession, MutationId, ReadValue, SessionFolderRow,
+    SessionListPreview, SessionListRow, SessionMutation, SessionRead, SessionRevision,
+    SurfaceReplacement,
 };
 pub use reader::SessionReadPool;
 pub use writer::{FaultKind, WRITER_QUEUE_CAPACITY};
@@ -400,6 +401,13 @@ impl SessionData {
         }
     }
 
+    pub fn list_folders_blocking(&self) -> Result<Vec<SessionFolderRow>> {
+        match self.read_blocking(SessionRead::ListFolders)? {
+            ReadValue::Folders(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected folders".into())),
+        }
+    }
+
     pub fn list_session_ids_blocking(&self) -> Result<Vec<String>> {
         match self.read_blocking(SessionRead::ListSessionIds)? {
             ReadValue::Ids(v) => Ok(v),
@@ -444,6 +452,58 @@ impl SessionData {
             .session_id)
     }
 
+    /// Display-only title override. Revision-neutral: a rename never invalidates
+    /// a running turn's transcript CAS.
+    pub fn set_session_title_blocking(&self, session_id: &str, title: Option<&str>) -> Result<()> {
+        self.mutate_blocking(SessionMutation::SetTitle {
+            session_id: session_id.to_string(),
+            operation_id: MutationId::new(),
+            title: title.map(str::to_string),
+        })?;
+        Ok(())
+    }
+
+    /// Move a session into a folder, or to the ungrouped bucket when NULL.
+    pub fn set_session_folder_blocking(
+        &self,
+        session_id: &str,
+        folder_id: Option<&str>,
+    ) -> Result<()> {
+        self.mutate_blocking(SessionMutation::SetFolder {
+            session_id: session_id.to_string(),
+            operation_id: MutationId::new(),
+            folder_id: folder_id.map(str::to_string),
+        })?;
+        Ok(())
+    }
+
+    pub fn create_session_folder_blocking(&self, name: &str) -> Result<String> {
+        let id = ulid::Ulid::new().to_string();
+        self.mutate_blocking(SessionMutation::CreateFolder {
+            id: id.clone(),
+            name: name.to_string(),
+            operation_id: MutationId::new(),
+        })?;
+        Ok(id)
+    }
+
+    pub fn rename_session_folder_blocking(&self, id: &str, name: &str) -> Result<()> {
+        self.mutate_blocking(SessionMutation::RenameFolder {
+            id: id.to_string(),
+            name: name.to_string(),
+            operation_id: MutationId::new(),
+        })?;
+        Ok(())
+    }
+
+    pub fn delete_session_folder_blocking(&self, id: &str) -> Result<()> {
+        self.mutate_blocking(SessionMutation::DeleteFolder {
+            id: id.to_string(),
+            operation_id: MutationId::new(),
+        })?;
+        Ok(())
+    }
+
     pub fn insert_items(&self, session_id: &str, items: &[crate::types::Item]) -> Result<()> {
         let expected = self.revision_blocking(session_id)?;
         self.mutate_blocking(SessionMutation::InsertDetails {
@@ -471,6 +531,7 @@ impl SessionData {
             summary: summary.to_string(),
             token_estimate,
             kept_from: kept_from.map(|s| s as crate::session::event::Seq),
+            at: None,
             expected_prefix: None,
             usage: None,
         })?;
@@ -548,6 +609,13 @@ impl SessionDataReader {
         match self.read_blocking(SessionRead::ListSessionIds)? {
             ReadValue::Ids(v) => Ok(v),
             _ => Err(LitecodeError::SessionStorage("unexpected ids".into())),
+        }
+    }
+
+    pub fn list_folders_blocking(&self) -> Result<Vec<SessionFolderRow>> {
+        match self.read_blocking(SessionRead::ListFolders)? {
+            ReadValue::Folders(v) => Ok(v),
+            _ => Err(LitecodeError::SessionStorage("unexpected folders".into())),
         }
     }
 

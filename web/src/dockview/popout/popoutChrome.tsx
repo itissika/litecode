@@ -1,7 +1,8 @@
 import { THEME_CHANGE_EVENT } from "../../lib/theme";
 import { getWindows, registeredDocuments, subscribeWindows } from "../workbench/windows";
 import { releaseOrphanRenderOverlays } from "./orphanOverlay";
-import { bindPopoutPin } from "./popoutPin";
+import { bindPopoutActions, type PopoutActionsHost } from "./popoutActions";
+import { mirrorDocumentStyles } from "./popoutStyles";
 
 const LAYOUT_WATCH_MS = 100;
 
@@ -45,7 +46,35 @@ export function watchPopoutLayout(win: Window): () => void {
 }
 
 /**
- * Theme, pin, and resize watch for every registered popout.
+ * The popout has no preload, and host IPC only accepts the main window as the
+ * sender, so its controls call back through this renderer with the dock id.
+ * A plain browser has no bridge: pin and close-all still work, the OS window
+ * buttons are not rendered.
+ */
+function popoutActionsHost(): PopoutActionsHost {
+  const bridge = window.litecode;
+  // An older dev preload may not carry the window channels yet.
+  const canControl =
+    !!bridge &&
+    typeof bridge.popoutWindowMinimize === "function" &&
+    typeof bridge.popoutWindowMaximizeToggle === "function" &&
+    typeof bridge.popoutWindowIsMaximized === "function";
+  const control = canControl
+    ? {
+        minimize: (dockId: string) => bridge.popoutWindowMinimize(dockId),
+        toggleMaximize: (dockId: string) => bridge.popoutWindowMaximizeToggle(dockId),
+        isMaximized: (dockId: string) => bridge.popoutWindowIsMaximized(dockId),
+      }
+    : undefined;
+  return {
+    setAlwaysOnTop: (dockId, onTop) =>
+      bridge?.popoutSetAlwaysOnTop?.(dockId, onTop) ?? Promise.resolve(false),
+    windowControl: control,
+  };
+}
+
+/**
+ * Theme, window controls, and resize watch for every registered popout.
  * Empty render overlays are a gap in the always-renderer, so those are
  * removed when a popout registers. Panel moves are handled by the workbench.
  */
@@ -65,21 +94,24 @@ export function bindPopoutWindows(): () => void {
   window.addEventListener(THEME_CHANGE_EVENT, syncTheme);
   const stop = subscribeWindows((entry) => {
     if (!entry.dockId) return () => {};
+    let stopStyles = () => {};
     try {
       if (entry.window.closed) return () => {};
       preparePopoutDocument(entry.window.document, currentDvTheme());
+      // Dockview copies the opener's sheets once, at load. A panel that mounts
+      // later (restored popout, lazy CSS chunk, Monaco's theme sheet) needs the
+      // head mirrored for as long as the window lives.
+      stopStyles = mirrorDocumentStyles(entry.window.document);
     } catch {
       return () => {};
     }
     releaseOrphanRenderOverlays(registeredDocuments());
     const stopLayout = watchPopoutLayout(entry.window);
-    const stopPin = bindPopoutPin(entry.window, (dockId, onTop) => {
-      const set = window.litecode?.popoutSetAlwaysOnTop;
-      return set ? set(dockId, onTop) : Promise.resolve(false);
-    });
+    const stopActions = bindPopoutActions(entry.window, popoutActionsHost());
     return () => {
+      stopStyles();
       stopLayout();
-      stopPin();
+      stopActions();
     };
   });
   return () => {

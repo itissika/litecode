@@ -126,6 +126,39 @@ describe("messageStore seq map", () => {
     expect(isCompactCutRow(slice.messages[2]!)).toBe(true);
   });
 
+  it("draws a checkpoint where its cut froze, keeping later rows below", () => {
+    const sid = "s-cut-anchor";
+    load(sid, [
+      ev(0, userMsg("ask")),
+      ev(1, assistantMsg("a", "frozen")),
+      ev(2, assistantMsg("b", "written while the summary ran")),
+      {
+        seq: 3,
+        kind: "compacted",
+        state: "final",
+        body: { summary: "summary", from: 0, to: 1, at: 0 },
+      },
+    ]);
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.messages.map((row) => row.seq)).toEqual([0, 1, 2, 3]);
+    expect(slice.display.map((row) => row.seq)).toEqual([0, 3, 1, 2]);
+  });
+
+  it("falls back to the row seq for a legacy checkpoint without an anchor", () => {
+    const sid = "s-cut-legacy";
+    load(sid, [
+      ev(0, userMsg("ask")),
+      {
+        seq: 1,
+        kind: "compacted",
+        state: "final",
+        body: { summary: "summary", from: 0, to: 1 },
+      },
+    ]);
+    const slice = useMessageStore.getState().bySession.get(sid)!;
+    expect(slice.display.map((row) => row.seq)).toEqual([0, 1]);
+  });
+
   it("rejects load events that omit seq", () => {
     const sid = "s-bad";
     useMessageStore.getState().onBufferLoaded(sid, {

@@ -64,7 +64,13 @@ async fn listed(data: Arc<SessionData>) -> Vec<String> {
     let rows = mgr.data().list_sessions_blocking().expect("sql list");
     let mut ids = Vec::new();
     for row in rows {
-        if !mgr.is_session_empty(&row.id).await {
+        // Mirrors build_session_list: an empty root is hidden only when it has
+        // no title and no folder. Empty children stay listed.
+        let hidden = row.parent_session_id.is_none()
+            && row.title.is_none()
+            && row.folder_id.is_none()
+            && mgr.is_session_empty(&row.id).await;
+        if !hidden {
             ids.push(row.id);
         }
     }
@@ -115,6 +121,37 @@ async fn empty_new_session_stays_hidden() {
         sid
     };
     assert_hidden_after_reopen(&env, &sid, "empty create").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_session_with_title_stays_listed() {
+    let env = Env::new();
+    let sid = {
+        let data = env.open();
+        let sid = persist(&data, &[]);
+        data.set_session_title_blocking(&sid, Some("Named before the first turn"))
+            .expect("set title");
+        data.shutdown();
+        sid
+    };
+    assert_listed_after_reopen(&env, &sid, "titled empty session").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn empty_session_in_folder_stays_listed() {
+    let env = Env::new();
+    let sid = {
+        let data = env.open();
+        let sid = persist(&data, &[]);
+        let folder = data
+            .create_session_folder_blocking("Planning")
+            .expect("create folder");
+        data.set_session_folder_blocking(&sid, Some(&folder))
+            .expect("move session");
+        data.shutdown();
+        sid
+    };
+    assert_listed_after_reopen(&env, &sid, "foldered empty session").await;
 }
 
 // ── working_set / fold: durable item rows stay listed (T3 table-driven) ────

@@ -914,7 +914,10 @@ pub async fn handle_jsonrpc(
                         sink,
                         serde_json::to_value(ok_response(
                             id,
-                            serde_json::json!({"sessions": sessions}),
+                            serde_json::json!({
+                                "sessions": sessions.sessions,
+                                "folders": sessions.folders,
+                            }),
                         ))
                         .unwrap(),
                     );
@@ -941,6 +944,210 @@ pub async fn handle_jsonrpc(
             }
             // WP-166: the first list/new reply releases P2 startup work.
             session.sessions.mark_startup_settled();
+        }
+
+        methods::SESSION_RENAME => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+                #[serde(default)]
+                title: Option<String>,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.rename_session(&params.id, params.title).await {
+                Ok(()) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::SESSION_MOVE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+                #[serde(default)]
+                folder_id: Option<String>,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.move_session(&params.id, params.folder_id).await {
+                Ok(()) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::SESSION_FOLDER_CREATE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                name: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.create_session_folder(&params.name).await {
+                Ok(folder_id) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(
+                            id,
+                            serde_json::json!({ "folder_id": folder_id }),
+                        ))
+                        .unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::SESSION_FOLDER_RENAME => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+                name: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.rename_session_folder(&params.id, &params.name).await {
+                Ok(()) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
+        }
+
+        methods::SESSION_FOLDER_DELETE => {
+            #[derive(serde::Deserialize)]
+            struct Params {
+                id: String,
+            }
+            let params: Params = match serde_json::from_value(rpc.params.clone()) {
+                Ok(params) => params,
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(
+                            id,
+                            -32602,
+                            format!("Invalid params: {e}"),
+                        ))
+                        .unwrap(),
+                    );
+                    return false;
+                }
+            };
+            match session.delete_session_folder(&params.id).await {
+                Ok(()) => {
+                    for msg in session.take_all_outgoing() {
+                        emit(sink, msg);
+                    }
+                    emit(
+                        sink,
+                        serde_json::to_value(ok_response(id, serde_json::json!({}))).unwrap(),
+                    );
+                }
+                Err(e) => {
+                    emit(
+                        sink,
+                        serde_json::to_value(err_response(id, -32000, e.to_string())).unwrap(),
+                    );
+                }
+            }
         }
 
         methods::SESSION_SNAPSHOT => {
@@ -2862,8 +3069,85 @@ mod ask_loop_tests {
         let (mut c, _s, _parent, child) = wp091_parent_child(dir.path()).await;
         let list = c.list_sessions().await.unwrap();
         assert!(
-            list.iter().any(|row| row.id == child),
+            list.sessions.iter().any(|row| row.id == child),
             "empty child must be listed"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_layout_rpcs_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut c, _s, parent, _child) = wp091_parent_child(dir.path()).await;
+
+        let created = wp091_rpc(
+            &mut c,
+            "session/folder/create",
+            serde_json::json!({"name": "Work"}),
+        )
+        .await;
+        assert!(created.get("error").is_none(), "{created}");
+        let folder_id = created["result"]["folder_id"]
+            .as_str()
+            .expect("folder id")
+            .to_string();
+
+        let list = wp091_rpc(&mut c, "session/list", serde_json::json!({})).await;
+        assert_eq!(list["result"]["folders"][0]["name"], "Work");
+
+        let renamed = wp091_rpc(
+            &mut c,
+            "session/rename",
+            serde_json::json!({"id": parent, "title": "Parent title"}),
+        )
+        .await;
+        assert!(renamed.get("error").is_none(), "{renamed}");
+
+        let moved = wp091_rpc(
+            &mut c,
+            "session/move",
+            serde_json::json!({"id": parent, "folder_id": folder_id}),
+        )
+        .await;
+        assert!(moved.get("error").is_none(), "{moved}");
+
+        let list = wp091_rpc(&mut c, "session/list", serde_json::json!({})).await;
+        let row = list["result"]["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .find(|row| row["id"].as_str() == Some(parent.as_str()))
+            .expect("parent listed");
+        assert_eq!(row["title"], "Parent title");
+        assert_eq!(row["folder_id"].as_str(), Some(folder_id.as_str()));
+
+        let renamed_folder = wp091_rpc(
+            &mut c,
+            "session/folder/rename",
+            serde_json::json!({"id": folder_id, "name": "Planning"}),
+        )
+        .await;
+        assert!(renamed_folder.get("error").is_none(), "{renamed_folder}");
+        let list = wp091_rpc(&mut c, "session/list", serde_json::json!({})).await;
+        assert_eq!(list["result"]["folders"][0]["name"], "Planning");
+
+        let deleted = wp091_rpc(
+            &mut c,
+            "session/folder/delete",
+            serde_json::json!({"id": folder_id}),
+        )
+        .await;
+        assert!(deleted.get("error").is_none(), "{deleted}");
+        let list = wp091_rpc(&mut c, "session/list", serde_json::json!({})).await;
+        assert!(list["result"]["folders"].as_array().unwrap().is_empty());
+        let row = list["result"]["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .find(|row| row["id"].as_str() == Some(parent.as_str()))
+            .expect("parent still listed");
+        assert!(
+            row.get("folder_id").is_none(),
+            "deleting the folder must ungroup the session: {row}"
         );
     }
 
@@ -2930,7 +3214,7 @@ mod ask_loop_tests {
         };
         // No turn yet → null, and serialized explicitly.
         let list = c.list_sessions().await.unwrap();
-        let json = serde_json::to_value(row(&list, &child)).unwrap();
+        let json = serde_json::to_value(row(&list.sessions, &child)).unwrap();
         assert!(
             json.as_object()
                 .unwrap()
@@ -2939,21 +3223,21 @@ mod ask_loop_tests {
         assert!(json["last_turn_cancelled_by"].is_null());
 
         wp099_turn_end(&s, &child, "t1", "cancelled", Some("user"));
-        let r = row(&c.list_sessions().await.unwrap(), &child);
+        let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_reason, "cancelled");
         assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("user"));
 
         wp099_turn_end(&s, &child, "t2", "cancelled", Some("parent"));
-        let r = row(&c.list_sessions().await.unwrap(), &child);
+        let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_cancelled_by.as_deref(), Some("parent"));
 
         wp099_turn_end(&s, &child, "t3", "completed", None);
-        let r = row(&c.list_sessions().await.unwrap(), &child);
+        let r = row(&c.list_sessions().await.unwrap().sessions, &child);
         assert_eq!(r.last_turn_cancelled_by, None);
 
         // Main session: same rule as last_turn_reason → always null (Q6).
         wp099_turn_end(&s, &parent, "p1", "cancelled", Some("user"));
-        let r = row(&c.list_sessions().await.unwrap(), &parent);
+        let r = row(&c.list_sessions().await.unwrap().sessions, &parent);
         assert_eq!(r.last_turn_cancelled_by, None);
     }
 

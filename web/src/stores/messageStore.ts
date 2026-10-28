@@ -7,7 +7,7 @@ import {
   sealMismatchError,
   userImageRefs,
 } from "../api/adapter";
-import { trimPartialHead } from "../lib/transcriptProjection";
+import { orderForDisplay, trimPartialHead } from "../lib/transcriptProjection";
 import type {
   BufferItemNotification,
   BufferLoaded,
@@ -119,7 +119,9 @@ function withDisplay(slice: MessageSlice): MessageSlice {
   // A history window often opens mid-turn. Drop that fragment from the view the
   // list renders so the first bubble's key stays stable when the previous page
   // arrives. The full rows stay on `messages`.
-  const visible = trimPartialHead(slice.messages, slice.fromSeq);
+  // A checkpoint is drawn where its cut froze, not where its row landed, so the
+  // rows the turn wrote while the summary ran stay below the mark.
+  const visible = orderForDisplay(trimPartialHead(slice.messages, slice.fromSeq));
   if (!slice.pendingUser) {
     if (visible === slice.display) return slice;
     return { ...slice, display: visible };

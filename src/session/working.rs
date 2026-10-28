@@ -57,6 +57,7 @@ impl From<CompactionCheckpoint> for CompactedBody {
             summary: checkpoint.summary,
             from: checkpoint.from,
             to: checkpoint.to,
+            at: None,
         }
     }
 }

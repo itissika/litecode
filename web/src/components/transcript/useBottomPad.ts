@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
-import { hostResizeObserver, viewOf } from "../../lib/domView";
+import { viewOf } from "../../lib/domView";
+import { observeHostSize } from "../../lib/hostDocument";
 
 /**
  * Trailing clearance, as a fraction of the scroll viewport, that keeps the tail
@@ -44,6 +45,7 @@ export function useBottomPad({
 
   useEffect(() => {
     const el = scrollRef.current;
+    if (!el) return;
     const view = viewOf(el);
     const measure = () => {
       const node = scrollRef.current;
@@ -51,14 +53,13 @@ export function useBottomPad({
       const h = node.getBoundingClientRect().height;
       setViewportH(h > 0 ? h : 0);
     };
-    measure();
     const raf = view.requestAnimationFrame(measure);
-    const Observer = hostResizeObserver(el);
-    const ro = Observer ? new Observer(measure) : null;
-    if (el && ro) ro.observe(el);
+    // Follows the panel into a popout: the observer is rebuilt from the window
+    // that owns the scroller now, and measures once for this document.
+    const stop = observeHostSize(el, measure);
     return () => {
       view.cancelAnimationFrame(raf);
-      ro?.disconnect();
+      stop();
     };
   }, [scrollRef]);
 

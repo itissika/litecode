@@ -500,6 +500,99 @@ async fn branch_commits_after_a_final_answer_without_a_next_boundary() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn branch_announces_the_anchor_before_the_summary_and_persists_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let provider = Arc::new(GatedSummaryProvider::default());
+    let mut runtime =
+        build_runtime_with_provider(dir.path(), test_agent(vec![], "auto", 5), provider.clone());
+    runtime.set_compaction_prefetch_mode(CompactionPrefetchMode::On);
+
+    let sid = runtime.session_id.clone();
+    let sessions = Arc::clone(runtime.sessions());
+    let mut events = sessions.subscribe(&sid).expect("session event stream");
+    let seed: Vec<_> = (0..9)
+        .map(|i| {
+            let mut state = i as u64 + 1;
+            let mut text = format!("anchor-seed-{i} ");
+            for _ in 0..20_500 {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push((b'a' + ((state >> 33) % 26) as u8) as char);
+            }
+            user_text(text)
+        })
+        .collect();
+    sessions.insert_detail_rows(&sid, &seed).expect("seed rows");
+    let last_seed = sessions.entry_wire_seq_cursor(&sid).0 as u64;
+
+    let result = runtime
+        .run_with_turn("go".into(), "anchor-turn", 5)
+        .await
+        .expect("turn succeeds");
+    assert!(result.contains("gated final answer"), "{result}");
+
+    // The anchor is known while the summary is still gated: a reader can place
+    // the line before the checkpoint row exists.
+    let mut started_at = None;
+    while let Ok(envelope) = events.try_recv() {
+        if let InternalEvent::CompactionLifecycle {
+            trigger,
+            stage: CompactionStage::Started,
+            at,
+            ..
+        } = envelope.event
+        {
+            if trigger == CompactionTrigger::Auto {
+                started_at = at;
+            }
+        }
+    }
+    let at = started_at.expect("Started must carry the frozen anchor");
+    assert!(
+        at >= last_seed,
+        "anchor {at} must be at or after the last seeded row {last_seed}"
+    );
+
+    provider.release.notify_one();
+    let mut committed_seq = None;
+    for _ in 0..200 {
+        let (_, next) = sessions.entry_wire_seq_cursor(&sid);
+        if let Ok(rows) = sessions.entry_load_events_range(&sid, 0, next) {
+            if let Some(event) = rows
+                .iter()
+                .find(|event| event.event_type == litecode::session::EventType::Compacted)
+            {
+                committed_seq = Some(event.seq);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let checkpoint_seq = committed_seq.expect("the branch must commit a checkpoint");
+
+    let (_, next) = sessions.entry_wire_seq_cursor(&sid);
+    let rows = sessions
+        .entry_load_events_range(&sid, 0, next)
+        .expect("event log");
+    let checkpoint = rows
+        .iter()
+        .find(|event| event.seq == checkpoint_seq)
+        .expect("checkpoint row");
+    let body: litecode::session::CompactedBody =
+        serde_json::from_value(checkpoint.data.clone()).expect("checkpoint body");
+    assert_eq!(
+        body.at,
+        Some(at),
+        "the durable row must keep the anchor the branch announced"
+    );
+    assert!(
+        checkpoint_seq > at,
+        "the checkpoint row lands at commit ({checkpoint_seq}), after its anchor ({at})"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn committed_branch_is_loaded_by_the_next_turn() {
     let dir = tempfile::tempdir().expect("tempdir");
     let provider = Arc::new(FinalAnswerPrefetchProvider::default());

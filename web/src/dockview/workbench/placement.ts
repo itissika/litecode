@@ -4,6 +4,7 @@ import { dockview } from "./host";
 import { kindForComponent, type CenterPlacement } from "./kinds";
 import { groupRole, isUsableCenter } from "./model";
 import { groupId, normalizeGroup, readGroup, type GroupLike } from "./readGroup";
+import { getWindows } from "./windows";
 
 const recentMainGroups: string[] = [];
 
@@ -170,13 +171,33 @@ function agentPlace(api: DockviewApi): PanelPlace | null {
   return placeOn(created as unknown as GroupLike);
 }
 
+/**
+ * The popout window the user is working in hosts its own opens: a file link,
+ * a symbol, a new session that needs a panel lands in that window as a new
+ * tab, not in the main window behind it. An edge is never a popout, so this
+ * only ever sees a center group.
+ */
+function originPlace(dockId: string | null | undefined): PanelPlace | null {
+  if (!dockId) return null;
+  const entry = getWindows().find((item) => item.dockId === dockId);
+  const group = entry?.group;
+  if (!group) return null;
+  const facts = readGroup(group);
+  if (groupRole(facts) !== "popout-center" || !isUsableCenter(facts)) return null;
+  if (!facts.id) return null;
+  return placeOn(group);
+}
+
 export function placementFor(
   component: string,
   api?: DockviewApi | null,
   preferredGroupId?: string,
+  originDockId?: string | null,
 ): PanelPlace | null {
   const live = liveApi(api);
   if (!live) return null;
+  const origin = originPlace(originDockId);
+  if (origin) return origin;
   const spec = kindForComponent(component);
   const placement: CenterPlacement = spec?.placement ?? "document";
   if (preferredGroupId && placement === "document") {

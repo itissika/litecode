@@ -295,6 +295,7 @@ fn legacy_labeled_checkpoint_body_loads_and_projects_without_the_label() {
             summary: "[Conversation summary]\nprior facts".into(),
             token_estimate: 10,
             kept_from: Some(1),
+            at: None,
             expected_prefix: None,
             usage: None,
         })

@@ -51,6 +51,8 @@ function KeyedDocument() {
   return <KnowledgeDocument key={focusedId ?? "empty"} />;
 }
 
+// UI copy is asserted in the default locale: jsdom reports navigator.languages
+// as en-US, so i18n resolves to "en" — the same default the other suites use.
 describe("KnowledgeDocument", () => {
   it("reads the focused node and follows a body chip in place", () => {
     render(<KeyedDocument />);
@@ -81,14 +83,14 @@ describe("KnowledgeDocument", () => {
 
   it("edits the summary directly and toggles the enabled state", async () => {
     render(<KeyedDocument />);
-    const summary = screen.getByRole("textbox", { name: "摘要" });
+    const summary = screen.getByRole("textbox", { name: "Summary" });
     fireEvent.change(summary, { target: { value: "新的摘要" } });
     fireEvent.blur(summary);
     await waitFor(() => {
       expect(saveNode).toHaveBeenCalledWith("session", { summary: "新的摘要" });
     });
 
-    fireEvent.click(screen.getByRole("switch", { name: "禁用" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Disable" }));
     await waitFor(() => {
       expect(saveNode).toHaveBeenCalledWith("session", { status: "disabled" });
     });
@@ -96,15 +98,15 @@ describe("KnowledgeDocument", () => {
 
   it("shows structure information and switches between reading and editing", async () => {
     render(<KeyedDocument />);
-    expect(screen.getByText("关联节点")).toBeTruthy();
-    expect(screen.getByText("引用", { exact: true })).toBeTruthy();
-    expect(screen.getByText("被引用", { exact: true })).toBeTruthy();
+    expect(screen.getByText("Related nodes")).toBeTruthy();
+    expect(screen.getByText("References", { exact: true })).toBeTruthy();
+    expect(screen.getByText("Referenced by", { exact: true })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "编辑正文" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit body" }));
     expect(document.querySelector(".ProseMirror")).not.toBeNull();
     expect(document.querySelector(".agent-markdown")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "预览正文" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview body" }));
     await waitFor(() => {
       expect(document.querySelector(".agent-markdown")).not.toBeNull();
     });

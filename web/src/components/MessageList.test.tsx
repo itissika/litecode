@@ -81,6 +81,7 @@ const turnState = {
     {
       permissionQueue: unknown[];
       compacting: boolean;
+      compactingAt: number | null;
       turnPhase: string | null;
       pendingMessages: { id: string; text: string }[];
     }
@@ -90,6 +91,7 @@ const turnState = {
       {
         permissionQueue: [],
         compacting: false,
+        compactingAt: null,
         turnPhase: null,
         pendingMessages: [],
       },
@@ -939,6 +941,88 @@ describe("MessageList compacting now marker", () => {
       />,
     );
     expect(screen.queryByTestId("compacting-now")).toBeNull();
+  });
+
+  it("sits where the checkpoint will land, above the rows written after the freeze", () => {
+    slice().compacting = true;
+    slice().compactingAt = 1;
+    const rows: HumanRow[] = [
+      { seq: 0, kind: "item/user", state: "final", body: userTextItem("go") },
+      { ...liveReasoning, seq: 1 },
+      { seq: 2, kind: "item/user", state: "final", body: userTextItem("steer") },
+    ];
+    render(
+      <MessageList
+        messages={rows}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    const mark = screen.getByTestId("compacting-now");
+    const frozen = document.querySelector('[data-seq-hit~="1"]');
+    const later = document.querySelector('[data-seq-hit~="2"]');
+    expect(frozen).toBeTruthy();
+    expect(later).toBeTruthy();
+    // Above the line: what the cut already saw. Below it: the running turn.
+    expect(
+      frozen!.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      mark.compareDocumentPosition(later!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    slice().compacting = false;
+    slice().compactingAt = null;
+  });
+
+  it("hands the slot over to the checkpoint row without rendering both", () => {
+    slice().compacting = true;
+    slice().compactingAt = 1;
+    const rows: HumanRow[] = [
+      { seq: 0, kind: "item/user", state: "final", body: userTextItem("go") },
+      { ...liveReasoning, seq: 1 },
+      { seq: 2, kind: "item/user", state: "final", body: userTextItem("steer") },
+    ];
+    const view = render(
+      <MessageList
+        messages={rows}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.getByTestId("compacting-now")).toBeTruthy();
+
+    // The row lands before the succeeded stage clears the flag: one slot, never two.
+    view.rerender(
+      <MessageList
+        messages={[
+          ...rows,
+          {
+            seq: 3,
+            kind: "compacted",
+            state: "final",
+            body: { summary: "summary", from: 0, to: 1, at: 1 },
+          },
+        ]}
+        loadingHistory={false}
+        canLoadMore={false}
+        onLoadMore={() => {}}
+        isRunning={true}
+        scrollRef={makeScrollRef()}
+        sessionId="session-1"
+      />,
+    );
+    expect(screen.queryByTestId("compacting-now")).toBeNull();
+    expect(document.querySelector('[data-seq-hit~="3"]')).toBeTruthy();
+    slice().compacting = false;
+    slice().compactingAt = null;
   });
 
   it("does not keep the compacting line after auto compact when only turnPhase is stuck", () => {

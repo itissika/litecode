@@ -3,7 +3,7 @@
  * needs them to label a never-subscribed child), so the sidebar must show roots
  * only — otherwise every launched worker appears as a session of its own.
  */
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionInfo } from "../api/types";
@@ -26,6 +26,7 @@ function session(id: string, patch: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   useSessionStore.setState({
     sessions: [],
     sessionsLoading: false,
@@ -42,6 +43,144 @@ afterEach(() => {
   } as never);
   useConnectionStore.setState({ state: "disconnected" } as never);
   vi.restoreAllMocks();
+});
+
+describe("SessionList — folders and titles", () => {
+  it("groups roots by folder, keeps empty folders, and shows ungrouped", async () => {
+    const filed = session("s-filed", {
+      preview: "filed work",
+      folder_id: "f1",
+    });
+    const loose = session("s-loose", { preview: "loose work" });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({
+        sessions: [filed, loose],
+        folders: [
+          { id: "f1", name: "Work", sort_order: 0 },
+          { id: "f2", name: "Archive", sort_order: 1 },
+        ],
+      })),
+    } as never);
+
+    render(<SessionList />);
+
+    expect(await screen.findByText("Work")).toBeTruthy();
+    expect(screen.getByText("Archive")).toBeTruthy();
+    expect(screen.getByText("filed work")).toBeTruthy();
+    expect(screen.getByText("loose work")).toBeTruthy();
+    expect(screen.getByText("Ungrouped")).toBeTruthy();
+    expect(screen.getByText("Empty")).toBeTruthy();
+  });
+
+  it("orders folders by sort_order, not arrival order", async () => {
+    const first = session("s1", { preview: "one" });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({
+        sessions: [first],
+        folders: [
+          { id: "f2", name: "Second", sort_order: 2 },
+          { id: "f1", name: "First", sort_order: 1 },
+        ],
+      })),
+    } as never);
+
+    render(<SessionList />);
+    await screen.findByText("Second");
+    const headers = screen.getAllByRole("button", {
+      name: /Collapse folder: (Second|First)/,
+    });
+    expect(headers[0]?.textContent).toContain("First");
+    expect(headers[1]?.textContent).toContain("Second");
+  });
+
+  it("shows the title override instead of the auto preview", async () => {
+    const titled = session("s1", {
+      preview: "auto preview",
+      title: "Release checklist",
+    });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [titled], folders: [] })),
+    } as never);
+
+    render(<SessionList />);
+
+    expect(await screen.findByText("Release checklist")).toBeTruthy();
+    expect(screen.queryByText("auto preview")).toBeNull();
+  });
+
+  it("starts renaming on double-click", async () => {
+    const target = session("s1", { preview: "auto preview" });
+    useConnectionStore.setState({
+      state: "connected",
+      sendRpc: vi.fn(async () => ({ sessions: [target], folders: [] })),
+    } as never);
+
+    render(<SessionList />);
+    fireEvent.doubleClick(await screen.findByText("auto preview"));
+
+    expect(
+      screen.getByRole("textbox", { name: "Session title" }),
+    ).toBeTruthy();
+  });
+
+  it("renames a folder inline without toggling its collapse state", async () => {
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") {
+        return {
+          sessions: [],
+          folders: [{ id: "f1", name: "Work", sort_order: 0 }],
+        };
+      }
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    const header = await screen.findByRole("button", {
+      name: "Collapse folder: Work",
+    });
+    fireEvent.contextMenu(header);
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename folder" }));
+
+    const input = screen.getByRole("textbox", { name: "Folder name" });
+    fireEvent.change(input, { target: { value: "Plan" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(sendRpc).toHaveBeenCalledWith("session/folder/rename", {
+      id: "f1",
+      name: "Plan",
+    });
+    const renamed = await screen.findByRole("button", {
+      name: "Collapse folder: Plan",
+    });
+    expect(renamed.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("renames a session from the context menu", async () => {
+    const target = session("s1", { preview: "auto preview" });
+    const sendRpc = vi.fn(async (method: string) => {
+      if (method === "session/list") return { sessions: [target], folders: [] };
+      return {};
+    });
+    useConnectionStore.setState({ state: "connected", sendRpc } as never);
+
+    render(<SessionList />);
+    fireEvent.contextMenu(await screen.findByText("auto preview"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Rename session" }));
+
+    const input = screen.getByRole("textbox", { name: "Session title" });
+    fireEvent.change(input, { target: { value: "Renamed" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(sendRpc).toHaveBeenCalledWith("session/rename", {
+      id: "s1",
+      title: "Renamed",
+    });
+    expect(await screen.findByText("Renamed")).toBeTruthy();
+  });
 });
 
 describe("SessionList — root filtering (P7)", () => {

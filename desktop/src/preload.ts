@@ -211,6 +211,15 @@ const bridge = {
   popoutSetAlwaysOnTop: async (dockId: string, onTop: boolean): Promise<boolean> => {
     return (await ipcRenderer.invoke("litecode:popout-set-always-on-top", dockId, onTop)) === true;
   },
+  popoutWindowMinimize: async (dockId: string): Promise<void> => {
+    await ipcRenderer.invoke("litecode:popout-window-minimize", dockId);
+  },
+  popoutWindowMaximizeToggle: async (dockId: string): Promise<boolean> => {
+    return (await ipcRenderer.invoke("litecode:popout-window-maximize-toggle", dockId)) === true;
+  },
+  popoutWindowIsMaximized: async (dockId: string): Promise<boolean> => {
+    return (await ipcRenderer.invoke("litecode:popout-window-is-maximized", dockId)) === true;
+  },
   browserCreate: async (input: {
     id: string;
     backgroundColor: string;

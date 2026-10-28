@@ -1,4 +1,5 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import i18n from "../i18n";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PlanExecuteMark,
@@ -13,14 +14,14 @@ describe("PlanExecuteMark", () => {
   it("names the plan file the button launched", () => {
     render(<PlanExecuteMark planPath=".litecode/plan/calm.md" />);
     expect(screen.getByTestId("plan-execute-mark").textContent).toBe(
-      ".litecode/plan/calm.md 开始执行",
+      i18n.t("session.planPathExecute", { path: ".litecode/plan/calm.md" }),
     );
   });
 
   it("degrades to the bare label with no active plan pointer", () => {
     render(<PlanExecuteMark planPath={null} />);
     expect(screen.getByTestId("plan-execute-mark").textContent).toBe(
-      "开始执行",
+      i18n.t("session.startExecute"),
     );
   });
 });

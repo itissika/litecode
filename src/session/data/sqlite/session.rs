@@ -1347,6 +1347,8 @@ pub(crate) fn load_meta_on(
         plan_slug,
         plan_revision,
         preview,
+        title,
+        folder_id,
     ): (
         String,
         i64,
@@ -1366,12 +1368,14 @@ pub(crate) fn load_meta_on(
         Option<String>,
         Option<String>,
         String,
+        Option<String>,
+        Option<String>,
     ) = conn
         .query_row(
             "SELECT project, created_at, parent_session_id, parent_call_id, responsibility, subagent_depth,
                     agent_id, model_id, thinking_tier, context_mode, updated_at,
                     compacted_seq, surface_rewrite_seq, spine_from, todos_json, active_plan_slug,
-                    plan_revision, last_message
+                    plan_revision, last_message, title, folder_id
              FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
             |row| {
@@ -1394,6 +1398,8 @@ pub(crate) fn load_meta_on(
                     row.get(15)?,
                     row.get(16)?,
                     row.get(17)?,
+                    row.get(18)?,
+                    row.get(19)?,
                 ))
             },
         )
@@ -1433,6 +1439,8 @@ pub(crate) fn load_meta_on(
         plan_slug,
         plan_revision,
         preview,
+        title,
+        folder_id,
     })
 }
 
@@ -3482,7 +3490,7 @@ impl Session {
     /// §5.1 compact success — summary checkpoint with empty keep (summary-only view).
     pub fn apply_compact_checkpoint(&self, summary: &str, token_estimate: i64) -> Result<i64> {
         // `kept_from_seq = N` (checkpoint) → no pre-existing detail in the view.
-        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None)
+        self.apply_compact_checkpoint_checked(summary, None, token_estimate, None, None, None)
     }
 
     /// Pi-style keep-recent compact:
@@ -3501,7 +3509,14 @@ impl Session {
         kept_from_seq: Option<i64>,
         token_estimate: i64,
     ) -> Result<i64> {
-        self.apply_compact_checkpoint_checked(summary, kept_from_seq, token_estimate, None, None)
+        self.apply_compact_checkpoint_checked(
+            summary,
+            kept_from_seq,
+            token_estimate,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Like `apply_compact_checkpoint_from`, but abort if the turn view length
@@ -3513,6 +3528,7 @@ impl Session {
         token_estimate: i64,
         expected_view_len: Option<usize>,
         usage: Option<&ProviderUsage>,
+        at: Option<Seq>,
     ) -> Result<i64> {
         let _gate = self.lock_write();
         let now = chrono::Utc::now().timestamp_millis();
@@ -3533,6 +3549,7 @@ impl Session {
             summary: summary.to_string(),
             from,
             to,
+            at,
         };
         let draft = EventDraft {
             time: now,
@@ -4087,6 +4104,7 @@ mod tests {
                 42,
                 None,
                 Some(&usage),
+                None,
             )
             .unwrap();
 

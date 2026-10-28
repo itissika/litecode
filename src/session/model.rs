@@ -150,6 +150,11 @@ pub struct CompactedBody {
     pub summary: String,
     pub from: Seq,
     pub to: Seq,
+    /// Tail seq at the moment the cut froze. Display only: a reader draws this
+    /// checkpoint there so the turn's later rows stay below it. Legacy rows
+    /// have none and fall back to their own seq; never used for the shadow range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<Seq>,
 }
 
 /// The only persisted SessionMeta fields. Live and catalog projections do not
@@ -179,4 +184,10 @@ pub struct SessionMeta {
     /// Content hash the session last saw for `plan_slug`.
     pub plan_revision: Option<String>,
     pub preview: String,
+    /// User title override; `None` means "use `preview`".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Sidebar folder placement; `None` means ungrouped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder_id: Option<String>,
 }

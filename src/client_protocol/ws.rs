@@ -513,7 +513,10 @@ async fn handle_socket(socket: WebSocket, state: ServeState, session_hint: Optio
                                 &list_tx,
                                 serde_json::to_value(ok_response(
                                     rpc.id.clone(),
-                                    serde_json::json!({"sessions": list}),
+                                    serde_json::json!({
+                                        "sessions": list.sessions,
+                                        "folders": list.folders,
+                                    }),
                                 ))
                                 .unwrap(),
                             );

@@ -231,8 +231,13 @@ async fn session_list_fastlane_matches_controller_list() {
             .expect("direct list");
     assert_eq!(
         reply.pointer("/result/sessions").cloned().unwrap(),
-        serde_json::to_value(&direct).unwrap(),
+        serde_json::to_value(&direct.sessions).unwrap(),
         "ws fast path and controller list must return identical rows"
+    );
+    assert_eq!(
+        reply.pointer("/result/folders").cloned().unwrap(),
+        serde_json::to_value(&direct.folders).unwrap(),
+        "ws fast path and controller list must return identical folders"
     );
     let ids = listed_ids(&reply);
     assert!(ids.contains(&full));

@@ -9,6 +9,7 @@ import {
 import { bindTabDrag } from "../drag/bindTabDrag";
 import { releaseOrphanRenderOverlays } from "../popout/orphanOverlay";
 import { bindPopoutWindows } from "../popout/popoutChrome";
+import { bindWindowActivity } from "./activity";
 import { recoverDefaultLayout } from "./edges";
 import { emitPanelRemoved, onPanelRemoved } from "./events";
 import { bindDockview, dockview } from "./host";
@@ -46,6 +47,7 @@ let settleRaf: number | undefined;
 function startWindowShell(api: DockviewApi): () => void {
   const stopRegistry = bindWindowRegistry(api);
   const stopChrome = bindPopoutWindows();
+  const stopActivity = bindWindowActivity();
   const stopKeys = bindWorkbenchKeys();
   const stopDrag = bindTabDrag(api);
   const moveSub = api.onDidMovePanel(() => {
@@ -54,6 +56,7 @@ function startWindowShell(api: DockviewApi): () => void {
   return () => {
     stopRegistry();
     stopChrome();
+    stopActivity();
     stopKeys();
     stopDrag();
     moveSub.dispose();

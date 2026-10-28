@@ -1,6 +1,7 @@
 import type { DockviewApi, DockviewGroupPanel } from "dockview-react";
 
 import { dockIdFromPopoutUrl, popoutPageUrl } from "../config/popoutUrl";
+import { lastUserDockId } from "./activity";
 import { dockview } from "./host";
 import { isLayoutRestoring } from "./restoreGate";
 import { getWindows } from "./windows";
@@ -158,8 +159,9 @@ function moveToPlace(live: ReturnApi, panel: PanelLike, place: PanelPlace): void
  *
  * A panel already on a usable surface is activated in place. A popout is
  * focused rather than copied back. A panel sitting on an anchor is moved
- * onto the main center first. A missing panel is added on the main center,
- * even when a popout window is in front.
+ * onto the main center first. A missing panel is added to the window the
+ * user last used: a popout window hosts it as a new tab, otherwise it goes
+ * to the main center.
  */
 export function openPanel(request: OpenPanelRequest, api?: DockviewApi | null): void {
   const live = api ?? dockview();
@@ -189,7 +191,12 @@ export function openPanel(request: OpenPanelRequest, api?: DockviewApi | null): 
   // Edges recover via addPanel directly; business opens go through here and
   // must not race fromJSON (a panel added mid-restore is wiped).
   if (isLayoutRestoring()) return;
-  const place = placementFor(request.component, live, request.preferredGroupId);
+  const place = placementFor(
+    request.component,
+    live,
+    request.preferredGroupId,
+    lastUserDockId(),
+  );
   if (!place || !tabComponent) return;
   live.addPanel({
     id: request.id,

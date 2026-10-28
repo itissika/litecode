@@ -64,7 +64,7 @@ async fn delete_listed_idle_session_after_cold_start_without_subscribe() {
 
     let listed = ctrl.list_sessions().await.expect("list");
     assert!(
-        listed.iter().any(|s| s.id == sid),
+        listed.sessions.iter().any(|s| s.id == sid),
         "session must be visible in the list before delete"
     );
 
@@ -74,7 +74,7 @@ async fn delete_listed_idle_session_after_cold_start_without_subscribe() {
 
     let listed = ctrl.list_sessions().await.expect("list after delete");
     assert!(
-        listed.iter().all(|s| s.id != sid),
+        listed.sessions.iter().all(|s| s.id != sid),
         "deleted session must leave the list"
     );
     assert!(sessions.data().meta_blocking(&sid).is_err());

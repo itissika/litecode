@@ -143,7 +143,16 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
     }
 
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS sessions (
+        "CREATE TABLE IF NOT EXISTS session_folders (
+            id                TEXT PRIMARY KEY,
+            name              TEXT NOT NULL,
+            sort_order        INTEGER NOT NULL DEFAULT 0,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_folders_sort
+            ON session_folders(sort_order, created_at);
+        CREATE TABLE IF NOT EXISTS sessions (
             id                TEXT PRIMARY KEY,
             schema_version    INTEGER NOT NULL DEFAULT 3,
             project           TEXT NOT NULL,
@@ -170,7 +179,9 @@ pub fn ensure_session_schema(conn: &Connection) -> Result<()> {
             responsibility    TEXT NOT NULL DEFAULT '',
             revision          INTEGER NOT NULL DEFAULT 0,
             next_seq          INTEGER NOT NULL DEFAULT 0,
-            deleted_children_json TEXT NOT NULL DEFAULT '{}'
+            deleted_children_json TEXT NOT NULL DEFAULT '{}',
+            title             TEXT,
+            folder_id         TEXT REFERENCES session_folders(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_sessions_project
             ON sessions(project);
@@ -455,6 +466,26 @@ fn migrate_optional_columns(conn: &Connection) -> Result<()> {
                 [],
             )?;
         }
+        // Display-only session layout. These are side columns, not transcript
+        // state: `title` overrides the auto preview and `folder_id` is a
+        // single-folder placement. Neither may bump `revision` or
+        // `updated_at` when written.
+        if !cols.iter().any(|c| c == "title") {
+            conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT", [])?;
+        }
+        if !cols.iter().any(|c| c == "folder_id") {
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN folder_id TEXT
+                 REFERENCES session_folders(id) ON DELETE SET NULL",
+                [],
+            )?;
+        }
+        // Must run after the column exists: on an old DB the batch above skips
+        // `CREATE TABLE sessions`, so `folder_id` is absent until this point.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_folder ON sessions(folder_id)",
+            [],
+        )?;
     }
     if table_exists(conn, "transcript_items")? {
         let cols = table_columns(conn, "transcript_items")?;
@@ -649,6 +680,72 @@ mod tests {
             })
             .unwrap();
         assert_eq!(next, 5, "backfill must be MAX(seq)+1 = 5");
+    }
+
+    #[test]
+    fn existing_session_db_adds_layout_columns_and_folder_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        // Simulate a database written before the layout columns existed. The
+        // required-column gate must accept it, and the additive migration must
+        // add `title` / `folder_id` without touching `schema_version`.
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                schema_version INTEGER NOT NULL DEFAULT 3,
+                project TEXT NOT NULL,
+                last_message TEXT NOT NULL DEFAULT '',
+                last_assistant TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                model_id TEXT,
+                thinking_tier TEXT NOT NULL DEFAULT 'medium',
+                context_mode TEXT NOT NULL DEFAULT 'standard',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                checkpoint_seq INTEGER NOT NULL DEFAULT 0,
+                kept_from_seq INTEGER NOT NULL DEFAULT 0,
+                compacted_seq INTEGER,
+                surface_rewrite_seq INTEGER NOT NULL DEFAULT 0,
+                truncate_epoch INTEGER NOT NULL DEFAULT 0,
+                spine_from INTEGER NOT NULL DEFAULT 0,
+                subagent_depth INTEGER NOT NULL DEFAULT 0,
+                todos_json TEXT NOT NULL DEFAULT '[]',
+                active_plan_slug TEXT,
+                plan_revision TEXT,
+                parent_session_id TEXT,
+                parent_call_id TEXT,
+                responsibility TEXT NOT NULL DEFAULT '',
+                revision INTEGER NOT NULL DEFAULT 0,
+                next_seq INTEGER NOT NULL DEFAULT 0,
+                deleted_children_json TEXT NOT NULL DEFAULT '{}'
+            );
+            INSERT INTO sessions (id, schema_version, project, agent_id, created_at, updated_at)
+            VALUES ('s1', 3, '/p', 'default', 1, 2);",
+        )
+        .unwrap();
+
+        ensure_session_schema(&conn).unwrap();
+
+        let cols = table_columns(&conn, "sessions").unwrap();
+        assert!(cols.iter().any(|c| c == "title"));
+        assert!(cols.iter().any(|c| c == "folder_id"));
+        assert!(table_exists(&conn, "session_folders").unwrap());
+        let (title, folder_id): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT title, folder_id FROM sessions WHERE id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, None);
+        assert_eq!(folder_id, None);
+        let version: i64 = conn
+            .query_row(
+                "SELECT schema_version FROM sessions WHERE id = 's1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, SESSION_LOG_SCHEMA_VERSION as i64);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type RefObject } from "react";
 
 import type { HumanRow, PendingMessage } from "../api/types";
-import { canRevertFiles, projectBubbles } from "../lib/transcriptProjection";
+import { canRevertFiles, projectBubbles, withCompacting } from "../lib/transcriptProjection";
 import { useMessageStore } from "../stores/messageStore";
 import { useTurnStore } from "../stores/turnStore";
 import { CompactingMark, TranscriptMarkForRow } from "./transcriptMarks";
@@ -78,12 +78,19 @@ export const MessageList = memo(function MessageList({
   userRailLayoutRef,
   userRailNotifyRef,
 }: MessageListProps) {
-  const bubbles = useMemo(() => projectBubbles(messages), [messages]);
   // Transient "compacting now" line: `compacting` is set on started and cleared
   // on succeeded/failed. Do not key off `turnPhase`, which can stay compacting
-  // after the checkpoint lands.
-  const compactingNow = useTurnStore(
+  // after the checkpoint lands. `compactingAt` is the tail the cut froze at, so
+  // the line appears where the checkpoint row will land.
+  const compacting = useTurnStore(
     (s) => s.byId.get(sessionId)?.compacting ?? false,
+  );
+  const compactingAt = useTurnStore(
+    (s) => s.byId.get(sessionId)?.compactingAt ?? null,
+  );
+  const bubbles = useMemo(
+    () => withCompacting(projectBubbles(messages), { compacting, at: compactingAt }),
+    [messages, compacting, compactingAt],
   );
   // Plan-execution marks name the plan the button launched; the persisted row
   // carries only the prompt text, so the path comes from the session pointer.
@@ -109,14 +116,12 @@ export const MessageList = memo(function MessageList({
     (s) => s.bySession.get(sessionId)?.landedQueueSeq ?? null,
   );
   const clearLandedQueueSeq = useMessageStore((s) => s.clearLandedQueueSeq);
-  const compactingRows = compactingNow ? 1 : 0;
   const queueRows = pendingQueue ? 1 : 0;
 
   const pad = useBottomPad({ scrollRef, composerCollapsed });
   const onGeometryRef = useRef<(() => void) | null>(null);
   const view = useTranscriptViewport({
     bubbles,
-    compactingRows,
     queueRows,
     queueText: pendingQueue?.joined ?? null,
     queueImageCount: pendingQueue?.images.length ?? 0,
@@ -156,8 +161,7 @@ export const MessageList = memo(function MessageList({
     width: "100%",
   };
 
-  const showList =
-    bubbles.length + compactingRows + queueRows > 0 || canLoadMore;
+  const showList = bubbles.length + queueRows > 0 || canLoadMore;
 
   onGeometryRef.current = () => {
     if (!userRailLayoutRef) return;
@@ -207,7 +211,7 @@ export const MessageList = memo(function MessageList({
           {view.virtualItems.map((virtualItem) => {
             if (
               pendingQueue &&
-              virtualItem.index === bubbles.length + compactingRows
+              virtualItem.index === bubbles.length
             ) {
               return (
                 <div
@@ -222,18 +226,6 @@ export const MessageList = memo(function MessageList({
                     canRecall={!readOnly && pendingMessages.length > 0}
                     onRecall={() => void recallPending?.(sessionId)}
                   />
-                </div>
-              );
-            }
-            if (virtualItem.index >= bubbles.length) {
-              return (
-                <div
-                  key={virtualItem.key}
-                  data-index={virtualItem.index}
-                  ref={view.virtualizer.measureElement}
-                  style={itemStyle}
-                >
-                  <CompactingMark />
                 </div>
               );
             }
@@ -256,7 +248,9 @@ export const MessageList = memo(function MessageList({
               bubble.first != null &&
               bubble.first.seq === landedQueueSeq;
 
-            const item = bubble.markOnly ? (
+            const item = bubble.compacting ? (
+              <CompactingMark />
+            ) : bubble.markOnly ? (
               bubble.rows.map((cut) => (
                 <TranscriptMarkForRow
                   key={String(cut.seq)}

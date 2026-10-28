@@ -1,17 +1,13 @@
 import type { EditorView } from "@tiptap/pm/view";
 
+import { subscribeHostDocument } from "./hostDocument";
+
 type SelectionObserver = {
   onSelectionChange: EventListener;
   stop(): void;
   start(): void;
 };
 
-type Bucket = {
-  observer: MutationObserver;
-  views: Set<EditorView>;
-};
-
-const buckets = new Map<Document, Bucket>();
 const boundDoc = new WeakMap<EditorView, Document>();
 const afterMove = new WeakMap<EditorView, () => void>();
 
@@ -50,51 +46,13 @@ function rebindEditorView(view: EditorView): void {
 /** Follow later reparents. The first call also catches a view already in a popout. */
 export function trackEditorView(view: EditorView, onMove?: () => void): () => void {
   if (onMove) afterMove.set(view, onMove);
-  rebindEditorView(view);
-  watch(view);
+  // The subscription reports the current document first, which binds a view
+  // that is already in a popout.
+  const stop = subscribeHostDocument(view.dom, () => {
+    if (!view.isDestroyed) rebindEditorView(view);
+  });
   return () => {
     afterMove.delete(view);
-    unwatch(view);
+    stop();
   };
-}
-
-function watch(view: EditorView): void {
-  const doc = view.dom.ownerDocument;
-  let bucket = buckets.get(doc);
-  if (!bucket) {
-    const views = new Set<EditorView>();
-    const observer = new MutationObserver(() => {
-      for (const tracked of views) {
-        if (tracked.isDestroyed) {
-          views.delete(tracked);
-          continue;
-        }
-        if (!tracked.dom.isConnected || tracked.dom.ownerDocument === doc) continue;
-        views.delete(tracked);
-        try {
-          rebindEditorView(tracked);
-        } finally {
-          if (!tracked.isDestroyed && tracked.dom.isConnected) watch(tracked);
-        }
-      }
-      if (views.size === 0) {
-        observer.disconnect();
-        buckets.delete(doc);
-      }
-    });
-    observer.observe(doc.documentElement, { childList: true, subtree: true });
-    bucket = { observer, views };
-    buckets.set(doc, bucket);
-  }
-  bucket.views.add(view);
-}
-
-function unwatch(view: EditorView): void {
-  for (const [doc, bucket] of buckets) {
-    if (!bucket.views.delete(view)) continue;
-    if (bucket.views.size === 0) {
-      bucket.observer.disconnect();
-      buckets.delete(doc);
-    }
-  }
 }

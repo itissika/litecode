@@ -14,6 +14,7 @@ use crate::types::{LitecodeError, Result};
 
 use super::command::{CommitKind, CommitReceipt, SessionMutation};
 use super::sqlite::conn::SharedDb;
+use super::sqlite::folders;
 use super::sqlite::ops;
 use super::sqlite::read;
 use super::sqlite::session::{ApplyOutcome, CommitDeltaOutcome, Session, SessionApply};
@@ -648,6 +649,32 @@ fn bump_receipt_with_journal(
     Ok(receipt)
 }
 
+/// Revision-neutral layout write: report the current CAS revision, never +1.
+fn layout_receipt(state: &WriterState, session_id: &str) -> Result<CommitReceipt> {
+    Ok(CommitReceipt {
+        session_id: session_id.to_string(),
+        operation_id: String::new(),
+        revision: read::load_revision(state.db.conn(), session_id)?,
+        outcome: CommitKind::MetaUpdated,
+        preview: None,
+        assistant_preview: None,
+        working_set: None,
+    })
+}
+
+/// Folder CRUD is not session-scoped; the receipt is only a completion signal.
+fn folder_receipt() -> CommitReceipt {
+    CommitReceipt {
+        session_id: String::new(),
+        operation_id: String::new(),
+        revision: 0,
+        outcome: CommitKind::MetaUpdated,
+        preview: None,
+        assistant_preview: None,
+        working_set: None,
+    }
+}
+
 fn ensure_live<'a>(state: &'a mut WriterState, session_id: &str) -> Result<&'a mut Session> {
     if !state.live.contains_key(session_id) {
         let session =
@@ -909,6 +936,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
             summary,
             token_estimate,
             kept_from,
+            at,
             expected_prefix,
             usage,
         } => {
@@ -920,6 +948,7 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                     token_estimate,
                     expected_prefix,
                     usage.as_ref(),
+                    at,
                 )?
             };
             bump_receipt(
@@ -1117,6 +1146,45 @@ fn dispatch(state: &mut WriterState, mutation: SessionMutation) -> Result<Commit
                 expected_revision,
                 CommitKind::MetaUpdated,
             )
+        }
+        SessionMutation::SetTitle {
+            session_id,
+            operation_id: _,
+            title,
+        } => {
+            folders::set_title(state.db.conn(), &session_id, title.as_deref())?;
+            layout_receipt(state, &session_id)
+        }
+        SessionMutation::SetFolder {
+            session_id,
+            operation_id: _,
+            folder_id,
+        } => {
+            folders::set_folder(state.db.conn(), &session_id, folder_id.as_deref())?;
+            layout_receipt(state, &session_id)
+        }
+        SessionMutation::CreateFolder {
+            id,
+            name,
+            operation_id: _,
+        } => {
+            folders::create_folder(state.db.conn(), &id, &name)?;
+            Ok(folder_receipt())
+        }
+        SessionMutation::RenameFolder {
+            id,
+            name,
+            operation_id: _,
+        } => {
+            folders::rename_folder(state.db.conn(), &id, &name)?;
+            Ok(folder_receipt())
+        }
+        SessionMutation::DeleteFolder {
+            id,
+            operation_id: _,
+        } => {
+            folders::delete_folder(state.db.conn(), &id)?;
+            Ok(folder_receipt())
         }
         SessionMutation::Delete {
             session_id,

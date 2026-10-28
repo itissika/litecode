@@ -261,6 +261,10 @@ pub enum InternalEvent {
         error: Option<String>,
         #[serde(default)]
         telemetry: CompactionTelemetry,
+        /// Tail seq the cut froze at; a reader draws the checkpoint there.
+        /// Absent on paths that never split the turn.
+        #[serde(default)]
+        at: Option<u64>,
     },
     PermissionAsk {
         session_id: String,

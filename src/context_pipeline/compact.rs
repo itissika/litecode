@@ -129,6 +129,10 @@ pub struct CompactionPlan {
     pub kept_from_seq: Seq,
     pub prior_checkpoint_seq: Option<Seq>,
     pub summary_cap: u32,
+    /// Tail seq the loop had when this cut froze. A reader draws the checkpoint
+    /// here so everything the turn writes afterwards stays below it. Display
+    /// only: the shadow range is still `kept_from_seq`.
+    pub at: Seq,
 }
 
 /// Read-only plan material for one compaction. The sync path commits this
@@ -234,6 +238,13 @@ fn build_compaction_plan(
     let summary_max_tokens = budget
         .compact_output_tokens(max_tokens)
         .min(request.max_output_tokens);
+    // The display anchor: the newest persisted row at freeze time. Rows written
+    // after it are the ones that must render below the checkpoint.
+    let at = persisted
+        .iter()
+        .rev()
+        .find_map(|row| row.log_seq)
+        .unwrap_or(kept_from_seq);
     let plan = CompactionPlan {
         trigger,
         prefix_len,
@@ -241,6 +252,7 @@ fn build_compaction_plan(
         kept_from_seq,
         prior_checkpoint_seq,
         summary_cap: summary_max_tokens,
+        at,
     };
     Ok(Some(CompactionPlanBuild {
         plan,
@@ -1025,6 +1037,7 @@ impl CompactPolicy {
             None,
             None,
             telemetry.clone(),
+            None,
         );
         emit_compact_lifecycle_with_telemetry(
             sessions,
@@ -1035,6 +1048,7 @@ impl CompactPolicy {
             None,
             None,
             telemetry,
+            None,
         );
         Ok(true)
     }
@@ -1148,6 +1162,7 @@ impl CompactPolicy {
                     tokens_before,
                     None,
                 ),
+                Some(build.plan.at),
             );
         }
         let (artifact, review, summary_attempts) = Self::first_pass_compaction(
@@ -1533,6 +1548,7 @@ impl CompactPolicy {
                     None,
                     None,
                     telemetry.clone(),
+                    None,
                 );
                 emit_compact_lifecycle_with_telemetry(
                     sessions,
@@ -1543,6 +1559,7 @@ impl CompactPolicy {
                     None,
                     None,
                     telemetry,
+                    None,
                 );
                 return Ok(None);
             }
@@ -1605,6 +1622,7 @@ impl CompactPolicy {
                 None,
                 None,
                 base_telemetry.clone(),
+                Some(build.plan.at),
             );
 
             let (artifact, review, summary_attempts) = match Self::first_pass_compaction(
@@ -1745,6 +1763,7 @@ impl CompactPolicy {
                 None,
                 None,
                 telemetry,
+                Some(plan.at),
             );
         }
         if final_meter.is_over_prompt_limit() {
@@ -1783,6 +1802,7 @@ impl CompactPolicy {
                 summary: artifact.text.clone(),
                 token_estimate: final_count as i64,
                 kept_from: Some(plan.kept_from_seq),
+                at: Some(plan.at),
                 expected_prefix: Some(prefix_len),
                 // Already captured off the response stream; persisting it is what
                 // stops the summarizer call from being an unrecorded cost.
@@ -1911,6 +1931,7 @@ impl CompactPolicy {
                     None,
                     None,
                     telemetry,
+                    None,
                 );
                 return Ok(Some(outcome.summary));
             }
@@ -1939,6 +1960,7 @@ impl CompactPolicy {
             None,
             None,
             telemetry,
+            None,
         );
         Ok(Some(summary))
     }
@@ -2299,6 +2321,7 @@ fn emit_compact_lifecycle_with_telemetry(
     fail_kind: Option<CompactionFailKind>,
     error: Option<String>,
     telemetry: CompactionTelemetry,
+    at: Option<Seq>,
 ) {
     sessions.publish_internal(
         session_id,
@@ -2309,6 +2332,7 @@ fn emit_compact_lifecycle_with_telemetry(
             fail_kind,
             error,
             telemetry,
+            at,
         },
     );
 }
@@ -2323,6 +2347,7 @@ pub(crate) fn emit_compaction_abandoned(sessions: &SessionManager, session_id: &
         None,
         None,
         CompactionTelemetry::default(),
+        None,
     );
 }
 
@@ -2353,6 +2378,7 @@ fn emit_compact_failed_with_telemetry(
         Some(fail_kind),
         Some(err.to_string()),
         telemetry,
+        None,
     );
 }
 

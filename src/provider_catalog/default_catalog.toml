@@ -300,8 +300,9 @@ modalities = ["text"]
 # K3 accepts low/high/max. Temperature is fixed at 1.0, so it is omitted.
 reasoning = { tiers = { low = "low", medium = "high", high = "max" } }
 
+# Upstream id marks the economy tier; the label stays product-level.
 [[models]]
-id = "deepseek-v4.1-flash"
+id = "deepseek-v4.1-flash-economy"
 provider_id = "ark-coding"
 label = "DeepSeek V4.1 Flash"
 endpoint_type = "chat_completions"

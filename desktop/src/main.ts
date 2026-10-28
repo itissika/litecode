@@ -121,6 +121,8 @@ type SessionMode = "local" | "remote";
 let mainWindow: BrowserWindow | null = null;
 /** Must match `build.appId`: the NSIS Start Menu shortcut carries this AUMID. */
 const DESKTOP_APP_ID = "app.litecode.desktop";
+/** Dev electron.exe must not claim the installed app's AUMID or its icon is poisoned. */
+const DESKTOP_DEV_APP_ID = `${DESKTOP_APP_ID}.dev`;
 /** Recent toasts stay referenced so a click from Action Center still lands. */
 const liveTurnToasts: Notification[] = [];
 const MAX_LIVE_TOASTS = 5;
@@ -1958,22 +1960,63 @@ function registerIpc(): void {
     targetWindow(event)?.close();
   });
 
+  const popoutChild = (dockId: unknown): BrowserWindow | null => {
+    if (typeof dockId !== "string" || !isPopoutDockId(dockId)) return null;
+    const child = popoutWindows.get(dockId);
+    return child && !child.isDestroyed() ? child : null;
+  };
+
   handleTrusted(
     "litecode:popout-set-always-on-top",
     "workbench",
     (_event, dockId: unknown, onTop: unknown) => {
-      if (typeof dockId !== "string" || !isPopoutDockId(dockId)) return false;
-      const child = popoutWindows.get(dockId);
-      if (!child || child.isDestroyed()) return false;
+      const child = popoutChild(dockId);
+      if (!child) return false;
       child.setAlwaysOnTop(onTop === true);
       return child.isAlwaysOnTop();
+    },
+  );
+
+  handleTrusted(
+    "litecode:popout-window-minimize",
+    "workbench",
+    (_event, dockId: unknown) => {
+      popoutChild(dockId)?.minimize();
+    },
+  );
+
+  handleTrusted(
+    "litecode:popout-window-maximize-toggle",
+    "workbench",
+    (_event, dockId: unknown) => {
+      const child = popoutChild(dockId);
+      if (!child) return false;
+      if (child.isMaximized()) {
+        child.unmaximize();
+        return false;
+      }
+      child.maximize();
+      return true;
+    },
+  );
+
+  handleTrusted(
+    "litecode:popout-window-is-maximized",
+    "workbench",
+    (_event, dockId: unknown) => {
+      return popoutChild(dockId)?.isMaximized() ?? false;
     },
   );
 }
 
 app.whenReady().then(async () => {
   // Windows toast attribution: the installer's Start Menu shortcut carries this id.
-  app.setAppUserModelId(DESKTOP_APP_ID);
+  // Only the installed exe may own it: in dev Electron writes its notification
+  // shortcut for this AUMID pointing at electron.exe, and Windows then paints the
+  // generic Electron icon for both the dev shell and the installed app.
+  if (process.platform === "win32") {
+    app.setAppUserModelId(app.isPackaged ? DESKTOP_APP_ID : DESKTOP_DEV_APP_ID);
+  }
   initDesktopI18n(resolveLocale(app.getLocale()));
   registerIpc();
   await startBrowserAutomationBridge();

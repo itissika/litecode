@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
-import { hostResizeObserver, viewOf } from "../../lib/domView";
+import { viewOf } from "../../lib/domView";
+import { observeHostSize } from "../../lib/hostDocument";
 
 import {
   nearestUserMark,
@@ -144,24 +145,23 @@ export function UserMessageRail({
       }
     };
 
-    const view = viewOf(scroller);
+    let frameView: Window | null = null;
     const schedule = () => {
       if (frame !== 0) return;
-      frame = view.requestAnimationFrame(paint);
+      frameView = viewOf(scroller);
+      frame = frameView.requestAnimationFrame(paint);
     };
 
     notifyRef.current = schedule;
     scroller.addEventListener("scroll", schedule, { passive: true });
-    const Observer = hostResizeObserver(scroller);
-    const observer = Observer ? new Observer(schedule) : null;
-    observer?.observe(scroller);
+    const stopSize = observeHostSize(scroller, schedule);
     schedule();
 
     return () => {
       if (notifyRef.current === schedule) notifyRef.current = null;
       scroller.removeEventListener("scroll", schedule);
-      observer?.disconnect();
-      if (frame !== 0) view.cancelAnimationFrame(frame);
+      stopSize();
+      if (frame !== 0) frameView?.cancelAnimationFrame(frame);
     };
   }, [scrollRef, layoutRef, notifyRef]);
 

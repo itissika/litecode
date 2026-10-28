@@ -40,7 +40,9 @@ function placePreview(
  * cap. Gif, webp, and avif animate in the picture tag. Video
  * plays muted and looped. The full reference, when it is longer than the capsule, is the
  * caption in that same panel. The panel is portaled into the chip's own
- * document so a popped-out editor does not paint it on the opener.
+ * document so a popped-out editor does not paint it on the opener. A scroll
+ * elsewhere in that document (another session panel streaming to its end)
+ * must leave it alone; only a scroll that can move the chip dismisses it.
  */
 export function ImageChipPreview({
   path,
@@ -111,11 +113,28 @@ export function ImageChipPreview({
       prev && prev.top === next.top && prev.left === next.left ? prev : next,
     );
     const view = viewOf(anchor);
+    // Capture-phase scroll reaches the window from every panel's scroller:
+    // scroll does not bubble, but it does traverse the capture path. A
+    // non-bubbling scroll in another session panel is constant while it
+    // streams, so it may hide this preview only when the target is the
+    // document/window or a container the chip lives in -- i.e. when the
+    // anchor itself could have moved.
+    const onScroll = (event: Event) => {
+      const target = event.target as Node | null;
+      if (
+        target &&
+        typeof target.contains === "function" &&
+        !target.contains(anchor)
+      ) {
+        return;
+      }
+      close();
+    };
     const onHide = () => close();
-    view.addEventListener("scroll", onHide, true);
+    view.addEventListener("scroll", onScroll, true);
     view.addEventListener("resize", onHide);
     return () => {
-      view.removeEventListener("scroll", onHide, true);
+      view.removeEventListener("scroll", onScroll, true);
       view.removeEventListener("resize", onHide);
     };
   }, [open, close, path, caption, failed, ready]);

@@ -409,6 +409,7 @@ fn project_with(
             fail_kind,
             error,
             telemetry,
+            at,
         } => {
             let snapshot = snapshot?;
             let mut started_snapshot = snapshot.clone();
@@ -432,6 +433,7 @@ fn project_with(
                     "operation_id": operation_id,
                     "error": error,
                     "telemetry": telemetry,
+                    "at": at,
                     "snapshot": started_snapshot,
                 }),
             ))
@@ -642,8 +644,14 @@ fn turn_error(
     }
 }
 
-pub fn session_list(sessions: Vec<super::protocol::SessionInfo>) -> serde_json::Value {
-    notification("session/list", serde_json::json!({ "sessions": sessions }))
+pub fn session_list(list: super::protocol::SessionList) -> serde_json::Value {
+    notification(
+        "session/list",
+        serde_json::json!({
+            "sessions": list.sessions,
+            "folders": list.folders,
+        }),
+    )
 }
 
 fn turn_event_ids(

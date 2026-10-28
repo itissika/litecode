@@ -580,6 +580,8 @@ impl SessionManager {
                 plan_slug: None,
                 plan_revision: None,
                 preview: String::new(),
+                title: None,
+                folder_id: None,
             }
         });
         let revision = self.data.revision_blocking(session_id).unwrap_or(0);

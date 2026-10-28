@@ -58,6 +58,18 @@ pub struct SessionListRow {
     pub parent_session_id: Option<String>,
     pub parent_call_id: Option<String>,
     pub responsibility: String,
+    /// User title override; `None` means "use `preview`".
+    pub title: Option<String>,
+    /// Folder placement; `None` means ungrouped.
+    pub folder_id: Option<String>,
+}
+
+/// One folder row for the session sidebar. Display-only and workspace-local.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionFolderRow {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +226,9 @@ pub enum SessionMutation {
         summary: String,
         token_estimate: i64,
         kept_from: Option<Seq>,
+        /// Trigger-time tail seq, persisted as the checkpoint's display anchor.
+        /// Display only; the shadow range stays `kept_from`.
+        at: Option<Seq>,
         expected_prefix: Option<usize>,
         /// Bill for the summarizer request that produced `summary`. Stored on the
         /// checkpoint row itself, so the call is never silently free.
@@ -284,6 +299,34 @@ pub enum SessionMutation {
         expected_revision: u64,
         operation_id: MutationId,
     },
+    /// Display-only title override. `None` means "use the auto preview".
+    /// Revision-neutral: it must not bump `sessions.revision` or `updated_at`.
+    SetTitle {
+        session_id: String,
+        operation_id: MutationId,
+        title: Option<String>,
+    },
+    /// Display-only folder placement. `None` means ungrouped.
+    /// Revision-neutral, like `SetTitle`.
+    SetFolder {
+        session_id: String,
+        operation_id: MutationId,
+        folder_id: Option<String>,
+    },
+    CreateFolder {
+        id: String,
+        name: String,
+        operation_id: MutationId,
+    },
+    RenameFolder {
+        id: String,
+        name: String,
+        operation_id: MutationId,
+    },
+    DeleteFolder {
+        id: String,
+        operation_id: MutationId,
+    },
 }
 
 impl SessionMutation {
@@ -310,13 +353,21 @@ impl SessionMutation {
             | Self::SetModel { operation_id, .. }
             | Self::SetThinkingTier { operation_id, .. }
             | Self::SetContextMode { operation_id, .. }
-            | Self::Delete { operation_id, .. } => &operation_id.0,
+            | Self::Delete { operation_id, .. }
+            | Self::SetTitle { operation_id, .. }
+            | Self::SetFolder { operation_id, .. }
+            | Self::CreateFolder { operation_id, .. }
+            | Self::RenameFolder { operation_id, .. }
+            | Self::DeleteFolder { operation_id, .. } => &operation_id.0,
         }
     }
 
     pub fn session_id(&self) -> Option<&str> {
         match self {
-            Self::Create { .. } => None,
+            Self::Create { .. }
+            | Self::CreateFolder { .. }
+            | Self::RenameFolder { .. }
+            | Self::DeleteFolder { .. } => None,
             Self::Apply { session_id, .. }
             | Self::InsertDetails { session_id, .. }
             | Self::PersistItem { session_id, .. }
@@ -337,13 +388,21 @@ impl SessionMutation {
             | Self::SetModel { session_id, .. }
             | Self::SetThinkingTier { session_id, .. }
             | Self::SetContextMode { session_id, .. }
-            | Self::Delete { session_id, .. } => Some(session_id),
+            | Self::Delete { session_id, .. }
+            | Self::SetTitle { session_id, .. }
+            | Self::SetFolder { session_id, .. } => Some(session_id),
         }
     }
 
     pub fn expected_revision(&self) -> Option<u64> {
         match self {
-            Self::Create { .. } | Self::RecordProviderUsage { .. } => None,
+            Self::Create { .. }
+            | Self::RecordProviderUsage { .. }
+            | Self::SetTitle { .. }
+            | Self::SetFolder { .. }
+            | Self::CreateFolder { .. }
+            | Self::RenameFolder { .. }
+            | Self::DeleteFolder { .. } => None,
             Self::Apply {
                 expected_revision, ..
             }
@@ -441,6 +500,7 @@ pub enum SessionRead {
         session_id: String,
     },
     ListSessions,
+    ListFolders,
     ListSessionIds,
     ListSessionsForGc,
     /// Sessions whose `updated_at` is at or after `since_ms` (activity report).
@@ -565,6 +625,7 @@ pub enum ReadValue {
     TruncateEpoch(u64),
     Meter(SessionContextMeter),
     List(Vec<SessionListRow>),
+    Folders(Vec<SessionFolderRow>),
     Ids(Vec<String>),
     GcList(Vec<(String, i64)>),
     /// `(id, parent_session_id, updated_at, agent_id, last_message)` activity rows.

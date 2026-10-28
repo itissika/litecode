@@ -205,6 +205,11 @@ export type LitecodeDesktopBridge = {
   windowIsMaximized(): Promise<boolean>;
   windowClose(): Promise<void>;
   popoutSetAlwaysOnTop(dockId: string, onTop: boolean): Promise<boolean>;
+  /** Window controls for one popout window, addressed by its dock id. */
+  popoutWindowMinimize(dockId: string): Promise<void>;
+  /** Returns whether the window is maximized after the toggle. */
+  popoutWindowMaximizeToggle(dockId: string): Promise<boolean>;
+  popoutWindowIsMaximized(dockId: string): Promise<boolean>;
   browserCreate(input: { id: string; backgroundColor: string }): Promise<BrowserState>;
   browserNavigate(input: { id: string; url: string }): Promise<BrowserState>;
   browserGoBack(id: string): Promise<BrowserState>;

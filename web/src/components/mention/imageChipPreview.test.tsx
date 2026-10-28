@@ -155,6 +155,34 @@ describe("ImageChipPreview", () => {
     );
   });
 
+  it("ignores a scroll in another panel and still closes on its own scroller", () => {
+    render(
+      <div data-testid="own-scroller">
+        <span data-testid="other-panel" />
+        <ImageChipPreview text="src/a.rs : fn save">
+          <button type="button">a.rs</button>
+        </ImageChipPreview>
+      </div>,
+    );
+    fireEvent.mouseEnter(anchor());
+    expect(document.querySelector(".image-chip-preview")).toBeTruthy();
+
+    // Another session panel streams to its end. The window capture listener
+    // sees that scroll, but nothing the chip is anchored to moved.
+    fireEvent.scroll(document.querySelector("[data-testid='other-panel']")!);
+    expect(document.querySelector(".image-chip-preview")).toBeTruthy();
+
+    // The chip's own container scrolls: the anchor moves, so the preview goes.
+    fireEvent.scroll(document.querySelector("[data-testid='own-scroller']")!);
+    expect(document.querySelector(".image-chip-preview")).toBeNull();
+
+    // A viewport scroll still dismisses it.
+    fireEvent.mouseEnter(anchor());
+    expect(document.querySelector(".image-chip-preview")).toBeTruthy();
+    fireEvent.scroll(document);
+    expect(document.querySelector(".image-chip-preview")).toBeNull();
+  });
+
   it("closes when the pointer leaves", () => {
     vi.mocked(readBytes).mockResolvedValue(
       new Blob([Uint8Array.from([1])], { type: "image/gif" }),

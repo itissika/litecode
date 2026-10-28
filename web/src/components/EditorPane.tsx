@@ -35,6 +35,7 @@ import {
   LITECODE_MONACO_THEME_LIGHT,
 } from "../theme/monaco";
 import { getTheme, THEME_CHANGE_EVENT } from "../lib/theme";
+import { observeHostSize } from "../lib/hostDocument";
 import { BINARY_FILE_MESSAGE } from "../lib/fileKind";
 import {
   attachGitQuickDiff,
@@ -122,11 +123,14 @@ export function EditorPane({
   const addToChatRef = useRef<{ dispose: () => void } | null>(null);
   const spanDragCleanup = useRef<(() => void) | null>(null);
   const quickDiffRef = useRef<GitQuickDiffHandle | null>(null);
+  const sizeStop = useRef<(() => void) | null>(null);
   const pathRef = useRef(filePath);
   pathRef.current = filePath;
 
   useEffect(() => {
     return () => {
+      sizeStop.current?.();
+      sizeStop.current = null;
       addToChatRef.current?.dispose();
       spanDragCleanup.current?.();
       quickDiffRef.current?.dispose();
@@ -176,6 +180,8 @@ export function EditorPane({
   useEffect(() => {
     if (usePreview) {
       editorRef.current = null;
+      sizeStop.current?.();
+      sizeStop.current = null;
       quickDiffRef.current?.dispose();
       quickDiffRef.current = null;
     }
@@ -401,6 +407,20 @@ export function EditorPane({
                   monacoRef.current = monaco;
                   editorRef.current = _editor;
                   _editor.layout();
+                  // Monaco's own automaticLayout observer is created in the
+                  // opener realm; it stops reporting once dockview moves the
+                  // editor into a popout document. Follow the host window.
+                  sizeStop.current?.();
+                  sizeStop.current = null;
+                  // Watch the container the panel sizes, not the editor node:
+                  // Monaco sets its own node size from the layout it is given,
+                  // so that node never reports the popout's real box.
+                  const hostNode = _editor.getContainerDomNode();
+                  if (hostNode) {
+                    sizeStop.current = observeHostSize(hostNode, () => {
+                      if (editorRef.current === _editor) _editor.layout();
+                    });
+                  }
                   quickDiffRef.current?.dispose();
                   quickDiffRef.current = attachGitQuickDiff(
                     _editor,
@@ -471,7 +491,9 @@ export function EditorPane({
                     '"JetBrains Mono", Menlo, Monaco, "Courier New", monospace',
                   lineNumbers: "on",
                   scrollBeyondLastLine: false,
-                  automaticLayout: true,
+                  // Sized by observeHostSize in onMount: the built-in observer
+                  // cannot follow the panel into a popout document.
+                  automaticLayout: false,
                   tabSize: 2,
                   autoClosingBrackets: "languageDefined",
                   autoClosingQuotes: "languageDefined",

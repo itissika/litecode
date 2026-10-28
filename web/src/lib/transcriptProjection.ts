@@ -405,6 +405,151 @@ export interface Bubble {
   followedByUser: boolean;
   /** Next bubble is a system mark (compact, background exit, …), which ends the segment. */
   followedByMark: boolean;
+  /** Synthetic transient row while a compaction runs; not a log row. */
+  compacting?: boolean;
+}
+
+/** Virtual key of the transient "compacting…" bubble. */
+const COMPACTING_BUBBLE_KEY = "__compacting__";
+
+/** Where a row is drawn: a checkpoint sits at its trigger seq, not its own. */
+export function rowDisplayAnchor(row: HumanRow): number {
+  if (row.kind === "compacted") {
+    const at = row.body.at;
+    if (typeof at === "number") return at + 0.5;
+  }
+  return row.seq;
+}
+
+/**
+ * Restore each checkpoint to the position its cut froze at, so the rows the
+ * turn wrote while the summary ran stay below the mark. Seq order otherwise.
+ */
+export function orderForDisplay(rows: HumanRow[]): HumanRow[] {
+  let anchored: HumanRow[] | null = null;
+  for (const row of rows) {
+    if (row.kind === "compacted" && typeof row.body.at === "number") {
+      (anchored ??= []).push(row);
+    }
+  }
+  if (!anchored) return rows;
+  anchored.sort((a, b) => rowDisplayAnchor(a) - rowDisplayAnchor(b));
+  const out: HumanRow[] = [];
+  let next = 0;
+  for (const row of rows) {
+    if (row.kind === "compacted" && typeof row.body.at === "number") continue;
+    // An anchored row draws at `at + 0.5`: in front of the row at `at + 1`,
+    // behind the row at `at` itself.
+    while (next < anchored.length && rowDisplayAnchor(anchored[next]!) < row.seq) {
+      out.push(anchored[next++]!);
+    }
+    out.push(row);
+  }
+  while (next < anchored.length) out.push(anchored[next++]!);
+  return out;
+}
+
+/** First drawn position of a bubble, or +∞ for a bubble with no rows. */
+function bubbleAnchor(bubble: Bubble): number {
+  const first = bubble.rows[0];
+  return first ? rowDisplayAnchor(first) : Number.POSITIVE_INFINITY;
+}
+
+/** Last drawn position of a bubble, or -∞ for a bubble with no rows. */
+function bubbleEnd(bubble: Bubble): number {
+  const last = bubble.rows[bubble.rows.length - 1];
+  return last ? rowDisplayAnchor(last) : Number.NEGATIVE_INFINITY;
+}
+
+/** A bubble's own fields, recomputed for a halved row run. */
+function rebuildBubble(rows: HumanRow[], key: string): Bubble {
+  const first = rows.find((row) => !isTranscriptMarkRow(row));
+  return {
+    key,
+    rows,
+    first,
+    isUser: first != null && isHumanUserRow(first),
+    markOnly: rows.every(isTranscriptMarkRow),
+    followedByUser: false,
+    followedByMark: false,
+  };
+}
+
+/**
+ * Insert the transient "compacting…" line at the anchor the cut froze at, so it
+ * appears where the checkpoint row will land and the running turn's output
+ * stays below it. Without an anchor (synchronous paths) it trails the list.
+ *
+ * The durable row arrives before `succeeded` clears the flag; a checkpoint for
+ * the same anchor suppresses the synthetic line, so the mark never renders
+ * twice for one frame.
+ */
+export function withCompacting(
+  bubbles: Bubble[],
+  state: { compacting: boolean; at: number | null },
+): Bubble[] {
+  if (!state.compacting) return bubbles;
+  const at = state.at;
+  const bubble: Bubble = {
+    key: COMPACTING_BUBBLE_KEY,
+    rows: [],
+    isUser: false,
+    markOnly: true,
+    followedByUser: false,
+    followedByMark: false,
+    compacting: true,
+  };
+  if (at == null) return [...bubbles, bubble];
+  const landed = bubbles.some((candidate) => {
+    const row = candidate.rows[0];
+    return (
+      candidate.rows.length === 1 &&
+      row?.kind === "compacted" &&
+      row.body.at === at
+    );
+  });
+  if (landed) return bubbles;
+  // A bubble whose rows straddle the anchor is halved, exactly as the durable
+  // checkpoint will split it: consecutive assistant rows coalesce, so appending
+  // the line after the whole bubble would put it below rows the cut never saw.
+  const out: Bubble[] = [];
+  let placed = false;
+  for (const candidate of bubbles) {
+    if (placed) {
+      out.push(candidate);
+      continue;
+    }
+    if (bubbleEnd(candidate) <= at + 0.5) {
+      out.push(candidate);
+      continue;
+    }
+    if (bubbleAnchor(candidate) > at + 0.5) {
+      out.push(bubble, candidate);
+      placed = true;
+      continue;
+    }
+    const cut = candidate.rows.findIndex((row) => row.seq > at);
+    if (cut <= 0 || cut >= candidate.rows.length) {
+      out.push(bubble, candidate);
+      placed = true;
+      continue;
+    }
+    const below = candidate.rows.slice(cut);
+    out.push(rebuildBubble(candidate.rows.slice(0, cut), candidate.key));
+    out.push(bubble);
+    placed = true;
+    out.push(rebuildBubble(below, String(below[0]!.seq)));
+  }
+  if (!placed) out.push(bubble);
+  for (let i = 0; i < out.length - 1; i++) {
+    const next = out[i + 1]!;
+    out[i]!.followedByUser = next.isUser;
+    out[i]!.followedByMark = next.markOnly;
+  }
+  const last = out[out.length - 1]!;
+  last.followedByUser = false;
+  last.followedByMark = false;
+  return out;
 }
 
 /** One pass over the visible rows: bubble identity and whether the next bubble is a user message. */

@@ -10,8 +10,11 @@ import {
   groupRowsForBubbles,
   locateBashTool,
   locateSeq,
+  orderForDisplay,
   projectBubbles,
+  rowDisplayAnchor,
   trimPartialHead,
+  withCompacting,
 } from "./transcriptProjection";
 
 const userRow: HumanRow = {
@@ -170,11 +173,86 @@ describe("bubbleIdentity", () => {
   });
 });
 
-const compactCut = (seq: number): HumanRow => ({
+const compactCut = (seq: number, at?: number): HumanRow => ({
   seq,
   kind: "compacted",
   state: "final",
-  body: { summary: "hidden", from: 0, to: seq },
+  body: { summary: "hidden", from: 0, to: seq, ...(at != null ? { at } : {}) },
+});
+
+describe("checkpoint display anchor", () => {
+  it("draws a checkpoint at its trigger seq, not the seq its row landed on", () => {
+    const cut = compactCut(9, 4);
+    expect(rowDisplayAnchor(cut)).toBe(4.5);
+    expect(rowDisplayAnchor(compactCut(9))).toBe(9);
+  });
+
+  it("keeps every row written after the freeze below the checkpoint", () => {
+    const rows = [
+      userAt(0),
+      assistantRow(1),
+      assistantRow(2),
+      assistantRow(3),
+      assistantRow(4),
+      assistantRow(5),
+      assistantRow(6),
+      compactCut(9, 4),
+    ];
+    expect(orderForDisplay(rows).map((row) => row.seq)).toEqual([
+      0, 1, 2, 3, 4, 9, 5, 6,
+    ]);
+  });
+
+  it("leaves legacy checkpoints and untouched streams in seq order", () => {
+    const rows = [userAt(0), compactCut(5), assistantRow(6)];
+    expect(orderForDisplay(rows).map((row) => row.seq)).toEqual([0, 5, 6]);
+  });
+});
+
+describe("withCompacting", () => {
+  it("appears where the checkpoint will land and stays there while the turn grows", () => {
+    const rows = [userAt(0), assistantRow(1), assistantRow(2), assistantRow(3)];
+    const frozen = projectBubbles(rows);
+    const shown = withCompacting(frozen, { compacting: true, at: 1 });
+    // Rows 2–3 coalesce into one bubble below the line, exactly as they do
+    // once the durable checkpoint splits the run.
+    expect(shown.map((bubble) => bubble.key)).toEqual([
+      "0",
+      "1",
+      "__compacting__",
+      "2",
+    ]);
+    expect(shown[2]?.compacting).toBe(true);
+    // The rows written after the freeze stay below the line.
+    expect(shown[1]?.followedByMark).toBe(true);
+    expect(shown[3]?.followedByMark).toBe(false);
+  });
+
+  it("lands exactly where the durable checkpoint renders", () => {
+    const rows = [userAt(0), assistantRow(1), assistantRow(2), assistantRow(3)];
+    const shown = withCompacting(projectBubbles(rows), { compacting: true, at: 1 });
+    const landed = projectBubbles(orderForDisplay([...rows, compactCut(9, 1)]));
+    const index = shown.findIndex((bubble) => bubble.compacting);
+    expect(index).toBeGreaterThan(0);
+    expect(landed[index]?.rows[0]?.kind).toBe("compacted");
+  });
+
+  it("trails the list when the path never split the turn", () => {
+    const bubbles = projectBubbles([userAt(0), assistantRow(1)]);
+    const shown = withCompacting(bubbles, { compacting: true, at: null });
+    expect(shown.at(-1)?.compacting).toBe(true);
+  });
+
+  it("yields to the checkpoint row that already landed for the same anchor", () => {
+    const bubbles = projectBubbles([userAt(0), compactCut(9, 1), assistantRow(2)]);
+    const shown = withCompacting(bubbles, { compacting: true, at: 1 });
+    expect(shown.some((bubble) => bubble.compacting)).toBe(false);
+  });
+
+  it("is a no-op while no compaction runs", () => {
+    const bubbles = projectBubbles([userAt(0)]);
+    expect(withCompacting(bubbles, { compacting: false, at: 3 })).toBe(bubbles);
+  });
 });
 
 describe("groupRowsForBubbles compact cut", () => {

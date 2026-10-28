@@ -254,6 +254,30 @@ describe("turnStore convergence", () => {
     expect(useTurnStore.getState().byId.get(sessionId)?.compacting).toBe(false);
   });
 
+  it("keeps the frozen cut anchor on started and drops it on succeeded", () => {
+    const sessionId = "s-life-at";
+    useTurnStore.setState({
+      byId: new Map([[sessionId, { ...EMPTY_SLICE, runState: "running" }]]),
+    });
+    const snap = snapshot(sessionId);
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "started",
+      at: 41,
+      snapshot: { ...snap, compacting: true },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compactingAt).toBe(41);
+
+    useTurnStore.getState().onCompactLifecycle({
+      session_id: sessionId,
+      trigger: "auto",
+      stage: "succeeded",
+      snapshot: { ...snap, compacting: false },
+    });
+    expect(useTurnStore.getState().byId.get(sessionId)?.compactingAt).toBeNull();
+  });
+
   it("onCompactLifecycle clears an abandoned branch without a failure toast", () => {
     const sessionId = "s-life-abandoned";
     useTurnStore.setState({

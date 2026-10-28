@@ -1818,6 +1818,7 @@ mod compact_item_wire_tests {
                 fail_kind: Some(CompactionFailKind::Quality),
                 error: Some("summary quality rejected".into()),
                 telemetry: Default::default(),
+                at: None,
             },
             "/p",
             &binding(),
@@ -1860,6 +1861,7 @@ mod compact_item_wire_tests {
                     error: (stage == CompactionStage::Failed)
                         .then(|| "summary quality rejected".into()),
                     telemetry: telemetry.clone(),
+                    at: None,
                 },
                 "/p",
                 &binding(),

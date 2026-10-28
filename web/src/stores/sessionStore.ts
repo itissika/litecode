@@ -3,7 +3,9 @@ import type {
   WireServerHello,
   SessionSnapshot,
   SessionInfo,
+  SessionFolder,
   SessionLifecycle,
+  SessionList,
   OperationResult,
   OperationKind,
   PrimaryAgentInfo,
@@ -66,6 +68,10 @@ function sortSessions(sessions: SessionInfo[]): SessionInfo[] {
   return [...sessions].sort(
     (a, b) => orderBucket(b.updated_at) - orderBucket(a.updated_at),
   );
+}
+
+function sortFolders(folders: SessionFolder[]): SessionFolder[] {
+  return [...folders].sort((a, b) => a.sort_order - b.sort_order);
 }
 
 function sessionControlsLocked(sessionId: string): boolean {
@@ -132,6 +138,8 @@ interface SessionState {
   primaryAgents: PrimaryAgentInfo[];
   project: string;
   sessions: SessionInfo[];
+  /** Sidebar folders, ordered by `sort_order`. */
+  folders: SessionFolder[];
   sessionsLoading: boolean;
   sessionListError: string | null;
   pendingSessionOp: OperationKind | null;
@@ -147,7 +155,7 @@ interface SessionStore extends SessionState {
   onHello: (hello: WireServerHello) => void;
   onModelsChanged: (models: ModelInfo[]) => void;
   applySnapshot: (snap: SessionSnapshot) => void;
-  onSessionList: (sessions: SessionInfo[]) => void;
+  onSessionList: (sessions: SessionInfo[], folders?: SessionFolder[]) => void;
   onSessionLifecycle: (params: SessionLifecycle) => void;
   onSessionAttached: (params: { session_id: string; turn: any }) => void;
   onOperationResult: (op: OperationResult) => void;
@@ -162,6 +170,13 @@ interface SessionStore extends SessionState {
   setModel: (sessionId: string, modelId: string) => void;
   setThinkingTier: (sessionId: string, tier: ThinkingTier) => void;
   setContextMode: (sessionId: string, mode: ContextMode) => void;
+
+  // Display-only sidebar layout
+  renameSession: (id: string, title: string | null) => void;
+  moveSession: (id: string, folderId: string | null) => void;
+  createFolder: (name: string) => void;
+  renameFolder: (id: string, name: string) => void;
+  deleteFolder: (id: string) => void;
 
   // UI actions
   setShowSessionList: (open: boolean) => void;
@@ -360,6 +375,7 @@ export const useSessionStore = create<SessionStore>((set, get) => {
     primaryAgents: [],
     project: "",
     sessions: [],
+    folders: [],
     sessionsLoading: false,
     sessionListError: null,
     pendingSessionOp: null,
@@ -388,13 +404,14 @@ export const useSessionStore = create<SessionStore>((set, get) => {
 
     applySnapshot,
 
-    onSessionList: (sessions: SessionInfo[]) => {
+    onSessionList: (sessions: SessionInfo[], folders?: SessionFolder[]) => {
       // A `session/list` snapshot can be built before a delete and arrive
       // after it (the fast path runs off the serial loop). Drop ids already
       // confirmed deleted so a late snapshot cannot resurrect a row.
       const deleted = get().deletedSessionIds;
       set({
         sessions: sortSessions(sessions.filter((s) => !deleted[s.id])),
+        ...(folders ? { folders: sortFolders(folders) } : {}),
         sessionsLoading: false,
         sessionListError: null,
       });
@@ -706,11 +723,12 @@ export const useSessionStore = create<SessionStore>((set, get) => {
       set({ sessionsLoading: true, sessionListError: null });
       useConnectionStore
         .getState()
-        .sendRpc<{ sessions: SessionInfo[] }>("session/list")
+        .sendRpc<SessionList>("session/list")
         .then((data) => {
           const deleted = get().deletedSessionIds;
           set({
             sessions: sortSessions(data.sessions.filter((s) => !deleted[s.id])),
+            folders: sortFolders(data.folders ?? []),
             sessionsLoading: false,
             sessionListError: null,
           });
@@ -792,6 +810,130 @@ export const useSessionStore = create<SessionStore>((set, get) => {
           useToastStore
             .getState()
             .showToast("Failed to set context mode", "error");
+        });
+    },
+
+    renameSession: (id, title) => {
+      const previous = get().sessions.find((s) => s.id === id)?.title;
+      const normalized = title?.trim() || null;
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === id ? { ...s, title: normalized } : s,
+        ),
+      }));
+      useConnectionStore
+        .getState()
+        .sendRpc("session/rename", { id, title: normalized })
+        .catch(() => {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === id ? { ...s, title: previous } : s,
+            ),
+          }));
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.renameFailed"), "error");
+        });
+    },
+
+    moveSession: (id, folderId) => {
+      const previous = get().sessions.find((s) => s.id === id)?.folder_id;
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === id ? { ...s, folder_id: folderId } : s,
+        ),
+      }));
+      useConnectionStore
+        .getState()
+        .sendRpc("session/move", { id, folder_id: folderId })
+        .catch(() => {
+          set((state) => ({
+            sessions: state.sessions.map((s) =>
+              s.id === id ? { ...s, folder_id: previous } : s,
+            ),
+          }));
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.moveFailed"), "error");
+        });
+    },
+
+    createFolder: (name) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      useConnectionStore
+        .getState()
+        .sendRpc<{ folder_id: string }>("session/folder/create", { name: trimmed })
+        .then((result) => {
+          // The server pushes a fresh list before this reply, so this is only a
+          // fallback for an older/partial reply shape.
+          set((state) => {
+            if (
+              !result?.folder_id ||
+              state.folders.some((folder) => folder.id === result.folder_id)
+            ) {
+              return {};
+            }
+            return {
+              folders: [
+                ...state.folders,
+                {
+                  id: result.folder_id,
+                  name: trimmed,
+                  sort_order: state.folders.length,
+                },
+              ],
+            };
+          });
+        })
+        .catch(() => {
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.createFolderFailed"), "error");
+        });
+    },
+
+    renameFolder: (id, name) => {
+      const trimmed = name.trim();
+      if (!trimmed) return;
+      const previous = get().folders.find((folder) => folder.id === id)?.name;
+      set((state) => ({
+        folders: state.folders.map((folder) =>
+          folder.id === id ? { ...folder, name: trimmed } : folder,
+        ),
+      }));
+      useConnectionStore
+        .getState()
+        .sendRpc("session/folder/rename", { id, name: trimmed })
+        .catch(() => {
+          set((state) => ({
+            folders: state.folders.map((folder) =>
+              folder.id === id ? { ...folder, name: previous ?? folder.name } : folder,
+            ),
+          }));
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.renameFolderFailed"), "error");
+        });
+    },
+
+    deleteFolder: (id) => {
+      const previousFolders = get().folders;
+      const previousSessions = get().sessions;
+      set((state) => ({
+        folders: state.folders.filter((folder) => folder.id !== id),
+        sessions: state.sessions.map((session) =>
+          session.folder_id === id ? { ...session, folder_id: null } : session,
+        ),
+      }));
+      useConnectionStore
+        .getState()
+        .sendRpc("session/folder/delete", { id })
+        .catch(() => {
+          set({ folders: previousFolders, sessions: previousSessions });
+          useToastStore
+            .getState()
+            .showToast(i18n.t("session.deleteFolderFailed"), "error");
         });
     },
 

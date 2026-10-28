@@ -94,6 +94,8 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 | `todos` | `[{ content, status }]` | 会话待办整表；compact 不改这一列 |
 | `plan_slug` | `Option<String>` | 当前 plan 文件的 slug；正文在旁路 |
 | `preview` | String | 会话列表摘要，通常来自最近一条 `item/user` |
+| `title` | `Option<String>` | 用户标题覆盖；`NULL` 回退 `preview`。纯展示覆盖层，不进 `SessionEvent` / `AgentView`，不 bump `revision` / `updated_at` |
+| `folder_id` | `Option<String>` | 侧边栏文件夹；`NULL` 未分组。FK `ON DELETE SET NULL`；纯展示覆盖层，不进 `SessionEvent` / `AgentView` |
 
 ### 不进 SessionMeta
 
@@ -143,9 +145,11 @@ AgentView 与 HumanView 都不回写。GateRow 是唯一提交口。能否开下
 
 | kind | 脊骨 | HumanView | AgentView | body |
 |---|---|---|---|---|
-| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | **不是** durable assistant Item；只有 projector 把 role-free body 投影成 user checkpoint | `CompactedBody { summary, from, to }`（无 role） |
+| `compacted` | 本行替换 `[from, to)`。被换行仍在 SessionEvent | 切痕，不展示摘要 | **不是** durable assistant Item；只有 projector 把 role-free body 投影成 user checkpoint | `CompactedBody { summary, from, to, at? }`（无 role） |
 
-`compacted` 的持久 body 永远保留原始 `summary` 文本和 `from/to`，不写 `role`。AgentView/projector 在读取边界把它展开成唯一形状：
+`compacted` 的持久 body 永远保留原始 `summary` 文本和 `from/to`，不写 `role`。`at` 是切点冻结那一刻的尾部 seq，只给 HumanView 定位这一行用（后台压缩时摘要跑在主 loop 之外，行的自称 seq 是提交时刻，会让切痕落到主 loop 之后新增内容的下面）；`at` 不参与 shadow 区间，旧行缺省，读不到就按自身 seq 画。
+
+AgentView/projector 在读取边界把它展开成唯一形状：
 
 ```
 {CHECKPOINT_PREAMBLE}

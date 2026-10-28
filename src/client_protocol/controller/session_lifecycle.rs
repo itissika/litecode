@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::client_protocol::project;
 use crate::client_protocol::protocol::{
-    ErrorCode, OperationKind, SessionBindingProjection, SessionInfo,
+    ErrorCode, OperationKind, SessionBindingProjection, SessionFolder, SessionInfo, SessionList,
 };
 use crate::context_pipeline::{
     BudgetPolicy, CompactPolicy, ContextEnvelope, measure_persisted_context_with_breakdown,
@@ -453,13 +453,7 @@ impl SessionController {
         }
         self._workspace_outgoing.push(operation_msg);
         self._workspace_outgoing.push(snapshot_msg);
-        if let Ok(sessions) = self.list_sessions().await {
-            let session_list_msg = project::session_list(sessions);
-            for proj in self.projections.values_mut() {
-                proj.push_outgoing(session_list_msg.clone());
-            }
-            self._workspace_outgoing.push(session_list_msg);
-        }
+        let _ = self.push_session_list().await;
         Ok(sid)
     }
 
@@ -489,10 +483,7 @@ impl SessionController {
 
         // Workspace-level outs: delete must not depend on remaining projections
         // (Session List alone / deleting the only subscribed session).
-        if let Ok(sessions) = self.list_sessions().await {
-            self._workspace_outgoing
-                .push(project::session_list(sessions));
-        }
+        let _ = self.push_session_list().await;
         let project_str = self.project.clone();
         let snapshot = project::buffer_snapshot(
             id,
@@ -517,8 +508,66 @@ impl SessionController {
         Ok(())
     }
 
-    pub async fn list_sessions(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
+    pub async fn list_sessions(&mut self) -> anyhow::Result<SessionList> {
         build_session_list(&self.sessions, &self.runtime.resolved).await
+    }
+
+    /// Build one `session/list` payload and fan it out to every projection and
+    /// the workspace queue. Layout writes call this after mutating SQLite.
+    pub(crate) async fn push_session_list(&mut self) -> anyhow::Result<()> {
+        let list = self.list_sessions().await?;
+        let message = project::session_list(list);
+        for projection in self.projections.values_mut() {
+            projection.push_outgoing(message.clone());
+        }
+        self._workspace_outgoing.push(message);
+        Ok(())
+    }
+
+    /// Display-only title override; `None` restores the auto preview.
+    pub async fn rename_session(
+        &mut self,
+        session_id: &str,
+        title: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.sessions
+            .data()
+            .set_session_title_blocking(session_id, title.as_deref())?;
+        self.push_session_list().await?;
+        Ok(())
+    }
+
+    /// Move a session into a folder; `None` returns it to ungrouped.
+    pub async fn move_session(
+        &mut self,
+        session_id: &str,
+        folder_id: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.sessions
+            .data()
+            .set_session_folder_blocking(session_id, folder_id.as_deref())?;
+        self.push_session_list().await?;
+        Ok(())
+    }
+
+    pub async fn create_session_folder(&mut self, name: &str) -> anyhow::Result<String> {
+        let folder_id = self.sessions.data().create_session_folder_blocking(name)?;
+        self.push_session_list().await?;
+        Ok(folder_id)
+    }
+
+    pub async fn rename_session_folder(&mut self, id: &str, name: &str) -> anyhow::Result<()> {
+        self.sessions
+            .data()
+            .rename_session_folder_blocking(id, name)?;
+        self.push_session_list().await?;
+        Ok(())
+    }
+
+    pub async fn delete_session_folder(&mut self, id: &str) -> anyhow::Result<()> {
+        self.sessions.data().delete_session_folder_blocking(id)?;
+        self.push_session_list().await?;
+        Ok(())
     }
 
     // ── per-session operations ──
@@ -848,13 +897,29 @@ impl crate::session::delete::RemovedSessionCleanup for crate::tools::subagent::S
 pub(crate) async fn build_session_list(
     sessions_mgr: &crate::session::manager::SessionManager,
     resolved: &crate::config::ResolvedConfig,
-) -> anyhow::Result<Vec<SessionInfo>> {
+) -> anyhow::Result<SessionList> {
+    let folders = sessions_mgr
+        .data()
+        .list_folders_blocking()?
+        .into_iter()
+        .map(|folder| SessionFolder {
+            id: folder.id,
+            name: folder.name,
+            sort_order: folder.sort_order,
+        })
+        .collect();
     let db_sessions = sessions_mgr.data().list_sessions_blocking()?;
     let mut result = Vec::with_capacity(db_sessions.len());
     for row in db_sessions {
         // WP-091 R8 / P8: empty child sessions stay listed (a just-bound
-        // child must be visible after reconnect).
-        if row.parent_session_id.is_none() && sessions_mgr.is_session_empty(&row.id).await {
+        // child must be visible after reconnect). An empty root is also kept
+        // when the user named it or filed it: otherwise naming a fresh session
+        // would make it vanish from the sidebar.
+        if row.parent_session_id.is_none()
+            && row.title.is_none()
+            && row.folder_id.is_none()
+            && sessions_mgr.is_session_empty(&row.id).await
+        {
             continue;
         }
         let running = sessions_mgr.is_turn_running(&row.id).await;
@@ -894,6 +959,8 @@ pub(crate) async fn build_session_list(
             project: row.project,
             updated_at: row.updated_at,
             preview: row.preview,
+            title: row.title,
+            folder_id: row.folder_id,
             assistant_preview: row.assistant_preview,
             running,
             status,
@@ -909,5 +976,8 @@ pub(crate) async fn build_session_list(
             last_turn_cancelled_by,
         });
     }
-    Ok(result)
+    Ok(SessionList {
+        sessions: result,
+        folders,
+    })
 }
